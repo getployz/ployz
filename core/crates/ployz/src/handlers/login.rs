@@ -128,7 +128,9 @@ pub(super) fn logout(root: &ArgMatches) -> Result<(), Error> {
             super::account::say_clears(&out.servers, next.as_deref());
         }
         None => say!("Not signed in."),
-    })
+    })?;
+    out.as_ref()
+        .map_or(Ok(()), |out| super::account::unconfirmed(&out.servers))
 }
 
 #[derive(serde::Serialize)]

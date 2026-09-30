@@ -109,6 +109,7 @@ pub struct VolumeConfig {
     #[ts(type = "2")]
     pub version: u8,
     pub name: String,
+    pub storage: VolumeKind,
 }
 
 /// A variable value associated with its stable producer owner and lineage.
@@ -220,7 +221,7 @@ pub fn compile_environment_intent(
             ),
             ("PORT", "3000".into()),
             ("PLOYZ_ENVIRONMENT_NAME", intent.environment_slug.clone()),
-            ("PLOYZ_SERVICE_NAME", service.slug.clone()),
+            ("PLOYZ_SERVICE_NAME", service.config.private_dns.to_string()),
             ("PLOYZ_ENVIRONMENT_ID", environment_id.into()),
             ("PLOYZ_SERVICE_ID", service.id.clone()),
         ] {
@@ -247,6 +248,7 @@ pub fn compile_environment_intent(
         snapshot: CompiledNodeSnapshot(CompiledNodeConfig::Volume(VolumeConfig {
             version: 2,
             name: v.name.clone(),
+            storage: v.storage,
         })),
         encrypted_registry_username: None,
         encrypted_registry_secret: None,

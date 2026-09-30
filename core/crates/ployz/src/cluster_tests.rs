@@ -11,11 +11,16 @@ use super::*;
 
 #[test]
 fn unspecified_or_negative_stop_timeout_has_no_rpc_deadline() {
-    assert_eq!(stop_rpc_timeout(Some(-1)), None);
-    assert_eq!(stop_rpc_timeout(None), None);
+    assert_eq!(stop_rpc_timeout(Some(-1), 1), None);
+    assert_eq!(stop_rpc_timeout(None, 1), None);
     assert_eq!(
-        stop_rpc_timeout(Some(5)),
+        stop_rpc_timeout(Some(5), 1),
         Some(TARGET_RPC_TIMEOUT + Duration::from_secs(5))
+    );
+    // Stops on one Machine run one at a time: the last waits behind the others.
+    assert_eq!(
+        stop_rpc_timeout(Some(10), 2),
+        Some(TARGET_RPC_TIMEOUT + Duration::from_secs(20))
     );
 }
 

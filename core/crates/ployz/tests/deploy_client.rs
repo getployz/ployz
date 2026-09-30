@@ -1137,6 +1137,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
         .write(
             &who,
             &CreateVolume {
+                storage: ployz_core::config::VolumeKind::Local {},
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: data.clone(),
@@ -1151,7 +1152,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
     let held = Arc::clone(&service.volumes);
     let (address, server) = listening(service).await;
     let connections = || vec![ployz::context::Connection::tcp(address)];
-    let deploy = |n: u8, accept: Vec<VolumeName>, trusted: Trusted| {
+    let deploy = |n: u8, accept: Vec<VolumeName>, trusted: Trusted, version: Option<String>| {
         let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
         store
             .write_trusted(
@@ -1160,7 +1161,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
                     id: id.clone(),
                     environment: EnvironmentRef::default(),
                     services: Vec::new(),
-                    version: None,
+                    version,
                     upload: None,
                     accept_volume_loss: accept,
                     message: None,
@@ -1170,7 +1171,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
             .map(|_| id)
     };
 
-    let first = deploy(1, Vec::new(), Trusted::default()).unwrap();
+    let first = deploy(1, Vec::new(), Trusted::default(), None).unwrap();
     let ran = ployz::sdk::run_deployment(
         Arc::clone(&store),
         first,
@@ -1224,11 +1225,15 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
         ..Trusted::default()
     };
     // Unaccepted it refuses; accepted, the runner deletes exactly the reviewed one.
-    assert_eq!(
-        deploy(2, Vec::new(), trusted.clone()).unwrap_err().code,
-        ployz_core::RpcErrorCode::ConfirmationRequired
-    );
-    let second = deploy(2, vec![data], trusted).unwrap();
+    let refused = deploy(2, Vec::new(), trusted.clone(), None).unwrap_err();
+    assert_eq!(refused.code, ployz_core::RpcErrorCode::ConfirmationRequired);
+    // The acceptance is bound to the reviewed version.
+    let version = refused
+        .details
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let second = deploy(2, vec![data], trusted, version).unwrap();
     // A same-named Docker Volume that appeared after the review is never deleted.
     held.lock().unwrap().push(on('b'));
     let ran = ployz::sdk::run_deployment(

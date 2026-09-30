@@ -1,34 +1,24 @@
-//! The Config Store for Cloud: `read` and `write` as Promises. Each call runs its
-//! blocking database work on a worker thread, at most [`CONCURRENCY`] at once, and
-//! ends `unavailable` when it waits or runs too long. The Store's in-process-only
-//! operations are never bound here without their own caller checks: Cloud's worker
+//! The Config Store for Cloud: `read` and `write` as Promises. Every Store call,
+//! the runner's and GitHub's included, goes through `ployz::sdk::store_call`: on a
+//! worker thread, bounded, ending `unavailable` when it waits or runs too long.
+//! The Store's in-process-only operations are never bound here without their own caller checks: Cloud's worker
 //! runs a Deployment in one call, so its secrets and evidence never reach JavaScript.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use ployz_core::{RpcError, RpcErrorCode, ServiceName};
+use ployz_core::{RpcError, ServiceName};
 use ployz_store::{Actor, DeploymentId, GithubBuildId, OrganizationId, RunEvidence, RunnerId};
-use tokio::sync::Semaphore;
+use serde::de::DeserializeOwned;
 
 use crate::{invalid_argument, rpc_to_napi};
-
-/// Store calls running at once per handle; more wait their turn.
-const CONCURRENCY: usize = 8;
-/// How long a call may wait for its turn.
-const QUEUE_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long a call may run. The database's own statement and lock timeouts end the
-/// work itself; past this the caller stops waiting and the outcome is unknown.
-const RUN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// One Config Store over one database.
 #[napi]
 pub struct ConfigStore {
     store: Arc<ployz_store::ConfigStore>,
-    permits: Arc<Semaphore>,
 }
 
 /// Open the Config Store at `url` (`postgres://…`, or `sqlite:PATH` in tests),
@@ -40,10 +30,12 @@ pub struct ConfigStore {
 #[napi]
 pub async fn open_config_store(url: String, sealing_secret: String) -> Result<ConfigStore> {
     let sealing = ployz_store::SealingKey::new(sealing_secret.as_bytes()).map_err(rpc_to_napi)?;
-    let store = blocking(move || ployz_store::ConfigStore::open(&url, sealing)).await?;
+    let store = tokio::task::spawn_blocking(move || ployz_store::ConfigStore::open(&url, sealing))
+        .await
+        .map_err(|error| Error::from_reason(error.to_string()))?
+        .map_err(rpc_to_napi)?;
     Ok(ConfigStore {
         store: Arc::new(store),
-        permits: Arc::new(Semaphore::new(CONCURRENCY)),
     })
 }
 
@@ -59,17 +51,13 @@ pub async fn observe_volumes(
     connections: serde_json::Value,
     sought: Vec<String>,
 ) -> Result<serde_json::Value> {
-    let connections = serde_json::from_value(connections)
-        .map_err(|_| invalid_argument("invalid management connections"))?;
+    let connections = connections_of(connections)?;
     let sought = sought
         .into_iter()
         .map(ployz_core::DockerVolumeName::parse)
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|_| invalid_argument("invalid Docker Volume name"))?;
-    let observed = ployz::sdk::observe_volumes(connections, sought)
-        .await
-        .map_err(rpc_to_napi)?;
-    serde_json::to_value(observed).map_err(|error| Error::from_reason(error.to_string()))
+    to_json(ployz::sdk::observe_volumes(connections, sought).await)
 }
 
 #[napi]
@@ -87,11 +75,9 @@ impl ConfigStore {
         trusted: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
-        let query: ployz_store::Query = serde_json::from_value(query)
-            .map_err(|_| invalid_argument("Expected a Config Store query"))?;
+        let query: ployz_store::Query = decode(query, "Expected a Config Store query")?;
         let trusted = evidence(trusted)?;
-        let store = Arc::clone(&self.store);
-        self.run(move || store.read_trusted(&who, &query, &trusted))
+        self.run(move |store| store.read_trusted(&who, &query, &trusted))
             .await
     }
 
@@ -110,11 +96,9 @@ impl ConfigStore {
         principal: Option<String>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization, principal)?;
-        let command: ployz_store::Command = serde_json::from_value(command)
-            .map_err(|_| invalid_argument("Expected a Config Store command"))?;
+        let command: ployz_store::Command = decode(command, "Expected a Config Store command")?;
         let trusted = evidence(trusted)?;
-        let store = Arc::clone(&self.store);
-        self.run(move || store.write_trusted(&who, &command, &trusted))
+        self.run(move |store| store.write_trusted(&who, &command, &trusted))
             .await
     }
 
@@ -126,8 +110,7 @@ impl ConfigStore {
     #[napi]
     pub async fn deployment_sources(&self, deployment: String) -> Result<serde_json::Value> {
         let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
-        let store = Arc::clone(&self.store);
-        self.run(move || store.sources(&deployment)).await
+        self.run(move |store| store.sources(&deployment)).await
     }
 
     /// Pin the commits Cloud resolved (`{runtime Service name: commit}`) for
@@ -144,10 +127,9 @@ impl ConfigStore {
         commits: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
-        let commits = serde_json::from_value(commits)
-            .map_err(|_| invalid_argument("Expected commits by Service name"))?;
-        let store = Arc::clone(&self.store);
-        self.run(move || store.pin(&deployment, &commits)).await
+        let commits = decode(commits, "Expected commits by Service name")?;
+        self.run(move |store| store.pin(&deployment, &commits))
+            .await
     }
 
     /// Run the Organization's queued Deployment `deployment` as `runner` on one of
@@ -181,15 +163,13 @@ impl ConfigStore {
         let who = actor(organization, None)?;
         let (deployment, runner) = ids(deployment, runner)?;
         // Only a Deployment of this Organization runs here.
-        let (store, owned) = (Arc::clone(&self.store), deployment.clone());
-        self.run(move || store.read(&who, &ployz_store::DeploymentQuery { id: owned.clone() }))
+        let owned = deployment.clone();
+        self.run(move |store| store.read(&who, &ployz_store::DeploymentQuery { id: owned }))
             .await?;
-        let connections = serde_json::from_value(connections)
-            .map_err(|_| invalid_argument("invalid management connections"))?;
+        let connections = connections_of(connections)?;
         let sources: Sources = sources
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|_| invalid_argument("Expected checkouts, upload and failure"))?
+            .map(|sources| decode(sources, "Expected checkouts, upload and failure"))
+            .transpose()?
             .unwrap_or_default();
         let checkouts = match sources.failure {
             Some(reason) => Err(reason),
@@ -198,16 +178,16 @@ impl ConfigStore {
                 upload: sources.upload,
             }),
         };
-        let summary = ployz::sdk::run_deployment(
-            Arc::clone(&self.store),
-            deployment,
-            runner,
-            connections,
-            checkouts,
+        to_json(
+            ployz::sdk::run_deployment(
+                Arc::clone(&self.store),
+                deployment,
+                runner,
+                connections,
+                checkouts,
+            )
+            .await,
         )
-        .await
-        .map_err(rpc_to_napi)?;
-        serde_json::to_value(summary).map_err(|error| Error::from_reason(error.to_string()))
     }
 
     /// Record that `runner` stopped without finishing Deployment `deployment`: its
@@ -223,8 +203,7 @@ impl ConfigStore {
         runner: String,
     ) -> Result<serde_json::Value> {
         let (deployment, runner) = ids(deployment, runner)?;
-        let store = Arc::clone(&self.store);
-        self.run(move || store.record(&deployment, &runner, RunEvidence::Abandoned))
+        self.run(move |store| store.record(&deployment, &runner, RunEvidence::Abandoned))
             .await
     }
 
@@ -243,11 +222,9 @@ impl ConfigStore {
         trusted: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
-        let event: ployz_store::SystemEvent = serde_json::from_value(whole(event))
-            .map_err(|_| invalid_argument("Expected a system event"))?;
+        let event: ployz_store::SystemEvent = decode(event, "Expected a system event")?;
         let trusted = evidence(trusted)?;
-        let store = Arc::clone(&self.store);
-        self.run(move || store.system(&who.organization, &event, &trusted))
+        self.run(move |store| store.system(&who.organization, &event, &trusted))
             .await
     }
 
@@ -259,8 +236,7 @@ impl ConfigStore {
     #[napi]
     pub async fn remove_organization(&self, organization: String) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
-        let store = Arc::clone(&self.store);
-        self.run(move || store.remove_organization(&who)).await
+        self.run(move |store| store.remove_organization(&who)).await
     }
 
     /// Every queued Deployment no runner claimed, admitted before `before` (Unix
@@ -271,8 +247,7 @@ impl ConfigStore {
     /// Returns a storage error.
     #[napi]
     pub async fn unclaimed(&self, before: i64) -> Result<serde_json::Value> {
-        let store = Arc::clone(&self.store);
-        self.run(move || store.unclaimed(before)).await
+        self.run(move |store| store.unclaimed(before)).await
     }
 
     /// The head of a GitHub branch the Store last saw for the Organization, or null:
@@ -289,8 +264,7 @@ impl ConfigStore {
     ) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
         let (repository_id, branch) = github_branch(repository_id, &branch)?;
-        let store = Arc::clone(&self.store);
-        self.run(move || store.branch_head(&who.organization, repository_id, &branch))
+        self.run(move |store| store.branch_head(&who.organization, repository_id, &branch))
             .await
     }
 
@@ -308,8 +282,7 @@ impl ConfigStore {
     ) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
         let (repository_id, branch) = github_branch(repository_id, &branch)?;
-        let store = Arc::clone(&self.store);
-        self.run(move || store.pending_saves(&who.organization, repository_id, &branch))
+        self.run(move |store| store.pending_saves(&who.organization, repository_id, &branch))
             .await
     }
 }
@@ -344,10 +317,8 @@ impl ConfigStore {
         run: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let build = github_id(&build)?;
-        let run =
-            serde_json::from_value(run).map_err(|_| invalid_argument("Expected a GitHub run"))?;
-        let store = Arc::clone(&self.store);
-        self.run(move || store.github_dispatched(&build, &run))
+        let run = decode(run, "Expected a GitHub run")?;
+        self.run(move |store| store.github_dispatched(&build, &run))
             .await
     }
 
@@ -358,8 +329,7 @@ impl ConfigStore {
     #[napi]
     pub async fn github_build(&self, build: String) -> Result<serde_json::Value> {
         let build = github_id(&build)?;
-        let store = Arc::clone(&self.store);
-        self.run(move || store.github_build(&build)).await
+        self.run(move |store| store.github_build(&build)).await
     }
 
     /// Skip GitHub for a build it can't take, before any run: the next Builder takes it.
@@ -369,8 +339,7 @@ impl ConfigStore {
     #[napi]
     pub async fn github_skip(&self, build: String, message: String) -> Result<serde_json::Value> {
         let build = github_id(&build)?;
-        let store = Arc::clone(&self.store);
-        self.run(move || {
+        self.run(move |store| {
             store.github_end(&build, None, &ployz_store::GithubEnd::Skipped { message })
         })
         .await
@@ -452,12 +421,21 @@ fn github_id(build: &str) -> Result<GithubBuildId> {
 }
 
 fn claims_of(claims: serde_json::Value) -> Result<ployz_store::GithubClaims> {
-    serde_json::from_value(claims).map_err(|_| invalid_argument("Expected OIDC claims"))
+    decode(claims, "Expected OIDC claims")
 }
 
 fn connections_of(connections: serde_json::Value) -> Result<Vec<ployz::context::Connection>> {
-    serde_json::from_value(connections)
-        .map_err(|_| invalid_argument("invalid management connections"))
+    decode(connections, "invalid management connections")
+}
+
+fn repository(repository_id: i64) -> Result<u64> {
+    u64::try_from(repository_id).map_err(|_| invalid_argument("Expected a GitHub repository ID"))
+}
+
+/// Decode what JavaScript sent, its whole numbers as integers first; `refusal` names
+/// what was expected.
+fn decode<T: DeserializeOwned>(value: serde_json::Value, refusal: &str) -> Result<T> {
+    serde_json::from_value(whole(value)).map_err(|_| invalid_argument(refusal))
 }
 
 fn to_json<T: serde::Serialize>(
@@ -470,23 +448,11 @@ fn to_json<T: serde::Serialize>(
 impl ConfigStore {
     async fn run<T: serde::Serialize + Send + 'static>(
         &self,
-        work: impl FnOnce() -> std::result::Result<T, RpcError> + Send + 'static,
+        work: impl FnOnce(&ployz_store::ConfigStore) -> std::result::Result<T, RpcError>
+        + Send
+        + 'static,
     ) -> Result<serde_json::Value> {
-        let permit = tokio::time::timeout(QUEUE_TIMEOUT, Arc::clone(&self.permits).acquire_owned())
-            .await
-            .map_err(|_| unavailable("The Config Store is busy; retry"))?
-            .map_err(|_| unavailable("The Config Store is closed"))?;
-        let value = blocking(move || {
-            // The turn ends when the work does, even if the caller stopped waiting.
-            let _permit = permit;
-            work()
-        });
-        let value = tokio::time::timeout(RUN_TIMEOUT, value)
-            .await
-            .map_err(|_| {
-                unavailable("The Config Store did not answer in time; the outcome is unknown")
-            })??;
-        serde_json::to_value(value).map_err(|error| Error::from_reason(error.to_string()))
+        to_json(ployz::sdk::store_call(&self.store, work).await)
     }
 }
 
@@ -505,10 +471,8 @@ fn github_branch(
     repository_id: i64,
     branch: &str,
 ) -> Result<(ployz_store::RepositoryId, ployz_store::BranchName)> {
-    let repository_id = u64::try_from(repository_id)
-        .map_err(|_| invalid_argument("Expected a GitHub repository ID"))?;
     Ok((
-        ployz_store::RepositoryId::parse(repository_id).map_err(rpc_to_napi)?,
+        ployz_store::RepositoryId::parse(repository(repository_id)?).map_err(rpc_to_napi)?,
         ployz_store::BranchName::parse(branch).map_err(rpc_to_napi)?,
     ))
 }
@@ -520,29 +484,11 @@ fn ids(deployment: String, runner: String) -> Result<(DeploymentId, RunnerId)> {
     ))
 }
 
-async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> std::result::Result<T, RpcError> + Send + 'static,
-) -> Result<T> {
-    tokio::task::spawn_blocking(work)
-        .await
-        .map_err(|_| unavailable("The Config Store call stopped unexpectedly"))?
-        .map_err(rpc_to_napi)
-}
-
-fn unavailable(message: &str) -> Error {
-    rpc_to_napi(RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: message.to_owned(),
-        details: serde_json::Value::Null,
-    })
-}
-
 /// Evidence Cloud gathered itself (`ConfigTrusted`), or none.
 fn evidence(trusted: Option<serde_json::Value>) -> Result<ployz_store::Trusted> {
     Ok(trusted
-        .map(|trusted| serde_json::from_value(whole(trusted)))
-        .transpose()
-        .map_err(|_| invalid_argument("Expected Config Store evidence"))?
+        .map(|trusted| decode(trusted, "Expected Config Store evidence"))
+        .transpose()?
         .unwrap_or_default())
 }
 

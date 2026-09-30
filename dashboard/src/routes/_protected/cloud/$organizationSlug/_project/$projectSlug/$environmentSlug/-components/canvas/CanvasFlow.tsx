@@ -174,6 +174,7 @@ export function CanvasFlow({
         }}
       />
       <VolumeCreatorDialog
+        organizationSlug={params.organizationSlug}
         open={volumeCreator.creatorOpen}
         onOpenChange={volumeCreator.setCreatorOpen}
         position={volumeCreator.creatorPosition}

@@ -12,7 +12,8 @@ use serde_json::json;
 
 use super::account::in_cloud;
 use super::login::open_browser;
-use super::{Error, Handler, Json, leaf_matches};
+use super::store::Next;
+use super::{Error, Handler, leaf_matches};
 use crate::cli::{positional, switch};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::LoginError;
@@ -48,11 +49,11 @@ pub(crate) fn command() -> Command {
         )
 }
 
-pub(super) fn handler(path: &str) -> Option<(Handler, Json)> {
+pub(super) fn handler(path: &str) -> Option<Handler> {
     Some(match path {
-        "connect" => (connect, Json::Supported),
-        "ls" => (list, Json::Supported),
-        "disconnect" => (disconnect, Json::Supported),
+        "connect" => connect,
+        "ls" => list,
+        "disconnect" => disconnect,
         _ => return None,
     })
 }
@@ -105,14 +106,6 @@ struct Disconnection {
     account: String,
 }
 
-#[derive(Serialize)]
-struct Report<'a, T> {
-    #[serde(flatten)]
-    value: &'a T,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    next: Option<&'a str>,
-}
-
 async fn connection(credential: &Credential) -> Result<Connection, LoginError> {
     cloud_account::call(credential, Method::GET, "github", None).await
 }
@@ -158,16 +151,16 @@ fn connect(root: &ArgMatches) -> Result<(), Error> {
         }
         let pending =
             json!({ "status": "pending", "url": before.install_url, "connection": before });
-        return crate::output::emit(&Report {
-            value: &pending,
-            next: Some("ployz github connect --wait"),
-        });
+        return crate::output::emit(&Next::new(
+            &pending,
+            Some("ployz github connect --wait".to_owned()),
+        ));
     };
     crate::output::finish(
-        &Report {
-            value: &after,
-            next: Some("ployz service add NAME --repo OWNER/REPO"),
-        },
+        &Next::new(
+            &after,
+            Some("ployz service add NAME --repo OWNER/REPO".to_owned()),
+        ),
         || {
             say!("done.");
             say_connection(&after);
@@ -179,18 +172,12 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
     let Some(repository) = leaf_matches(root).get_one::<String>("repository") else {
         let listed = in_cloud(root, async |_, credential| connection(credential).await)?;
         let next = (!listed.ready).then_some("ployz github connect");
-        return crate::output::finish(
-            &Report {
-                value: &listed,
-                next,
-            },
-            || {
-                say_connection(&listed);
-                if let Some(next) = next {
-                    say!("No repositories yet. Next: {next}");
-                }
-            },
-        );
+        return crate::output::finish(&Next::new(&listed, next.map(str::to_owned)), || {
+            say_connection(&listed);
+            if let Some(next) = next {
+                say!("No repositories yet. Next: {next}");
+            }
+        });
     };
     if !valid_repository(repository) {
         return Err(Error::usage(

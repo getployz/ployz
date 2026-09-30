@@ -36,13 +36,18 @@ export function applyOptimistic(queryClient: QueryClient, organizationSlug: stri
       return;
     }
     case "create_volume": {
-      const volume: VolumeListing = { id: command.id, name: command.name, mounts: [], deployed: false, change: "create" };
+      const volume: VolumeListing = { id: command.id, name: command.name, storage: command.storage,
+        storage_locked: false, mounts: [], deployed: false, change: "create" };
       views<VolumesView>("volumes", command.environment, (view) => ({ ...view, volumes: [...view.volumes, volume] }));
       return;
     }
     case "remove_service":
       views<ServicesView>("services", command.environment, (view) => ({ ...view, services: view.services.flatMap((service) =>
         service.name !== command.service ? [service] : service.change === "create" ? [] : [{ ...service, change: "delete" as const }]) }));
+      return;
+    case "set_volume_storage":
+      views<VolumesView>("volumes", command.environment, (view) => ({ ...view, volumes: view.volumes.map((volume) =>
+        volume.name === command.volume ? { ...volume, storage: command.storage } : volume) }));
       return;
     case "remove_volume":
       views<VolumesView>("volumes", command.environment, (view) => ({ ...view, volumes: view.volumes.flatMap((volume) =>

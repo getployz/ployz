@@ -83,7 +83,7 @@ fn parent() -> Value {
     };
     json!({"version": 1, "environmentSlug": "production",
            "services": [api, web, image(3, WORKER, "worker"), image(4, CACHE, "cache")],
-           "volumes": [{"resourceId": id(seed, 30), "resourceLineageId": DATA, "name": "data"}]})
+           "volumes": [{"resourceId": id(seed, 30), "resourceLineageId": DATA, "name": "data", "storage": {"kind": "local"}}]})
 }
 
 /// Give every node, variable, route and Volume a fresh id, keeping lineage.
@@ -497,6 +497,22 @@ fn with_picks(
         into,
         &json!({"parent": parent_input, "picks": picks}),
     ))
+}
+
+#[test]
+fn volume_storage_moves_as_one_setting_with_its_exact_limit() {
+    let base = parent();
+    let mut from = branch();
+    let storage = json!({"kind":"provisioned","maximumBytes":7000000000_i64});
+    from["volumes"][0]["storage"] = storage.clone();
+    let key = format!("{DATA}:storage");
+    let result = changes(Some(&base), &from, &base, &json!({"picks":[{"key":key}]}));
+    assert_eq!(row(&result, &key)["role"], "move");
+    assert_eq!(result["next"]["volumes"][0]["storage"], storage);
+    assert_eq!(
+        result["next"]["volumes"][0]["resourceId"],
+        base["volumes"][0]["resourceId"]
+    );
 }
 
 fn table_picks() -> Value {

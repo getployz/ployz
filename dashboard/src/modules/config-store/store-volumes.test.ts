@@ -1,8 +1,16 @@
 import type { DiffView } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
-import { detachedMounts, mountChange, mountPathError, volumeLoss } from "./store-volumes";
+import { detachedMounts, mountChange, mountPathError, volumeLoss, volumeStorage } from "./store-volumes";
 
 describe("store volumes", () => {
+  it("uses an exact managed limit and only opts out when explicitly unchecked", () => {
+    expect(volumeStorage(true, "5")).toEqual({ kind: "provisioned", maximumBytes: 5_000_000_000 });
+    expect(volumeStorage(true, "0.5")).toEqual({ kind: "provisioned", maximumBytes: 500_000_000 });
+    for (const invalid of ["", "0", "-1", "bad", "Infinity", "9007199254.740992"]) {
+      expect(volumeStorage(true, invalid)).toBeNull();
+    }
+    expect(volumeStorage(false, "")).toEqual({ kind: "local" });
+  });
   it("mounts at a path and detaches by unsetting the mount", () => {
     expect(mountChange("web", "data", "/srv")).toEqual({ op: "set", path: "web.mounts.data", value: "/srv" });
     expect(mountChange("web", "data", null)).toEqual({ op: "unset", path: "web.mounts.data" });

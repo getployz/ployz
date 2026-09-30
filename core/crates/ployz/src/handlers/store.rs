@@ -68,7 +68,7 @@ pub(crate) fn environment(matches: &ArgMatches) -> Result<EnvironmentRef, Error>
 /// `PLOYZ_TOKEN` or this device's sign-in, or the hidden in-process SQLite Store
 /// when `PLOYZ_STORE` is set.
 pub(crate) enum Store {
-    Local(ConfigStore, Actor),
+    Local(std::sync::Arc<ConfigStore>, Actor),
     Cloud(tokio::runtime::Runtime, Credential),
 }
 
@@ -198,6 +198,14 @@ impl Store {
     ) -> Result<VolumeStaged, StoreCallError> {
         let request = Command::RemoveVolume(remove.clone());
         self.call("write", &request, |store, who| store.write(who, remove))
+    }
+
+    pub(crate) fn set_volume_storage(
+        &self,
+        set: &ployz_store::SetVolumeStorage,
+    ) -> Result<VolumeStaged, StoreCallError> {
+        let request = Command::SetVolumeStorage(set.clone());
+        self.call("write", &request, |store, who| store.write(who, set))
     }
 
     pub(crate) fn volumes(&self, query: &VolumesQuery) -> Result<VolumesView, StoreCallError> {
@@ -408,7 +416,7 @@ impl Store {
 
     /// The in-process Store, which only the hidden test mode has: there this CLI
     /// runs Deployments itself. `claim` and `record` never cross HTTPS.
-    pub(crate) fn local(&self) -> Option<&ConfigStore> {
+    pub(crate) fn local(&self) -> Option<&std::sync::Arc<ConfigStore>> {
         match self {
             Self::Local(store, _) => Some(store),
             Self::Cloud(..) => None,
@@ -471,13 +479,14 @@ fn reachable_at(config: &std::path::Path) -> Result<Option<Store>, Error> {
             None => config.with_file_name("store.key"),
         };
         let key = SealingKey::from_file(&key)?;
-        return Ok(Some(Store::Local(ConfigStore::open(&url, key)?, actor)));
+        return Ok(Some(Store::Local(
+            std::sync::Arc::new(ConfigStore::open(&url, key)?),
+            actor,
+        )));
     }
     let credentials = CredentialStore::beside(config);
-    let token = std::env::var(env::TOKEN).ok();
-    let cloud = std::env::var(env::CLOUD_URL).ok();
     let runtime = runtime()?;
-    match runtime.block_on(cloud_account::credential(&credentials, token, cloud)) {
+    match runtime.block_on(cloud_account::from_env(&credentials)) {
         Ok(credential) => Ok(Some(Store::Cloud(runtime, credential))),
         Err(LoginError::SignedOut) => Ok(None),
         Err(error) => Err(error.into()),
@@ -546,13 +555,26 @@ pub(crate) fn with_refresh_hint(
     matches: &ArgMatches,
     read: &str,
 ) -> StoreCallError {
+    with_next(
+        error,
+        |refusal| refusal.code == RpcErrorCode::Conflict,
+        || next(matches, &[read]),
+    )
+}
+
+/// A refusal `when` picks names `next` as the command to run next.
+pub(crate) fn with_next(
+    error: StoreCallError,
+    when: impl FnOnce(&ployz_core::RpcError) -> bool,
+    next: impl FnOnce() -> String,
+) -> StoreCallError {
     let StoreCallError::Refused(mut error) = error else {
         return error;
     };
-    if error.code == RpcErrorCode::Conflict
+    if when(&error)
         && let Some(details) = error.details.as_object_mut()
     {
-        details.insert("next".into(), json!(next(matches, &[read])));
+        details.insert("next".into(), json!(next()));
     }
     StoreCallError::Refused(error)
 }
@@ -565,15 +587,44 @@ pub(crate) fn failed<'matches>(
     words: &'matches [&'matches str],
 ) -> impl FnOnce(StoreCallError) -> Error + 'matches {
     move |error| {
-        let StoreCallError::Refused(mut error) = error else {
-            return error.into();
-        };
-        if error.code == RpcErrorCode::Ambiguous
-            && let Some(details) = error.details.as_object_mut()
-            && details.contains_key("projects")
-        {
-            details.insert("next".into(), json!(rerun(matches, words)));
-        }
-        error.into()
+        with_next(
+            error,
+            |refusal| {
+                refusal.code == RpcErrorCode::Ambiguous && refusal.details.get("projects").is_some()
+            },
+            || rerun(matches, words),
+        )
+        .into()
     }
+}
+
+/// A unit enum variant as the word its JSON uses, such as `not_applied`.
+pub(crate) fn word(value: &impl serde::Serialize) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// Argument `arg`, a Service name. Core's name error quotes the value; a rejected
+/// value is never echoed.
+pub(crate) fn service_name(
+    matches: &ArgMatches,
+    arg: &str,
+) -> Result<ployz_core::ServiceName, Error> {
+    ployz_core::ServiceName::parse(super::required(matches, arg)?).map_err(|_| {
+        Error::usage("Expected a Service name: lowercase letters, digits and -, like web")
+            .with_exit(crate::failure::USAGE_EXIT)
+    })
+}
+
+/// Argument `arg`, a Volume name.
+pub(crate) fn volume_name(
+    matches: &ArgMatches,
+    arg: &str,
+) -> Result<ployz_store::VolumeName, Error> {
+    ployz_store::VolumeName::parse(super::required(matches, arg)?).map_err(|_| {
+        Error::usage("Expected a Volume name: lowercase letters, digits and -, like data")
+            .with_exit(crate::failure::USAGE_EXIT)
+    })
 }

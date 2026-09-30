@@ -15,7 +15,7 @@ export function ProjectCard({
 }: {
   name: string;
   /** Its Services by name; `slug` is how runtime evidence names each in the Namespace. */
-  environment: { name: string; namespace: string; services: { id: string; name: string; slug: string; config: { source: { type: "empty" | "git" | "image" } } }[] } | null;
+  environment: { name: string; namespace: string; services: { id: string; name: string; slug: string; config: { source: { type: "empty" | "uploaded" | "git" | "image" } } }[] } | null;
   runtimeServices: readonly RuntimeServiceRecord[];
   runtimeStatus: RuntimeLensStatus;
 }) {

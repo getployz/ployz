@@ -20,7 +20,7 @@ import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
 import { buildStoreEdges, buildStoreNodes } from "./canvas/nodes";
 import type { StoreCanvasService } from "./canvas/types";
-import { branchQuery, diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreDeployments, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { branchQuery, diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { liveNodes } from "#/modules/config-store/store-branches";
 import { serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
@@ -69,9 +69,6 @@ function CanvasWithData() {
   const settings = requireView(settingsResult);
   const diff = requireView(diffResult);
   const volumes = requireView(volumesResult);
-  // An empty Service runs what the last deployed upload built: the newest applied Deployment says whether it had one.
-  const uploadedLast = useStoreDeployments(organizationSlug, ref).data.pages[0]?.deployments
-    .find((deployment) => deployment.status === "applied")?.upload != null;
   const { selectedNodeId } = useCanvasInspectorSelection();
   const positions = getCanvasPositionsCollection(organizationSlug, scope);
   const { data: positionRows } = useLiveSuspenseQuery({
@@ -86,7 +83,7 @@ function CanvasWithData() {
       subtitle: settingText(serviceSettingRows(settings, service.name).get(service.source === "git" ? "repository" : "image")?.value) || null,
       changeCount: serviceChanges(diff, service.id).size,
       runtimeIdentity: namespace.ok ? `${namespace.value.namespace}/${service.private_dns}` : null,
-      uploaded: service.source === "empty" && uploadedLast,
+      uploaded: service.source === "uploaded",
     })),
     volumes: volumes.volumes,
     live: branch.ok ? liveNodes(branch.value.live, services.services) : [],

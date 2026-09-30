@@ -54,6 +54,8 @@ pub struct ServiceListing {
 pub enum SourceKind {
     /// Nothing yet: a Deploy skips it.
     Empty,
+    /// Built from a directory `ployz up` uploaded.
+    Uploaded,
     /// Built from a repository.
     Git,
     /// A container image.
@@ -142,6 +144,7 @@ struct Listed {
 /// Working State's Services, then deployed ones it dropped, sorted by name.
 fn listed(tx: &mut dyn Tx, environment: &scope::Environment) -> Result<Vec<Listed>, RpcError> {
     let review = review::review(tx, environment)?;
+    let built = crate::deployment::receipts(tx, &environment.summary.id)?;
     let working = &environment.working.services;
     let removed = review
         .head
@@ -163,6 +166,11 @@ fn listed(tx: &mut dyn Tx, environment: &scope::Environment) -> Result<Vec<Liste
                 listing: ServiceListing {
                     service: summary(&node)?,
                     source: match node.config.source {
+                        ServiceSource::Empty { .. }
+                            if built.contains_key(&node.config.private_dns) =>
+                        {
+                            SourceKind::Uploaded
+                        }
                         ServiceSource::Empty { .. } => SourceKind::Empty,
                         ServiceSource::Git { .. } => SourceKind::Git,
                         ServiceSource::Image { .. } => SourceKind::Image,

@@ -422,7 +422,7 @@ rows: Array<string>, state: SaveState, };
 
 export type ConditionalSaveId = string;
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "remove_volume" } & RemoveVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "move" } & Move | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "set_pr_plan" } & SetPrPlan;
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "set_volume_storage" } & SetVolumeStorage | { "command": "remove_volume" } & RemoveVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "move" } & Move | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "set_pr_plan" } & SetPrPlan;
 
 export type ConfigDomainEvidence = {
 /**
@@ -660,6 +660,10 @@ environment: EnvironmentRef,
  * Its name, unique among the Environment's Volumes.
  */
 name: VolumeName,
+/**
+ * Managed storage by default; Docker storage is an explicit opt-out.
+ */
+storage: VolumeKind,
 /**
  * Where Services mount it.
  */
@@ -1750,7 +1754,12 @@ export type Namespace = string;
 
 export type NamespaceQuery = { environment: EnvironmentRef, };
 
-export type NamespaceView = { environment: EnvironmentSummary, namespace: Namespace, };
+export type NamespaceView = { environment: EnvironmentSummary, namespace: Namespace,
+/**
+ * Each Service's runtime name (its Private DNS name), by the name it has now:
+ * a renamed Service's containers keep the name it was created with.
+ */
+services: { [key in ServiceName]: ServiceName }, };
 
 export type NodeChange = {
 /**
@@ -2413,7 +2422,7 @@ export type SavedVariableValue = { "kind": "literal", value: string, } | { "kind
  */
 encryptedValue: EncryptedSecretValue | null, };
 
-export type SavedVolumeIntent = { resourceId: string, resourceLineageId: string, name: string, };
+export type SavedVolumeIntent = { resourceId: string, resourceLineageId: string, name: string, storage: VolumeKind, };
 
 export type ScopedVolumeSource = { namespace: Namespace, logical_name: DockerVolumeName, };
 
@@ -2681,6 +2690,24 @@ remove_on_close: boolean | null,
  */
 include_bots: boolean | null, };
 
+export type SetVolumeStorage = {
+/**
+ * The Environment containing the Volume.
+ */
+environment: EnvironmentRef,
+/**
+ * The draft Volume to edit, by name.
+ */
+volume: VolumeName,
+/**
+ * Its explicit storage choice and bound.
+ */
+storage: VolumeKind,
+/**
+ * Refuse edits against a different Working revision.
+ */
+expect: Revision | null, };
+
 export type SettingPath = string;
 
 export type SettingRow = {
@@ -2717,7 +2744,7 @@ export type Skipped = { environment: EnvironmentId,
  */
 reason: string, };
 
-export type SourceKind = "empty" | "git" | "image";
+export type SourceKind = "empty" | "uploaded" | "git" | "image";
 
 export type Start = { deployment: DeploymentId, };
 
@@ -2885,11 +2912,13 @@ export type VariableProducer = { ownerId: string, owner: ValuePartOwner, key: st
 
 export type VolumeAttachment = { volumeResourceId: string, mountPath: string, };
 
-export type VolumeConfig = { version: 2, name: string, };
+export type VolumeConfig = { version: 2, name: string, storage: VolumeKind, };
 
 export type VolumeDriver = { name: string, options: { [key in string]: string }, };
 
 export type VolumeId = string;
+
+export type VolumeKind = { "kind": "local", } | { "kind": "provisioned", maximumBytes: ProvisionedVolumeMaximumBytes, };
 
 export type VolumeListing = {
 /**
@@ -2901,6 +2930,10 @@ mounts: Array<Mount>,
  */
 deployed: boolean,
 /**
+ * An admitted attempt fixes the storage choice, even if it fails.
+ */
+storage_locked: boolean,
+/**
  * What the next Deploy does to it; none when it is deployed as it is.
  */
 change: ReviewLifecycleKind | null,
@@ -2911,7 +2944,11 @@ id: VolumeId,
 /**
  * Its name, which mount paths address it by.
  */
-name: VolumeName, };
+name: VolumeName,
+/**
+ * Its chosen storage, including the maximum for a Provisioned Volume.
+ */
+storage: VolumeKind, };
 
 export type VolumeName = string;
 
@@ -2984,7 +3021,11 @@ id: VolumeId,
 /**
  * Its name, which mount paths address it by.
  */
-name: VolumeName, };
+name: VolumeName,
+/**
+ * Its chosen storage, including the maximum for a Provisioned Volume.
+ */
+storage: VolumeKind, };
 
 export type VolumeToCreate = {
 /**
@@ -3022,6 +3063,10 @@ mounts: Array<Mount>,
  */
 deployed: boolean,
 /**
+ * An admitted attempt fixes the storage choice, even if it fails.
+ */
+storage_locked: boolean,
+/**
  * What the next Deploy does to it; none when it is deployed as it is.
  */
 change: ReviewLifecycleKind | null,
@@ -3032,7 +3077,11 @@ id: VolumeId,
 /**
  * Its name, which mount paths address it by.
  */
-name: VolumeName, };
+name: VolumeName,
+/**
+ * Its chosen storage, including the maximum for a Provisioned Volume.
+ */
+storage: VolumeKind, };
 
 export type VolumesQuery = {
 /**

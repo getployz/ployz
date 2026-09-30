@@ -65,9 +65,7 @@ pub(super) fn clear_build_cache(matches: &ArgMatches) -> Result<(), Error> {
 pub(super) async fn connect(matches: &ArgMatches, context: Option<&str>) -> Result<Client, Error> {
     if matches.get_one::<String>("connect").is_none() && context.is_none() {
         let store = CredentialStore::beside(&super::config_path(matches)?);
-        let token = std::env::var(env::TOKEN).ok();
-        let cloud = std::env::var(env::CLOUD_URL).ok();
-        match cloud_account::credential(&store, token, cloud).await {
+        match cloud_account::from_env(&store).await {
             Ok(credential) => return through_cloud(matches, &credential).await,
             Err(LoginError::SignedOut) => {
                 // Signed out with no context or local daemon: the fix is signing in, not a
@@ -475,7 +473,9 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
         .arg(
             value("storage", None)
                 .value_parser(clap::value_parser!(ployz_core::StorageChoice))
-                .help("Prepare ZFS storage or keep this Server currently stateless"),
+                .help(
+                    "Enable managed volumes [Cloud default: zfs]; none keeps Docker volumes only",
+                ),
         )
         .arg(value("public-ip", None).default_value("auto"))
         .arg(
@@ -494,17 +494,16 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
 }
 
-pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
-    use super::Json::Supported;
+pub(super) fn handler(path: &str) -> Option<super::Handler> {
     Some(match path {
-        "add" => (enroll::add, Supported),
-        "build-cache-clear" => (clear_build_cache, Supported),
-        "inspect" => (inspect, Supported),
-        "logs" => (super::operator::machine_logs, Supported),
-        "ls" => (list, Supported),
-        "rm" => (remove, Supported),
-        "set" => (set, Supported),
-        "upgrade" => (upgrade, Supported),
+        "add" => enroll::add,
+        "build-cache-clear" => clear_build_cache,
+        "inspect" => inspect,
+        "logs" => super::operator::machine_logs,
+        "ls" => list,
+        "rm" => remove,
+        "set" => set,
+        "upgrade" => upgrade,
         _ => return None,
     })
 }
