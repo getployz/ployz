@@ -6,7 +6,7 @@ import { ListRowSkeletons, ShowMore } from "#/components/show-more";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
-import { admission, deploymentStatusIcons, deploymentStatusLabels, targetsLabel, uploadLabel } from "#/modules/config-store/store-deployments";
+import { admission, deploymentStatusIcons, deploymentStatusLabel, targetsLabel, uploadLabel } from "#/modules/config-store/store-deployments";
 import { RelativeTime } from "#/components/relative-time";
 import { requireView, servicesQuery, useStoreDeployments, useStoreView } from "#/modules/config-store/store-view.queries";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
@@ -72,7 +72,7 @@ export function StoreDeploymentRows({ service, returnTo }: { service: ServiceLis
           <ItemContent className="min-w-0">
             <ItemTitle className="w-full"><span className="truncate">{deployment.message ? `#${deployment.number} · ${deployment.message}` : `Deployment #${deployment.number}`}</span></ItemTitle>
             <ItemDescription className="flex items-center gap-1.5 [&_svg]:size-3.5">
-              <DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />{deploymentStatusLabels[deployment.status]}
+              <DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />{deploymentStatusLabel(deployment)}
               {" · "}<span className="truncate">
                 {deployment.upload ? uploadLabel(deployment.upload) : `Deploys ${targetsLabel(deployment)}${by ? ` · by ${by}` : ""}`}
               </span>

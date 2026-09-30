@@ -1,4 +1,4 @@
-import { Suspense, useState } from "react";
+import { Suspense, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import type { BuildView, DeploymentStatus, DeploymentView, NodeOutcome } from "@ployz/sdk";
 import { DatabaseIcon, GitBranchPlusIcon, MoreVerticalIcon } from "lucide-react";
@@ -18,8 +18,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "#
 import { Skeleton } from "#/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import {
-  admission, canFixOnBranch, deploymentActions, deploymentByline, deploymentStatusIcons, deploymentStatusLabels, failureReason, focusedService,
-  missingDeployLogs, nodeLight, nodeStatusLabels, notExecuted,
+  admission, canFixOnBranch, deploymentActions, deploymentByline, deploymentStatusIcons, deploymentStatusLabel, focusedService, missingDeployLogs,
+  nodeLight, nodeOutcomeLabel, nodeStatusLabels,
 } from "#/modules/config-store/store-deployments";
 import { buildLogQuery, deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -31,7 +31,7 @@ import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SE
 /** Past this many Services the tabs become a dropdown. */
 const MAX_TABS = 6;
 const BUILT = new Set<BuildView["status"]>(["built", "reused"]);
-type LogStage = "build" | "deploy";
+type LogStage = NonNullable<typeof deploymentPageSearchSchema.Type["logs"]>;
 
 /**
  * One Config Store Deployment, the CLI's or this dashboard's, as a panel over the canvas (which lights its nodes). The header
@@ -54,9 +54,9 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
   const services = deployment.nodes.filter((node) => node.type === "service");
   const volumes = deployment.nodes.filter((node) => node.type === "volume");
   const focused = focusedService(deployment, search.service);
-  const reason = failureReason(deployment.outcome);
-  const needsSource = notExecuted(deployment.outcome)?.needsSource ?? [];
-  const fixing = !noServers && focused && canFixOnBranch(deployment, focused) ? focused.name : null;
+  const reason = deployment.outcome?.reason;
+  const needsSource = deployment.outcome?.type === "not_executed" ? deployment.outcome.needs_upload : [];
+  const fixing = focused && canFixOnBranch(deployment, focused, noServers) ? focused.name : null;
   const { at, started, ended } = admission(deployment);
   const byline = deploymentByline(deployment, focused?.name);
   const pick = (next: { service: string; logs?: LogStage }) =>
@@ -65,6 +65,12 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
     const node = services.find((candidate) => candidate.id === id);
     if (node) pick({ service: node.id });
   };
+  const volumeMarks = volumes.map((node) => (
+    <span key={node.id} className="flex shrink-0 items-center gap-1.5 text-muted-foreground [&_svg]:size-4">
+      <DatabaseIcon aria-hidden />{node.name}
+      {node.outcome === "removed" ? <Removed node={node} /> : <OutcomeIcon node={node} status={deployment.status} />}
+    </span>
+  ));
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -77,7 +83,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
             <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground [&_svg]:size-3.5">
               <DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />
               {/* A phone keeps the icon; the word stays for screen readers. */}
-              <span className="max-sm:sr-only">{deploymentStatusLabels[deployment.status]}</span>
+              <span className="max-sm:sr-only">{deploymentStatusLabel(deployment)}</span>
             </span>
             {/* One that ended as it started has no duration to show. */}
             {started && ended?.getTime() !== started.getTime() ? (
@@ -111,49 +117,56 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
           </div>
         ) : null}
 
-        {focused ? (
-          <Tabs value={focused.id} onValueChange={pickService} className="min-h-64 flex-1">
-            <div className="flex shrink-0 items-center gap-3 overflow-x-auto">
-              {services.length > MAX_TABS ? (
-                <Select value={focused.id} onValueChange={pickService}>
-                  <SelectTrigger aria-label="Service" className="w-64"><SelectValue>{focused.name}</SelectValue></SelectTrigger>
-                  <SelectContent>
-                    {services.map((node) => <SelectItem key={node.id} value={node.id}>{node.name} · {nodeStatusLabels[node.outcome]}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <TabsList variant="line" aria-label="Services">
+        {!focused ? <>
+          {volumes.length ? <NodeRow>{volumeMarks}</NodeRow> : null}
+          <p className="text-muted-foreground">No service in this deployment.</p>
+        </> : services.length > MAX_TABS ? (
+          <div className="flex min-h-64 flex-1 flex-col gap-2">
+            <NodeRow>
+              <Select value={focused.id} onValueChange={pickService}>
+                <SelectTrigger aria-label="Service" className="w-64"><SelectValue>{focused.name}</SelectValue></SelectTrigger>
+                <SelectContent>
                   {services.map((node) => (
-                    <TabsTrigger key={node.id} value={node.id}>
-                      {node.outcome === "removed" ? <>{node.name}<Removed node={node} /></> : <><OutcomeIcon node={node} status={deployment.status} />{node.name}</>}
-                    </TabsTrigger>
+                    <SelectItem key={node.id} value={node.id}>{node.name} · {nodeOutcomeLabel(node.outcome, deployment.status)}</SelectItem>
                   ))}
-                </TabsList>
-              )}
-              {volumes.map((node) => (
-                <span key={node.id} className="flex shrink-0 items-center gap-1.5 text-muted-foreground [&_svg]:size-4">
-                  <DatabaseIcon aria-hidden />{node.name}
-                  {node.outcome === "removed" ? <Removed node={node} /> : <OutcomeIcon node={node} status={deployment.status} />}
-                </span>
-              ))}
-            </div>
+                </SelectContent>
+              </Select>
+              {volumeMarks}
+            </NodeRow>
+            <ServiceLogs key={focused.id} deployment={deployment} node={focused} picked={search.logs} onPick={(logs) => pick({ service: focused.id, logs })} />
+          </div>
+        ) : (
+          <Tabs value={focused.id} onValueChange={pickService} className="min-h-64 flex-1">
+            <NodeRow>
+              <TabsList variant="line" aria-label="Services">
+                {services.map((node) => (
+                  <TabsTrigger key={node.id} value={node.id}>
+                    {node.outcome === "removed" ? <>{node.name}<Removed node={node} /></> : <><OutcomeIcon node={node} status={deployment.status} />{node.name}</>}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+              {volumeMarks}
+            </NodeRow>
             {services.map((node) => (
               <TabsContent key={node.id} value={node.id} className="flex min-h-0 flex-col">
                 <ServiceLogs deployment={deployment} node={node} picked={search.logs} onPick={(logs) => pick({ service: node.id, logs })} />
               </TabsContent>
             ))}
           </Tabs>
-        ) : (
-          <p className="text-muted-foreground">No service in this deployment.</p>
         )}
       </div>
     </div>
   );
 }
 
-/** A node's Node Outcome as its icon, named on hover and for screen readers. */
+/** The row of the Deployment's Services and changed Volumes, scrolling sideways when it overflows. */
+function NodeRow({ children }: { children: ReactNode }) {
+  return <div className="flex shrink-0 items-center gap-3 overflow-x-auto">{children}</div>;
+}
+
+/** A node's outcome as its icon, named on hover and for screen readers. */
 function OutcomeIcon({ node, status }: { node: NodeOutcome; status: DeploymentStatus }) {
-  const label = nodeStatusLabels[node.outcome];
+  const label = nodeOutcomeLabel(node.outcome, status);
   return (
     <span title={label} className="inline-flex [&_svg]:size-4">
       <DeploymentStatusIcon status={nodeLight(node.outcome, status)} /><span className="sr-only">{label}</span>
@@ -161,9 +174,11 @@ function OutcomeIcon({ node, status }: { node: NodeOutcome; status: DeploymentSt
   );
 }
 
-/** A removed node, said in words: a Volume's data is gone with it. */
+/** A removed node, said in words; a Volume's reads red, its data gone with it. */
 function Removed({ node }: { node: NodeOutcome }) {
-  return <span className="text-destructive">{node.type === "volume" ? "Deleted" : nodeStatusLabels.removed}</span>;
+  return node.type === "volume"
+    ? <span className="text-destructive">Deleted</span>
+    : <span className="text-muted-foreground">{nodeStatusLabels.removed}</span>;
 }
 
 /**

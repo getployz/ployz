@@ -2,7 +2,8 @@ import type { DeploymentView, DiffView, ServiceListing } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
-  canFixOnBranch, changeGroups, deploymentActions, deploymentByline, focusedService, missingDeployLogs, nodeLight, uploadLabel,
+  canFixOnBranch, changeGroups, deploymentActions, deploymentByline, deploymentStatusLabel, focusedService, missingDeployLogs, nodeLight,
+  nodeOutcomeLabel, uploadLabel,
 } from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
@@ -85,16 +86,33 @@ it("opens on the picked Service, else the failed one, else one it didn't apply, 
   expect(focusedService(deployment({ nodes }), "id-web")?.name).toBe("web");
   expect(focusedService(deployment({ nodes }), undefined)?.name).toBe("worker");
   expect(focusedService(deployment({ nodes: nodes.slice(0, 2) }), undefined)?.name).toBe("api");
-  expect(canFixOnBranch(deployment({ nodes }), node("worker", "failed"))).toBe(true);
-  expect(canFixOnBranch(deployment({ nodes }), node("web", "deployed"))).toBe(false);
-  // Nothing ran: the fix is giving it a source, not a Branch.
-  expect(canFixOnBranch(deployment({ outcome: { type: "not_executed", reason: "x", needs_upload: [] } }), node("api", "pending"))).toBe(false);
+  expect(canFixOnBranch(deployment({ nodes }), node("worker", "failed"), false)).toBe(true);
+  expect(canFixOnBranch(deployment({ nodes }), node("web", "deployed"), false)).toBe(false);
+  // With no Server the way on is adding one; with nothing run, giving it a source.
+  expect(canFixOnBranch(deployment({ nodes }), node("worker", "failed"), true)).toBe(false);
+  expect(canFixOnBranch(deployment({ outcome: { type: "not_executed", reason: "x", needs_upload: [] } }), node("api", "pending"), false)).toBe(false);
 });
 
 it("says why a Service has no deploy logs: the Deployment never ran, or its turn never came", () => {
   expect(missingDeployLogs(deployment({ status: "queued", started_at: null, outcome: null }), node("web", "pending"))).toBe("Not started");
   expect(missingDeployLogs(deployment({ outcome: { type: "not_executed", reason: "x", needs_upload: [] } }), node("web", "pending"))).toBe("Not started");
   expect(missingDeployLogs(deployment({}), node("api", "not_attempted"))).toBe("Not attempted");
+  expect(missingDeployLogs(deployment({}), node("cron", "removed"))).toBe("Removed");
   expect(missingDeployLogs(deployment({}), node("web", "failed"))).toBeNull();
 });
 
+
+it("words a node's outcome as the glossary does once it has one, and a pending one as its Deployment reads", () => {
+  expect(nodeOutcomeLabel("pending", "queued")).toBe("Queued");
+  expect(nodeOutcomeLabel("pending", "running")).toBe("Deploying");
+  expect(nodeOutcomeLabel("pending", "cancelled")).toBe("Not attempted");
+  expect(nodeOutcomeLabel("unchanged", "applied")).toBe("Unchanged");
+  expect(nodeOutcomeLabel("not_attempted", "failed")).toBe("Not attempted");
+});
+
+it("says a Deployment that removes its Environment is Removing, then Removed", () => {
+  expect(deploymentStatusLabel({ status: "running", remove: true })).toBe("Removing");
+  expect(deploymentStatusLabel({ status: "applied", remove: true })).toBe("Removed");
+  expect(deploymentStatusLabel({ status: "failed", remove: true })).toBe("Failed");
+  expect(deploymentStatusLabel({ status: "applied", remove: false })).toBe("Deployed");
+});

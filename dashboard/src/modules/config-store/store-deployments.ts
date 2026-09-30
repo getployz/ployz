@@ -1,6 +1,6 @@
 import type {
-  ChangeKind, DeploymentStatus, DeploymentSummary, DeploymentView, DiffView, JsonValue, NodeChange, NodeOutcome, NodeStatus, Outcome,
-  ServiceListing, UploadedSource,
+  ChangeKind, DeploymentStatus, DeploymentSummary, DeploymentView, DiffView, JsonValue, NodeChange, NodeOutcome, NodeStatus, ServiceListing,
+  UploadedSource,
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { settingTitle } from "./catalog";
@@ -125,7 +125,7 @@ export type DeploymentLight = "queued" | "deploying" | "deployed" | "failed" | "
 export type NodeLight = "queued" | "deploying" | "deployed" | "failed" | "unknown" | "not_applied";
 
 export const nodeLightLabels = {
-  queued: "Queued", deploying: "Deploying", deployed: "Deployed", failed: "Failed", unknown: "Unknown", not_applied: "Not applied",
+  queued: "Queued", deploying: "Deploying", deployed: "Deployed", failed: "Failed", unknown: "Unknown", not_applied: "Not attempted",
 } satisfies Record<NodeLight, string>;
 
 /** Each status in the icons' vocabulary. */
@@ -150,6 +150,17 @@ export function nodeLight(outcome: NodeStatus, deployment: DeploymentStatus): No
   if (outcome === "pending" && deployment === "queued") return "queued";
   if (outcome === "pending" && isInFlight(deployment)) return "deploying";
   return "not_applied";
+}
+
+/** A node's outcome in words: the glossary's Node Outcome once it has one, else how its Deployment reads it (Queued, Deploying). */
+export const nodeOutcomeLabel = (outcome: NodeStatus, deployment: DeploymentStatus) =>
+  outcome === "pending" ? nodeLightLabels[nodeLight(outcome, deployment)] : nodeStatusLabels[outcome];
+
+/** A Deployment's status in words; one that removes its Environment from the Servers reads Removing, then Removed. */
+export function deploymentStatusLabel({ status, remove }: Pick<DeploymentSummary, "status" | "remove">) {
+  if (remove && status === "running") return "Removing";
+  if (remove && status === "applied") return nodeStatusLabels.removed;
+  return deploymentStatusLabels[status];
 }
 
 /** "every service", or the Services a targeted Deploy named. */
@@ -194,35 +205,39 @@ export function focusedService(deployment: DeploymentView, picked: string | unde
     ?? services.find((node) => !nodeApplied(node.outcome)) ?? services[0];
 }
 
-/** Whether a failed Deployment's `node` can be fixed on a Branch: the Deployment ran, and `node` didn't apply. */
-export const canFixOnBranch = (deployment: DeploymentView, node: NodeOutcome) =>
-  deployment.status === "failed" && deployment.outcome?.type === "executed" && !nodeApplied(node.outcome);
-
-/** Why `node` has no deploy logs in the Deployment: nothing of it ran, or its turn never came. Null when it may have some. */
-export function missingDeployLogs(deployment: DeploymentView, node: NodeOutcome) {
-  if (deployment.started_at === null || deployment.outcome?.type === "not_executed") return "Not started";
-  return node.outcome === "not_attempted" ? nodeStatusLabels.not_attempted : null;
-}
+/**
+ * Whether a failed Deployment's `node` can be fixed on a Branch: the Deployment ran and `node` didn't apply. With no
+ * Server the failure is having none, and adding one is the way on.
+ */
+export const canFixOnBranch = (deployment: DeploymentView, node: NodeOutcome, noServers: boolean) =>
+  !noServers && deployment.status === "failed" && deployment.outcome?.type === "executed" && !nodeApplied(node.outcome);
 
 /**
- * The one action a Deployment page shows: retry an ended one that didn't apply, start a queued one, cancel one before
- * it ends; with no Server, adding one instead. A queued one's Cancel waits beside Start, in the menu.
+ * Why `node` has no deploy logs in the Deployment: nothing of it ran, its turn never came, or it was removed. Null when it
+ * may have some.
  */
-export function deploymentActions(status: DeploymentStatus, noServers: boolean) {
+export function missingDeployLogs(deployment: DeploymentView, node: NodeOutcome) {
+  if (deployment.started_at === null || deployment.outcome?.type === "not_executed") return "Not started";
+  return node.outcome === "not_attempted" || node.outcome === "removed" ? nodeStatusLabels[node.outcome] : null;
+}
+
+/** The one action a Deployment page shows by itself. */
+export type DeploymentAction = "add_server" | "retry" | "start" | "cancel";
+
+/**
+ * Retry an ended Deployment that didn't apply, start a queued one, cancel one before it ends; with no Server, adding
+ * one comes first.
+ */
+function primaryAction(status: DeploymentStatus, noServers: boolean): DeploymentAction | null {
   const retry = status === "failed" || status === "unknown" || status === "cancelled";
-  const start = status === "queued";
-  const cancel = status === "queued" || status === "running";
-  const primary: "add_server" | "retry" | "start" | "cancel" | null = noServers && (retry || start) ? "add_server" : retry ? "retry" : start ? "start" : cancel ? "cancel" : null;
-  return { primary, cancelInMenu: cancel && primary !== "cancel" };
+  if (noServers && (retry || status === "queued")) return "add_server";
+  if (retry) return "retry";
+  if (status === "queued") return "start";
+  return status === "running" ? "cancel" : null;
 }
 
-/** Why a Deployment didn't run, and the Services that had nothing to run (each needs an image or a repository). */
-export function notExecuted(outcome: Outcome | null) {
-  if (outcome?.type !== "not_executed") return null;
-  return { reason: outcome.reason, needsSource: outcome.needs_upload };
-}
-
-/** Why a Deployment failed, as the Store words it for users: nothing ran, or what stopped its execution. */
-export function failureReason(outcome: Outcome | null) {
-  return outcome?.reason ?? null;
+/** The action a Deployment page shows, and whether Cancel waits in its menu beside another one. */
+export function deploymentActions(status: DeploymentStatus, noServers: boolean) {
+  const primary = primaryAction(status, noServers);
+  return { primary, cancelInMenu: (status === "queued" || status === "running") && primary !== "cancel" };
 }

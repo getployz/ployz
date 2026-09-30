@@ -11,7 +11,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Tooltip, TooltipContent, TooltipTrigger } from "#/components/ui/tooltip";
 import type { DeploymentSummary } from "@ployz/sdk";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
-import { deploymentStatusIcons, deploymentStatusLabels, targetsLabel, uploadLabel, type ChangeGroup } from "#/modules/config-store/store-deployments";
+import { deploymentStatusIcons, deploymentStatusLabel, targetsLabel, uploadLabel, type ChangeGroup } from "#/modules/config-store/store-deployments";
 import { listNames, plural } from "#/lib/plural";
 import { goLiveWhen } from "#/modules/config-store/store-pull-requests";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
@@ -195,7 +195,7 @@ function AttemptState({ deployment }: { deployment: DeploymentSummary }) {
   const detail = deployment.upload ? `${targetsLabel(deployment)} · ${uploadLabel(deployment.upload)}` : targetsLabel(deployment);
   return (
     <Row icon={<DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />}
-      title={`${deploymentStatusLabels[deployment.status]} · Deployment #${deployment.number}`} detail={`Deploys ${detail}`}>
+      title={`${deploymentStatusLabel(deployment)} · Deployment #${deployment.number}`} detail={`Deploys ${detail}`}>
       <Link to={DEPLOYMENT_PAGE_ROUTE_TO} params={{ ...params, deploymentId: deployment.id }} className={buttonVariants({ variant: "outline" })}>
         Logs
       </Link>
