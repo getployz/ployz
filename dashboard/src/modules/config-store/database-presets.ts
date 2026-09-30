@@ -78,6 +78,7 @@ export function databaseCommand(preset: DatabasePreset, target: {
     .map(([key, value]) => [key, { value, exported: true }]));
   return {
     command: "batch",
+    environment,
     commands: [
       // The Store checks the ids are UUIDs.
       { command: "create_service", id: service, environment, name, image: preset.image },

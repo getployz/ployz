@@ -40,6 +40,7 @@ fn shop() -> (ConfigStore, Actor) {
 /// Service `db`, Volume `db-data` mounted into it, and `env` patched onto it.
 fn database(env: Value) -> Batch {
     Batch {
+        environment: EnvironmentRef::default(),
         commands: vec![
             BatchCommand::CreateService(CreateService {
                 id: ServiceLineageId::parse(uuid(3)).unwrap(),
@@ -138,4 +139,17 @@ fn a_failing_command_leaves_nothing_of_the_batch() {
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     assert!(services(&store, &who).is_empty());
     assert_eq!(volumes(&store, &who), 0);
+}
+
+#[test]
+fn a_batch_writes_one_environment_and_refuses_a_command_naming_another() {
+    let (store, who) = shop();
+    let mut batch = database(json!({}));
+    if let BatchCommand::Edit(edit) = &mut batch.commands[2] {
+        edit.environment.environment =
+            Some(ployz_store::EnvironmentName::parse("staging").unwrap());
+    }
+    let error = store.write(&who, &batch).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert!(services(&store, &who).is_empty());
 }

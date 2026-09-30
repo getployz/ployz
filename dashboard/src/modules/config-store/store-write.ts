@@ -18,11 +18,9 @@ export type StoreEdit = {
 /** Commands that read or write an Environment besides the one they name. */
 const SPANS: ReadonlySet<ConfigCommand["command"]> = new Set(["move", "create_branch", "copy_node"]);
 
-/** The Environment a command names; a Batch's is its first command's. */
+/** The Environment a command names; a Batch names one for all its commands. */
 function commandEnvironment(command: ConfigCommand): EnvironmentRef | null {
-  // ponytail: one Environment per Batch is assumed, not checked (the Store doesn't either).
-  const named = command.command === "batch" ? command.commands[0] : command;
-  return named && "environment" in named && named.environment ? named.environment : null;
+  return "environment" in command && command.environment ? command.environment : null;
 }
 
 /** The Environment revision a write produced; a Batch's is its last command's. */

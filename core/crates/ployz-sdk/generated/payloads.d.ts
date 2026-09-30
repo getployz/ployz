@@ -72,6 +72,10 @@ checks: Array<PullRequestRef>, };
 
 export type Batch = {
 /**
+ * The Environment every command writes. A command naming one is refused.
+ */
+environment: EnvironmentRef,
+/**
  * The commands, applied in order.
  */
 commands: Array<BatchCommand>, };
@@ -1890,7 +1894,7 @@ export type OrganizationId = string;
 
 export type OrganizationRemoved = { organization: OrganizationId, };
 
-export type Outcome = { "type": "executed", summary: JsonValue, reason: string | null, } | { "type": "not_executed", reason: string, needs_upload: Array<ServiceName>, };
+export type Outcome = { "type": "executed", summary: JsonValue, reason: string | null, } | { "type": "not_executed", reason: string, needs_upload: Array<ServiceName>, } | { "type": "never_ran" } | { "type": "forgotten" };
 
 export type OwnedNamespace = { namespace: Namespace, project: ProjectName, environment: EnvironmentName, };
 
