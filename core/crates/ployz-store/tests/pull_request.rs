@@ -123,7 +123,7 @@ fn facts(open: bool, updated: &str) -> PullRequest {
         open,
         merge_commit: None,
         merge_reached: None,
-        updated: updated.into(),
+        updated: ployz_store::GithubTimestamp::parse(updated).unwrap(),
     }
 }
 

@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
-use crate::branch::{self, Carried, MoveRow, MoveView, Moved, Moving, Save, Take, Way, When};
+use crate::branch::{self, Carried, MoveRow, MoveView, Moved, Moving, Save, Take, When};
 use crate::id::{ConditionalSaveId, EnvironmentId, Revision};
 use crate::pull_request::{self, PullRequest, PullRequestRef};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
@@ -269,18 +269,7 @@ pub(crate) fn view(
 ) -> Result<MoveView, RpcError> {
     let sides = sides(tx, who, from, into, false)?;
     let moving = moving(tx, &sides)?;
-    let changes = moving.compare(&sides.into.working, None)?;
-    let rows = changes
-        .rows
-        .iter()
-        .filter_map(|row| branch::move_row(&moving, &sides.pr, &sides.into, row))
-        .collect();
-    Ok(MoveView {
-        version: branch::version(&sides.into, &changes.review),
-        from: sides.pr.summary,
-        into: sides.into.summary,
-        rows,
-    })
+    branch::view_of(&moving, sides.pr, sides.into)
 }
 
 /// The Environments the standing Conditional Saves of `event`'s pull request
@@ -436,7 +425,10 @@ fn wait_with(
             repository,
             branch,
             head,
-            serde_json::to_string(&saves).expect("JSON").as_str().into(),
+            serde_json::to_string(&saves)
+                .expect("Conditional Save IDs are JSON")
+                .as_str()
+                .into(),
         ],
     )?;
     Ok(true)
@@ -653,20 +645,14 @@ fn against(
     picks: Option<Vec<BranchPick>>,
 ) -> Result<BranchChanges, RpcError> {
     let landing = &stored.landing;
-    let moving = Moving {
-        source: stored.from.id.clone(),
-        branch: stored.from.id.clone(),
-        nothing: String::new(),
-        from: landing.from.clone(),
-        base: landing.base.clone(),
-        provided: branch::used_live(into).into_keys().collect(),
-        hostnames: landing.hostnames.clone(),
-        way: Way::Save {
-            parent: landing.parent.clone(),
-            from_kept: false,
-        },
-    };
-    moving.compare(into, picks)
+    Moving::landed(
+        &stored.from.id,
+        (&landing.from, &landing.base),
+        &landing.hostnames,
+        landing.parent.as_ref(),
+        into,
+    )
+    .compare(into, picks)
 }
 
 /// `next` with each variable `before` lacked under the ID `saved` gave it (by

@@ -425,7 +425,7 @@ fn a_branch_uses_what_its_parent_runs_live_down_the_tree() {
             name: "db".into(),
             owner: Some(production.clone()),
             data: true,
-            used_by: vec!["web".into()],
+            used_by: vec![ServiceName::parse("web").unwrap()],
         }]
     );
     // A live reference reads, and is written, by the name where it runs.

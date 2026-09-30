@@ -769,7 +769,10 @@ pub(super) fn finish(
                 )?,
                 None => tx.execute(
                     "DELETE FROM config_applied WHERE environment_id = ?1 AND node_id = ?2",
-                    &[stored.summary.environment_id.as_str().into(), node.id().into()],
+                    &[
+                        stored.summary.environment_id.as_str().into(),
+                        node.id().into(),
+                    ],
                 )?,
             };
         }

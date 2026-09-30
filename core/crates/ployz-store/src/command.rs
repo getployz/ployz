@@ -234,7 +234,7 @@ commands! {
         => crate::teardown::set_default(tx, who, c);
     /// Set the Setup Commands a Branch of an Environment runs once it is made.
     SetBranchSetup(crate::SetBranchSetup) -> BranchSetup(crate::EnvironmentsView)
-        => crate::teardown::set_branch_setup(tx, who, c);
+        => crate::branch::set_branch_setup(tx, who, c);
     /// Delete an Environment nothing of which runs on the Servers.
     RemoveEnvironment(crate::RemoveEnvironment)
         -> EnvironmentRemoved(crate::Teardown<crate::EnvironmentRemoved>)
@@ -300,7 +300,6 @@ pub enum Written {
     /// A PR plan changed: the Project's PR plans after it.
     PrPlans(crate::PrPlansView),
 }
-
 
 /// Run `create` once for the caller-minted `ids`. Replaying the identical command
 /// returns what the first run wrote; any of its IDs reused with another body, or

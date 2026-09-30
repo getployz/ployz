@@ -158,7 +158,8 @@ fn facts(
         open,
         merge_commit: merge.map(backend::sha),
         merge_reached: reached,
-        updated: format!("2026-09-29T10:00:{second:02}Z"),
+        updated: ployz_store::GithubTimestamp::parse(format!("2026-09-29T10:00:{second:02}Z"))
+            .unwrap(),
     }
 }
 
@@ -376,7 +377,7 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
             head: commit(5),
             status: "completed".into(),
             conclusion: Some("success".into()),
-            updated: "2026-09-29T10:01:00Z".into(),
+            updated: ployz_store::GithubTimestamp::parse("2026-09-29T10:01:00Z").unwrap(),
         }),
     );
     assert_eq!(passed.admitted.len(), 1, "{passed:?}");

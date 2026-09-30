@@ -8,26 +8,25 @@ pub(crate) fn move_changes(
     sealing: &SealingKey,
     request: &Move,
 ) -> Result<Moved, RpcError> {
-    let (side, picks, version) = match request {
+    let (named, direction, picks, version) = match request {
         Move::Take(take) => return crate::conditional_save::take(tx, who, take),
         Move::Save(save) if crate::conditional_save::at_merge(tx, who, &save.from, save.when)? => {
             return crate::conditional_save::save(tx, who, sealing, save);
         }
         Move::Save(save) => (
-            Side::Save {
-                from: &save.from,
-                into: save.into.as_ref(),
-            },
+            (&save.from, save.into.as_ref()),
+            Direction::Save,
             save.picks.as_deref(),
             save.version.as_deref(),
         ),
         Move::Update(update) => (
-            Side::Update { into: &update.into },
+            (&update.into, None),
+            Direction::Update,
             update.picks.as_deref(),
             update.version.as_deref(),
         ),
     };
-    let mut sides = sides(tx, who, side, true)?;
+    let mut sides = sides(tx, who, named, direction, true)?;
     if let Some(removal) = crate::teardown::removing(tx, &sides.branch().summary.id)? {
         return Err(crate::teardown::being_removed(sides.branch(), &removal));
     }
@@ -35,14 +34,7 @@ pub(crate) fn move_changes(
         settled(tx, &sides.into)?;
     }
     let moving = moving(tx, &sides)?;
-    let changes = moving.compare(&sides.into.working, None)?;
-    let current = self::version(&sides.into, &changes.review);
-    if version.is_some_and(|asked| asked != current) {
-        return Err(error::conflict(
-            "Changed since you reviewed: review the move again",
-            json!({ "version": current }),
-        ));
-    }
+    let changes = reviewed(&moving, &sides.into, version)?;
     let picks = self::picks(&moving, &sides.into, sealing, &changes.rows, picks)?;
     let staged = moving.apply(tx, who, &mut sides.into, picks)?;
     Ok(Moved {
@@ -60,30 +52,54 @@ pub(crate) fn move_view(
     who: &Actor,
     query: &MoveQuery,
 ) -> Result<MoveView, RpcError> {
-    let side = match query {
+    let (named, direction) = match query {
         MoveQuery::Save { from, into, when } => {
             if crate::conditional_save::at_merge(tx, who, from, *when)? {
                 return crate::conditional_save::view(tx, who, from, into.as_ref());
             }
-            Side::Save {
-                from,
-                into: into.as_ref(),
-            }
+            ((from, into.as_ref()), Direction::Save)
         }
-        MoveQuery::Update { into } => Side::Update { into },
+        MoveQuery::Update { into } => ((into, None), Direction::Update),
     };
-    let sides = sides(tx, who, side, false)?;
+    let sides = sides(tx, who, named, direction, false)?;
     let moving = moving(tx, &sides)?;
-    let changes = moving.compare(&sides.into.working, None)?;
+    view_of(&moving, sides.from, sides.into)
+}
+
+/// Compare `moving` into `into`, refusing unless `asked`, if any, is still the
+/// version of that comparison.
+pub(crate) fn reviewed(
+    moving: &Moving,
+    into: &Environment,
+    asked: Option<&str>,
+) -> Result<BranchChanges, RpcError> {
+    let changes = moving.compare(&into.working, None)?;
+    let current = version(into, &changes.review);
+    if asked.is_some_and(|asked| asked != current) {
+        return Err(error::conflict(
+            "Changed since you reviewed: review the move again",
+            json!({ "version": current }),
+        ));
+    }
+    Ok(changes)
+}
+
+/// What moving `from` into `into` would stage, as the Move view shows it.
+pub(crate) fn view_of(
+    moving: &Moving,
+    from: Environment,
+    into: Environment,
+) -> Result<MoveView, RpcError> {
+    let changes = moving.compare(&into.working, None)?;
     let rows = changes
         .rows
         .iter()
-        .filter_map(|row| move_row(&moving, &sides.from, &sides.into, row))
+        .filter_map(|row| move_row(moving, &from, &into, row))
         .collect();
     Ok(MoveView {
-        version: version(&sides.into, &changes.review),
-        from: sides.from.summary,
-        into: sides.into.summary,
+        version: version(&into, &changes.review),
+        from: from.summary,
+        into: into.summary,
         rows,
     })
 }
@@ -125,25 +141,14 @@ pub(crate) fn move_row(
     })
 }
 
-/// Which way changes move between a Branch and its Parent.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// Which way changes move between a Branch and its Parent. [`Way`] is the same
+/// choice once the move is compared, with what only a Save needs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Direction {
     /// The Branch's changes into its Parent.
     Save,
     /// The Parent's deployed changes into the Branch.
     Update,
-}
-
-/// The Environment a Move names: the Branch, and the Parent if named.
-pub(super) enum Side<'a> {
-    Save {
-        from: &'a EnvironmentRef,
-        into: Option<&'a EnvironmentRef>,
-    },
-    Update {
-        into: &'a EnvironmentRef,
-    },
 }
 
 /// A Branch and its Parent, as one Move addresses them.
@@ -163,22 +168,19 @@ impl Sides {
     }
 }
 
-/// Resolve a Move's sides; `lock` locks both, in ID order.
+/// Resolve a Move's sides from the Branch it names and, if named, its Parent;
+/// `lock` locks both, in ID order.
 pub(super) fn sides(
     tx: &mut dyn Tx,
     who: &Actor,
-    side: Side<'_>,
+    (branch, parent): (&EnvironmentRef, Option<&EnvironmentRef>),
+    direction: Direction,
     lock: bool,
 ) -> Result<Sides, RpcError> {
-    let (branch, parent_named, direction) = match side {
-        Side::Save { from, into } => (
-            scope::environment(tx, who, from)?,
-            into.map(|into| scope::environment(tx, who, into))
-                .transpose()?,
-            Direction::Save,
-        ),
-        Side::Update { into } => (scope::environment(tx, who, into)?, None, Direction::Update),
-    };
+    let branch = scope::environment(tx, who, branch)?;
+    let parent_named = parent
+        .map(|parent| scope::environment(tx, who, parent))
+        .transpose()?;
     let parent = branch_row(tx, &branch)?.parent;
     if let Some(named) = parent_named
         && named.summary.id != parent
@@ -376,8 +378,7 @@ pub(crate) struct Moving {
 }
 
 /// Which way a move goes, with what only that way needs.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "way", rename_all = "snake_case")]
+#[derive(Clone, Debug)]
 pub(crate) enum Way {
     /// Into a Branch: every variable lands with `from`'s value by default.
     Update,
@@ -441,6 +442,38 @@ impl Moving {
                 from_kept: row.kept,
             },
         })
+    }
+
+    /// A saved move landing later: `from`'s changes over `base` from Branch
+    /// `branch`, with `parent`'s deployed values on offer, into `into`.
+    pub(crate) fn landed(
+        branch: &EnvironmentId,
+        (from, base): (&SavedEnvironmentIntent, &SavedEnvironmentIntent),
+        hostnames: &BranchHostnames,
+        parent: Option<&SavedEnvironmentIntent>,
+        into: &SavedEnvironmentIntent,
+    ) -> Self {
+        Self {
+            source: branch.clone(),
+            branch: branch.clone(),
+            nothing: "Nothing left to land".to_owned(),
+            from: from.clone(),
+            base: base.clone(),
+            provided: used_live(into).into_keys().collect(),
+            hostnames: hostnames.clone(),
+            way: Way::Save {
+                parent: parent.cloned(),
+                from_kept: false,
+            },
+        }
+    }
+
+    /// A Save's deployed Parent values on offer; none for an Update.
+    pub(crate) fn parent(&self) -> Option<&SavedEnvironmentIntent> {
+        match &self.way {
+            Way::Save { parent, .. } => parent.as_ref(),
+            Way::Update => None,
+        }
     }
 
     pub(crate) fn compare(

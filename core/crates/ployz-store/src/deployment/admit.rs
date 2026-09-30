@@ -3,8 +3,8 @@
 //! an ended Deployment froze. Starting hands a queued one to a runner again, and
 //! cancelling stops one.
 
-use ployz_core::config::canonicalize_environment_intent;
 use ployz_core::config::SavedEnvironmentIntent;
+use ployz_core::config::canonicalize_environment_intent;
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -129,9 +129,6 @@ pub struct Start {
     pub deployment: DeploymentId,
 }
 
-
-
-
 pub(crate) fn admit(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -204,30 +201,17 @@ fn deploy(
         (cluster_domain, &namespace),
         trusted,
     )?;
-    // A full Deploy removes what Saved State dropped; publishing puts a removal in
-    // Saved State. Either runs the destructive review; only the first deletes.
-    let publishes = review
-        .saved
-        .as_ref()
-        .is_none_or(|saved| saved.intent != saved_intent);
-    let removed = if admit.services.is_empty() || publishes {
-        removal::removed(&review.head.applied, &saved_intent, &namespace)?
-    } else {
-        Vec::new()
-    };
-    let losses = removal::review(
+    let losses = review::destructive(
         who,
-        id,
-        (&review.view.version, admit.version.as_deref()),
-        removed,
+        &review,
+        (
+            &saved_intent,
+            &namespace,
+            review::Shipping::Deploy(&admit.services),
+        ),
+        (admit.version.as_deref(), &admit.accept_volume_loss),
         trusted.volumes.as_ref(),
-        &admit.accept_volume_loss,
     )?;
-    let losses = if admit.services.is_empty() {
-        losses
-    } else {
-        Vec::new()
-    };
     let (saved, _) = review::publish(
         tx,
         who,
@@ -292,7 +276,7 @@ fn removal(
     let review = review::review(tx, &environment)?;
     review::check(&review, admit.version.as_deref())?;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
-    let empty = review::empty(&environment.working.environment_slug);
+    let empty = crate::scope::empty(&environment.working.environment_slug);
     let losses = if forget {
         Vec::new()
     } else {

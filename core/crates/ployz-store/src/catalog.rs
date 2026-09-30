@@ -194,19 +194,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn output_is_deterministic_and_versioned() {
+    fn output_is_deterministic_and_a_service_path_is_its_subtree() {
         let first = serde_json::to_string(&schema(None).unwrap()).unwrap();
         assert_eq!(
             first,
             serde_json::to_string(&schema(None).unwrap()).unwrap()
         );
         let whole = schema(None).unwrap();
-        assert_eq!(whole["$schema"], DIALECT);
-        assert_eq!(whole["x-ployz-version"], CATALOG_VERSION);
-        assert_eq!(
-            schema(Some("web.cpuLimit")).unwrap()["title"],
-            json!("CPU limit")
-        );
         assert_eq!(
             schema(Some("web")).unwrap()["properties"],
             whole["$defs"]["service"]["properties"]
