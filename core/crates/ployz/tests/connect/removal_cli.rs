@@ -162,15 +162,20 @@ async fn server_removal_without_the_typed_name_names_what_goes_and_the_retry() {
     server.abort();
 }
 
-#[tokio::test]
-async fn last_cloud_managed_server_is_refused_before_any_confirmation() {
+/// `server rm` of the last Server, which Cloud holds, run with `env` on top of a clean one.
+async fn remove_last_cloud_server(
+    env: &[(&str, &str)],
+    extra: &[&str],
+) -> (std::process::Output, DiscoveryService) {
     let service = DiscoveryService::new(test_description());
     *service.management_clients.lock().unwrap() =
         vec![ployz_core::ManagementClientLabel::parse("cloud").unwrap()];
-    let resets = service.reset_machines.clone();
-    let (address, _server) = serve_discovery(service).await;
+    let (address, _server) = serve_discovery(service.clone()).await;
     let config = std::env::temp_dir().join(format!("ployz-last-{}.yaml", MachineId::random()));
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env_remove("PLOYZ_TOKEN")
+        .env_remove("PLOYZ_CLOUD_URL")
+        .envs(env.iter().copied())
         .args([
             "--connect",
             &format!("tcp://{address}"),
@@ -181,9 +186,16 @@ async fn last_cloud_managed_server_is_refused_before_any_confirmation() {
             "rm",
             "one",
         ])
+        .args(extra)
         .output()
         .await
         .unwrap();
+    (output, service)
+}
+
+#[tokio::test]
+async fn last_cloud_managed_server_asks_for_cloud_before_any_confirmation() {
+    let (output, service) = remove_last_cloud_server(&[], &[]).await;
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
@@ -193,7 +205,86 @@ async fn last_cloud_managed_server_is_refused_before_any_confirmation() {
     );
     assert_eq!(
         error.pointer("/error/details/next"),
-        Some(&json!("ployz org rm ORGANIZATION"))
+        Some(&json!("ployz login"))
     );
-    assert!(resets.lock().unwrap().is_empty());
+    assert!(service.reset_machines.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn cloud_removes_its_last_server_for_the_cli() {
+    // Cloud: the removal it's asked for, answered done; anything else (the Store's Volume names) isn't offered.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let cloud = format!("http://{}", listener.local_addr().unwrap());
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(
+        Vec::<(String, serde_json::Value)>::new(),
+    ));
+    let seen = asked.clone();
+    std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader, Read, Write};
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let mut length = 0;
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                if header.trim().is_empty() {
+                    break;
+                }
+                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            let (status, reply) = if line.starts_with("DELETE /api/cli/servers/") {
+                let body = serde_json::from_slice(&body).unwrap();
+                seen.lock().unwrap().push((line.trim().to_owned(), body));
+                ("200 OK", r#"{"removed":true}"#)
+            } else {
+                ("404 Not Found", r#"{"code":"NOT_FOUND"}"#)
+            };
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                reply.len()
+            )
+            .unwrap();
+        }
+    });
+
+    let (output, service) = remove_last_cloud_server(
+        &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
+        &["--confirm", "one", "--accept-volume-loss", "data"],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    // Cloud reset it, not the CLI, so Cloud saw it go and let go of it.
+    assert!(service.reset_machines.lock().unwrap().is_empty());
+    let asked = asked.lock().unwrap();
+    let [(line, body)] = asked.as_slice() else {
+        panic!("Cloud was asked {asked:?}");
+    };
+    assert!(
+        line.starts_with(&format!("DELETE /api/cli/servers/{} ", machine_id('a'))),
+        "{line}"
+    );
+    assert_eq!(
+        body.pointer("/confirm_data_loss/confirmed/0/id/name"),
+        Some(&json!("data")),
+        "{body}"
+    );
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        result.get("next"),
+        Some(&json!("ployz server add")),
+        "{result}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("is the last Server: whatever runs on it stops"),
+        "{stderr}"
+    );
 }
