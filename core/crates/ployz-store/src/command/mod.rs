@@ -176,9 +176,9 @@ pub enum Written {
     /// The Default Environment changed: the Project's Environments after it.
     DefaultEnvironment(crate::EnvironmentsView),
     /// An Environment was deleted.
-    EnvironmentRemoved(crate::EnvironmentRemoved),
+    EnvironmentRemoved(crate::Teardown<crate::EnvironmentRemoved>),
     /// A Project was deleted.
-    ProjectRemoved(crate::ProjectRemoved),
+    ProjectRemoved(crate::Teardown<crate::ProjectRemoved>),
     /// A PR plan changed: the Project's PR plans after it.
     PrPlans(crate::PrPlansView),
 }
@@ -352,7 +352,7 @@ tells!(
     crate::KeepBranch => KeepBranch / Branch(crate::Branched),
     crate::SetBuildOrder => SetBuildOrder / BuildOrder(crate::BuildOrderView),
     crate::SetDefaultEnvironment => SetDefaultEnvironment / DefaultEnvironment(crate::EnvironmentsView),
-    crate::RemoveEnvironment => RemoveEnvironment / EnvironmentRemoved(crate::EnvironmentRemoved),
-    crate::RemoveProject => RemoveProject / ProjectRemoved(crate::ProjectRemoved),
+    crate::RemoveEnvironment => RemoveEnvironment / EnvironmentRemoved(crate::Teardown<crate::EnvironmentRemoved>),
+    crate::RemoveProject => RemoveProject / ProjectRemoved(crate::Teardown<crate::ProjectRemoved>),
     crate::SetPrPlan => SetPrPlan / PrPlans(crate::PrPlansView),
 );
