@@ -233,6 +233,8 @@ impl Remote {
         // Provisioning may wait for human authentication; only network setup is timed.
         command.args(["-tt", self.destination.target()]);
         command.stdin(Stdio::inherit());
+        // Remote installer chatter is progress, not the result: stdout stays for `--json`.
+        command.stdout(std::io::stderr());
         command
     }
 
@@ -264,7 +266,7 @@ impl Remote {
 
     async fn platform(&self) -> Result<String, ProvisionError> {
         let mut command = self.ssh();
-        command.arg("uname -s; uname -m");
+        command.arg("uname -s; uname -m").stdout(Stdio::piped());
         let output = tokio::process::Command::from(command)
             .output()
             .await
@@ -353,7 +355,7 @@ impl Remote {
     /// Confirm the remote user can install and report its architecture.
     async fn preflight(&self) -> Result<RemoteHost, ProvisionError> {
         let mut whoami = self.ssh();
-        whoami.arg("whoami");
+        whoami.arg("whoami").stdout(Stdio::piped());
         let output = tokio::process::Command::from(whoami)
             .output()
             .await
@@ -562,6 +564,7 @@ async fn install_local(
     installer_status(
         tokio::process::Command::new(bootstrap.daemon())
             .args(install_arguments(version, preparation))
+            .stdout(std::io::stderr())
             .status()
             .await,
     )

@@ -109,6 +109,7 @@ pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                     InspectRequest {
                         telemetry: ployz_core::InspectTelemetry::Full,
                         include_rtts: true,
+                        include_storage: true,
                         ..Default::default()
                     },
                     &selector,

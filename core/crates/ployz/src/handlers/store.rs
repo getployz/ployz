@@ -380,7 +380,8 @@ pub(crate) fn with_refresh_hint(
 ) -> StoreCallError {
     with_next(
         error,
-        |refusal| refusal.code == RpcErrorCode::Conflict,
+        // A conflict that already names its next step (no Server: `ployz server add`) keeps it.
+        |refusal| refusal.code == RpcErrorCode::Conflict && refusal.details.get("next").is_none(),
         || next(matches, &[read]),
     )
 }
@@ -508,5 +509,31 @@ mod tests {
         let error = error.report();
         assert_eq!(error.details.get("next"), Some(&json!(retry)));
         assert!(error.message.ends_with(&format!("Retry: {retry}")));
+    }
+
+    #[test]
+    fn a_conflict_keeps_the_next_step_the_store_named() {
+        let root = crate::cli::command()
+            .try_get_matches_from(["ployz", "deploy", "--env", "staging"])
+            .unwrap();
+        let refused = |details| {
+            StoreCallError::Refused(ployz_core::RpcError {
+                code: RpcErrorCode::Conflict,
+                message: "refused".into(),
+                details,
+            })
+        };
+        let next_of = |error| match with_refresh_hint(error, leaf_matches(&root), "diff") {
+            StoreCallError::Refused(error) => error.details.get("next").cloned(),
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            next_of(refused(json!({ "next": "ployz server add" }))),
+            Some(json!("ployz server add"))
+        );
+        assert_eq!(
+            next_of(refused(json!({}))),
+            Some(json!("ployz diff --env staging"))
+        );
     }
 }
