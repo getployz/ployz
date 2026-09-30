@@ -29,12 +29,12 @@ pub(crate) fn admit(
         None => match tx
             .query(
                 "SELECT upload FROM config_deployment \
-                 WHERE environment_id = ?1 AND upload <> 'null' ORDER BY number DESC LIMIT 1",
+                 WHERE environment_id = ?1 AND upload IS NOT NULL ORDER BY number DESC LIMIT 1",
                 &[environment_id.into()],
             )?
             .first()
         {
-            Some(row) => row.json(0, "Deployment upload")?,
+            Some(row) => Some(row.json(0, "Deployment upload")?),
             None => None,
         },
     };
@@ -93,7 +93,7 @@ pub(crate) fn admit(
             frozen.namespace.as_str().into(),
             json_text(&Run::default()).as_str().into(),
             json_text(&frozen.credentials).as_str().into(),
-            json_text(&summary.upload).as_str().into(),
+            summary.upload.as_ref().map(json_text).as_deref().into(),
             frozen.cluster_domain.as_ref().map(Hostname::as_str).into(),
             summary.admitted_at.into(),
             who.principal.as_ref().map(Principal::as_str).into(),
