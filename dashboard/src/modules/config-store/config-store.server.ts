@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
-import type { ConfigCommand, ConfigQuery, ConfigTrusted, ConfigWritten, SystemEvent } from "@ployz/sdk";
-import { eq, sql } from "drizzle-orm";
+import type { ConfigCommand, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigWritten, PullRequestRef, SystemEvent } from "@ployz/sdk";
+import { eq } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { gatherDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
@@ -8,7 +8,7 @@ import { gatherVolumeEvidence } from "#/modules/config-store/volume-evidence.ser
 import type { Actor } from "#/modules/identity/actor";
 import { user } from "#/modules/identity/tables";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { commandEnvironment, StoreRefused } from "#/modules/config-store/store.contract";
 import { getOrganizationForUserBySlug } from "#/modules/organization/organization-state.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import {
@@ -74,26 +74,12 @@ export function admittedEvents(organizationId: string, written: ConfigWritten): 
 }
 
 /**
- * The open pull requests with PR Environments in the Organization: any write there may move their checks.
- * ponytail: every open one of the Organization, debounced per pull request; narrow to the written Project if it costs.
+ * Ask for the check of each of `pulls` to be published again, after a write or a Deployment that may move it: the
+ * Store names them. A failed request is logged: the pull request's next event publishes it anyway.
  */
-const openPullRequests = Effect.fn("ConfigStore.openPullRequests")(function* (organizationId: string) {
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle.execute<{ repository_id: string; number: string }>(sql`
-    select distinct p.repository_id::text as repository_id, p.number::text as number from config_pr_environment p
-    join config_environment_branch b on b.environment_id = p.environment_id
-    where p.organization_id = ${organizationId} and b.closing = 0`, "objects");
-  return rows.map((row) => ({ repositoryId: Number(row.repository_id), number: Number(row.number) }));
-});
-
-/**
- * Ask for each open pull request of the Organization to have its check published again, after a write or a
- * Deployment that may move it. A failed request is logged: the pull request's next event publishes it anyway.
- */
-export const requestChecks = Effect.fn("ConfigStore.requestChecks")(function* (organizationId: string) {
-  const pulls = yield* openPullRequests(organizationId);
+export const requestChecks = Effect.fn("ConfigStore.requestChecks")(function* (organizationId: string, pulls: readonly PullRequestRef[]) {
   if (pulls.length === 0) return;
-  yield* sendInngestEvent(pulls.map((pull) => createConfigPrCheckRequestedEvent({ organizationId, ...pull }))).pipe(
+  yield* sendInngestEvent(pulls.map((pull) => createConfigPrCheckRequestedEvent({ organizationId, repositoryId: pull.repository_id, number: pull.number }))).pipe(
     Effect.catch((error) => Effect.logWarning("The PR checks were not requested.", { organizationId, error })),
   );
 });
@@ -178,7 +164,7 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
 
 /** What a committed write leaves Cloud to do: stop a cancelled Deployment's GitHub builds, run an admitted one, recheck PRs. */
 const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
-  organizationId: string, command: ConfigCommand, written: ConfigWritten,
+  organizationId: string, command: ConfigCommand, written: ConfigCommitted,
 ) {
   if (command.command === "cancel") {
     // Cancellation ends outstanding Build Grants at once; best effort, as the walk's next look ends them too.
@@ -196,7 +182,7 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
     && written.written === "deployment" && written.status === "applied") {
     yield* storeSystem(organizationId, { event: "sweep", now: Math.floor(Date.now() / 1000) });
   }
-  yield* requestChecks(organizationId);
+  yield* requestChecks(organizationId, written.checks);
 });
 
 /**
@@ -224,33 +210,38 @@ export const callStore = <C extends StoreCall>(organizationId: string, userId: s
   );
 }).pipe(Effect.withSpan("ConfigStore.call"));
 
+const memberOrganization = Effect.fn("ConfigStore.memberOrganization")(function* (actor: Actor, organizationSlug: string) {
+  const organization = yield* getOrganizationForUserBySlug(actor.userId, organizationSlug).pipe(Effect.orDie);
+  if (!organization) return yield* new NotFound({ message: "Organization not found." });
+  return organization;
+});
+
 /**
  * The dashboard's way into the Store: one read or write as `actor`, in the Organization named by `organizationSlug`
  * when the actor is a member of it (the same Organization gate as the Org Store's reads).
  */
 export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizationSlug: string, call: C) => Effect.gen(function* () {
-  const organization = yield* getOrganizationForUserBySlug(actor.userId, organizationSlug).pipe(Effect.orDie);
-  if (!organization) return yield* new NotFound({ message: "Organization not found." });
-  return yield* callStore(organization.id, actor.userId, call);
+  return yield* callStore((yield* memberOrganization(actor, organizationSlug)).id, actor.userId, call);
 }).pipe(Effect.withSpan("ConfigStore.callAsMember"));
 
 /**
- * The dashboard's write: `command` as `actor`, answered with the committed `diff` and `services` views of the
- * Environment it names, so the review's rows, count and pink arrive with the write. A view that can't be read is left
+ * The dashboard's write: `command` as `actor`, answered with the committed `diff`, `services` and Settings views of the
+ * Environment it names, so the review's rows, count, pink and values arrive with the write. A view that can't be read is left
  * out (the writer's refetch brings it); a command naming no Environment, or several (a Move), carries none.
  */
 export const writeStoreAsMember = (actor: Actor, organizationSlug: string, command: ConfigCommand) => Effect.gen(function* () {
-  const organization = yield* getOrganizationForUserBySlug(actor.userId, organizationSlug).pipe(Effect.orDie);
-  if (!organization) return yield* new NotFound({ message: "Organization not found." });
+  const organization = yield* memberOrganization(actor, organizationSlug);
   const result = yield* callStore(organization.id, actor.userId, { operation: "write", command });
-  if (!result.ok || !("environment" in command) || !command.environment) return result satisfies StoreWriteResult;
-  const { environment } = command;
+  const environment = commandEnvironment(command);
+  if (!result.ok || environment === null) return result satisfies StoreWriteResult;
   const views = yield* Effect.all({
     diff: readStore(organization.id, { query: "diff", environment }).pipe(Effect.option),
     services: readStore(organization.id, { query: "services", environment }).pipe(Effect.option),
-  }, { concurrency: 2 });
+    environment: readStore(organization.id, { query: "environment", environment, path: null, all: true }).pipe(Effect.option),
+  }, { concurrency: 3 });
   const committed: CommittedViews = {};
   if (Option.isSome(views.diff)) committed.diff = views.diff.value;
   if (Option.isSome(views.services)) committed.services = views.services.value;
+  if (Option.isSome(views.environment)) committed.environment = views.environment.value;
   return { ...result, views: committed } satisfies StoreWriteResult;
 }).pipe(Effect.map((answer): StoreWriteResult => answer), Effect.withSpan("ConfigStore.writeAsMember"));

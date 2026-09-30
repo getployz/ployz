@@ -145,6 +145,23 @@ it("runs a Move after pending edits in every Environment", async () => {
   expect(test.write.mock.calls[1]?.[0]).toMatchObject({ data: { command: { command: "move" } } });
 });
 
+it("runs a Move after a pending Batch that edits, as after an edit", async () => {
+  const test = setup(view(2, 1));
+  const batch = deferred<StoreResult<ConfigWritten>>();
+  test.write.mockImplementationOnce(() => batch.promise).mockResolvedValueOnce({ ok: true, value: { written: "moved" } as never });
+  const staging = { project: "shop", environment: "staging" };
+  act(() => {
+    void test.writer.commit({ command: "batch", environment: staging, commands: [{ command: "edit", environment: staging, expect: null, changes: replicas(3) }] })
+      .isPersisted.promise.catch(() => {});
+  });
+  const moved = test.writer.commit({ command: "move", move: "save", from: ref, into: null, picks: null });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(test.write).toHaveBeenCalledTimes(1);
+  batch.resolve({ ok: true, value: { written: "batch", results: [] } as never });
+  await moved.isPersisted.promise;
+  expect(test.write.mock.calls[1]?.[0]).toMatchObject({ data: { command: { command: "move" } } });
+});
+
 it("runs a copied node after the edits made before it, not the ones queued behind it", async () => {
   const test = setup(view(2, 1));
   const first = deferred<StoreResult<ConfigWritten>>();

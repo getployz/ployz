@@ -108,19 +108,23 @@ async function walkGithub(organizationId: string, target: StoreGithubTarget, ste
 }
 
 /**
- * The Organization's first Server joined: each Environment with published state deploys to it, each its own step so a
- * retry never admits one twice.
+ * The Organization's first Server joined: each Environment with published state deploys to it. Each admission's id is
+ * minted in its own step, so a retry after an unrecorded commit replays that admission rather than admitting again.
  */
 export const createDeployToFirstServer = (inngest: PloyzInngest, runEffect: StoreEffectRunner = runInngestEffect) =>
   inngest.createFunction(
-    { id: "deploy-to-first-server", retries: 3, triggers: [{ event: configFirstServerJoinedEventType }] },
+    {
+      id: "deploy-to-first-server", retries: 3, triggers: [{ event: configFirstServerJoinedEventType }],
+      concurrency: [{ key: "event.data.organizationId", limit: 1 }],
+    },
     async ({ event, step }) => {
       const { organizationId } = event.data;
       const environments = await step.run("published", () => runEffect(publishedEnvironments(organizationId)));
       const deployed = [];
       for (const environment of environments) {
         const name = `${environment.project}/${environment.environment}`;
-        deployed.push({ environment: name, ...await step.run(`deploy-${name}`, () => runEffect(deployToFirstServer(organizationId, environment))) });
+        const id = await step.run(`admission-${name}`, () => crypto.randomUUID());
+        deployed.push({ environment: name, ...await step.run(`deploy-${name}`, () => runEffect(deployToFirstServer(organizationId, environment, id))) });
       }
       return deployed;
     },

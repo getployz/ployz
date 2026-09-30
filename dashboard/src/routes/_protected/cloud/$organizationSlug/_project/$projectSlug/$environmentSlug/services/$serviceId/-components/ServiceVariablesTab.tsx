@@ -1,9 +1,9 @@
-import { Suspense, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import type { Persistable } from "#/collections/query-collection";
 import type { EnvironmentRef, EnvironmentView, ServiceListing } from "@ployz/sdk";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { serviceVariables, storeManagedExports, storeReferenceTargets, storeVariableWriter } from "#/modules/config-store/store-variables";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { domainsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { BracesIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import {
@@ -43,12 +43,7 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
     <ServiceVariablesView
       variables={variables}
       writer={writer}
-      // Its public domain needs the domains view, which looks at the Cluster: the rest shows without waiting for it.
-      managed={(
-        <Suspense fallback={<ManagedVariables managed={storeManagedExports(service, settings.environment, [])} />}>
-          <StoreManagedVariables organizationSlug={organizationSlug} environment={environment} service={service} settings={settings} />
-        </Suspense>
-      )}
+      managed={<ManagedVariables managed={storeManagedExports(service, settings.environment)} />}
       valueTargets={storeReferenceTargets(settings, services, service.id)}
       allowSealOnCreate
       onCreateVariable={({ key, value, sealed, exported }) => writer.create(key, value, sealed, exported)}
@@ -68,7 +63,7 @@ function ServiceVariablesView({
   /** The variables Ployz adds. */
   managed: ReactNode;
   valueTargets: ReferenceTarget[];
-  onCreateVariable: (input: VariableAddInput) => void;
+  onCreateVariable: (input: VariableAddInput) => Persistable;
   onSealVariable: (variable: PlainVariableRecord) => void;
   onUpdateMetadata: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
   onApplyRaw: (diff: RawEditorDiff) => void;
@@ -125,15 +120,6 @@ function ServiceVariablesView({
       />
     </div></TabsContent>
   );
-}
-
-/** The variables Ployz adds, with the public domain once the Service's domains are read. */
-function StoreManagedVariables({ organizationSlug, environment, service, settings }: {
-  organizationSlug: string; environment: EnvironmentRef; service: ServiceListing; settings: EnvironmentView;
-}) {
-  const domains = requireView(useStoreView(organizationSlug, domainsQuery(environment))).domains
-    .filter((domain) => domain.service === service.name);
-  return <ManagedVariables managed={storeManagedExports(service, settings.environment, domains)} />;
 }
 
 /** None of them is a secret, so each shows its value. */

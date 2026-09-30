@@ -41,7 +41,10 @@ export const receiveUpload = Effect.fn("ConfigStore.receiveUpload")(function* (
     // of their Organization; one Store read each.
     const stale = yield* database.drizzle.selectDistinct({ deploymentId: uploadChunk.deploymentId }).from(uploadChunk).where(and(
       eq(uploadChunk.organizationId, organizationId), sql`${uploadChunk.createdAt} < now() - interval '1 day'`));
-    yield* Effect.forEach(stale, (old) => releaseUpload(store, organizationId, old.deploymentId), { discard: true });
+    // Best effort: a stale upload that can't go now goes with a later upload, and never refuses this one.
+    yield* Effect.forEach(stale, (old) => releaseUpload(store, organizationId, old.deploymentId), { discard: true }).pipe(
+      Effect.catchCause((cause) => Effect.logWarning("Keeping stale uploads Cloud couldn't release.", cause)),
+    );
     yield* database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
       let pending = Buffer.alloc(0);
@@ -79,8 +82,9 @@ export const extractUpload = Effect.fn("ConfigStore.extractUpload")(function* (o
   const owned = and(eq(uploadChunk.organizationId, organizationId), eq(uploadChunk.deploymentId, deploymentId));
   const chunks = yield* drizzle.select({ index: uploadChunk.index }).from(uploadChunk).where(owned).orderBy(asc(uploadChunk.index));
   if (chunks.length === 0) return undefined;
-  // One chunk in memory at a time.
-  const read = (index: number) => Effect.runPromise(drizzle.select({ data: uploadChunk.data }).from(uploadChunk)
+  // One chunk in memory at a time, each read in this Effect's context.
+  const run = Effect.runPromiseWith(yield* Effect.context<never>());
+  const read = (index: number) => run(drizzle.select({ data: uploadChunk.data }).from(uploadChunk)
     .where(and(owned, eq(uploadChunk.index, index))).pipe(Effect.map((rows) => rows[0]?.data ?? Buffer.alloc(0))));
   async function* data() {
     for (const { index } of chunks) yield await read(index);

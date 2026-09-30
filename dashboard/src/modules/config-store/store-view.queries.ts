@@ -111,24 +111,42 @@ function isOfEnvironment(query: Query, key: string) {
   return config !== null && "environment" in config && environmentKey(config.environment) === key;
 }
 
-/** Refetches every view of one Environment and waits for them, so a committed write shows before its overlay goes. */
-export async function refetchEnvironmentViews(queryClient: QueryClient, organizationSlug: string, key: string) {
-  await queryClient.invalidateQueries({ queryKey: storeViewPrefix(organizationSlug), predicate: (query) => isOfEnvironment(query, key) });
+/**
+ * After a write: refetches the views of the Environment it named (`key`; null, every view of the Organization) and the
+ * Organization's views that name none, and waits for them, so the committed state shows before the overlay goes. The
+ * views the write's answer carried are already committed and aren't read again.
+ */
+export async function refetchAfterWrite(queryClient: QueryClient, organizationSlug: string, key: string | null, carried: CommittedViews = {}) {
+  await queryClient.invalidateQueries({ queryKey: storeViewPrefix(organizationSlug), predicate: (query) => {
+    const config = queryOf(query);
+    if (config === null || key === null) return config !== null;
+    if (!("environment" in config)) return true;
+    return isOfEnvironment(query, key) && carriedView(config, carried) === undefined;
+  } });
 }
 
-/** The newest Working State revision any cached view of the Environment shows. */
+/** The view a write's answer carried for a cached query of its Environment, if it carried that one. */
+function carriedView(config: ConfigQuery, views: CommittedViews) {
+  if (config.query === "diff") return views.diff;
+  if (config.query === "services") return views.services;
+  return config.query === "environment" && config.path === null && config.all ? views.environment : undefined;
+}
+
 /**
  * A write's committed views, in every cached view of the same kind and Environment: the review's rows, count and pink
- * arrive with the write, before any refetch.
+ * arrive with the write, before any refetch. A read already in flight is cancelled first, so it can't land over them.
  */
-export function putCommittedViews(queryClient: QueryClient, organizationSlug: string, key: string, views: CommittedViews) {
+export async function putCommittedViews(queryClient: QueryClient, organizationSlug: string, key: string, views: CommittedViews) {
   for (const query of queryClient.getQueryCache().findAll({ queryKey: storeViewPrefix(organizationSlug) })) {
-    const kind = queryOf(query)?.query;
-    const view = kind === "diff" ? views.diff : kind === "services" ? views.services : undefined;
-    if (view !== undefined && isOfEnvironment(query, key)) queryClient.setQueryData(query.queryKey, { ok: true, value: view });
+    const config = queryOf(query);
+    const view = config === null ? undefined : carriedView(config, views);
+    if (view === undefined || !isOfEnvironment(query, key)) continue;
+    await queryClient.cancelQueries({ queryKey: query.queryKey, exact: true });
+    queryClient.setQueryData(query.queryKey, { ok: true, value: view });
   }
 }
 
+/** The newest Working State revision any cached view of the Environment shows. */
 export function cachedRevision(queryClient: QueryClient, organizationSlug: string, key: string) {
   let latest: number | null = null;
   for (const query of queryClient.getQueryCache().findAll({ queryKey: storeViewPrefix(organizationSlug) })) {

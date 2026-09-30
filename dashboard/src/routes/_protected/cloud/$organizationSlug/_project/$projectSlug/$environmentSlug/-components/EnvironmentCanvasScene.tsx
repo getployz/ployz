@@ -62,7 +62,8 @@ export function PendingCanvas() {
 function CanvasWithData() {
   const scope = useCollectionScope();
   const { organizationSlug, projectSlug, environmentSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const { store: ref, environmentId, organizationId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+  const { store: ref, environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+  const { organizationId } = useLoaderData({ from: "/_protected/cloud/$organizationSlug" });
   // The branch view is refused unless this is a Branch.
   const [servicesResult, settingsResult, diffResult, volumesResult, branch, namespace] = useStoreViews(organizationSlug,
     [servicesQuery(ref), environmentSettingsQuery(ref), diffQuery(ref), volumesQuery(ref), branchQuery(ref), namespaceQuery(ref)] as const);

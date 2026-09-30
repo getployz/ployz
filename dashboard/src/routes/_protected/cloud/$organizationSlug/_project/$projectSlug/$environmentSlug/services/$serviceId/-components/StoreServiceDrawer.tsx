@@ -14,7 +14,8 @@ import { shownValue } from "#/modules/config-store/store-deployments";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
-import { dnsLabelError, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
+import { templateLabel } from "#/modules/config-store/database-presets";
+import { changedProps, dnsLabelError, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreViews } from "#/modules/config-store/store-view.queries";
 import type { Persistable } from "#/collections/query-collection";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -39,7 +40,7 @@ import { StoreDeploymentRows } from "../../../-components/DeploymentsList";
 import { SERVICE_PAGES, servicePageSchema } from "./service-pages";
 
 /** One Service in the Config Store, as the drawer shows and edits it. */
-type StoreService = {
+export type StoreService = {
   organizationSlug: string;
   environment: EnvironmentRef;
   service: ServiceListing;
@@ -56,10 +57,6 @@ type StoreService = {
   /** Sets Setting `name`, or unsets it (null). */
   set: (name: string, value: JsonValue | null) => Persistable;
 };
-
-/** The pink trail's props for a field whose staged change is `change`: changed, and what is deployed. */
-const changedProps = (change: ServiceSettingChange | undefined, shown: (value: JsonValue) => string = settingText) =>
-  ({ isChanged: change !== undefined, baselineValue: change ? shown(change.before) : undefined });
 
 /** A Service's source as its Settings say, pending edits included; an upload only while it has none of its own. */
 function sourceOf(service: ServiceListing, rows: Map<string, SettingRow>): ServiceListing["source"] {
@@ -80,14 +77,14 @@ const OPTION_LABELS = new Map([
 const SERVICE_ROUTE_FROM = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId";
 const SERVICE_ROUTE_TO = "/cloud/$organizationSlug/$projectSlug/$environmentSlug/services/$serviceId";
 
+/** Whether another Service here is named or reached as `name`: Service names and Private DNS names share one space. */
+const taken = (service: ServiceListing, services: readonly ServiceListing[], name: string) =>
+  services.some((other) => other.id !== service.id && (other.name === name || other.private_dns === name));
+
 /** A DNS label no other Service here has as its name or Private DNS. */
 function nameSchema(service: ServiceListing, services: readonly ServiceListing[]) {
-  return Schema.String.check(Schema.makeFilter<string>((name) => {
-    const error = dnsLabelError(name);
-    if (error) return error;
-    const taken = services.some((other) => other.id !== service.id && (other.name === name || other.private_dns === name));
-    return taken ? `A service here is already named ${name}.` : undefined;
-  }));
+  return Schema.String.check(Schema.makeFilter<string>((name) =>
+    dnsLabelError(name) ?? (taken(service, services, name) ? `A service here is already named ${name}.` : undefined)));
 }
 
 /**
@@ -131,11 +128,9 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
     // Domain statuses need a look at the Cluster, so the rest of the drawer doesn't wait for them.
     networking: (
       <Suspense fallback={null}>
-        <StoreNetworkingSection organizationSlug={organizationSlug} environment={store} service={service} changes={state.changes} version={diff.version}
-          privateDns={settingText(rows.get("privateDns")?.value) || service.private_dns}
+        <StoreNetworkingSection state={state} version={diff.version}
           validatePrivateDns={(raw) => raw === "" ? null : settingError(serviceSetting("privateDns"), raw)
-            ?? (services.some((other) => other.id !== service.id && (other.name === raw || other.private_dns === raw))
-              ? `A service here is already reached as ${raw}.` : null)} />
+            ?? (taken(service, services, raw) ? `A service here is already reached as ${raw}.` : null)} />
       </Suspense>
     ),
     scale: <FieldGroup>{field("replicas")}{field("cpuLimit")}{field("memLimit")}</FieldGroup>,
@@ -168,8 +163,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
           editTitle="Edit service name"
           editDescription="Rename this service. Other services reach it at its Private DNS name, which stays."
           placeholder="Service name"
-          isChanged={rename !== undefined}
-          baselineValue={rename ? settingText(rename.before) : undefined}
+          {...changedProps(rename)}
           onRename={(name) => writer.commit({ command: "rename_service", environment: store, service: service.name, name })}
         />
       </CanvasInspectorHeader>
@@ -470,6 +464,7 @@ function StoreSourceSection({ state }: { state: StoreService }) {
           <ItemMedia variant="icon">{kind === "repository" ? <GitHubMarkIcon /> : <PackageIcon />}</ItemMedia>
           <ItemContent>
             <ItemTitle>{kind === "repository" ? <a href={`https://github.com/${value}`} target="_blank" rel="noreferrer">{value}</a> : value}</ItemTitle>
+            {state.service.template ? <ItemDescription>From template: {templateLabel(state.service.template)}</ItemDescription> : null}
           </ItemContent>
           <ItemActions>
             <Button type="button" variant="ghost" size="icon" onClick={() => setPicking(kind)}>
