@@ -307,24 +307,39 @@ it.live(
         yield* enrollStoreServer(organizationId);
         yield* request("write", alice, shop);
         yield* request("write", alice, web);
-        // The Cluster Cloud reaches has just this Server, and resets it when asked; the first reset doesn't finish.
+        // Cloud's Cluster has this Server and `other`, which leaves first without a reset. It resets this one when
+        // asked; the first reset doesn't finish.
         const machineId = "0".repeat(32);
+        const other = "1".repeat(32);
+        const { drizzle } = yield* Database;
+        const encryption = yield* SecretEncryption;
+        const [enrolled] = yield* drizzle.select().from(organizationMachine);
+        if (!enrolled) return assert.fail("no Server enrolled");
+        yield* drizzle.insert(organizationMachine).values({
+          ...enrolled, machineId: other as MachineId, isDialEntry: false, encryptedCapability: encryption.encrypt("ployz1:other"),
+        });
         const warnings: Array<string | null> = ["Docker reset failed: busy volume", null];
         const connected = asTestDouble<PloyzSession>()({
           removeMachine: () => Effect.sync(() => ({ reset_warning: warnings.shift() ?? null })),
+          removeMachineMembership: () => Effect.void,
         });
         const runtime = {
           cancel: () => Effect.void,
           open: () => Effect.succeed({ status: "connected" as const, connected }),
         };
-        const remove = Effect.gen(function* () {
-          const removed = yield* Effect.scoped(removeMachineActivity({ organizationId, machineId, confirmDataLoss: [] }));
+        const removeServer = (server: string, noReset: boolean) => Effect.gen(function* () {
+          const removal = { organizationId, machineId: server, confirmDataLoss: [], noReset };
+          const removed = yield* Effect.scoped(removeMachineActivity(removal));
           assert.strictEqual(removed.kind, "removed");
           if (removed.kind !== "removed") return assert.fail("not removed");
-          const release = yield* releaseServerActivity({ organizationId, machineId, ...removed });
+          const release = yield* releaseServerActivity({ ...removal, ...removed });
           return { removed, release };
         }).pipe(Effect.provideService(OrganizationRuntime, runtime));
-        const { drizzle } = yield* Database;
+        const remove = removeServer(machineId, false);
+
+        // Taken out without a reset: Cloud drops its row, and another Server keeps the Cluster.
+        assert.deepStrictEqual((yield* removeServer(other, true)).release, { kind: "others_remain" });
+        assert.deepStrictEqual((yield* drizzle.select().from(organizationMachine)).map((row) => row.machineId), [machineId]);
 
         // A reset that didn't finish is partial: the Server may keep Cloud's key, so Cloud keeps its hold.
         const partial = yield* remove;
@@ -346,12 +361,11 @@ it.live(
         assert.strictEqual(refused.json.error?.details?.next, "ployz server add");
 
         // A replay of that release after a new Cluster was paired forgets nothing of it.
-        const encryption = yield* SecretEncryption;
         yield* drizzle.insert(organizationPairing).values({
           organizationId, encryptedPairingSecret: encryption.encrypt("ppair_replacement"),
           founderPublicKey: "founder-key", founderClaimMachineId: "1".repeat(32) as MachineId,
         });
-        const replay = yield* releaseServerActivity({ organizationId, machineId, generation: done.removed.generation, resetWarning: null });
+        const replay = yield* releaseServerActivity({ organizationId, machineId, generation: done.removed.generation, resetWarning: null, noReset: false });
         assert.strictEqual(replay.kind, "kept");
         assert.strictEqual((yield* drizzle.select().from(organizationPairing)).length, 1);
       }).pipe(Effect.provide(layer));

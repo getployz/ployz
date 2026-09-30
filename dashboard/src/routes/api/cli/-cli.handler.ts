@@ -35,10 +35,11 @@ const NewToken = Schema.Struct({
   expires_in_days: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 365 })),
 });
 
-/** `server rm`'s DataLossConfirmation: the Volumes the user accepted losing. */
-const RemoveServer = Schema.Struct({
-  confirm_data_loss: Schema.Struct({ confirmed: Schema.Array(dataLossIdentitySchema) }),
-});
+/** `server rm`: reset, with its DataLossConfirmation (the Volumes the user accepted losing), or `--no-reset`. */
+const RemoveServer = Schema.Union([
+  Schema.Struct({ confirm_data_loss: Schema.Struct({ confirmed: Schema.Array(dataLossIdentitySchema) }) }),
+  Schema.Struct({ no_reset: Schema.Literal(true) }),
+]);
 
 const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, request: Request, message: string) =>
   Effect.tryPromise({ try: () => request.json(), catch: () => new Validation({ message, userFacing: true }) }).pipe(
@@ -48,7 +49,7 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
 
 /**
  * `/api/cli/*`: the `ployz` CLI's account surface (Organizations and their removal, Organization Tokens and signed-in devices,
- * GitHub connections, billing), and removing a Server Cloud holds as its last, through the dashboard's durable removal. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
+ * GitHub connections, billing), and removing a Server Cloud manages, through the dashboard's durable removal. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
  */
 export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Request) {
   const caller = yield* resolveCaller(request.headers);
@@ -95,7 +96,9 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
         organizationId: caller.organization.id,
         requestedByUserId: caller.userId,
         machineId,
-        confirmDataLoss: [...input.confirm_data_loss.confirmed],
+        ...("no_reset" in input
+          ? { confirmDataLoss: [], noReset: true }
+          : { confirmDataLoss: [...input.confirm_data_loss.confirmed] }),
       });
       return { id: started.id };
     }

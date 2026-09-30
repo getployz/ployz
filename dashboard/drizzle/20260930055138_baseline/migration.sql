@@ -157,6 +157,7 @@ CREATE TABLE "machine_remove_attempt" (
 	"organization_id" uuid NOT NULL,
 	"requested_by_user_id" uuid NOT NULL,
 	"machine_id" text NOT NULL,
+	"no_reset" boolean DEFAULT false NOT NULL,
 	"confirm_data_loss" jsonb NOT NULL,
 	"state" text DEFAULT 'pending' NOT NULL,
 	"inngest_run_id" text,

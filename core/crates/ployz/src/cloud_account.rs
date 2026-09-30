@@ -528,10 +528,11 @@ enum Progress {
 /// How long `server rm` waits on Cloud's removal before it stops watching.
 const REMOVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 
-/// Have Cloud remove Server `machine` of the credential's Organization, accepting
-/// exactly `confirmation`: the same durable removal the dashboard starts, which Cloud
-/// runs under its own connection. Waits for it to settle. Cloud witnesses the reset,
-/// so when it was the last Server Cloud lets go of the Cluster.
+/// Have Cloud remove Server `machine` of the credential's Organization: resetting it
+/// and accepting exactly `reset`'s Data Loss, or with none, only taking it out of the
+/// Cluster. It is the same durable removal the dashboard starts, which Cloud runs under
+/// its own connection; this waits for it to settle. Cloud drops its row for the Server,
+/// and when it saw the last one reset, lets go of the Cluster.
 ///
 /// # Errors
 ///
@@ -541,14 +542,17 @@ const REMOVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 pub(crate) async fn remove_server(
     credential: &Credential,
     machine: &MachineId,
-    confirmation: &ployz_core::DataLossConfirmation,
+    reset: Option<&ployz_core::DataLossConfirmation>,
 ) -> Result<CloudRemoval, StoreCallError> {
     #[derive(Deserialize)]
     struct Queued {
         id: String,
     }
     let url = format!("{}/api/cli/servers/{machine}", credential.cloud());
-    let body = serde_json::json!({ "confirm_data_loss": confirmation });
+    let body = match reset {
+        Some(confirmation) => serde_json::json!({ "confirm_data_loss": confirmation }),
+        None => serde_json::json!({ "no_reset": true }),
+    };
     let queued: Queued = store_answer(
         credential,
         send(credential, Method::DELETE, &url, Some(&body)).await?,

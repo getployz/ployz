@@ -236,6 +236,8 @@ export declare class Client {
     machine: MachineTarget,
     confirmDataLoss: DataLossConfirmation,
   ): Promise<LocalMachineRemoved>;
+  /** Take a Machine out of the Cluster without resetting it: it keeps its state and keys. */
+  removeMachineMembership(machine: MachineTarget): Promise<void>;
   /** One Machine policy edit (Machine Roles and build concurrency); omitted fields keep their values. */
   updateMachine(
     machine: MachineTarget,

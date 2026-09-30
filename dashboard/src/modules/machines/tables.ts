@@ -26,6 +26,8 @@ export const machineRemoveAttempt = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: "restrict" }),
     machineId: text("machine_id").notNull().$type<MachineId>(),
+    /** Take the Server out of the Cluster without resetting it (`ployz server rm --no-reset`). */
+    noReset: boolean("no_reset").default(false).notNull(),
     confirmDataLoss: jsonb("confirm_data_loss")
       .notNull()
       .$type<DataLossIdentity[]>(),
