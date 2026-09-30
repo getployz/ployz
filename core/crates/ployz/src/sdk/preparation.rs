@@ -181,9 +181,7 @@ pub(crate) fn receipts(
         .filter_map(|build| {
             // Preparation may still rebuild a reused image that misses a platform.
             let reused = reused.get(&build.name).and_then(|candidates| {
-                candidates
-                    .iter()
-                    .find(|reused| reused.image == build.built)
+                candidates.iter().find(|reused| reused.image == build.built)
             });
             let receipt = match reused {
                 Some(reused) => BuildReceipt {

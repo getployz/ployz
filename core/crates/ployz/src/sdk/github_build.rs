@@ -514,10 +514,9 @@ mod tests {
         let report = serde_json::json!({
             "from": 0, "events": [], "platforms": ["linux/amd64"], "installFailed": "0.1.0",
         });
-        let error = github_report(store, id, claims, report)
-            .await
-            .err()
-            .expect("not both");
+        let Err(error) = github_report(store, id, claims, report).await else {
+            panic!("a report can't both end a build and say ployz didn't install");
+        };
         assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
     }
 }

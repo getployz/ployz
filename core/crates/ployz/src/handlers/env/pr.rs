@@ -119,7 +119,10 @@ pub(super) fn pr(root: &ArgMatches) -> Result<(), Error> {
                 None => {}
             }
             if !plan.copy.is_empty() {
-                words.push(format!("also copies {}", crate::handlers::joined(&plan.copy)));
+                words.push(format!(
+                    "also copies {}",
+                    crate::handlers::joined(&plan.copy)
+                ));
             }
             for setup in &plan.setup {
                 words.push(format!("then {}: {}", setup.service, setup.command));

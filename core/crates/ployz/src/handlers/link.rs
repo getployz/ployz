@@ -517,7 +517,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                     reason: reason.to_owned(),
                     message: format!("Deployment {} did not complete", ended.number),
                     deployment: Some(ended.id.clone()),
-                    next: Some(next(matches, &["deployment", "show", ended.id.as_str()])),
+                    next: Some(super::deploy::show_hint(&ended.id)),
                 });
             }
         }
@@ -544,7 +544,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
         .or_else(|| {
             deploying
                 .first()
-                .map(|deployment| next(matches, &["deployment", "show", deployment.id.as_str()]))
+                .map(|deployment| super::deploy::show_hint(&deployment.id))
         });
     let status = Status {
         identity,

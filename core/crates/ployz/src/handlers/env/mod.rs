@@ -416,4 +416,3 @@ fn node_names(names: &[String]) -> Result<Vec<ployz_store::NodeName>, Error> {
         .map(|name| ployz_store::NodeName::parse(name.as_str()))
         .collect::<Result<_, _>>()?)
 }
-

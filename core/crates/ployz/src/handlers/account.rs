@@ -172,7 +172,7 @@ fn token_list(root: &ArgMatches) -> Result<(), Error> {
         for revoking in &listed.revoking {
             say!(
                 "{}\t{}\trevoked; not yet cleared on {}\t-",
-                revoking.kind,
+                super::store::word(&revoking.kind),
                 revoking.id,
                 super::joined(&revoking.unconfirmed)
             );
@@ -396,4 +396,3 @@ fn billing_page(root: &ArgMatches, page: BillingPage) -> Result<(), Error> {
         }
     })
 }
-

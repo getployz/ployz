@@ -67,23 +67,21 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
             }
             None => (repo.as_str(), None),
         };
-        store
-            .write(&CreateGitService {
-                id,
-                environment,
-                name: name.clone(),
-                repository: ployz_store::RepositoryName::parse(repository)?,
-                branch,
-            })?
+        store.write(&CreateGitService {
+            id,
+            environment,
+            name: name.clone(),
+            repository: ployz_store::RepositoryName::parse(repository)?,
+            branch,
+        })?
     } else {
         let image = matches.get_one::<String>("image").cloned();
-        store
-            .write(&CreateService {
-                id,
-                environment,
-                name: name.clone(),
-                image,
-            })?
+        store.write(&CreateService {
+            id,
+            environment,
+            name: name.clone(),
+            image,
+        })?
     };
     staged(matches, &created, "Staged new Service")
 }
@@ -119,8 +117,7 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         service: service_name(matches, "service")?,
     };
-    let view = store::store(root)?
-        .read(&query)?;
+    let view = store::store(root)?.read(&query)?;
     output::finish(&view, || {
         let service = &view.service.service;
         say!("Service {} ({})", service.name, service.id);
@@ -154,8 +151,7 @@ pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
         service: service_name(matches, "service")?,
         name: service_name(matches, "name")?,
     };
-    let renamed = store::store(root)?
-        .write(&rename)?;
+    let renamed = store::store(root)?.write(&rename)?;
     staged(matches, &renamed, "Staged rename of Service")
 }
 
@@ -166,8 +162,7 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         service: service_name(matches, "service")?,
     };
-    let removed = store::store(root)?
-        .write(&remove)?;
+    let removed = store::store(root)?.write(&remove)?;
     staged(matches, &removed, "Staged removal of Service")
 }
 

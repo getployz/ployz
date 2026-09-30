@@ -234,12 +234,11 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
     let secret = if seal_all {
         Vec::new()
     } else {
-        let view = store(root)?
-            .read(&EnvironmentQuery {
-                environment: environment(matches)?,
-                path: Some(service.clone()),
-                all: false,
-            })?;
+        let view = store(root)?.read(&EnvironmentQuery {
+            environment: environment(matches)?,
+            path: Some(service.clone()),
+            all: false,
+        })?;
         let marker = json!({ "secret": true });
         view.values
             .and_then(|mut values| values.remove("env"))

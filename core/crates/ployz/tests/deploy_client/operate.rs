@@ -201,7 +201,9 @@ async fn server_clean_removes_only_a_namespace_no_environment_owns() {
     );
     assert_eq!(
         listed["next"],
-        format!("ployz server clean --connect tcp://{address} --namespace left-over --confirm left-over")
+        format!(
+            "ployz server clean --connect tcp://{address} --namespace left-over --confirm left-over"
+        )
     );
     assert_eq!(listed["omitted"], serde_json::json!([]), "{listed}");
 

@@ -246,10 +246,22 @@ fn retry(matches: &ArgMatches, namespace: &Namespace) -> String {
     let mut words = vec!["ployz", "server", "clean"];
     for flag in ["context", "connect"] {
         if let Some(value) = matches.get_one::<String>(flag) {
-            words.extend([if flag == "context" { "--context" } else { "--connect" }, value]);
+            words.extend([
+                if flag == "context" {
+                    "--context"
+                } else {
+                    "--connect"
+                },
+                value,
+            ]);
         }
     }
-    words.extend(["--namespace", namespace.as_str(), "--confirm", namespace.as_str()]);
+    words.extend([
+        "--namespace",
+        namespace.as_str(),
+        "--confirm",
+        namespace.as_str(),
+    ]);
     shell_words::join(words)
 }
 

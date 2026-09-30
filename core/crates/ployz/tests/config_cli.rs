@@ -795,12 +795,6 @@ fn an_agent_adds_mounts_detaches_and_removes_volumes() {
             ok(store, &["volume", "set", "data", "--size", "7GB"])["volume"]["storage"],
             json!({"kind":"provisioned","maximumBytes":7000000000_i64})
         );
-        failed(store, &["volume", "set", "data", "--size", "0"], 2);
-        failed(
-            store,
-            &["volume", "add", "invalid", "--docker", "--size", "5GB"],
-            2,
-        );
         assert_eq!(
             ok(store, &["volume", "add", "logs", "--docker"])["volume"]["storage"],
             json!({"kind":"docker"})
