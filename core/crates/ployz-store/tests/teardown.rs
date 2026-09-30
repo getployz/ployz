@@ -819,3 +819,34 @@ fn shutting_down_what_never_ran_applies_at_once() {
         .unwrap();
     assert_eq!(view.outcome, Some(ployz_store::Outcome::NeverRan));
 }
+
+#[test]
+fn namespaces_name_the_environment_that_owns_each() {
+    let (store, who) = shop();
+    assert!(
+        store
+            .read(&who, &ployz_store::NamespacesQuery {})
+            .unwrap()
+            .namespaces
+            .is_empty()
+    );
+    deploy(&store, &who, "production", 1, &["web"]);
+    let owned = store
+        .read(&who, &ployz_store::NamespacesQuery {})
+        .unwrap()
+        .namespaces;
+    assert_eq!(owned.len(), 1);
+    assert_eq!(
+        (owned[0].project.as_str(), owned[0].environment.as_str()),
+        ("shop", "production")
+    );
+    // Another Organization sees none of them.
+    let other = Actor::system(OrganizationId::parse("other").unwrap());
+    assert!(
+        store
+            .read(&other, &ployz_store::NamespacesQuery {})
+            .unwrap()
+            .namespaces
+            .is_empty()
+    );
+}
