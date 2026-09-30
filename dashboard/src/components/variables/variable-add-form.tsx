@@ -149,7 +149,6 @@ export function VariableAddForm({
     // Optimistic: the writer rolls back and toasts if saving fails.
     collection.update(id, (draft) => {
       draft.value = { type: "plain", value };
-      draft.updatedAt = new Date();
     });
     closeForm();
   }

@@ -7,8 +7,6 @@ import type { VariableRecord } from "#/modules/variables/variables";
 import { serviceSettingRows } from "./store-services";
 import type { useStoreWriter } from "./store-write";
 
-// The variables panel shows `VariableRecord`s; the Store keys a variable by its name and has no timestamps.
-const NEVER = new Date(0);
 const VARIABLE = /^env\.([^.]+)$/u;
 const isText = Schema.is(Schema.String);
 
@@ -26,17 +24,19 @@ export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceI
     return [{
       id: key, serviceId, key, description: null,
       exported: rows.get(`${name}.exported`)?.value === true,
-      value: isText(value) ? { type: "plain" as const, value } : { type: "sealed" as const, hasValue: true as const, fingerprint: "sealed" },
-      createdAt: NEVER, updatedAt: NEVER,
+      value: isText(value) ? { type: "plain" as const, value } : { type: "sealed" as const },
       changed: changes.has(name) || changes.has(`${name}.exported`),
     }];
   }).sort((a, b) => a.key.localeCompare(b.key));
 }
 
-/** The variables panel's writer over the Store: each write is one optimistic edit of `SERVICE.env.KEY`. */
+/**
+ * The variables panel's writer over the Store: each write is one optimistic edit of `SERVICE.env.KEY` (and its
+ * `.exported`), the one place those paths are spelled.
+ */
 export function storeVariableWriter(
   writer: ReturnType<typeof useStoreWriter>, environment: EnvironmentRef, service: string, variables: readonly VariableRecord[],
-): VariableWriter {
+) {
   const path = (key: string) => `${service}.env.${key}`;
   const edit = (...changes: Change[]) => writer.edit({ environment, changes });
   // A variable is two rows, its value and whether it's exported; the dashboard sets each by its own path.
@@ -44,7 +44,7 @@ export function storeVariableWriter(
     { op: "set", path: path(variable.key), value: variable.value.type === "plain" ? variable.value.value : { secret: true } },
     { op: "set", path: `${path(variable.key)}.exported`, value: variable.exported },
   ];
-  return {
+  const panel: VariableWriter = {
     insert: (variable) => edit(...rows(variable)),
     update(key, updater) {
       const variable = structuredClone(variables.find((candidate) => candidate.key === key));
@@ -53,6 +53,20 @@ export function storeVariableWriter(
       return edit(...rows(variable));
     },
     delete: (key) => edit({ op: "unset", path: path(key) }),
+  };
+  return {
+    ...panel,
+    create: (key: string, value: string, sealed: boolean, exported: boolean) => edit(
+      { op: "set", path: path(key), value: sealed ? { secret: value } : value },
+      { op: "set", path: `${path(key)}.exported`, value: exported },
+    ),
+    seal: (key: string, value: string) => edit({ op: "set", path: path(key), value: { secret: value } }),
+    export: (key: string, exported: boolean) => edit({ op: "set", path: `${path(key)}.exported`, value: exported }),
+    /** The raw editor's changes: sets and removals in one edit. */
+    replace: (sets: readonly { key: string; value: string }[], removed: readonly string[]) => edit(
+      ...sets.map(({ key, value }): Change => ({ op: "set", path: path(key), value })),
+      ...removed.map((key): Change => ({ op: "unset", path: path(key) })),
+    ),
   };
 }
 

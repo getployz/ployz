@@ -1,5 +1,5 @@
 import { Suspense, useState, type ReactNode } from "react";
-import type { Change, EnvironmentRef, EnvironmentView, JsonValue, ServiceListing } from "@ployz/sdk";
+import type { EnvironmentRef, EnvironmentView, ServiceListing } from "@ployz/sdk";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { serviceVariables, storeManagedExports, storeReferenceTargets, storeVariableWriter } from "#/modules/config-store/store-variables";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -38,8 +38,6 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
   const store = useStoreWriter(organizationSlug);
   const variables = serviceVariables(serviceSettingRows(settings, service.name), service.id, changes);
   const writer = storeVariableWriter(store, environment, service.name, variables);
-  const set = (key: string, value: JsonValue) =>
-    store.edit({ environment, changes: [{ op: "set", path: `${service.name}.env.${key}`, value }] });
 
   return (
     <ServiceVariablesView
@@ -53,19 +51,10 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
       )}
       valueTargets={storeReferenceTargets(settings, services, service.id)}
       allowSealOnCreate
-      onCreateVariable={({ key, value, sealed, exported }) => store.edit({ environment, changes: [
-        { op: "set", path: `${service.name}.env.${key}`, value: sealed ? { secret: value } : value },
-        { op: "set", path: `${service.name}.env.${key}.exported`, value: exported },
-      ] })}
-      onSealVariable={(variable) => set(variable.key, { secret: variable.value.value })}
-      onUpdateMetadata={(variable, patch) => set(`${variable.key}.exported`, patch.exported ?? variable.exported)}
-      onApplyRaw={({ creates, updates, deletes }) => store.edit({
-        environment,
-        changes: [
-          ...[...creates, ...updates].map(({ key, value }): Change => ({ op: "set", path: `${service.name}.env.${key}`, value })),
-          ...deletes.map((key): Change => ({ op: "unset", path: `${service.name}.env.${key}` })),
-        ],
-      })}
+      onCreateVariable={({ key, value, sealed, exported }) => writer.create(key, value, sealed, exported)}
+      onSealVariable={(variable) => writer.seal(variable.key, variable.value.value)}
+      onUpdateMetadata={(variable, patch) => writer.export(variable.key, patch.exported ?? variable.exported)}
+      onApplyRaw={({ creates, updates, deletes }) => writer.replace([...creates, ...updates], deletes)}
     />
   );
 }
