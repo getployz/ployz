@@ -186,7 +186,7 @@ pub struct DeploymentView {
     /// Every node it targets.
     pub nodes: Vec<NodeOutcome>,
     /// The Deploy Preview its runner prepared, with environment values removed.
-    pub preview: Option<Value>,
+    pub preview: Option<DeployPreview>,
     pub outcome: Option<Outcome>,
     /// Its Git Services' builds, once their commits are pinned.
     pub builds: Vec<BuildView>,
@@ -437,7 +437,8 @@ impl Frozen {
 /// The runner's evidence so far, stored as one document.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct Run {
-    preview: Option<Value>,
+    /// Parsed and redacted once, when recorded.
+    preview: Option<DeployPreview>,
     outcome: Option<Outcome>,
     /// A digest of the Executed evidence recorded: a replay must match it.
     #[serde(default)]
