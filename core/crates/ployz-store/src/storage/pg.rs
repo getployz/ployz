@@ -196,12 +196,18 @@ fn storage_error(source: postgres::Error) -> RpcError {
                 SqlState::LOCK_NOT_AVAILABLE,
                 SqlState::QUERY_CANCELED,
                 SqlState::ADMIN_SHUTDOWN,
+                SqlState::TOO_MANY_CONNECTIONS,
             ]
             .contains(code)
         });
     if transient {
         error::unavailable("The Config Store is unavailable; retry the command")
     } else {
-        error::internal(format!("Config Store storage failed: {source}"))
+        // `{source}` alone prints "db error"; the server's code and message say what failed.
+        let detail = source.as_db_error().map_or_else(
+            || source.to_string(),
+            |db| format!("{} ({})", db.message(), db.code().code()),
+        );
+        error::internal(format!("Config Store storage failed: {detail}"))
     }
 }
