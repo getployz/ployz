@@ -22,10 +22,10 @@ pub(super) fn shutdown(root: &ArgMatches) -> Result<(), Error> {
     };
     let store = store(root)?.args([name.as_str()]);
     let accept = accepted(matches)?;
-    let again = with_accepted(&["env", "shutdown", name.as_str()], &accept);
+    let again = store.again(&with_accepted(&accept));
     let events = deploy::open_events(matches)?;
     let version = matches.get_one::<String>("expect-version").cloned();
-    let (view, ran) = take_off(matches, &store, &at, (&accept, version), events, &again)?;
+    let (view, ran) = take_off(matches, &store, &at, (&accept, version), events)?;
     if view.deployment.status != DeploymentStatus::Applied {
         return unfinished(matches, &view, &[], ran, &again);
     }
@@ -61,7 +61,7 @@ pub(super) fn pr(root: &ArgMatches) -> Result<(), Error> {
         .transpose()?;
     let remove_on_close = matches.get_one::<bool>("remove-on-close").copied();
     let include_bots = matches.get_one::<bool>("bots").copied();
-    let store = store(root)?.args(repository.as_ref().map(ployz_store::RepositoryName::as_str));
+    let store = store(root)?;
     let query = ployz_store::PrPlansQuery {
         project: project.clone(),
     };
@@ -119,7 +119,10 @@ pub(super) fn pr(root: &ArgMatches) -> Result<(), Error> {
                 None => {}
             }
             if !plan.copy.is_empty() {
-                words.push(format!("also copies {}", super::joined(&plan.copy)));
+                words.push(format!(
+                    "also copies {}",
+                    crate::handlers::joined(&plan.copy)
+                ));
             }
             for setup in &plan.setup {
                 words.push(format!("then {}: {}", setup.service, setup.command));

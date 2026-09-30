@@ -115,7 +115,7 @@ fn no_reachable_server(unreachable: Vec<ployz_core::MachineId>) -> Error {
         RpcErrorCode::Unavailable,
         format!(
             "no Server of this Organization is reachable now: {}",
-            super::env::joined(&unreachable)
+            super::joined(&unreachable)
         ),
         json!({ "unreachable": unreachable }),
     )
@@ -476,7 +476,7 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
             value("storage", None)
                 .value_parser(clap::value_parser!(ployz_core::StorageChoice))
                 .help(
-                    "Enable managed volumes [Cloud default: zfs]; none keeps Docker volumes only",
+                    "Enable Provisioned Volumes [Cloud default: zfs]; none keeps Docker Volumes only",
                 ),
         )
         .arg(value("public-ip", None).default_value("auto"))

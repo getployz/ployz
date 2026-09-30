@@ -22,10 +22,9 @@ pub(crate) fn command() -> Command {
     base("volume", "Manage Volumes")
         .arg_required_else_help(true)
         .subcommand(
-            storage_flags(store::scoped(
-                Command::new("add")
-                    .about("Add a Volume with managed storage; staged until you deploy"),
-            ))
+            storage_flags(store::scoped(Command::new("add").about(
+                "Add a Provisioned Volume (or --docker); staged until you deploy",
+            )))
             .arg(positional("name", true).help("Volume name, unique in the Environment"))
             .arg(
                 value("mount", None)
@@ -102,11 +101,7 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    let mut args = vec![name.as_str()];
-    for _ in &mounts {
-        args.extend(["--mount", "SERVICE:/PATH"]);
-    }
-    let created = store::store(root)?.args(args).write(&CreateVolume {
+    let created = store::store(root)?.write(&CreateVolume {
         id: VolumeId::parse(store::mint())?,
         environment: store::environment(matches)?,
         name: name.clone(),
@@ -122,10 +117,10 @@ fn storage_flags(command: Command) -> Command {
             value("size", None)
                 .value_name("GB")
                 .value_parser(|size: &str| {
-                    ProvisionedVolumeMaximumBytes::parse(size)
+                    ProvisionedVolumeMaximumBytes::parse_gb(size)
                         .map_err(|_| "Use a positive size in GB, such as 5GB or 0.5GB")
                 })
-                .help("Managed storage limit in GB, such as 10GB; new Volumes default to 5GB"),
+                .help("Provisioned storage limit in GB, such as 10GB; new Volumes default to 5GB"),
         )
         .arg(
             switch("docker", None)
@@ -149,13 +144,11 @@ fn requested_storage(matches: &ArgMatches) -> VolumeKind {
 fn set(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
-    let changed = store::store(root)?
-        .args([volume.as_str()])
-        .write(&SetVolumeStorage {
-            environment: store::environment(matches)?,
-            volume: volume.clone(),
-            storage: requested_storage(matches),
-        })?;
+    let changed = store::store(root)?.write(&SetVolumeStorage {
+        environment: store::environment(matches)?,
+        volume: volume.clone(),
+        storage: requested_storage(matches),
+    })?;
     staged(matches, &changed, "Staged Volume storage")
 }
 
@@ -201,12 +194,10 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
 fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
-    let view = store::store(root)?
-        .args([volume.as_str()])
-        .read(&VolumeQuery {
-            environment: store::environment(matches)?,
-            volume: volume.clone(),
-        })?;
+    let view = store::store(root)?.read(&VolumeQuery {
+        environment: store::environment(matches)?,
+        volume: volume.clone(),
+    })?;
     output::finish(&view, || {
         let listing = &view.volume;
         say!("Volume {} ({})", listing.volume.name, listing.volume.id);
@@ -233,25 +224,21 @@ fn rename(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
     let name = volume_name(matches, "name")?;
-    let renamed = store::store(root)?
-        .args([volume.as_str(), name.as_str()])
-        .write(&ployz_store::RenameVolume {
-            environment: store::environment(matches)?,
-            volume: volume.clone(),
-            name: name.clone(),
-        })?;
+    let renamed = store::store(root)?.write(&ployz_store::RenameVolume {
+        environment: store::environment(matches)?,
+        volume: volume.clone(),
+        name: name.clone(),
+    })?;
     staged(matches, &renamed, "Staged rename of Volume")
 }
 
 fn remove(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
-    let removed = store::store(root)?
-        .args([volume.as_str()])
-        .write(&RemoveVolume {
-            environment: store::environment(matches)?,
-            volume: volume.clone(),
-        })?;
+    let removed = store::store(root)?.write(&RemoveVolume {
+        environment: store::environment(matches)?,
+        volume: volume.clone(),
+    })?;
     staged(matches, &removed, "Staged removal of Volume")
 }
 

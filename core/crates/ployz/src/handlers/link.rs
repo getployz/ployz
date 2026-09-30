@@ -242,6 +242,20 @@ fn acting_organization(config: &Path) -> Result<Option<Organization>, Error> {
     Ok(CredentialStore::beside(config).organization()?)
 }
 
+/// [`acting_organization`], asking Cloud for an Organization Token's, so a link
+/// always records the Organization it was made in.
+fn resolved_organization(config: &Path) -> Result<Option<Organization>, Error> {
+    if let Some(acting) = acting_organization(config)? {
+        return Ok(Some(acting));
+    }
+    let credentials = CredentialStore::beside(config);
+    let organization = super::runtime()?.block_on(async {
+        let credential = crate::cloud_account::from_env(&credentials).await?;
+        crate::cloud_account::acting_in(&credential).await
+    })?;
+    Ok(Some(organization))
+}
+
 /// A link made in another Organization never addresses this one's Project of the same name.
 fn check_organization(config: &Path, directory: &str, link: &Link) -> Result<(), Error> {
     let (Some(linked), Some(acting)) = (&link.organization, acting_organization(config)?) else {
@@ -302,7 +316,7 @@ pub(super) fn link(root: &ArgMatches) -> Result<(), Error> {
 pub(super) fn record(config: &Path, environment: EnvironmentSummary) -> Result<Linked, Error> {
     let linked = Linked {
         directory: here()?,
-        organization: acting_organization(config)?,
+        organization: resolved_organization(config)?,
         project: environment.project,
         environment: environment.name,
     };
@@ -320,21 +334,23 @@ pub(super) fn record(config: &Path, environment: EnvironmentSummary) -> Result<L
 }
 
 /// Point this device's links to Project `old` at `new` after a rename, in the
-/// Organization commands act in. Returns how many moved.
+/// Organization commands act in. A link from another Organization stays.
+/// Returns how many moved.
 pub(super) fn rename_project(
     config: &Path,
     old: &ProjectName,
     new: &ProjectName,
 ) -> Result<usize, Error> {
-    let acting = acting_organization(config)?;
+    let Some(acting) = resolved_organization(config)? else {
+        return Ok(0);
+    };
     let mut links = load(config)?;
     let mut moved = 0;
     for link in links.values_mut() {
-        // A link or a token without a known Organization can't be told apart: move it.
-        let same = match (&link.organization, &acting) {
-            (Some(linked), Some(acting)) => linked.id == acting.id,
-            _ => true,
-        };
+        let same = link
+            .organization
+            .as_ref()
+            .is_some_and(|linked| linked.id == acting.id);
         if same && &link.project == old {
             link.project = new.clone();
             moved += 1;
@@ -501,7 +517,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                     reason: reason.to_owned(),
                     message: format!("Deployment {} did not complete", ended.number),
                     deployment: Some(ended.id.clone()),
-                    next: Some(next(matches, &["deployment", "show", ended.id.as_str()])),
+                    next: Some(super::deploy::show_hint(&ended.id)),
                 });
             }
         }
@@ -528,7 +544,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
         .or_else(|| {
             deploying
                 .first()
-                .map(|deployment| next(matches, &["deployment", "show", deployment.id.as_str()]))
+                .map(|deployment| super::deploy::show_hint(&deployment.id))
         });
     let status = Status {
         identity,

@@ -273,7 +273,7 @@ impl ProvisionedVolumeMaximumBytes {
     ///
     /// Returns [`ValueError`] unless `value` is a positive number of GB with at most
     /// nine decimals.
-    pub fn parse(value: &str) -> Result<Self, ValueError> {
+    pub fn parse_gb(value: &str) -> Result<Self, ValueError> {
         let invalid = || {
             ValueError::new(
                 "storage limit",
@@ -309,14 +309,6 @@ impl ProvisionedVolumeMaximumBytes {
             .and_then(|bytes| bytes.checked_add(fraction))
             .and_then(|bytes| Self::try_from(bytes).ok())
             .ok_or_else(invalid)
-    }
-}
-
-impl std::str::FromStr for ProvisionedVolumeMaximumBytes {
-    type Err = ValueError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::parse(value)
     }
 }
 
@@ -609,10 +601,10 @@ mod tests {
             (".5", 500_000_000, "0.5 GB"),
             ("0.000000001", 1, "0.000000001 GB"),
         ] {
-            let limit = ProvisionedVolumeMaximumBytes::parse(text).unwrap();
+            let limit = ProvisionedVolumeMaximumBytes::parse_gb(text).unwrap();
             assert_eq!(limit.get(), bytes, "{text}");
             assert_eq!(limit.to_string(), shown);
-            assert_eq!(ProvisionedVolumeMaximumBytes::parse(shown), Ok(limit));
+            assert_eq!(ProvisionedVolumeMaximumBytes::parse_gb(shown), Ok(limit));
         }
         for refused in [
             "0",
@@ -627,7 +619,7 @@ mod tests {
             "18446744073709551615GB",
         ] {
             assert!(
-                ProvisionedVolumeMaximumBytes::parse(refused).is_err(),
+                ProvisionedVolumeMaximumBytes::parse_gb(refused).is_err(),
                 "{refused}"
             );
         }

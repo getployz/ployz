@@ -495,3 +495,28 @@ fn conflict(message: &str) -> RpcError {
         details: Value::Null,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_report_that_ends_a_build_and_says_install_failed_is_refused() {
+        let key = ployz_store::SealingKey::new(&[7; 32]).unwrap();
+        let store = Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap());
+        let id = GithubBuildId::parse("00000000-0000-4000-8000-000000000001.web").unwrap();
+        let claims = GithubClaims {
+            repository_id: "1".into(),
+            job_workflow_ref: "acme/app/.github/workflows/ployz.yml@refs/heads/main".into(),
+            run_id: "1".into(),
+            event_name: "workflow_dispatch".into(),
+        };
+        let report = serde_json::json!({
+            "from": 0, "events": [], "platforms": ["linux/amd64"], "installFailed": "0.1.0",
+        });
+        let Err(error) = github_report(store, id, claims, report).await else {
+            panic!("a report can't both end a build and say ployz didn't install");
+        };
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+    }
+}

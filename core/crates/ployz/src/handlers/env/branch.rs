@@ -49,11 +49,7 @@ pub(super) fn branch(root: &ArgMatches) -> Result<(), Error> {
         keep: matches.get_flag("keep"),
         fix,
     };
-    let mut args = vec![create.name.as_str()];
-    if let Some(from) = &create.from.environment {
-        args.extend(["--from", from.as_str()]);
-    }
-    let made = store(root)?.args(args).write(&create)?;
+    let made = store(root)?.write(&create)?;
     let deploy = store::next(matches, &["deploy", "--env", create.name.as_str()]);
     finish(&made, Some(deploy), "Made Branch")
 }
@@ -296,7 +292,7 @@ fn moved_out(matches: &ArgMatches, shift: Shift, moved: &Moved) -> Result<(), Er
             _ => say!("Moved {from} → {into}."),
         }
         if !moved.staged.is_empty() {
-            say!("Staged: {}", super::joined(&moved.staged));
+            say!("Staged: {}", crate::handlers::joined(&moved.staged));
         }
         if let Some(close) = &out.close {
             say!("Close the Branch when done: {close}");
@@ -312,7 +308,7 @@ pub(super) fn copy(root: &ArgMatches) -> Result<(), Error> {
         node,
         expect: expected(matches)?,
     };
-    let store = store(root)?.args([copy.node.as_str()]);
+    let store = store(root)?;
     let copied = store
         .try_write(&copy)
         .map_err(|error| store.fail(stale(error, matches)))?;
@@ -360,7 +356,7 @@ fn finish(result: &Branched, deploy: Option<String>, what: &str) -> Result<(), E
             branch.parent
         );
         if !result.staged.is_empty() {
-            say!("Staged: {}", super::joined(&result.staged));
+            say!("Staged: {}", crate::handlers::joined(&result.staged));
         }
         for live in &branch.live {
             match &live.owner {

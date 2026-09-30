@@ -268,7 +268,7 @@ const withVolumes: PreparationInput = {
     snapshots: [],
     volumes: [
       { volumeResourceId: "v1", storage: { kind: "provisioned", maximumBytes: 5_000_000_000 } },
-      { volumeResourceId: "v2", storage: { kind: "local" } },
+      { volumeResourceId: "v2", storage: { kind: "docker" } },
     ],
   },
   sources: {},
@@ -277,3 +277,13 @@ const withVolumes: PreparationInput = {
 const withoutStorage: PreparationInput = { deployment: { namespace: "app", snapshots: [], volumes: [{ volumeResourceId: "v1" }] }, sources: {} };
 void withVolumes;
 void withoutStorage;
+
+// Receipts to try are listed per Service, own first; a build says whether it reused.
+declare const receipt: import("../index").BuildReceipt;
+const withReceipts: PreparationInput = { deployment: { namespace: "app", snapshots: [] }, sources: {}, build_receipts: { web: [receipt] } };
+// @ts-expect-error receipts are a list per Service
+const withOneReceipt: PreparationInput = { deployment: { namespace: "app", snapshots: [] }, sources: {}, build_receipts: { web: receipt } };
+const reusedBuild: import("../index").BuildOutcome = { kind: "built", receipt, reused: true };
+void withReceipts;
+void withOneReceipt;
+void reusedBuild;

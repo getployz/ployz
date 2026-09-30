@@ -16,8 +16,9 @@ use crate::connect::Client;
 pub enum BuildOutcome {
     /// No Build Machine admitted the build within its start limit; it was withdrawn.
     Queued,
-    /// The build finished; its receipt identifies the image.
-    Built { receipt: BuildReceipt },
+    /// The build finished; its receipt identifies the image. `reused`: an earlier
+    /// image of the same build inputs served it, and nothing was built.
+    Built { receipt: BuildReceipt, reused: bool },
 }
 
 /// Build the one Service; withdraw it as `Queued` if no Build Machine admits
@@ -57,9 +58,16 @@ pub(super) async fn run(
     .await;
     match result {
         Ok(builds) => preparation::receipts(&captured.fingerprints, &captured.reused, &builds)
-            .into_values()
+            .into_iter()
             .next()
-            .map(|receipt| BuildOutcome::Built { receipt })
+            .map(|(service, receipt)| BuildOutcome::Built {
+                reused: captured.reused.get(&service).is_some_and(|candidates| {
+                    candidates
+                        .iter()
+                        .any(|reused| reused.image == receipt.image)
+                }),
+                receipt,
+            })
             .ok_or_else(|| super::invalid_argument("Build produced no receipt".into())),
         Err(PreparationError::Build(crate::build::Error::Withdrawn)) => Ok(BuildOutcome::Queued),
         Err(error) => Err(super::preparation_error(error, token.is_cancelled())),
