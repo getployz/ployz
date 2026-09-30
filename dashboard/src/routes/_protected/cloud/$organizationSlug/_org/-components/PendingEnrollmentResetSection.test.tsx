@@ -16,20 +16,14 @@ describe("PendingEnrollmentResetSection", () => {
     document.body.replaceChildren();
   });
 
-  it.each([
-    ["unclaimed", "Server setup not started"],
-    ["ready", "Organization enrollment ready"],
-  ] as const)(
-    "shows %s enrollment without offering reset",
-    (status, heading) => {
-      render(
+  it.each(["unclaimed", "ready"] as const)(
+    "shows nothing for %s enrollment: nothing to act on",
+    (status) => {
+      const { container } = render(
         <PendingEnrollmentResetSection status={status} onReset={vi.fn()} />,
       );
 
-      expect(screen.getByText(heading)).toBeTruthy();
-      expect(
-        screen.queryByRole("button", { name: "Reset founding attempt" }),
-      ).toBeNull();
+      expect(container.textContent).toBe("");
     },
   );
 
@@ -39,7 +33,7 @@ describe("PendingEnrollmentResetSection", () => {
       <PendingEnrollmentResetSection status="pending" onReset={onReset} />,
     );
 
-    expect(screen.getByText("Founding attempt pending")).toBeTruthy();
+    expect(screen.getByText("Your first server didn’t finish joining")).toBeTruthy();
     fireEvent.click(
       screen.getByRole("button", { name: "Reset founding attempt" }),
     );
