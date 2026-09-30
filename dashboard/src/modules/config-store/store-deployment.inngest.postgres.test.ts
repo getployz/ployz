@@ -7,12 +7,12 @@ import { Inngest } from "inngest";
 import { Header } from "tar";
 import { expect } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
-import { createCancelStoreDeployment, createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
+import { createCancelStoreDeployment, createDeployToFirstServer, createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
 import { recordStoreDeploymentRun, unclaimedStoreDeployments } from "#/modules/config-store/store-deployment.server";
 import { GithubObservationError, type GithubApiService } from "#/modules/github/github-observation.api";
-import { configDeploymentAdmittedEvent } from "#/modules/inngest/events";
+import { configDeploymentAdmittedEvent, createConfigFirstServerJoinedEvent } from "#/modules/inngest/events";
 import { makeInngestEffectRunner } from "#/server/run.server";
-import { seedStoreOrganization, seedStoreGitService, storeTestCloud } from "#/test/store-cloud";
+import { enrollStoreServer, seedStoreOrganization, seedStoreGitService, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000a001";
 const PROJECT = "00000000-0000-4000-8000-00000000a002";
@@ -125,6 +125,26 @@ it.live(
     }),
   60_000,
 );
+
+it.live("a first Server's join deploys each published Environment once, and leaves an unpublished one", () => Effect.gen(function* () {
+  const services = yield* Layer.build(yield* storeTestCloud());
+  yield* Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]).pipe(Effect.provide(services));
+  const store = yield* cloudStore.pipe(Effect.provide(services));
+  const write = (command: ConfigCommand) => Effect.promise(() => store.write(ORGANIZATION, command));
+  yield* write({ command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT });
+  yield* write({ command: "create_service", id: SERVICE, environment: here, name: "web", image: "nginx:1" });
+  yield* write({ command: "publish", environment: here, version: null, accept_volume_loss: [] });
+  yield* write({ command: "create_project", id: "00000000-0000-4000-8000-00000000a1f2", name: "draft", default_environment: "00000000-0000-4000-8000-00000000a1f3" });
+  const runner: Parameters<typeof createDeployToFirstServer>[1] =
+    makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services))));
+  const joined = yield* Effect.promise(() => new InngestTestEngine({
+    function: createDeployToFirstServer(new Inngest({ id: "first-server-test" }), runner),
+    events: [createConfigFirstServerJoinedEvent({ organizationId: ORGANIZATION })],
+  }).execute());
+  expect(joined.result).toEqual([{ environment: "shop/production", admitted: true }]);
+  const { deployments } = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployments", environment: { project: "shop", environment: null }, cursor: null, limit: null }));
+  expect(deployments).toHaveLength(1);
+}), 60_000);
 
 const HEAD = "a".repeat(40);
 const archive = (() => {
