@@ -47,7 +47,6 @@ pub(super) const FIELDS: &[&str] = &[
     "build.buildMethod",
     "build.dockerfilePath",
     "build.command",
-    "template",
 ];
 
 /// Compare settings against an available authored baseline, keeping derived effects separate.
