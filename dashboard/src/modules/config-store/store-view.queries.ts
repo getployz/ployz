@@ -121,8 +121,15 @@ export async function refetchAfterWrite(queryClient: QueryClient, organizationSl
     const config = queryOf(query);
     if (config === null || key === null) return config !== null;
     if (!("environment" in config)) return true;
-    return isOfEnvironment(query, key) && !(config.query === "diff" && carried.diff) && !(config.query === "services" && carried.services);
+    return isOfEnvironment(query, key) && carriedView(config, carried) === undefined;
   } });
+}
+
+/** The view a write's answer carried for a cached query of its Environment, if it carried that one. */
+function carriedView(config: ConfigQuery, views: CommittedViews) {
+  if (config.query === "diff") return views.diff;
+  if (config.query === "services") return views.services;
+  return config.query === "environment" && config.path === null && config.all ? views.environment : undefined;
 }
 
 /**
@@ -131,8 +138,8 @@ export async function refetchAfterWrite(queryClient: QueryClient, organizationSl
  */
 export async function putCommittedViews(queryClient: QueryClient, organizationSlug: string, key: string, views: CommittedViews) {
   for (const query of queryClient.getQueryCache().findAll({ queryKey: storeViewPrefix(organizationSlug) })) {
-    const kind = queryOf(query)?.query;
-    const view = kind === "diff" ? views.diff : kind === "services" ? views.services : undefined;
+    const config = queryOf(query);
+    const view = config === null ? undefined : carriedView(config, views);
     if (view === undefined || !isOfEnvironment(query, key)) continue;
     await queryClient.cancelQueries({ queryKey: query.queryKey, exact: true });
     queryClient.setQueryData(query.queryKey, { ok: true, value: view });

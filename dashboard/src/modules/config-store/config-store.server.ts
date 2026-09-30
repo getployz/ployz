@@ -239,8 +239,8 @@ export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizatio
 }).pipe(Effect.withSpan("ConfigStore.callAsMember"));
 
 /**
- * The dashboard's write: `command` as `actor`, answered with the committed `diff` and `services` views of the
- * Environment it names, so the review's rows, count and pink arrive with the write. A view that can't be read is left
+ * The dashboard's write: `command` as `actor`, answered with the committed `diff`, `services` and Settings views of the
+ * Environment it names, so the review's rows, count, pink and values arrive with the write. A view that can't be read is left
  * out (the writer's refetch brings it); a command naming no Environment, or several (a Move), carries none.
  */
 export const writeStoreAsMember = (actor: Actor, organizationSlug: string, command: ConfigCommand) => Effect.gen(function* () {
@@ -251,9 +251,11 @@ export const writeStoreAsMember = (actor: Actor, organizationSlug: string, comma
   const views = yield* Effect.all({
     diff: readStore(organization.id, { query: "diff", environment }).pipe(Effect.option),
     services: readStore(organization.id, { query: "services", environment }).pipe(Effect.option),
-  }, { concurrency: 2 });
+    environment: readStore(organization.id, { query: "environment", environment, path: null, all: true }).pipe(Effect.option),
+  }, { concurrency: 3 });
   const committed: CommittedViews = {};
   if (Option.isSome(views.diff)) committed.diff = views.diff.value;
   if (Option.isSome(views.services)) committed.services = views.services.value;
+  if (Option.isSome(views.environment)) committed.environment = views.environment.value;
   return { ...result, views: committed } satisfies StoreWriteResult;
 }).pipe(Effect.map((answer): StoreWriteResult => answer), Effect.withSpan("ConfigStore.writeAsMember"));
