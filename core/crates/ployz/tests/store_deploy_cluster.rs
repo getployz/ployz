@@ -746,7 +746,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
         DeploymentStatus::Failed,
         "{refused:?}"
     );
-    let Some(Outcome::NotExecuted { needs_upload, .. }) = refused.outcome else {
+    let Some(Outcome::NotExecuted { needs_upload, .. }) = refused.deployment.outcome else {
         panic!("nothing executed: {refused:?}");
     };
     assert_eq!(needs_upload, vec![ServiceName::parse("app").unwrap()]);

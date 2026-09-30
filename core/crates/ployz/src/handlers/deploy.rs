@@ -657,6 +657,11 @@ pub(super) fn say_view(view: &DeploymentView) {
     {
         say!("  {reason}");
     }
+    if super::teardown::left_on_old_servers(&view.deployment) {
+        say!(
+            "  Left on old servers: no Server was left to take it off, so whatever ran there still runs"
+        );
+    }
     for node in &view.nodes {
         say!(
             "  {}: {}",
