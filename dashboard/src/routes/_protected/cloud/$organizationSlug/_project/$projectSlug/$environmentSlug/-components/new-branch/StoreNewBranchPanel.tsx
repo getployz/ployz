@@ -1,17 +1,21 @@
-import { useState, type ReactNode } from "react";
+import { createContext, use, useState, type ReactNode } from "react";
 import { useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import type { BranchPreset } from "@ployz/sdk";
 import { getDashboardDestination } from "#/components/dashboard-navigation-model";
 import { Button } from "#/components/ui/button";
+import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { FieldDescription, FieldGroup, FieldLegend, FieldSet } from "#/components/ui/field";
 import { Item, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
 import { branchSetupCommands, ownLineages } from "#/modules/config-store/branch-picks";
+import { nodeName } from "#/modules/config-store/store-branches";
 import { dnsLabelError } from "#/modules/config-store/store-services";
 import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
 import { branchPlanQuery, environmentsQuery, useBranchPlan, useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
+import { AddServerDialog } from "#/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog";
 import type { SetupCommand } from "#/modules/config-store/branch-picks";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
@@ -28,7 +32,7 @@ type PickState = { session: string | null; focus: string[]; picks: Picks };
  * A New branch's picks over the Config Store, shared with the canvas under the panel. Each pick reads the Store's plan
  * (nodes by name); `focus` is the Service the panel opened on.
  */
-function useStorePicking(newBranch: { focus: string | null } | null): PickingView | null {
+function useStorePicking(newBranch: { focus: string | null } | null): { picking: PickingView | null; refusal: string | null } {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const initialFocus = newBranch?.focus ?? null;
@@ -38,9 +42,10 @@ function useStorePicking(newBranch: { focus: string | null } | null): PickingVie
   if (state.session !== session) setState(initial);
   const result = useBranchPlan(params.organizationSlug, newBranch ? branchPlanQuery(store, state.focus, state.picks) : null);
   const view = result?.ok ? result.value : null;
-  if (!newBranch || !view) return null;
+  const refusal = newBranch && result && !result.ok ? result.refusal.message : null;
+  if (!newBranch || !view) return { picking: null, refusal };
   const own = ownLineages(view);
-  return {
+  return { refusal, picking: {
     parent: { name: view.from.name },
     plan: view,
     presets: view.presets.map((preset) => ({ preset })),
@@ -56,12 +61,16 @@ function useStorePicking(newBranch: { focus: string | null } | null): PickingVie
         focus: on ? [...current.focus, name] : current.focus.filter((candidate) => candidate !== name),
       }));
     },
-  };
+  } };
 }
+
+/** Why the Store refused the open panel's Branch plan, or null. */
+const PlanRefusalContext = createContext<string | null>(null);
 
 /** Holds a New branch's picks over the Config Store while its panel is open. */
 export function StorePickingProvider({ newBranch, children }: { newBranch: { focus: string | null } | null; children: ReactNode }) {
-  return <PickingViewProvider picking={useStorePicking(newBranch)}>{children}</PickingViewProvider>;
+  const { picking, refusal } = useStorePicking(newBranch);
+  return <PlanRefusalContext value={refusal}><PickingViewProvider picking={picking}>{children}</PickingViewProvider></PlanRefusalContext>;
 }
 
 /**
@@ -72,6 +81,7 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const picking = usePickingView();
+  const refusal = use(PlanRefusalContext);
   const writer = useStoreWriter(params.organizationSlug);
   const navigate = useNavigate();
   const listing = useStoreView(params.organizationSlug, environmentsQuery(params.projectSlug));
@@ -86,11 +96,18 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
   const defaults = saved.length ? saved : plans?.ok ? plans.value.plans.flatMap((plan) => plan.start_from === params.environmentSlug ? plan.setup : []) : [];
   const setupCommands = edited ?? defaults.map((setup) => ({ lineageId: setup.service, command: setup.command }));
   const [pending, setPending] = useState<"deploy" | "create" | null>(null);
-  if (!picking) return null;
+  // With no Server nothing can run a Deploy: create only, and the way on is adding one.
+  const { noServers } = useRuntimeLens(params.organizationSlug);
+  if (!picking) {
+    return refusal ? <>
+      <CanvasInspectorHeader params={params}><span className="font-medium">New branch</span></CanvasInspectorHeader>
+      <Empty variant="placeholder"><EmptyDescription>{refusal}</EmptyDescription></Empty>
+    </> : null;
+  }
 
   const { plan, parent } = picking;
   const own = ownLineages(plan);
-  const nameOf = (node: string) => node;
+  const nameOf = nodeName;
   const branchName = (name ?? freeName(fix && focus ? `fix-${focus}` : "new-branch", taken)).trim();
   const nameError = nameProblem(branchName, taken);
   const blocked = own.length === 0 && !fix ? "Pick something to change" : null;
@@ -120,7 +137,7 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
   }
 
   return (
-    <form className="flex h-full min-h-0 flex-col" onSubmit={(event) => { event.preventDefault(); void submit(true); }}>
+    <form className="flex h-full min-h-0 flex-col" onSubmit={(event) => { event.preventDefault(); void submit(!noServers); }}>
       <CanvasInspectorHeader params={params}>
         <span className="font-medium">{fix && focus ? `Fix ${focus} on a branch` : "New branch"}</span>
         <p className="text-sm break-words text-muted-foreground">From {parent.name}{fix ? ", with the change that failed" : null}</p>
@@ -140,7 +157,14 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
         </FieldSet>
       </FieldGroup></div>
       <div className="flex shrink-0 flex-col gap-2 border-t p-4">
-        {blocked ? <Button type="submit" disabled>{blocked}</Button> : (
+        {blocked ? <Button type="submit" disabled>{blocked}</Button> : noServers ? (
+          <div className="flex gap-2 [&>*]:flex-1">
+            <Button type="submit" disabled={Boolean(nameError) || pending !== null}>
+              {pending === "create" && <Spinner data-icon="inline-start" />}Create
+            </Button>
+            <AddServerDialog organizationSlug={params.organizationSlug} label="Add a server" variant="outline" />
+          </div>
+        ) : (
           <div className="flex gap-2">
             <Button type="submit" className="flex-1" disabled={Boolean(nameError) || pending !== null}>
               {pending === "deploy" && <Spinner data-icon="inline-start" />}Create and deploy

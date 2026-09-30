@@ -3,6 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import { PlusIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "#/components/ui/button";
+import type { ButtonVariants } from "#/components/ui/button-variants";
 import { Checkbox } from "#/components/ui/checkbox";
 import { Alert, AlertDescription } from "#/components/ui/alert";
 import {
@@ -34,8 +35,12 @@ const expiryFormatter = new Intl.DateTimeFormat("en-US", {
 
 export function AddServerDialog({
   organizationSlug,
+  label = "Add server",
+  variant = "ink",
 }: {
   organizationSlug: string;
+  label?: string;
+  variant?: ButtonVariants["variant"];
 }) {
   const [open, setOpen] = useState(false);
   const [managedVolumes, setManagedVolumes] = useState(true);
@@ -63,14 +68,14 @@ export function AddServerDialog({
     <>
       <Button
         type="button"
-        variant="ink"
+        variant={variant}
         onClick={() => {
           setOpen(true);
           mintMutation.mutate();
         }}
       >
         <PlusIcon data-icon="inline-start" />
-        Add server
+        {label}
       </Button>
       <Dialog open={open} onOpenChange={handleOpenChange}>
         <DialogContent className="sm:max-w-xl">

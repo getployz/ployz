@@ -18,6 +18,7 @@ import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { EnvironmentChangesReview } from "./EnvironmentChangesReview";
+import { AddServerDialog } from "#/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog";
 
 /**
  * Where the bottom bar renders: the scene, outside the canvas that turns inert under a panel. The canvas owns the change
@@ -136,9 +137,7 @@ export function BottomBar({
       <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
       {noServers ? (
-        <Link to={SERVERS_ROUTE_TO} params={{ organizationSlug: params.organizationSlug }} className={buttonVariants({ variant: "intent" })}>
-          Add a server
-        </Link>
+        <AddServerDialog organizationSlug={params.organizationSlug} label="Add a server" variant="intent" />
       ) : <Tooltip>
         <TooltipTrigger render={<Button variant="intent" disabled={!deployable || admitting} aria-keyshortcuts="Shift+Enter" onClick={deploy} />}>
           {active.length > 0 ? "Deploy next" : "Deploy"}
@@ -204,7 +203,6 @@ function AttemptState({ deployment }: { deployment: DeploymentSummary }) {
   );
 }
 
-const SERVERS_ROUTE_TO = "/cloud/$organizationSlug/~/servers";
 
 /** One row: what, in a few words, then its actions. Changes to deploy take the staged-intent surface. */
 function Row({ staged = false, icon, title, detail, children }: {
