@@ -321,6 +321,12 @@ Bar text stays minimal: fewer words on mobile, and explanations belong in a pane
 
 **The One Vocabulary Rule.** A state looks and behaves the same in every field, resource, drawer, diff row, and toolbar. Local reinvention is a defect.
 
+### Volume storage
+
+- New Volumes default to managed storage with a limit; Docker storage is an explicit Advanced choice, never a silent fallback when no compatible Server is available. Such a Volume stays staged and says it needs a compatible Server. Unknown or incomplete runtime evidence does not establish that managed storage is unavailable.
+- Storage settings are editable until deployment is requested, then shown as fixed, including after failed or cancelled attempts.
+- Product copy does not expose ZFS or imply backups, replication, or resizing.
+
 ## Do's and Don'ts
 
 ### Do:
@@ -347,11 +353,3 @@ Bar text stays minimal: fewer words on mobile, and explanations belong in a pane
 - **Don't** make autosaved edits visually indistinguishable from deployed truth.
 - **Don't** put shadows on static cards or pair a one-pixel border with a wide decorative shadow.
 - **Don't** rely on color alone for state, focus, validation, or deployment evidence.
-
-## Volume storage
-
-Volumes default to managed storage with a 5 GB limit. Create volume shows Name and Storage limit (GB), with “Files stored here survive deployments and restarts.” Advanced contains a checked “Manage storage with Ployz” checkbox. Unchecking it hides the limit and says “Uses a Docker volume on the server, without an enforced storage limit.” The CLI uses the same default, `--size` for the limit, and `--docker` as the explicit opt-out.
-
-Creation never silently chooses Docker storage because no compatible Server is available. It remains staged and shows “Managed volumes need a compatible server before deployment.” Unknown or incomplete runtime evidence does not establish that managed storage is unavailable. Cloud enrollment prepares managed-volume support by default; its explicit `--storage none` opt-out preserves Docker volumes.
-
-The draft Volume's Storage settings use the same fields. Its first admitted Deployment fixes its storage choice and limit, including failed or cancelled attempts, so retries cannot silently change storage. The locked state says “Storage settings are fixed once deployment is requested.” Details say “Data stays on the server that hosts this volume.” Normal product copy does not expose ZFS or imply backups, replication, or resizing.

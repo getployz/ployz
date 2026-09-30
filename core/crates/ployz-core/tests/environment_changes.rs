@@ -39,8 +39,8 @@ fn lifecycle_and_settings_compare_against_submitted_or_applied_state() {
         ("service", service(1), service(2), "replicas", true),
         (
             "volume",
-            json!({"version":2,"name":"Data","storage":{"kind":"local"}}),
-            json!({"version":2,"name":"Renamed","storage":{"kind":"local"}}),
+            json!({"version":2,"name":"Data","storage":{"kind":"docker"}}),
+            json!({"version":2,"name":"Renamed","storage":{"kind":"docker"}}),
             "name",
             true,
         ),

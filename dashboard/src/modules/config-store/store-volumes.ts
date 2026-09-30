@@ -34,7 +34,7 @@ const GB = 1_000_000_000;
  * floating point between what was typed and what is stored.
  */
 export function volumeStorage(managed: boolean, sizeGB: string): VolumeKind | null {
-  if (!managed) return { kind: "local" };
+  if (!managed) return { kind: "docker" };
   const typed = /^(\d+)(?:\.(\d{1,9}))?$/.exec(sizeGB.trim());
   if (!typed) return null;
   const maximumBytes = Number(typed[1]) * GB + Number((typed[2] ?? "").padEnd(9, "0"));

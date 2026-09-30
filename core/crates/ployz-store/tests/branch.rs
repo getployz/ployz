@@ -73,7 +73,7 @@ fn shop() -> (ConfigStore, Actor) {
         .write(
             &who,
             &CreateVolume {
-                storage: ployz_core::config::VolumeKind::Local {},
+                storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse(uuid(5)).unwrap(),
                 environment: EnvironmentRef::default(),
                 name: VolumeName::parse("data").unwrap(),

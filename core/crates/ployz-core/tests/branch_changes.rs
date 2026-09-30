@@ -83,7 +83,7 @@ fn parent() -> Value {
     };
     json!({"version": 1, "environmentSlug": "production",
            "services": [api, web, image(3, WORKER, "worker"), image(4, CACHE, "cache")],
-           "volumes": [{"resourceId": id(seed, 30), "resourceLineageId": DATA, "name": "data", "storage": {"kind": "local"}}]})
+           "volumes": [{"resourceId": id(seed, 30), "resourceLineageId": DATA, "name": "data", "storage": {"kind": "docker"}}]})
 }
 
 /// Give every node, variable, route and Volume a fresh id, keeping lineage.
