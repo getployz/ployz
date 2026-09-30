@@ -141,7 +141,6 @@ const resolvePolarConfiguration = Effect.fn("Config.resolvePolar")(function* (
 const makeAppConfig = Effect.gen(function* () {
   const raw = yield* loadRawConfig;
   const polar = yield* resolvePolarConfiguration(raw);
-  const appUrl = raw.appUrl.href.replace(/\/$/, "");
 
   return {
     nodeEnv: raw.nodeEnv,
@@ -163,7 +162,6 @@ const makeAppConfig = Effect.gen(function* () {
       appWebhookSecret: raw.githubAppWebhookSecret,
     },
     polar,
-    polarSuccessUrl: `${appUrl}/cloud?checkout_id={CHECKOUT_ID}`,
     ployz: {
       hostedDnsUrl: raw.hostedDnsUrl,
       hostedDnsMintKey: raw.hostedDnsMintKey,
