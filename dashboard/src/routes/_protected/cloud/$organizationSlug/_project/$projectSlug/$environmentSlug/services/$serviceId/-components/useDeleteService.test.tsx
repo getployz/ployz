@@ -46,7 +46,7 @@ it.each([
   try {
     await router.load();
     render(<RouterProvider router={router} />);
-    fireEvent.click(await screen.findByText("Remove"));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
     await vi.waitFor(() => expect(commands.map((command) => command.command)).toEqual(sent));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(commands.slice(1)).toEqual(accepted ? [{ command: "remove_volume", environment, volume: "db-data" }] : []);
