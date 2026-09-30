@@ -16,14 +16,15 @@ export const registryCredentialSecretSchema = Schema.String.check(
 const dockerHubHosts = new Set(["docker.io", "index.docker.io"]);
 
 export function getRegistryHostFromImageReference(image: string) {
-  const trimmed = image.trim();
-  const firstSegment = trimmed.split("/")[0]?.toLowerCase() ?? "";
+  const segments = image.trim().split("/");
+  const firstSegment = segments[0]?.toLowerCase() ?? "";
 
-  if (
+  // Docker reads the first part as a host only before a `/`: `nginx:1.27` is a tag on Docker Hub, not host:port.
+  if (segments.length > 1 && (
     firstSegment.includes(".") ||
     firstSegment.includes(":") ||
     firstSegment === "localhost"
-  ) {
+  )) {
     return dockerHubHosts.has(firstSegment) ? "docker.io" : firstSegment;
   }
 
