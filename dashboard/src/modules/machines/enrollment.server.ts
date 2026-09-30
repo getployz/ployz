@@ -492,7 +492,7 @@ export const completeMachineEnrollment = Effect.fn(
     }
     // Shared negotiation verifies machine_id before this transaction can make it ready.
     yield* Effect.scoped(Effect.gen(function* () {
-      const opened = yield* (yield* OrganizationRuntime).open(token.organizationId, machineId);
+      const opened = yield* (yield* OrganizationRuntime).open(token.organizationId, { only: machineId });
       if (opened.status !== "connected") return yield* new PloyzProviderError({ operation: "confirm enrollment", cause: opened });
     }));
 

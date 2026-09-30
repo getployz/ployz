@@ -42,9 +42,13 @@ export type ScopedRuntimeClientSession =
 
 export interface OrganizationRuntimeService {
   readonly cancel: (organizationId: string, generation: string) => Effect.Effect<void>;
+  /**
+   * `only` dials just that Machine. `last` dials that Machine only after every other: a removal enters through another
+   * Server, since core refuses to remove the entry while another Machine is visible.
+   */
   readonly open: (
     organizationId: string,
-    machineId?: MachineId,
+    entry?: { readonly only: MachineId } | { readonly last: MachineId },
   ) => Effect.Effect<ScopedRuntimeClientSession, Error, Scope.Scope>;
 }
 
@@ -120,7 +124,10 @@ export function makeOrganizationRuntimeLayer(
       };
       return {
         cancel,
-        open: Effect.fn("OrganizationRuntime.open")(function* (organizationId: string, machineId?: MachineId) {
+        open: Effect.fn("OrganizationRuntime.open")(function* (
+          organizationId: string,
+          entry?: { readonly only: MachineId } | { readonly last: MachineId },
+        ) {
           const parent = yield* Effect.scope;
           const scope = yield* Scope.fork(parent);
           const cancelled = yield* Deferred.make<void>();
@@ -148,10 +155,15 @@ export function makeOrganizationRuntimeLayer(
               yield* close(session);
               return noConnection;
             }
-            const connections = machineId === undefined
+            const connections = entry === undefined
               ? access.connections
-              : access.connections.filter((connection) => connection.machine_id === machineId);
-            if (machineId !== undefined && connections.length === 0) return noConnection;
+              : "only" in entry
+                ? access.connections.filter((connection) => connection.machine_id === entry.only)
+                : [
+                  ...access.connections.filter((connection) => connection.machine_id !== entry.last),
+                  ...access.connections.filter((connection) => connection.machine_id === entry.last),
+                ];
+            if (entry !== undefined && "only" in entry && connections.length === 0) return noConnection;
             if (connections.length === 0) {
               return { status: "unreachable" as const, error: null };
             }

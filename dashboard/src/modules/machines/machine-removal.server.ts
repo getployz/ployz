@@ -92,14 +92,15 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
   function* (attempt: Pick<MachineRemoveAttemptContext, "organizationId" | "machineId" | "confirmDataLoss" | "noReset">) {
     const access = yield* loadOrganizationConnections(attempt.organizationId);
     const runtime = yield* OrganizationRuntime;
-    const session = yield* runtime.open(attempt.organizationId);
+    const machine = asMachineId(attempt.machineId);
+    // Enter through another Server: core won't remove the entry while one remains.
+    const session = yield* runtime.open(attempt.organizationId, { last: machine });
     if (access.kind !== "ready" || session.status !== "connected") {
       return yield* new MachineRemovalProviderFailure({
         operation: "open organization runtime",
         cause: session,
       });
     }
-    const machine = asMachineId(attempt.machineId);
     const outcome = yield* asRemoveMachineOutcome(attempt.noReset
       ? session.connected.removeMachineMembership(machine).pipe(Effect.as({ reset_warning: null }))
       : session.connected.removeMachine(machine, { confirmed: [...attempt.confirmDataLoss] }));

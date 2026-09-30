@@ -268,9 +268,30 @@ it.effect("dials only the requested saved Machine and refuses an unknown Machine
     })));
     yield* Effect.scoped(Effect.gen(function* () {
       const service = yield* OrganizationRuntime;
-      assert.strictEqual((yield* service.open("org-1", intended)).status, "connected");
-      assert.deepStrictEqual(yield* service.open("org-1", unknown), { status: "no_connection" });
+      assert.strictEqual((yield* service.open("org-1", { only: intended })).status, "connected");
+      assert.deepStrictEqual(yield* service.open("org-1", { only: unknown }), { status: "no_connection" });
       assert.deepStrictEqual(dialed, [[candidate]]);
+    })).pipe(Effect.provide(runtime));
+  }),
+);
+
+it.effect("dials the Machine asked for last after every other", () =>
+  Effect.gen(function* () {
+    const first = { management: "ployz1:first", machine_id: "00000000000000000000000000000001" as MachineId };
+    const second = { management: "ployz1:second", machine_id: "00000000000000000000000000000002" as MachineId };
+    const dialed: unknown[] = [];
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({
+      kind: "ready", generation: "current", connections: [first, second],
+    }), noPairingChanges).pipe(Layer.provide(makePloyzLayer({
+      connect: async (options) => {
+        if (!("connections" in options)) throw new Error("expected shared connector");
+        dialed.push(options.connections);
+        return asTestDouble<Client>()({ close: async () => {} });
+      },
+    })));
+    yield* Effect.scoped(Effect.gen(function* () {
+      yield* (yield* OrganizationRuntime).open("org-1", { last: first.machine_id });
+      assert.deepStrictEqual(dialed, [[second, first]]);
     })).pipe(Effect.provide(runtime));
   }),
 );
