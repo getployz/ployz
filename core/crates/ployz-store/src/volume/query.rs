@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::Actor;
-use crate::command::{Mount, VolumeSummary, volume_summary};
+use crate::volume::{Mount, VolumeSummary, summary as volume_summary};
 use crate::error;
 use crate::id::{VolumeId, VolumeName};
 use crate::removal::{self, RemovedVolume};
@@ -171,7 +171,7 @@ fn listed(
     environment: &scope::Environment,
 ) -> Result<Vec<(VolumeListing, SavedVolumeIntent)>, RpcError> {
     let review = review::review(tx, environment)?;
-    let locked = crate::command::locked_storage(tx, &environment.summary.id)?;
+    let locked = crate::volume::locked_storage(tx, &environment.summary.id)?;
     let working = &environment.working;
     let removed = review
         .head

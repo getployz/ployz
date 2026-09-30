@@ -55,8 +55,9 @@ pub struct NamespaceQuery {
 pub struct NamespaceView {
     pub environment: EnvironmentSummary,
     pub namespace: ployz_core::Namespace,
-    /// Each Service's runtime name (its Private DNS name), by the name it has now:
-    /// a renamed Service's containers keep the name it was created with.
+    /// Each deployed Service's runtime name (its Private DNS name, as Applied State
+    /// has it), by the name it has now: a renamed Service's containers keep the name
+    /// it was created with, and a staged Private DNS change isn't live yet.
     pub services: std::collections::BTreeMap<ServiceName, ServiceName>,
 }
 
@@ -142,13 +143,20 @@ pub(crate) fn namespace(
 ) -> Result<NamespaceView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
     let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
-    let services = environment
-        .working
+    // Containers run as Applied State has them, under the name the Service has now.
+    let applied = deployment::applied_state(tx, &environment.summary.id, &environment.working)?;
+    let services = applied
         .services
         .iter()
-        .filter_map(|service| {
-            let name = ServiceName::parse(service.slug.as_str()).ok()?;
-            Some((name, service.config.private_dns.clone()))
+        .filter_map(|applied| {
+            let now = environment
+                .working
+                .services
+                .iter()
+                .find(|service| service.id == applied.id)
+                .unwrap_or(applied);
+            let name = ServiceName::parse(now.slug.as_str()).ok()?;
+            Some((name, applied.config.private_dns.clone()))
         })
         .collect();
     Ok(NamespaceView {

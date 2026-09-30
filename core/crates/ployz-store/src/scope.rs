@@ -116,6 +116,24 @@ impl Environment {
 }
 
 impl Environment {
+    /// The Volume named `name` in Working State, to change.
+    pub(crate) fn volume_mut(
+        &mut self,
+        name: &VolumeName,
+    ) -> Result<&mut SavedVolumeIntent, RpcError> {
+        let index = self
+            .working
+            .volumes
+            .iter()
+            .position(|volume| volume.name == name.as_str())
+            .ok_or_else(|| self.volume(name).err().unwrap_or_else(|| error::corrupt("Volume")))?;
+        Ok(self
+            .working
+            .volumes
+            .get_mut(index)
+            .expect("position is in bounds"))
+    }
+
     /// The Volume named `name` in Working State.
     pub(crate) fn volume(&self, name: &VolumeName) -> Result<&SavedVolumeIntent, RpcError> {
         self.working
@@ -434,7 +452,6 @@ fn load(
 /// Persist changed Working State as the next revision. The document is validated
 /// whole first, so the Store never holds one it cannot read back.
 pub(crate) fn save_working(tx: &mut dyn Tx, environment: &mut Environment) -> Result<(), RpcError> {
-    crate::command::check_storage(tx, &environment.summary.id, &environment.working)?;
     let document = serde_json::to_value(&environment.working).expect("Working State is JSON");
     environment.working = parse_environment_intent(document)
         .map_err(|error| error::invalid(error.message, json!({ "path": error.path })))?;

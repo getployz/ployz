@@ -422,7 +422,7 @@ rows: Array<string>, state: SaveState, };
 
 export type ConditionalSaveId = string;
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "set_volume_storage" } & SetVolumeStorage | { "command": "remove_volume" } & RemoveVolume | { "command": "rename_volume" } & RenameVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "move" } & Move | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "set_branch_setup" } & SetBranchSetup | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "set_pr_plan" } & SetPrPlan;
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "rename_project" } & RenameProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "set_volume_storage" } & SetVolumeStorage | { "command": "remove_volume" } & RemoveVolume | { "command": "rename_volume" } & RenameVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "set_generated_domain" } & SetGeneratedDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "move" } & Move | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "set_branch_setup" } & SetBranchSetup | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "set_pr_plan" } & SetPrPlan;
 
 export type ConfigDomainEvidence = {
 /**
@@ -445,7 +445,12 @@ ingress_addresses: Array<string>,
 /**
  * What DNS answered just now, for the hostnames a check looked up.
  */
-lookups: Array<DnsLookup>, };
+lookups: Array<DnsLookup>,
+/**
+ * Hostnames the Servers publish now, as the Runtime Watch last reported them.
+ * Generated prefixes avoid those of other Namespaces, and a Deploy refuses one.
+ */
+published?: Array<PublishedHostname>, };
 
 export type ConfigMount = { config_name: string,
 /**
@@ -479,7 +484,7 @@ servers?: number, };
 
 export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "branch" } & BranchView | { "view": "branch_plan" } & BranchPlanView | { "view": "build_order" } & BuildOrderView | { "view": "move" } & MoveView | { "view": "environments" } & EnvironmentsView | { "view": "projects" } & ProjectsView | { "view": "pr_plans" } & PrPlansView | { "view": "pull_request" } & PullRequestView;
 
-export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "moved" } & Moved | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "environment_removed" } & Teardown<EnvironmentRemoved> | { "written": "project_removed" } & Teardown<ProjectRemoved> | { "written": "pr_plans" } & PrPlansView;
+export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "moved" } & Moved | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "environment_removed" } & Teardown<EnvironmentRemoved> | { "written": "project_removed" } & Teardown<ProjectRemoved> | { "written": "pr_plans" } & PrPlansView;
 
 export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null, };
 
@@ -861,7 +866,12 @@ preview: JsonValue | null, outcome: Outcome | null,
 /**
  * Its Git Services' builds, once their commits are pinned.
  */
-builds: Array<BuildView>, id: DeploymentId,
+builds: Array<BuildView>,
+/**
+ * Each Service's runtime name (its Private DNS name) by its name when admitted,
+ * for finding its containers.
+ */
+runtime_names: { [key in ServiceName]: ServiceName }, id: DeploymentId,
 /**
  * Counts from 1 within its Environment.
  */
@@ -1760,8 +1770,9 @@ export type NamespaceQuery = { environment: EnvironmentRef, };
 
 export type NamespaceView = { environment: EnvironmentSummary, namespace: Namespace,
 /**
- * Each Service's runtime name (its Private DNS name), by the name it has now:
- * a renamed Service's containers keep the name it was created with.
+ * Each deployed Service's runtime name (its Private DNS name, as Applied State
+ * has it), by the name it has now: a renamed Service's containers keep the name
+ * it was created with, and a staged Private DNS change isn't live yet.
  */
 services: { [key in ServiceName]: ServiceName }, };
 
@@ -2061,6 +2072,16 @@ saved: Revision,
  */
 created: boolean, };
 
+export type PublishedHostname = { hostname: Hostname,
+/**
+ * The Namespace of the Service publishing it.
+ */
+namespace: Namespace,
+/**
+ * The Service publishing it, by its runtime name.
+ */
+service: ServiceName, };
+
 export type PullPolicy = "always" | "missing" | "never";
 
 export type PullRequest = { repository_id: RepositoryId, number: PullRequestNumber, title: string,
@@ -2241,6 +2262,16 @@ export type RemovedVolume = { id: VolumeId, name: VolumeName,
  * The Docker Volume each Server holds its data in.
  */
 docker_volume: DockerVolumeName, };
+
+export type RenameProject = {
+/**
+ * The Project, by its current name.
+ */
+project: ProjectName,
+/**
+ * Its new name, unique in the Organization.
+ */
+name: ProjectName, };
 
 export type RenameService = {
 /**
@@ -2593,11 +2624,7 @@ environment: EnvironmentSummary,
  * What waits for a Deploy: every Setting of a new Service, or the Service itself
  * for a rename or removal. Empty when nothing changed.
  */
-staged: Array<SettingPath>,
-/**
- * What took effect at once: never anything here.
- */
-immediate: Array<SettingPath>, };
+staged: Array<SettingPath>, };
 
 export type ServiceStorageSpec = { placement: Placement, volumes: Array<ResolvedServiceVolume>, mounts: Array<ServiceMount>, };
 
@@ -2680,6 +2707,13 @@ export type SetBuildOrder = { build_order: BuildOrder | null, };
 
 export type SetDefaultEnvironment = { environment: EnvironmentRef, };
 
+export type SetGeneratedDomain = { environment: EnvironmentRef, service: ServiceName,
+/**
+ * One DNS label, unique among the Organization's generated domains and the
+ * hostnames other Namespaces publish.
+ */
+prefix: string, };
+
 export type SetManagementClientResponse = { capability: string | null, };
 
 export type SetPrPlan = {
@@ -2728,11 +2762,7 @@ volume: VolumeName,
 /**
  * Its explicit storage choice and bound.
  */
-storage: VolumeKind,
-/**
- * Refuse edits against a different Working revision.
- */
-expect: Revision | null, };
+storage: VolumeKind, };
 
 export type SettingPath = string;
 
@@ -3035,11 +3065,7 @@ environment: EnvironmentSummary,
  * What waits for a Deploy: the Volume as `volumes.NAME`, and each mount it
  * gained or lost as `SERVICE.mounts.NAME`.
  */
-staged: Array<SettingPath>,
-/**
- * What took effect at once: never anything here.
- */
-immediate: Array<SettingPath>, };
+staged: Array<SettingPath>, };
 
 export type VolumeSummary = {
 /**

@@ -42,7 +42,7 @@ fn lifecycle_and_settings_compare_against_submitted_or_applied_state() {
             json!({"version":2,"name":"Data","storage":{"kind":"local"}}),
             json!({"version":2,"name":"Renamed","storage":{"kind":"local"}}),
             "name",
-            false,
+            true,
         ),
     ] {
         for submitted in [false, true] {

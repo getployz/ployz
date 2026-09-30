@@ -186,6 +186,9 @@ pub struct DeploymentView {
     pub outcome: Option<Outcome>,
     /// Its Git Services' builds, once their commits are pinned.
     pub builds: Vec<BuildView>,
+    /// Each Service's runtime name (its Private DNS name) by its name when admitted,
+    /// for finding its containers.
+    pub runtime_names: BTreeMap<ServiceName, ServiceName>,
 }
 
 /// What a Deployment did to one of its target nodes.

@@ -247,10 +247,10 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
         code(store.record(&id(1), &a, succeeded(&["web"]))),
         RpcErrorCode::InvalidArgument
     );
-    let partial = RunEvidence::Executed {
+    let partial = |done: &str, failed: &str| RunEvidence::Executed {
         outcome: Box::new(outcome(json!({
-            "type": "failed", "completed": [operation("web")],
-            "failed": {"type": "operation", "operation": operation("api"), "error": {
+            "type": "failed", "completed": [operation(done)],
+            "failed": {"type": "operation", "operation": operation(failed), "error": {
                 "type": "machine", "action": "RemoveContainer",
                 "error": {"code": "internal", "message": "the daemon is busy", "details": {}}
             }},
@@ -258,7 +258,12 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
         }))),
         removed: Vec::new(),
     };
-    store.record(&id(1), &a, partial).unwrap();
+    store.record(&id(1), &a, partial("web", "api")).unwrap();
+    // The mirror image counts the same, yet says something else.
+    assert_eq!(
+        code(store.record(&id(1), &a, partial("api", "web"))),
+        RpcErrorCode::Conflict
+    );
     let view = store
         .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
         .unwrap();
@@ -1198,4 +1203,39 @@ fn deploying_a_service_with_nothing_to_run_is_refused_naming_it() {
     assert_eq!(refused.details["service"], "blank");
     // Deploying other Services leaves it out.
     admit(&store, &who, 1, &["web"], None).unwrap();
+}
+
+#[test]
+fn live_commands_find_containers_by_the_runtime_name_that_deployed() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    // A staged Private DNS change isn't live until it deploys.
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("web.privateDns").unwrap(),
+                    value: json!("front"),
+                }],
+            },
+        )
+        .unwrap();
+    let web = ployz_core::ServiceName::parse("web").unwrap();
+    let namespace = store.read(&who, &NamespaceQuery::default()).unwrap();
+    assert_eq!(namespace.services.get(&web), Some(&web));
+    let deployment = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap();
+    assert_eq!(deployment.runtime_names.get(&web), Some(&web));
 }

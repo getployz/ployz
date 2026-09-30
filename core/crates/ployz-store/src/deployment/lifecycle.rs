@@ -18,7 +18,7 @@ pub(crate) fn admit(
     frozen: &Frozen,
 ) -> Result<DeploymentSummary, RpcError> {
     let intent = saved_at(tx, environment, saved)?;
-    crate::command::check_storage(tx, environment, &intent)?;
+    crate::volume::fix_storage(tx, environment, &intent, &frozen.nodes)?;
     let environment_id = environment.as_str();
     // Without a new upload, Services without a source keep building from the latest one.
     let upload = match upload {
@@ -99,6 +99,29 @@ pub(crate) fn admit(
         ],
     )?;
     Ok(summary)
+}
+
+/// Apply removal `id` without a runner: nothing of its Environment is on a Server,
+/// because none is left or nothing ever ran there.
+pub(crate) fn forget(tx: &mut dyn Tx, id: &DeploymentId) -> Result<DeploymentSummary, RpcError> {
+    let mut stored = locked(tx, id)?;
+    stored.summary.status = DeploymentStatus::Running;
+    stored.summary.started_at = Some(now());
+    stored.run.nodes = stored
+        .nodes
+        .iter()
+        .map(|node| (node.id().to_owned(), NodeStatus::Removed))
+        .collect();
+    let reason = "Nothing of this Environment was left on a Server".to_owned();
+    finish(
+        tx,
+        stored,
+        Outcome::NotExecuted {
+            reason,
+            needs_upload: Vec::new(),
+        },
+        DeploymentStatus::Applied,
+    )
 }
 
 /// Supersede `environment`'s queued Deployment, if any, and number the next one.
@@ -479,6 +502,13 @@ pub(crate) fn record(
                 summary: serde_json::to_value(projection.summary).expect("a summary is JSON"),
                 reason,
             };
+            // A replay must say what each node did, not only as many of them.
+            if stored.run.outcome.is_some() && stored.run.nodes != nodes {
+                return Err(error::conflict(
+                    "This Deployment already recorded a different outcome",
+                    json!({ "deployment": id }),
+                ));
+            }
             stored.run.nodes = nodes;
             finish(tx, stored, outcome, status)
         }
@@ -585,7 +615,8 @@ fn current_name<'nodes>(nodes: &'nodes [TargetNode], runtime: &'nodes ServiceNam
 /// completed is Deployed (Removed once it left Saved State), some ran is Failed,
 /// none ran is Not attempted, none planned is Unchanged. A kept Volume follows the
 /// targeted Services mounting it, and is Unchanged when Applied State already holds
-/// it as saved. A removed Volume is Removed once the Deploy succeeded and every
+/// it as saved; one no targeted Service mounts is Deployed only by a Deploy that
+/// succeeded. A removed Volume is Removed once the Deploy succeeded and every
 /// Docker Volume it deletes is gone; Failed when one wasn't deleted, and Not
 /// attempted when the Deploy failed first.
 pub(super) fn node_outcomes(
@@ -638,6 +669,9 @@ pub(super) fn node_outcomes(
             NodeStatus::NotAttempted
         } else if applied.volumes.contains(volume) {
             NodeStatus::Unchanged
+        } else if mounting.is_empty() && !success {
+            // No Service's work confirms it: only a Deploy that fully ran does.
+            NodeStatus::NotAttempted
         } else {
             NodeStatus::Deployed
         }
