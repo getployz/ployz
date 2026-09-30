@@ -408,6 +408,22 @@ fn an_agent_adds_lists_renames_and_removes_services() {
 }
 
 #[test]
+fn an_agent_renames_a_project() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["project", "new", "blog"]);
+        let renamed = ok(store, &["project", "rename", "shop", "store"]);
+        assert_eq!(renamed["project"]["name"], json!("store"));
+        let listed = ok(store, &["project", "ls"]);
+        assert_eq!(listed["projects"][1]["name"], json!("store"));
+        let taken = error(store, &["project", "rename", "blog", "store"]);
+        assert_eq!(taken["code"], json!("conflict"));
+        let missing = error(store, &["project", "rename", "nope", "other"]);
+        assert_eq!(missing["code"], json!("not_found"));
+    }
+}
+
+#[test]
 fn an_agent_adds_checks_and_removes_domains() {
     for store in &targets() {
         let cloud = matches!(store, Target::Cloud { .. });
@@ -428,6 +444,19 @@ fn an_agent_adds_checks_and_removes_domains() {
         assert_eq!(generated["next"], json!("ployz deploy"));
         let again = ok(store, &["domain", "add", "web"]);
         assert_eq!((&again["staged"], again.get("next")), (&json!([]), None));
+
+        // Its generated prefix changes, staged; another generated domain can't take it.
+        let set = ok(store, &["domain", "set", "web", "Shop"]);
+        assert_eq!(set["domain"]["prefix"], json!("shop"));
+        assert_eq!(set["staged"], json!(["web"]));
+        assert_eq!(set["next"], json!("ployz deploy"));
+        ok(store, &["service", "add", "api", "--image", "api:1"]);
+        ok(store, &["domain", "add", "api"]);
+        let taken = error(store, &["domain", "set", "api", "shop"]);
+        assert_eq!(taken["code"], json!("conflict"));
+        let label = error(store, &["domain", "set", "api", "not.one-label"]);
+        assert_eq!(label["code"], json!("invalid_argument"));
+        ok(store, &["domain", "set", "web", "web"]);
 
         // The hidden Store stands for a self-hosted Cloud; hosted Cloud needs Pro.
         let args = ["domain", "add", "web", "App.Example.com"];
@@ -1591,6 +1620,13 @@ fn two_linked_directories_act_on_their_own_environments() {
         let got = run(b.path(), &["get"], &[]);
         assert_eq!(got.pointer("/environment/name"), Some(&json!("production")));
         assert_eq!(got.get("settings"), Some(&json!([])));
+
+        // Renaming the Project moves this device's links with it.
+        let renamed = run(b.path(), &["project", "rename", "shop", "store"], &[]);
+        assert_eq!(renamed.get("links"), Some(&json!(2)));
+        let got = run(b.path(), &["get"], &[]);
+        assert_eq!(got.pointer("/environment/project"), Some(&json!("store")));
+        run(b.path(), &["project", "rename", "store", "shop"], &[]);
 
         let status = run(&nested, &["status"], &[]);
         assert_eq!(status.pointer("/environment/name"), Some(&json!("staging")));
