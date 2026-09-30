@@ -44,8 +44,8 @@ export function ServiceCard({
   sub: string;
   status: string;
   tone?: Tone;
-  /** Card's own staged state, while a change waits for Deploy. */
-  state?: "changed";
+  /** The canvas's blue for a node the next Deploy changes, while the change waits for Deploy. */
+  state?: "info";
   className?: string;
 }) {
   return (
