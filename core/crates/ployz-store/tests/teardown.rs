@@ -762,7 +762,7 @@ fn with_no_server_left_a_removal_applies_at_once() {
         servers: Some(0),
         ..Trusted::default()
     };
-    // Nothing runs it and no data is left to lose, so no review and no runner.
+    // No runner and no review: it completes in configuration only.
     let removal = store
         .write_trusted(
             &who,
@@ -777,6 +777,18 @@ fn with_no_server_left_a_removal_applies_at_once() {
         )
         .unwrap();
     assert_eq!(removal.status, DeploymentStatus::Applied);
+    // Zero enrolled Servers isn't runtime absence: nothing claims it ran or removed anything.
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
+        .unwrap();
+    assert_eq!(view.outcome, Some(ployz_store::Outcome::Forgotten));
+    assert_eq!(view.deployment.started_at, None);
+    assert!(!view.nodes.is_empty());
+    assert!(
+        view.nodes
+            .iter()
+            .all(|node| node.outcome == ployz_store::NodeStatus::Unknown)
+    );
     removed(remove(&store, &who, "production"));
 
     // A Deploy still needs a Server to run it.
@@ -801,4 +813,8 @@ fn shutting_down_what_never_ran_applies_at_once() {
     let (store, who) = shop();
     let shutdown = admit(&store, &who, "staging", 1, true, &[], None).unwrap();
     assert_eq!(shutdown.status, DeploymentStatus::Applied);
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap();
+    assert_eq!(view.outcome, Some(ployz_store::Outcome::NeverRan));
 }

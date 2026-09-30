@@ -103,27 +103,39 @@ pub(crate) fn admit(
     Ok(summary)
 }
 
-/// Apply removal `id` without a runner: nothing of its Environment is on a Server,
-/// because none is left or nothing ever ran there.
-pub(crate) fn forget(tx: &mut dyn Tx, id: &DeploymentId) -> Result<DeploymentSummary, RpcError> {
+/// How a removal of `environment` applies without a runner, if it can: nothing of
+/// it ever ran on a Server, or Cloud counted no Server left to run it. Zero
+/// enrolled Servers isn't runtime absence: that removal completes only in
+/// configuration, and says so.
+pub(crate) fn forgettable(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    trusted: &crate::Trusted,
+) -> Result<Option<Outcome>, RpcError> {
+    if crate::teardown::ran(tx, environment)?.is_none() {
+        return Ok(Some(Outcome::NeverRan));
+    }
+    Ok(trusted.no_servers().then_some(Outcome::Forgotten))
+}
+
+/// Apply removal `id` without a runner, with `outcome` from [`forgettable`]. It
+/// never started. Applied State lets go of every node, which Unknown reads.
+pub(crate) fn forget(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    outcome: Outcome,
+) -> Result<DeploymentSummary, RpcError> {
     let mut stored = locked(tx, id)?;
-    stored.summary.status = DeploymentStatus::Running;
-    stored.summary.started_at = Some(now());
     stored.run.nodes = stored
         .nodes
         .iter()
-        .map(|node| (node.id().to_owned(), NodeStatus::Removed))
+        .map(|node| (node.id().to_owned(), NodeStatus::Unknown))
         .collect();
-    let reason = "Nothing of this Environment was left on a Server".to_owned();
-    finish(
-        tx,
-        stored,
-        Outcome::NotExecuted {
-            reason,
-            needs_upload: Vec::new(),
-        },
-        DeploymentStatus::Applied,
-    )
+    tx.execute(
+        "DELETE FROM config_applied WHERE environment_id = ?1",
+        &[stored.summary.environment_id.as_str().into()],
+    )?;
+    end(tx, stored, outcome, DeploymentStatus::Applied)
 }
 
 /// Supersede `environment`'s queued Deployment, if any, and number the next one.
@@ -486,6 +498,20 @@ pub(crate) fn record(
             Ok(stored.summary)
         }
         RunEvidence::Executed { outcome, removed } => {
+            // A replay must carry the same evidence: Applied State moved since, so
+            // recomputing its Node Outcomes would not tell.
+            let executed = crate::removal::short_digest(
+                &serde_json::to_string(&(&outcome, &removed)).expect("evidence is JSON"),
+            );
+            if stored.run.outcome.is_some() {
+                if stored.run.executed.as_ref() == Some(&executed) {
+                    return Ok(stored.summary);
+                }
+                return Err(error::conflict(
+                    "This Deployment already recorded a different outcome",
+                    json!({ "deployment": id }),
+                ));
+            }
             let Some(preview) = stored.run.preview.clone() else {
                 return Err(error::conflict(
                     "Record the Deploy Preview before what executing it did",
@@ -518,14 +544,8 @@ pub(crate) fn record(
                 summary: serde_json::to_value(projection.summary).expect("a summary is JSON"),
                 reason,
             };
-            // A replay must say what each node did, not only as many of them.
-            if stored.run.outcome.is_some() && stored.run.nodes != nodes {
-                return Err(error::conflict(
-                    "This Deployment already recorded a different outcome",
-                    json!({ "deployment": id }),
-                ));
-            }
             stored.run.nodes = nodes;
+            stored.run.executed = Some(executed);
             finish(tx, stored, outcome, status)
         }
         RunEvidence::Confirmed(services) => {
@@ -681,8 +701,10 @@ pub(super) enum Evidence<'run> {
 /// nothing for is Unchanged; one it plans for is Pending until confirmed or executed, then all
 /// completed is Deployed (Removed once it left Saved State), some ran is Failed and
 /// none ran is Not attempted. A kept Volume follows the targeted Services mounting
-/// it, and is Unchanged when Applied State already holds it as saved; one no targeted
-/// Service mounts is Deployed only by a Deploy that succeeded. A removed
+/// it: Deployed once one of them is. It is Unchanged when Applied State already
+/// holds it as saved. One no targeted Service mounts is Not attempted when new
+/// (nothing creates its storage), and a held one is Deployed only by a Deploy that
+/// succeeded. A removed
 /// Volume is Removed once the Deploy succeeded and every Docker Volume it deletes is
 /// gone; Failed when one wasn't deleted, and Not attempted when the Deploy failed first.
 /// While it runs, a Deployment stores only what is settled; its Pending nodes matter
@@ -693,11 +715,16 @@ pub(super) fn node_outcomes(
     applied: &SavedEnvironmentIntent,
     evidence: &Evidence<'_>,
 ) -> BTreeMap<String, NodeStatus> {
+    // A Service confirmed or executed lands Deployed, or Removed once it left Saved State.
+    let landed = |kept: bool| {
+        if kept {
+            NodeStatus::Deployed
+        } else {
+            NodeStatus::Removed
+        }
+    };
     let service = |name: &ServiceName, kept: bool| match evidence {
-        Evidence::Planned { confirmed, .. } if confirmed.contains(name) => match kept {
-            true => NodeStatus::Deployed,
-            false => NodeStatus::Removed,
-        },
+        Evidence::Planned { confirmed, .. } if confirmed.contains(name) => landed(kept),
         Evidence::Planned { preview, .. } => {
             if preview
                 .operations
@@ -711,11 +738,7 @@ pub(super) fn node_outcomes(
         }
         Evidence::Executed { projection, .. } => {
             if projection.confirmed_services.contains(name) {
-                if kept {
-                    NodeStatus::Deployed
-                } else {
-                    NodeStatus::Removed
-                }
+                landed(kept)
             } else if projection.failed_services.contains(name) {
                 NodeStatus::Failed
             } else if projection.unattempted_services.contains(name) {
@@ -769,10 +792,20 @@ pub(super) fn node_outcomes(
             NodeStatus::Pending
         } else if applied.volumes.contains(volume) {
             NodeStatus::Unchanged
-        } else if matches!(evidence, Evidence::Planned { .. }) {
+        } else if mounting.is_empty()
+            && !applied
+                .volumes
+                .iter()
+                .any(|held| held.resource_id == volume.resource_id)
+        {
+            // Storage work comes only with a mount: nothing a Deploy runs creates it.
+            NodeStatus::NotAttempted
+        } else if matches!(evidence, Evidence::Planned { .. })
+            && !mounting.contains(&NodeStatus::Deployed)
+        {
             NodeStatus::Pending
         } else if mounting.is_empty() && !succeeded(evidence) {
-            // No Service's work confirms it: only a Deploy that fully ran does.
+            // A held Volume no Service mounts changes only with a Deploy that fully ran.
             NodeStatus::NotAttempted
         } else {
             NodeStatus::Deployed
@@ -805,7 +838,7 @@ pub(super) fn node_outcomes(
 
 pub(super) fn finish(
     tx: &mut dyn Tx,
-    mut stored: Stored,
+    stored: Stored,
     outcome: Outcome,
     status: DeploymentStatus,
 ) -> Result<DeploymentSummary, RpcError> {
@@ -819,6 +852,16 @@ pub(super) fn finish(
         }
         None => running(&stored)?,
     }
+    end(tx, stored, outcome, status)
+}
+
+/// End `stored` with `outcome`: what it confirmed enters Applied State.
+fn end(
+    tx: &mut dyn Tx,
+    mut stored: Stored,
+    outcome: Outcome,
+    status: DeploymentStatus,
+) -> Result<DeploymentSummary, RpcError> {
     advance(tx, &stored)?;
     // A cancelled Deployment that stopped short reads cancelled, not failed.
     stored.summary.status = match (stored.summary.status, status) {

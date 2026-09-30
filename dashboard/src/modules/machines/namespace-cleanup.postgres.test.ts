@@ -2,7 +2,7 @@ import { it } from "@effect/vitest";
 import { Effect } from "effect";
 import { expect } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
-import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { acmeWeb, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 import { listStrayNamespaces, loadNamespaceDataLoss } from "./namespace-cleanup.server";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000e001";
@@ -21,7 +21,7 @@ it.live("offers to remove only Namespaces no Environment owns, and refuses an ow
   }));
   yield* Effect.promise(() => store.write(ORGANIZATION, {
     command: "admit", admit: "deploy", id: "00000000-0000-4000-8000-00000000e005", environment: shop, services: [], version: null, accept_volume_loss: [],
-  }, { servers: 1 }));
+  }, { ...acmeWeb(), servers: 1 }));
   const { namespace } = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "namespace", environment: shop }));
   const actor = { userId };
 

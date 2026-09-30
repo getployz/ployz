@@ -151,7 +151,7 @@ it("runs a Move after a pending Batch that edits, as after an edit", async () =>
   test.write.mockImplementationOnce(() => batch.promise).mockResolvedValueOnce({ ok: true, value: { written: "moved" } as never });
   const staging = { project: "shop", environment: "staging" };
   act(() => {
-    void test.writer.commit({ command: "batch", commands: [{ command: "edit", environment: staging, expect: null, changes: replicas(3) }] })
+    void test.writer.commit({ command: "batch", environment: staging, commands: [{ command: "edit", environment: staging, expect: null, changes: replicas(3) }] })
       .isPersisted.promise.catch(() => {});
   });
   const moved = test.writer.commit({ command: "move", move: "save", from: ref, into: null, picks: null });

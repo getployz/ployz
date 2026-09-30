@@ -539,6 +539,7 @@ fn admit(
             (&environment, &saved),
             &names,
             (cluster_domain.as_ref(), &pins),
+            trusted,
         )
     })?;
     Ok(Some(Deploy::Admitted(Box::new(summary))))
@@ -554,10 +555,17 @@ pub(crate) fn auto_admit(
     (environment, saved): (&scope::Environment, &review::Saved),
     services: &[ServiceName],
     (cluster_domain, pins): (Option<&Hostname>, &BTreeMap<ServiceName, CommitSha>),
+    trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
     let id = &environment.summary.id;
-    crate::deployment::admit::needs_cluster_domain(environment, &saved.intent, cluster_domain)?;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
+    crate::deployment::admit::gate(
+        tx,
+        who,
+        (environment, &saved.intent),
+        (cluster_domain, &namespace),
+        trusted,
+    )?;
     let head = deployment::head(tx, environment)?;
     let mut frozen = deployment::freeze(
         id,
