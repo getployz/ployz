@@ -172,6 +172,11 @@ impl ConfigStore {
             .transpose()?
             .unwrap_or_default();
         let checkouts = match sources.failure {
+            Some(_) if !sources.checkouts.is_empty() || sources.upload.is_some() => {
+                return Err(invalid_argument(
+                    "Expected checkouts and an upload, or why they couldn't be read: not both",
+                ));
+            }
             Some(reason) => Err(reason),
             None => Ok(ployz::sdk::Sources {
                 checkouts: sources.checkouts,
