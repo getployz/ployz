@@ -12,7 +12,7 @@ use ployz_core::{
 };
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, CreateVolume, DataEffect,
-    Deploy, DeploymentId, DeploymentStatus, DiffQuery, DiffView, Edit, EnvironmentId,
+    Deploy, Discard, DeploymentId, DeploymentStatus, DiffQuery, DiffView, Edit, EnvironmentId,
     EnvironmentQuery, EnvironmentRef, Mount, NodeStatus, OrganizationId, ProjectId, ProjectName,
     Publish, RemovalsQuery, RemoveVolume, Retry, RunEvidence, RunnerId, ServiceLineageId,
     SetVolumeStorage, SettingPath, Trusted, VolumeId, VolumeListing, VolumeName, VolumeObservation,
@@ -391,6 +391,35 @@ fn an_undeployed_volume_is_removed_without_servers() {
     );
     // No evidence and no Servers: nothing deployed can lose data.
     admit(&store, &who, 1, &[], None).unwrap();
+}
+
+#[test]
+fn a_deployed_volume_removal_discards_alone() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    run(&store, 1, Vec::new());
+    store
+        .write(
+            &who,
+            &RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+            },
+        )
+        .unwrap();
+    assert!(!diff(&store, &who).changes.is_empty());
+    store
+        .write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                path: Some(SettingPath::parse("volumes.data").unwrap()),
+                version: None,
+            },
+        )
+        .unwrap();
+    // The Volume stays, and so does its mount, which went with it.
+    assert!(diff(&store, &who).changes.is_empty());
 }
 
 #[test]
