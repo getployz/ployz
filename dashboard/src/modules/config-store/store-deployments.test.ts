@@ -35,14 +35,14 @@ it("groups the Store's review by node, labelling rows from the catalog; a whole 
 it("lets a deployed Volume's row discard alone when the Store can restore it", () => {
   const [volume] = changeGroups({ ...diff, changes: [{ type: "volume", id: "v1", name: "store", lifecycle: "update", comparison: null, data: null, settings: [
     { path: "volumes.store.name", kind: "update", before: "pg-data", after: "store", canRestore: true },
-    { path: "volumes.store.storage", kind: "update", before: null, after: { kind: "local" }, canRestore: false },
+    { path: "volumes.store.storage", kind: "update", before: null, after: { kind: "docker" }, canRestore: false },
   ] }] }, services);
   expect(volume?.rows.map((row) => [row.path, row.canDiscard])).toEqual([["volumes.store.name", true], ["volumes.store.storage", false]]);
 });
 
 it("words a Volume's storage by its limit", () => {
   expect(shownValue({ kind: "provisioned", maximumBytes: 4_100_000_000 })).toBe("4.1 GB limit");
-  expect(shownValue({ kind: "local" })).toBe("Docker volume");
+  expect(shownValue({ kind: "docker" })).toBe("Docker volume");
 });
 
 it("reads a pending node as its Deployment does, and a vanished runner's node as Unknown, never Failed", () => {

@@ -175,7 +175,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                 .get(mount.volume_resource_id.as_str())
                 .expect("mounted sources are filtered")
             {
-                VolumeKind::Local {} => RawVolumeSource::Ordinary {
+                VolumeKind::Docker {} => RawVolumeSource::Ordinary {
                     name,
                     driver: VolumeDriver::parse("local", BTreeMap::new())
                         .map_err(lowering_error)?,

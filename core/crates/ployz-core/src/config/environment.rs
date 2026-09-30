@@ -61,7 +61,7 @@ pub struct SavedVolumeIntent {
     deny_unknown_fields
 )]
 pub enum VolumeKind {
-    Local {},
+    Docker {},
     Provisioned {
         maximum_bytes: crate::ProvisionedVolumeMaximumBytes,
     },
@@ -70,7 +70,7 @@ pub enum VolumeKind {
 impl VolumeKind {
     /// New Cloud Volumes have a five GB storage limit unless Docker storage is explicitly chosen.
     #[must_use]
-    pub fn managed_default() -> Self {
+    pub fn provisioned_default() -> Self {
         Self::Provisioned {
             maximum_bytes: crate::ProvisionedVolumeMaximumBytes::try_from(5_000_000_000)
                 .expect("five GB is a positive byte count"),

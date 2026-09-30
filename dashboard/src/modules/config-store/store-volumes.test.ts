@@ -13,7 +13,7 @@ describe("store volumes", () => {
     for (const invalid of ["", "0", "-1", "bad", "Infinity", "9007199254.740992"]) {
       expect(volumeStorage(true, invalid)).toBeNull();
     }
-    expect(volumeStorage(false, "")).toEqual({ kind: "local" });
+    expect(volumeStorage(false, "")).toEqual({ kind: "docker" });
   });
   it("mounts at a path and detaches by unsetting the mount", () => {
     expect(mountChange("web", "data", "/srv")).toEqual({ op: "set", path: "web.mounts.data", value: "/srv" });

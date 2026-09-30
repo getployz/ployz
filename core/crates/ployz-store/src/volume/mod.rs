@@ -32,7 +32,7 @@ pub struct CreateVolume {
     /// Its name, unique among the Environment's Volumes.
     pub name: VolumeName,
     /// Managed storage by default; Docker storage is an explicit opt-out.
-    #[serde(default = "VolumeKind::managed_default")]
+    #[serde(default = "VolumeKind::provisioned_default")]
     pub storage: VolumeKind,
     /// Where Services mount it.
     #[serde(default)]

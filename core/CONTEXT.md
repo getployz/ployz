@@ -224,7 +224,7 @@ A Service's name. Renaming it is a staged change to its slug in Working State, s
 _Avoid_: Deployable name, DNS alias
 
 **Volume Kind**:
-The explicit, user-chosen kind of an Environment's Volume: a Provisioned Volume (sized, quota-enforced, hosted only on a Server with a managed pool) or a plain Docker Volume (unsized, any Server). Both are machine-local. Creation defaults to a Provisioned Volume with a 5 GB maximum; plain Docker storage requires an explicit opt-out. The kind and maximum can change in Working State until the first Deployment targeting that Volume is admitted. Admission fixes both, including failed, cancelled and pending attempts, because frozen attempts can prepare storage or be retried. Saved documents always carry the explicit kind, never infer it from a missing size, and have no legacy-reading defaults.
+The explicit, user-chosen kind of an Environment's Volume: a Provisioned Volume (sized, quota-enforced, hosted only on a Server with a managed pool) or a plain Docker Volume (unsized, any Server). Both are machine-local. Creation defaults to a Provisioned Volume; plain Docker storage requires an explicit opt-out. The kind and maximum can change in Working State until the first Deployment targeting that Volume is admitted. Admission fixes both, including failed, cancelled and pending attempts, because frozen attempts can prepare storage or be retried. Saved documents always carry the explicit kind and never infer it from a missing size.
 _Avoid_: Storage class, volume type dropdown
 
 **Registry Credential**:

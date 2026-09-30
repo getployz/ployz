@@ -50,7 +50,7 @@ fn authored_service_variables_compile_with_volume_mounts() {
 fn saved_volumes_require_an_explicit_valid_storage_choice() {
     for storage in [
         json!({"kind":"provisioned","maximumBytes":0}),
-        json!({"kind":"local","maximumBytes":5}),
+        json!({"kind":"docker","maximumBytes":5}),
     ] {
         let mut value = intent();
         *value.pointer_mut("/volumes/0/storage").unwrap() = storage;

@@ -365,7 +365,7 @@ fn discard_keeps_mounts_it_does_not_name() {
                     service: ServiceName::parse("web").unwrap(),
                     path: "/data".into(),
                 }],
-                storage: ployz_core::config::VolumeKind::managed_default(),
+                storage: ployz_core::config::VolumeKind::provisioned_default(),
             },
         )
         .unwrap();

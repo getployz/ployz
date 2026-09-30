@@ -83,7 +83,7 @@ const decodeShown = Schema.decodeUnknownOption(Schema.Union([
   Schema.Struct({ path: Schema.String, timeoutSeconds: Schema.Number }),
   Schema.Array(Schema.Struct({ prefix: Schema.String, targetPort: Schema.NullOr(Schema.Number) })),
   // A Volume's storage.
-  Schema.Struct({ kind: Schema.Literal("provisioned"), maximumBytes: Schema.Number }), Schema.Struct({ kind: Schema.Literal("local") }),
+  Schema.Struct({ kind: Schema.Literal("provisioned"), maximumBytes: Schema.Number }), Schema.Struct({ kind: Schema.Literal("docker") }),
   // A whole source, when a Service connects or disconnects one.
   Schema.Struct({ type: Schema.Literals(["image", "git", "empty"]), image: Schema.optional(Schema.String), repository: Schema.optional(Schema.String) }),
 ]));

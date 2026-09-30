@@ -60,7 +60,7 @@ fn shop() -> (ConfigStore, Actor) {
         .write(
             &who,
             &CreateVolume {
-                storage: ployz_core::config::VolumeKind::Local {},
+                storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse(VOLUME).unwrap(),
                 environment: EnvironmentRef::default(),
                 name: VolumeName::parse("data").unwrap(),
@@ -216,7 +216,7 @@ fn code(result: Result<impl std::fmt::Debug, RpcError>) -> RpcErrorCode {
 fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
     let create: CreateVolume =
         serde_json::from_value(json!({ "id": VOLUME, "name": "data" })).unwrap();
-    assert_eq!(create.storage, VolumeKind::managed_default());
+    assert_eq!(create.storage, VolumeKind::provisioned_default());
     let (store, who) = shop();
     let set = |storage| {
         store.write(
@@ -228,7 +228,7 @@ fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
             },
         )
     };
-    let changed = set(VolumeKind::managed_default()).unwrap();
+    let changed = set(VolumeKind::provisioned_default()).unwrap();
     assert_eq!(texts(&changed.staged), ["volumes.data"]);
     assert!(!listed(&store, &who)[0].storage_locked);
     let managed = VolumeKind::Provisioned {
@@ -268,7 +268,7 @@ fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
         DeploymentStatus::Failed
     );
     assert!(listed(&store, &who)[0].storage_locked);
-    for storage in [VolumeKind::Local {}, VolumeKind::managed_default()] {
+    for storage in [VolumeKind::Docker {}, VolumeKind::provisioned_default()] {
         let refused = set(storage).unwrap_err();
         assert_eq!(refused.code, RpcErrorCode::Conflict);
         assert_eq!(refused.details["storage_locked"], true);
@@ -338,7 +338,7 @@ fn a_volume_mounts_by_setting_and_round_trips_get_patch_get() {
     let taken = store.write(
         &who,
         &CreateVolume {
-            storage: ployz_core::config::VolumeKind::Local {},
+            storage: ployz_core::config::VolumeKind::Docker {},
             id: VolumeId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
             environment: EnvironmentRef::default(),
             name: VolumeName::parse("data").unwrap(),
@@ -746,7 +746,7 @@ fn an_unmounted_volume_deploys_only_with_a_deploy_that_succeeded() {
         .write(
             &who,
             &CreateVolume {
-                storage: ployz_core::config::VolumeKind::Local {},
+                storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: VolumeName::parse("spare").unwrap(),
