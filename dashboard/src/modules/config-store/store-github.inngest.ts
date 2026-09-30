@@ -95,10 +95,7 @@ export const createStorePrCheck = (inngest: PloyzInngest, runEffect: StoreEffect
     }),
   );
 
-/**
- * Hourly: lost hand-offs go to the worker again, and every Store closes idle Branches and deletes closing ones that
- * left the Servers.
- */
+/** Hourly: every Store closes idle Branches and deletes closing ones that left the Servers. */
 export const createStoreSweep = (inngest: PloyzInngest, runEffect: StoreEffectRunner = runInngestEffect) =>
   inngest.createFunction(
     { id: "store-sweep", retries: 3, triggers: [{ cron: "30 * * * *" }], concurrency: [{ limit: 1 }] },
