@@ -8,7 +8,7 @@ import { Button } from "#/components/ui/button";
 import { Field, FieldDescription, FieldLabel } from "#/components/ui/field";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
-import { environmentsQuery, requireView, servicesQuery, useStoreView } from "#/modules/config-store/store-view.queries";
+import { environmentsQuery, servicesQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { SetupCommandsField, useSavedSetupCommands } from "./new-branch/SetupCommandsField";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { storeEnvironmentNotes, storeEnvironmentTree } from "#/modules/config-store/store-workspace";
@@ -22,7 +22,10 @@ type Place = { organizationSlug: string; projectSlug: string; environmentSlug: s
 /** An Environment's settings over the Config Store: deleting it, once it is neither the Default nor a Parent. */
 export function StoreEnvironmentSettings({ organizationSlug, projectSlug, environmentSlug }: Place) {
   const navigate = useNavigate();
-  const { environments } = requireView(useStoreView(organizationSlug, environmentsQuery(projectSlug)));
+  const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
+  // Deleted (here, or elsewhere) while open: nothing to show while the page moves on.
+  if (!listing.ok) return null;
+  const { environments } = listing.value;
   const environment = environments.find((row) => row.name === environmentSlug);
   const branches = environments.filter((row) => row.parent === environmentSlug).map((row) => row.name);
   const disabledReason = environment?.default
@@ -57,7 +60,8 @@ export function StoreEnvironmentSettings({ organizationSlug, projectSlug, enviro
 function StoreBranchSetup({ organizationSlug, projectSlug, environmentSlug, saved }: Place & { saved: SetupCommand[] }) {
   const writer = useStoreWriter(organizationSlug);
   const environment = { project: projectSlug, environment: environmentSlug };
-  const services = requireView(useStoreView(organizationSlug, servicesQuery(environment))).services
+  const listed = useStoreView(organizationSlug, servicesQuery(environment));
+  const services = (listed.ok ? listed.value.services : [])
     .filter((service) => service.change !== "delete").map((service) => ({ lineageId: service.name, name: service.name }));
   const setup = useSavedSetupCommands(saved.map((command) => ({ lineageId: command.service, command: command.command })),
     (whole) => writer.commit({ command: "set_branch_setup", environment,
@@ -83,7 +87,10 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
   const navigate = useNavigate();
   const writer = useStoreWriter(organizationSlug);
   const [creating, setCreating] = useState(false);
-  const { environments } = requireView(useStoreView(organizationSlug, environmentsQuery(projectSlug)));
+  const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
+  // Deleted while open: nothing to show while the page moves on.
+  if (!listing.ok) return null;
+  const { environments } = listing.value;
   const defaultEnvironment = environments.find((row) => row.default);
   return (
     <>
