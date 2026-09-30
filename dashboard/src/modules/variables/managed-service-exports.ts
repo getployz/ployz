@@ -9,8 +9,8 @@ type ServiceExportContext = {
   environmentId: string;
   environmentSlug: string;
   privateDns: string;
-  routes: readonly { hostname: string }[];
-  managedHostnames: readonly { prefix: string }[];
+  /** Its public hostname, if it has one: PLOYZ_PUBLIC_DOMAIN. */
+  publicDomain: string | null;
 };
 
 export interface ManagedServiceExportRecord {
@@ -27,24 +27,7 @@ export interface ManagedServiceExportRecord {
   readonly managed: true;
 }
 
-/** A managed hostname expanded against the Organization's Cluster Domain. */
-export const managedHostname = (prefix: string, clusterDomain: string) => `${prefix}.${clusterDomain}`;
-
-/** Domain lists preserve link order; editing a port does not change priority. */
-export function servicePublicDomain(
-  service: Pick<ServiceExportContext, "routes" | "managedHostnames">,
-  clusterDomain: string | null,
-): string | null {
-  const custom = service.routes.at(-1);
-  if (custom) return custom.hostname;
-  const managed = service.managedHostnames.at(-1);
-  return managed && clusterDomain ? managedHostname(managed.prefix, clusterDomain) : null;
-}
-
-export function getManagedServiceExports(
-  service: ServiceExportContext,
-  clusterDomain: string | null = null,
-): ManagedServiceExportRecord[] {
+export function getManagedServiceExports(service: ServiceExportContext): ManagedServiceExportRecord[] {
   const definitions: Array<Pick<
     ManagedServiceExportRecord,
     "key" | "description" | "value"
@@ -81,7 +64,7 @@ export function getManagedServiceExports(
     },
   ];
 
-  const publicDomain = servicePublicDomain(service, clusterDomain);
+  const { publicDomain } = service;
   if (publicDomain) definitions.push({
     key: "PLOYZ_PUBLIC_DOMAIN",
     description: "The most recently linked custom domain, otherwise the most recently linked generated domain.",
