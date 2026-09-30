@@ -21,8 +21,8 @@ const OBSERVATION_TTL_MS = 15_000;
 /** The parts of a call that need domain evidence; decode it with this. The Store validates the whole call. */
 const DomainCall = Schema.Union([
   Schema.Struct({ command: Schema.Literals(["add_domain", "remove_domain"]) }),
-  // A removal expands no domain.
-  Schema.Struct({ command: Schema.Literal("admit"), environment: Schema.optional(EnvironmentRef), remove: Schema.optional(Schema.Literal(false)) }),
+  // Only a Deploy expands domains: a removal expands none, a retry inherits what its source froze.
+  Schema.Struct({ command: Schema.Literal("admit"), admit: Schema.Literal("deploy"), environment: Schema.optional(EnvironmentRef) }),
   Schema.Struct({ query: Schema.Literal("domains") }),
   Schema.Struct({ query: Schema.Literal("domain"), environment: Schema.optional(EnvironmentRef), domain: Schema.String }),
 ]);

@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { it } from "@effect/vitest";
-import type { ConfigCommand, ServiceId } from "@ployz/sdk";
+import type { ConfigCommand } from "@ployz/sdk";
 import { Effect, Layer } from "effect";
 import { expect } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
@@ -61,8 +61,8 @@ it.live(
         domains: { custom_domains: false, cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] },
       }));
       yield* write({ command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT });
-      yield* write({ command: "create_git_service", id: SERVICE as ServiceId, environment: here, name: "web", repository: "acme/web", branch: null });
-      yield* write({ command: "admit", id: DEPLOYMENT, environment: here, services: [], version: null, retry: null, remove: false, accept_volume_loss: [] });
+      yield* write({ command: "create_git_service", id: SERVICE, environment: here, name: "web", repository: "acme/web", branch: null });
+      yield* write({ command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [] });
       const view = () => Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: DEPLOYMENT }));
 
       // Auto tries GitHub first: GitHub gets the pinned build.
@@ -83,7 +83,7 @@ it.live(
       expect(yield* provided(planStoreGithubBuilds(data))).toEqual([]);
 
       // A build GitHub holds: only its dispatched run's token checks in.
-      yield* write({ command: "admit", id: "00000000-0000-4000-8000-00000000b102", environment: here, services: [], version: null, retry: null, remove: false, accept_volume_loss: [] });
+      yield* write({ command: "admit", admit: "deploy", id: "00000000-0000-4000-8000-00000000b102", environment: here, services: [], version: null, accept_volume_loss: [] });
       const next = `00000000-0000-4000-8000-00000000b102.web`;
       yield* Effect.promise(() => store.pinSources("00000000-0000-4000-8000-00000000b102", { web: HEAD }));
       yield* Effect.promise(() => store.githubDispatched(next, {
@@ -115,7 +115,7 @@ it.live(
       // A walk that starts with the Servers leaves the build to them, unless no Server takes builds: then GitHub.
       yield* write({ command: "set_build_order", build_order: "servers-then-github" });
       const serversFirst = "00000000-0000-4000-8000-00000000b103";
-      yield* write({ command: "admit", id: serversFirst, environment: here, services: [], version: null, retry: null, remove: false, accept_volume_loss: [] });
+      yield* write({ command: "admit", admit: "deploy", id: serversFirst, environment: here, services: [], version: null, accept_volume_loss: [] });
       yield* Effect.promise(() => store.pinSources(serversFirst, { web: HEAD }));
       const plan = { ...data, deploymentId: serversFirst };
       expect(yield* provided(planStoreGithubBuilds(plan))).toEqual([]);

@@ -21,7 +21,7 @@ function createCanvasPosition(overrides?: Partial<CanvasPosition>): CanvasPositi
 describe("Config Store nodes", () => {
   const service = (id: string, name: string) => {
     // SAFETY: test ids stand in for the Store's minted Service ids.
-    const listing: ServiceListing = { id: id as ServiceListing["id"], name, private_dns: name, source: "image", change: null };
+    const listing: ServiceListing = { id: id, name, private_dns: name, source: "image", change: null };
     return { service: listing, subtitle: null, changeCount: 0, runtimeIdentity: null, uploaded: false };
   };
   const volume = (id: string, mounts: { service: string; path: string }[]): VolumeListing =>
