@@ -1,7 +1,7 @@
 import type { DomainRow, ServiceListing } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { RuntimeContainerRecord } from "#/modules/runtime/runtime.collection";
-import { deployChip, nodeIssues, publicDomain, runtimeLine, stagedSurface, type RuntimeLens } from "./node-status";
+import { deployChip, fillText, fillTone, nodeIssues, volumeFill, publicDomain, runtimeLine, stagedSurface, type RuntimeLens } from "./node-status";
 
 const service: ServiceListing = { source: "image", change: null, template: null, id: "web", name: "web", private_dns: "web" };
 const container = (state: string, health?: string): RuntimeContainerRecord =>
@@ -58,17 +58,34 @@ describe("nodeIssues", () => {
   const domain = (status: DomainRow["status"]) => ({ status });
 
   it("counts what the user can fix, red when a Service is down", () => {
-    expect(nodeIssues(runtimeLine(service, runtime(container("exited")), seen), [domain("needs_attention")])).toEqual({ count: 2, tone: "bad" });
-    expect(nodeIssues(runtimeLine(service, runtime(), seen), [])).toEqual({ count: 1, tone: "bad" });
-    expect(nodeIssues(runtimeLine(service, runtime(container("running", "healthy")), seen), [domain("needs_attention"), domain("setting_up")]))
+    expect(nodeIssues(runtimeLine(service, runtime(container("exited")), seen), [domain("needs_attention")], [])).toEqual({ count: 2, tone: "bad" });
+    expect(nodeIssues(runtimeLine(service, runtime(), seen), [], [])).toEqual({ count: 1, tone: "bad" });
+    expect(nodeIssues(runtimeLine(service, runtime(container("running", "healthy")), seen), [domain("needs_attention"), domain("setting_up")], []))
       .toEqual({ count: 1, tone: "warn" });
   });
 
   it("counts nothing for a healthy, starting, new or empty Service, nor a grey word", () => {
-    expect(nodeIssues(runtimeLine(service, runtime(container("running", "not_configured")), seen), [domain("ready")])).toBeNull();
-    expect(nodeIssues(runtimeLine(service, runtime(container("running", "starting")), seen), [])).toBeNull();
-    expect(nodeIssues(runtimeLine(service, runtime(container("exited")), watch({ status: "unavailable" })), [])).toBeNull();
-    expect(nodeIssues(runtimeLine({ ...service, change: "create" }, null, seen), [])).toBeNull();
+    expect(nodeIssues(runtimeLine(service, runtime(container("running", "not_configured")), seen), [domain("ready")], [])).toBeNull();
+    expect(nodeIssues(runtimeLine(service, runtime(container("running", "starting")), seen), [], [])).toBeNull();
+    expect(nodeIssues(runtimeLine(service, runtime(container("exited")), watch({ status: "unavailable" })), [], [])).toBeNull();
+    expect(nodeIssues(runtimeLine({ ...service, change: "create" }, null, seen), [], [])).toBeNull();
+  });
+});
+
+describe("volume fill", () => {
+  const usage = (name: string, usedBytes: number) => ({ name, usedBytes, boundBytes: 100 });
+
+  it("is the fullest Server's share of the Volume's bound, none without a bound", () => {
+    expect(volumeFill([usage("ns_vol-a", 40), usage("ns_vol-a", 92), usage("ns_vol-b", 99)], "ns_vol-a")).toBe(0.92);
+    expect(volumeFill([usage("ns_vol-b", 99)], "ns_vol-a")).toBeNull();
+    expect(volumeFill([usage("ns_vol-a", 150)], "ns_vol-a")).toBe(1);
+  });
+
+  it("turns amber from 80% and red from 95%, and each is an issue", () => {
+    expect([0.79, 0.8, 0.94, 0.95, null].map(fillTone)).toEqual([null, "warn", "warn", "bad", null]);
+    expect(fillText(0.926)).toBe("92% full");
+    const online = runtimeLine(service, runtime(container("running", "healthy")), seen);
+    expect(nodeIssues(online, [], [0.5, 0.85, 0.97, null])).toEqual({ count: 2, tone: "warn" });
   });
 });
 

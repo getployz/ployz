@@ -20,6 +20,8 @@ export function useRuntimeLens(organizationSlug: string) {
     noServers: status === "no_connection" || (status === "observed" && machines.length === 0),
     status,
     error,
+    /** Each Provisioned Volume's usage, as last observed. */
+    volumes: statusRows[0]?.volumes ?? [],
     incomplete: statusRows[0] ? isIncompleteObservation(statusRows[0].incompleteIds) : false,
     /** When the evidence shown was current; kept when the connection drops, null before any. */
     observedAt: statusRows[0]?.observedAt ?? null,

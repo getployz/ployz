@@ -37,6 +37,16 @@ const runtimeWatchIncompleteVolumeIdSchema = Schema.Struct({
   name: Schema.String,
 });
 
+/** A Provisioned Volume's usage on one Machine. Plain Docker volumes have no bound, so Cloud drops them. */
+const runtimeWatchVolumeSchema = Schema.Struct({
+  id: Schema.Struct({ machine_id: Schema.String, name: Schema.String }),
+  storage: Schema.Struct({
+    kind: Schema.Literal("provisioned"),
+    bound_bytes: Schema.Number,
+    used_bytes: Schema.Number,
+  }),
+});
+
 const runtimeWatchCertificateSchema = Schema.Struct({
   hostname: Schema.String,
   status: Schema.String,
@@ -67,6 +77,7 @@ export const runtimeWatchFrameSchema = Schema.Struct({
   /** Each Machine's build concurrency in effect, by Machine id. */
   effective_build_concurrency: Schema.Record(Schema.String, Schema.Number),
   containers: Schema.Array(runtimeWatchContainerSchema),
+  volumes: Schema.Array(runtimeWatchVolumeSchema),
   certificates: Schema.Array(runtimeWatchCertificateSchema),
   incomplete_ids: Schema.Struct({
     machines: Schema.Array(Schema.String),
@@ -125,6 +136,9 @@ export function runtimeWatchFrameForTransport(
     })),
     effective_build_concurrency: { ...frame.effective_build_concurrency },
     containers: frame.containers.map(runtimeWatchContainerForTransport),
+    volumes: frame.volumes.flatMap(({ id, storage }) => storage.kind === "provisioned"
+      ? [{ id: { machine_id: id.machine_id, name: id.name }, storage: { kind: storage.kind, bound_bytes: storage.bound_bytes, used_bytes: storage.used_bytes } }]
+      : []),
     certificates: frame.certificates.map((certificate) => ({
       hostname: certificate.hostname,
       status: certificate.status,
@@ -198,6 +212,12 @@ export function runtimeSnapshotFromWatchFrame(
       containers: service.containers.map(runtimeContainerRecordFromWatch),
       hookContainers: service.hook_containers.map(runtimeContainerRecordFromWatch),
       observedAt,
+    })),
+    volumes: frame.volumes.map(({ id, storage }) => ({
+      machineId: id.machine_id,
+      name: id.name,
+      usedBytes: storage.used_bytes,
+      boundBytes: storage.bound_bytes,
     })),
     certificates: frame.certificates.map((certificate) => ({
       hostname: certificate.hostname,

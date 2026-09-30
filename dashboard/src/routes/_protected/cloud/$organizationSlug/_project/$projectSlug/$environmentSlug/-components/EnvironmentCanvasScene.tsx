@@ -28,7 +28,7 @@ import { serviceChanges, serviceSettingRows, settingText } from "#/modules/confi
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { StorePickingProvider } from "./new-branch/StoreNewBranchPanel";
 import { StorePrPickingProvider } from "./pr-environments/StorePrPlanPanel";
-import { RuntimeLensProvider } from "./canvas/RuntimeLensProvider";
+import { RuntimeLensProvider, VolumeFillProvider } from "./canvas/RuntimeLensProvider";
 
 /** A `replicas` Setting that says how many. */
 const isReplicaCount = Schema.is(Schema.Int);
@@ -115,6 +115,7 @@ function CanvasWithData() {
   const initialEdges = buildStoreEdges(store);
 
   return (
+    <VolumeFillProvider namespace={namespace.ok ? namespace.value.namespace : null}>
     <ReactFlowProvider
       key={`${projectSlug}/${environmentSlug}`}
       initialNodes={initialNodes}
@@ -134,6 +135,7 @@ function CanvasWithData() {
         store={store}
       />
     </ReactFlowProvider>
+    </VolumeFillProvider>
   );
 }
 

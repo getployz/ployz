@@ -100,6 +100,16 @@ const runtimeIncompleteVolumeIdSchema = Schema.Struct({
   name: Schema.String,
 });
 
+/** A Provisioned Volume's usage on one Machine, by its Docker Volume name. */
+export const runtimeVolumeRecordSchema = Schema.Struct({
+  machineId: Schema.String,
+  name: Schema.String,
+  usedBytes: NonnegativeInt,
+  boundBytes: NonnegativeInt,
+});
+
+export type RuntimeVolumeRecord = typeof runtimeVolumeRecordSchema.Type;
+
 /** Certificate evidence stays in the Engine's own vocabulary. In particular,
  * a certificate observation does not establish a Route or serving binding. */
 export const runtimeCertificateRecordSchema = Schema.Struct({
@@ -144,6 +154,7 @@ export const runtimeStatusRecordSchema = Schema.Struct({
   id: Schema.Literal("runtime"),
   status: runtimeLensStatusSchema,
   error: Schema.NullOr(Schema.String),
+  volumes: Schema.Array(runtimeVolumeRecordSchema),
   certificates: Schema.Array(runtimeCertificateRecordSchema),
   incompleteIds: runtimeIncompleteIdsSchema,
   /** Null when Cloud has not received a Runtime Watch observation. */
@@ -159,6 +170,7 @@ export const runtimeSnapshotSchema = Schema.Struct({
   error: Schema.NullOr(Schema.String),
   machines: Schema.Array(runtimeMachineRecordSchema),
   services: Schema.Array(runtimeServiceRecordSchema),
+  volumes: Schema.Array(runtimeVolumeRecordSchema),
   certificates: Schema.Array(runtimeCertificateRecordSchema),
   incompleteIds: runtimeIncompleteIdsSchema,
   observedAt: Schema.NullOr(Schema.String),
@@ -175,6 +187,7 @@ function emptyRuntimeSnapshot(input: {
     error: input.error,
     machines: [],
     services: [],
+    volumes: [],
     certificates: [],
     incompleteIds: { ...EMPTY_RUNTIME_INCOMPLETE_IDS },
     observedAt: null,
@@ -227,6 +240,7 @@ export function applyRuntimeSnapshot(input: {
       id: "runtime",
       status: input.snapshot.status,
       error: input.snapshot.error,
+      volumes: input.snapshot.volumes,
       certificates: input.snapshot.certificates,
       incompleteIds: input.snapshot.incompleteIds,
       observedAt: input.snapshot.observedAt,
@@ -248,6 +262,7 @@ export function getCachedRuntimeSnapshot(collections: RuntimeCollections) {
     services: Array.from(collections.services.values()).map((row) =>
       withoutVirtualProps(row as VirtualRowProps & RuntimeServiceRecord),
     ),
+    volumes: status.volumes,
     certificates: status.certificates,
     incompleteIds: status.incompleteIds,
     observedAt: status.observedAt,
@@ -281,6 +296,7 @@ function createRuntimeCollections(organizationSlug: string, scope: CollectionSco
             id: "runtime",
             status: snapshot.status,
             error: snapshot.error,
+            volumes: snapshot.volumes,
             certificates: snapshot.certificates,
             incompleteIds: snapshot.incompleteIds,
             observedAt: snapshot.observedAt,

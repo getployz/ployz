@@ -18,6 +18,13 @@ export const STAGED_CLASSES = {
   destructive: { surface: "border-destructive-border bg-destructive-soft text-destructive", name: "line-through" },
 } satisfies Record<StagedColour, { surface: string; name: string }>;
 
+/** A Volume's fill by how full it is (`fillTone`): grey, then amber from 80%, red from 95%. */
+export const FILL_CLASSES = {
+  ok: { bar: "bg-border", text: "text-muted-foreground" },
+  warn: { bar: "bg-warning-border", text: "text-warning" },
+  bad: { bar: "bg-destructive-border", text: "text-destructive" },
+} satisfies Record<"ok" | "warn" | "bad", { bar: string; text: string }>;
+
 /** A crash: an explosion off the ground, like the one Railway draws. */
 function CrashedIcon({ className }: { className?: string }) {
   return (
