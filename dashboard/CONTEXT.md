@@ -128,7 +128,7 @@ _Avoid_: Hosted DNS hostname as runtime state, generated domain as pairing state
 `PLOYZ_PUBLIC_DOMAIN` is the last linked custom domain in a Service's captured route list, otherwise the last generated hostname expanded against the Organization's Cluster Domain during deployment preparation. DNS and certificate health do not affect selection. Domain lists retain link order; port edits retain position, removal falls back to the preceding domain, and relinking appends. With no public hostname the managed variable is absent. Cloud exposes it for references and injects it into the deployment environment; authored overrides retain the usual variable precedence. Running containers keep the value captured for their deployment.
 
 **Deployment Page**:
-The page for one Deployment: each Environment Node it changed, with its Node Outcome and Deployment Logs. While it is open, the canvas behind it lights up the nodes it changed; nodes since deleted or removed appear only in its list. The canvas never enters an attempt; it always draws the Environment as it is now.
+The page for one Deployment: each Environment Node it changed, with its Node Outcome and Deployment Logs. While it is open, the canvas behind it lights up the nodes it changed; nodes since deleted or removed appear only on the page. The canvas never enters an attempt; it always draws the Environment as it is now.
 _Avoid_: Deployment Mode, Editor Mode, deployment view of the canvas
 
 **Target Node List**:

@@ -1,5 +1,6 @@
 import type {
-  ChangeKind, DeploymentStatus, DeploymentSummary, DiffView, JsonValue, NodeChange, NodeStatus, Outcome, ServiceListing, UploadedSource,
+  ChangeKind, DeploymentStatus, DeploymentSummary, DeploymentView, DiffView, JsonValue, NodeChange, NodeOutcome, NodeStatus, Outcome,
+  ServiceListing, UploadedSource,
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { settingTitle } from "./catalog";
@@ -167,27 +168,52 @@ export function admission(deployment: DeploymentSummary) {
   };
 }
 
-/** How long something ran, whole seconds: "45s", "1m 12s", "2h 5m". */
-export function formatDuration(seconds: number) {
-  const whole = Math.max(0, Math.floor(seconds));
-  if (whole < 60) return `${whole}s`;
-  if (whole < 3600) return `${Math.floor(whole / 60)}m ${whole % 60}s`;
-  return `${Math.floor(whole / 3600)}h ${Math.floor((whole % 3600) / 60)}m`;
-}
-
-/** Where an upload came from: "Uploaded by nick · abc1234 + changes". */
-export function uploadLabel(upload: UploadedSource) {
+/** Where an upload came from: "Uploaded by nick · abc1234 + changes"; it names no uploader who is `starter`. */
+export function uploadLabel(upload: UploadedSource, starter?: string | null) {
   const base = upload.base ? ` · ${upload.base.commit.slice(0, 7)}${upload.base.changed ? " + changes" : ""}` : "";
-  return `Uploaded${upload.uploader ? ` by ${upload.uploader}` : ""}${base}`;
+  return `Uploaded${upload.uploader && upload.uploader !== starter ? ` by ${upload.uploader}` : ""}${base}`;
 }
 
-/** What the user can do with a Deployment: retry an ended one that didn't apply, start a queued one, cancel one before it ends. */
-export function deploymentActions(status: DeploymentStatus) {
-  return {
-    retry: status === "failed" || status === "unknown" || status === "cancelled",
-    start: status === "queued",
-    cancel: status === "queued" || status === "running",
-  };
+/**
+ * Who started a Deployment and what it ships: the `service`'s pinned commit, else the first pinned one, else its
+ * upload. "by nick · 8a7ed6e".
+ */
+export function deploymentByline(deployment: DeploymentView, service: string | undefined) {
+  const commit = deployment.builds.find((build) => build.service === service)?.commit ?? deployment.builds.find((build) => build.commit)?.commit;
+  const by = deployment.admitted_by;
+  return [
+    by ? `by ${by}` : null,
+    commit ? commit.slice(0, 7) : deployment.upload ? uploadLabel(deployment.upload, by) : null,
+  ].filter(Boolean).join(" · ");
+}
+
+/** The Service a Deployment page opens on: the picked one, else the one that failed, else one it didn't apply, else the first. */
+export function focusedService(deployment: DeploymentView, picked: string | undefined) {
+  const services = deployment.nodes.filter((node) => node.type === "service");
+  return services.find((node) => node.id === picked) ?? services.find((node) => node.outcome === "failed")
+    ?? services.find((node) => !nodeApplied(node.outcome)) ?? services[0];
+}
+
+/** Whether a failed Deployment's `node` can be fixed on a Branch: the Deployment ran, and `node` didn't apply. */
+export const canFixOnBranch = (deployment: DeploymentView, node: NodeOutcome) =>
+  deployment.status === "failed" && deployment.outcome?.type === "executed" && !nodeApplied(node.outcome);
+
+/** Why `node` has no deploy logs in the Deployment: nothing of it ran, or its turn never came. Null when it may have some. */
+export function missingDeployLogs(deployment: DeploymentView, node: NodeOutcome) {
+  if (deployment.started_at === null || deployment.outcome?.type === "not_executed") return "Not started";
+  return node.outcome === "not_attempted" ? nodeStatusLabels.not_attempted : null;
+}
+
+/**
+ * The one action a Deployment page shows: retry an ended one that didn't apply, start a queued one, cancel one before
+ * it ends; with no Server, adding one instead. A queued one's Cancel waits beside Start, in the menu.
+ */
+export function deploymentActions(status: DeploymentStatus, noServers: boolean) {
+  const retry = status === "failed" || status === "unknown" || status === "cancelled";
+  const start = status === "queued";
+  const cancel = status === "queued" || status === "running";
+  const primary: "add_server" | "retry" | "start" | "cancel" | null = noServers && (retry || start) ? "add_server" : retry ? "retry" : start ? "start" : cancel ? "cancel" : null;
+  return { primary, cancelInMenu: cancel && primary !== "cancel" };
 }
 
 /** Why a Deployment didn't run, and the Services that had nothing to run (each needs an image or a repository). */

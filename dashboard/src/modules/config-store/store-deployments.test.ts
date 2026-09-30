@@ -1,7 +1,9 @@
-import type { DiffView, ServiceListing } from "@ployz/sdk";
+import type { DeploymentView, DiffView, ServiceListing } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { changeGroups, deploymentActions, formatDuration, nodeLight, uploadLabel } from "./store-deployments";
+import {
+  canFixOnBranch, changeGroups, deploymentActions, deploymentByline, focusedService, missingDeployLogs, nodeLight, uploadLabel,
+} from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
 const diff = asTestDouble<DiffView>()({
@@ -43,19 +45,56 @@ it("reads a pending node as its Deployment does, and a vanished runner's node as
   expect(nodeLight("unknown", "unknown")).toBe("unknown");
 });
 
-it("offers retry only after a Deployment ended without applying, start while queued, cancel before it ends", () => {
-  expect(deploymentActions("failed")).toEqual({ retry: true, start: false, cancel: false });
-  expect(deploymentActions("queued")).toEqual({ retry: false, start: true, cancel: true });
-  expect(deploymentActions("running")).toEqual({ retry: false, start: false, cancel: true });
-  expect(deploymentActions("cancelling")).toEqual({ retry: false, start: false, cancel: false });
-  expect(deploymentActions("applied")).toEqual({ retry: false, start: false, cancel: false });
+it("shows one action: retry after a Deployment ended without applying, start while queued, cancel before it ends", () => {
+  expect(deploymentActions("failed", false)).toEqual({ primary: "retry", cancelInMenu: false });
+  expect(deploymentActions("queued", false)).toEqual({ primary: "start", cancelInMenu: true });
+  expect(deploymentActions("running", false)).toEqual({ primary: "cancel", cancelInMenu: false });
+  expect(deploymentActions("cancelling", false)).toEqual({ primary: null, cancelInMenu: false });
+  expect(deploymentActions("applied", false)).toEqual({ primary: null, cancelInMenu: false });
+  // With no Server nothing can run it, so adding one comes first; a running one can still be cancelled.
+  expect(deploymentActions("failed", true)).toEqual({ primary: "add_server", cancelInMenu: false });
+  expect(deploymentActions("queued", true)).toEqual({ primary: "add_server", cancelInMenu: true });
+  expect(deploymentActions("running", true)).toEqual({ primary: "cancel", cancelInMenu: false });
 });
 
-it("names an upload's provenance", () => {
+it("names an upload's provenance, and its uploader only when someone else started the Deployment", () => {
   expect(uploadLabel({ digest: "d", base: { commit: "abc1234def", changed: true }, uploader: "nick" })).toBe("Uploaded by nick · abc1234 + changes");
+  expect(uploadLabel({ digest: "d", base: { commit: "abc1234def", changed: false }, uploader: "nick" }, "nick")).toBe("Uploaded · abc1234");
   expect(uploadLabel({ digest: "d", base: null })).toBe("Uploaded");
 });
 
-it("words a duration in whole seconds, minutes past a minute, hours past an hour", () => {
-  expect([0, 45.9, 72, 3599, 7500].map(formatDuration)).toEqual(["0s", "45s", "1m 12s", "59m 59s", "2h 5m"]);
+const node = (name: string, outcome: DeploymentView["nodes"][number]["outcome"]) => ({ type: "service" as const, id: `id-${name}`, name, outcome });
+const deployment = (fields: Partial<DeploymentView>) => asTestDouble<DeploymentView>()({
+  status: "failed", nodes: [], builds: [], upload: null, admitted_by: null, started_at: 100, outcome: { type: "executed", summary: null, reason: "x" },
+  ...fields,
 });
+
+it("says who started a Deployment and what it ships: the Service's commit, else the first pinned one, else its upload", () => {
+  const builds = [{ service: "web", commit: "8a7ed6e9f0", status: "built", message: null }, { service: "api", commit: "1234567abc", status: "built", message: null }] as const;
+  expect(deploymentByline(deployment({ admitted_by: "Nick", builds: [...builds] }), "api")).toBe("by Nick · 1234567");
+  expect(deploymentByline(deployment({ admitted_by: "Nick", builds: [...builds] }), "whoami")).toBe("by Nick · 8a7ed6e");
+  // A retry of someone else's upload names both; one's own upload names the uploader once.
+  const upload = { digest: "d", base: { commit: "abc1234def", changed: true }, uploader: "nick" };
+  expect(deploymentByline(deployment({ admitted_by: "Ada", upload }), undefined)).toBe("by Ada · Uploaded by nick · abc1234 + changes");
+  expect(deploymentByline(deployment({ admitted_by: "nick", upload }), undefined)).toBe("by nick · Uploaded · abc1234 + changes");
+  expect(deploymentByline(deployment({}), undefined)).toBe("");
+});
+
+it("opens on the picked Service, else the failed one, else one it didn't apply, and offers a fix only for what ran and failed", () => {
+  const nodes = [node("web", "deployed"), node("api", "not_attempted"), node("worker", "failed")];
+  expect(focusedService(deployment({ nodes }), "id-web")?.name).toBe("web");
+  expect(focusedService(deployment({ nodes }), undefined)?.name).toBe("worker");
+  expect(focusedService(deployment({ nodes: nodes.slice(0, 2) }), undefined)?.name).toBe("api");
+  expect(canFixOnBranch(deployment({ nodes }), node("worker", "failed"))).toBe(true);
+  expect(canFixOnBranch(deployment({ nodes }), node("web", "deployed"))).toBe(false);
+  // Nothing ran: the fix is giving it a source, not a Branch.
+  expect(canFixOnBranch(deployment({ outcome: { type: "not_executed", reason: "x", needs_upload: [] } }), node("api", "pending"))).toBe(false);
+});
+
+it("says why a Service has no deploy logs: the Deployment never ran, or its turn never came", () => {
+  expect(missingDeployLogs(deployment({ status: "queued", started_at: null, outcome: null }), node("web", "pending"))).toBe("Not started");
+  expect(missingDeployLogs(deployment({ outcome: { type: "not_executed", reason: "x", needs_upload: [] } }), node("web", "pending"))).toBe("Not started");
+  expect(missingDeployLogs(deployment({}), node("api", "not_attempted"))).toBe("Not attempted");
+  expect(missingDeployLogs(deployment({}), node("web", "failed"))).toBeNull();
+});
+
