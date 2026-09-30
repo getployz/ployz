@@ -2,7 +2,6 @@ import type {
   ChangeKind, DeploymentStatus, DeploymentSummary, DiffView, JsonValue, NodeChange, NodeStatus, Outcome, ServiceListing, UploadedSource,
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
-import { plural } from "#/lib/plural";
 import { settingTitle } from "./catalog";
 
 /** One changed Setting in Details. */
@@ -168,6 +167,14 @@ export function admission(deployment: DeploymentSummary) {
   };
 }
 
+/** How long something ran, whole seconds: "45s", "1m 12s", "2h 5m". */
+export function formatDuration(seconds: number) {
+  const whole = Math.max(0, Math.floor(seconds));
+  if (whole < 60) return `${whole}s`;
+  if (whole < 3600) return `${Math.floor(whole / 60)}m ${whole % 60}s`;
+  return `${Math.floor(whole / 3600)}h ${Math.floor((whole % 3600) / 60)}m`;
+}
+
 /** Where an upload came from: "Uploaded by nick · abc1234 + changes". */
 export function uploadLabel(upload: UploadedSource) {
   const base = upload.base ? ` · ${upload.base.commit.slice(0, 7)}${upload.base.changed ? " + changes" : ""}` : "";
@@ -192,31 +199,4 @@ export function notExecuted(outcome: Outcome | null) {
 /** Why a Deployment failed, as the Store words it for users: nothing ran, or what stopped its execution. */
 export function failureReason(outcome: Outcome | null) {
   return outcome?.reason ?? null;
-}
-
-/** The part of a recorded Deploy Preview the page shows; the Store keeps the rest. */
-const PreviewSummary = Schema.Struct({
-  operations: Schema.Array(Schema.Struct({ service_name: Schema.NullOr(Schema.String) })),
-  would_remove: Schema.Array(Schema.Unknown),
-  volumes_to_create: Schema.Array(Schema.Unknown),
-  warnings: Schema.Array(Schema.Struct({ type: Schema.String, message: Schema.optional(Schema.String) })),
-});
-const decodePreview = Schema.decodeUnknownOption(PreviewSummary);
-
-/**
- * The Deploy Preview its runner recorded before executing, in a few lines: operations per Service, what it creates
- * and removes, and its warnings. Null before a runner prepared one.
- */
-export function previewLines(preview: JsonValue | null): string[] | null {
-  const decoded = decodePreview(preview);
-  if (Option.isNone(decoded)) return null;
-  const { operations, would_remove, volumes_to_create, warnings } = decoded.value;
-  const counts = new Map<string, number>();
-  for (const { service_name } of operations) counts.set(service_name ?? "Environment", (counts.get(service_name ?? "Environment") ?? 0) + 1);
-  return [
-    operations.length === 0 ? "Nothing to change" : [...counts].map(([name, n]) => `${name}: ${plural(n, "operation")}`).join(" · "),
-    ...(volumes_to_create.length ? [`Creates ${plural(volumes_to_create.length, "volume")}`] : []),
-    ...(would_remove.length ? [`Removes ${plural(would_remove.length, "service")}`] : []),
-    ...warnings.map((warning) => warning.message ?? warning.type.replaceAll("_", " ")),
-  ];
 }
