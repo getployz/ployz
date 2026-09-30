@@ -151,11 +151,12 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       return;
     }
     case "set_generated_domain": {
-      const { service, prefix } = command;
-      // The hostname follows the prefix under the same Cluster Domain.
+      const { service, prefix, port } = command;
+      // The hostname follows the prefix under the same Cluster Domain; an omitted port stays.
       await views<DomainsView>("domains", command.environment, (view) => ({ ...view, domains: view.domains.map((domain) =>
         domain.kind !== "generated" || domain.service !== service ? domain : {
-          ...domain, prefix, hostname: domain.hostname === null ? null : `${prefix}${domain.hostname.slice(domain.prefix.length)}`,
+          ...domain, prefix, port: port === undefined ? domain.port : port,
+          hostname: domain.hostname === null ? null : `${prefix}${domain.hostname.slice(domain.prefix.length)}`,
         }) }));
       await stage(command.environment, service, { path: `${service}.managedHostnames`, kind: "update", before: null, after: prefix, canRestore: false });
       return;

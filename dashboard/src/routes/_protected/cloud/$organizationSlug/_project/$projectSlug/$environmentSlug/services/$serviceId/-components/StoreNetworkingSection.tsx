@@ -139,15 +139,8 @@ export function StoreNetworkingSection({ state, version, validatePrivateDns }: {
             onClose={() => setEditor(null)}
             onSubmit={({ prefix, targetPort }) => {
               if (generated?.kind !== "generated") return void add(null, targetPort);
-              // Adding the generated domain again changes its port, but can't clear one: that takes a fresh domain,
-              // whose subdomain is the Private DNS name until set.
-              const fresh = targetPort === null && generated.port !== null;
-              if (fresh) remove(generated.prefix);
-              if (targetPort !== generated.port) add(null, targetPort);
-              // Last, so a fresh domain keeps the chosen subdomain too.
-              if (prefix !== (fresh ? privateDns : generated.prefix)) {
-                writer.commit({ command: "set_generated_domain", environment, service: service.name, prefix });
-              }
+              // One command: the subdomain, and the port (null follows the container's PORT).
+              writer.commit({ command: "set_generated_domain", environment, service: service.name, prefix: prefix.trim().toLowerCase(), port: targetPort });
             }}
           />
         ) : null}
