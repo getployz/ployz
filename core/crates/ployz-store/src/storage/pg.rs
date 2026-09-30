@@ -35,10 +35,7 @@ impl Postgres {
                 serde_json::Value::Null,
             )
         })?;
-        let millis = TIMEOUT.as_millis();
-        config.connect_timeout(TIMEOUT).options(&format!(
-            "-c statement_timeout={millis} -c lock_timeout={millis}"
-        ));
+        config.connect_timeout(TIMEOUT);
         let roots =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let tls = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
@@ -100,6 +97,13 @@ fn run<T>(
         .isolation_level(isolation)
         .read_only(!write)
         .start()
+        .map_err(storage_error)?;
+    // Per transaction, not as startup options: PgBouncer refuses those.
+    let millis = TIMEOUT.as_millis();
+    transaction
+        .batch_execute(&format!(
+            "SET LOCAL statement_timeout = {millis}; SET LOCAL lock_timeout = {millis}"
+        ))
         .map_err(storage_error)?;
     // Dropping the transaction on an error rolls it back.
     let value = work(&mut PostgresTx(&mut transaction))?;
