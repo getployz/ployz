@@ -262,11 +262,7 @@ branch: BranchView,
 /**
  * Nodes staged in its Working State.
  */
-staged: Array<NodeName>,
-/**
- * What changed at once.
- */
-immediate: Array<string>, };
+staged: Array<NodeName>, };
 
 export type BridgeEndpointCapacity = { bridge_usable_endpoints: number, bridge_attached_endpoints: number, bridge_free_endpoints: number, };
 
@@ -399,19 +395,19 @@ export type ChangeKind = "add" | "update" | "remove";
 
 export type ChangeSetInput = { working: ReviewStateProjection, applied: ReviewStateProjection, saved: ReviewStateProjection | null, submitted: ReviewStateProjection | null, nodeIntroductions: ReviewStateProjection, };
 
+export type CheckConclusion = "success" | "neutral" | "skipped" | "failure" | "cancelled" | "timed_out" | "action_required" | "stale" | "startup_failure" | "other";
+
+export type CheckStatus = "queued" | "in_progress" | "completed" | "other";
+
 export type CheckSuite = { repository_id: RepositoryId, suite: number,
 /**
  * The commit it checks.
  */
-head: CommitSha,
+head: CommitSha, status: CheckStatus,
 /**
- * GitHub's status: `queued`, `in_progress`, `completed`, ….
+ * GitHub's conclusion; read only once it completed.
  */
-status: string,
-/**
- * GitHub's conclusion once completed.
- */
-conclusion: string | null,
+conclusion: CheckConclusion | null,
 /**
  * When GitHub last changed it: an older result never replaces a newer one.
  */

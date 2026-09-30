@@ -146,7 +146,9 @@ export const observeStoreCheckSuite = Effect.fn("StoreGithub.observeCheckSuite")
   const suite = yield* fetchInstallationCheckSuite(payload.installationId, repository, payload.checkSuiteId);
   const event: SystemEvent = {
     event: "check_suite", repository_id: payload.repositoryId, suite: suite.checkSuiteId, head: suite.headSha,
-    status: suite.status, conclusion: suite.conclusion, updated: githubTimestamp(suite.updatedAt),
+    // GitHub's other statuses (requested, waiting, pending) are still running, as `other` reads.
+    status: suite.status === "queued" || suite.status === "in_progress" || suite.status === "completed" ? suite.status : "other",
+    conclusion: suite.conclusion, updated: githubTimestamp(suite.updatedAt),
   };
   const deployments: ConfigDeploymentAdmittedEventData[] = [];
   for (const organizationId of organizations) {

@@ -26,7 +26,7 @@ use crate::id::{ConditionalSaveId, DeploymentId, EnvironmentId, Hostname, Organi
 use crate::policy::{self, is_repository_path};
 use crate::review;
 use crate::scope::{self, EnvironmentSummary};
-use crate::storage::Tx;
+use crate::storage::{Tx, name_of};
 use crate::{Actor, Trusted, build, registry};
 
 /// An observation Cloud made of GitHub. Never caller testimony: only Cloud's worker
@@ -76,13 +76,49 @@ pub struct CheckSuite {
     pub suite: u64,
     /// The commit it checks.
     pub head: CommitSha,
-    /// GitHub's status: `queued`, `in_progress`, `completed`, ….
-    pub status: String,
-    /// GitHub's conclusion once completed.
+    pub status: CheckStatus,
+    /// GitHub's conclusion; read only once it completed.
     #[serde(default)]
-    pub conclusion: Option<String>,
+    pub conclusion: Option<CheckConclusion>,
     /// When GitHub last changed it: an older result never replaces a newer one.
     pub updated: crate::GithubTimestamp,
+}
+
+/// A check suite's status as GitHub names it; a status GitHub adds later reads
+/// `other`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckStatus {
+    Queued,
+    InProgress,
+    Completed,
+    #[serde(other)]
+    Other,
+}
+
+/// A completed check suite's conclusion as GitHub names it; one GitHub adds later
+/// reads `other`, which doesn't pass.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckConclusion {
+    Success,
+    Neutral,
+    Skipped,
+    Failure,
+    Cancelled,
+    TimedOut,
+    ActionRequired,
+    Stale,
+    StartupFailure,
+    #[serde(other)]
+    Other,
+}
+
+impl CheckConclusion {
+    /// Whether it lets a deploy waiting for CI go.
+    const fn passed(self) -> bool {
+        matches!(self, Self::Success | Self::Neutral | Self::Skipped)
+    }
 }
 
 /// What an event made the Store do.
@@ -117,9 +153,6 @@ pub struct Skipped {
     /// Users read it: it holds no secret.
     pub reason: String,
 }
-
-/// Check-suite conclusions that let a waiting deploy go.
-const PASSED: [&str; 3] = ["success", "neutral", "skipped"];
 
 pub(crate) fn system(
     tx: &mut dyn Tx,
@@ -276,13 +309,6 @@ fn check_suite(
     let repository_id = event.repository_id;
     let suite = i64::try_from(event.suite)
         .map_err(|_| error::invalid("Expected a check suite ID", json!({})))?;
-    let text_ok = |text: &str| text.len() <= 64 && !text.chars().any(char::is_control);
-    if !text_ok(&event.status) || !event.conclusion.as_deref().is_none_or(text_ok) {
-        return Err(error::invalid(
-            "Expected GitHub's status and conclusion",
-            json!({}),
-        ));
-    }
     let organization = who.organization.as_str();
     tx.execute(
         "INSERT INTO config_check_suite \
@@ -296,8 +322,8 @@ fn check_suite(
             repository_id.into(),
             suite.into(),
             event.head.as_str().into(),
-            event.status.as_str().into(),
-            event.conclusion.as_deref().into(),
+            name_of(event.status).as_str().into(),
+            event.conclusion.map(name_of).as_deref().into(),
             event.updated.as_str().into(),
         ],
     )?;
@@ -603,8 +629,13 @@ fn passed(tx: &mut dyn Tx, who: &Actor, push: &Push<'_>) -> Result<bool, RpcErro
         ],
     )?;
     let mut passed = !suites.is_empty();
+    let completed = name_of(CheckStatus::Completed);
     for suite in suites {
-        passed &= suite.text(0)? == "completed" && PASSED.contains(&suite.text(1)?);
+        passed &= suite.text(0)? == completed
+            && suite
+                .optional_text(1)?
+                .and_then(|conclusion| serde_json::from_value(json!(conclusion)).ok())
+                .is_some_and(CheckConclusion::passed);
     }
     Ok(passed)
 }

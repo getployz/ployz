@@ -113,8 +113,8 @@ fn suite(id: u64, head: &str, status: &str, conclusion: Option<&str>, minute: u8
         repository_id: backend::repo_id(11),
         suite: id,
         head: backend::sha(head),
-        status: status.into(),
-        conclusion: conclusion.map(Into::into),
+        status: serde_json::from_value(json!(status)).unwrap(),
+        conclusion: conclusion.map(|conclusion| serde_json::from_value(json!(conclusion)).unwrap()),
         updated: ployz_store::GithubTimestamp::parse(format!("2026-09-29T10:{minute:02}:00Z"))
             .unwrap(),
     })
@@ -392,4 +392,13 @@ fn a_push_deploy_refuses_a_hostname_another_namespace_publishes() {
     assert!(automated.admitted.is_empty());
     assert_eq!(automated.skipped.len(), 1, "{automated:?}");
     assert!(automated.skipped[0].reason.contains("shop.example.com"));
+}
+
+#[test]
+fn a_status_or_conclusion_github_adds_later_reads_other() {
+    let status: ployz_store::CheckStatus = serde_json::from_value(json!("requested")).unwrap();
+    assert_eq!(status, ployz_store::CheckStatus::Other);
+    let conclusion: ployz_store::CheckConclusion =
+        serde_json::from_value(json!("brand_new")).unwrap();
+    assert_eq!(conclusion, ployz_store::CheckConclusion::Other);
 }

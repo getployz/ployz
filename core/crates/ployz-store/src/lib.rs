@@ -35,7 +35,10 @@ mod volume;
 
 use ployz_core::RpcError;
 
-pub use automation::{AutoDeployed, Automated, BranchHead, CheckSuite, Skipped, SystemEvent};
+pub use automation::{
+    AutoDeployed, Automated, BranchHead, CheckConclusion, CheckStatus, CheckSuite, Skipped,
+    SystemEvent,
+};
 pub use branch::{
     BranchPlanQuery, BranchPlanView, BranchQuery, BranchView, Branched, CopyNode, CreateBranch,
     KeepBranch, LiveNode, Move, MoveChoice, MovePick, MoveQuery, MoveRow, MoveView, Moved,
