@@ -600,7 +600,7 @@ fn visible_name(
         return display.to_owned();
     }
     match operation {
-        DeployOperation::PrepareVolumes { .. } => "provisioned volumes".into(),
+        DeployOperation::PrepareVolumes { .. } => "Managed volumes".into(),
         DeployOperation::WaitHealthy { dependency, .. } => dependency.to_string(),
         DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => {
             spec.name.to_string()

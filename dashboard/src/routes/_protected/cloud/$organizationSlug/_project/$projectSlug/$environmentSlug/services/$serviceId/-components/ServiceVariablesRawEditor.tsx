@@ -1,4 +1,5 @@
 import { useReducer, useRef } from "react";
+import type { Persistable } from "#/collections/query-collection";
 import { Result } from "effect";
 import {
   Dialog,
@@ -85,7 +86,7 @@ export function ServiceVariablesRawEditor({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Saves the editor's creates, updates and deletes: optimistic, rolled back and toasted on failure. */
-  onApply: (diff: RawEditorDiff) => void;
+  onApply: (diff: RawEditorDiff) => Persistable;
   variables: VariableRecord[];
   valueTargets?: ReferenceTarget[];
 }) {
@@ -103,6 +104,8 @@ export function ServiceVariablesRawEditor({
   );
   const prevOpenRef = useRef(open);
   const isEditorInitializedRef = useRef(false);
+  /** What was typed when the Store refused it, with its reason: the editor reopens on it. */
+  const refusedRef = useRef<Pick<RawEditorState, "mode" | "envText" | "jsonText" | "submitError"> | null>(null);
 
   function resetEditorFromVariables() {
     dispatchEditor({
@@ -115,7 +118,9 @@ export function ServiceVariablesRawEditor({
   if (open !== prevOpenRef.current) {
     prevOpenRef.current = open;
     if (open) {
-      resetEditorFromVariables();
+      if (refusedRef.current) dispatchEditor({ type: "patch", patch: refusedRef.current });
+      else resetEditorFromVariables();
+      refusedRef.current = null;
       isEditorInitializedRef.current = true;
     } else {
       isEditorInitializedRef.current = false;
@@ -209,7 +214,12 @@ export function ServiceVariablesRawEditor({
       return;
     }
 
-    onApply(diff);
+    const typed = { mode: editor.mode, envText: editor.envText, jsonText: editor.jsonText };
+    // Optimistic: a refusal reopens the editor on what was typed, with the Store's reason over it.
+    onApply(diff).isPersisted.promise.catch((error) => {
+      refusedRef.current = { ...typed, submitError: error instanceof Error ? error.message : "The variables couldn’t be saved." };
+      onOpenChange(true);
+    });
     onOpenChange(false);
   }
 

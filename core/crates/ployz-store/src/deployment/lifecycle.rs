@@ -533,6 +533,7 @@ pub(crate) fn record(
                     removed: &removed,
                 },
             );
+            let nodes = keep_advanced(&stored.run.nodes, nodes);
             // A Deploy that left a Volume's data behind didn't finish: a retry removes it.
             let status = if success && nodes.values().all(|status| *status != NodeStatus::Failed) {
                 DeploymentStatus::Applied
@@ -571,8 +572,11 @@ pub(crate) fn record(
             }
             let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
             let applied = applied_state(tx, &stored.summary.environment_id, &saved)?;
-            stored.run.nodes = settled(&stored.nodes, &saved, &applied, preview, &confirmed);
-            advance(tx, &stored)?;
+            stored.run.nodes = keep_advanced(
+                &stored.run.nodes,
+                settled(&stored.nodes, &saved, &applied, preview, &confirmed),
+            );
+            advance(tx, &stored, false)?;
             save(tx, &mut stored)?;
             Ok(stored.summary)
         }
@@ -858,7 +862,7 @@ fn end(
     outcome: Outcome,
     status: DeploymentStatus,
 ) -> Result<DeploymentSummary, RpcError> {
-    advance(tx, &stored)?;
+    advance(tx, &stored, status == DeploymentStatus::Applied)?;
     // A cancelled Deployment that stopped short reads cancelled, not failed.
     stored.summary.status = match (stored.summary.status, status) {
         (DeploymentStatus::Cancelling, DeploymentStatus::Failed) => DeploymentStatus::Cancelled,
@@ -872,17 +876,17 @@ fn end(
 }
 
 /// Put each node `stored` confirmed (Deployed or Removed) into Applied State as
-/// its Saved revision has it. Applying one again changes nothing.
-fn advance(tx: &mut dyn Tx, stored: &Stored) -> Result<(), RpcError> {
+/// its Saved revision has it; once it `succeeded`, every Unchanged node too: the
+/// Deploy covered it even when the runtime had nothing to do (a rename, a tag).
+/// Applying one again changes nothing.
+fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcError> {
     let advanced: Vec<&TargetNode> = stored
         .nodes
         .iter()
         .filter(|node| {
-            stored
-                .run
-                .nodes
-                .get(node.id())
-                .is_some_and(|status| status.advances())
+            stored.run.nodes.get(node.id()).is_some_and(|status| {
+                status.advances() || (succeeded && *status == NodeStatus::Unchanged)
+            })
         })
         .collect();
     if !advanced.is_empty() {
@@ -926,6 +930,21 @@ fn advance(tx: &mut dyn Tx, stored: &Stored) -> Result<(), RpcError> {
         }
     }
     Ok(())
+}
+
+/// `next`, with every node `prior` already advanced kept as it was: Applied State
+/// holds it now, so recomputing would read it Unchanged.
+fn keep_advanced(
+    prior: &BTreeMap<String, NodeStatus>,
+    mut next: BTreeMap<String, NodeStatus>,
+) -> BTreeMap<String, NodeStatus> {
+    next.extend(
+        prior
+            .iter()
+            .filter(|(_, status)| status.advances())
+            .map(|(id, status)| (id.clone(), *status)),
+    );
+    next
 }
 
 /// Whether `evidence` is a Deploy that executed every operation.

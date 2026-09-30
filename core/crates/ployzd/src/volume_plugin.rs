@@ -506,7 +506,7 @@ mod tests {
             json!({"Name":"data","Opts":{"size":"2g"}}),
         )
         .await;
-        assert!(error(&resized).contains("separate update"));
+        assert!(error(&resized).contains("size is fixed once deployed"));
         assert_eq!(
             fs::read_to_string(test.0.join("commands"))
                 .unwrap()

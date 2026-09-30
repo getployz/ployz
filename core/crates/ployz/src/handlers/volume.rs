@@ -6,7 +6,9 @@
 
 use clap::{ArgAction, ArgMatches, Command};
 use ployz_core::config::VolumeKind;
-use ployz_core::{ProvisionedVolumeMaximumBytes, ServiceName};
+use ployz_core::{
+    MachineObservation, MachineStorageObservation, ProvisionedVolumeMaximumBytes, ServiceName,
+};
 use ployz_store::{
     CreateVolume, Mount, RemoveVolume, SetVolumeStorage, VolumeId, VolumeQuery, VolumeStaged,
     VolumesQuery,
@@ -22,9 +24,10 @@ pub(crate) fn command() -> Command {
     base("volume", "Manage Volumes")
         .arg_required_else_help(true)
         .subcommand(
-            storage_flags(store::scoped(Command::new("add").about(
-                "Add a Provisioned Volume (or --docker); staged until you deploy",
-            )))
+            storage_flags(store::scoped(
+                Command::new("add")
+                    .about("Add a Managed volume (or --docker); staged until you deploy"),
+            ))
             .arg(positional("name", true).help("Volume name, unique in the Environment"))
             .arg(
                 value("mount", None)
@@ -101,14 +104,47 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
+    let storage = requested_storage(matches);
     let created = store::store(root)?.write(&CreateVolume {
         id: VolumeId::parse(store::mint())?,
         environment: store::environment(matches)?,
         name: name.clone(),
-        storage: requested_storage(matches),
+        storage,
         mounts,
     })?;
+    if matches!(storage, VolumeKind::Provisioned { .. }) && no_managed_host(matches) {
+        output::warn(NO_MANAGED_HOST);
+    }
     staged(matches, &created, "Staged new Volume")
+}
+
+const NO_MANAGED_HOST: &str = "No Server here can host Managed volumes yet, so a Deploy of this one fails until one can: add a Server with Managed volumes, or use --docker instead.";
+
+/// Why `--docker` is not recommended; said when a command asks for one.
+const DOCKER_VOLUME: &str = "Docker volume (not recommended): no size limit, and it stays out of backups and Server moves as they arrive.";
+
+/// Best effort, bounded: whether every Server this reaches reports it can't host
+/// managed Volumes. Unreachable or unknown answers `false`; the Deploy still checks.
+fn no_managed_host(matches: &ArgMatches) -> bool {
+    let Ok(runtime) = super::runtime() else {
+        return false;
+    };
+    let context = matches.try_get_one::<String>("context").ok().flatten();
+    runtime.block_on(async {
+        let observe = async {
+            let mut client = super::server::connect(matches, context.map(String::as_str))
+                .await
+                .ok()?;
+            let mut machines = client.machines().await.ok()?;
+            client.observe_machine_storage(&mut machines).await;
+            Some(none_hosts_managed(&machines))
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), observe)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(false)
+    })
 }
 
 fn storage_flags(command: Command) -> Command {
@@ -120,17 +156,18 @@ fn storage_flags(command: Command) -> Command {
                     ProvisionedVolumeMaximumBytes::parse_gb(size)
                         .map_err(|_| "Use a positive size in GB, such as 5GB or 0.5GB")
                 })
-                .help("Provisioned storage limit in GB, such as 10GB; new Volumes default to 5GB"),
+                .help("Managed volume size limit in GB, such as 10GB; new Volumes default to 5GB"),
         )
         .arg(
             switch("docker", None)
                 .conflicts_with("size")
-                .help("Advanced: use a Docker volume without an enforced storage limit"),
+                .help("Use a plain Docker volume, with no size limit (not recommended)"),
         )
 }
 
 fn requested_storage(matches: &ArgMatches) -> VolumeKind {
     if matches.get_flag("docker") {
+        output::warn(DOCKER_VOLUME);
         VolumeKind::Docker {}
     } else if let Some(maximum_bytes) = matches.get_one::<ProvisionedVolumeMaximumBytes>("size") {
         VolumeKind::Provisioned {
@@ -154,8 +191,10 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
 
 fn storage_word(storage: VolumeKind) -> String {
     match storage {
-        VolumeKind::Docker {} => "Docker (no enforced storage limit)".into(),
-        VolumeKind::Provisioned { maximum_bytes } => format!("Managed ({maximum_bytes} limit)"),
+        VolumeKind::Docker {} => "Docker volume (no size limit)".into(),
+        VolumeKind::Provisioned { maximum_bytes } => {
+            format!("Managed volume ({maximum_bytes} limit)")
+        }
     }
 }
 
@@ -243,6 +282,15 @@ fn remove(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// A staged Volume change and `ployz diff` to review it.
+/// Servers were seen and each says it is Docker only; one not
+/// answering might host them.
+fn none_hosts_managed(machines: &[MachineObservation]) -> bool {
+    !machines.is_empty()
+        && machines
+            .iter()
+            .all(|machine| machine.storage == Some(MachineStorageObservation::Stateless))
+}
+
 fn staged(matches: &ArgMatches, result: &VolumeStaged, what: &str) -> Result<(), Error> {
     let hint = store::next(matches, &["diff"]);
     output::finish(&Next::new(result, Some(hint)), || {
@@ -258,3 +306,53 @@ fn staged(matches: &ArgMatches, result: &VolumeStaged, what: &str) -> Result<(),
 }
 
 use super::store::volume_name;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_core::{Machine, MembershipObservation, WireGuardPublicKey};
+
+    fn server(seed: u8, storage: Option<MachineStorageObservation>) -> MachineObservation {
+        let mut observed = MachineObservation::new(
+            Machine {
+                labels: Default::default(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress: true,
+                id: char::from(b'a' + seed)
+                    .to_string()
+                    .repeat(32)
+                    .parse()
+                    .unwrap(),
+                name: format!("node-{seed}").parse().unwrap(),
+                subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
+                public_key: WireGuardPublicKey([seed; 32]),
+                public_ip: None,
+                advertised_endpoints: Vec::new(),
+                runtime: Default::default(),
+                build_concurrency: None,
+            },
+            MembershipObservation::Up,
+        );
+        observed.storage = storage;
+        observed
+    }
+
+    #[test]
+    fn only_servers_that_all_say_docker_only_warn() {
+        let stateless = Some(MachineStorageObservation::Stateless);
+        assert!(none_hosts_managed(&[
+            server(0, stateless),
+            server(1, stateless)
+        ]));
+        assert!(!none_hosts_managed(&[]));
+        assert!(!none_hosts_managed(&[
+            server(0, stateless),
+            server(1, None)
+        ]));
+        assert!(!none_hosts_managed(&[
+            server(0, stateless),
+            server(1, Some(MachineStorageObservation::Ready)),
+        ]));
+    }
+}

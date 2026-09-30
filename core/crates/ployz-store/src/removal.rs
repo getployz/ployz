@@ -69,10 +69,10 @@ pub(crate) fn removed(
 
 /// The Docker Volume a Volume's data lives in: lowering names it `vol-{id}`, and
 /// the Servers scope that to the Namespace.
-pub(crate) fn docker_volume(
-    namespace: &Namespace,
-    volume: &str,
-) -> Result<DockerVolumeName, RpcError> {
+///
+/// # Errors
+/// Returns `internal` when `volume` can't name a Docker Volume.
+pub fn docker_volume(namespace: &Namespace, volume: &str) -> Result<DockerVolumeName, RpcError> {
     let logical = DockerVolumeName::parse(format!("vol-{volume}"))
         .map_err(|_| error::corrupt("Volume ID"))?;
     Ok(namespace.volume_name(&logical))

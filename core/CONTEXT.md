@@ -381,8 +381,8 @@ A ZFS storage budget on one storage-ready Machine. Provisioned Volumes live on i
 _Avoid_: Cluster pool, auto-created pool, dedicated disk, Machine ZFS Pool, ZFS-enabled cluster
 
 **Provisioned Volume**:
-A Docker Volume backed by a dataset on a Machine Pool, with a declared maximum size. An ordinary named Docker Volume is not one and is unaffected.
-_Avoid_: Managed Volume, Managed ZFS Volume, cluster volume, storage class, CSI volume
+A Docker Volume backed by a dataset on a Machine Pool, with a declared maximum size. An ordinary named Docker Volume is not one and is unaffected. User-facing copy (CLI output, errors, dashboard) calls it a Managed volume and an ordinary one a Docker volume; Provisioned stays the wire and code name. A Machine without a Machine Pool reads Docker only.
+_Avoid_: Managed ZFS Volume, cluster volume, storage class, CSI volume; Managed volume in wire or code names
 
 **Service Volume Reference**:
 A name used within one Service specification to refer to storage. It is not the Docker Volume name or a machine-independent storage identity.

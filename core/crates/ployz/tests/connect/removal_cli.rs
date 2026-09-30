@@ -52,7 +52,7 @@ async fn machine_removal_reports_complete_and_partial_results() {
         assert!(stdout.contains("Removed Server one"), "{stdout}");
         assert!(
             stdout.contains(
-                "Volumes losing access through the cluster (1). Their data will not be erased:"
+                "Volumes the Cluster loses (1); only the Server's disk keeps their data:"
             ),
             "{stdout}"
         );
@@ -160,4 +160,40 @@ async fn server_removal_without_the_typed_name_names_what_goes_and_the_retry() {
     assert!(resets.lock().unwrap().is_empty());
     assert!(removals.lock().unwrap().is_empty());
     server.abort();
+}
+
+#[tokio::test]
+async fn last_cloud_managed_server_is_refused_before_any_confirmation() {
+    let service = DiscoveryService::new(test_description());
+    *service.management_clients.lock().unwrap() =
+        vec![ployz_core::ManagementClientLabel::parse("cloud").unwrap()];
+    let resets = service.reset_machines.clone();
+    let (address, _server) = serve_discovery(service).await;
+    let config = std::env::temp_dir().join(format!("ployz-last-{}.yaml", MachineId::random()));
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "--connect",
+            &format!("tcp://{address}"),
+            "--ployz-config",
+            config.to_str().unwrap(),
+            "--json",
+            "server",
+            "rm",
+            "one",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        error.pointer("/error/code"),
+        Some(&json!("conflict")),
+        "{error}"
+    );
+    assert_eq!(
+        error.pointer("/error/details/next"),
+        Some(&json!("ployz org rm ORGANIZATION"))
+    );
+    assert!(resets.lock().unwrap().is_empty());
 }

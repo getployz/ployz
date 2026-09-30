@@ -54,7 +54,7 @@ async fn cloud_init_join_participates() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains(&format!("Joined Machine joiner ({machine_id})")),
+        stdout.contains(&format!("Joined Server joiner ({machine_id})")),
         "{stdout}"
     );
     assert_eq!(
@@ -122,7 +122,7 @@ async fn cloud_zfs_rejects_a_remote_machine_before_join() {
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr).contains(
-            "zfs storage preparation requires running ployz server add on the Machine itself"
+            "zfs storage preparation requires running ployz server add on the Server itself"
         ),
         "{}",
         String::from_utf8_lossy(&output.stderr)
@@ -377,7 +377,7 @@ async fn cloud_init_retries_not_yet_then_joins() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains(&format!("Joined Machine joiner ({machine_id})")),
+        stdout.contains(&format!("Joined Server joiner ({machine_id})")),
         "{stdout}"
     );
 
@@ -549,12 +549,70 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("new founding claim requires an uninitialized Machine"),
+            .contains("new founding claim requires an uninitialized Server"),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(daemon.reset_count(), 0);
     assert_eq!(enroll.posts().len(), 1);
+}
+
+#[tokio::test]
+async fn rerun_on_the_founded_machine_does_not_claim_to_found_it() {
+    let founder = founder_machine();
+    let pairing = json!({ "secret": PAIRING });
+    let enroll = EnrollListen::start(
+        json!({ "kind": "initialize", "resumed": true, "storage": "none", "pairing": pairing }),
+    )
+    .await;
+    let daemon = JoinDaemon::new(Registered {
+        assigned_machine: founder.clone(),
+        visible_peers: Vec::new(),
+        target_versions: Default::default(),
+    });
+    let machine_addr = serve_machine(daemon.clone()).await;
+    let mut client = connect_daemon(machine_addr).await;
+    client
+        .call::<op::Initialize>(
+            InitializeRequest {
+                initial_policy: ployz_core::InitialMachinePolicy {
+                    accepts_ingress: false,
+                    ..Default::default()
+                },
+                name: founder.name.clone(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: founder.advertised_endpoints.clone(),
+                wireguard_mtu: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    let output = init_cloud(
+        &format!("ssh://root@{machine_addr}"),
+        &enroll.url,
+        "founder",
+        false,
+        true,
+    )
+    .await;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains(&format!("Server founder ({}) is enrolled", founder.id)),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("Initialised") && !stdout.contains("deploys"),
+        "{stdout}"
+    );
+    assert_eq!(daemon.reset_count(), 0);
 }
 
 #[tokio::test]
@@ -799,7 +857,7 @@ async fn join_places_observed_ingress_on_this_machine() {
         String::from_utf8_lossy(&output.stdout)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Joined Machine joiner"), "{stdout}");
+    assert!(stdout.contains("Joined Server joiner"), "{stdout}");
     let ensured = daemon.ensure_requests();
     assert_eq!(ensure_names(&ensured), [("ployz-system", "ingress")]);
 }
@@ -951,7 +1009,7 @@ async fn join_fails_visibly_when_expected_ingress_cannot_be_placed() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stdout.contains("Joined Machine"), "stdout: {stdout}");
+    assert!(stdout.contains("Joined Server"), "stdout: {stdout}");
     assert!(
         stderr.contains("Global catch-up is incomplete"),
         "stderr: {stderr}"

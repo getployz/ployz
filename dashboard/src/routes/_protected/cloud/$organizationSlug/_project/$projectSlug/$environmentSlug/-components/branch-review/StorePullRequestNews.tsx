@@ -5,7 +5,7 @@ import type { EnvironmentRef, PullRequestRef, PullRequestView } from "@ployz/sdk
 import { ArrowUpIcon, CircleCheckIcon, GitPullRequestIcon, TriangleAlertIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { plural } from "#/lib/plural";
-import { movePicks, presentMoveRow } from "#/modules/config-store/store-branches";
+import { isNodeRow, movePicks, presentMoveRow } from "#/modules/config-store/store-branches";
 import { atMergeQuery, destinationNews, goLiveWhen, pullRequestQuery, type DestinationNews } from "#/modules/config-store/store-pull-requests";
 import { useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -89,7 +89,7 @@ function AtMergeSheet({ from, into, number, onClose, onShutDown }: {
   const writer = useStoreWriter(params.organizationSlug);
   const view = useStoreView(params.organizationSlug, atMergeQuery(from, into));
   const rows = useRowPicks((view.ok ? view.value.rows : []).map((row) => ({
-    row: { key: row.row, node: !row.row.includes("."), conflict: row.conflict, choice: row.choice ?? undefined },
+    row: { key: row.row, node: isNodeRow(row.row), conflict: row.conflict, choice: row.choice ?? undefined },
     presented: presentMoveRow(row),
   })));
   const [pending, setPending] = useState(false);

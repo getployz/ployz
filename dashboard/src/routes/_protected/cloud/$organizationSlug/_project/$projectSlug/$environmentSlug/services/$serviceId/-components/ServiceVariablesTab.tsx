@@ -68,7 +68,7 @@ function ServiceVariablesView({
   onCreateVariable: (input: VariableAddInput) => Persistable;
   onSealVariable: (variable: PlainVariableRecord) => void;
   onUpdateMetadata: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
-  onApplyRaw: (diff: RawEditorDiff) => void;
+  onApplyRaw: (diff: RawEditorDiff) => Persistable;
   allowSealOnCreate?: boolean;
 }) {
   const [rawEditorOpen, setRawEditorOpen] = useState(false);
