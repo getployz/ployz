@@ -4,6 +4,7 @@ import type {
 import { Option, Schema } from "effect";
 import { plural } from "#/lib/plural";
 import { settingTitle } from "./catalog";
+import { volumeStorageText } from "./store-volumes";
 
 /** One changed Setting in Details. */
 export type ChangeRow = {
@@ -79,13 +80,15 @@ const decodeShown = Schema.decodeUnknownOption(Schema.Union([
   Schema.String, Schema.Struct({ secret: Schema.Literal(true) }), Schema.Struct({ hostname: Schema.String }),
   Schema.Struct({ path: Schema.String, timeoutSeconds: Schema.Number }),
   Schema.Array(Schema.Struct({ prefix: Schema.String, targetPort: Schema.NullOr(Schema.Number) })),
+  // A Volume's storage.
+  Schema.Struct({ kind: Schema.Literal("provisioned"), maximumBytes: Schema.Number }), Schema.Struct({ kind: Schema.Literal("local") }),
   // A whole source, when a Service connects or disconnects one.
   Schema.Struct({ type: Schema.Literals(["image", "git", "empty"]), image: Schema.optional(Schema.String), repository: Schema.optional(Schema.String) }),
 ]));
 
 /**
  * A diff value as a cell shows it: text as is, a sealed one as Sealed, a route by its hostname, a healthcheck by its
- * path and timeout, generated domains by name and port; else its JSON.
+ * path and timeout, generated domains by name and port, a Volume's storage by its limit; else its JSON.
  */
 export function shownValue(value: JsonValue): string {
   if (value === null) return "";
@@ -97,6 +100,7 @@ export function shownValue(value: JsonValue): string {
       if ("secret" in shown) return "Sealed";
       if ("path" in shown) return `${shown.path} within ${shown.timeoutSeconds}s`;
       if ("type" in shown) return shown.image ?? shown.repository ?? "None";
+      if ("kind" in shown) return volumeStorageText(shown);
       return shown.map(({ prefix, targetPort }) => targetPort === null ? prefix : `${prefix} → port ${targetPort}`).join(", ");
     },
   });

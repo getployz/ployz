@@ -1,7 +1,7 @@
 import type { DiffView, ServiceListing } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { changeGroups, deploymentActions, nodeLight, previewLines, uploadLabel } from "./store-deployments";
+import { changeGroups, deploymentActions, nodeLight, previewLines, shownValue, uploadLabel } from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
 const diff = asTestDouble<DiffView>()({
@@ -30,6 +30,11 @@ it("groups the Store's review by node, labelling rows from the catalog; a whole 
   ]);
   // A Volume discards by `volumes.NAME`.
   expect(volume).toMatchObject({ nodeType: "volume", lifecycle: "create", canDiscard: true, discardPath: "volumes.pg-data", changeCount: 1, rows: [] });
+});
+
+it("words a Volume's storage by its limit", () => {
+  expect(shownValue({ kind: "provisioned", maximumBytes: 4_100_000_000 })).toBe("4.1 GB limit");
+  expect(shownValue({ kind: "local" })).toBe("Docker volume");
 });
 
 it("reads a pending node as its Deployment does, and a vanished runner's node as Unknown, never Failed", () => {

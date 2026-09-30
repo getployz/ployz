@@ -110,7 +110,8 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
           removed += change.settings.length - rows.length;
           return rows.length === 0 && change.lifecycle === "update" ? [] : [{ ...change, settings: rows }];
         });
-        return { ...view, changes, total_count: changes.length === 0 ? 0 : Math.max(0, view.total_count - removed), published: true };
+        // Whether what remains is published is the Store's to say.
+        return { ...view, changes, total_count: changes.length === 0 ? 0 : Math.max(0, view.total_count - removed) };
       });
       await views<EnvironmentView>("environment", command.environment, (view) => ({ ...view, settings: view.settings.map((row) => {
         const deployed = reverted.find((change) => change.path === row.path);

@@ -26,7 +26,10 @@ import { serviceOnline } from "#/routes/_protected/cloud/$organizationSlug/-comp
 export function storeServiceStatus(service: ServiceListing, changeCount: number, runtime: RuntimeServiceRecord | null, uploaded = false) {
   if (service.change === "create") return { state: "success", text: "Service will be created", badge: "New" } as const;
   if (service.change === "delete") return { state: "destructive", text: "Removed on the next deploy", badge: "Removing" } as const;
-  if (service.change === "update") return { state: "changed", text: `${changeCount} ${changeCount === 1 ? "change" : "changes"}`, badge: null } as const;
+  // A change shows before the Store's review counts it.
+  if (service.change === "update") {
+    return { state: "changed", text: changeCount === 0 ? "Changed" : `${changeCount} ${changeCount === 1 ? "change" : "changes"}`, badge: null } as const;
+  }
   if (service.source === "empty" && !uploaded) return { state: undefined, text: "Empty", badge: null } as const;
   if (!runtime && uploaded) return { state: undefined, text: "Uploaded", badge: null } as const;
   if (!runtime) return { state: undefined, text: "Deployed", badge: null } as const;
