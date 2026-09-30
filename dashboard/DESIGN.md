@@ -148,7 +148,7 @@ The product palette is neutral first. Ink and white carry action hierarchy; warm
 
 ### Secondary
 
-- **Intent Pink** (`#d0268c`): the saturated anchor for staged intent, selection emphasis, and focus. It is deliberately warm and unmistakably pink, never violet or purple.
+- **Intent Pink** (`#d0268c`): the saturated anchor for staged intent and focus. It is deliberately warm and unmistakably pink, never violet or purple.
 - **Intent Deep** (`#a80068`): accessible intent text and compact indicators on pale staged surfaces.
 - **Intent Soft** (`#fff0f7`) and **Intent Border** (`#efb3ce`): the background and boundary applied to autosaved fields, resources, and diff rows that differ from deployed truth.
 
@@ -227,6 +227,17 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 - **Background:** Clear Canvas at rest, semantic pale surfaces only when the entire container shares that state.
 - **Shadow Strategy:** flat by default; use a one-pixel structural ring. Floating containers follow the Elevation section.
 - **Internal Padding:** 16px by default, 12px for compact variants, and 24px only for focused resource nodes or dialogs.
+
+### Canvas nodes
+
+A node answers two questions in two places, and neither ever stands in for the other.
+
+- **Card:** the icon, the name, and the public domain when there is one: its first custom domain, else its generated one, muted until the Deploy that adds it lands. Source, image, replicas, ports and reasons live in its panel.
+- **Status line: what runs now.** One word from runtime evidence: Online, Degraded, Unhealthy, "Crashed 2 min ago", Not deployed, No source, or a grey "Deployed" while there is no evidence. Staged or in-flight work never replaces it. It ends in **⚠ N** when there is something to fix, red if any of them is a crash and amber otherwise, and that opens the list. Crashed alone also turns the border red.
+- **Chip: anything about Deploys.** The first that applies: "Deploying 0:42" or "Queued"; "New", "N changes" or "Removing"; on an open Deployment Page, its Node Outcome. Otherwise nothing. A staged node takes the staged-intent surface and a staged removal the Failure Red one; nothing else fills a card.
+- **Volumes are trays** under each service that mounts them: the name over a fill showing how full it is, amber from 85%. A tray speaks only when it must: pink when staged, "Removing", "N% full". A volume several services share shows under each, marked shared, and hovering one lights them all. Only a volume nothing mounts is a node of its own.
+- **Selected**, while its panel is open: a two-pixel ink ring. **Keyboard focus:** an Intent Pink outline, drawn only while the user navigates by keyboard. A pointer press ends that, so a closed panel hands focus back to its node without drawing it.
+- Only a node being dragged casts a shadow.
 
 ### Projects
 
