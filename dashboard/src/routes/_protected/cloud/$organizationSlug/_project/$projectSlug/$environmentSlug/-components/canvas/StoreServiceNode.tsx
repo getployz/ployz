@@ -1,59 +1,49 @@
 import { Handle, Position } from "@xyflow/react";
 import { Link, useLoaderData, useParams } from "@tanstack/react-router";
-import type { ServiceListing } from "@ployz/sdk";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
-import { Badge } from "#/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
 import { cn } from "#/lib/utils";
-import { outcomeCardState } from "#/components/deployment-outcome-badges";
 import { useNodeLighting } from "../deployment-page";
-import { NodeOutcomeBadge } from "./NodeOutcomeBadge";
 import { useRemoveStoreService } from "../../services/$serviceId/-components/useDeleteService";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../environment-route-paths";
 import { ServiceContextMenu } from "./ServiceContextMenu";
 import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
-import { getServiceIcon, getServiceStatusClasses } from "./service-node-helpers";
-import type { StoreCanvasService } from "./types";
-import { isIncompleteObservation, type RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
+import { DeployChip, StatusLine, getServiceIcon } from "./service-node-helpers";
+import { deployChip, nodeIssues, publicDomain, runtimeEvidence, runtimeLine } from "./node-status";
+import { VolumeTray } from "./VolumeTray";
+import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
+import type { StoreCanvasService, VolumeTray as Tray } from "./types";
+import { isIncompleteObservation } from "#/modules/runtime/runtime.collection";
+import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
 import { useRuntimeService, useRuntimeStatus } from "#/providers/runtime-provider";
-import { serviceOnline } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
 
 /**
- * What a Service's card says, from what the next Deploy does to it; else how it runs (`runtime`, null before any
- * runtime evidence of it). `observed`: the Servers' evidence is in, so no `runtime` means nothing of it runs.
+ * A Config Store Service on the canvas and in its phone list: what runs now on its status line, anything about Deploys
+ * in its chip. Opens its drawer; right-click removes it. `compact`: the phone list's two rows.
  */
-export function storeServiceStatus(service: ServiceListing, changeCount: number, runtime: RuntimeServiceRecord | null, uploaded = false, observed = false) {
-  if (service.change === "create") return { state: "success", text: "Service will be created", badge: "New" } as const;
-  if (service.change === "delete") return { state: "destructive", text: "Removed on the next deploy", badge: "Removing" } as const;
-  // A change shows before the Store's review counts it.
-  if (service.change === "update") {
-    return { state: "changed", text: changeCount === 0 ? "Changed" : `${changeCount} ${changeCount === 1 ? "change" : "changes"}`, badge: null } as const;
-  }
-  if (service.source === "empty" && !uploaded) return { state: undefined, text: "Empty", badge: null } as const;
-  if (!runtime && uploaded) return { state: undefined, text: "Uploaded", badge: null } as const;
-  if (!runtime) return { state: undefined, text: observed ? "Not running" : "Deployed", badge: null } as const;
-  const containers = `${runtime.containers.length} ${runtime.containers.length === 1 ? "container" : "containers"}`;
-  return serviceOnline(runtime)
-    ? { state: "success", text: `Online · ${containers}`, badge: null } as const
-    : { state: "warning", text: `Not running · ${containers}`, badge: null } as const;
-}
-
-/** A Config Store Service on the canvas and in its phone list: opens its drawer, right-click removes it. */
-export function StoreServiceCard({ service, subtitle, changeCount, runtimeIdentity, uploaded, selected, className }: StoreCanvasService & {
-  selected: boolean;
-  className: string;
-}) {
+export function StoreServiceCard({ service, domains, changeCount, runtimeIdentity, uploaded, desiredReplicas, selected, compact = false, className }:
+  StoreCanvasService & { selected: boolean; compact?: boolean; className: string }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const remove = useRemoveStoreService(store, service);
   const { runtime } = useRuntimeService(runtimeIdentity ?? "");
-  const { lensStatus, incompleteIds } = useRuntimeStatus();
-  const observed = lensStatus === "no_connection" || (lensStatus === "observed" && !isIncompleteObservation(incompleteIds));
-  const status = storeServiceStatus(service, changeCount, runtime, uploaded, observed);
-  const dot = getServiceStatusClasses(status.state);
+  const { lensStatus, incompleteIds, observedAt } = useRuntimeStatus();
+  const inFlight = useStoreDeployments(params.organizationSlug, store).data.pages[0]?.deployments.filter((deployment) => deployment.in_flight) ?? [];
   // Under an open Deployment Page: its Node Outcome, or dimmed when it didn't target this Service.
   const light = useNodeLighting(service.id);
+  const chip = deployChip(service, changeCount, inFlight);
+  const status = runtimeLine(service, runtime, {
+    evidence: runtimeEvidence(lensStatus, isIncompleteObservation(incompleteIds), observedAt),
+    uploaded, desiredReplicas, deploying: chip?.kind === "deploying",
+  });
+  const issues = nodeIssues(status, domains);
+  const domain = publicDomain(domains, service.name);
+  const staged = light === undefined && service.change !== null;
+  const icon = <Avatar><AvatarFallback>{getServiceIcon({ source: { type: service.source } })}</AvatarFallback></Avatar>;
+  const title = <CardTitle className="truncate">{service.name}</CardTitle>;
+  const subtitle = domain ? <CardDescription className={cn("truncate", domain.live && "text-foreground")}>{domain.hostname}</CardDescription> : null;
+  const chipped = <DeployChip light={light} chip={chip} />;
 
   return (
     <ServiceContextMenu serviceId={service.id} onDelete={remove}>
@@ -64,44 +54,58 @@ export function StoreServiceCard({ service, subtitle, changeCount, runtimeIdenti
         data-canvas-node={service.id}
         aria-current={selected ? "page" : undefined}
         draggable={false}
-        className={className}
+        className={cn("relative z-10 rounded-xl", className)}
       >
-        <Card size="node" state={light ? outcomeCardState(light.outcome) : status.state}
-          className={cn("h-full justify-between", light === null && "opacity-40")} data-selected={selected}>
-          <CardHeader>
-            <div className="flex items-start gap-3">
-              <Avatar><AvatarFallback>{getServiceIcon({ source: { type: service.source } })}</AvatarFallback></Avatar>
-              <div className="min-w-0 flex-1 overflow-hidden">
-                <CardTitle className="truncate">{service.name}</CardTitle>
-                {subtitle ? <CardDescription className="truncate">{subtitle}</CardDescription> : null}
+        <Card size={compact ? "sm" : "node"} state={staged ? (service.change === "delete" ? "destructive" : "changed") : undefined}
+          className={cn("h-full justify-between", light === null && "opacity-40", status.down && "ring-destructive")} data-selected={selected}>
+          {compact ? (
+            <CardContent className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3">
+              <div className="row-span-2">{icon}</div>
+              {title}
+              <div className="justify-self-end">{chipped}</div>
+              <div className="min-w-0">{subtitle}</div>
+              <StatusLine status={status} issues={issues} className="justify-self-end" />
+            </CardContent>
+          ) : <>
+            <CardHeader>
+              <div className="flex items-start gap-3">
+                {icon}
+                <div className="min-w-0 flex-1 overflow-hidden">{title}{subtitle}</div>
+                {chipped}
               </div>
-              {light ? <NodeOutcomeBadge light={light} /> : status.badge ? <Badge variant={status.badge === "New" ? "success" : "destructive"}>{status.badge}</Badge> : null}
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center gap-3">
-              <span className={cn("flex size-3 items-center justify-center rounded-full", dot.dot)}>
-                <span className={cn("size-1.5 rounded-full", dot.innerDot)} />
-              </span>
-              <span className="min-w-0 flex-1 truncate text-muted-foreground">{status.text}</span>
-            </div>
-          </CardContent>
+            </CardHeader>
+            <CardContent><StatusLine status={status} issues={issues} /></CardContent>
+          </>}
         </Card>
       </Link>
     </ServiceContextMenu>
   );
 }
 
-export function StoreServiceNode({ data, selected }: { data: StoreCanvasService; selected?: boolean }) {
+/** A Service's Volume trays, under its card. */
+export function ServiceTrays({ trays, selectedNodeId }: { trays: Tray[]; selectedNodeId: string | null }) {
+  return trays.map((tray) => <VolumeTray key={tray.volume.id} tray={tray} selected={tray.volume.id === selectedNodeId} />);
+}
+
+export function StoreServiceNode({ data }: { data: StoreCanvasService & { trays: Tray[] } }) {
   const pick = useNodePick(data.service.name);
+  // A tray's Volume can be what's selected, so the card asks the route rather than React Flow.
+  const { selectedNodeId } = useCanvasInspectorSelection();
+  const trays = <ServiceTrays trays={data.trays} selectedNodeId={selectedNodeId} />;
   if (pick) {
-    return <PickedNode pick={pick} name={data.service.name} nodeId={data.service.id} icon={getServiceIcon({ source: { type: data.service.source } })} />;
+    return <>
+      <div className="relative z-10">
+        <PickedNode pick={pick} name={data.service.name} nodeId={data.service.id} icon={getServiceIcon({ source: { type: data.service.source } })} />
+      </div>
+      {trays}
+    </>;
   }
   return (
     <>
       <Handle type="target" position={Position.Bottom} isConnectable={false} className="opacity-0" />
       <Handle type="source" position={Position.Top} isConnectable={false} className="opacity-0" />
-      <StoreServiceCard {...data} selected={selected ?? false} className="block h-36 w-72" />
+      <StoreServiceCard {...data} selected={selectedNodeId === data.service.id} className="block h-36 w-72" />
+      {trays}
     </>
   );
 }

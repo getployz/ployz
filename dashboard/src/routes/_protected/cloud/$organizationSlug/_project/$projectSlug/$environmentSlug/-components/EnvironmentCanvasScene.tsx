@@ -1,5 +1,6 @@
 import { CANVAS_FIT_VIEW } from "./canvas/constants";
 import { Suspense, useState } from "react";
+import { Schema } from "effect";
 import {
   Background,
   BackgroundVariant,
@@ -21,12 +22,15 @@ import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
 import { buildStoreEdges, buildStoreNodes } from "./canvas/nodes";
 import type { StoreCanvasService } from "./canvas/types";
-import { branchQuery, diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { branchQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { liveNodes } from "#/modules/config-store/store-branches";
-import { serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
+import { serviceChanges, serviceSettingRows } from "#/modules/config-store/store-services";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { StorePickingProvider } from "./new-branch/StoreNewBranchPanel";
 import { StorePrPickingProvider } from "./pr-environments/StorePrPlanPanel";
+
+/** A `replicas` Setting that says how many. */
+const isReplicaCount = Schema.is(Schema.Int);
 
 export function PendingCanvas() {
   return (
@@ -65,8 +69,8 @@ function CanvasWithData() {
   const { store: ref, environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { organizationId } = useLoaderData({ from: "/_protected/cloud/$organizationSlug" });
   // The branch view is refused unless this is a Branch.
-  const [servicesResult, settingsResult, diffResult, volumesResult, branch, namespace] = useStoreViews(organizationSlug,
-    [servicesQuery(ref), environmentSettingsQuery(ref), diffQuery(ref), volumesQuery(ref), branchQuery(ref), namespaceQuery(ref)] as const);
+  const [servicesResult, settingsResult, diffResult, volumesResult, branch, namespace, domainsResult] = useStoreViews(organizationSlug,
+    [servicesQuery(ref), environmentSettingsQuery(ref), diffQuery(ref), volumesQuery(ref), branchQuery(ref), namespaceQuery(ref), domainsQuery(ref)] as const);
   const { selectedNodeId } = useCanvasInspectorSelection();
   const positions = getCanvasPositionsCollection(organizationSlug, scope);
   const { data: positionRows } = useLiveSuspenseQuery({
@@ -81,14 +85,20 @@ function CanvasWithData() {
   const diff = requireView(diffResult);
   const volumes = requireView(volumesResult);
   const canvasPositions = positionRows.map((row) => parseLiveQueryRow(canvasPositionSchema, row));
+  // A card shows its public domain and counts the ones that need the user; without the view it shows neither.
+  const domains = domainsResult.ok ? domainsResult.value.domains : [];
   const store = {
-    services: services.services.map((service): StoreCanvasService => ({
+    services: services.services.map((service): StoreCanvasService => {
+      const replicas = serviceSettingRows(settings, service.name).get("replicas")?.value;
+      return {
       service,
-      subtitle: settingText(serviceSettingRows(settings, service.name).get(service.source === "git" ? "repository" : "image")?.value) || null,
+      domains: domains.filter((domain) => domain.service === service.name),
       changeCount: serviceChanges(diff, service.id).size,
       runtimeIdentity: namespace.ok ? `${namespace.value.namespace}/${service.private_dns}` : null,
       uploaded: service.source === "uploaded",
-    })),
+      desiredReplicas: isReplicaCount(replicas) ? replicas : null,
+      };
+    }),
     volumes: volumes.volumes,
     live: branch.ok ? liveNodes(branch.value.live, services.services) : [],
     diff,

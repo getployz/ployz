@@ -3,24 +3,22 @@ import { Link, useParams } from "@tanstack/react-router";
 import { HardDriveIcon } from "lucide-react";
 import type { VolumeListing } from "@ployz/sdk";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
-import { Badge } from "#/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
-import { outcomeCardState } from "#/components/deployment-outcome-badges";
+import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
 import { cn } from "#/lib/utils";
-import { volumeStorageText } from "#/modules/config-store/store-volumes";
 import { useNodeLighting } from "../deployment-page";
-import { NodeOutcomeBadge } from "./NodeOutcomeBadge";
 import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { stagedChip } from "./node-status";
+import { DeployChip, StatusLine } from "./service-node-helpers";
 
-/** A Config Store Volume on the canvas and in its phone list: its mount paths, and what the next Deploy does to it. */
+const NOT_MOUNTED = { word: "Not mounted", tone: "idle", down: false, since: null } as const;
+
+/** A Volume no Service here mounts, on the canvas and in its phone list: the one kind of Volume that is its own node. */
 export function StoreVolumeCard({ volume, selected, className }: { volume: VolumeListing; selected: boolean; className: string }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const paths = volume.mounts.map((mount) => mount.path);
-  const summary = paths.length === 0 ? "No mounts" : paths.length > 2 ? `${paths.slice(0, 2).join(", ")}, +${paths.length - 2}` : paths.join(", ");
-  const removing = volume.change === "delete";
   const light = useNodeLighting(volume.id);
+  const staged = light === undefined && volume.change !== null;
   return (
     <Link
       to={ENVIRONMENT_RESOURCE_ROUTE_TO}
@@ -29,24 +27,18 @@ export function StoreVolumeCard({ volume, selected, className }: { volume: Volum
       data-canvas-node={volume.id}
       aria-current={selected ? "page" : undefined}
       draggable={false}
-      className={className}
+      className={cn("rounded-xl", className)}
     >
-      <Card size="node" state={light ? outcomeCardState(light.outcome) : removing ? "destructive" : volume.change === "create" ? "success" : undefined}
+      <Card size="node" state={staged ? (volume.change === "delete" ? "destructive" : "changed") : undefined}
         className={cn("h-full justify-between", light === null && "opacity-40")} data-selected={selected}>
         <CardHeader>
           <div className="flex items-start gap-3">
             <Avatar><AvatarFallback><HardDriveIcon /></AvatarFallback></Avatar>
-            <div className="min-w-0 flex-1 overflow-hidden">
-              <CardTitle className="truncate">{volume.name}</CardTitle>
-              <CardDescription>Volume</CardDescription>
-            </div>
-            {light ? <NodeOutcomeBadge light={light} /> : removing ? <Badge variant="destructive">Removing</Badge> : volume.change === "create" ? <Badge variant="success">New</Badge> : null}
+            <CardTitle className="min-w-0 flex-1 truncate">{volume.name}</CardTitle>
+            <DeployChip light={light} chip={volume.change === null ? null : stagedChip(volume.change, 0)} />
           </div>
         </CardHeader>
-        <CardContent>
-          <p className="truncate text-muted-foreground">{volumeStorageText(volume.storage)}</p>
-          <p className="truncate text-muted-foreground" title={paths.join(", ")}>{summary}</p>
-        </CardContent>
+        <CardContent><StatusLine status={NOT_MOUNTED} issues={null} /></CardContent>
       </Card>
     </Link>
   );

@@ -249,6 +249,11 @@
 .bottom-bar-row[data-staged] { background: var(--changed-soft); }
 .bottom-bar:has(> [data-staged]) { border-color: var(--changed-border); }
 .canvas-node-list { padding-bottom: 5.5rem; }
+/* Canvas nodes draw their focus only while the user navigates by keyboard (`data-navigation`, set by the canvas), so a
+   panel closed after a click hands focus back to its node without drawing it. Only a dragged node casts a shadow. */
+[data-canvas-node] { outline: none; }
+[data-navigation="keyboard"] [data-canvas-node]:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+.react-flow__node.dragging [data-slot="card"] { box-shadow: 0 1px 3px rgb(0 0 0 / 0.10), 0 2px 4px -1px rgb(0 0 0 / 0.10); }
 .canvas-inspector-shade {
   grid-area: 1 / 1 / 3 / 2;
   z-index: 10;

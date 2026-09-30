@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -20,7 +20,8 @@ import { blurClickedNodeLink, useCanvasNavigation } from "./useCanvasNavigation"
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { useDeploymentFocus } from "../deployment-page";
 import { useServiceCreator } from "./useServiceCreator";
-import { LIVE_EDGE_STYLE } from "./nodes";
+import { LIVE_EDGE_STYLE, canvasNodeOf } from "./nodes";
+import { LitVolumeProvider } from "./VolumeTray";
 import { usePickingView } from "../new-branch/branch-picking";
 import { useVolumeCreator } from "./useVolumeCreator";
 import { useStoreChangeActions } from "./useStoreChangeActions";
@@ -70,7 +71,9 @@ export function CanvasFlow({
   const { selectedNodeId } = useCanvasInspectorSelection();
   const findableNodes = [...store.services.map(({ service }) => ({ id: service.id, name: service.name, type: "service" as const })),
     ...store.volumes.map((volume) => ({ id: volume.id, name: volume.name, type: "volume" as const }))];
-  const selectedNode = canvasNodes.find((node) => node.id === selectedNodeId);
+  // A Volume in a tray shows on its Service's node, so that is the node the canvas brings into view.
+  const focusNodeId = selectedNodeId === null ? null : canvasNodeOf(canvasNodes, selectedNodeId) ?? selectedNodeId;
+  const selectedNode = canvasNodes.find((node) => node.id === focusNodeId);
   const selectedNodePositionKey = selectedNode ? `${selectedNode.position.x}:${selectedNode.position.y}` : null;
   // While picking a Branch, links into what it would use live are dashed. A plan names nodes.
   const picking = usePickingView();
@@ -81,13 +84,17 @@ export function CanvasFlow({
   ]);
   const edges = pickedLiveIds.size === 0 ? canvasEdges : canvasEdges.map((edge) =>
     pickedLiveIds.has(edge.source) || pickedLiveIds.has(edge.target) ? { ...edge, style: LIVE_EDGE_STYLE } : edge);
+  const deploymentFocus = useDeploymentFocus();
   const { getViewportCenter } = useCanvasNavigation(
-    selectedNodeId,
+    focusNodeId,
     selectedNodePositionKey,
     flowReady,
-    // Picking a Branch brings the whole canvas into view beside the panel.
-    useDeploymentFocus() ?? (picking ? { key: "new-branch", nodeIds: canvasNodes.map((node) => node.id) } : null),
+    deploymentFocus
+      ? { key: deploymentFocus.key, nodeIds: [...new Set(deploymentFocus.nodeIds.flatMap((id) => canvasNodeOf(canvasNodes, id) ?? []))] }
+      // Picking a Branch brings the whole canvas into view beside the panel.
+      : picking ? { key: "new-branch", nodeIds: canvasNodes.map((node) => node.id) } : null,
   );
+  useKeyboardNavigation();
   const creator = useServiceCreator(params, environmentId, getViewportCenter);
   const volumeCreator = useVolumeCreator(
     params,
@@ -101,7 +108,7 @@ export function CanvasFlow({
   }
 
   return (
-    <>
+    <LitVolumeProvider>
       <div className="canvas-graph" inert={selectedNodeId !== null}>
       <div className="hidden h-full min-[861px]:block">
         <CanvasContextMenu
@@ -181,8 +188,30 @@ export function CanvasFlow({
         position={volumeCreator.creatorPosition}
         onCreate={volumeCreator.createVolume}
       />
-    </>
+    </LitVolumeProvider>
   );
+}
+
+/**
+ * Canvas nodes draw their focus only while the user navigates by keyboard: Tab, the arrows or the finder's `/` start
+ * that, and a pointer press ends it. Enter and Escape change nothing, so a panel opened by a click and closed with
+ * Escape hands focus back to its node without drawing it.
+ */
+function useKeyboardNavigation() {
+  useEffect(() => {
+    const root = document.documentElement;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Tab" || event.key === "/" || event.key.startsWith("Arrow")) root.dataset["navigation"] = "keyboard";
+    };
+    const onPointer = () => { delete root.dataset["navigation"]; };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("pointerdown", onPointer, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("pointerdown", onPointer, true);
+      delete root.dataset["navigation"];
+    };
+  }, []);
 }
 
 /**

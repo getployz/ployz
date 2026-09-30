@@ -1,0 +1,101 @@
+import type { DomainRow, ServiceListing } from "@ployz/sdk";
+import { describe, expect, it } from "vitest";
+import type { RuntimeContainerRecord } from "#/modules/runtime/runtime.collection";
+import { deployChip, nodeIssues, publicDomain, runtimeEvidence, runtimeLine } from "./node-status";
+
+const service: ServiceListing = { source: "image", change: null, template: null, id: "web", name: "web", private_dns: "web" };
+const container = (state: string, health?: string): RuntimeContainerRecord =>
+  ({ id: state, displayName: "web", machineId: "m", namespace: "n", kind: "service", runtime: health ? { state, health } : { state } });
+const runtime = (...containers: RuntimeContainerRecord[]) => ({ containers });
+const seen = { evidence: { kind: "live" } as const, uploaded: false, desiredReplicas: null, deploying: false };
+
+describe("runtimeLine", () => {
+  it("says what runs now in one word", () => {
+    expect(runtimeLine(service, runtime(container("running", "healthy")), seen).word).toBe("Online");
+    expect(runtimeLine(service, runtime(container("running", "unhealthy")), seen).word).toBe("Unhealthy");
+    expect(runtimeLine(service, runtime(container("exited"), container("restarting")), seen)).toMatchObject({ word: "Crashed", tone: "bad", down: true });
+  });
+
+  it("says Not running once the Servers' whole evidence has none of it, and Deployed while a Server is missing from it", () => {
+    expect(runtimeLine(service, null, seen)).toMatchObject({ word: "Not running", down: true });
+    expect(runtimeLine(service, null, { ...seen, evidence: { kind: "partial" } })).toMatchObject({ word: "Deployed", down: false });
+  });
+
+  it("never guesses without current evidence: it waits, greys the last word with its age, or says why", () => {
+    const since = new Date("2026-09-30T10:00:00Z");
+    const crashed = runtime(container("exited"));
+    expect(runtimeLine(service, crashed, { ...seen, evidence: { kind: "connecting" } }).tone).toBe("pending");
+    expect(runtimeLine(service, crashed, { ...seen, evidence: { kind: "stale", since } })).toEqual({ word: "Crashed", tone: "quiet", down: false, since });
+    expect(runtimeLine(service, null, { ...seen, evidence: { kind: "unreachable" } })).toMatchObject({ word: "Can't reach servers", tone: "unreachable" });
+    expect(runtimeLine(service, null, { ...seen, evidence: { kind: "no_servers" } })).toMatchObject({ word: "Needs a server", down: false });
+  });
+
+  it("says Not deployed for a new Service and No source for an empty one, whatever runs", () => {
+    expect(runtimeLine({ ...service, change: "create" }, null, seen).word).toBe("Not deployed");
+    expect(runtimeLine({ ...service, source: "empty" }, null, seen).word).toBe("No source");
+    expect(runtimeLine({ ...service, source: "empty" }, null, { ...seen, uploaded: true }).word).toBe("Not running");
+    expect(runtimeLine({ ...service, change: "create" }, null, { ...seen, evidence: { kind: "unreachable" } }).word).toBe("Not deployed");
+  });
+
+  it("says Degraded when fewer replicas serve than it asks for, except while a Deploy rolls them", () => {
+    const one = runtime(container("running", "healthy"), container("exited"));
+    expect(runtimeLine(service, one, { ...seen, desiredReplicas: 2 }).word).toBe("Degraded");
+    expect(runtimeLine(service, one, { ...seen, desiredReplicas: 2, deploying: true }).word).toBe("Online");
+    expect(runtimeLine(service, one, { ...seen, desiredReplicas: 1 }).word).toBe("Online");
+  });
+});
+
+describe("nodeIssues", () => {
+  const domain = (status: DomainRow["status"]) => ({ status });
+
+  it("counts what the user can fix, red when a Service is down", () => {
+    expect(nodeIssues(runtimeLine(service, runtime(container("exited")), seen), [domain("needs_attention")])).toEqual({ count: 2, tone: "bad" });
+    expect(nodeIssues(runtimeLine(service, runtime(container("running", "healthy")), seen), [domain("needs_attention"), domain("setting_up")]))
+      .toEqual({ count: 1, tone: "warn" });
+  });
+
+  it("counts nothing for a healthy, new or empty Service", () => {
+    expect(nodeIssues(runtimeLine(service, runtime(container("running", "not_configured")), seen), [domain("ready")])).toBeNull();
+    expect(nodeIssues(runtimeLine({ ...service, change: "create" }, null, seen), [])).toBeNull();
+  });
+});
+
+describe("publicDomain", () => {
+  const generated = { kind: "generated", prefix: "web", hostname: "web.acme.ployz.app", service: "web", port: null, status: "ready", reason: null, action: null } as const;
+  const custom = { kind: "custom", hostname: "acme.com", service: "web", port: null, status: "setting_up", reason: null, action: null } as const;
+
+  it("is the first custom domain, else the generated one, muted until it serves", () => {
+    expect(publicDomain([generated, custom], "web")).toEqual({ hostname: "acme.com", live: false });
+    expect(publicDomain([generated], "web")).toEqual({ hostname: "web.acme.ployz.app", live: true });
+    expect(publicDomain([{ ...generated, hostname: null }], "web")).toBeNull();
+    expect(publicDomain([custom], "api")).toBeNull();
+  });
+});
+
+describe("deployChip", () => {
+  const deployment = (status: "queued" | "running", services: string[]) => ({ status, services, started_at: status === "running" ? 100 : null, admitted_at: 90 });
+
+  it("puts a Deploy in flight first: running, else queued, when it targets the Service or every Service", () => {
+    expect(deployChip({ ...service, change: "update" }, 2, [deployment("queued", []), deployment("running", ["web"])])).toEqual({ kind: "deploying", since: 100 });
+    expect(deployChip(service, 0, [deployment("queued", ["web"])])).toEqual({ kind: "queued" });
+    expect(deployChip(service, 0, [deployment("running", ["api"])])).toBeNull();
+  });
+
+  it("says what the next Deploy does otherwise", () => {
+    expect(deployChip({ ...service, change: "create" }, 0, [])).toEqual({ kind: "staged", label: "New", variant: "changed" });
+    expect(deployChip({ ...service, change: "update" }, 1, [])).toEqual({ kind: "staged", label: "1 change", variant: "changed" });
+    expect(deployChip({ ...service, change: "update" }, 0, [])).toEqual({ kind: "staged", label: "Changed", variant: "changed" });
+    expect(deployChip({ ...service, change: "delete" }, 0, [])).toEqual({ kind: "staged", label: "Removing", variant: "destructive" });
+  });
+});
+
+
+describe("runtimeEvidence", () => {
+  it("reads the Runtime Watch status: a lost connection keeps its last evidence and when it was current", () => {
+    expect(runtimeEvidence("observed", false, null)).toEqual({ kind: "live" });
+    expect(runtimeEvidence("observed", true, null)).toEqual({ kind: "partial" });
+    expect(runtimeEvidence("unavailable", false, "2026-09-30T10:00:00Z")).toEqual({ kind: "stale", since: new Date("2026-09-30T10:00:00Z") });
+    expect(runtimeEvidence("no_connection", false, null)).toEqual({ kind: "no_servers" });
+    expect(runtimeEvidence("unreachable", false, null)).toEqual({ kind: "unreachable" });
+  });
+});

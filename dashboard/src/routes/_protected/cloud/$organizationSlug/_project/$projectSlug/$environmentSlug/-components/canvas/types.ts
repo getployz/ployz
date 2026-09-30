@@ -1,4 +1,4 @@
-import type { DiffView, ServiceListing, VolumeListing } from "@ployz/sdk";
+import type { DiffView, DomainRow, ServiceListing, VolumeListing } from "@ployz/sdk";
 import type { Node } from "@xyflow/react";
 
 export type CanvasResourceType = "service" | "volume";
@@ -6,17 +6,23 @@ export type CanvasResourceType = "service" | "volume";
 /** A Service as the Config Store lists it, with what its card shows. */
 export type StoreCanvasService = {
   service: ServiceListing;
-  /** Its image or repository. */
-  subtitle: string | null;
+  /** Its public domains, with their status. */
+  domains: DomainRow[];
   /** How many of its Settings the next Deploy changes. */
   changeCount: number;
   /** How runtime evidence names it, `NAMESPACE/PRIVATE_DNS`; null when the Environment has no Namespace. */
   runtimeIdentity: string | null;
   /** An empty Service here last deployed from an Uploaded Source (`deploy --upload`). */
   uploaded: boolean;
+  /** How many replicas it asks for, when its Settings say. */
+  desiredReplicas: number | null;
 };
 
+/** A Volume as a tray under a Service that mounts it; `sharedWith`: the other Services here that mount it. */
+export type VolumeTray = { volume: VolumeListing; sharedWith: string[] };
+
 export type CanvasStoreServiceNode = Node<StoreCanvasService & {
+  trays: VolumeTray[];
   resourceType: "service";
   resourceId: string;
   environmentId: string;

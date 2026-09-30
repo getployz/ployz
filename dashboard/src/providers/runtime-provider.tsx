@@ -140,6 +140,8 @@ export function useRuntimeStatus() {
     // DNS publication, route binding, certificate use, or service health.
     certificates: row?.certificates ?? [],
     incompleteIds: row?.incompleteIds ?? EMPTY_RUNTIME_INCOMPLETE_IDS,
+    /** When the evidence shown was current; kept when the connection drops, null before any. */
+    observedAt: row?.observedAt ?? null,
   };
 }
 
