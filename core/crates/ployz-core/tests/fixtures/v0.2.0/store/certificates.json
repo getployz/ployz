@@ -1,0 +1,12 @@
+{
+  "certificate": "-----BEGIN CERTIFICATE-----\nMIIBZTCCAQqgAwIBAgIUJPVSAlQXO6dq3wtkSHpeN81cD6YwCgYIKoZIzj0EAwIw\nITEfMB0GA1UEAwwWcmNnZW4gc2VsZiBzaWduZWQgY2VydDAgFw03NTAxMDEwMDAw\nMDBaGA80MDk2MDEwMTAwMDAwMFowITEfMB0GA1UEAwwWcmNnZW4gc2VsZiBzaWdu\nZWQgY2VydDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABNpAo6P51OEWNG/ZZ+P6\n5h/g3kgOGbYxpbf8YlyVp9BnLFCg1tQQqEm5gHsuen3vPxt1agoso5FmV+PHy+0R\nn1SjHjAcMBoGA1UdEQQTMBGCD2FwcC5leGFtcGxlLmNvbTAKBggqhkjOPQQDAgNJ\nADBGAiEAwsYXVko/tVFA5DrcAQVTE9iWLfxNFL+ajBRU+sxM3G4CIQDVm62KIy6n\nlu7AOTWQB3cfmQZ4gqh8ZfvuY/9VZdTOOQ==\n-----END CERTIFICATE-----\n",
+  "challenge_response": "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "challenge_token": "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
+  "failures": 2,
+  "last_error": "authority refused the order",
+  "last_failure": "authority",
+  "next_attempt_at": "2024-01-01T01:00:00Z",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgzUrYkMj/YDguuwZv\nIJJQ5pI9+iB/msQh+sNLKmR0bJahRANCAATaQKOj+dThFjRv2Wfj+uYf4N5IDhm2\nMaW3/GJclafQZyxQoNbUEKhJuYB7Lnp97z8bdWoKLKORZlfjx8vtEZ9U\n-----END PRIVATE KEY-----\n",
+  "published": false,
+  "route": "via_proxy"
+}

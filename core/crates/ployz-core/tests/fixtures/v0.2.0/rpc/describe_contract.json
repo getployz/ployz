@@ -1,0 +1,19 @@
+{
+  "request": {
+    "command": "describe_contract",
+    "payload": {},
+    "protocol_major": 1
+  },
+  "response": {
+    "kind": "contract_description",
+    "payload": {
+      "capabilities": [
+        "ployz.image.pull-from-machine.v1"
+      ],
+      "daemon_version": "0.2.0",
+      "machine_id": "0123456789abcdef0123456789abcdef",
+      "protocol_major": 1
+    },
+    "protocol_major": 1
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "id": {
+    "machine_id": "0123456789abcdef0123456789abcdef",
+    "name": "data"
+  },
+  "labels": {
+    "purpose": "database"
+  },
+  "options": {
+    "type": "none"
+  },
+  "storage": {
+    "driver": "local",
+    "kind": "plain"
+  }
+}

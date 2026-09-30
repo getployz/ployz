@@ -21,6 +21,8 @@ pub mod diag;
 pub mod dns;
 pub mod docker;
 pub(crate) mod filesystem;
+#[cfg(test)]
+mod frozen_format_tests;
 mod host_capacity;
 pub(crate) mod ingress;
 pub mod installer;
