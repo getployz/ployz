@@ -247,12 +247,13 @@ fn add_service(
 fn exposed_port(dockerfile: &str) -> Option<u16> {
     // ponytail: a port the final stage inherits from its base image isn't seen.
     let mut port = None;
-    for line in dockerfile.lines() {
-        let mut words = line.split_whitespace();
-        match words.next() {
-            Some(word) if word.eq_ignore_ascii_case("FROM") => port = None,
-            Some(word) if word.eq_ignore_ascii_case("EXPOSE") && port.is_none() => {
-                port = words.find_map(|port| port.split('/').next()?.parse().ok());
+    for (keyword, arguments) in crate::build::dockerfile_instructions(dockerfile) {
+        match keyword.as_str() {
+            "FROM" => port = None,
+            "EXPOSE" if port.is_none() => {
+                port = arguments
+                    .split_whitespace()
+                    .find_map(|port| port.split('/').next()?.parse().ok());
             }
             _ => {}
         }
@@ -287,6 +288,7 @@ mod tests {
         for (dockerfile, port) in [
             ("FROM nginx\nEXPOSE 80\nEXPOSE 443", Some(80)),
             ("FROM x\n  expose 3000/tcp 9000", Some(3000)),
+            ("FROM x\nEXPOSE \\\n  8080", Some(8080)),
             ("FROM x\nEXPOSE $PORT", None),
             ("FROM x", None),
             (

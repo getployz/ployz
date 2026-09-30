@@ -124,19 +124,18 @@ pub enum BuildVariables {
 impl BuildVariables {
     /// The `ARG` names `dockerfile` declares, in every stage.
     fn declared(dockerfile: &str) -> Self {
-        let mut names = BTreeSet::new();
-        for line in dockerfile.lines() {
-            let mut words = line.split_whitespace();
-            if words
-                .next()
-                .is_some_and(|word| word.eq_ignore_ascii_case("ARG"))
-            {
-                names.extend(words.filter_map(|word| {
-                    let name = word.split('=').next()?;
-                    (!name.is_empty()).then(|| name.to_owned())
-                }));
-            }
-        }
+        let names = crate::build::dockerfile_instructions(dockerfile)
+            .into_iter()
+            .filter(|(keyword, _)| keyword == "ARG")
+            .flat_map(|(_, arguments)| {
+                arguments
+                    .split_whitespace()
+                    .filter_map(|word| word.split('=').next())
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         Self::Declared(names)
     }
 
