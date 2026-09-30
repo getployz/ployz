@@ -422,6 +422,36 @@
           "x-ployz-data-loss": false,
           "x-ployz-secret": false
         },
+        "template": {
+          "additionalProperties": false,
+          "description": "The Service Template it was created from, and its version. It changes nothing that runs. Unset forgets it.",
+          "examples": [
+            {
+              "id": "postgres",
+              "version": 1
+            }
+          ],
+          "properties": {
+            "id": {
+              "maxLength": 63,
+              "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+              "type": "string"
+            },
+            "version": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "version"
+          ],
+          "title": "Template",
+          "type": "object",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
         "waitForCi": {
           "default": false,
           "description": "Hold an auto-deploy until every GitHub check suite of the commit passes. Takes effect at once.",

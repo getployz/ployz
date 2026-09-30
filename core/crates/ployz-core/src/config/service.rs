@@ -34,6 +34,20 @@ pub struct AuthoredServiceConfig {
     pub managed_hostnames: Vec<ServiceManagedHostname>,
     #[serde(default)]
     pub build: ServiceBuildConfig,
+    /// The Service Template it was created from; authoring metadata only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub template: Option<ServiceTemplate>,
+}
+
+/// Which Service Template, and which version of it, a Service was created from.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceTemplate {
+    /// The template, as a DNS label such as `postgres`.
+    pub id: String,
+    /// Its version, from 1.
+    pub version: u32,
 }
 
 /// Service settings with environment and attachments derived by compilation.

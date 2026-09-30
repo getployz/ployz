@@ -30,8 +30,8 @@ function cached() {
     { path: "web.startCommand", value: "serve", default: null, apply: "staged" },
   ] } satisfies EnvironmentView);
   put(servicesQuery(ref), { environment, services: [
-    { id: id("w"), name: "web", private_dns: "web", source: "image", change: "update" },
-    { id: id("c"), name: "cache", private_dns: "cache", source: "image", change: "create" },
+    { id: id("w"), name: "web", private_dns: "web", source: "image", change: "update", template: null },
+    { id: id("c"), name: "cache", private_dns: "cache", source: "image", change: "create", template: null },
   ] } satisfies ServicesView);
   const read = <V,>(query: Parameters<typeof storeViewOptions>[2]) => (queryClient.getQueryData<{ value: V }>(key(query)))?.value;
   return { queryClient, read };

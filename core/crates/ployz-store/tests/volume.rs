@@ -53,6 +53,7 @@ fn shop() -> (ConfigStore, Actor) {
                 environment: EnvironmentRef::default(),
                 name: ServiceName::parse("web").unwrap(),
                 image: Some("postgres:17".into()),
+                template: None,
             },
         )
         .unwrap();

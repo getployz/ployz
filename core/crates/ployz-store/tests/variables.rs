@@ -46,6 +46,7 @@ fn shop(store: &ConfigStore) {
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(name).unwrap(),
                     image: Some("nginx:1".into()),
+                    template: None,
                 },
             )
             .unwrap();

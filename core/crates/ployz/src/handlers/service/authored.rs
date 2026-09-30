@@ -86,6 +86,7 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
                 environment,
                 name: name.clone(),
                 image,
+                template: None,
             })?
     };
     staged(matches, &created, "Staged new Service")

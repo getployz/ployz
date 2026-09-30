@@ -57,6 +57,7 @@ fn shop() -> (ConfigStore, Actor) {
                     environment: at(environment),
                     name: ServiceName::parse("web").unwrap(),
                     image: Some("nginx:1".into()),
+                    template: None,
                 },
             )
             .unwrap();
