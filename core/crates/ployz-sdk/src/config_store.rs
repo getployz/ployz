@@ -98,8 +98,19 @@ impl ConfigStore {
         let who = actor(organization, principal)?;
         let command: ployz_store::Command = decode(command, "Expected a Config Store command")?;
         let trusted = evidence(trusted)?;
-        self.run(move |store| store.write_trusted(&who, &command, &trusted))
+        self.run(move |store| store.commit(&who, &command, &trusted))
             .await
+    }
+
+    /// The pull requests (`PullRequestRef[]`) whose checks a change in Environment
+    /// `environment` may move, such as a Deployment of it ending. Only Cloud calls this.
+    ///
+    /// # Errors
+    /// Returns `invalid_argument` for a malformed ID, or a storage error.
+    #[napi]
+    pub async fn checks(&self, environment: String) -> Result<serde_json::Value> {
+        let environment = ployz_store::EnvironmentId::parse(environment).map_err(rpc_to_napi)?;
+        self.run(move |store| store.checks(&environment)).await
     }
 
     /// The Git Services Deployment `deployment` builds (`GitSource[]`), each with its

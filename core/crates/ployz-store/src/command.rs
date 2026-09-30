@@ -321,6 +321,54 @@ impl BatchCommand {
     }
 }
 
+/// A write's answer as Cloud gets it: what the command did, and the pull requests
+/// whose GitHub check it may move, which Cloud publishes again.
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+#[ts(rename = "ConfigCommitted")]
+pub struct Committed {
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub written: Written,
+    /// The open PR Environments' pull requests in the Project of the Environment it
+    /// wrote; none when it wrote none.
+    pub checks: Vec<crate::PullRequestRef>,
+}
+
+impl Written {
+    /// The Environment it wrote, if it wrote one that still exists.
+    #[must_use]
+    pub fn environment(&self) -> Option<&crate::EnvironmentId> {
+        match self {
+            Self::Environment(created) => Some(&created.environment.id),
+            Self::Service(staged) | Self::ServiceRenamed(staged) | Self::ServiceRemoved(staged) => {
+                Some(&staged.environment.id)
+            }
+            Self::Volume(staged) | Self::VolumeRemoved(staged) | Self::VolumeRenamed(staged) => {
+                Some(&staged.environment.id)
+            }
+            Self::Edited(edited) => Some(&edited.environment.id),
+            Self::Published(published) => Some(&published.environment.id),
+            Self::Discarded(discarded) => Some(&discarded.environment.id),
+            Self::Deployment(deployment) => Some(&deployment.environment_id),
+            Self::Domain(staged) => Some(&staged.environment.id),
+            Self::Moved(moved) => Some(&moved.into.id),
+            Self::Batch(batched) => batched.results.last().and_then(Self::environment),
+            // A new Project or Branch has no pull request yet; the rest write no
+            // Environment's config, or delete it.
+            Self::Project(_)
+            | Self::ProjectRenamed(_)
+            | Self::Automated(_)
+            | Self::Branch(_)
+            | Self::BuildOrder(_)
+            | Self::DefaultEnvironment(_)
+            | Self::BranchSetup(_)
+            | Self::EnvironmentRemoved(_)
+            | Self::ProjectRemoved(_)
+            | Self::PrPlans(_) => None,
+        }
+    }
+}
+
 /// What each command of a [`Batch`] did, in order.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct Batched {
