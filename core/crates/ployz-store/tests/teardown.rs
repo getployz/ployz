@@ -126,6 +126,7 @@ fn admit(
             version,
             upload: None,
             accept_volume_loss: accept_volume_loss.clone(),
+            message: None,
         }),
     };
     let trusted = Trusted {

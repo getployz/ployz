@@ -445,6 +445,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                         version: None,
                         upload: None,
                         accept_volume_loss: Vec::new(),
+                        message: None,
                     }),
                     &ployz_store::Trusted::default(),
                 )
@@ -615,6 +616,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
                             uploader: None,
                         }),
                         accept_volume_loss: Vec::new(),
+                        message: None,
                     }),
                     &ployz_store::Trusted::default(),
                 )

@@ -48,6 +48,11 @@ pub(crate) fn deploy_command() -> Command {
             value("expect-version", None)
                 .value_name("VERSION")
                 .help("Refuse unless this is still the latest `ployz diff` version"),
+        )
+        .arg(
+            value("message", None)
+                .value_name("TEXT")
+                .help("Say what this Deploy ships; shown on the Deployment"),
         ),
     )
     .arg(
@@ -170,6 +175,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         version: matches.get_one::<String>("expect-version").cloned(),
         source,
         accept,
+        message: matches.get_one::<String>("message").cloned(),
     };
     upload_and_ship(matches, &store, request, events)?.finish()
 }
@@ -181,6 +187,7 @@ pub(super) struct Request {
     pub(super) version: Option<String>,
     pub(super) source: Option<PathBuf>,
     pub(super) accept: Vec<VolumeName>,
+    pub(super) message: Option<String>,
 }
 
 /// Upload `request.source`, admit the Deployment, then run or follow it.
@@ -196,6 +203,7 @@ pub(super) fn upload_and_ship(
         version,
         source,
         accept,
+        message,
     } = request;
     let upload = source.as_deref().map(uploaded_source).transpose()?;
     // The in-process Store trusts this CLI to observe the Servers; Cloud observes
@@ -221,6 +229,7 @@ pub(super) fn upload_and_ship(
                 version,
                 upload,
                 accept_volume_loss: accept,
+                message,
             }),
             volumes,
         )

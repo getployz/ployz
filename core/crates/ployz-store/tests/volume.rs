@@ -144,6 +144,7 @@ fn admit_at(
                     .iter()
                     .map(|name| VolumeName::parse(*name).unwrap())
                     .collect(),
+                message: None,
             }),
             &Trusted {
                 volumes: observed,

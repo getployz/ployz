@@ -696,7 +696,11 @@ upload?: UploadedSource | null,
  * `confirmation_required` unless it names each one and passes the `version`
  * that refusal handed back.
  */
-accept_volume_loss?: Array<VolumeName>, };
+accept_volume_loss?: Array<VolumeName>,
+/**
+ * What this Deploy ships, in the admitter's words; shown on the Deployment.
+ */
+message?: string | null, };
 
 export type DeployEvent = { "type": "progress", completed: number, total: number, rows: Array<OperationRow>, } | { "type": "outcome", outcome: DeployOutcome<ExecutionError>, } | { "type": "images_pruned", report: ImageCleanupReport, };
 
@@ -831,7 +835,11 @@ started_at: number | null,
  * When it ended, in Unix seconds: its outcome recorded, or cancelled before
  * it ran.
  */
-ended_at: number | null, };
+ended_at: number | null,
+/**
+ * What whoever admitted it said it ships.
+ */
+message: string | null, };
 
 export type DeploymentView = { environment: EnvironmentSummary,
 /**
@@ -892,7 +900,11 @@ started_at: number | null,
  * When it ended, in Unix seconds: its outcome recorded, or cancelled before
  * it ran.
  */
-ended_at: number | null, };
+ended_at: number | null,
+/**
+ * What whoever admitted it said it ships.
+ */
+message: string | null, };
 
 export type DeploymentsQuery = { environment: EnvironmentRef,
 /**

@@ -80,6 +80,7 @@ CREATE TABLE config_deployment (
     lease BIGINT NOT NULL DEFAULT 0,
     started BIGINT,
     ended BIGINT,
+    message TEXT,
     UNIQUE (environment_id, number)
 );
 
@@ -177,7 +178,7 @@ CREATE TABLE config_waiting_deploy (
 CREATE TABLE config_environment_branch (
     environment_id TEXT PRIMARY KEY REFERENCES config_environment (id) ON DELETE CASCADE,
     organization_id TEXT NOT NULL,
-    parent_id TEXT NOT NULL REFERENCES config_environment (id),
+    parent_id TEXT NOT NULL REFERENCES config_environment (id) ON DELETE CASCADE,
     kept BIGINT NOT NULL,
     base TEXT NOT NULL,
     setup TEXT NOT NULL,

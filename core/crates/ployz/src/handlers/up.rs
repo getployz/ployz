@@ -89,6 +89,7 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
             version: None,
             source: Some(directory),
             accept: Vec::new(),
+            message: None,
         },
         events,
     )?;

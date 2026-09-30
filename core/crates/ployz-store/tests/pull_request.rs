@@ -455,6 +455,7 @@ fn a_closed_pull_request_leaves_the_servers_before_the_store() {
                 version: None,
                 upload: None,
                 accept_volume_loss: Vec::new(),
+                message: None,
             }),
             &Trusted::default(),
         )
@@ -570,6 +571,7 @@ fn idle_branches_close_after_a_week_unless_kept() {
                     version: None,
                     upload: None,
                     accept_volume_loss: Vec::new(),
+                    message: None,
                 }),
                 &Trusted::default(),
             )

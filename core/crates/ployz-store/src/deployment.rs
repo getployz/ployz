@@ -98,7 +98,12 @@ pub struct DeploymentSummary {
     /// it ran.
     #[ts(type = "number | null")]
     pub ended_at: Option<i64>,
+    /// What whoever admitted it said it ships.
+    pub message: Option<String>,
 }
+
+/// The most characters a Deployment message has.
+pub(crate) const MESSAGE_MAX: usize = 500;
 
 /// How long a runner holds a claimed Deployment without recording anything. Every
 /// record renews it; once it lapses the runner is gone and the outcome is unknown.
@@ -384,6 +389,8 @@ pub(crate) struct Frozen {
     pub(crate) credentials: BTreeMap<ServiceName, EncryptedSecretValue>,
     /// The Cluster Domain its generated domains expand under.
     pub(crate) cluster_domain: Option<Hostname>,
+    /// Its target Services with no source of their own: they run only an upload.
+    pub(crate) sourceless: Vec<String>,
 }
 
 impl Frozen {
@@ -415,7 +422,8 @@ pub(crate) struct Stored {
 }
 
 const COLUMNS: &str = "id, environment_id, number, status, saved_revision, services, nodes, \
-     namespace, run, upload, cluster_domain, runner, lease, admitted_by, admitted, started, ended";
+     namespace, run, upload, cluster_domain, runner, lease, admitted_by, admitted, started, ended, \
+     message";
 
 /// SQL selecting Deployments that may still run: queued, or claimed by a runner
 /// whose lease holds.
@@ -510,11 +518,21 @@ pub(crate) fn freeze(
         &crate::branch::Lowering::default(),
         None,
     )?;
+    let sourceless = saved
+        .services
+        .iter()
+        .filter(|service| {
+            matches!(service.config.source, ServiceSource::Empty { .. })
+                && nodes.iter().any(|node| node.id() == service.id)
+        })
+        .map(|service| service.slug.clone())
+        .collect();
     Ok(Frozen {
         nodes,
         namespace,
         credentials: BTreeMap::new(),
         cluster_domain: cluster_domain.cloned(),
+        sourceless,
     })
 }
 
@@ -643,7 +661,12 @@ fn json_value(value: &impl Serialize) -> Value {
 pub(crate) fn admit(
     tx: &mut dyn Tx,
     who: &Actor,
-    (id, services, upload): (&DeploymentId, &[ServiceName], Option<UploadedSource>),
+    (id, services, upload, message): (
+        &DeploymentId,
+        &[ServiceName],
+        Option<UploadedSource>,
+        Option<String>,
+    ),
     environment: &EnvironmentId,
     saved: Revision,
     frozen: &Frozen,
@@ -667,6 +690,25 @@ pub(crate) fn admit(
             None => None,
         },
     };
+    // A Service with nothing to run would fail the whole Deploy on the Servers.
+    if let (None, Some(name)) = (&upload, frozen.sourceless.first()) {
+        return Err(error::invalid(
+            format!("{name} has nothing to run yet: add an image or connect a repository"),
+            json!({ "service": name }),
+        ));
+    }
+    let message = message
+        .map(|message| message.trim().to_owned())
+        .filter(|message| !message.is_empty());
+    if message
+        .as_ref()
+        .is_some_and(|message| message.chars().count() > MESSAGE_MAX)
+    {
+        return Err(error::invalid(
+            format!("A Deployment message is at most {MESSAGE_MAX} characters"),
+            json!({}),
+        ));
+    }
     let number = queue(tx, environment)?;
     let summary = DeploymentSummary {
         id: id.clone(),
@@ -681,12 +723,13 @@ pub(crate) fn admit(
         admitted_at: now(),
         started_at: None,
         ended_at: None,
+        message,
     };
     tx.execute(
         "INSERT INTO config_deployment \
          (id, organization_id, environment_id, number, status, saved_revision, services, nodes, \
-          namespace, run, credentials, upload, cluster_domain, admitted, admitted_by) \
-         VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+          namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, message) \
+         VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         &[
             id.as_str().into(),
             who.organization.as_str().into(),
@@ -704,6 +747,7 @@ pub(crate) fn admit(
             frozen.cluster_domain.as_ref().map(Hostname::as_str).into(),
             summary.admitted_at.into(),
             who.principal.as_ref().map(Principal::as_str).into(),
+            summary.message.as_deref().into(),
         ],
     )?;
     Ok(summary)
@@ -780,9 +824,9 @@ pub(crate) fn retry(
     tx.execute(
         "INSERT INTO config_deployment \
          (id, organization_id, environment_id, number, status, saved_revision, services, nodes, \
-          namespace, run, credentials, upload, cluster_domain, admitted, admitted_by) \
+          namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, message) \
          SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, services, \
-          nodes, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6 \
+          nodes, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message \
          FROM config_deployment WHERE id = ?4",
         &[
             id.as_str().into(),
@@ -1690,6 +1734,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             admitted_at: row.int(14)?,
             started_at: row.optional_int(15)?,
             ended_at: row.optional_int(16)?,
+            message: row.optional_text(17)?.map(str::to_owned),
         },
         environment: row.parse(1, "identity")?,
         nodes: row.json(6, "Deployment")?,
