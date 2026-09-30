@@ -29,6 +29,9 @@ export function createVolumeCommand(id: string, environment: EnvironmentRef, nam
 
 const GB = 1_000_000_000;
 
+/** A new Volume's managed limit in GB, as the Store defaults one (`VolumeKind::provisioned_default`). */
+export const DEFAULT_VOLUME_GB = "5";
+
 /**
  * Invalid managed limits never become an implicit Docker opt-out. GB are decimal and read exactly, to the byte: no
  * floating point between what was typed and what is stored.

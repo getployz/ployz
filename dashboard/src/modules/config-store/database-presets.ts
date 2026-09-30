@@ -1,5 +1,6 @@
 import type { ConfigCommand, EnvironmentRef } from "@ployz/sdk";
 import { randomText } from "./store-services";
+import { DEFAULT_VOLUME_GB } from "./store-volumes";
 
 /**
  * A Database Preset: a common database set up as Railway sets it up (image, data path, start command, variables),
@@ -67,8 +68,8 @@ const LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 export const randomPassword = () => randomText(LETTERS, 32);
 
 /**
- * One Batch that creates the preset's Service and its Volume (managed, 5 GB, like any new Volume) mounted at its data
- * path, then sets its start command and variables. All of it saves, or none.
+ * One Batch that creates the preset's Service and its Volume (managed, at the default limit, like any new Volume)
+ * mounted at its data path, then sets its start command and variables. All of it saves, or none.
  */
 export function databaseCommand(preset: DatabasePreset, target: {
   service: string; volume: string; environment: EnvironmentRef; name: string; volumeName: string; password: string;
@@ -83,7 +84,7 @@ export function databaseCommand(preset: DatabasePreset, target: {
       // The Store checks the ids are UUIDs.
       { command: "create_service", id: service, environment, name, image: preset.image },
       { command: "create_volume", id: volume, environment, name: volumeName,
-        storage: { kind: "provisioned", maximumBytes: 5_000_000_000 }, mounts: [{ service: name, path: preset.dataPath }] },
+        storage: { kind: "provisioned", maximumBytes: Number(DEFAULT_VOLUME_GB) * 1_000_000_000 }, mounts: [{ service: name, path: preset.dataPath }] },
       { command: "edit", environment, expect: null, changes: [{ op: "patch", path: name,
         value: preset.startCommand === undefined ? { env } : { startCommand: preset.startCommand, env } }] },
     ],

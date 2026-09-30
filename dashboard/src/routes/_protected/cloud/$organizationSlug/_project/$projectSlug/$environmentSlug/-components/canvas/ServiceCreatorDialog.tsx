@@ -7,7 +7,8 @@ import {
   DialogTitle,
 } from "#/components/ui/dialog";
 import { ServiceCreateCommand } from "#/components/service-create-command";
-import type { CreatorPanel, FlowPosition } from "./types";
+import type { CreatePanel } from "#/components/create-menu-items";
+import type { FlowPosition } from "./types";
 
 export function ServiceCreatorDialog({
   open,
@@ -20,7 +21,7 @@ export function ServiceCreatorDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  panel: CreatorPanel;
+  panel: CreatePanel;
   position: FlowPosition;
   params: {
     organizationSlug: string;

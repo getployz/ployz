@@ -11,7 +11,8 @@ import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
 import { usePlaceNewNode } from "./useCanvasPositionMutation";
 import { SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, SNAP_GRID } from "./constants";
-import type { CanvasResourceNode, CreatorPanel, FlowPosition } from "./types";
+import type { CreatePanel } from "#/components/create-menu-items";
+import type { CanvasResourceNode, FlowPosition } from "./types";
 import { findPlacement } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-utils/node-placement";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../environment-route-paths";
 
@@ -90,7 +91,7 @@ export function useServiceCreator(
     x: 0,
     y: 0,
   });
-  const [creatorPanel, setCreatorPanel] = useState<CreatorPanel>("root");
+  const [creatorPanel, setCreatorPanel] = useState<CreatePanel>("root");
   const lastRightClickFlowPosition = useRef<FlowPosition>({ x: 0, y: 0 });
 
   function computePlacement(target: FlowPosition) {
@@ -102,13 +103,13 @@ export function useServiceCreator(
     return findPlacement(target, SERVICE_NODE_SIZE, existingRects);
   }
 
-  function openCreator(position: FlowPosition, panel: CreatorPanel = "root") {
+  function openCreator(position: FlowPosition, panel: CreatePanel = "root") {
     setCreatorPosition(computePlacement(position));
     setCreatorPanel(panel);
     setCreatorOpen(true);
   }
 
-  function openCreatorAtCenter(panel: CreatorPanel = "root") {
+  function openCreatorAtCenter(panel: CreatePanel = "root") {
     openCreator(getViewportCenter(), panel);
   }
 
@@ -125,7 +126,7 @@ export function useServiceCreator(
     });
   }
 
-  function openCreatorAtLastRightClick(panel: CreatorPanel) {
+  function openCreatorAtLastRightClick(panel: CreatePanel) {
     openCreator(lastRightClickFlowPosition.current, panel);
   }
 

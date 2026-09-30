@@ -7,12 +7,12 @@ import {
 } from "#/components/ui/context-menu";
 import { SERVICE_CREATE_MENU_ITEMS } from "#/components/create-menu-items";
 import type { CreateMenuItem } from "#/components/create-menu-items";
-import type { CreatorPanel } from "./types";
+import type { CreatePanel } from "#/components/create-menu-items";
 
 function getActionForItem(
   { id, panel }: CreateMenuItem,
   actions: {
-    onCreateFromPanel: (panel: CreatorPanel) => void;
+    onCreateFromPanel: (panel: CreatePanel) => void;
     onCreateBlank: () => void;
     onCreateVolume: () => void;
   },
@@ -37,7 +37,7 @@ export function CanvasContextMenu({
   onCreateVolume,
 }: {
   children: React.ReactNode;
-  onCreateFromPanel: (panel: CreatorPanel) => void;
+  onCreateFromPanel: (panel: CreatePanel) => void;
   onCreateBlank: () => void;
   onCreateVolume: () => void;
 }) {
