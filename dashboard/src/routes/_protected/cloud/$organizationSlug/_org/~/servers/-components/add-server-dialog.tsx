@@ -1,12 +1,10 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { ChevronRightIcon, PlusIcon } from "lucide-react";
+import { PlusIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "#/components/ui/button";
 import type { ButtonVariants } from "#/components/ui/button-variants";
-import { Checkbox } from "#/components/ui/checkbox";
 import { Alert, AlertDescription } from "#/components/ui/alert";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "#/components/ui/collapsible";
 import {
   Dialog,
   DialogContent,
@@ -15,12 +13,7 @@ import {
   DialogTitle,
 } from "#/components/ui/dialog";
 import { Spinner } from "#/components/ui/spinner";
-import {
-  Field,
-  FieldContent,
-  FieldDescription,
-  FieldLabel,
-} from "#/components/ui/field";
+import { Switch } from "#/components/ui/switch";
 import { mintMachineEnrollmentServerFn } from "#/modules/machines/enrollment.functions";
 import { CopyBlock } from "./copy-block";
 
@@ -80,79 +73,108 @@ export function AddServerDialog({
       </Button>
       <Dialog open={open} onOpenChange={handleOpenChange}>
         <DialogContent className="sm:max-w-xl">
-          <div className="flex flex-col gap-3">
-            <DialogHeader>
-              <DialogTitle>Add a server</DialogTitle>
-              <DialogDescription>
-                Run once as administrator · Expires{" "}
-                {mintMutation.data
-                  ? expiryFormatter.format(
-                      new Date(mintMutation.data.expiresAt),
-                    )
-                  : "in 24 hours"}
-                .
-              </DialogDescription>
-            </DialogHeader>
-            <p className="text-sm text-muted-foreground">
-              Managed volumes on. Enforced size limits today. Backups, Server
-              moves and zero-downtime migrations build on this as they ship.
-            </p>
-            {mintMutation.isPending ? (
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Spinner />
-                Creating command…
-              </div>
-            ) : mintMutation.data ? (
-              <CopyBlock
-                value={`${mintMutation.data.command}${withoutZfs ? " --storage none" : ""}`}
-              />
-            ) : (
-              <Alert variant="destructive">
-                <AlertDescription>
-                  Command unavailable. Close and try again.
-                </AlertDescription>
-              </Alert>
-            )}
-            <Collapsible className="flex flex-col gap-3">
-              <CollapsibleTrigger
-                render={
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="group self-start"
-                  />
-                }
-              >
-                Advanced
-                <ChevronRightIcon
-                  data-icon="inline-end"
-                  className="transition-transform group-data-[panel-open]:rotate-90"
+          <DialogHeader>
+            <DialogTitle>Add a server</DialogTitle>
+            <DialogDescription>
+              Expires{" "}
+              {mintMutation.data
+                ? expiryFormatter.format(new Date(mintMutation.data.expiresAt))
+                : "in 24 hours"}
+              .
+            </DialogDescription>
+          </DialogHeader>
+          <ol className="flex flex-col gap-4">
+            <Step number={1} title={withoutZfs ? "Get a Linux server" : "Get an Ubuntu server"}>
+              <p className="text-muted-foreground">
+                {withoutZfs
+                  ? "Any systemd Linux, amd64 or arm64."
+                  : "Ubuntu LTS on a VM or bare metal, amd64 or arm64. Any provider works."}
+              </p>
+            </Step>
+            <Step number={2} title="Run this as root">
+              {mintMutation.isPending ? (
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Spinner />
+                  Creating command…
+                </div>
+              ) : mintMutation.data ? (
+                <CopyBlock
+                  value={`${mintMutation.data.command}${withoutZfs ? " --storage none" : ""}`}
                 />
-              </CollapsibleTrigger>
-              <CollapsibleContent render={<Field orientation="horizontal" />}>
-                <Checkbox
+              ) : (
+                <Alert variant="destructive">
+                  <AlertDescription>
+                    Command unavailable. Close and try again.
+                  </AlertDescription>
+                </Alert>
+              )}
+              {withoutZfs ? null : (
+                <p className="text-sm text-muted-foreground">
+                  Sets up managed volumes (ZFS): enforced size limits now, with
+                  backups, Server moves and zero-downtime migrations built on it
+                  as they ship.
+                </p>
+              )}
+            </Step>
+          </ol>
+          <div className="border-t pt-3 text-sm text-muted-foreground">
+            {withoutZfs ? (
+              <div className="flex items-start gap-2.5">
+                <Switch
                   id="without-zfs"
-                  checked={withoutZfs}
+                  className="mt-0.5"
+                  checked
                   onCheckedChange={setWithoutZfs}
                 />
-                <FieldContent>
-                  <FieldLabel htmlFor="without-zfs">
-                    Start without ZFS (not recommended)
-                  </FieldLabel>
-                  {withoutZfs ? (
-                    <FieldDescription>
-                      Volumes on this Server get no size limits, and it won’t
-                      get backups, Server moves or zero-downtime migrations as
-                      they arrive. Only for hosts that can’t run ZFS.
-                    </FieldDescription>
-                  ) : null}
-                </FieldContent>
-              </CollapsibleContent>
-            </Collapsible>
+                <div>
+                  <label htmlFor="without-zfs" className="text-foreground">
+                    Without ZFS{" "}
+                    <span className="text-muted-foreground">
+                      · not recommended
+                    </span>
+                  </label>
+                  <p>
+                    Volumes get no size limits, and this Server misses backups,
+                    Server moves and zero-downtime migrations as they arrive.{" "}
+                    <InlineLink onClick={() => setWithoutZfs(false)}>
+                      Use ZFS instead
+                    </InlineLink>
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <p>
+                Not on Ubuntu, or can’t run ZFS?{" "}
+                <InlineLink onClick={() => setWithoutZfs(true)}>
+                  Start without it
+                </InlineLink>
+              </p>
+            )}
           </div>
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+function Step({ number, title, children }: { number: number; title: string; children: ReactNode }) {
+  return (
+    <li className="flex gap-3">
+      <span className="flex size-5.5 shrink-0 items-center justify-center rounded-full border text-xs text-muted-foreground">
+        {number}
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <p>{title}</p>
+        {children}
+      </div>
+    </li>
+  );
+}
+
+function InlineLink({ onClick, children }: { onClick: () => void; children: ReactNode }) {
+  return (
+    <Button type="button" variant="link" className="h-auto p-0 text-foreground underline" onClick={onClick}>
+      {children}
+    </Button>
   );
 }
