@@ -91,7 +91,11 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.message.contains("in time"), "{}", error.message);
-        assert_eq!(ONE.available_permits(), 0, "the running work keeps its turn");
+        assert_eq!(
+            ONE.available_permits(),
+            0,
+            "the running work keeps its turn"
+        );
         finished.recv().unwrap();
         let waited = tokio::time::timeout(Duration::from_secs(5), ONE.acquire()).await;
         assert!(waited.is_ok(), "the turn ends with the work");

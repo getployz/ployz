@@ -77,13 +77,9 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
         hostname,
         port: matches.get_one::<u16>("port").copied(),
     };
-    let mut words = vec!["domain", "add", add.service.as_str()];
-    if let Some(hostname) = &add.hostname {
-        words.push(hostname.as_str());
-    }
-    let added = store::store(root)?
-        .write(&add)
-        .map_err(store::failed(matches, &words))?;
+    let mut args = vec![add.service.as_str()];
+    args.extend(add.hostname.as_ref().map(Hostname::as_str));
+    let added = store::store(root)?.args(args).write(&add)?;
     staged(matches, &added, "Staged domain")
 }
 
@@ -93,9 +89,7 @@ fn remove(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         domain: required(matches, "domain")?,
     };
-    let removed = store::store(root)?
-        .write(&remove)
-        .map_err(store::failed(matches, &["domain", "rm", "DOMAIN"]))?;
+    let removed = store::store(root)?.args(["DOMAIN"]).write(&remove)?;
     staged(matches, &removed, "Staged removal of domain")
 }
 
@@ -110,8 +104,8 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
         service,
     };
     let view = store::store(root)?
-        .read(&query)
-        .map_err(store::failed(matches, &["domain", "ls"]))?;
+        .args(query.service.as_ref().map(ployz_core::ServiceName::as_str))
+        .read(&query)?;
     let next = view
         .domains
         .iter()
@@ -136,9 +130,7 @@ fn check(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         domain: required(matches, "domain")?,
     };
-    let view = store::store(root)?
-        .read(&query)
-        .map_err(store::failed(matches, &["domain", "check", "DOMAIN"]))?;
+    let view = store::store(root)?.args(["DOMAIN"]).read(&query)?;
     let next = next(matches, view.domain.action.as_ref());
     output::finish(&Next::new(&view, next), || show(&view.domain))
 }

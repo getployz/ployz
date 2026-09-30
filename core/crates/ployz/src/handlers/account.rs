@@ -321,12 +321,10 @@ fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         ));
     }
     let store = CredentialStore::beside(&config_path(matches)?);
-    let removal = runtime()?
-        .block_on(async {
-            let credential = cloud_account::from_env(&store).await?;
-            cloud_account::remove_organization(&credential, slug).await
-        })
-        .map_err(super::store::failed(matches, &["org", "rm", slug.as_str()]))?;
+    let removal = runtime()?.block_on(async {
+        let credential = cloud_account::from_env(&store).await?;
+        cloud_account::remove_organization(&credential, slug).await
+    })?;
     let next = (!removal.removed).then_some(retry.as_str());
     let report = Next::new(&removal, next.map(str::to_owned));
     crate::output::finish(&report, || {

@@ -12,7 +12,7 @@ use serde_json::json;
 
 use super::Error;
 use super::deploy;
-use super::store::{self, Store, failed, mint};
+use super::store::{self, Store, mint};
 use crate::failure::USAGE_EXIT;
 
 /// Whether `--confirm` typed `name`; a different name is a usage error.
@@ -28,22 +28,13 @@ pub(super) fn confirmed(matches: &ArgMatches, name: &str, what: &str) -> Result<
     }
 }
 
-pub(super) fn inventory(
-    matches: &ArgMatches,
-    store: &Store,
-    at: &EnvironmentRef,
-) -> Result<Inventory, Error> {
-    let words = ["env", "rm"];
-    let services = store
-        .read(&ServicesQuery {
-            environment: at.clone(),
-        })
-        .map_err(failed(matches, &words))?;
-    let volumes = store
-        .read(&VolumesQuery {
-            environment: at.clone(),
-        })
-        .map_err(failed(matches, &words))?;
+pub(super) fn inventory(store: &Store, at: &EnvironmentRef) -> Result<Inventory, Error> {
+    let services = store.read(&ServicesQuery {
+        environment: at.clone(),
+    })?;
+    let volumes = store.read(&VolumesQuery {
+        environment: at.clone(),
+    })?;
     Ok(Inventory {
         environment: services.environment,
         services: services
@@ -61,42 +52,43 @@ pub(super) fn inventory(
 
 /// Every `--accept-volume-loss` name.
 pub(super) fn accepted(matches: &ArgMatches) -> Result<Vec<VolumeName>, Error> {
-    matches
-        .get_many::<String>("accept-volume-loss")
-        .into_iter()
-        .flatten()
-        .map(|name| {
-            VolumeName::parse(name.as_str()).map_err(|_| {
-                Error::usage("Expected Volume names: lowercase letters, digits and -")
-                    .with_exit(USAGE_EXIT)
-            })
-        })
-        .collect()
+    store::volume_names(matches, "accept-volume-loss")
+}
+
+/// `again` with every `--accept-volume-loss` in `accept`.
+pub(super) fn with_accepted<'a>(again: &[&'a str], accept: &'a [VolumeName]) -> Vec<&'a str> {
+    let mut again = again.to_vec();
+    again.extend(
+        accept
+            .iter()
+            .flat_map(|name| ["--accept-volume-loss", name.as_str()]),
+    );
+    again
 }
 
 /// Run `remove` until the Store deletes what it names: each Environment of `project`
 /// it names as still on the Servers goes off them first through a removal Deployment,
-/// accepting the loss of the `accept` Volumes it deletes. Returns what was removed and
-/// those Deployments; `None` once a removal that didn't apply was reported (`again`
-/// finishes it).
+/// accepting the loss of the `--accept-volume-loss` Volumes it deletes. Returns what
+/// was removed and those Deployments; `None` once a removal that didn't apply was
+/// reported (`again` finishes it).
 pub(super) fn remove_all<C, T>(
     matches: &ArgMatches,
     store: &Store,
     remove: &C,
     project: &ProjectName,
     mut events: Option<std::io::BufWriter<std::fs::File>>,
-    words: &[&str],
     again: &[&str],
 ) -> Result<Option<(T, Vec<DeploymentSummary>)>, Error>
 where
     C: Tell<Written = Teardown<T>>,
 {
     let accept = accepted(matches)?;
+    let again = with_accepted(again, &accept);
     // The reviewed version binds the first removal, the one whose refusal named it.
     let mut version = matches.get_one::<String>("expect-version").cloned();
     let mut ran = Vec::new();
     loop {
-        let environment = match store.write(remove).map_err(failed(matches, words))? {
+        let environment = match store.write(remove)? {
             Teardown::Removed(removed) => return Ok(Some((removed, ran))),
             Teardown::Waiting {
                 environment,
@@ -110,7 +102,7 @@ where
                     json!({
                         "environment": environment,
                         "deployment": deployment,
-                        "next": shell_words::join(["ployz", "deployment", "show", deployment.as_str()]),
+                        "next": deploy::show_hint(&deployment),
                     }),
                 ));
             }
@@ -121,12 +113,10 @@ where
             environment: Some(environment),
         };
         // Each removal accepts only the Volumes it deletes; a name may recur across Environments.
-        let deletes = store
-            .read(&RemovalsQuery {
-                environment: at.clone(),
-                remove: true,
-            })
-            .map_err(failed(matches, words))?;
+        let deletes = store.read(&RemovalsQuery {
+            environment: at.clone(),
+            remove: true,
+        })?;
         let accept: Vec<_> = accept
             .iter()
             .filter(|name| deletes.volumes.iter().any(|volume| &volume.name == *name))
@@ -143,11 +133,10 @@ where
             &at,
             (&accept, version.take()),
             writer,
-            words,
-            again,
+            &again,
         )?;
         if view.deployment.status != DeploymentStatus::Applied {
-            unfinished(matches, &view, &ran, outcome, again)?;
+            unfinished(matches, &view, &ran, outcome, &again)?;
             return Ok(None);
         }
         ran.push(view.deployment);
@@ -163,28 +152,19 @@ pub(super) fn take_off(
     at: &EnvironmentRef,
     (accept, version): (&[VolumeName], Option<String>),
     events: Option<std::io::BufWriter<std::fs::File>>,
-    words: &[&str],
     again: &[&str],
 ) -> Result<(DeploymentView, Result<(), Error>), Error> {
-    // The in-process Store trusts this CLI to observe the Servers; Cloud observes them itself.
-    let volumes = match store.local() {
-        Some(_) => deploy::observe(matches, store, at, true)?,
-        None => None,
-    };
     let admitted = store
-        .admit(
-            &Admit::Remove(ployz_store::Removal {
-                id: DeploymentId::parse(mint())?,
-                environment: at.clone(),
-                version,
-                accept_volume_loss: accept.to_vec(),
-                close: false,
-            }),
-            volumes,
-        )
-        .map_err(|error| failed(matches, words)(deploy::accepting(error, matches, again)))?;
+        .admit(&Admit::Remove(ployz_store::Removal {
+            id: DeploymentId::parse(mint())?,
+            environment: at.clone(),
+            version,
+            accept_volume_loss: accept.to_vec(),
+            close: false,
+        }))
+        .map_err(|error| store.fail(deploy::accepting(error, matches, again)))?;
     let deploy::Shipped { view, ran, .. } =
-        deploy::execute(matches, store, &admitted, None, events, words)?;
+        deploy::execute(matches, store, &admitted, None, events)?;
     Ok((view, ran))
 }
 

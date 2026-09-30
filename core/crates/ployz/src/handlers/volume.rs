@@ -107,19 +107,17 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    let mut words = vec!["volume", "add", name.as_str()];
+    let mut args = vec![name.as_str()];
     for _ in &mounts {
-        words.extend(["--mount", "SERVICE:/PATH"]);
+        args.extend(["--mount", "SERVICE:/PATH"]);
     }
-    let created = store::store(root)?
-        .write(&CreateVolume {
-            id: VolumeId::parse(store::mint())?,
-            environment: store::environment(matches)?,
-            name: name.clone(),
-            storage: requested_storage(matches),
-            mounts,
-        })
-        .map_err(store::failed(matches, &words))?;
+    let created = store::store(root)?.args(args).write(&CreateVolume {
+        id: VolumeId::parse(store::mint())?,
+        environment: store::environment(matches)?,
+        name: name.clone(),
+        storage: requested_storage(matches),
+        mounts,
+    })?;
     staged(matches, &created, "Staged new Volume")
 }
 
@@ -178,13 +176,13 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
     let changed = store::store(root)?
+        .args([volume.as_str()])
         .write(&SetVolumeStorage {
             environment: store::environment(matches)?,
             volume: volume.clone(),
             storage: requested_storage(matches),
             expect: None,
-        })
-        .map_err(store::failed(matches, &["volume", "set", volume.as_str()]))?;
+        })?;
     staged(matches, &changed, "Staged Volume storage")
 }
 
@@ -200,11 +198,9 @@ fn storage_word(storage: VolumeKind) -> String {
 
 fn list(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let view = store::store(root)?
-        .read(&VolumesQuery {
-            environment: store::environment(matches)?,
-        })
-        .map_err(store::failed(matches, &["volume", "ls"]))?;
+    let view = store::store(root)?.read(&VolumesQuery {
+        environment: store::environment(matches)?,
+    })?;
     output::finish(&view, || {
         say!("VOLUME\tSTORAGE\tMOUNTS\tDEPLOYED\tNEXT DEPLOY");
         for listing in &view.volumes {
@@ -236,14 +232,11 @@ fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
     let view = store::store(root)?
+        .args([volume.as_str()])
         .read(&VolumeQuery {
             environment: store::environment(matches)?,
             volume: volume.clone(),
-        })
-        .map_err(store::failed(
-            matches,
-            &["volume", "inspect", volume.as_str()],
-        ))?;
+        })?;
     output::finish(&view, || {
         let listing = &view.volume;
         say!("Volume {} ({})", listing.volume.name, listing.volume.id);
@@ -271,15 +264,12 @@ fn rename(root: &ArgMatches) -> Result<(), Error> {
     let volume = volume_name(matches, "volume")?;
     let name = volume_name(matches, "name")?;
     let renamed = store::store(root)?
+        .args([volume.as_str(), name.as_str()])
         .write(&ployz_store::RenameVolume {
             environment: store::environment(matches)?,
             volume: volume.clone(),
-            name,
-        })
-        .map_err(store::failed(
-            matches,
-            &["volume", "rename", volume.as_str()],
-        ))?;
+            name: name.clone(),
+        })?;
     staged(matches, &renamed, "Staged rename of Volume")
 }
 
@@ -287,11 +277,11 @@ fn remove(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
     let removed = store::store(root)?
+        .args([volume.as_str()])
         .write(&RemoveVolume {
             environment: store::environment(matches)?,
             volume: volume.clone(),
-        })
-        .map_err(store::failed(matches, &["volume", "rm", volume.as_str()]))?;
+        })?;
     staged(matches, &removed, "Staged removal of Volume")
 }
 

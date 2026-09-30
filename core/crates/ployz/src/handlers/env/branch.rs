@@ -11,7 +11,7 @@ use ployz_store::{
 use serde_json::json;
 
 use super::super::config::expected;
-use super::super::store::{self, Next, failed, mint, project, store};
+use super::super::store::{self, Next, mint, project, store};
 use super::super::{Error, leaf_matches, required};
 use crate::cli::{repeated, switch, value};
 use crate::cloud_account::StoreCallError;
@@ -25,14 +25,7 @@ pub(super) fn branch(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("from")
         .map(|from| EnvironmentName::parse(from.as_str()))
         .transpose()?;
-    let nodes = |flag: &str| -> Vec<String> {
-        matches
-            .get_many::<String>(flag)
-            .into_iter()
-            .flatten()
-            .cloned()
-            .collect()
-    };
+    let nodes = |flag: &str| super::super::string_values(matches, flag);
     let setup = setups(&nodes("setup"))?;
     let fix = matches
         .get_one::<String>("fix")
@@ -56,13 +49,11 @@ pub(super) fn branch(root: &ArgMatches) -> Result<(), Error> {
         keep: matches.get_flag("keep"),
         fix,
     };
-    let mut words = vec!["env", "branch", create.name.as_str()];
+    let mut args = vec![create.name.as_str()];
     if let Some(from) = &create.from.environment {
-        words.extend(["--from", from.as_str()]);
+        args.extend(["--from", from.as_str()]);
     }
-    let made = store(root)?
-        .write(&create)
-        .map_err(failed(matches, &words))?;
+    let made = store(root)?.args(args).write(&create)?;
     let deploy = store::next(matches, &["deploy", "--env", create.name.as_str()]);
     finish(&made, Some(deploy), "Made Branch")
 }
@@ -137,7 +128,6 @@ fn shift(
     let matches = leaf_matches(root);
     let store = store(root)?;
     let command = shift.command();
-    let words = ["env", command];
     if matches.get_flag("plan") {
         let sides = match shift {
             Shift::Update | Shift::Take => MoveQuery::Update {
@@ -149,7 +139,7 @@ fn shift(
                 when: None,
             },
         };
-        let view = store.read(&sides).map_err(failed(matches, &words))?;
+        let view = store.read(&sides)?;
         return plan(matches, command, &view);
     }
     let picks = match shift {
@@ -190,8 +180,8 @@ fn shift(
         }),
     };
     let moved = store
-        .write(&request)
-        .map_err(|error| failed(matches, &words)(reviewed(error, matches, command)))?;
+        .try_write(&request)
+        .map_err(|error| store.fail(reviewed(error, matches, command)))?;
     moved_out(matches, shift, &moved)
 }
 
@@ -322,11 +312,10 @@ pub(super) fn copy(root: &ArgMatches) -> Result<(), Error> {
         node,
         expect: expected(matches)?,
     };
-    let words = ["env", "copy", copy.node.as_str()];
-    let copied = store(root)?
-        .write(&copy)
-        .map_err(|error| stale(error, matches))
-        .map_err(failed(matches, &words))?;
+    let store = store(root)?.args([copy.node.as_str()]);
+    let copied = store
+        .try_write(&copy)
+        .map_err(|error| store.fail(stale(error, matches)))?;
     finish(
         &copied,
         Some(store::next(matches, &["deploy"])),
@@ -340,9 +329,7 @@ pub(super) fn keep(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         kept: !matches.get_flag("off"),
     };
-    let kept = store(root)?
-        .write(&keep)
-        .map_err(failed(matches, &["env", "keep"]))?;
+    let kept = store(root)?.write(&keep)?;
     let what = if keep.kept {
         "Keeping Branch"
     } else {

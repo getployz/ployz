@@ -11,7 +11,7 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_store::{Change, Edit, EnvironmentQuery, Revision, SettingPath};
 use serde_json::{Value, json};
 
-use super::store::{Next, environment, failed, next, scoped, store, with_refresh_hint};
+use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
 use crate::failure::USAGE_EXIT;
@@ -86,7 +86,6 @@ pub(super) fn expected(matches: &ArgMatches) -> Result<Option<Revision>, Error> 
 
 pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let store = store(root)?;
     let query = EnvironmentQuery {
         environment: environment(matches)?,
         path: matches
@@ -96,9 +95,7 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
         all: matches.get_flag("all"),
     };
     let path = query.path.as_ref().map(ToString::to_string);
-    let mut words = vec!["get"];
-    words.extend(path.as_deref());
-    let view = store.read(&query).map_err(failed(matches, &words))?;
+    let view = store(root)?.args(path.as_deref()).read(&query)?;
     crate::output::finish(&view, || {
         if view.settings.is_empty() {
             say!(
@@ -238,13 +235,14 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
     let secret = if seal_all {
         Vec::new()
     } else {
+        let named = service.to_string();
         let view = store(root)?
+            .args([named.as_str(), "--from-env-file", "FILE"])
             .read(&EnvironmentQuery {
                 environment: environment(matches)?,
                 path: Some(service.clone()),
                 all: false,
-            })
-            .map_err(failed(matches, &["get", &service.to_string()]))?;
+            })?;
         let marker = json!({ "secret": true });
         view.values
             .and_then(|mut values| values.remove("env"))
@@ -272,7 +270,7 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
     if changes.is_empty() {
         return Err(Error::usage("The env file sets no variables").with_exit(USAGE_EXIT));
     }
-    let mut words = ["set", &service.to_string(), "--from-env-file", "FILE"]
+    let mut words = [&service.to_string(), "--from-env-file", "FILE"]
         .map(str::to_owned)
         .to_vec();
     if seal_all {
@@ -345,19 +343,18 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
     edit_as(root, changes, &words)
 }
 
-/// Apply `changes`; `words` is the command that reruns it, values left out.
-fn edit_as(root: &ArgMatches, changes: Vec<Change>, words: &[String]) -> Result<(), Error> {
+/// Apply `changes`; `args` rerun it, values left out.
+fn edit_as(root: &ArgMatches, changes: Vec<Change>, args: &[String]) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let edit = Edit {
         environment: environment(matches)?,
         expect: expected(matches)?,
         changes,
     };
-    let words = words.iter().map(String::as_str).collect::<Vec<_>>();
-    let store = store(root)?;
+    let store = store(root)?.args(args.iter().map(String::as_str));
     let edited = store
-        .write(&edit)
-        .map_err(|error| failed(matches, &words)(with_refresh_hint(error, matches, "get")))?;
+        .try_write(&edit)
+        .map_err(|error| store.fail(with_refresh_hint(error, matches, "get")))?;
     let hint = (!edited.staged.is_empty()).then(|| next(matches, &["diff"]));
     crate::output::finish(&Next::new(&edited, hint), || {
         let where_ = format!("{}/{}", edited.environment.project, edited.environment.name);
@@ -374,13 +371,9 @@ fn edit_as(root: &ArgMatches, changes: Vec<Change>, words: &[String]) -> Result<
     })
 }
 
-/// The `set` or `unset` that makes `changes`, with every value left as a placeholder.
+/// The `set` or `unset` arguments that make `changes`, every value a placeholder.
 fn rerun(changes: &[Change]) -> Vec<String> {
-    let verb = match changes.first() {
-        Some(Change::Unset { .. }) => "unset",
-        Some(Change::Set { .. } | Change::Patch { .. }) | None => "set",
-    };
-    let mut words = vec![verb.to_owned()];
+    let mut words = Vec::new();
     for change in changes {
         match change {
             Change::Set { path, value } if value.get("secret").is_some_and(Value::is_string) => {
