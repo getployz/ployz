@@ -112,15 +112,14 @@ function isOfEnvironment(query: Query, key: string) {
 }
 
 /**
- * After a write: refetches the views of the Environment it named (`key`; null, every view of the Organization) and the
- * Organization's views that name none, and waits for them, so the committed state shows before the overlay goes. The
- * views the write's answer carried are already committed and aren't read again.
+ * After a write: refetches the views of the Environment it named (`key`; null, every view of the Organization) and
+ * waits for them, so the committed state shows before the overlay goes. The views the write's answer carried are
+ * already committed and aren't read again; the Organization's views follow the change stream.
  */
 export async function refetchAfterWrite(queryClient: QueryClient, organizationSlug: string, key: string | null, carried: CommittedViews = {}) {
   await queryClient.invalidateQueries({ queryKey: storeViewPrefix(organizationSlug), predicate: (query) => {
     const config = queryOf(query);
     if (config === null || key === null) return config !== null;
-    if (!("environment" in config)) return true;
     return isOfEnvironment(query, key) && carriedView(config, carried) === undefined;
   } });
 }
