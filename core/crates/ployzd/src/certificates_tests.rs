@@ -425,7 +425,11 @@ fn ingress_challenge_ips_come_from_running_ingress_machines() {
         parts.machine_id = remote.id;
         parts.resolved_spec.name = ServiceName::parse("ingress").unwrap();
         parts.namespace = Namespace::system();
-        parts.runtime = ContainerRuntimeObservation::Exited { code: 1 };
+        parts.runtime = ContainerRuntimeObservation::Exited {
+            code: 1,
+            stopped_at: None,
+            oom_killed: false,
+        };
     })
     .unwrap();
     let mut user = observation(3, "caddy", Vec::new());

@@ -647,7 +647,11 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                             .find(|c| c.container_id == stop.container_id)
                             .unwrap()
                             .try_update(|parts| {
-                                parts.runtime = ContainerRuntimeObservation::Exited { code: 0 }
+                                parts.runtime = ContainerRuntimeObservation::Exited {
+                                    code: 0,
+                                    stopped_at: None,
+                                    oom_killed: false,
+                                }
                             })
                             .unwrap();
                         RpcResponse::from(ContainerChanged {

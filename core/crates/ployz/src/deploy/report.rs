@@ -719,7 +719,7 @@ fn runtime_summary(observation: &ContainerRuntimeObservation) -> RuntimeSummary 
         },
         ContainerRuntimeObservation::Paused => RuntimeSummary::Paused,
         ContainerRuntimeObservation::Restarting => RuntimeSummary::Restarting,
-        ContainerRuntimeObservation::Exited { code } => RuntimeSummary::Exited { code: *code },
+        ContainerRuntimeObservation::Exited { code, .. } => RuntimeSummary::Exited { code: *code },
         ContainerRuntimeObservation::Removing => RuntimeSummary::Removing,
         ContainerRuntimeObservation::Dead => RuntimeSummary::Dead,
         ContainerRuntimeObservation::Unknown { .. } => RuntimeSummary::Unrecognized,

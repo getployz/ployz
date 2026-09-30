@@ -757,7 +757,13 @@ fn published_hosts_without_healthy_replicas_return_bad_gateway() {
         vec![ingress("stopped.example", 80, HttpProtocol::Http)],
     );
     stopped
-        .try_update(|parts| parts.runtime = ContainerRuntimeObservation::Exited { code: 137 })
+        .try_update(|parts| {
+            parts.runtime = ContainerRuntimeObservation::Exited {
+                code: 137,
+                stopped_at: None,
+                oom_killed: false,
+            }
+        })
         .unwrap();
     let mut unhealthy = observation(
         3,

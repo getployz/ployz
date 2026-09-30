@@ -20,6 +20,10 @@ const NonnegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 export const runtimeContainerStateSchema = Schema.Struct({
   state: Schema.String,
   health: Schema.optionalKey(Schema.String),
+  /** An exited container's exit code, when it stopped (RFC 3339) and whether it ran out of memory. */
+  code: Schema.optionalKey(Schema.Number),
+  stopped_at: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  oom_killed: Schema.optionalKey(Schema.Boolean),
 });
 
 /** Direct container evidence, without historical specs or inferred Service state. */

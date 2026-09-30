@@ -328,14 +328,22 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
             'd',
             "worker",
             ContainerKind::ServiceContainer,
-            ContainerRuntimeObservation::Exited { code: 1 },
+            ContainerRuntimeObservation::Exited {
+                code: 1,
+                stopped_at: None,
+                oom_killed: false,
+            },
         ),
         listing_container(
             '0',
             'd',
             "worker",
             ContainerKind::PreDeployHook,
-            ContainerRuntimeObservation::Exited { code: 0 },
+            ContainerRuntimeObservation::Exited {
+                code: 0,
+                stopped_at: None,
+                oom_killed: false,
+            },
         ),
     ]);
     service.listed_volumes.lock().unwrap().insert(

@@ -20,6 +20,16 @@ describe("runtimeLine", () => {
     expect(runtimeLine(service, runtime(), seen)).toMatchObject({ word: "Not running", tone: "bad", down: true });
   });
 
+  it("says since when it crashed, from the newest stop, and Out of memory when that one was OOM-killed", () => {
+    const stopped = (stopped_at: string | null, oom_killed: boolean): RuntimeContainerRecord =>
+      ({ ...container("exited"), runtime: { state: "exited", code: 137, stopped_at, oom_killed } });
+    expect(runtimeLine(service, runtime(stopped("2026-09-30T09:58:00.000Z", false), stopped("2026-09-30T09:50:00.000Z", true)), seen))
+      .toEqual({ word: "Crashed", tone: "crashed", down: true, since: new Date("2026-09-30T09:58:00.000Z") });
+    expect(runtimeLine(service, runtime(stopped("2026-09-30T09:50:00.000Z", false), stopped("2026-09-30T09:58:00.000Z", true)), seen))
+      .toMatchObject({ word: "Out of memory", since: new Date("2026-09-30T09:58:00.000Z") });
+    expect(runtimeLine(service, runtime(stopped(null, false)), seen)).toMatchObject({ word: "Crashed", since: null });
+  });
+
   it("says a grey Starting while its containers run but none serves or fails a health check yet", () => {
     expect(runtimeLine(service, runtime(container("running", "starting")), seen)).toMatchObject({ word: "Starting", tone: "quiet", down: false });
   });
