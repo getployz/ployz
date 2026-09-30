@@ -197,6 +197,9 @@ mod tests {
             output["machine"]["public_key"],
             "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
         );
-        assert_eq!(output["machine"], super::super::machine_json(&observation.machine));
+        assert_eq!(
+            output["machine"],
+            super::super::machine_json(&observation.machine)
+        );
     }
 }
