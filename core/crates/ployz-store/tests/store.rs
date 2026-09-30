@@ -132,7 +132,6 @@ fn an_image_service_shows_every_setting_with_its_default() {
             "web.replicas",
             "web.restartPolicy",
             "web.startCommand",
-            "web.template",
         ]
     );
     let view = get(&store, &who, Some("web"));
@@ -151,7 +150,7 @@ fn an_image_service_shows_every_setting_with_its_default() {
             { "path": "web.replicas", "value": 1, "default": 1, "apply": "staged" },
             { "path": "web.restartPolicy", "value": "unless-stopped", "default": "unless-stopped", "apply": "staged" },
             { "path": "web.startCommand", "value": null, "default": null, "apply": "staged" },
-            { "path": "web.template", "value": null, "default": null, "apply": "staged" },
+            { "path": "web.template", "value": null, "default": null, "apply": "immediate" },
         ])
     );
     assert_eq!(
