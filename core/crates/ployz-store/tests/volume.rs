@@ -809,6 +809,17 @@ fn a_new_unmounted_volume_is_not_deployed_by_a_deploy_that_succeeded() {
 }
 
 #[test]
+fn replaying_what_executing_did_changes_nothing_after_the_volume_landed() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    run(&store, 1, Vec::new());
+    let first = outcomes(&store, &who, 1);
+    // Applied State now holds data: the replay is judged on its evidence, not on it.
+    execute(&store, 1, Vec::new());
+    assert_eq!(outcomes(&store, &who, 1), first);
+}
+
+#[test]
 fn a_new_volume_is_deployed_once_the_service_mounting_it_is_confirmed() {
     let (store, who) = shop();
     admit(&store, &who, 1, &[], None).unwrap();

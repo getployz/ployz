@@ -498,6 +498,20 @@ pub(crate) fn record(
             Ok(stored.summary)
         }
         RunEvidence::Executed { outcome, removed } => {
+            // A replay must carry the same evidence: Applied State moved since, so
+            // recomputing its Node Outcomes would not tell.
+            let executed = crate::removal::short_digest(
+                &serde_json::to_string(&(&outcome, &removed)).expect("evidence is JSON"),
+            );
+            if stored.run.outcome.is_some() {
+                if stored.run.executed.as_ref() == Some(&executed) {
+                    return Ok(stored.summary);
+                }
+                return Err(error::conflict(
+                    "This Deployment already recorded a different outcome",
+                    json!({ "deployment": id }),
+                ));
+            }
             let Some(preview) = stored.run.preview.clone() else {
                 return Err(error::conflict(
                     "Record the Deploy Preview before what executing it did",
@@ -530,14 +544,8 @@ pub(crate) fn record(
                 summary: serde_json::to_value(projection.summary).expect("a summary is JSON"),
                 reason,
             };
-            // A replay must say what each node did, not only as many of them.
-            if stored.run.outcome.is_some() && stored.run.nodes != nodes {
-                return Err(error::conflict(
-                    "This Deployment already recorded a different outcome",
-                    json!({ "deployment": id }),
-                ));
-            }
             stored.run.nodes = nodes;
+            stored.run.executed = Some(executed);
             finish(tx, stored, outcome, status)
         }
         RunEvidence::Confirmed(services) => {
