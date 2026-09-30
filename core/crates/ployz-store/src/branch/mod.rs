@@ -37,7 +37,7 @@ use crate::id::{
 use crate::policy::{self, Policy};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::sealing::SealingKey;
-use crate::settings::{NodeName, ServiceSetting, shown};
+use crate::settings::{NodeName, SettingPath, shown};
 use crate::storage::Tx;
 use crate::{Actor, registry, review};
 

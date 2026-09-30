@@ -15,7 +15,7 @@ use ployz_store::{
     Deploy, DeploymentId, DeploymentStatus, DiffQuery, DiffView, Discard, Edit, EnvironmentId,
     EnvironmentQuery, EnvironmentRef, Mount, NodeStatus, OrganizationId, ProjectId, ProjectName,
     Publish, RemovalsQuery, RemoveVolume, Retry, RunEvidence, RunnerId, ServiceLineageId,
-    SetVolumeStorage, SettingPath, Trusted, VolumeId, VolumeListing, VolumeName, VolumeObservation,
+    RenameVolume, SetVolumeStorage, SettingPath, Trusted, VolumeId, VolumeListing, VolumeName, VolumeObservation,
     VolumeQuery, VolumesQuery,
 };
 use serde_json::{Value, json};
@@ -711,4 +711,37 @@ fn a_renamed_volume_keeps_its_mounts_and_refuses_a_taken_name() {
     assert_eq!(listed(&store, &who)[0].mounts[0].path, "/data");
     let gone = rename("other").unwrap_err();
     assert_eq!(gone.code, RpcErrorCode::NotFound);
+}
+
+#[test]
+fn a_deployed_volume_rename_discards_by_its_row() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    run(&store, 1, Vec::new());
+    store
+        .write(
+            &who,
+            &RenameVolume {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+                name: VolumeName::parse("files").unwrap(),
+            },
+        )
+        .unwrap();
+    let changes = diff(&store, &who).changes;
+    let row = &changes[0].settings[0];
+    assert_eq!(row.path, "volumes.files.name");
+    assert!(row.can_restore);
+    store
+        .write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                path: Some(path(&row.path)),
+                version: None,
+            },
+        )
+        .unwrap();
+    assert!(diff(&store, &who).changes.is_empty());
+    assert_eq!(texts(&[listed(&store, &who)[0].volume.name.clone()]), ["data"]);
 }

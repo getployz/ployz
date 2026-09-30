@@ -486,16 +486,7 @@ impl Moving {
         if path == "node" {
             return node;
         }
-        let path = match (
-            path.strip_prefix("variables."),
-            path.strip_prefix("mounts."),
-        ) {
-            (Some(key), _) => format!("env.{key}"),
-            (_, Some(volume)) => format!("mounts.{}", name_in(volume)),
-            _ => ServiceSetting::of_field(path)
-                .map_or_else(|| path.to_owned(), |setting| setting.name().to_owned()),
-        };
-        format!("{node}.{path}")
+        SettingPath::from_core(&node, path, name_in)
     }
 
     /// Land `picks` in `into` and advance the Branch's base by exactly what landed.
