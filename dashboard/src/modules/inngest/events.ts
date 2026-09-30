@@ -1,10 +1,4 @@
-import type { WebhookCustomerStateChangedPayload } from "@polar-sh/sdk/models/components/webhookcustomerstatechangedpayload";
-import type { WebhookSubscriptionActivePayload } from "@polar-sh/sdk/models/components/webhooksubscriptionactivepayload";
-import type { WebhookSubscriptionCanceledPayload } from "@polar-sh/sdk/models/components/webhooksubscriptioncanceledpayload";
-import type { WebhookSubscriptionCreatedPayload } from "@polar-sh/sdk/models/components/webhooksubscriptioncreatedpayload";
-import type { WebhookSubscriptionRevokedPayload } from "@polar-sh/sdk/models/components/webhooksubscriptionrevokedpayload";
-import type { WebhookSubscriptionUncanceledPayload } from "@polar-sh/sdk/models/components/webhooksubscriptionuncanceledpayload";
-import type { WebhookSubscriptionUpdatedPayload } from "@polar-sh/sdk/models/components/webhooksubscriptionupdatedpayload";
+import type { webhooks } from "#/modules/billing/polar-api";
 import { Schema } from "effect";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 import { eventType, staticSchema } from "inngest";
@@ -360,12 +354,12 @@ export function createGithubPullRequestReceivedEvent(
 }
 
 type PolarSubscriptionWebhookPayload =
-  | WebhookSubscriptionCreatedPayload
-  | WebhookSubscriptionUpdatedPayload
-  | WebhookSubscriptionActivePayload
-  | WebhookSubscriptionCanceledPayload
-  | WebhookSubscriptionRevokedPayload
-  | WebhookSubscriptionUncanceledPayload;
+  | webhooks.WebhookSubscriptionCreatedPayload
+  | webhooks.WebhookSubscriptionUpdatedPayload
+  | webhooks.WebhookSubscriptionActivePayload
+  | webhooks.WebhookSubscriptionCanceledPayload
+  | webhooks.WebhookSubscriptionRevokedPayload
+  | webhooks.WebhookSubscriptionUncanceledPayload;
 
 export function createOrganizationBillingSyncEventsFromSubscriptionPayload(
   payload: PolarSubscriptionWebhookPayload,
@@ -382,21 +376,19 @@ export function createOrganizationBillingSyncEventsFromSubscriptionPayload(
     createOrganizationBillingSyncRequestedEvent({
       organizationId,
       reason: payload.type,
-      sourceUpdatedAt: payload.timestamp.toISOString(),
+      sourceUpdatedAt: new Date(payload.timestamp).toISOString(),
     }),
   ];
 }
 
 export function createOrganizationBillingSyncEventsFromCustomerStatePayload(
-  payload: WebhookCustomerStateChangedPayload,
+  payload: webhooks.WebhookCustomerStateChangedPayload,
 ) {
   const organizationIds = Array.from(
     new Set(
-      payload.data.activeSubscriptions
-        .map(
-          (
-            subscription: WebhookCustomerStateChangedPayload["data"]["activeSubscriptions"][number],
-          ) => coerceReferenceId(subscription.metadata["referenceId"]),
+      payload.data.active_subscriptions
+        .map((subscription) =>
+          coerceReferenceId(subscription.metadata["referenceId"]),
         )
         .filter(
           (organizationId): organizationId is string => organizationId !== null,
@@ -412,7 +404,7 @@ export function createOrganizationBillingSyncEventsFromCustomerStatePayload(
     createOrganizationBillingSyncRequestedEvent({
       organizationId,
       reason: payload.type,
-      sourceUpdatedAt: payload.timestamp.toISOString(),
+      sourceUpdatedAt: new Date(payload.timestamp).toISOString(),
     }),
   );
 }

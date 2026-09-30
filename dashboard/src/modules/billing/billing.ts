@@ -8,11 +8,17 @@ export const ManagedSubscriptionSnapshot = Schema.Struct({
 export type ManagedSubscriptionSnapshot =
   typeof ManagedSubscriptionSnapshot.Type;
 
+/** A Polar subscription as the API sends it (snake_case, ISO dates), decoded to our names. */
 export const PolarSubscription = Schema.Struct({
   id: Schema.String,
   productId: Schema.String,
-  currentPeriodEnd: Schema.Date,
-});
+  currentPeriodEnd: Schema.DateFromString,
+}).pipe(
+  Schema.encodeKeys({
+    productId: "product_id",
+    currentPeriodEnd: "current_period_end",
+  }),
+);
 export type PolarSubscription = typeof PolarSubscription.Type;
 
 /** Only the one configured product counts; retired products are ignored. */
