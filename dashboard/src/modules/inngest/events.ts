@@ -111,7 +111,7 @@ export type ConfigPrCheckRequestedEventData = {
 };
 
 /** A member left an Organization (when the request named it): their devices' holders on its Servers go now. */
-export type ServerAccessRetireRequestedEventData = { organizationId: string | null };
+export type ServerAccessRetireRequestedEventData = Record<string, never>;
 
 /** A Config Store Deployment was admitted; Cloud's worker runs it. */
 export type ConfigDeploymentAdmittedEventData = {
@@ -276,8 +276,8 @@ export function createConfigPrCheckRequestedEvent(input: { organizationId: strin
   } as const;
 }
 
-export function createServerAccessRetireRequestedEvent(data: ServerAccessRetireRequestedEventData) {
-  return { name: serverAccessRetireRequestedEvent, data } as const;
+export function createServerAccessRetireRequestedEvent() {
+  return { name: serverAccessRetireRequestedEvent, data: {} satisfies ServerAccessRetireRequestedEventData } as const;
 }
 
 export function createConfigDeploymentAdmittedEvent(data: ConfigDeploymentAdmittedEventData) {

@@ -19,7 +19,7 @@ import {
 import {
   pendingServerRevocations,
   provideServerAccess,
-  retireCredentialServerAccess,
+  retireServerAccess,
 } from "#/modules/machines/server-access.server";
 import { refusal } from "#/modules/config-store/config-store.server";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
@@ -68,14 +68,14 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       const removed = yield* revokeCredential(caller, id).pipe(
         Effect.catchTag("NotFound", (missing) => pendingRevocation(caller, id, missing)),
       );
-      return { removed, servers: yield* retireCredentialServerAccess(id) };
+      return { removed, servers: yield* retireServerAccess(id) };
     }
     case "POST logout": {
       if (caller.credential.kind !== "session") {
         return yield* new Validation({ message: "An Organization Token isn't signed in; revoke it with `ployz token rm`.", userFacing: true });
       }
       yield* revokeCredential(caller, caller.credential.id);
-      return { signed_out: { id: caller.credential.id }, servers: yield* retireCredentialServerAccess(caller.credential.id) };
+      return { signed_out: { id: caller.credential.id }, servers: yield* retireServerAccess(caller.credential.id) };
     }
     case "POST server-access":
       return yield* provideServerAccess(caller);

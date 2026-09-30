@@ -8,13 +8,11 @@ import { loadClusterDomain, reserveClusterDomain } from "#/modules/cluster-domai
 import type { OrganizationClusterDomain } from "#/modules/cluster-domain/tables";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createClusterDomainSyncRequestedEvent } from "#/modules/inngest/events";
-import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
+import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { EnvironmentRef, environmentOf, type StoreCall, type StoreRead } from "./store.contract";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
 
 const DNS_TIMEOUT_MS = 3_000;
-/** A slow or unreachable Cluster leaves statuses unobserved rather than holding up the page that reads them. */
-const OBSERVE_TIMEOUT = "5 seconds";
 /** How long one observation answers `domains` reads: an open drawer rereads them on every edit and every poll. */
 const OBSERVATION_TTL_MS = 15_000;
 
@@ -44,15 +42,14 @@ function clusterDomain(row: OrganizationClusterDomain | null): ConfigDomainEvide
  * Cluster answers, so the Store reads its certificates as unobserved.
  */
 const observeCluster = Effect.fn("ConfigStore.observeCluster")(function* (organizationId: string) {
-  const session = yield* (yield* OrganizationRuntime).open(organizationId);
-  if (session.status !== "connected") return null;
-  const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
+  const frame = yield* firstRuntimeFrame(organizationId);
+  if (frame === null) return null;
   return {
     certificates: frame.certificates,
     ingress_addresses: frame.machines.flatMap(({ machine }) =>
       machine.accepts_ingress && machine.public_ip !== null ? [machine.public_ip] : []),
   };
-}, Effect.scoped, Effect.timeout(OBSERVE_TIMEOUT), Effect.catch((error) =>
+}, Effect.catch((error) =>
   Effect.logWarning("No runtime frame for domain statuses; they read as unobserved.", error).pipe(Effect.as(null))));
 
 type ClusterObservation = Effect.Success<ReturnType<typeof observeCluster>>;

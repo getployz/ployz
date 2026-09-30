@@ -9,7 +9,7 @@ import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow,
 import { verifyGithubOidcToken } from "#/modules/github/github-oidc.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createGithubBuildRunCompletedEvent, type ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
-import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
+import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { AppConfig } from "#/server/config.server";
 import { BuildGrantUnavailable, Conflict, Forbidden, NotFound, Unauthorized, Validation } from "#/server/public-error";
 
@@ -46,12 +46,10 @@ export type StoreGithubTarget = {
  * Whether any Server takes builds now, as the Cluster reports it. No answer reads as yes: the runner then says why the
  * Servers couldn't build.
  */
-const serversBuild = Effect.fn("StoreGithub.serversBuild")(function* (organizationId: string) {
-  const session = yield* (yield* OrganizationRuntime).open(organizationId);
-  if (session.status !== "connected") return true;
-  const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
-  return frame.machines.some(({ machine }) => machine.accepts_builds);
-}, Effect.scoped, Effect.timeout("5 seconds"), Effect.orElseSucceed(() => true));
+const serversBuild = (organizationId: string) => firstRuntimeFrame(organizationId).pipe(
+  Effect.map((frame) => frame === null || frame.machines.some(({ machine }) => machine.accepts_builds)),
+  Effect.orElseSucceed(() => true),
+);
 
 /**
  * Pin the Deployment's Git Services and list those whose walk starts with GitHub and haven't started; a walk that
