@@ -884,7 +884,11 @@ message: string | null,
 /**
  * Whether it may still run: queued, or claimed by a runner still there.
  */
-in_flight: boolean, };
+in_flight: boolean,
+/**
+ * What its runner recorded at its end; none while it hasn't ended.
+ */
+outcome: Outcome | null, };
 
 export type DeploymentView = { environment: EnvironmentSummary,
 /**
@@ -898,7 +902,7 @@ nodes: Array<NodeOutcome>,
 /**
  * The Deploy Preview its runner prepared, with environment values removed.
  */
-preview: DeployPreview | null, outcome: Outcome | null,
+preview: DeployPreview | null,
 /**
  * Its Git Services' builds, once their commits are pinned.
  */
@@ -962,7 +966,11 @@ message: string | null,
 /**
  * Whether it may still run: queued, or claimed by a runner still there.
  */
-in_flight: boolean, };
+in_flight: boolean,
+/**
+ * What its runner recorded at its end; none while it hasn't ended.
+ */
+outcome: Outcome | null, };
 
 export type DeploymentsQuery = { environment: EnvironmentRef,
 /**
@@ -2702,15 +2710,13 @@ name: ServiceName,
  */
 private_dns: ServiceName, };
 
-export type ServiceTemplate = {
-/**
- * The template, as a DNS label such as `postgres`.
- */
-id: string,
+export type ServiceTemplate = { id: ServiceTemplateId,
 /**
  * Its version, from 1.
  */
 version: number, };
+
+export type ServiceTemplateId = string;
 
 export type ServiceView = {
 /**

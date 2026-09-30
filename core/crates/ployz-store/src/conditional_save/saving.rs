@@ -150,7 +150,9 @@ fn picked_secret(moving: &Moving, picks: &[BranchPick], key: &str) -> Option<Sav
         None | Some(BranchPickChoice::From) => {}
         Some(BranchPickChoice::New { value: Some(value) }) => {
             secret.value = value.value.clone();
-            secret.value_fingerprint.clone_from(&value.value_fingerprint);
+            secret
+                .value_fingerprint
+                .clone_from(&value.value_fingerprint);
         }
         Some(
             BranchPickChoice::New { value: None }
