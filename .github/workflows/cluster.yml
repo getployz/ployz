@@ -62,7 +62,7 @@ jobs:
       packages: read
       actions: write
     env:
-      PLOYZ_TESTKIT_IMAGE: ghcr.io/getployz/ployz2-testkit:${{ github.sha }}-amd64
+      PLOYZ_TESTKIT_IMAGE: ghcr.io/getployz/ployz-testkit:${{ github.sha }}-amd64
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
@@ -99,10 +99,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish the multi-arch manifest
         env:
-          AMD64: ghcr.io/getployz/ployz2-testkit:${{ github.sha }}-amd64
-          ARM64: ghcr.io/getployz/ployz2-testkit:${{ github.sha }}-arm64
-          SHA: ghcr.io/getployz/ployz2-testkit:${{ github.sha }}
-          MAIN: ghcr.io/getployz/ployz2-testkit:main
+          AMD64: ghcr.io/getployz/ployz-testkit:${{ github.sha }}-amd64
+          ARM64: ghcr.io/getployz/ployz-testkit:${{ github.sha }}-arm64
+          SHA: ghcr.io/getployz/ployz-testkit:${{ github.sha }}
+          MAIN: ghcr.io/getployz/ployz-testkit:main
         run: |
           docker buildx imagetools create -t "$SHA" "$AMD64" "$ARM64"
           if [ "${GITHUB_REF}" = "refs/heads/main" ]; then

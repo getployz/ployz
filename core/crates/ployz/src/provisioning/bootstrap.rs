@@ -13,7 +13,7 @@ use tokio::time::timeout;
 
 use super::ProvisionError;
 
-const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz2";
+const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz";
 const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A verified copy of this CLI release's daemon, owned by a private directory.

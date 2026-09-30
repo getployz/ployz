@@ -33,13 +33,13 @@ runs:
         push: false
         load: true
         provenance: false
-        tags: ghcr.io/getployz/ployz2-testkit:${{ github.sha }}-${{ inputs.arch }}
-        cache-from: type=registry,ref=ghcr.io/getployz/ployz2-testkit:main
+        tags: ghcr.io/getployz/ployz-testkit:${{ github.sha }}-${{ inputs.arch }}
+        cache-from: type=registry,ref=ghcr.io/getployz/ployz-testkit:main
         cache-to: type=inline
     - name: Prime and push the native image
       shell: bash
       env:
-        IMAGE: ghcr.io/getployz/ployz2-testkit:${{ github.sha }}-${{ inputs.arch }}
+        IMAGE: ghcr.io/getployz/ployz-testkit:${{ github.sha }}-${{ inputs.arch }}
       working-directory: core
       run: |
         bash scripts/prime-testkit-image.sh

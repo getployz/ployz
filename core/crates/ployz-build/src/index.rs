@@ -1,6 +1,6 @@
 //! Railpack 0.39.0 needs separate solves and upstream OCI index assembly.
 //! Primary evidence (shipped beta binaries, ARM64 under emulation):
-//! https://github.com/getployz/ployz2/blob/c3ca5519a4607256ffb28052d77a1c7d89f1bbe1/prototypes/railpack-transfer/FINDINGS.md
+//! https://github.com/getployz/ployz/blob/c3ca5519a4607256ffb28052d77a1c7d89f1bbe1/prototypes/railpack-transfer/FINDINGS.md
 
 use crate::{
     BuildError, BuiltImage, Docker, Planned, Progress, Request, Stage, Streams, TargetEvidence,

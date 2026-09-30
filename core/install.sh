@@ -2,7 +2,7 @@
 
 set -eu
 
-PLOYZ_GITHUB_URL=${PLOYZ_GITHUB_URL:-https://github.com/getployz/ployz2}
+PLOYZ_GITHUB_URL=${PLOYZ_GITHUB_URL:-https://github.com/getployz/ployz}
 PLOYZ_CHANNEL_URL=${PLOYZ_CHANNEL_URL:-https://ployz.sh}
 PLOYZ_VERSION=${PLOYZ_VERSION:-${1:-stable}}
 INSTALL_BIN_DIR=${INSTALL_BIN_DIR:-/usr/local/bin}

@@ -58,7 +58,7 @@ commit_if_changed() {
 push_channel_files() {
     local work=$1 tag=$2
     local token=${GITHUB_TOKEN:-${GH_TOKEN:-}}
-    local repo=${GITHUB_REPOSITORY:-getployz/ployz2}
+    local repo=${GITHUB_REPOSITORY:-getployz/ployz}
     local remote
     [ -n "$token" ] || {
         echo "GITHUB_TOKEN is required to update the channels branch" >&2
@@ -94,7 +94,7 @@ push_homebrew_tap() {
     work=$(mktemp -d)
     git clone --depth 1 "https://x-access-token:${token}@github.com/getployz/homebrew-ployz.git" "$work"
     git_identity "$work"
-    write_homebrew_formula_from_checksums "$checksums" "$work/Formula/ployz.rb" "$version" "$tag" "${GITHUB_REPOSITORY:-getployz/ployz2}"
+    write_homebrew_formula_from_checksums "$checksums" "$work/Formula/ployz.rb" "$version" "$tag" "${GITHUB_REPOSITORY:-getployz/ployz}"
     commit_if_changed "$work" "ployz $version"
     git -C "$work" push origin HEAD
     rm -rf "$work"
