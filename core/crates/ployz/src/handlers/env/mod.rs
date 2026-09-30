@@ -47,6 +47,22 @@ pub(crate) fn command() -> Command {
                 .arg(positional("name", true))
                 .arg(project_arg()),
         )
+        .subcommand(
+            store::scoped(Command::new("setup").about(
+                "Set the Setup Commands a new Branch of an Environment runs when it names none",
+            ))
+            .arg(
+                repeated("setup")
+                    .value_name("SERVICE=COMMAND")
+                    .required_unless_present("clear")
+                    .help("Run COMMAND in the Branch's copy of SERVICE; repeatable"),
+            )
+            .arg(
+                switch("clear", None)
+                    .conflicts_with("setup")
+                    .help("Run none by default"),
+            ),
+        )
         .subcommand(deploy::following(
             base(
                 "rm",
@@ -215,6 +231,7 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
         "new" => new,
         "ls" => ls,
         "default" => default,
+        "setup" => setup,
         "rm" => rm,
         "branch" => branch::branch,
         "save" => branch::save,
@@ -272,6 +289,22 @@ fn default(root: &ArgMatches) -> Result<(), Error> {
     crate::output::finish(&listed, || print_environments(&listed))
 }
 
+fn setup(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let values: Vec<String> = matches
+        .get_many::<String>("setup")
+        .map(|values| values.cloned().collect())
+        .unwrap_or_default();
+    let set = ployz_store::SetBranchSetup {
+        environment: store::environment(matches)?,
+        setup: branch::setups(&values)?,
+    };
+    let listed = store(root)?
+        .write(&set)
+        .map_err(failed(matches, &["env", "setup"]))?;
+    crate::output::finish(&listed, || print_environments(&listed))
+}
+
 fn print_environments(listed: &EnvironmentsView) {
     say!("Environments of Project {}:", listed.project.name);
     for environment in &listed.environments {
@@ -292,6 +325,13 @@ fn print_environments(listed: &EnvironmentsView) {
         match notes.is_empty() {
             true => say!("  {}", environment.name),
             false => say!("  {} ({})", environment.name, notes.join(", ")),
+        }
+        for setup in &environment.branch_setup {
+            say!(
+                "    new Branches run in {}: {}",
+                setup.service,
+                setup.command
+            );
         }
     }
 }

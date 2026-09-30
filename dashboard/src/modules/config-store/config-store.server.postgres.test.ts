@@ -1,6 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import { expect, vi } from "vitest";
-import type { ConfigCommand, ConfigQuery, ServiceId } from "@ployz/sdk";
+import type { ConfigCommand, ConfigQuery } from "@ployz/sdk";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -106,7 +106,7 @@ const SERVICE = "00000000-0000-4000-8000-000000000003";
 const here = { project: null, environment: null };
 const shop: ConfigCommand = { command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT };
 const web: ConfigCommand = {
-  command: "create_service", id: SERVICE as ServiceId, environment: here, name: "web", image: "nginx:1",
+  command: "create_service", id: SERVICE, environment: here, name: "web", image: "nginx:1",
 };
 const write = (command: ConfigCommand) => ({ operation: "write" as const, command });
 const get = (path: string | null): ConfigQuery => ({ query: "environment", environment: here, path, all: false });
@@ -256,7 +256,7 @@ it.live(
         yield* request("write", alice, shop);
         yield* request("write", alice, web);
         const admit: ConfigCommand = {
-          command: "admit", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null, retry: null, remove: false, accept_volume_loss: [],
+          command: "admit", admit: "deploy", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null, accept_volume_loss: [],
         };
         assert.strictEqual((yield* request("write", alice, admit)).status, 200);
         // A retried request replays the admission and sends the same event, which Inngest drops.
@@ -310,7 +310,7 @@ it.live(
         });
         let services = 10;
         const git = (name: string, repository: string, branch?: string): ConfigCommand => ({
-          command: "create_git_service", id: `00000000-0000-4000-8000-0000000000${(services += 1)}` as ServiceId,
+          command: "create_git_service", id: `00000000-0000-4000-8000-0000000000${(services += 1)}`,
           environment: here, name, repository, branch: branch ?? null,
         });
 
@@ -399,8 +399,8 @@ it.live(
         ]);
 
         const admit: ConfigCommand = {
-          command: "admit", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null,
-          remove: false, accept_volume_loss: [],
+          command: "admit", admit: "deploy", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null,
+          accept_volume_loss: [],
         };
         assert.strictEqual((yield* request("write", alice, admit)).status, 200);
         assert.lengthOf(hostedDns.requests.filter((call) => call.method === "POST"), 1);
@@ -449,7 +449,7 @@ it.live(
         const bob = yield* signUp("bob");
         yield* request("write", alice, shop);
         yield* request("write", alice, {
-          command: "create_service", id: SERVICE as ServiceId, environment: here, name: "app", image: null,
+          command: "create_service", id: SERVICE, environment: here, name: "app", image: null,
         });
         const [first, second] = ["00000000-0000-4000-8000-000000000201", "00000000-0000-4000-8000-000000000202"];
         const archive = yield* sourceArchive;
@@ -468,7 +468,7 @@ it.live(
 
         // Cloud, not the caller, names who uploaded it.
         const admitted = yield* request("write", alice, {
-          command: "admit", id: first, environment: here, services: [], version: null, retry: null, remove: false, accept_volume_loss: [],
+          command: "admit", admit: "deploy", id: first, environment: here, services: [], version: null, accept_volume_loss: [],
           upload: { digest: "d".repeat(64), base: null, uploader: "mallory" },
         });
         assert.strictEqual(admitted.status, 200);

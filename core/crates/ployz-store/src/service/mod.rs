@@ -3,6 +3,8 @@
 //! transaction and never changes after. Its Private DNS name is fixed at creation:
 //! a rename changes only the name paths and results address it by.
 
+pub(crate) mod query;
+
 use ployz_core::config::{
     SavedServiceIntent, ServiceImageCredentials, ServiceSource, parse_service_config,
 };
@@ -11,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use super::{Command, replayable};
 use crate::Actor;
+use crate::command::{Command, replayable};
 use crate::error;
 use crate::id::ServiceLineageId;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};

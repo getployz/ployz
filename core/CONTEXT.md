@@ -220,7 +220,7 @@ A non-Service Environment Node with stable identity and type-owned configuration
 _Avoid_: Generic canvas item, Service subtype
 
 **Service Metadata**:
-The display name of a Service, stored on its stable identity and saved immediately. Renaming does not change Private DNS, the stable service slug, Working State, or any accepted deployment. References target IDs; managed `PLOYZ_SERVICE_NAME` exports the stable slug.
+A Service's name. Renaming it is a staged change to its slug in Working State, shipped by the next Deploy like any other; Private DNS stays as it was, so other Services keep reaching it. Private DNS changes only when set itself, also staged, and no two Services share a name or Private DNS name. References target IDs; managed `PLOYZ_SERVICE_NAME` exports the stable Private DNS name.
 _Avoid_: Deployable name, DNS alias
 
 **Volume Kind**:

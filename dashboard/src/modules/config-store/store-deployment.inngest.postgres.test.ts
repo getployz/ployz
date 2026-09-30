@@ -1,7 +1,7 @@
 import { gzipSync } from "node:zlib";
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
-import type { ConfigCommand, ConfigTrusted, ServiceId } from "@ployz/sdk";
+import type { ConfigCommand, ConfigTrusted } from "@ployz/sdk";
 import { Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { Header } from "tar";
@@ -40,7 +40,7 @@ it.live(
       const write = (command: ConfigCommand) => Effect.promise(() => store.write(ORGANIZATION, command));
       yield* write({ command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT });
       yield* write({
-        command: "create_service", id: SERVICE as ServiceId, environment: here, name: "web", image: "nginx:1",
+        command: "create_service", id: SERVICE, environment: here, name: "web", image: "nginx:1",
       });
       yield* write({
         command: "edit", environment: here, expect: null, changes: [
@@ -48,7 +48,7 @@ it.live(
           { op: "set", path: "web.env.GREETING", value: "hi-${{ TOKEN }}" },
         ],
       });
-      yield* write({ command: "admit", id: DEPLOYED, environment: here, services: [], version: null, retry: null, remove: false, accept_volume_loss: [] });
+      yield* write({ command: "admit", admit: "deploy", id: DEPLOYED, environment: here, services: [], version: null, accept_volume_loss: [] });
 
       const runner: Parameters<typeof createRunStoreDeployment>[1] =
         makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services))));
@@ -71,7 +71,7 @@ it.live(
       expect(duplicate.result).toMatchObject({ nothingToRun: expect.any(String) });
 
       // A cancelled Deployment never runs.
-      yield* write({ command: "admit", id: CANCELLED, environment: here, services: [], version: null, retry: null, remove: false, accept_volume_loss: [] });
+      yield* write({ command: "admit", admit: "deploy", id: CANCELLED, environment: here, services: [], version: null, accept_volume_loss: [] });
       yield* write({ command: "cancel", deployment: CANCELLED });
       const cancelled = yield* run(CANCELLED);
       expect(cancelled.result).toMatchObject({ nothingToRun: expect.any(String) });
@@ -85,7 +85,7 @@ it.live(
       expect(abandoned).toMatchObject({ nothingToRun: expect.any(String) });
 
       // A run cancelled in Inngest after it claimed its Deployment records that it stopped: it never reads running.
-      yield* write({ command: "admit", id: LOST, environment: here, services: [], version: null, retry: null, remove: false, accept_volume_loss: [] });
+      yield* write({ command: "admit", admit: "deploy", id: LOST, environment: here, services: [], version: null, accept_volume_loss: [] });
       yield* recordStoreDeploymentRun("cancelled-run", admitted(LOST).data).pipe(Effect.provide(services));
       yield* Effect.promise(() => store.runDeployment(ORGANIZATION, LOST, "cloud-cancelled-run", [], { failure: "stopped" }));
       const stop = (runId: string) => Effect.promise(async () => (await new InngestTestEngine({
@@ -97,7 +97,7 @@ it.live(
       expect(yield* stop("cancelled-run")).toEqual({ skipped: true });
 
       // An admission whose hand-off was lost is handed over again by the sweep, once it has waited.
-      yield* write({ command: "admit", id: QUEUED, environment: here, services: [], version: null, retry: null, remove: false, accept_volume_loss: [] });
+      yield* write({ command: "admit", admit: "deploy", id: QUEUED, environment: here, services: [], version: null, accept_volume_loss: [] });
       const later = new Date(Date.now() + 11 * 60_000);
       const unclaimed = yield* unclaimedStoreDeployments(later).pipe(Effect.provide(services));
       expect(unclaimed.map((deployment) => deployment.deploymentId)).toContain(QUEUED);
@@ -153,11 +153,11 @@ it.live(
       const write = (command: ConfigCommand, trusted?: ConfigTrusted) =>
         Effect.promise(() => store.write(ORGANIZATION, command, trusted));
       yield* write({ command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT });
-      yield* write({ command: "create_git_service", id: SERVICE as ServiceId, environment: here, name: "web", repository: "acme/web", branch: null }, {
+      yield* write({ command: "create_git_service", id: SERVICE, environment: here, name: "web", repository: "acme/web", branch: null }, {
         repositories: [{ repository: "acme/web", repository_id: 42, access: { type: "public" }, default_branch: "main", branches: [] }],
         domains: { custom_domains: false, cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] },
       });
-      yield* write({ command: "admit", id: DEPLOYED, environment: here, services: [], version: null, remove: false, accept_volume_loss: [] });
+      yield* write({ command: "admit", admit: "deploy", id: DEPLOYED, environment: here, services: [], version: null, accept_volume_loss: [] });
 
       const worker = createRunStoreDeployment(
         new Inngest({ id: "store-deployment-git-test" }),
@@ -184,7 +184,7 @@ it.live(
 
       // A branch GitHub no longer has is why the next Deployment ran nothing.
       state.branchGone = true;
-      yield* write({ command: "admit", id: CANCELLED, environment: here, services: [], version: null, remove: false, accept_volume_loss: [] });
+      yield* write({ command: "admit", admit: "deploy", id: CANCELLED, environment: here, services: [], version: null, accept_volume_loss: [] });
       yield* run(CANCELLED);
       expect(yield* view(CANCELLED)).toMatchObject({
         status: "failed",

@@ -13,9 +13,10 @@ const { observeVolumes } = createRequire(import.meta.url)("@ployz/sdk") as Pick<
 /** The part of a command that decides whether a Deploy can delete Volume data; the Store validates the whole command. */
 const AdmitCommand = Schema.Struct({
   command: Schema.Literal("admit"),
+  // A retry needs no evidence: it ships the Volume identities its source accepted.
+  admit: Schema.Literals(["deploy", "remove"]),
   environment: Schema.optional(EnvironmentRef),
   services: Schema.optional(Schema.Array(Schema.String)),
-  remove: Schema.optional(Schema.Boolean),
 });
 
 /**
@@ -32,7 +33,7 @@ export const gatherVolumeEvidence = Effect.fn("ConfigStore.gatherVolumeEvidence"
   const command = Option.getOrUndefined(Schema.decodeUnknownOption(AdmitCommand)(call.command));
   if (command === undefined || (command.services ?? []).length > 0) return undefined;
   const environment = environmentOf(command.environment);
-  const view = yield* storeTry(() => read({ query: "removals", environment, remove: command.remove ?? false })).pipe(Effect.option);
+  const view = yield* storeTry(() => read({ query: "removals", environment, remove: command.admit === "remove" })).pipe(Effect.option);
   const removals = Option.getOrUndefined(view);
   if (removals === undefined || removals.volumes.length === 0) return undefined;
   const loaded = yield* loadOrganizationConnections(organizationId).pipe(Effect.option);

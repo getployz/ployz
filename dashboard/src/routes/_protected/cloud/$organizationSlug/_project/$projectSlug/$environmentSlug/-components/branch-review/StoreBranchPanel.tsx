@@ -73,7 +73,7 @@ function BranchPanel({ params, store, branch, save, update, listing }: {
     removal ? <RemovalNews key="removal" lead name={name} status={removal.status} shutDown={branch.pull_request !== null}
       onFinish={() => void closing.close()} onStart={() => {
         // Back on the Servers until shut down again; the writer toasts a refusal.
-        writer.commit({ command: "admit", id: crypto.randomUUID(), environment: store, services: [], version: null, remove: false, accept_volume_loss: [] });
+        writer.commit({ command: "admit", admit: "deploy", id: crypto.randomUUID(), environment: store, services: [], version: null, accept_volume_loss: [] });
       }} /> : null,
     // A PR Environment saves into each Destination for the merge, not into its Parent now.
     branch.pull_request ? pr && <StorePullRequestNews key="pr" store={store} view={pr} lead={!removal} onShutDown={() => void closing.shutDown()} /> : saveView?.rows.length ? (
@@ -275,7 +275,7 @@ function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: Bran
   async function takeOff({ accept, version }: { accept: readonly string[]; version: string | null }, shut = shutting): Promise<DeletionCheck<Acceptance> | null> {
     try {
       await writer.commit({
-        command: "admit", id: crypto.randomUUID(), environment: store, services: [], version, remove: true, accept_volume_loss: [...accept],
+        command: "admit", admit: "remove", id: crypto.randomUUID(), environment: store, version, accept_volume_loss: [...accept],
       }).isPersisted.promise;
       toast(`${name} is coming off the servers`,
         { description: shut ? "The pull request's next push brings it back." : "Its panel finishes closing it once it's off." });

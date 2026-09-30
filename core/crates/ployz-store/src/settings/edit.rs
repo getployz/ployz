@@ -138,7 +138,7 @@ pub(crate) fn edit(
                         .map_err(|_| error::corrupt("Service name"))?,
                 };
                 let id = node.id.clone();
-                super::service::refuse_taken(&environment, &name, Some(&id))?;
+                crate::service::refuse_taken(&environment, &name, Some(&id))?;
                 let config = &mut environment.service_mut(service)?.config;
                 let changed = config.private_dns != name;
                 config.private_dns = name;
@@ -180,12 +180,12 @@ pub(crate) fn edit(
                     ));
                 };
                 (
-                    super::volume::attach(&mut environment, service, volume, mount)?,
+                    crate::volume::attach(&mut environment, service, volume, mount)?,
                     Apply::Staged,
                 )
             }
             (Some(Target::Mount(volume)), None) => (
-                super::volume::detach(&mut environment, service, volume)?,
+                crate::volume::detach(&mut environment, service, volume)?,
                 Apply::Staged,
             ),
             (None, _) => return Err(crate::settings::name_a_setting(path.node())),

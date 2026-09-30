@@ -18,6 +18,8 @@ CREATE TABLE config_environment (
     name TEXT NOT NULL,
     working_revision BIGINT NOT NULL,
     working TEXT NOT NULL,
+    -- Setup Commands a new Branch of it runs when it names none (JSON; NULL: none).
+    branch_setup TEXT,
     UNIQUE (project_id, name)
 );
 
