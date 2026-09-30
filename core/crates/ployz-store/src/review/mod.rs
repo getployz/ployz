@@ -23,7 +23,7 @@ use crate::Actor;
 use crate::error;
 use crate::id::{EnvironmentId, Revision};
 use crate::scope::{Environment, EnvironmentSummary, revision_param};
-use crate::settings::{ServiceSetting, shown};
+use crate::settings::{SettingPath, shown};
 use crate::storage::Tx;
 
 /// An Environment's staged changes, grouped by node, and the version to act on them.
@@ -145,14 +145,9 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                     .settings
                     .into_iter()
                     .map(|mut row| {
-                        if let Some(volume) = row.path.strip_prefix("mounts.") {
-                            row.path = format!(
-                                "{name}.mounts.{}",
-                                volume_name(&intents, volume).unwrap_or_default()
-                            );
+                        if row.path.starts_with("mounts.") {
                             row.before = row.before.get("mountPath").cloned().unwrap_or_default();
                             row.after = row.after.get("mountPath").cloned().unwrap_or_default();
-                            return row;
                         }
                         if group.node.node_type == EnvironmentNodeType::Volume {
                             row.path = format!("volumes.{name}.{}", row.path);
@@ -160,10 +155,9 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                         }
                         row.before = shown(&row.path, row.before);
                         row.after = shown(&row.path, row.after);
-                        row.path = match ServiceSetting::of_field(&row.path) {
-                            Some(setting) => format!("{name}.{}", setting.name()),
-                            None => format!("{name}.{}", row.path),
-                        };
+                        row.path = SettingPath::from_core(&name, &row.path, |id| {
+                            volume_name(&intents, id).unwrap_or_default()
+                        });
                         row
                     })
                     .collect();
@@ -292,7 +286,7 @@ pub(crate) fn publish(
     latest: Option<&Saved>,
 ) -> Result<(Revision, bool), RpcError> {
     let intent = canonicalize_environment_intent(intent);
-    crate::command::check_storage(tx, environment, &intent)?;
+    crate::volume::check_storage(tx, environment, &intent)?;
     if let Some(latest) = latest
         && latest.intent == intent
     {

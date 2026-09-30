@@ -27,7 +27,7 @@ use crate::policy::{self, is_repository_path};
 use crate::review;
 use crate::scope::{self, EnvironmentSummary};
 use crate::storage::Tx;
-use crate::{Actor, Trusted, build, domain, registry};
+use crate::{Actor, Trusted, build, registry};
 
 /// An observation Cloud made of GitHub. Never caller testimony: only Cloud's worker
 /// passes one, in-process.
@@ -374,12 +374,7 @@ fn deploy(
         }),
         Ok(None) => {}
         // One Environment that can't deploy never holds back the others.
-        Err(error)
-            if matches!(
-                error.code,
-                RpcErrorCode::InvalidArgument | RpcErrorCode::Unsupported | RpcErrorCode::NotFound
-            ) =>
-        {
+        Err(error) if skippable(&error) => {
             automated.skipped.push(Skipped {
                 environment: environment.clone(),
                 reason: error.message,
@@ -388,6 +383,18 @@ fn deploy(
         Err(error) => return Err(error),
     }
     Ok(())
+}
+
+/// Whether an automatic Deploy that failed with `error` is skipped, leaving the
+/// others to go on: the Environment can't deploy until someone changes it.
+pub(crate) fn skippable(error: &RpcError) -> bool {
+    matches!(
+        error.code,
+        RpcErrorCode::InvalidArgument
+            | RpcErrorCode::Unsupported
+            | RpcErrorCode::NotFound
+            | RpcErrorCode::Conflict
+    )
 }
 
 enum Deploy {
@@ -523,13 +530,16 @@ fn admit(
     // Generated domains expand under the Cluster Domain Cloud reserved for the
     // Environment's last Deploy.
     let cluster_domain = deployment::cluster_domain(tx, id)?;
-    let summary = auto_admit(
-        tx,
-        who,
-        (&environment, &saved),
-        &names,
-        (cluster_domain.as_ref(), &pins),
-    )?;
+    // A skipped Deploy leaves nothing behind, such as a reserved Namespace.
+    let summary = crate::storage::attempt(tx, |tx| {
+        auto_admit(
+            tx,
+            who,
+            (&environment, &saved),
+            &names,
+            (cluster_domain.as_ref(), &pins),
+        )
+    })?;
     Ok(Some(Deploy::Admitted(Box::new(summary))))
 }
 
@@ -545,17 +555,7 @@ pub(crate) fn auto_admit(
     (cluster_domain, pins): (Option<&Hostname>, &BTreeMap<ServiceName, CommitSha>),
 ) -> Result<DeploymentSummary, RpcError> {
     let id = &environment.summary.id;
-    if cluster_domain.is_none() && domain::has_generated(&saved.intent) {
-        return Err(RpcError {
-            code: RpcErrorCode::Unsupported,
-            message: format!(
-                "Deploy {} once first: generated domains need the Cluster Domain Cloud \
-                 reserves at a Deploy",
-                environment.summary.name
-            ),
-            details: json!({}),
-        });
-    }
+    crate::deployment::admit::needs_cluster_domain(environment, &saved.intent, cluster_domain)?;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let head = deployment::head(tx, environment)?;
     let mut frozen = deployment::freeze(

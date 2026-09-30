@@ -111,12 +111,13 @@ pub(crate) fn in_flight(
     latest_where(tx, environment, &in_flight_sql())
 }
 
-/// `environment`'s latest Deployment a runner claimed: what may run on the Servers.
+/// `environment`'s latest Deployment that started: claimed by a runner, or a removal
+/// that applied without one. What may run on the Servers.
 pub(crate) fn last_ran(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Option<DeploymentSummary>, RpcError> {
-    latest_where(tx, environment, "runner IS NOT NULL")
+    latest_where(tx, environment, "started IS NOT NULL")
 }
 
 pub(super) fn latest_where(
@@ -163,7 +164,7 @@ pub(crate) fn view(
     id: &DeploymentId,
 ) -> Result<DeploymentView, RpcError> {
     let stored = owned(tx, who, id)?;
-    let environment = scope::load_by_id(tx, &stored.environment)?;
+    let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
     let nodes = stored
         .nodes
         .iter()
@@ -188,9 +189,18 @@ pub(crate) fn view(
             },
         })
         .collect();
+    let runtime_names = stored
+        .nodes
+        .iter()
+        .filter_map(|node| match node {
+            TargetNode::Service { name, runtime, .. } => Some((name.clone(), runtime.clone())),
+            TargetNode::Volume { .. } => None,
+        })
+        .collect();
     let builds = build::views(tx, &stored)?;
     Ok(DeploymentView {
         builds,
+        runtime_names,
         deployment: stored.summary,
         environment: environment.summary,
         namespace: stored.namespace,

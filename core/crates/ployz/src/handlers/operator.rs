@@ -219,12 +219,13 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
     }
     // A Deployment names its Environment, whatever the scope says.
     let namespace = match (&deployment, &store) {
-        (Some(id), Some(store)) => Some(Scoped {
-            namespace: store
-                .read(&ployz_store::DeploymentQuery { id: id.clone() })?
-                .namespace,
-            services: std::collections::BTreeMap::new(),
-        }),
+        (Some(id), Some(store)) => {
+            let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
+            Some(Scoped {
+                namespace: view.namespace,
+                services: view.runtime_names,
+            })
+        }
         _ => scope(root)?,
     };
     let args = parse_service_args(&named)?

@@ -292,7 +292,7 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
 /// The Services `stored` targets that have no source of their own: they build from
 /// its upload.
 pub(crate) fn uploads_of(tx: &mut dyn Tx, stored: &Stored) -> Result<Vec<ServiceName>, RpcError> {
-    let saved = deployment::saved_at(tx, &stored.environment, stored.summary.saved)?;
+    let saved = deployment::saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
     Ok(saved
         .services
         .iter()
@@ -303,7 +303,7 @@ pub(crate) fn uploads_of(tx: &mut dyn Tx, stored: &Stored) -> Result<Vec<Service
 }
 
 pub(crate) fn sources_of(tx: &mut dyn Tx, stored: &Stored) -> Result<Vec<GitSource>, RpcError> {
-    let saved = deployment::saved_at(tx, &stored.environment, stored.summary.saved)?;
+    let saved = deployment::saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
     let rows = rows(tx, &stored.summary.id)?;
     let organization = organization(tx, &stored.summary.id)?;
     let mut sources = Vec::new();
@@ -317,8 +317,12 @@ pub(crate) fn sources_of(tx: &mut dyn Tx, stored: &Stored) -> Result<Vec<GitSour
         let Some(mut source) = source_of(service, row) else {
             continue;
         };
-        (source.builders, source.preferred_machine) =
-            builders::walk(tx, organization.as_str(), &stored.environment, &service.id)?;
+        (source.builders, source.preferred_machine) = builders::walk(
+            tx,
+            organization.as_str(),
+            &stored.summary.environment_id,
+            &service.id,
+        )?;
         sources.push(source);
     }
     Ok(sources)
@@ -686,7 +690,7 @@ pub(crate) fn github_input(
         .ok_or_else(|| error::corrupt("GitHub build commit"))?;
     let input = deployment::input(tx, &stored, sealing)?;
     // The latest receipt of the Service, a cache hint; its own when it has one.
-    let receipt = deployment::receipts(tx, &stored.environment)?
+    let receipt = deployment::receipts(tx, &stored.summary.environment_id)?
         .remove(&id.service)
         .and_then(|receipts| receipts.into_iter().next());
     Ok((input, commit, receipt))
@@ -796,7 +800,7 @@ pub(crate) fn github_end(
     let mut log = row.log;
     let (status, message, github) = match end {
         GithubEnd::Built { receipt } => {
-            deployment::save_receipt(tx, &stored.environment, &id.service, receipt)?;
+            deployment::save_receipt(tx, &stored.summary.environment_id, &id.service, receipt)?;
             let status = if run_id.is_some() {
                 BuildStatus::Built
             } else {

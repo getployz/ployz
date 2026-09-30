@@ -11,8 +11,8 @@ use ployz_core::config::{
     SavedEnvironmentIntent, SavedServiceIntent, ServiceManagedHostname, ServiceRoute,
 };
 use ployz_core::{
-    CertificateAvailability, CertificateFailureKind, CertificateObservation, IngressHost, RpcError,
-    RpcErrorCode, ServiceName,
+    CertificateAvailability, CertificateFailureKind, CertificateObservation, IngressHost,
+    Namespace, RpcError, RpcErrorCode, ServiceName,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -47,6 +47,22 @@ pub struct DomainEvidence {
     /// What DNS answered just now, for the hostnames a check looked up.
     #[serde(default)]
     pub lookups: Vec<DnsLookup>,
+    /// Hostnames the Servers publish now, as the Runtime Watch last reported them.
+    /// Generated prefixes avoid those of other Namespaces, and a Deploy refuses one.
+    #[serde(default)]
+    #[ts(as = "Option<Vec<PublishedHostname>>", optional)]
+    pub published: Vec<PublishedHostname>,
+}
+
+/// A hostname a Service on the Servers publishes.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PublishedHostname {
+    pub hostname: Hostname,
+    /// The Namespace of the Service publishing it.
+    pub namespace: Namespace,
+    /// The Service publishing it, by its runtime name.
+    pub service: ServiceName,
 }
 
 /// The Organization's Cluster Domain: generated hostnames live one label under it.
@@ -112,6 +128,18 @@ pub struct RemoveDomain {
     pub environment: EnvironmentRef,
     /// Its hostname, or a generated domain's prefix.
     pub domain: String,
+}
+
+/// Change the prefix of a Service's generated domain, `PREFIX.CLUSTER-DOMAIN`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SetGeneratedDomain {
+    #[serde(default)]
+    pub environment: EnvironmentRef,
+    pub service: ServiceName,
+    /// One DNS label, unique among the Organization's generated domains and the
+    /// hostnames other Namespaces publish.
+    pub prefix: String,
 }
 
 /// A domain added or removed in Working State, staged until a Deploy.
@@ -289,10 +317,9 @@ pub(crate) fn add_domain(
         .map(|service| (service.id, service.config))
         .collect::<Vec<_>>();
     // Hostnames under the Cluster Domain are Ployz's to hand out, never custom.
-    let cluster = match &trusted.domains.cluster_domain {
-        Some(cluster) => Some(cluster.name.clone()),
-        None => crate::deployment::cluster_domain(tx, &environment.summary.id)?,
-    };
+    let cluster = cluster_of(tx, &environment, trusted)?;
+    let namespace = crate::deployment::namespace(tx, who, &environment.summary, false)?;
+    let published = published_prefixes(trusted, &namespace, cluster.as_ref());
     if let (Some(hostname), Some(cluster)) = (&add.hostname, &cluster) {
         let (hostname, cluster) = (hostname.as_str(), cluster.as_str());
         if hostname == cluster || hostname.ends_with(&format!(".{cluster}")) {
@@ -362,6 +389,7 @@ pub(crate) fn add_domain(
                         .iter()
                         .flat_map(|(_, config)| &config.managed_hostnames)
                         .map(|managed| managed.prefix.as_str())
+                        .chain(published.iter().map(String::as_str))
                         .collect::<Vec<_>>();
                     let prefix = free_prefix(service.config.private_dns.as_str(), &taken);
                     managed.push(ServiceManagedHostname {
@@ -393,6 +421,192 @@ pub(crate) fn add_domain(
         } else {
             Vec::new()
         },
+    })
+}
+
+pub(crate) fn set_generated_domain(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    set: &SetGeneratedDomain,
+    trusted: &Trusted,
+) -> Result<DomainStaged, RpcError> {
+    let mut environment = scope::lock(tx, who, &set.environment)?;
+    let prefix = label(&set.prefix)?;
+    let id = environment.service(&set.service)?.id.clone();
+    let taken = other_environments(tx, who, &environment)?
+        .iter()
+        .chain(std::iter::once(&environment.working))
+        .flat_map(|intent| &intent.services)
+        .filter(|service| service.id != id)
+        .flat_map(|service| &service.config.managed_hostnames)
+        .any(|managed| managed.prefix == prefix);
+    if taken {
+        return Err(error::conflict(
+            format!("Another generated domain of this Organization is {prefix}"),
+            json!({ "prefix": prefix }),
+        ));
+    }
+    let cluster = cluster_of(tx, &environment, trusted)?;
+    let namespace = crate::deployment::namespace(tx, who, &environment.summary, false)?;
+    if let Some(cluster) = &cluster
+        && let Some(published) = published_elsewhere(trusted, &namespace)
+            .find(|published| published.hostname.as_str() == format!("{prefix}.{cluster}"))
+    {
+        return Err(clash(tx, who, published)?);
+    }
+    let service = environment.service_mut(&set.service)?;
+    let Some(managed) = service.config.managed_hostnames.first_mut() else {
+        return Err(error::not_found(
+            format!("{} has no generated domain to change", set.service),
+            json!({ "next": format!("ployz domain add {}", set.service) }),
+        ));
+    };
+    let changed = managed.prefix != prefix;
+    managed.prefix.clone_from(&prefix);
+    let port = managed.target_port;
+    if changed {
+        scope::save_working(tx, &mut environment)?;
+    }
+    Ok(DomainStaged {
+        environment: environment.summary,
+        domain: Domain {
+            service: set.service.clone(),
+            name: generated(prefix, trusted),
+            port,
+        },
+        staged: match changed {
+            true => vec![SettingPath::whole(&set.service)],
+            false => Vec::new(),
+        },
+    })
+}
+
+/// A generated domain's prefix, lowercased, or why it isn't one DNS label.
+fn label(prefix: &str) -> Result<String, RpcError> {
+    let prefix = prefix.trim().to_ascii_lowercase();
+    let valid = (1..=63).contains(&prefix.len())
+        && prefix
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && !prefix.starts_with('-')
+        && !prefix.ends_with('-');
+    if valid {
+        return Ok(prefix);
+    }
+    Err(error::invalid(
+        "A generated domain's prefix is one DNS label: 1-63 letters, digits and hyphens, \
+         not starting or ending with a hyphen",
+        json!({ "example": "shop-api" }),
+    ))
+}
+
+/// The Cluster Domain `environment`'s generated domains live under: the one Cloud
+/// reserved, else the one its last Deploy used.
+fn cluster_of(
+    tx: &mut dyn Tx,
+    environment: &Environment,
+    trusted: &Trusted,
+) -> Result<Option<Hostname>, RpcError> {
+    match &trusted.domains.cluster_domain {
+        Some(cluster) => Ok(Some(cluster.name.clone())),
+        None => crate::deployment::cluster_domain(tx, &environment.summary.id),
+    }
+}
+
+/// What other Namespaces than `own` publish: no hostname of `own`'s Environment
+/// may take it.
+fn published_elsewhere<'t>(
+    trusted: &'t Trusted,
+    own: &'t Namespace,
+) -> impl Iterator<Item = &'t PublishedHostname> {
+    trusted
+        .domains
+        .published
+        .iter()
+        .filter(move |published| published.namespace != *own)
+}
+
+/// The prefixes of hostnames other Namespaces than `own` publish under `cluster`.
+fn published_prefixes(
+    trusted: &Trusted,
+    own: &Namespace,
+    cluster: Option<&Hostname>,
+) -> Vec<String> {
+    let Some(cluster) = cluster else {
+        return Vec::new();
+    };
+    let under = format!(".{cluster}");
+    published_elsewhere(trusted, own)
+        .filter_map(|published| published.hostname.as_str().strip_suffix(&under))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Refuse to deploy a hostname of `intent` another Namespace than `namespace`
+/// publishes, generated ones expanded under `cluster_domain`.
+///
+/// # Errors
+/// `conflict` naming who publishes it.
+pub(crate) fn check_published(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    intent: &SavedEnvironmentIntent,
+    (cluster_domain, namespace): (Option<&Hostname>, &Namespace),
+    trusted: &Trusted,
+) -> Result<(), RpcError> {
+    let expanded = expand(intent, cluster_domain);
+    let ours = |hostname: &Hostname| {
+        expanded
+            .services
+            .iter()
+            .flat_map(|service| &service.config.routes)
+            .any(|route| route.hostname == hostname.as_str())
+    };
+    match published_elsewhere(trusted, namespace).find(|published| ours(&published.hostname)) {
+        Some(published) => Err(clash(tx, who, published)?),
+        None => Ok(()),
+    }
+}
+
+/// Why `published`'s hostname can't be taken: it names the Project and Environment
+/// whose Namespace publishes it, or says no Project owns that Namespace and how to
+/// take it off the Servers.
+fn clash(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    published: &PublishedHostname,
+) -> Result<RpcError, RpcError> {
+    let PublishedHostname {
+        hostname,
+        namespace,
+        service,
+    } = published;
+    let owner = tx.query(
+        "SELECT p.name, e.name FROM config_namespace n \
+         JOIN config_environment e ON e.id = n.environment_id \
+         JOIN config_project p ON p.id = e.project_id \
+         WHERE n.organization_id = ?1 AND n.namespace = ?2",
+        &[who.organization.as_str().into(), namespace.as_str().into()],
+    )?;
+    Ok(match owner.first() {
+        Some(row) => {
+            let (project, environment) = (row.text(0)?, row.text(1)?);
+            error::conflict(
+                format!("{hostname} is already published by {service} in {project}/{environment}"),
+                json!({ "hostname": hostname, "project": project, "environment": environment }),
+            )
+        }
+        None => error::conflict(
+            format!(
+                "{hostname} is already published by {service} in Namespace {namespace}, which \
+                 isn't in any Project: remove that Namespace from the Servers first"
+            ),
+            json!({
+                "hostname": hostname,
+                "namespace": namespace,
+                "next": format!("ployz server clean --namespace {namespace} --confirm {namespace}"),
+            }),
+        ),
     })
 }
 
@@ -902,6 +1116,7 @@ mod tests {
             ),
             ingress_addresses: vec!["203.0.113.7".into()],
             lookups: Vec::new(),
+            published: Vec::new(),
         }
     }
 

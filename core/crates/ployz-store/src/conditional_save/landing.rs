@@ -115,12 +115,14 @@ pub(super) fn plan(
     };
 
     let staged: BTreeSet<&str> = working_picks.iter().map(|pick| pick.key.as_str()).collect();
-    // A secret the Destination holds too only ever lands as a hint.
+    let landed: BTreeSet<&str> = saved_picks.iter().map(|pick| pick.key.as_str()).collect();
+    // A secret that didn't land, such as one the Destination holds too, stays as a
+    // hint with its sealed value.
     let left: Vec<Row> = stored
         .rows
         .iter()
         .filter(|row| {
-            row.secret.is_some()
+            (row.secret.is_some() && !landed.contains(row.key.as_str()))
                 || (in_saved.contains_key(&row.key) || in_working.contains_key(&row.key))
                     && !unchanged(&row.key)
         })

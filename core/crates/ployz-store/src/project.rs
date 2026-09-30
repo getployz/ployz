@@ -7,7 +7,6 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
-use crate::command::{Command, replayable};
 use crate::error;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectId, ProjectName, Revision};
 use crate::scope::{self, EnvironmentSummary, Project};
@@ -46,6 +45,16 @@ pub struct ProjectSummary {
     pub name: ProjectName,
 }
 
+/// Rename a Project. Its Environments keep the Namespaces they run in on the Servers.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RenameProject {
+    /// The Project, by its current name.
+    pub project: ProjectName,
+    /// Its new name, unique in the Organization.
+    pub name: ProjectName,
+}
+
 /// Create an empty Environment in a Project.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -67,15 +76,6 @@ pub struct EnvironmentCreated {
 }
 
 pub(crate) fn create_project(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    create: &CreateProject,
-) -> Result<ProjectCreated, RpcError> {
-    let command = Command::CreateProject(create.clone());
-    replayable(tx, who, &command, |tx| insert_project(tx, who, create))
-}
-
-fn insert_project(
     tx: &mut dyn Tx,
     who: &Actor,
     create: &CreateProject,
@@ -121,17 +121,6 @@ fn insert_project(
 }
 
 pub(crate) fn create_environment(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    create: &CreateEnvironment,
-) -> Result<EnvironmentCreated, RpcError> {
-    let command = Command::CreateEnvironment(create.clone());
-    replayable(tx, who, &command, |tx| {
-        insert_new_environment(tx, who, create)
-    })
-}
-
-fn insert_new_environment(
     tx: &mut dyn Tx,
     who: &Actor,
     create: &CreateEnvironment,
@@ -190,5 +179,36 @@ pub(crate) fn insert_environment(
         project: project.name.clone(),
         name,
         revision,
+    })
+}
+
+pub(crate) fn rename_project(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    rename: &RenameProject,
+) -> Result<ProjectSummary, RpcError> {
+    let project = scope::project(tx, who, Some(&rename.project))?;
+    if rename.name != project.name {
+        let taken = tx.query(
+            "SELECT id FROM config_project WHERE organization_id = ?1 AND name = ?2",
+            &[
+                who.organization.as_str().into(),
+                rename.name.as_str().into(),
+            ],
+        )?;
+        if !taken.is_empty() {
+            return Err(error::conflict(
+                format!("A Project named {} already exists", rename.name),
+                json!({ "project": rename.name }),
+            ));
+        }
+        tx.execute(
+            "UPDATE config_project SET name = ?1 WHERE id = ?2",
+            &[rename.name.as_str().into(), project.id.as_str().into()],
+        )?;
+    }
+    Ok(ProjectSummary {
+        id: project.id,
+        name: rename.name.clone(),
     })
 }

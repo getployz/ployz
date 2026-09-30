@@ -16,7 +16,7 @@ use crate::error;
 use crate::id::{Revision, VolumeName};
 use crate::review::{self, Review};
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
-use crate::settings::{NodeName, SettingPath, Target};
+use crate::settings::{NodeName, SettingPath, Target, VolumeField};
 use crate::storage::Tx;
 use crate::{Actor, Trusted, deployment, removal};
 
@@ -189,20 +189,25 @@ fn restore(
     };
     let (node_type, id) = node?;
     let part = path.target();
+    let field = path.volume_field();
     let holds = |intent: &SavedEnvironmentIntent| match node_type {
         EnvironmentNodeType::Service => intent.services.iter().any(|service| service.id == id),
         EnvironmentNodeType::Volume => intent.volumes.iter().any(|volume| volume.resource_id == id),
     };
     // A part of a node never deployed resets to its Introduction; Saved State follows
     // only where it holds the node already.
-    let introduction = part.is_some() && !holds(&head);
+    let introduction = (part.is_some() || field.is_some()) && !holds(&head);
     let baseline = if introduction {
         review::introductions(tx, environment)?
     } else {
         head
     };
     let restore = |current: &SavedEnvironmentIntent| {
-        restore_node(current, &baseline, (node_type, &id), part).map_err(|message| {
+        let restored = match field {
+            Some(field) => restore_field(current, &baseline, &id, field),
+            None => restore_node(current, &baseline, (node_type, &id), part),
+        };
+        restored.map_err(|message| {
             error::conflict(
                 format!("Discard would leave an invalid Environment: {message}"),
                 json!({ "path": path }),
@@ -212,7 +217,16 @@ fn restore(
     // Saved State follows, except for a part Saved State holds as it is at Head already.
     let saved_follows = match (part, saved) {
         (_, Some(saved)) if introduction && !holds(saved) => false,
-        (None, _) => true,
+        (None, saved) => field.is_none_or(|field| {
+            let value = |intent: &SavedEnvironmentIntent| {
+                intent
+                    .volumes
+                    .iter()
+                    .find(|volume| volume.resource_id == id)
+                    .map(|volume| field.of(volume))
+            };
+            saved.is_some_and(|saved| value(saved) != value(&baseline))
+        }),
         (Some(Target::Setting(setting)), Some(saved)) => {
             let config = |intent: &SavedEnvironmentIntent| {
                 intent
@@ -237,6 +251,30 @@ fn restore(
         Some(_) | None => None,
     };
     Ok((restore(working)?, saved))
+}
+
+/// `current` with Volume `id`'s `field` as `baseline` has it.
+fn restore_field(
+    current: &SavedEnvironmentIntent,
+    baseline: &SavedEnvironmentIntent,
+    id: &str,
+    field: VolumeField,
+) -> Result<SavedEnvironmentIntent, String> {
+    let gone = || "discard the whole Volume instead".to_owned();
+    let mut restored = current.clone();
+    let from = baseline
+        .volumes
+        .iter()
+        .find(|volume| volume.resource_id == id)
+        .ok_or_else(gone)?;
+    let volume = restored
+        .volumes
+        .iter_mut()
+        .find(|volume| volume.resource_id == id)
+        .ok_or_else(gone)?;
+    field.restore(volume, from);
+    parse_environment_intent(serde_json::to_value(restored).expect("Working State is JSON"))
+        .map_err(|error| error.message)
 }
 
 /// `current` with node `id`, or one part of it, as `baseline` has it.

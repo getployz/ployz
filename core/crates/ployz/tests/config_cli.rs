@@ -293,7 +293,7 @@ fn an_agent_creates_and_edits_an_image_service() {
                 "web.startCommand"
             ]))
         );
-        assert_eq!(added.get("immediate"), Some(&json!([])));
+        assert!(added.get("immediate").is_none());
 
         let set = ok(
             store,
