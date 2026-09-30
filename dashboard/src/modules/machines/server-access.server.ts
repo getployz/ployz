@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { Connection, MachineId as SdkMachineId } from "@ployz/sdk";
-import { and, eq, isNotNull, isNull, not, sql, type SQL } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, not, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { MachineId } from "#/db/tables";
 import type { Caller } from "#/modules/identity/actor";
@@ -89,7 +89,7 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
         )).returning({ machineId: serverAccess.machineId })).length > 0;
     }));
     if (revoked) {
-      yield* retireCredentialServerAccess(caller.credential.id);
+      yield* retireServerAccess(caller.credential.id);
       return yield* new Unauthorized();
     }
     return { machine_id: machineId, management: management.value };
@@ -115,7 +115,11 @@ const stillAuthorized = sql`(exists (select 1 from ${member}
  * removal): Cloud forgets its capability at once, then tries one bounded Clear per Server. A Clear that doesn't
  * confirm leaves the revocation pending for the next retry.
  */
-export const retireServerAccess = Effect.fn("ServerAccess.retire")(function* (scope?: SQL, credentialId?: string) {
+export const retireServerAccess = Effect.fn("ServerAccess.retire")(function* (
+  /** One credential's holders, on every Server of every Organization it reached; else every holder. */
+  credentialId?: string,
+) {
+  const scope = credentialId === undefined ? undefined : eq(serverAccess.credentialId, credentialId);
   const database = yield* Database;
   const { drizzle } = database;
   yield* database.transaction(Effect.gen(function* () {
@@ -160,10 +164,6 @@ export const retireServerAccess = Effect.fn("ServerAccess.retire")(function* (sc
     unconfirmed: outcomes.flatMap((outcome) => outcome.confirmed ? [] : [outcome.machineId]),
   };
 });
-
-/** Retire one credential's holders, on every Server of every Organization it reached. */
-export const retireCredentialServerAccess = (credentialId: string) =>
-  retireServerAccess(eq(serverAccess.credentialId, credentialId), credentialId);
 
 /** Revoked credentials of the Organization whose Servers haven't confirmed the Clear yet. */
 export const pendingServerRevocations = Effect.fn("ServerAccess.pending")(function* (organizationId: string) {

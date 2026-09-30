@@ -10,7 +10,7 @@ import {
 } from "better-auth/plugins";
 import { createAuthMiddleware } from "better-auth/api";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
-import { Context, Data, Effect, Layer, Option, Redacted, Schema } from "effect";
+import { Context, Data, Effect, Layer, Redacted, Schema } from "effect";
 import { sessionAdditionalFields, userAdditionalFields } from "#/auth/session-fields";
 import { getBetterAuthUrlConfig } from "#/auth/trusted-origins";
 import {
@@ -244,10 +244,8 @@ const makeAuth = Effect.gen(function* () {
       // A member removed or leaving: their devices' holders on the Organization's Servers go now, not at the next sweep.
       after: createAuthMiddleware(async (ctx) => {
         if (ctx.path !== "/organization/remove-member" && ctx.path !== "/organization/leave") return;
-        const named = Schema.decodeUnknownOption(Schema.Struct({ organizationId: Schema.String }))(ctx.body);
-        await runHook(sendInngestEvent(createServerAccessRetireRequestedEvent({
-          organizationId: Option.isSome(named) ? named.value.organizationId : null,
-        })).pipe(
+        // The retirement sweeps every holder a credential no longer authorizes: it needs no payload.
+        await runHook(sendInngestEvent(createServerAccessRetireRequestedEvent()).pipe(
           Effect.catch((error) => Effect.logWarning("Server access retirement was not requested; the sweep does it.", error)),
         ));
       }),
