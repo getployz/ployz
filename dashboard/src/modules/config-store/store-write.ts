@@ -58,6 +58,11 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
     return seen === null || (own !== null && own > seen) ? own : seen;
   }
 
+  function trackEdit(promise: Promise<unknown>) {
+    const settled = promise.then(() => undefined, () => undefined).finally(() => unsettled.delete(settled));
+    unsettled.add(settled);
+  }
+
   /**
    * Runs `work` in the Environment's queue, then waits for `refresh` so the committed state shows before the
    * pending edit's overlay goes. Failure toasts, refreshes the same views (the rollback), and rejects.
@@ -94,8 +99,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
         if (written.written === "edited") committed.set(key, written.environment.revision);
         return written;
       }, () => refetchEnvironmentViews(queryClient, organizationSlug, key), true);
-      const settled = promise.then(() => undefined, () => undefined).finally(() => unsettled.delete(settled));
-      unsettled.add(settled);
+      trackEdit(promise);
       return observeFailure({ isPersisted: { promise } });
     },
     /**
@@ -109,10 +113,17 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
     commit(command: ConfigCommand, handles: readonly string[] = []): { isPersisted: { promise: Promise<ConfigWritten> } } {
       const key = "environment" in command && command.environment ? environmentKey(command.environment) : "";
       applyOptimistic(queryClient, organizationSlug, command);
+      const expects = command.command === "set_volume_storage";
+      const save = async () => {
+        const written = await send(command.command === "set_volume_storage" ? { ...command, expect: expected(key) } : command);
+        if (written.written === "volume") committed.set(key, written.environment.revision);
+        return written;
+      };
       // ponytail: waits for edits in every Environment, not just the ones it touches; edits settle in a round trip.
-      const work = SPANS.has(command.command) ? async () => { await Promise.all(unsettled); return send(command); } : () => send(command);
+      const work = SPANS.has(command.command) ? async () => { await Promise.all(unsettled); return save(); } : save;
       const promise = queued(key, ["store-command", organizationSlug, key], [], work,
-        () => queryClient.invalidateQueries({ queryKey: storeViewPrefix(organizationSlug) }), false, handles);
+        () => queryClient.invalidateQueries({ queryKey: storeViewPrefix(organizationSlug) }), expects, handles);
+      if (expects) trackEdit(promise);
       return observeFailure({ isPersisted: { promise } });
     },
   };

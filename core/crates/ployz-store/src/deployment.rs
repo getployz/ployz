@@ -553,7 +553,7 @@ fn lower(
     let volumes: Vec<Value> = saved
         .volumes
         .iter()
-        .map(|volume| json!({ "volumeResourceId": volume.resource_id }))
+        .map(|volume| json!({ "volumeResourceId": volume.resource_id, "storage": volume.storage }))
         .collect();
     let input = json!({
         "namespace": namespace,
@@ -613,6 +613,8 @@ pub(crate) fn admit(
     saved: Revision,
     frozen: &Frozen,
 ) -> Result<DeploymentSummary, RpcError> {
+    let intent = saved_at(tx, environment, saved)?;
+    crate::command::check_storage(tx, environment, &intent)?;
     let (id, services) = (&admit.id, &admit.services);
     let environment_id = environment.as_str();
     // Without a new upload, Services without a source keep building from the latest one.

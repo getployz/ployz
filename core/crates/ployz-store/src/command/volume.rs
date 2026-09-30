@@ -3,7 +3,9 @@
 //! data; only removing a deployed Volume deletes data, and a Deploy of that removal
 //! needs its destructive review (see `crate::removal`).
 
-use ployz_core::config::{SavedVolumeIntent, VolumeAttachment};
+use std::collections::BTreeMap;
+
+use ployz_core::config::{SavedEnvironmentIntent, SavedVolumeIntent, VolumeAttachment, VolumeKind};
 use ployz_core::{ContainerPath, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -12,7 +14,7 @@ use ts_rs::TS;
 use super::{Command, replayable};
 use crate::Actor;
 use crate::error;
-use crate::id::{VolumeId, VolumeName};
+use crate::id::{EnvironmentId, Revision, VolumeId, VolumeName};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
 
@@ -27,6 +29,9 @@ pub struct CreateVolume {
     pub environment: EnvironmentRef,
     /// Its name, unique among the Environment's Volumes.
     pub name: VolumeName,
+    /// Managed storage by default; Docker storage is an explicit opt-out.
+    #[serde(default = "VolumeKind::managed_default")]
+    pub storage: VolumeKind,
     /// Where Services mount it.
     #[serde(default)]
     pub mounts: Vec<Mount>,
@@ -54,6 +59,22 @@ pub struct RemoveVolume {
     pub volume: VolumeName,
 }
 
+/// Change a draft Volume's storage. Deployment fixes its storage choice and limit.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SetVolumeStorage {
+    /// The Environment containing the Volume.
+    #[serde(default)]
+    pub environment: EnvironmentRef,
+    /// The draft Volume to edit, by name.
+    pub volume: VolumeName,
+    /// Its explicit storage choice and bound.
+    pub storage: VolumeKind,
+    #[serde(default)]
+    /// Refuse edits against a different Working revision.
+    pub expect: Option<Revision>,
+}
+
 /// A Volume created or removed in Working State, staged until a Deploy.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct VolumeStaged {
@@ -75,6 +96,8 @@ pub struct VolumeSummary {
     pub id: VolumeId,
     /// Its name, which mount paths address it by.
     pub name: VolumeName,
+    /// Its chosen storage, including the maximum for a Provisioned Volume.
+    pub storage: VolumeKind,
 }
 
 pub(crate) fn create_volume(
@@ -99,6 +122,7 @@ pub(crate) fn create_volume(
             // A new Volume starts its own lineage; Branch copies keep it.
             resource_lineage_id: create.id.to_string(),
             name: create.name.to_string(),
+            storage: create.storage,
         };
         environment.working.volumes.push(node.clone());
         let mut staged = vec![whole(&create.name)];
@@ -126,12 +150,99 @@ pub(crate) fn create_volume(
             volume: VolumeSummary {
                 id: create.id.clone(),
                 name: create.name.clone(),
+                storage: create.storage,
             },
             environment: environment.summary,
             staged,
             immediate: Vec::new(),
         })
     })
+}
+
+pub(crate) fn set_storage(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    set: &SetVolumeStorage,
+) -> Result<VolumeStaged, RpcError> {
+    let mut environment = scope::lock(tx, who, &set.environment)?;
+    environment.expect(set.expect)?;
+    let node = environment.volume(&set.volume)?;
+    let changed = node.storage != set.storage;
+    let id = node.resource_id.clone();
+    if changed {
+        environment
+            .working
+            .volumes
+            .iter_mut()
+            .find(|node| node.resource_id == id)
+            .expect("Volume was found")
+            .storage = set.storage;
+        scope::save_working(tx, &mut environment)?;
+    }
+    Ok(VolumeStaged {
+        volume: summary(environment.volume(&set.volume)?)?,
+        environment: environment.summary,
+        staged: if changed {
+            vec![format!("volumes.{}.storage", set.volume)]
+        } else {
+            Vec::new()
+        },
+        immediate: Vec::new(),
+    })
+}
+
+/// An admitted Deployment can prepare storage even when it never applies a node.
+/// Keep its storage choice fixed, including failed and cancelled attempts and retries.
+pub(crate) fn locked_storage(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<BTreeMap<String, VolumeKind>, RpcError> {
+    // ponytail: scan this Environment's attempt history; materialize first storage choices if history makes this costly.
+    let rows = tx.query(
+        "SELECT s.intent, d.nodes FROM config_deployment d JOIN config_saved s \
+         ON s.environment_id = d.environment_id AND s.revision = d.saved_revision \
+         WHERE d.environment_id = ?1 ORDER BY d.number",
+        &[environment.as_str().into()],
+    )?;
+    let mut locked = BTreeMap::new();
+    for row in rows {
+        let saved: SavedEnvironmentIntent = serde_json::from_str(row.text(0)?)
+            .map_err(|_| error::corrupt("Saved Volume storage"))?;
+        let nodes: Vec<crate::deployment::TargetNode> =
+            serde_json::from_str(row.text(1)?).map_err(|_| error::corrupt("Deployment nodes"))?;
+        for volume in saved.volumes {
+            if nodes.iter().any(|node| node.id == volume.resource_id) {
+                locked.entry(volume.resource_id).or_insert(volume.storage);
+            }
+        }
+    }
+    Ok(locked)
+}
+
+pub(crate) fn check_storage(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    intent: &SavedEnvironmentIntent,
+) -> Result<(), RpcError> {
+    if intent.volumes.is_empty() {
+        return Ok(());
+    }
+    let locked = locked_storage(tx, environment)?;
+    for volume in &intent.volumes {
+        if locked
+            .get(&volume.resource_id)
+            .is_some_and(|storage| *storage != volume.storage)
+        {
+            return Err(error::conflict(
+                format!(
+                    "Volume {} storage cannot change after deployment has been requested",
+                    volume.name
+                ),
+                json!({ "volume": volume.name, "storage_locked": true }),
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn remove_volume(
@@ -212,6 +323,7 @@ pub(crate) fn summary(node: &SavedVolumeIntent) -> Result<VolumeSummary, RpcErro
     Ok(VolumeSummary {
         id: VolumeId::parse(node.resource_id.as_str()).map_err(|_| error::corrupt("Volume ID"))?,
         name: VolumeName::parse(node.name.as_str()).map_err(|_| error::corrupt("Volume name"))?,
+        storage: node.storage,
     })
 }
 

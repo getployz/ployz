@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use super::{
     ConfigError, ServiceConfig, ServiceEnvValue, ServiceHealthcheck, ServiceSource, ValuePart,
-    ValuePartOwner, parse_service_config,
+    ValuePartOwner, VolumeKind, parse_service_config,
 };
 use crate::{
     ByteQuantity, ContainerResources, CpuNanos, DependencyCondition, DeployIntent, HealthcheckSpec,
@@ -66,6 +66,7 @@ struct LowerDeploymentSnapshot {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LowerDeploymentVolume {
     volume_resource_id: String,
+    storage: VolumeKind,
 }
 
 /// Lower captured authored settings and adapter-supplied image/environment inputs.
@@ -77,10 +78,10 @@ struct LowerDeploymentVolume {
 /// Returns ConfigError when a source lacks a pullable image, a setting is unsupported by the runtime,
 /// or resolved ports, limits, mounts, or commands cannot form a valid runtime request.
 pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, ConfigError> {
-    let volume_ids: BTreeSet<_> = input
+    let volume_sources: BTreeMap<_, _> = input
         .volumes
         .iter()
-        .map(|v| v.volume_resource_id.as_str())
+        .map(|v| (v.volume_resource_id.as_str(), v.storage))
         .collect();
     let snapshots = input
         .snapshots
@@ -158,7 +159,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
         };
         let mounted: Vec<_> = configured_mounts
             .iter()
-            .filter(|m| volume_ids.contains(m.volume_resource_id.as_str()))
+            .filter(|m| volume_sources.contains_key(m.volume_resource_id.as_str()))
             .collect();
         let mut volumes = Vec::new();
         let mut mounts = Vec::new();
@@ -166,16 +167,26 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             let name = format!("vol-{}", mount.volume_resource_id);
             let reference: crate::ServiceVolumeReference =
                 name.clone().try_into().map_err(lowering_error)?;
-            volumes.push(ServiceVolume {
-                reference: reference.clone(),
-                source: RawVolumeSource::Ordinary {
-                    name: name.try_into().map_err(lowering_error)?,
+            let name = name.try_into().map_err(lowering_error)?;
+            let source = match volume_sources
+                .get(mount.volume_resource_id.as_str())
+                .expect("mounted sources are filtered")
+            {
+                VolumeKind::Local {} => RawVolumeSource::Ordinary {
+                    name,
                     driver: VolumeDriver::parse("local", BTreeMap::new())
                         .map_err(lowering_error)?,
                     labels: BTreeMap::new(),
-                }
-                .try_into()
-                .map_err(lowering_error)?,
+                },
+                VolumeKind::Provisioned { maximum_bytes } => RawVolumeSource::Provisioned {
+                    name,
+                    maximum_bytes: *maximum_bytes,
+                    labels: BTreeMap::new(),
+                },
+            };
+            volumes.push(ServiceVolume {
+                reference: reference.clone(),
+                source: source.try_into().map_err(lowering_error)?,
             });
             mounts.push(ServiceMount {
                 volume: reference,

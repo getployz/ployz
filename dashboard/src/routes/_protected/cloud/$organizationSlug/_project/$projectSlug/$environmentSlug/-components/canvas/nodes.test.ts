@@ -25,7 +25,7 @@ describe("Config Store nodes", () => {
     return { service: listing, subtitle: null, changeCount: 0, runtimeIdentity: null, uploaded: false };
   };
   const volume = (id: string, mounts: { service: string; path: string }[]): VolumeListing =>
-    ({ id, name: id, mounts, deployed: false, change: "create" });
+    ({ id, name: id, mounts, deployed: false, storage: { kind: "local" }, storage_locked: false, change: "create" });
 
   it("links each Volume into the Services that mount it", () => {
     const store = { services: [service("s1", "postgres"), service("s2", "web")], volumes: [volume("v1", [{ service: "postgres", path: "/data" }, { service: "web", path: "/srv" }])] };

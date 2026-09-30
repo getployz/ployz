@@ -724,8 +724,28 @@ fn an_agent_adds_mounts_detaches_and_removes_volumes() {
                 "id": added["volume"]["id"], "name": "data",
                 "mounts": [{ "service": "db", "path": "/data" }],
                 "deployed": false, "change": "create",
+                "storage": { "kind": "provisioned", "maximumBytes": 5000000000_i64 }, "storage_locked": false,
             }])
         );
+        assert_eq!(
+            ok(store, &["volume", "set", "data", "--docker"])["volume"]["storage"],
+            json!({"kind":"local"})
+        );
+        assert_eq!(
+            ok(store, &["volume", "set", "data", "--size", "7GB"])["volume"]["storage"],
+            json!({"kind":"provisioned","maximumBytes":7000000000_i64})
+        );
+        failed(store, &["volume", "set", "data", "--size", "0"], 2);
+        failed(
+            store,
+            &["volume", "add", "invalid", "--docker", "--size", "5GB"],
+            2,
+        );
+        assert_eq!(
+            ok(store, &["volume", "add", "logs", "--docker"])["volume"]["storage"],
+            json!({"kind":"local"})
+        );
+        ok(store, &["volume", "rm", "logs"]);
         let inspected = ok(store, &["volume", "inspect", "data"]);
         assert_eq!(inspected["lineage"], inspected["id"]);
 

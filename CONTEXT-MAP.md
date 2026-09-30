@@ -16,6 +16,7 @@ Organization's. Cloud never owns runtime truth.
 At the boundary:
 
 - Cloud **Server** refers to an Engine **Machine**, with no separate runtime identity.
+- Cloud **Managed Volume** refers to an Engine **Provisioned Volume**; both are Server-local and quota-enforced.
 - A **Deployment** records one Engine **Deploy**; in Cloud it also waits in Cloud's queue;
   the two are not interchangeable.
 - Shared runtime bootstrap terms follow the Engine glossary; the Cloud glossary

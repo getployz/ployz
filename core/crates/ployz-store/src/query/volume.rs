@@ -46,6 +46,8 @@ pub struct VolumeListing {
     pub mounts: Vec<Mount>,
     /// Whether a Deploy applied it, so the Servers may hold its data.
     pub deployed: bool,
+    /// An admitted attempt fixes the storage choice, even if it fails.
+    pub storage_locked: bool,
     /// What the next Deploy does to it; none when it is deployed as it is.
     pub change: Option<ReviewLifecycleKind>,
 }
@@ -169,6 +171,7 @@ fn listed(
     environment: &scope::Environment,
 ) -> Result<Vec<(VolumeListing, SavedVolumeIntent)>, RpcError> {
     let review = review::review(tx, environment)?;
+    let locked = crate::command::locked_storage(tx, &environment.summary.id)?;
     let working = &environment.working;
     let removed = review
         .head
@@ -190,6 +193,7 @@ fn listed(
         .map(|node| {
             let listing = VolumeListing {
                 volume: volume_summary(&node)?,
+                storage_locked: locked.contains_key(&node.resource_id),
                 mounts: mounts(working, &node.resource_id)?,
                 deployed: review
                     .head

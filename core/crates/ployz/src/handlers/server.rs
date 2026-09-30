@@ -473,7 +473,9 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
         .arg(
             value("storage", None)
                 .value_parser(clap::value_parser!(ployz_core::StorageChoice))
-                .help("Prepare ZFS storage or keep this Server currently stateless"),
+                .help(
+                    "Enable managed volumes [Cloud default: zfs]; none keeps Docker volumes only",
+                ),
         )
         .arg(value("public-ip", None).default_value("auto"))
         .arg(

@@ -415,6 +415,18 @@ impl ConfigStore {
             .write(|tx| command::remove_volume(tx, who, remove))
     }
 
+    /// Change a draft Volume's storage; a deployment request fixes it.
+    ///
+    /// # Errors
+    /// As [`write`](Self::write), including conflict when storage is locked.
+    pub fn set_volume_storage(
+        &self,
+        who: &Actor,
+        set: &SetVolumeStorage,
+    ) -> Result<VolumeStaged, RpcError> {
+        self.storage.write(|tx| command::set_storage(tx, who, set))
+    }
+
     /// [`Query::Volumes`]: an Environment's Volumes.
     ///
     /// # Errors

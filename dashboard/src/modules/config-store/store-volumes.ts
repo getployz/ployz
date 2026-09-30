@@ -1,4 +1,4 @@
-import type { Change, ConfigCommand, DiffView, EnvironmentRef } from "@ployz/sdk";
+import type { Change, ConfigCommand, DiffView, EnvironmentRef, VolumeKind } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { settingText } from "./store-services";
 
@@ -22,9 +22,21 @@ export function mountPathError(path: string) {
 }
 
 /** The command that creates a Volume with the id the caller minted, mounted nowhere yet. */
-export function createVolumeCommand(id: string, environment: EnvironmentRef, name: string): ConfigCommand & { command: "create_volume" } {
+export function createVolumeCommand(id: string, environment: EnvironmentRef, name: string, storage: VolumeKind): ConfigCommand & { command: "create_volume" } {
   // The Store checks the id is a UUID.
-  return { command: "create_volume", id, environment, name, mounts: [] };
+  return { command: "create_volume", id, environment, name, storage, mounts: [] };
+}
+
+/** Invalid managed limits never become an implicit Docker opt-out. */
+export function volumeStorage(managed: boolean, sizeGB: string): VolumeKind | null {
+  if (!managed) return { kind: "local" };
+  const maximumBytes = Number(sizeGB) * 1_000_000_000;
+  return Number.isSafeInteger(maximumBytes) && maximumBytes >= 1_000_000
+    ? { kind: "provisioned", maximumBytes } : null;
+}
+
+export function volumeStorageText(storage: VolumeKind) {
+  return storage.kind === "provisioned" ? `${storage.maximumBytes / 1_000_000_000} GB limit` : "Docker volume";
 }
 
 const decodeVolumeLoss = Schema.decodeUnknownOption(Schema.Struct({

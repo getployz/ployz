@@ -7,6 +7,7 @@ import { Badge } from "#/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
 import { outcomeCardState } from "#/components/deployment-outcome-badges";
 import { cn } from "#/lib/utils";
+import { volumeStorageText } from "#/modules/config-store/store-volumes";
 import { useNodeLighting } from "../deployment-page";
 import { NodeOutcomeBadge } from "./NodeOutcomeBadge";
 import { PickedNode } from "./PickableNode";
@@ -43,6 +44,7 @@ export function StoreVolumeCard({ volume, selected, className }: { volume: Volum
           </div>
         </CardHeader>
         <CardContent>
+          <p className="truncate text-muted-foreground">{volumeStorageText(volume.storage)}</p>
           <p className="truncate text-muted-foreground" title={paths.join(", ")}>{summary}</p>
         </CardContent>
       </Card>

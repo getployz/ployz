@@ -214,6 +214,16 @@ impl Store {
         })
     }
 
+    pub(crate) fn set_volume_storage(
+        &self,
+        set: &ployz_store::SetVolumeStorage,
+    ) -> Result<VolumeStaged, StoreCallError> {
+        let request = Command::SetVolumeStorage(set.clone());
+        self.call("write", &request, |store, who| {
+            store.set_volume_storage(who, set)
+        })
+    }
+
     pub(crate) fn volumes(&self, query: &VolumesQuery) -> Result<VolumesView, StoreCallError> {
         let request = Query::Volumes(query.clone());
         self.call("read", &request, |store, who| store.volumes(who, query))
