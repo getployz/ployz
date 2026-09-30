@@ -3,6 +3,8 @@ import { Schema } from "effect";
 export const ManagedSubscriptionSnapshot = Schema.Struct({
   activeSubscriptionId: Schema.NullOr(Schema.String),
   currentPeriodEnd: Schema.NullOr(Schema.Date),
+  /** Cancelled in Polar: Pro stays until currentPeriodEnd, then ends. */
+  cancelAtPeriodEnd: Schema.Boolean,
   hasActiveSubscription: Schema.Boolean,
 });
 export type ManagedSubscriptionSnapshot =
@@ -13,10 +15,12 @@ export const PolarSubscription = Schema.Struct({
   id: Schema.String,
   productId: Schema.String,
   currentPeriodEnd: Schema.DateFromString,
+  cancelAtPeriodEnd: Schema.Boolean,
 }).pipe(
   Schema.encodeKeys({
     productId: "product_id",
     currentPeriodEnd: "current_period_end",
+    cancelAtPeriodEnd: "cancel_at_period_end",
   }),
 );
 export type PolarSubscription = typeof PolarSubscription.Type;
@@ -39,6 +43,7 @@ export function selectManagedSubscriptionSnapshot(
   return {
     activeSubscriptionId: selected?.id ?? null,
     currentPeriodEnd: selected?.currentPeriodEnd ?? null,
+    cancelAtPeriodEnd: selected?.cancelAtPeriodEnd ?? false,
     hasActiveSubscription: selected !== null,
   };
 }

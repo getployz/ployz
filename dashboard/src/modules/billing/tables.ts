@@ -16,6 +16,7 @@ export const organizationBillingState = pgTable(
       mode: "date",
       withTimezone: true,
     }),
+    cancelAtPeriodEnd: boolean("cancel_at_period_end").default(false).notNull(),
     hasActiveSubscription: boolean("has_active_subscription")
       .default(false)
       .notNull(),

@@ -37,6 +37,7 @@ const OrganizationBillingSyncEventData = Schema.Struct({
 const DurableManagedSubscriptionSnapshot = Schema.Struct({
   activeSubscriptionId: Schema.NullOr(Schema.String),
   currentPeriodEnd: Schema.NullOr(Schema.DateFromString),
+  cancelAtPeriodEnd: Schema.Boolean,
   hasActiveSubscription: Schema.Boolean,
 });
 

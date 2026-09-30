@@ -87,6 +87,7 @@ export const persistOrganizationBillingStateSnapshot = Effect.fn(
   const values = {
     activeSubscriptionId: snapshot.activeSubscriptionId,
     currentPeriodEnd: snapshot.currentPeriodEnd,
+    cancelAtPeriodEnd: snapshot.cancelAtPeriodEnd,
     hasActiveSubscription: snapshot.hasActiveSubscription,
     syncedAt,
     ...sourceOrdering,
@@ -140,9 +141,23 @@ export const getBillingState = Effect.fn("Billing.getState")(function* (
     actor,
     input.organizationSlug,
   );
-  return {
-    hasActiveSubscription: yield* hasCachedActiveSubscription(organization.id),
-  };
+  const database = yield* Database;
+  const rows = yield* database.drizzle
+    .select({
+      hasActiveSubscription: schemaOrganizationBillingState.hasActiveSubscription,
+      currentPeriodEnd: schemaOrganizationBillingState.currentPeriodEnd,
+      cancelAtPeriodEnd: schemaOrganizationBillingState.cancelAtPeriodEnd,
+    })
+    .from(schemaOrganizationBillingState)
+    .where(eq(schemaOrganizationBillingState.organizationId, organization.id))
+    .limit(1);
+  return (
+    rows[0] ?? {
+      hasActiveSubscription: false,
+      currentPeriodEnd: null,
+      cancelAtPeriodEnd: false,
+    }
+  );
 });
 
 export const createEmbeddedCheckout = Effect.fn("Billing.createCheckout")(
