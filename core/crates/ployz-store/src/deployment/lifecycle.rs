@@ -101,6 +101,29 @@ pub(crate) fn admit(
     Ok(summary)
 }
 
+/// Apply removal `id` without a runner: nothing of its Environment is on a Server,
+/// because none is left or nothing ever ran there.
+pub(crate) fn forget(tx: &mut dyn Tx, id: &DeploymentId) -> Result<DeploymentSummary, RpcError> {
+    let mut stored = locked(tx, id)?;
+    stored.summary.status = DeploymentStatus::Running;
+    stored.summary.started_at = Some(now());
+    stored.run.nodes = stored
+        .nodes
+        .iter()
+        .map(|node| (node.id().to_owned(), NodeStatus::Removed))
+        .collect();
+    let reason = "Nothing of this Environment was left on a Server".to_owned();
+    finish(
+        tx,
+        stored,
+        Outcome::NotExecuted {
+            reason,
+            needs_upload: Vec::new(),
+        },
+        DeploymentStatus::Applied,
+    )
+}
+
 /// Supersede `environment`'s queued Deployment, if any, and number the next one.
 pub(super) fn queue(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<u64, RpcError> {
     tx.execute(

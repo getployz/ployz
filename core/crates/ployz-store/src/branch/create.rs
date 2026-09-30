@@ -12,7 +12,7 @@ pub(crate) fn create_branch(
     })
 }
 
-pub(super) fn insert_branch(
+pub(crate) fn insert_branch(
     tx: &mut dyn Tx,
     who: &Actor,
     create: &CreateBranch,

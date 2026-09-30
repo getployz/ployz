@@ -111,12 +111,13 @@ pub(crate) fn in_flight(
     latest_where(tx, environment, &in_flight_sql())
 }
 
-/// `environment`'s latest Deployment a runner claimed: what may run on the Servers.
+/// `environment`'s latest Deployment that started: claimed by a runner, or a removal
+/// that applied without one. What may run on the Servers.
 pub(crate) fn last_ran(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Option<DeploymentSummary>, RpcError> {
-    latest_where(tx, environment, "runner IS NOT NULL")
+    latest_where(tx, environment, "started IS NOT NULL")
 }
 
 pub(super) fn latest_where(
