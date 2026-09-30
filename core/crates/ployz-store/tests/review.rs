@@ -220,6 +220,27 @@ fn changed(store: &ConfigStore, who: &Actor, service: &str) -> Vec<String> {
 }
 
 #[test]
+fn a_template_change_is_immediate_and_no_change_to_review() {
+    let (store, who) = shop();
+    let edited = store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("web.template").unwrap(),
+                    value: json!({ "id": "postgres", "version": 1 }),
+                }],
+            },
+        )
+        .unwrap();
+    assert!(edited.staged.is_empty());
+    assert_eq!(edited.immediate.len(), 1);
+    assert!(changed(&store, &who, "web").is_empty());
+}
+
+#[test]
 fn edits_to_a_published_service_never_deployed_are_changes_that_discard_resets() {
     let (store, who) = shop();
     publish(&store, &who, None).unwrap();

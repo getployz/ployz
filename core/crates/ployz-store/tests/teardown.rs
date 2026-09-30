@@ -778,11 +778,12 @@ fn with_no_server_left_a_removal_applies_at_once() {
         )
         .unwrap();
     assert_eq!(removal.status, DeploymentStatus::Applied);
+    assert_eq!(removal.outcome, Some(ployz_store::Outcome::Forgotten));
     // Zero enrolled Servers isn't runtime absence: nothing claims it ran or removed anything.
     let view = store
         .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
         .unwrap();
-    assert_eq!(view.outcome, Some(ployz_store::Outcome::Forgotten));
+    assert_eq!(view.deployment.outcome, Some(ployz_store::Outcome::Forgotten));
     assert_eq!(view.deployment.started_at, None);
     assert!(!view.nodes.is_empty());
     assert!(
@@ -817,7 +818,7 @@ fn shutting_down_what_never_ran_applies_at_once() {
     let view = store
         .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
         .unwrap();
-    assert_eq!(view.outcome, Some(ployz_store::Outcome::NeverRan));
+    assert_eq!(view.deployment.outcome, Some(ployz_store::Outcome::NeverRan));
 }
 
 #[test]

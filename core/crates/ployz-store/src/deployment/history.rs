@@ -210,7 +210,6 @@ pub(crate) fn view(
         namespace: stored.namespace,
         nodes,
         preview: stored.run.preview,
-        outcome: stored.run.outcome,
     })
 }
 

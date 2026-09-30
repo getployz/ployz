@@ -197,9 +197,9 @@ impl ServiceSetting {
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand
-            | Self::Template
             | Self::Git(_) => Apply::Staged,
-            Self::RegistryCredential | Self::Policy(_) => Apply::Immediate,
+            // ponytail: a tag, not runtime config; nothing lowers it, so a Deploy never ships it.
+            Self::Template | Self::RegistryCredential | Self::Policy(_) => Apply::Immediate,
         }
     }
 
