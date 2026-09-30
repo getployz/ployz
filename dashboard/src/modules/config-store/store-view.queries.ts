@@ -29,6 +29,7 @@ const refreshedBy = {
   build_log: ["store_deployment"],
   // Admission fixes an Environment's Namespace.
   namespace: ["store_environment", "store_deployment"],
+  namespaces: ["store_environment", "store_deployment"],
   // Whether a domain is deployed follows Deployments; its certificate and DNS are Cloud's observations, which
   // change with no Store write, so a domains view also polls while one is on its way (`DOMAIN_POLL_MS`).
   domains: ["store_environment", "store_deployment"],

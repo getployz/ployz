@@ -257,6 +257,10 @@ pub enum Outcome {
 pub enum RunEvidence {
     /// The Deploy Preview preparation produced, recorded before it is confirmed.
     Prepared(DeployPreview),
+    /// These runtime Services completed every planned operation while execution
+    /// still runs: each reads Deployed (or Removed) and enters Applied State now,
+    /// whatever happens to the runner later.
+    Confirmed(Vec<ServiceName>),
     /// What executing that preview did, and what deleting the Docker Volumes of the
     /// Volumes it removes did: the runner deletes them only after a successful Deploy.
     Executed {
@@ -291,8 +295,9 @@ pub struct Claimed {
     pub intent: DeployIntent,
     /// The lowering input `intent` came from: what SDK preparation takes.
     pub input: Value,
-    /// The latest build receipt of each Service, by runtime name: hints preparation verifies.
-    pub receipts: BTreeMap<ServiceName, Value>,
+    /// Every build receipt of each Service, by runtime name, its Environment's own
+    /// first: hints preparation verifies.
+    pub receipts: BTreeMap<ServiceName, Vec<Value>>,
     /// The Git Services it builds, each with its pinned commit, if any.
     pub sources: Vec<GitSource>,
     /// The Docker Volumes to delete once the Deploy succeeds: exactly those whose

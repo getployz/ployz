@@ -6,27 +6,24 @@ import {
   ContextMenuTrigger,
 } from "#/components/ui/context-menu";
 import { SERVICE_CREATE_MENU_ITEMS } from "#/components/create-menu-items";
-import type { CreateMenuItemId } from "#/components/create-menu-items";
+import type { CreateMenuItem } from "#/components/create-menu-items";
 import type { CreatorPanel } from "./types";
 
 function getActionForItem(
-  itemId: CreateMenuItemId,
+  { id, panel }: CreateMenuItem,
   actions: {
     onCreateFromPanel: (panel: CreatorPanel) => void;
     onCreateBlank: () => void;
     onCreateVolume: () => void;
   },
 ) {
-  if (itemId === "git-repository") {
-    return () => actions.onCreateFromPanel("git");
+  if (panel) {
+    return () => actions.onCreateFromPanel(panel);
   }
-  if (itemId === "container-image") {
-    return () => actions.onCreateFromPanel("image");
-  }
-  if (itemId === "empty-service") {
+  if (id === "empty-service") {
     return actions.onCreateBlank;
   }
-  if (itemId === "volume") {
+  if (id === "volume") {
     return actions.onCreateVolume;
   }
 
@@ -51,17 +48,17 @@ export function CanvasContextMenu({
       </ContextMenuTrigger>
       <ContextMenuContent style={{ width: 220 }}>
         <ContextMenuGroup>
-          {SERVICE_CREATE_MENU_ITEMS.map(({ id, icon: Icon, label }) => (
+          {SERVICE_CREATE_MENU_ITEMS.map((item) => (
             <ContextMenuItem
-              key={id}
-              onClick={getActionForItem(id, {
+              key={item.id}
+              onClick={getActionForItem(item, {
                 onCreateFromPanel,
                 onCreateBlank,
                 onCreateVolume,
               })}
             >
-              <Icon />
-              {label}
+              <item.icon />
+              {item.label}
             </ContextMenuItem>
           ))}
         </ContextMenuGroup>

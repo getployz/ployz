@@ -744,7 +744,7 @@ pub(crate) mod tests {
                 200,
                 serde_json::json!({
                     "signed_out": { "id": "d1" },
-                    "servers": { "confirmed": ["m1"], "unconfirmed": ["m2"] },
+                    "servers": { "confirmed": ["1".repeat(32)], "unconfirmed": ["2".repeat(32)] },
                 }),
             ),
             other => panic!("unexpected {other}"),
@@ -803,7 +803,10 @@ pub(crate) mod tests {
         wait(&store, pending).await.unwrap();
         let out = logout(&store).await.unwrap().unwrap();
         assert_eq!(out.device.as_deref(), Some("d1"));
-        assert_eq!(out.servers.unconfirmed, ["m2"]);
+        assert_eq!(
+            out.servers.unconfirmed,
+            [ployz_core::MachineId::parse("2".repeat(32)).unwrap()]
+        );
         assert!(matches!(
             signed_in(&store).await,
             Err(LoginError::SignedOut)

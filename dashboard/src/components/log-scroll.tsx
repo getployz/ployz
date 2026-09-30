@@ -7,7 +7,7 @@ import { cn } from "#/lib/utils";
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { useVirtualizer, type VirtualizerOptions } from "@tanstack/react-virtual";
 
-export function useLogScroll(options: Pick<VirtualizerOptions<HTMLDivElement, HTMLDivElement>, "count" | "getItemKey" | "onChange" | "paddingStart">) {
+export function useLogScroll(options: Pick<VirtualizerOptions<HTMLDivElement, HTMLDivElement>, "count" | "getItemKey" | "onChange">) {
   const element = useRef<HTMLDivElement>(null);
   const virtual = useVirtualizer({
     ...options,
@@ -30,7 +30,8 @@ export function LogHeader({ time, children }: { time: string; children: ReactNod
   const zone = zoneLabel(useTimeZone());
   return <div className="flex h-8 shrink-0 items-center gap-3 border-b px-1 font-mono text-xs text-muted-foreground">
     <span className={cn("shrink-0", time)}>Time ({zone})</span>
-    <span className="min-w-0 flex-1">{children}</span>
+    {/* A phone stacks each time over its line, so only the time's heading shows. */}
+    <span className="min-w-0 flex-1 max-sm:hidden">{children}</span>
   </div>;
 }
 

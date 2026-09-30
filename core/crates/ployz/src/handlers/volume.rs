@@ -39,14 +39,9 @@ pub(crate) fn command() -> Command {
                 Command::new("set").about("Change a Volume's storage before its first deployment"),
             ))
             .arg(positional("volume", true))
-            .arg(
-                switch("managed", None)
-                    .help("Use managed storage with the default 5 GB limit")
-                    .conflicts_with("docker"),
-            )
             .group(
                 clap::ArgGroup::new("storage-change")
-                    .args(["size", "docker", "managed"])
+                    .args(["size", "docker"])
                     .required(true),
             ),
         )
@@ -107,19 +102,17 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    let mut words = vec!["volume", "add", name.as_str()];
+    let mut args = vec![name.as_str()];
     for _ in &mounts {
-        words.extend(["--mount", "SERVICE:/PATH"]);
+        args.extend(["--mount", "SERVICE:/PATH"]);
     }
-    let created = store::store(root)?
-        .write(&CreateVolume {
-            id: VolumeId::parse(store::mint())?,
-            environment: store::environment(matches)?,
-            name: name.clone(),
-            storage: requested_storage(matches),
-            mounts,
-        })
-        .map_err(store::failed(matches, &words))?;
+    let created = store::store(root)?.args(args).write(&CreateVolume {
+        id: VolumeId::parse(store::mint())?,
+        environment: store::environment(matches)?,
+        name: name.clone(),
+        storage: requested_storage(matches),
+        mounts,
+    })?;
     staged(matches, &created, "Staged new Volume")
 }
 
@@ -127,39 +120,18 @@ fn storage_flags(command: Command) -> Command {
     command
         .arg(
             value("size", None)
-                .value_name("SIZE")
-                .value_parser(parse_size)
-                .help("Storage limit, such as 500MB or 10GB; new managed Volumes default to 5GB"),
+                .value_name("GB")
+                .value_parser(|size: &str| {
+                    ProvisionedVolumeMaximumBytes::parse(size)
+                        .map_err(|_| "Use a positive size in GB, such as 5GB or 0.5GB")
+                })
+                .help("Managed storage limit in GB, such as 10GB; new Volumes default to 5GB"),
         )
         .arg(
             switch("docker", None)
                 .conflicts_with("size")
                 .help("Advanced: use a Docker volume without an enforced storage limit"),
         )
-}
-
-fn parse_size(value: &str) -> Result<ProvisionedVolumeMaximumBytes, String> {
-    let units = [
-        ("GiB", 1_073_741_824),
-        ("MiB", 1_048_576),
-        ("GB", 1_000_000_000),
-        ("MB", 1_000_000),
-        ("B", 1),
-    ];
-    let (number, multiplier) = units
-        .iter()
-        .find_map(|(suffix, multiplier)| {
-            value
-                .strip_suffix(suffix)
-                .map(|number| (number, *multiplier))
-        })
-        .unwrap_or((value, 1));
-    number
-        .parse::<u64>()
-        .ok()
-        .and_then(|number| number.checked_mul(multiplier))
-        .and_then(|bytes| ProvisionedVolumeMaximumBytes::try_from(bytes).ok())
-        .ok_or_else(|| "Use a positive whole-number size, such as 500MB, 5GB or 10GiB".into())
 }
 
 fn requested_storage(matches: &ArgMatches) -> VolumeKind {
@@ -178,32 +150,27 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
     let changed = store::store(root)?
+        .args([volume.as_str()])
         .write(&SetVolumeStorage {
             environment: store::environment(matches)?,
             volume: volume.clone(),
             storage: requested_storage(matches),
-        })
-        .map_err(store::failed(matches, &["volume", "set", volume.as_str()]))?;
+        })?;
     staged(matches, &changed, "Staged Volume storage")
 }
 
 fn storage_word(storage: VolumeKind) -> String {
     match storage {
         VolumeKind::Docker {} => "Docker (no enforced storage limit)".into(),
-        VolumeKind::Provisioned { maximum_bytes } => format!(
-            "Managed ({} GB limit)",
-            maximum_bytes.get() as f64 / 1_000_000_000.0
-        ),
+        VolumeKind::Provisioned { maximum_bytes } => format!("Managed ({maximum_bytes} limit)"),
     }
 }
 
 fn list(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let view = store::store(root)?
-        .read(&VolumesQuery {
-            environment: store::environment(matches)?,
-        })
-        .map_err(store::failed(matches, &["volume", "ls"]))?;
+    let view = store::store(root)?.read(&VolumesQuery {
+        environment: store::environment(matches)?,
+    })?;
     output::finish(&view, || {
         say!("VOLUME\tSTORAGE\tMOUNTS\tDEPLOYED\tNEXT DEPLOY");
         for listing in &view.volumes {
@@ -235,14 +202,11 @@ fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
     let view = store::store(root)?
+        .args([volume.as_str()])
         .read(&VolumeQuery {
             environment: store::environment(matches)?,
             volume: volume.clone(),
-        })
-        .map_err(store::failed(
-            matches,
-            &["volume", "inspect", volume.as_str()],
-        ))?;
+        })?;
     output::finish(&view, || {
         let listing = &view.volume;
         say!("Volume {} ({})", listing.volume.name, listing.volume.id);
@@ -270,15 +234,12 @@ fn rename(root: &ArgMatches) -> Result<(), Error> {
     let volume = volume_name(matches, "volume")?;
     let name = volume_name(matches, "name")?;
     let renamed = store::store(root)?
+        .args([volume.as_str(), name.as_str()])
         .write(&ployz_store::RenameVolume {
             environment: store::environment(matches)?,
             volume: volume.clone(),
-            name,
-        })
-        .map_err(store::failed(
-            matches,
-            &["volume", "rename", volume.as_str()],
-        ))?;
+            name: name.clone(),
+        })?;
     staged(matches, &renamed, "Staged rename of Volume")
 }
 
@@ -286,11 +247,11 @@ fn remove(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
     let removed = store::store(root)?
+        .args([volume.as_str()])
         .write(&RemoveVolume {
             environment: store::environment(matches)?,
             volume: volume.clone(),
-        })
-        .map_err(store::failed(matches, &["volume", "rm", volume.as_str()]))?;
+        })?;
     staged(matches, &removed, "Staged removal of Volume")
 }
 
@@ -310,17 +271,3 @@ fn staged(matches: &ArgMatches, result: &VolumeStaged, what: &str) -> Result<(),
 }
 
 use super::store::volume_name;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn storage_sizes_are_positive_exact_and_cannot_overflow() {
-        assert_eq!(parse_size("5GB").unwrap().get(), 5_000_000_000);
-        assert_eq!(parse_size("500MB").unwrap().get(), 500_000_000);
-        assert_eq!(parse_size("1GiB").unwrap().get(), 1_073_741_824);
-        for value in ["0", "-1GB", "1.5GB", "unknown", "18446744073709551615GB"] {
-            assert!(parse_size(value).is_err());
-        }
-    }
-}

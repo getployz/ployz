@@ -31,7 +31,12 @@ pub(super) async fn run(
 ) -> Result<BuildOutcome, RpcError> {
     let captured = super::capture(input).await?;
     // An uploaded Service without its source has no target: its receipt alone serves it.
-    if captured.build.targets().count() > 1 || captured.fingerprints.len() != 1 {
+    let services: std::collections::BTreeSet<_> = captured
+        .fingerprints
+        .keys()
+        .chain(captured.reused.keys())
+        .collect();
+    if captured.build.targets().count() > 1 || services.len() != 1 {
         return Err(super::invalid_argument(
             "build input must hold exactly one Git Service with its source commit, \
              or one uploaded Service"
@@ -51,7 +56,7 @@ pub(super) async fn run(
     )
     .await;
     match result {
-        Ok(builds) => preparation::receipts(&captured.fingerprints, &captured.contents, &builds)
+        Ok(builds) => preparation::receipts(&captured.fingerprints, &captured.reused, &builds)
             .into_values()
             .next()
             .map(|receipt| BuildOutcome::Built { receipt })
@@ -117,7 +122,6 @@ async fn reuse(
     let fingerprints = preparation::expected_fingerprints(
         input.deployment,
         std::collections::BTreeMap::from([(spec.name.clone(), input.commit)]),
-        std::collections::BTreeMap::new(),
     )?;
     if fingerprints.get(&spec.name) != Some(&receipt.fingerprint)
         || receipt.image.platforms.is_empty()

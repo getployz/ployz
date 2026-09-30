@@ -689,7 +689,10 @@ pub(crate) fn github_input(
         .commit
         .ok_or_else(|| error::corrupt("GitHub build commit"))?;
     let input = deployment::input(tx, &stored, sealing)?;
-    let receipt = deployment::receipts(tx, &stored.summary.environment_id)?.remove(&id.service);
+    // The latest receipt of the Service, a cache hint; its own when it has one.
+    let receipt = deployment::receipts(tx, &stored.summary.environment_id)?
+        .remove(&id.service)
+        .and_then(|receipts| receipts.into_iter().next());
     Ok((input, commit, receipt))
 }
 

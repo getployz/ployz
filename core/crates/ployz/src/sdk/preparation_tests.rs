@@ -71,6 +71,7 @@ fn input(root: &Path, snapshots: Vec<Value>) -> crate::sdk::PreparationInput {
             .collect(),
         uploads: BTreeMap::new(),
         build_receipts: BTreeMap::new(),
+        borrowed: BTreeMap::new(),
         build_index: 0,
         preferred_machine: None,
     }
@@ -890,7 +891,7 @@ async fn the_server_named_in_the_latest_receipt_builds_the_service_while_it_can(
     let (sdk, server) = session(service.clone()).await;
     // A stale receipt still names the Machine whose build cache is warm.
     let receipt: crate::sdk::preparation::BuildReceipt = serde_json::from_value(json!({
-        "fingerprint": "0".repeat(64), "machine_id": "c".repeat(32),
+        "fingerprint": "0".repeat(64), "variables": "all", "machine_id": "c".repeat(32),
         "image": {"reference": format!("sha256:{}", "f".repeat(64)), "tags": [],
             "platforms": ["linux/amd64"], "location": "unused"}
     }))
@@ -1036,6 +1037,7 @@ async fn sdk_reuses_unchanged_git_image_when_another_service_changes() {
         source_commits: BTreeMap::from([(name.clone(), commit)]),
         uploads: BTreeMap::new(),
         build_receipts: receipts,
+        borrowed: BTreeMap::new(),
         build_index: 0,
         preferred_machine: None,
     };
@@ -1233,8 +1235,12 @@ fn uploaded(root: &Path, with_source: bool) -> crate::sdk::PreparationInput {
             BTreeMap::new()
         },
         source_commits: BTreeMap::new(),
-        uploads: BTreeMap::from([(name, crate::build::content_digest(root).unwrap())]),
+        uploads: BTreeMap::from([(
+            name,
+            super::UploadDigest::parse(crate::build::content_digest(root).unwrap()).unwrap(),
+        )]),
         build_receipts: BTreeMap::new(),
+        borrowed: BTreeMap::new(),
         build_index: 0,
         preferred_machine: None,
     }

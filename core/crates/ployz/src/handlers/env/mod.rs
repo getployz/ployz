@@ -19,8 +19,8 @@ use serde_json::json;
 
 use super::config::expect;
 use super::deploy;
-use super::store::{self, failed, mint, project, project_arg, store};
-use super::teardown::{Inventory, accepted, confirmed, inventory, remove_all};
+use super::store::{self, mint, project, project_arg, store};
+use super::teardown::{Inventory, confirmed, inventory, remove_all};
 use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, repeated, switch, value};
 use crate::output::say;
@@ -249,14 +249,13 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
 fn new(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = EnvironmentName::parse(required(matches, "name")?)?;
-    let store = store(root)?;
+    let store = store(root)?.args([name.as_str()]);
     let create = CreateEnvironment {
         id: EnvironmentId::parse(mint())?,
         project: project(matches)?,
         name,
     };
-    let words = ["env", "new", create.name.as_str()];
-    let created = store.write(&create).map_err(failed(matches, &words))?;
+    let created = store.write(&create)?;
     crate::output::finish(&created, || {
         say!(
             "Created Environment {} in Project {}.",
@@ -268,11 +267,9 @@ fn new(root: &ArgMatches) -> Result<(), Error> {
 
 fn ls(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let listed = store(root)?
-        .read(&EnvironmentsQuery {
-            project: project(matches)?,
-        })
-        .map_err(failed(matches, &["env", "ls"]))?;
+    let listed = store(root)?.read(&EnvironmentsQuery {
+        project: project(matches)?,
+    })?;
     crate::output::finish(&listed, || print_environments(&listed))
 }
 
@@ -285,25 +282,17 @@ fn default(root: &ArgMatches) -> Result<(), Error> {
             environment: Some(name),
         },
     };
-    let listed = store(root)?
-        .write(&set)
-        .map_err(failed(matches, &["env", "default"]))?;
+    let listed = store(root)?.write(&set)?;
     crate::output::finish(&listed, || print_environments(&listed))
 }
 
 fn setup(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let values: Vec<String> = matches
-        .get_many::<String>("setup")
-        .map(|values| values.cloned().collect())
-        .unwrap_or_default();
     let set = ployz_store::SetBranchSetup {
         environment: store::environment(matches)?,
-        setup: branch::setups(&values)?,
+        setup: branch::setups(&super::string_values(matches, "setup"))?,
     };
-    let listed = store(root)?
-        .write(&set)
-        .map_err(failed(matches, &["env", "setup"]))?;
+    let listed = store(root)?.write(&set)?;
     crate::output::finish(&listed, || print_environments(&listed))
 }
 
@@ -357,27 +346,20 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
         project: project(matches)?,
         environment: Some(name.clone()),
     };
-    let store = store(root)?;
-    let words = ["env", "rm", name.as_str()];
-    let inventory = inventory(matches, &store, &at)?;
+    let store = store(root)?.args([name.as_str()]);
+    let inventory = inventory(&store, &at)?;
     // Typed where it is: PROJECT/ENV.
     let typed = format!("{}/{name}", inventory.environment.project);
-    let mut again = vec!["env", "rm", name.as_str(), "--confirm", typed.as_str()];
+    // Not removed yet (queued, failed, cancelled, or its outcome unknown): this same
+    // command finishes it once the removal applied, or queues it again.
+    let again = ["env", "rm", name.as_str(), "--confirm", typed.as_str()];
     if !confirmed(matches, &typed, "Environment")? {
         return Err(unconfirmed(matches, inventory, &again));
     }
-    let accept = accepted(matches)?;
-    // Not removed yet (queued, failed, cancelled, or its outcome unknown): this same
-    // command finishes it once the removal applied, or queues it again.
-    again.extend(
-        accept
-            .iter()
-            .flat_map(|name| ["--accept-volume-loss", name.as_str()]),
-    );
     let project = inventory.environment.project.clone();
     let remove = RemoveEnvironment { environment: at };
     let events = deploy::open_events(matches)?;
-    match remove_all(matches, &store, &remove, &project, events, &words, &again)? {
+    match remove_all(matches, &store, &remove, &project, events, &again)? {
         Some((removed, ran)) => finish_removal(&removed, ran.last()),
         None => Ok(()),
     }
@@ -437,7 +419,7 @@ fn node_names(names: &[String]) -> Result<Vec<ployz_store::NodeName>, Error> {
 }
 
 /// Items as one line of text.
-fn joined<T: ToString>(items: &[T]) -> String {
+pub(super) fn joined<T: ToString>(items: &[T]) -> String {
     items
         .iter()
         .map(ToString::to_string)

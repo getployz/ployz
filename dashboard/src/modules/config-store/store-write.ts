@@ -18,6 +18,20 @@ export type StoreEdit = {
 /** Commands that read or write an Environment besides the one they name. */
 const SPANS: ReadonlySet<ConfigCommand["command"]> = new Set(["move", "create_branch", "copy_node"]);
 
+/** The Environment a command names; a Batch's is its first command's. */
+function commandEnvironment(command: ConfigCommand): EnvironmentRef | null {
+  // ponytail: one Environment per Batch is assumed, not checked (the Store doesn't either).
+  const named = command.command === "batch" ? command.commands[0] : command;
+  return named && "environment" in named && named.environment ? named.environment : null;
+}
+
+/** The Environment revision a write produced; a Batch's is its last command's. */
+function writtenRevision(written: ConfigWritten): number | null {
+  const last = written.written === "batch" ? written.results.at(-1) : written;
+  return last?.written === "service" || last?.written === "volume" || last?.written === "edited"
+    ? last.environment.revision : null;
+}
+
 const CONFLICT = "Changed elsewhere, so this edit was undone. You're seeing the latest now.";
 /** A write that never got an answer (offline, Cloud restarting): the browser's words ("Failed to fetch") mean nothing here. */
 const UNREACHABLE = "Couldn't reach Ployz Cloud, so this change was undone. Check your connection and try again.";
@@ -40,9 +54,8 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
   async function send(command: ConfigCommand) {
     const result = await writeStoreServerFn({ data: { organizationSlug, command } });
     if (!result.ok) throw new StoreRefused(result.refusal);
-    if (result.views && "environment" in command && command.environment) {
-      putCommittedViews(queryClient, organizationSlug, environmentKey(command.environment), result.views);
-    }
+    const environment = commandEnvironment(command);
+    if (result.views && environment) putCommittedViews(queryClient, organizationSlug, environmentKey(environment), result.views);
     return result.value;
   }
 
@@ -105,14 +118,15 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
      * a destructive confirmation, an external service) is a listed command in the boundary test.
      */
     commit(command: ConfigCommand, handles: readonly string[] = []): { isPersisted: { promise: Promise<ConfigWritten> } } {
-      const key = "environment" in command && command.environment ? environmentKey(command.environment) : "";
+      const environment = commandEnvironment(command);
+      const key = environment ? environmentKey(environment) : "";
       void applyOptimistic(queryClient, organizationSlug, command);
       // A command that edits Working State expects the newest revision, as an edit does, and is tracked like one.
       const expects = "expect" in command;
       const save = async () => {
         const written = await send(expects ? { ...command, expect: expected(key) } : command);
-        // A copied node answers as a Service, with the revision it saved.
-        if (expects && written.written === "service") committed.set(key, written.environment.revision);
+        const revision = writtenRevision(written);
+        if (revision !== null) committed.set(key, revision);
         return written;
       };
       // Only the edits made before it: an edit queued behind it in its own Environment must not be waited for.

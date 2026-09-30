@@ -49,6 +49,9 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
     listed.flatMap((node) => !names.has(node.name) ? [node] : node.change === "create" ? [] : [{ ...node, change: null }]);
 
   switch (command.command) {
+    case "batch":
+      for (const inner of command.commands) applyOptimistic(queryClient, organizationSlug, inner);
+      return;
     case "create_service":
     case "create_git_service": {
       const service: ServiceListing = {

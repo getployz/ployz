@@ -77,7 +77,7 @@ fn fake_cloud(browser: Arc<Mutex<Browser>>, routes: Arc<Mutex<Vec<String>>>) -> 
                     200,
                     json!({
                         "signed_out": { "id": "d1" },
-                        "servers": { "confirmed": ["m1"], "unconfirmed": ["m2"] },
+                        "servers": { "confirmed": ["1".repeat(32)], "unconfirmed": ["2".repeat(32)] },
                     }),
                 ),
                 _ => (404, json!({})),
@@ -164,7 +164,7 @@ fn json_login_returns_the_code_at_once_and_finishes_on_the_next_run() {
             "signed_out": true,
             "cloud": cloud,
             "device": "d1",
-            "servers": { "confirmed": ["m1"], "unconfirmed": ["m2"] },
+            "servers": { "confirmed": ["1".repeat(32)], "unconfirmed": ["2".repeat(32)] },
             "next": "ployz token rm d1",
         })
     );

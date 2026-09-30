@@ -1,45 +1,49 @@
-import { Suspense, useState } from "react";
+import { Suspense, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import type { BuildView, DeploymentView, NodeOutcome } from "@ployz/sdk";
-import { GitBranchPlusIcon } from "lucide-react";
+import type { BuildView, DeploymentSummary, DeploymentView, NodeOutcome } from "@ployz/sdk";
+import { DatabaseIcon, GitBranchPlusIcon, MoreVerticalIcon } from "lucide-react";
 import { toast } from "sonner";
 import { ContainerLogs } from "#/components/container-logs";
-import { outcomeBadges } from "#/components/deployment-outcome-badges";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
+import { LogEmpty } from "#/components/log-scroll";
 import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "#/components/ui/alert-dialog";
-import { RelativeTime } from "#/components/relative-time";
+import { RelativeTime, RunningTime } from "#/components/relative-time";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
-import { buttonVariants } from "#/components/ui/button-variants";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
-import { Item, ItemContent, ItemGroup, ItemTitle } from "#/components/ui/item";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import {
-  admission, deploymentActions, deploymentStatusIcons, deploymentStatusLabels, failureReason, nodeApplied, nodeLight, nodeStatusLabels, notExecuted, previewLines,
-  targetsLabel,
-  uploadLabel,
+  admission, canFixOnBranch, deploymentActions, deploymentByline, deploymentStatusIcons, deploymentStatusLabel, focusedService, missingDeployLogs,
+  nodeLight, nodeOutcomeLabel, nodeStatusLabels, type DeploymentAction,
 } from "#/modules/config-store/store-deployments";
 import { buildLogQuery, deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { formatDuration } from "#/utils/relative-time";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
 import { DEPLOYMENT_PAGE_ROUTE_TO, type deploymentPageSearchSchema } from "./deployment-page";
 import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
 
+/** Past this many Services the tabs become a dropdown. */
+const MAX_TABS = 6;
 const BUILT = new Set<BuildView["status"]>(["built", "reused"]);
+type LogStage = NonNullable<typeof deploymentPageSearchSchema.Type["logs"]>;
 
 /**
- * One Config Store Deployment, the CLI's or this dashboard's, as a panel over the canvas (which lights its nodes): its
- * status and what it ships, Retry / Deploy now / Cancel, why it didn't run, its recorded Deploy Preview, a chip per
- * Service with its Node Outcome, and that Service's Build | Deploy logs.
+ * One Config Store Deployment, the CLI's or this dashboard's, as a panel over the canvas (which lights its nodes). The header
+ * holds its number, status, duration and the action its status allows, over who started it, what it ships and when; why
+ * it failed sits under it with the fix. Then a tab per Service, its changed Volumes beside them, and that Service's logs.
  */
 export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: string; search: typeof deploymentPageSearchSchema.Type }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const navigate = useNavigate();
   const result = useStoreView(params.organizationSlug, deploymentQuery(deploymentId));
+  // With no Server, nothing can run it: the way on is adding one.
+  const { noServers } = useRuntimeLens(params.organizationSlug);
   if (!result.ok) {
     return <>
       <CanvasInspectorHeader params={params}><span className="font-medium">Deployment</span></CanvasInspectorHeader>
@@ -49,130 +53,164 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
   const deployment = result.value;
   const services = deployment.nodes.filter((node) => node.type === "service");
   const volumes = deployment.nodes.filter((node) => node.type === "volume");
-  const buildOf = (node: NodeOutcome | undefined) => deployment.builds.find((build) => build.service === node?.name);
-  const focused = services.find((node) => node.id === search.service)
-    ?? services.find((node) => !nodeApplied(node.outcome)) ?? services[0];
-  const build = buildOf(focused);
-  // A build still going or failed is where to look; else how it deployed.
-  const tab = search.logs ?? (build && !BUILT.has(build.status) ? "build" : "deploy");
-  const skipped = notExecuted(deployment.outcome);
-  const failure = skipped ? null : failureReason(deployment.outcome);
-  const preview = previewLines(deployment.preview);
-  const admitted = admission(deployment);
-  const pageSearch = (service: string) => ({ service, logs: undefined, returnTo: search.returnTo });
+  const focused = focusedService(deployment, search.service);
+  const reason = deployment.outcome?.reason;
+  const needsSource = deployment.outcome?.type === "not_executed" ? deployment.outcome.needs_upload : [];
+  const fixing = focused && canFixOnBranch(deployment, focused, noServers) ? focused.name : null;
+  const { at, started, ended } = admission(deployment);
+  const byline = deploymentByline(deployment, focused?.name);
+  const pick = (next: { service: string; logs?: LogStage }) =>
+    void navigate({ to: ".", search: (previous) => ({ ...previous, logs: undefined, ...next }), replace: true });
+  const pickService = (id: string | null) => {
+    const node = services.find((candidate) => candidate.id === id);
+    if (node) pick({ service: node.id });
+  };
+  const logs = focused
+    ? <ServiceLogs key={focused.id} deployment={deployment} node={focused} picked={search.logs} onPick={(stage) => pick({ service: focused.id, logs: stage })} />
+    : null;
+  const volumeMarks = volumes.map((node) => (
+    <span key={node.id} className="flex shrink-0 items-center gap-1.5 text-muted-foreground [&_svg]:size-4">
+      <DatabaseIcon aria-hidden />{node.name}
+      {node.outcome === "removed" ? <Removed node={node} /> : <OutcomeIcon node={node} deployment={deployment} />}
+    </span>
+  ));
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <CanvasInspectorHeader params={params}>
-        <span className="flex min-w-0 items-center gap-2 font-medium [&_svg]:size-4">
-          <DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />
-          <span className="truncate">Deployment #{deployment.number}</span>
-        </span>
+      <CanvasInspectorHeader params={params} actions={<StoreDeploymentActions deployment={deployment} noServers={noServers} />}>
+        <div className="flex min-w-0 flex-col">
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="truncate font-medium">
+              {deployment.message ? `#${deployment.number} · ${deployment.message}` : `Deployment #${deployment.number}`}
+            </span>
+            <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground [&_svg]:size-3.5">
+              <DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />
+              {/* A phone keeps the icon; the word stays for screen readers. */}
+              <span className="max-sm:sr-only">{deploymentStatusLabel(deployment)}</span>
+            </span>
+            {/* One that ended as it started has no duration to show. */}
+            {started && ended?.getTime() !== started.getTime() ? (
+              <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
+                {ended ? formatDuration((ended.getTime() - started.getTime()) / 1000) : <RunningTime from={started} />}
+              </span>
+            ) : null}
+          </span>
+          <p className="truncate text-xs text-muted-foreground">
+            {byline}{byline && at ? " · " : null}{at ? <RelativeTime date={at} /> : null}
+          </p>
+        </div>
       </CanvasInspectorHeader>
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
-        <header className="flex flex-col gap-1">
-          <p className="text-xs text-muted-foreground">
-            Saved revision {deployment.saved}{deployment.upload ? ` · ${uploadLabel(deployment.upload)}` : admitted.by ? ` · by ${admitted.by}` : null}
-            {admitted.at ? <> · admitted <RelativeTime date={admitted.at} /></> : null}
-            {admitted.started ? <> · started <RelativeTime date={admitted.started} /></> : null}
-            {admitted.ended ? <> · ended <RelativeTime date={admitted.ended} /></> : null}
-          </p>
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <h2 className="min-w-0 text-base font-medium break-words">{deployment.message ?? `Deploys ${targetsLabel(deployment)}`}</h2>
-            <StoreDeploymentActions deployment={deployment} focused={focused} />
+        {reason || fixing ? (
+          <div className="flex flex-wrap items-center gap-2">
+            {reason ? <p className="min-w-0 break-words text-destructive">{reason}</p> : null}
+            {/* A Service with nothing to run: the way on is giving it an image, in its drawer. */}
+            {needsSource.flatMap((name) => services.filter((node) => node.name === name)).map((node) => (
+              <Button key={node.id} size="sm" variant="outline" nativeButton={false}
+                render={<Link to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: node.id }} />}>
+                Add an image to {node.name}
+              </Button>
+            ))}
+            {fixing ? (
+              <Button size="sm" variant="outline" nativeButton={false} render={<Link to={ENVIRONMENT_NEW_BRANCH_ROUTE_TO}
+                params={params} search={{ focus: fixing, fix: deployment.id }} />}>
+                <GitBranchPlusIcon data-icon="inline-start" />Fix it on a branch
+              </Button>
+            ) : null}
           </div>
-          {deployment.message ? <p className="text-muted-foreground">Deploys {targetsLabel(deployment)}</p> : null}
-          <p className="flex items-center gap-1 [&_svg]:size-3.5">
-            <DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />{deploymentStatusLabels[deployment.status]}
-          </p>
-          {skipped ? (
-            <div className="flex flex-col items-start gap-2">
-              <p className="break-words text-destructive">{skipped.reason}</p>
-              {/* A Service with nothing to run: the way on is giving it an image, in its drawer. */}
-              {skipped.needsSource.flatMap((name) => services.filter((node) => node.name === name)).map((node) => (
-                <Button key={node.id} size="sm" variant="outline" nativeButton={false}
-                  render={<Link to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: node.id }} />}>
-                  Add an image to {node.name}
-                </Button>
-              ))}
-            </div>
-          ) : null}
-          {failure ? <p className="break-words text-destructive">{failure}</p> : null}
-        </header>
-
-        {preview ? (
-          <section aria-label="Deploy Preview" className="flex flex-col gap-1">
-            <h3 className="font-medium">Preview</h3>
-            <ul className="text-muted-foreground">{preview.map((line) => <li key={line}>{line}</li>)}</ul>
-          </section>
         ) : null}
 
-        {services.length > 1 ? (
-          <nav aria-label="Services" className="flex flex-wrap gap-1.5">
-            {services.map((node) => {
-              const current = node.id === focused?.id;
-              return (
-                <Link key={node.id} to="." search={pageSearch(node.id)} replace aria-current={current ? "true" : undefined}
-                  className={buttonVariants({ size: "sm", variant: current ? "secondary" : "outline" })}>
-                  {node.name}
-                  <Badge variant={outcomeBadges[nodeLight(node.outcome, deployment)]}>{nodeStatusLabels[node.outcome]}</Badge>
-                </Link>
-              );
-            })}
-          </nav>
-        ) : null}
-
-        {focused ? (
-          <Tabs value={tab} onValueChange={(value) => {
-            if (value === "build" || value === "deploy") void navigate({ to: ".", search: (previous) => ({ ...previous, service: focused.id, logs: value }), replace: true });
-          }} className="flex min-h-80 flex-1 flex-col">
-            <div className="flex items-center gap-2">
-              {services.length === 1 ? <span className="font-medium">{focused.name}</span> : null}
-              <TabsList variant="line">
-                <TabsTrigger value="build" disabled={!build} title={build ? undefined : "Prebuilt image, nothing built"}>Build</TabsTrigger>
-                <TabsTrigger value="deploy">Deploy</TabsTrigger>
-              </TabsList>
-              {services.length === 1 ? (
-                <Badge variant={outcomeBadges[nodeLight(focused.outcome, deployment)]} className="ml-auto">{nodeStatusLabels[focused.outcome]}</Badge>
-              ) : null}
-            </div>
-            <TabsContent value="build" className="mt-3 flex min-h-0 flex-1 flex-col gap-2">
-              {build ? <>
-                <p className="text-muted-foreground">
-                  {build.status[0]?.toUpperCase()}{build.status.slice(1)} from {build.commit ? <span className="font-mono">{build.commit.slice(0, 7)}</span> : "the upload"}
-                </p>
-                {build.message ? <p className="break-words text-destructive">{build.message}</p> : null}
-                <Suspense fallback={<Skeleton className="h-24 w-full" />}>
-                  <StoreBuildLog deploymentId={deployment.id} service={build.service} />
-                </Suspense>
-              </> : null}
-            </TabsContent>
-            <TabsContent value="deploy" className="mt-3 flex min-h-0 flex-1 flex-col">
-              <ContainerLogs selection={{ organizationSlug: params.organizationSlug, deploymentId: deployment.id, serviceId: focused.id }} />
-            </TabsContent>
-          </Tabs>
-        ) : (
+        {!focused ? <>
+          {volumes.length ? <NodeRow>{volumeMarks}</NodeRow> : null}
           <p className="text-muted-foreground">No service in this deployment.</p>
+        </> : services.length > MAX_TABS ? (
+          <div className="flex min-h-64 flex-1 flex-col gap-2">
+            <NodeRow>
+              <Select value={focused.id} onValueChange={pickService}>
+                <SelectTrigger aria-label="Service" className="w-64"><SelectValue>{focused.name}</SelectValue></SelectTrigger>
+                <SelectContent>
+                  {services.map((node) => (
+                    <SelectItem key={node.id} value={node.id}>{node.name} · {nodeOutcomeLabel(node.outcome, deployment)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {volumeMarks}
+            </NodeRow>
+            {logs}
+          </div>
+        ) : (
+          <Tabs value={focused.id} onValueChange={pickService} className="min-h-64 flex-1">
+            <NodeRow>
+              <TabsList variant="line" aria-label="Services">
+                {services.map((node) => (
+                  <TabsTrigger key={node.id} value={node.id}>
+                    {node.outcome === "removed" ? <>{node.name}<Removed node={node} /></> : <><OutcomeIcon node={node} deployment={deployment} />{node.name}</>}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+              {volumeMarks}
+            </NodeRow>
+            {/* Only the picked Service's panel mounts, so one is all there is to render. */}
+            <TabsContent value={focused.id} className="flex min-h-0 flex-col">{logs}</TabsContent>
+          </Tabs>
         )}
-
-        {volumes.length ? (
-          <section className="flex flex-col gap-2">
-            <h3 className="font-medium">Volumes</h3>
-            <ItemGroup className="gap-2">
-              {volumes.map((node) => (
-                <Item key={node.id} variant="outline" size="sm">
-                  <ItemContent className="min-w-0"><ItemTitle><span className="truncate">{node.name}</span></ItemTitle></ItemContent>
-                  {/* A removed Volume's data is gone: say so. */}
-                  <Badge variant={outcomeBadges[nodeLight(node.outcome, deployment)]}>
-                    {node.outcome === "removed" ? "Deleted" : nodeStatusLabels[node.outcome]}
-                  </Badge>
-                </Item>
-              ))}
-            </ItemGroup>
-          </section>
-        ) : null}
       </div>
     </div>
+  );
+}
+
+/** The row of the Deployment's Services and changed Volumes, scrolling sideways when it overflows. */
+function NodeRow({ children }: { children: ReactNode }) {
+  return <div className="flex shrink-0 items-center gap-3 overflow-x-auto">{children}</div>;
+}
+
+/** A node's outcome as its icon, named on hover and for screen readers. */
+function OutcomeIcon({ node, deployment }: { node: NodeOutcome; deployment: Pick<DeploymentSummary, "status" | "in_flight"> }) {
+  const label = nodeOutcomeLabel(node.outcome, deployment);
+  return (
+    <span title={label} className="inline-flex [&_svg]:size-4">
+      <DeploymentStatusIcon status={nodeLight(node.outcome, deployment)} /><span className="sr-only">{label}</span>
+    </span>
+  );
+}
+
+/** A removed node, said in words; a Volume's reads red, its data gone with it. */
+function Removed({ node }: { node: NodeOutcome }) {
+  return node.type === "volume"
+    ? <span className="text-destructive">Deleted</span>
+    : <span className="text-muted-foreground">{nodeStatusLabels.removed}</span>;
+}
+
+/**
+ * One Service's logs in the Deployment. Where it builds, Build | Deploy follows the running stage until one is picked;
+ * its deploy logs say so when the Deployment never reached it.
+ */
+function ServiceLogs({ deployment, node, picked, onPick }: {
+  deployment: DeploymentView; node: NodeOutcome; picked: LogStage | undefined; onPick: (logs: LogStage) => void;
+}) {
+  const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const build = deployment.builds.find((candidate) => candidate.service === node.name);
+  const missing = missingDeployLogs(deployment, node);
+  const deploy = missing
+    ? <LogEmpty title={missing} />
+    : <ContainerLogs selection={{ organizationSlug, deploymentId: deployment.id, serviceId: node.id }} />;
+  if (!build) return deploy;
+  // A build still going or failed is where to look; else how it deployed.
+  const stage = picked ?? (BUILT.has(build.status) ? "deploy" : "build");
+  return (
+    <Tabs value={stage} onValueChange={(value) => { if (value === "build" || value === "deploy") onPick(value); }} className="min-h-0 flex-1">
+      <TabsList aria-label="Logs">
+        <TabsTrigger value="build">Build</TabsTrigger>
+        <TabsTrigger value="deploy">Deploy</TabsTrigger>
+      </TabsList>
+      <TabsContent value="build" className="flex min-h-0 flex-col gap-2">
+        {build.message ? <p className="break-words text-destructive">{build.message}</p> : null}
+        <Suspense fallback={<Skeleton className="h-24 w-full" />}>
+          <StoreBuildLog deploymentId={deployment.id} service={build.service} />
+        </Suspense>
+      </TabsContent>
+      <TabsContent value="deploy" className="flex min-h-0 flex-col">{deploy}</TabsContent>
+    </Tabs>
   );
 }
 
@@ -189,18 +227,16 @@ function StoreBuildLog({ deploymentId, service }: { deploymentId: string; servic
 }
 
 /**
- * Retry an ended Deployment that didn't apply (it ships what it froze), Deploy now a queued one nothing is running
- * yet, Cancel one before it ends. Whoever admitted it, CLI or dashboard: they share one queue per Environment.
+ * The action a Deployment's status allows, one at a time so the header fits a phone: a queued one's Cancel waits in ⋮.
+ * Whoever admitted it, CLI or dashboard: they share one queue per Environment.
  */
-function StoreDeploymentActions({ deployment, focused }: { deployment: DeploymentView; focused: NodeOutcome | undefined }) {
+function StoreDeploymentActions({ deployment, noServers }: { deployment: DeploymentView; noServers: boolean }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const navigate = useNavigate();
   const writer = useStoreWriter(params.organizationSlug);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
-  const actions = deploymentActions(deployment.status);
-  // With no Server, nothing can run it: the way on is adding one.
-  const { noServers } = useRuntimeLens(params.organizationSlug);
+  const { primary, cancelInMenu } = deploymentActions(deployment.status, noServers);
 
   async function retry() {
     const id = crypto.randomUUID();
@@ -216,29 +252,32 @@ function StoreDeploymentActions({ deployment, focused }: { deployment: Deploymen
     }
   }
 
-  // A failed Deployment's focused Service it didn't apply can be fixed on a Branch, with the change that failed.
-  // With no Server, the failure is having none: Add a server is the one way on.
-  const fixing = deployment.status === "failed" && !noServers && focused && !nodeApplied(focused.outcome) ? focused.name : null;
+  // Retry ships what the Deployment froze; Deploy now starts a queued one nothing is running yet.
+  const buttons = {
+    add_server: <Button size="sm" nativeButton={false} render={<Link to="/cloud/$organizationSlug/~/servers" params={params} />}>Add a server</Button>,
+    retry: <Button size="sm" variant="outline" disabled={retrying} onClick={() => void retry()}>Retry</Button>,
+    start: (
+      <Button size="sm" variant="outline" onClick={() => {
+        writer.commit({ command: "start", deployment: deployment.id });
+        toast.success(`Deployment #${deployment.number} starts now`);
+      }}>Deploy now</Button>
+    ),
+    cancel: <Button size="sm" variant="outline" onClick={() => setCancelOpen(true)}>Cancel</Button>,
+  } satisfies Record<DeploymentAction, ReactNode>;
 
   return (
-    <div className="flex shrink-0 flex-wrap items-center gap-2">
-      {fixing ? (
-        <Button size="sm" variant="outline" nativeButton={false} render={<Link to={ENVIRONMENT_NEW_BRANCH_ROUTE_TO}
-          params={params} search={{ focus: fixing, fix: deployment.id }} />}>
-          <GitBranchPlusIcon data-icon="inline-start" />Fix it on a branch
-        </Button>
+    <>
+      {primary ? buttons[primary] : null}
+      {cancelInMenu ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<Button variant="ghost" size="icon" aria-label="Deployment actions" title="Deployment actions" />}>
+            <MoreVerticalIcon />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-auto">
+            <DropdownMenuItem onClick={() => setCancelOpen(true)}>Cancel deployment…</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       ) : null}
-      {noServers && (actions.retry || actions.start) ? (
-        <Button size="sm" nativeButton={false} render={<Link to="/cloud/$organizationSlug/~/servers" params={params} />}>Add a server</Button>
-      ) : null}
-      {actions.retry && !noServers ? <Button size="sm" variant="outline" disabled={retrying} onClick={() => void retry()}>Retry</Button> : null}
-      {actions.start && !noServers ? (
-        <Button size="sm" variant="outline" onClick={() => {
-          writer.commit({ command: "start", deployment: deployment.id });
-          toast.success(`Deployment #${deployment.number} starts now`);
-        }}>Deploy now</Button>
-      ) : null}
-      {actions.cancel ? <Button size="sm" variant="outline" onClick={() => setCancelOpen(true)}>Cancel</Button> : null}
       <AlertDialog open={cancelOpen} onOpenChange={setCancelOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -258,6 +297,6 @@ function StoreDeploymentActions({ deployment, focused }: { deployment: Deploymen
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </>
   );
 }

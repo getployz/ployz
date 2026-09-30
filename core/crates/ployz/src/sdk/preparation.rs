@@ -1,6 +1,6 @@
 //! Cloud's frozen configuration and checked-out paths enter the CLI capture seam here.
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
@@ -13,6 +13,49 @@ use ployz_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+
+/// An Uploaded Source's content digest: lowercase hex sha256 of its paths, bytes,
+/// modes and links.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct UploadDigest(String);
+
+impl UploadDigest {
+    /// # Errors
+    /// Returns `invalid_argument` unless `value` is a lowercase sha256.
+    pub fn parse(value: impl Into<String>) -> Result<Self, RpcError> {
+        let value = value.into();
+        if !ployz_core::is_lower_hex(&value, 64) {
+            return Err(invalid("upload digest must be a lowercase sha256"));
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for UploadDigest {
+    type Error = RpcError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+impl From<UploadDigest> for String {
+    fn from(digest: UploadDigest) -> Self {
+        digest.0
+    }
+}
+
+impl std::fmt::Display for UploadDigest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
 
 /// Backend-only frozen settings and repository directories, keyed by runtime Service name.
 #[derive(Deserialize)]
@@ -27,10 +70,14 @@ pub struct PreparationInput {
     /// build from an upload instead of a commit. With a `sources` directory it must hold
     /// exactly that content; without one only a matching, still-usable receipt serves it.
     #[serde(default)]
-    pub uploads: BTreeMap<ServiceName, String>,
+    pub uploads: BTreeMap<ServiceName, UploadDigest>,
     /// Previous completed images are hints; preparation verifies their availability.
     #[serde(default)]
     pub build_receipts: BTreeMap<ServiceName, BuildReceipt>,
+    /// More receipts to try, in order, when a Service's own doesn't match: other
+    /// Environments' images of the same build inputs.
+    #[serde(default)]
+    pub borrowed: BTreeMap<ServiceName, Vec<BuildReceipt>>,
     /// This build's position among its attempt's builds. Builds whose cache
     /// holder cannot build spread across Machines by it.
     #[serde(default)]
@@ -55,43 +102,105 @@ pub struct OutsideBuildInput {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BuildReceipt {
+    /// sha256 of the build's identity and the values of its `variables`.
     pub fingerprint: String,
-    /// An uploaded Service's fingerprint without its variables. Without the upload,
-    /// a receipt of the same content still serves it after a variable change.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
+    /// Which of the Service's variables the build read.
+    pub variables: BuildVariables,
     pub image: ployz_build::BuiltImage,
     pub machine_id: ployz_core::MachineId,
+}
+
+/// Which variables are a build's inputs: a variable it never reads can change
+/// without a rebuild.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildVariables {
+    /// Every variable: Railpack reads them all, and a Git Service's fingerprint is
+    /// fixed before its checkout exists (a GitHub build's grant carries it).
+    All,
+    /// An uploaded Dockerfile build's declared `ARG`s; Docker's predefined proxy and
+    /// `BUILDKIT_` arguments count too.
+    Declared(BTreeSet<String>),
+}
+
+impl BuildVariables {
+    /// The `ARG` names `dockerfile` declares, in every stage.
+    fn declared(dockerfile: &str) -> Self {
+        let mut names = BTreeSet::new();
+        for line in dockerfile.lines() {
+            let mut words = line.split_whitespace();
+            if words
+                .next()
+                .is_some_and(|word| word.eq_ignore_ascii_case("ARG"))
+            {
+                names.extend(words.filter_map(|word| {
+                    let name = word.split('=').next()?;
+                    (!name.is_empty()).then(|| name.to_owned())
+                }));
+            }
+        }
+        Self::Declared(names)
+    }
+
+    fn reads(&self, name: &str) -> bool {
+        const PREDEFINED: [&str; 5] = [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "FTP_PROXY",
+            "NO_PROXY",
+            "ALL_PROXY",
+        ];
+        match self {
+            Self::All => true,
+            Self::Declared(names) => {
+                names.contains(name)
+                    || PREDEFINED.contains(&name.to_ascii_uppercase().as_str())
+                    || name.starts_with("BUILDKIT_")
+            }
+        }
+    }
 }
 
 pub(crate) struct CapturedPreparation {
     pub intent: DeployIntent,
     pub build: CapturedBuild,
-    pub fingerprints: BTreeMap<ServiceName, String>,
-    /// Each uploaded Service's fingerprint without its variables.
-    pub contents: BTreeMap<ServiceName, String>,
+    /// Each Service to build: its fingerprint and the variables it reads.
+    pub fingerprints: BTreeMap<ServiceName, (String, BuildVariables)>,
     pub reusable: Vec<BuiltService>,
+    /// The receipt each reused image came with; it keeps its own fingerprint.
+    pub reused: BTreeMap<ServiceName, BuildReceipt>,
     pub preference: BuildPreference,
 }
 
+/// A receipt for each of `builds`: a reused image keeps the receipt it came with.
 pub(crate) fn receipts(
-    fingerprints: &BTreeMap<ServiceName, String>,
-    contents: &BTreeMap<ServiceName, String>,
+    fingerprints: &BTreeMap<ServiceName, (String, BuildVariables)>,
+    reused: &BTreeMap<ServiceName, BuildReceipt>,
     builds: &[BuiltService],
 ) -> BTreeMap<ServiceName, BuildReceipt> {
-    fingerprints
+    builds
         .iter()
-        .filter_map(|(name, fingerprint)| {
-            let build = builds.iter().find(|build| &build.name == name)?;
-            Some((
-                name.clone(),
-                BuildReceipt {
-                    fingerprint: fingerprint.clone(),
-                    content: contents.get(name).cloned(),
-                    image: build.built.clone(),
+        .filter_map(|build| {
+            // Preparation may still rebuild a reused image that misses a platform.
+            let reused = reused
+                .get(&build.name)
+                .filter(|reused| reused.image.reference == build.built.reference);
+            let receipt = match reused {
+                Some(reused) => BuildReceipt {
                     machine_id: build.machine_id,
+                    ..reused.clone()
                 },
-            ))
+                None => {
+                    let (fingerprint, variables) = fingerprints.get(&build.name)?;
+                    BuildReceipt {
+                        fingerprint: fingerprint.clone(),
+                        variables: variables.clone(),
+                        image: build.built.clone(),
+                        machine_id: build.machine_id,
+                    }
+                }
+            };
+            Some((build.name.clone(), receipt))
         })
         .collect()
 }
@@ -125,6 +234,7 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
         &mut input.uploads,
     )?;
     let mut builds = BTreeMap::new();
+    let mut variables = BTreeMap::new();
     let mut sourceless = Vec::new();
     for (name, (root_dir, settings)) in frozen.checkouts {
         let Some(repository) = input.sources.remove(&name) else {
@@ -142,7 +252,7 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
         if let Some(digest) = frozen.uploaded.get(&name) {
             // ponytail: an edit between this check and capture goes unnoticed; Cloud's
             // extracted uploads are private, so only a local runner's directory can race.
-            if crate::build::content_digest(&repository).map_err(invalid)? != *digest {
+            if crate::build::content_digest(&repository).map_err(invalid)? != digest.as_str() {
                 return Err(invalid(format!(
                     "the source for {name} is not the uploaded content {digest}"
                 )));
@@ -152,6 +262,7 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
         if !context.is_dir() {
             return Err(invalid("source root must be a directory"));
         }
+        let mut reads = BuildVariables::All;
         let recipe = match settings.build_method {
             BuildMethod::Dockerfile => {
                 let dockerfile = settings.dockerfile_path.as_deref().unwrap_or("Dockerfile");
@@ -159,12 +270,18 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
                 if !dockerfile.is_file() {
                     return Err(invalid("Dockerfile must be a file"));
                 }
+                if frozen.uploaded.contains_key(&name) {
+                    let text = std::fs::read_to_string(&dockerfile)
+                        .map_err(|_| invalid("Dockerfile is unreadable"))?;
+                    reads = BuildVariables::declared(&text);
+                }
                 Recipe::Dockerfile(dockerfile)
             }
             BuildMethod::Railpack => Recipe::Railpack {
                 command: settings.command,
             },
         };
+        variables.insert(name.clone(), reads);
         builds.insert(name, BuildSpec { context, recipe });
     }
     if !input.sources.is_empty() {
@@ -186,38 +303,49 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
         build_index: input.build_index,
         preferred: input.preferred_machine,
     };
-    let contents = frozen
-        .identities
-        .iter()
-        .filter(|(name, _)| frozen.uploaded.contains_key(*name))
-        .map(|(name, identity)| (name.clone(), digest(identity)))
-        .collect::<BTreeMap<_, _>>();
-    let fingerprints = fingerprints(&intent, frozen.identities);
+    // A receipt serves a Service when its image still exists and the build inputs it
+    // read are unchanged: its own first, then the borrowed ones in order.
+    let mut reused = BTreeMap::new();
+    for service in &intent.target {
+        let Some(identity) = frozen.identities.get(&service.name) else {
+            continue;
+        };
+        let own = input.build_receipts.remove(&service.name);
+        let borrowed = input.borrowed.remove(&service.name).unwrap_or_default();
+        if let Some(receipt) = own.into_iter().chain(borrowed).find(|receipt| {
+            !receipt.image.platforms.is_empty()
+                && receipt.fingerprint == fingerprint(identity, service, &receipt.variables)
+        }) {
+            reused.insert(service.name.clone(), receipt);
+        }
+    }
     let reusable = intent
         .target
         .iter()
         .filter_map(|service| {
-            let receipt = input.build_receipts.remove(&service.name)?;
-            // Without its upload, a Service's variables are runtime-only: its image
-            // keeps the build variables it was built with.
-            let same_content = sourceless.contains(&service.name)
-                && receipt.content.is_some()
-                && receipt.content.as_ref() == contents.get(&service.name);
-            if (fingerprints.get(&service.name) != Some(&receipt.fingerprint) && !same_content)
-                || receipt.image.platforms.is_empty()
-            {
-                return None;
-            }
+            let receipt = reused.get(&service.name)?;
             Some(BuiltService {
                 name: service.name.clone(),
                 machine_id: receipt.machine_id,
                 image: service.container.image.clone(),
                 placement: service.placement.clone(),
-                built: receipt.image,
+                built: receipt.image.clone(),
                 _retention: None,
             })
         })
         .collect::<Vec<BuiltService>>();
+    let fingerprints = intent
+        .target
+        .iter()
+        .filter_map(|service| {
+            let reads = variables.remove(&service.name)?;
+            let identity = frozen.identities.get(&service.name)?;
+            Some((
+                service.name.clone(),
+                (fingerprint(identity, service, &reads), reads),
+            ))
+        })
+        .collect();
     let (uploads, commits): (Vec<ServiceName>, Vec<ServiceName>) = sourceless
         .into_iter()
         .filter(|name| !reusable.iter().any(|built| &built.name == name))
@@ -232,8 +360,8 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
         intent,
         build,
         fingerprints,
-        contents,
         reusable,
+        reused,
         preference,
     })
 }
@@ -263,13 +391,13 @@ struct Frozen {
     checkouts: BTreeMap<ServiceName, (String, ServiceBuildConfig)>,
     identities: BTreeMap<ServiceName, Value>,
     /// Content digest of each Service built from an Uploaded Source.
-    uploaded: BTreeMap<ServiceName, String>,
+    uploaded: BTreeMap<ServiceName, UploadDigest>,
 }
 
 fn freeze(
     mut deployment: Value,
     source_commits: &mut BTreeMap<ServiceName, String>,
-    uploads: &mut BTreeMap<ServiceName, String>,
+    uploads: &mut BTreeMap<ServiceName, UploadDigest>,
 ) -> Result<Frozen, RpcError> {
     let snapshots = deployment
         .get_mut("snapshots")
@@ -294,9 +422,6 @@ fn freeze(
         // Tagged, so an upload's identity never equals a commit's.
         let source = match (uploads.remove(name), repository_id) {
             (Some(digest), _) => {
-                if !ployz_core::is_lower_hex(&digest, 64) {
-                    return Err(invalid("upload digest must be a lowercase sha256"));
-                }
                 if source_commits.contains_key(name) {
                     return Err(invalid(format!(
                         "{name} builds from a commit or an upload, not both"
@@ -358,23 +483,20 @@ fn freeze(
     })
 }
 
-/// sha256 of each build's identity (source, recipe, ployz version) and the container
-/// environment its build variables come from.
-fn fingerprints(
-    intent: &DeployIntent,
-    mut identities: BTreeMap<ServiceName, Value>,
-) -> BTreeMap<ServiceName, String> {
-    intent
-        .target
+/// sha256 of a build's identity (source, recipe, ployz version) and the values of
+/// the variables it reads: its build inputs.
+fn fingerprint(
+    identity: &Value,
+    service: &ployz_core::RequestedServiceSpec,
+    variables: &BuildVariables,
+) -> String {
+    let read: BTreeMap<_, _> = service
+        .container
+        .environment
         .iter()
-        .filter_map(|service| {
-            let identity = identities.remove(&service.name)?;
-            Some((
-                service.name.clone(),
-                digest(&(identity, &service.container.environment)),
-            ))
-        })
-        .collect()
+        .filter(|(name, _)| variables.reads(name))
+        .collect();
+    digest(&(identity, read))
 }
 
 fn digest(value: &impl Serialize) -> String {
@@ -385,18 +507,27 @@ fn digest(value: &impl Serialize) -> String {
 /// The ployz version every fingerprint covers; a runner must install exactly this one.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// What `capture` would fingerprint for these pinned commits and upload digests,
-/// without any source: the fingerprint Cloud hands a runner to build against.
+/// What `capture` fingerprints for these pinned commits, without any checkout: the
+/// fingerprint Cloud hands a runner to build against.
 /// # Errors
-/// Rejects an invalid deployment, a commit for a non-Git Service, or an upload for
-/// a Service that pulls an image.
+/// Rejects an invalid deployment, or a commit for a non-Git Service.
 pub fn expected_fingerprints(
     deployment: Value,
     mut source_commits: BTreeMap<ServiceName, String>,
-    mut uploads: BTreeMap<ServiceName, String>,
 ) -> Result<BTreeMap<ServiceName, String>, RpcError> {
-    let frozen = freeze(deployment, &mut source_commits, &mut uploads)?;
-    Ok(fingerprints(&frozen.intent, frozen.identities))
+    let frozen = freeze(deployment, &mut source_commits, &mut BTreeMap::new())?;
+    Ok(frozen
+        .intent
+        .target
+        .iter()
+        .filter_map(|service| {
+            let identity = frozen.identities.get(&service.name)?;
+            Some((
+                service.name.clone(),
+                fingerprint(identity, service, &BuildVariables::All),
+            ))
+        })
+        .collect())
 }
 
 /// The Deploy Intent `capture` would build for, without any checkout.
@@ -443,6 +574,7 @@ mod tests {
             source_commits: BTreeMap::new(),
             uploads: BTreeMap::new(),
             build_receipts: BTreeMap::new(),
+            borrowed: BTreeMap::new(),
             build_index: 0,
             preferred_machine: None,
         })
@@ -465,12 +597,8 @@ mod tests {
     fn expected_fingerprints_refuse_an_invalid_deployment_or_commit() {
         let web = ServiceName::parse("web").unwrap();
         let commit = |value: &str| BTreeMap::from([(web.clone(), value.to_owned())]);
-        let error = expected_fingerprints(
-            json!({"namespace": "app"}),
-            commit(&"a".repeat(40)),
-            BTreeMap::new(),
-        )
-        .unwrap_err();
+        let error = expected_fingerprints(json!({"namespace": "app"}), commit(&"a".repeat(40)))
+            .unwrap_err();
         assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
         let deployment = json!({"namespace": "app", "snapshots": [{"config": {
             "version": 2, "privateDns": "web", "healthcheck": {"type":"none"}, "restartPolicy":"on-failure",
@@ -479,9 +607,7 @@ mod tests {
             "build":{"buildMethod":"dockerfile", "dockerfilePath":"Dockerfile", "command":null}
         }}]});
         for refused in ["A".repeat(40), "abc".into()] {
-            let error =
-                expected_fingerprints(deployment.clone(), commit(&refused), BTreeMap::new())
-                    .unwrap_err();
+            let error = expected_fingerprints(deployment.clone(), commit(&refused)).unwrap_err();
             assert_eq!(
                 error.code,
                 RpcErrorCode::InvalidArgument,
@@ -509,6 +635,9 @@ mod tests {
             capture(serde_json::from_value(input).unwrap())
                 .unwrap()
                 .fingerprints
+                .into_iter()
+                .map(|(name, (fingerprint, _))| (name, fingerprint))
+                .collect::<BTreeMap<_, _>>()
         };
         let expected = fingerprint(base.clone());
         // Cloud computes the same fingerprint without a checkout.
@@ -517,7 +646,6 @@ mod tests {
             expected_fingerprints(
                 base.get("deployment").unwrap().clone(),
                 BTreeMap::from([(web.clone(), "a".repeat(40))]),
-                BTreeMap::new(),
             )
             .unwrap()
             .get(&web),
@@ -551,7 +679,6 @@ mod tests {
                 expected_fingerprints(
                     changed.get("deployment").unwrap().clone(),
                     BTreeMap::from([(web.clone(), "a".repeat(40))]),
-                    BTreeMap::new(),
                 )
                 .unwrap(),
                 expected,
@@ -592,7 +719,7 @@ mod tests {
         assert!(capture(serde_json::from_value(invalid_commit).unwrap()).is_err());
         let mut invalid_receipt = base;
         invalid_receipt.as_object_mut().unwrap().insert("build_receipts".into(), json!({"web": {
-            "fingerprint": "a".repeat(64), "machine_id": "a".repeat(32),
+            "fingerprint": "a".repeat(64), "variables": "all", "machine_id": "a".repeat(32),
             "image": {"reference":"mutable:latest", "tags":[], "platforms":["linux/amd64"], "location":"unused"}
         }}));
         assert!(capture(serde_json::from_value(invalid_receipt).unwrap()).is_err());
@@ -605,7 +732,11 @@ mod tests {
     )]
     fn an_uploaded_source_has_its_own_identity_and_needs_its_content_or_a_receipt() {
         let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+        std::fs::write(
+            root.path().join("Dockerfile"),
+            "FROM scratch\nARG API_URL\n",
+        )
+        .unwrap();
         let digest = crate::build::content_digest(root.path()).unwrap();
         let web = ServiceName::parse("web").unwrap();
         let service = |source: Value| {
@@ -630,101 +761,134 @@ mod tests {
                 }))
                 .unwrap()
             };
-        let uploads = || BTreeMap::from([(web.clone(), digest.clone())]);
+        let with_env = |env: Value| {
+            let mut changed = empty.clone();
+            changed["snapshots"][0]["resolvedEnv"] = env;
+            changed
+        };
         let uploaded = capture(input(&empty, true, None, Some(&digest))).unwrap();
         assert_eq!(uploaded.build.targets().count(), 1);
-        let fingerprint = uploaded.fingerprints.get(&web).unwrap().clone();
+        let (fingerprint, variables) = uploaded.fingerprints[&web].clone();
         assert_eq!(
-            expected_fingerprints(empty.clone(), BTreeMap::new(), uploads()).unwrap()[&web],
-            fingerprint,
-            "Cloud computes the same fingerprint without the upload"
+            variables,
+            BuildVariables::Declared(BTreeSet::from(["API_URL".to_owned()]))
         );
         // Git receipts stay separate: the same bytes as a commit never match.
         let commit = "a".repeat(40);
         let clean = capture(input(&git, true, Some(&commit), None)).unwrap();
-        assert_ne!(clean.fingerprints[&web], fingerprint);
+        assert_ne!(clean.fingerprints[&web].0, fingerprint);
         let dirty = capture(input(&git, true, None, Some(&digest))).unwrap();
         assert_eq!(
-            dirty.fingerprints[&web], fingerprint,
+            dirty.fingerprints[&web].0, fingerprint,
             "the base commit is provenance only"
         );
-        // Changed build inputs change the fingerprint.
-        let mut railpack = empty.clone();
-        *railpack
-            .pointer_mut("/snapshots/0/config/build/buildMethod")
-            .unwrap() = json!("railpack");
-        let mut variable = empty.clone();
-        variable["snapshots"][0]["resolvedEnv"] = json!({"TOKEN": "changed"});
-        for changed in [railpack, variable] {
-            assert_ne!(
-                expected_fingerprints(changed, BTreeMap::new(), uploads()).unwrap()[&web],
-                fingerprint
-            );
-        }
+        // A variable the Dockerfile declares is a build input; any other isn't.
+        let captured = |deployment: &Value| {
+            capture(input(deployment, true, None, Some(&digest)))
+                .unwrap()
+                .fingerprints[&web]
+                .0
+                .clone()
+        };
+        assert_eq!(
+            captured(&with_env(json!({"TOKEN": "runtime"}))),
+            fingerprint
+        );
+        assert_ne!(
+            captured(&with_env(json!({"API_URL": "changed"}))),
+            fingerprint
+        );
         // The source must hold exactly the uploaded content.
         std::fs::write(root.path().join("extra"), "edit").unwrap();
         let error = capture(input(&empty, true, None, Some(&digest)))
             .err()
             .unwrap();
         assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
-        // Without its content, only a matching receipt serves it.
+        // Without its content, only a matching receipt serves it: its own first, then
+        // a borrowed one.
         let error = capture(input(&empty, false, None, Some(&digest)))
             .err()
             .unwrap();
         assert_eq!(error.code, RpcErrorCode::NotFound, "{error:?}");
         assert_eq!(error.details["preparation"]["kind"], "upload_needed");
-        let receipt = |fingerprint: &str| {
-            json!({"web": {"fingerprint": fingerprint, "machine_id": "a".repeat(32),
+        let receipt = |fingerprint: &str| -> BuildReceipt {
+            serde_json::from_value(json!({"fingerprint": fingerprint,
+                "variables": {"declared": ["API_URL"]}, "machine_id": "a".repeat(32),
                 "image": {"reference": format!("sha256:{}", "1".repeat(64)), "tags": [],
-                    "platforms": ["linux/amd64"], "location": "unused"}}})
+                    "platforms": ["linux/amd64"], "location": "unused"}}))
+            .unwrap()
         };
-        let mut sourceless = input(&empty, false, None, Some(&digest));
-        sourceless.build_receipts = serde_json::from_value(receipt(&"f".repeat(64))).unwrap();
+        let sourceless = |deployment: &Value, own: &str, borrowed: &[&str]| {
+            let mut sourceless = input(deployment, false, None, Some(&digest));
+            sourceless.build_receipts = BTreeMap::from([(web.clone(), receipt(own))]);
+            sourceless.borrowed = BTreeMap::from([(
+                web.clone(),
+                borrowed
+                    .iter()
+                    .map(|fingerprint| receipt(fingerprint))
+                    .collect(),
+            )]);
+            capture(sourceless)
+        };
+        let stale = "f".repeat(64);
         assert_eq!(
-            capture(sourceless).err().unwrap().code,
+            sourceless(&empty, &stale, &[]).err().unwrap().code,
             RpcErrorCode::NotFound
         );
-        let mut sourceless = input(&empty, false, None, Some(&digest));
-        sourceless.build_receipts = serde_json::from_value(receipt(&fingerprint)).unwrap();
-        let reused = capture(sourceless).unwrap();
+        let reused = sourceless(&empty, &stale, &[&stale, &fingerprint]).unwrap();
         assert_eq!(reused.build.targets().count(), 0);
         assert_eq!(reused.reusable.len(), 1);
-        // A variable change: without the upload, a receipt of the same content serves it.
-        let content = uploaded.contents[&web].clone();
-        let mut variable = empty.clone();
-        variable["snapshots"][0]["resolvedEnv"] = json!({"TOKEN": "changed"});
-        let with_content = |content: &str| {
-            let mut receipts = receipt(&fingerprint);
-            receipts["web"]["content"] = json!(content);
-            let mut sourceless = input(&variable, false, None, Some(&digest));
-            sourceless.build_receipts = serde_json::from_value(receipts).unwrap();
-            sourceless
-        };
-        assert_eq!(capture(with_content(&content)).unwrap().reusable.len(), 1);
         assert_eq!(
-            capture(with_content(&"f".repeat(64))).err().unwrap().code,
+            reused.reused[&web].fingerprint, fingerprint,
+            "a reused image keeps the receipt it came with"
+        );
+        // A runtime variable change still reuses it; a changed build input needs the upload.
+        let runtime = with_env(json!({"TOKEN": "changed"}));
+        assert_eq!(
+            sourceless(&runtime, &fingerprint, &[])
+                .unwrap()
+                .reusable
+                .len(),
+            1
+        );
+        let build_input = with_env(json!({"API_URL": "changed"}));
+        assert_eq!(
+            sourceless(&build_input, &fingerprint, &[])
+                .err()
+                .unwrap()
+                .code,
             RpcErrorCode::NotFound
         );
-        // With the upload, the variable change rebuilds.
-        std::fs::remove_file(root.path().join("extra")).unwrap();
-        let mut sourced = with_content(&content);
-        sourced.sources = BTreeMap::from([(web.clone(), root.path().to_path_buf())]);
-        let rebuilt = capture(sourced).unwrap();
-        assert!(rebuilt.reusable.is_empty());
-        assert_eq!(rebuilt.build.targets().count(), 1);
         // A commit built elsewhere (GitHub) needs no checkout while its receipt matches.
         let mut built = input(&git, false, Some(&commit), None);
-        built.build_receipts = serde_json::from_value(receipt(&clean.fingerprints[&web])).unwrap();
+        built.build_receipts = BTreeMap::from([(
+            web.clone(),
+            BuildReceipt {
+                variables: BuildVariables::All,
+                ..receipt(&clean.fingerprints[&web].0)
+            },
+        )]);
         assert_eq!(capture(built).unwrap().reusable.len(), 1);
+        assert_eq!(
+            expected_fingerprints(git.clone(), BTreeMap::from([(web.clone(), commit.clone())]))
+                .unwrap()[&web],
+            clean.fingerprints[&web].0,
+            "Cloud computes a Git Service's fingerprint without its checkout"
+        );
         let unbuilt = capture(input(&git, false, Some(&commit), None))
             .err()
             .unwrap();
         assert_eq!(unbuilt.code, RpcErrorCode::InvalidArgument, "{unbuilt:?}");
         // Refused: a bad digest, a commit and an upload together, an upload for an image.
+        assert!(
+            serde_json::from_value::<PreparationInput>(json!({
+                "deployment": empty, "sources": {}, "uploads": {"web": "abc"},
+            }))
+            .is_err()
+        );
         let image = service(json!({"type":"image", "version":1, "image":"nginx",
             "credentials":{"type":"none"}}));
         for refused in [
-            input(&empty, false, None, Some("abc")),
             input(&git, true, Some(&commit), Some(&digest)),
             input(&image, false, None, Some(&digest)),
         ] {

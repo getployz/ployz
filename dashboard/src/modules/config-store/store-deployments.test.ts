@@ -1,7 +1,10 @@
-import type { DiffView, ServiceListing } from "@ployz/sdk";
+import type { DeploymentView, DiffView, ServiceListing } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { changeGroups, deploymentActions, nodeLight, previewLines, shownValue, uploadLabel } from "./store-deployments";
+import {
+  canFixOnBranch, changeGroups, deploymentActions, deploymentByline, deploymentStatusLabel, deploysLabel, focusedService, missingDeployLogs,
+  nodeLight, nodeOutcomeLabel, shownValue, uploadLabel,
+} from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
 const diff = asTestDouble<DiffView>()({
@@ -56,28 +59,75 @@ it("reads a pending node as its Deployment does, and a vanished runner's node as
   expect(nodeLight("unknown", { status: "unknown", in_flight: false })).toBe("unknown");
 });
 
-it("offers retry only after a Deployment ended without applying, start while queued, cancel before it ends", () => {
-  expect(deploymentActions("failed")).toEqual({ retry: true, start: false, cancel: false });
-  expect(deploymentActions("queued")).toEqual({ retry: false, start: true, cancel: true });
-  expect(deploymentActions("running")).toEqual({ retry: false, start: false, cancel: true });
-  expect(deploymentActions("cancelling")).toEqual({ retry: false, start: false, cancel: false });
-  expect(deploymentActions("applied")).toEqual({ retry: false, start: false, cancel: false });
+it("shows one action: retry after a Deployment ended without applying, start while queued, cancel before it ends", () => {
+  expect(deploymentActions("failed", false)).toEqual({ primary: "retry", cancelInMenu: false });
+  expect(deploymentActions("queued", false)).toEqual({ primary: "start", cancelInMenu: true });
+  expect(deploymentActions("running", false)).toEqual({ primary: "cancel", cancelInMenu: false });
+  expect(deploymentActions("cancelling", false)).toEqual({ primary: null, cancelInMenu: false });
+  expect(deploymentActions("applied", false)).toEqual({ primary: null, cancelInMenu: false });
+  // With no Server nothing can run it, so adding one comes first; a running one can still be cancelled.
+  expect(deploymentActions("failed", true)).toEqual({ primary: "add_server", cancelInMenu: false });
+  expect(deploymentActions("queued", true)).toEqual({ primary: "add_server", cancelInMenu: true });
+  expect(deploymentActions("running", true)).toEqual({ primary: "cancel", cancelInMenu: false });
 });
 
-it("names an upload's provenance", () => {
+it("names an upload's provenance, and its uploader only when someone else started the Deployment", () => {
   expect(uploadLabel({ digest: "d", base: { commit: "abc1234def", changed: true }, uploader: "nick" })).toBe("Uploaded by nick · abc1234 + changes");
+  expect(uploadLabel({ digest: "d", base: { commit: "abc1234def", changed: false }, uploader: "nick" }, "nick")).toBe("Uploaded · abc1234");
   expect(uploadLabel({ digest: "d", base: null })).toBe("Uploaded");
 });
 
-it("summarizes a recorded Deploy Preview, and nothing before one", () => {
-  expect(previewLines(null)).toBeNull();
-  expect(previewLines({
-    namespace: "shop-production", storage: [], preserved_volumes: [], prune_refusal: null,
-    operations: [{ index: 0, service_name: "web", status: { type: "pending" } }, { index: 1, service_name: "web", status: { type: "pending" } },
-      { index: 2, service_name: null, status: { type: "pending" } }],
-    volumes_to_create: [{}], would_remove: [{}],
-    warnings: [{ type: "ingress_hostname", message: "shop.example.com points elsewhere" }, { type: "unbudgeted_disk_usage" }],
-  })).toEqual([
-    "web: 2 operations · Environment: 1 operation", "Creates 1 volume", "Removes 1 service", "shop.example.com points elsewhere", "unbudgeted disk usage",
-  ]);
+const node = (name: string, outcome: DeploymentView["nodes"][number]["outcome"]) => ({ type: "service" as const, id: `id-${name}`, name, outcome });
+const deployment = (fields: Partial<DeploymentView>) => asTestDouble<DeploymentView>()({
+  status: "failed", nodes: [], builds: [], upload: null, admitted_by: null, started_at: 100, outcome: { type: "executed", summary: null, reason: "x" },
+  ...fields,
+});
+
+it("says who started a Deployment and what it ships: the Service's commit, else the first pinned one, else its upload", () => {
+  const builds = [{ service: "web", commit: "8a7ed6e9f0", status: "built", message: null }, { service: "api", commit: "1234567abc", status: "built", message: null }] as const;
+  expect(deploymentByline(deployment({ admitted_by: "Nick", builds: [...builds] }), "api")).toBe("by Nick · 1234567");
+  expect(deploymentByline(deployment({ admitted_by: "Nick", builds: [...builds] }), "whoami")).toBe("by Nick · 8a7ed6e");
+  // A retry of someone else's upload names both; one's own upload names the uploader once.
+  const upload = { digest: "d", base: { commit: "abc1234def", changed: true }, uploader: "nick" };
+  expect(deploymentByline(deployment({ admitted_by: "Ada", upload }), undefined)).toBe("by Ada · Uploaded by nick · abc1234 + changes");
+  expect(deploymentByline(deployment({ admitted_by: "nick", upload }), undefined)).toBe("by nick · Uploaded · abc1234 + changes");
+  expect(deploymentByline(deployment({}), undefined)).toBe("");
+});
+
+it("opens on the picked Service, else the failed one, else one it didn't apply, and offers a fix only for what ran and failed", () => {
+  const nodes = [node("web", "deployed"), node("api", "not_attempted"), node("worker", "failed")];
+  expect(focusedService(deployment({ nodes }), "id-web")?.name).toBe("web");
+  expect(focusedService(deployment({ nodes }), undefined)?.name).toBe("worker");
+  expect(focusedService(deployment({ nodes: nodes.slice(0, 2) }), undefined)?.name).toBe("api");
+  expect(canFixOnBranch(deployment({ nodes }), node("worker", "failed"), false)).toBe(true);
+  expect(canFixOnBranch(deployment({ nodes }), node("web", "deployed"), false)).toBe(false);
+  // With no Server the way on is adding one; with nothing run, giving it a source.
+  expect(canFixOnBranch(deployment({ nodes }), node("worker", "failed"), true)).toBe(false);
+  expect(canFixOnBranch(deployment({ outcome: { type: "not_executed", reason: "x", needs_upload: [] } }), node("api", "pending"), false)).toBe(false);
+});
+
+it("says why a Service has no deploy logs: the Deployment never ran, or its turn never came", () => {
+  expect(missingDeployLogs(deployment({ status: "queued", started_at: null, outcome: null }), node("web", "pending"))).toBe("Not started");
+  expect(missingDeployLogs(deployment({ outcome: { type: "not_executed", reason: "x", needs_upload: [] } }), node("web", "pending"))).toBe("Not started");
+  expect(missingDeployLogs(deployment({}), node("api", "not_attempted"))).toBe("Not attempted");
+  expect(missingDeployLogs(deployment({}), node("cron", "removed"))).toBe("Removed");
+  expect(missingDeployLogs(deployment({}), node("web", "failed"))).toBeNull();
+});
+
+
+it("words a node's outcome as the glossary does once it has one, and a pending one as its Deployment reads", () => {
+  expect(nodeOutcomeLabel("pending", { status: "queued", in_flight: true })).toBe("Queued");
+  expect(nodeOutcomeLabel("pending", { status: "running", in_flight: true })).toBe("Deploying");
+  expect(nodeOutcomeLabel("pending", { status: "cancelled", in_flight: false })).toBe("Not attempted");
+  expect(nodeOutcomeLabel("unchanged", { status: "applied", in_flight: false })).toBe("Unchanged");
+  expect(nodeOutcomeLabel("not_attempted", { status: "failed", in_flight: false })).toBe("Not attempted");
+});
+
+it("words a Deployment that takes its Environment off the Servers as the Branch panel does, and ships nothing", () => {
+  expect(deploymentStatusLabel({ status: "running", remove: true })).toBe("Coming off the servers");
+  expect(deploymentStatusLabel({ status: "applied", remove: true })).toBe("Off the servers");
+  expect(deploymentStatusLabel({ status: "failed", remove: true })).toBe("Failed");
+  expect(deploymentStatusLabel({ status: "applied", remove: false })).toBe("Deployed");
+  expect(deploysLabel({ services: [], remove: true })).toBeNull();
+  expect(deploysLabel({ services: ["web", "api"], remove: false })).toBe("Deploys web, api");
 });

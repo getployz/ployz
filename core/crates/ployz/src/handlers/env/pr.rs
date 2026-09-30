@@ -5,11 +5,11 @@ use ployz_store::{DeploymentStatus, EnvironmentName, EnvironmentRef};
 use serde_json::json;
 
 use super::super::deploy;
-use super::super::store::{self, failed, project, store};
+use super::super::store::{self, project, store};
 use super::super::{Error, leaf_matches, required};
 use super::branch::setups;
 use crate::failure::USAGE_EXIT;
-use crate::handlers::teardown::{accepted, take_off, unfinished};
+use crate::handlers::teardown::{accepted, take_off, unfinished, with_accepted};
 use crate::output::say;
 
 /// Take an Environment off the Servers and keep everything else of it.
@@ -20,28 +20,14 @@ pub(super) fn shutdown(root: &ArgMatches) -> Result<(), Error> {
         project: project(matches)?,
         environment: Some(name.clone()),
     };
-    let store = store(root)?;
-    let words = ["env", "shutdown", name.as_str()];
+    let store = store(root)?.args([name.as_str()]);
     let accept = accepted(matches)?;
+    let again = with_accepted(&["env", "shutdown", name.as_str()], &accept);
     let events = deploy::open_events(matches)?;
     let version = matches.get_one::<String>("expect-version").cloned();
-    let (view, ran) = take_off(
-        matches,
-        &store,
-        &at,
-        (&accept, version),
-        events,
-        &words,
-        &words,
-    )?;
+    let (view, ran) = take_off(matches, &store, &at, (&accept, version), events, &again)?;
     if view.deployment.status != DeploymentStatus::Applied {
-        let mut again: Vec<&str> = words.to_vec();
-        again.extend(
-            accept
-                .iter()
-                .flat_map(|name| ["--accept-volume-loss", name.as_str()]),
-        );
-        return unfinished(matches, &view, ran, &again);
+        return unfinished(matches, &view, &[], ran, &again);
     }
     let on = store::next(matches, &["deploy", "--env", name.as_str()]);
     deploy::finish_view(&view, Some(on))
@@ -75,8 +61,7 @@ pub(super) fn pr(root: &ArgMatches) -> Result<(), Error> {
         .transpose()?;
     let remove_on_close = matches.get_one::<bool>("remove-on-close").copied();
     let include_bots = matches.get_one::<bool>("bots").copied();
-    let store = store(root)?;
-    let words = ["env", "pr"];
+    let store = store(root)?.args(repository.as_ref().map(ployz_store::RepositoryName::as_str));
     let query = ployz_store::PrPlansQuery {
         project: project.clone(),
     };
@@ -87,12 +72,12 @@ pub(super) fn pr(root: &ArgMatches) -> Result<(), Error> {
         || remove_on_close.is_some()
         || include_bots.is_some();
     let view = match changing {
-        false => store.read(&query).map_err(failed(matches, &words))?,
+        false => store.read(&query)?,
         true => {
             let repository = match repository {
                 Some(repository) => repository,
                 None => {
-                    let plans = store.read(&query).map_err(failed(matches, &words))?;
+                    let plans = store.read(&query)?;
                     match plans.plans.as_slice() {
                         [only] => only.repository.clone(),
                         _ => {
@@ -114,7 +99,7 @@ pub(super) fn pr(root: &ArgMatches) -> Result<(), Error> {
                 remove_on_close,
                 include_bots,
             };
-            store.write(&set).map_err(failed(matches, &words))?
+            store.write(&set)?
         }
     };
     let mut json = serde_json::to_value(&view).expect("PR plans are JSON");
