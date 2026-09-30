@@ -4,16 +4,15 @@
 use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 use ployz_store::{
-    CreateProject, DeploymentStatus, DeploymentSummary, EnvironmentId, EnvironmentName,
-    EnvironmentRef, ProjectId, ProjectName, ProjectRemoved, RemovalsQuery, RemoveProject,
+    CreateProject, DeploymentSummary, EnvironmentId, EnvironmentRef, ProjectId, ProjectName,
+    ProjectRemoved, RemoveProject,
 };
 use serde_json::json;
 
 use super::store::{self, Store, failed, mint, store};
-use super::teardown::{accepted, confirmed, inventory, take_off, unfinished};
+use super::teardown::{accepted, confirmed, inventory, remove_all};
 use super::{Error, deploy, leaf_matches, required};
 use crate::cli::{base, positional, value};
-use crate::cloud_account::StoreCallError;
 use crate::output::say;
 
 pub(crate) fn command() -> Command {
@@ -46,7 +45,8 @@ pub(crate) fn command() -> Command {
                     .value_name("PROJECT")
                     .help("The Project's name, typed to confirm its removal"),
             )
-            .arg(crate::cli::volume_acceptance()),
+            .arg(crate::cli::volume_acceptance())
+            .arg(crate::cli::reviewed_version()),
         ))
 }
 
@@ -69,9 +69,7 @@ fn new(root: &ArgMatches) -> Result<(), Error> {
         default_environment: EnvironmentId::parse(mint())?,
     };
     let words = ["project", "new", create.name.as_str()];
-    let created = store
-        .create_project(&create)
-        .map_err(failed(matches, &words))?;
+    let created = store.write(&create).map_err(failed(matches, &words))?;
     crate::output::finish(&created, || {
         say!(
             "Created Project {} with Environment {}.",
@@ -84,7 +82,7 @@ fn new(root: &ArgMatches) -> Result<(), Error> {
 fn ls(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let listed = store(root)?
-        .projects()
+        .read(&ployz_store::ProjectsQuery {})
         .map_err(failed(matches, &["project", "ls"]))?;
     crate::output::finish(&listed, || {
         if listed.projects.is_empty() {
@@ -132,50 +130,10 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
     let remove = RemoveProject {
         project: name.clone(),
     };
-    let mut events = deploy::open_events(matches)?;
-    let mut ran: Vec<DeploymentSummary> = Vec::new();
-    loop {
-        let environment = match store.remove_project(&remove) {
-            Ok(removed) => return finish(&removed, &ran),
-            Err(StoreCallError::Refused(error))
-                if error.details.get("deployed") == Some(&json!(true)) =>
-            {
-                EnvironmentName::parse(
-                    error
-                        .details
-                        .get("environment")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default(),
-                )?
-            }
-            Err(error) => return Err(failed(matches, &words)(error)),
-        };
-        let at = EnvironmentRef {
-            project: Some(name.clone()),
-            environment: Some(environment),
-        };
-        // Each removal accepts only the Volumes it deletes; a name may recur across Environments.
-        let deletes = store
-            .removals(&RemovalsQuery {
-                environment: at.clone(),
-                remove: true,
-            })
-            .map_err(failed(matches, &words))?;
-        let accept: Vec<_> = accept
-            .iter()
-            .filter(|name| deletes.volumes.iter().any(|volume| &volume.name == *name))
-            .cloned()
-            .collect();
-        let writer = events
-            .as_mut()
-            .map(|writer| writer.get_ref().try_clone())
-            .transpose()?
-            .map(std::io::BufWriter::new);
-        let (view, outcome) = take_off(matches, &store, &at, &accept, writer, &words, &again)?;
-        if view.deployment.status != DeploymentStatus::Applied {
-            return unfinished(matches, &view, outcome, &again);
-        }
-        ran.push(view.deployment);
+    let events = deploy::open_events(matches)?;
+    match remove_all(matches, &store, &remove, &name, events, &words, &again)? {
+        Some((removed, ran)) => finish(&removed, &ran),
+        None => Ok(()),
     }
 }
 
@@ -188,7 +146,9 @@ fn unconfirmed(
     again: &[&str],
 ) -> Result<Error, Error> {
     let words = ["project", "rm"];
-    let listed = store.projects().map_err(failed(matches, &words))?;
+    let listed = store
+        .read(&ployz_store::ProjectsQuery {})
+        .map_err(failed(matches, &words))?;
     let Some(listing) = listed
         .projects
         .iter()

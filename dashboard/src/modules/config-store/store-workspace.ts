@@ -1,7 +1,5 @@
 import type { ConfigCommand, ConfigWritten, EnvironmentListing } from "@ployz/sdk";
-import { Option, Schema } from "effect";
 import { isInFlight } from "./store-deployments";
-import { StoreRefused } from "./store-write";
 
 /** A Project's Environments in tree order: roots first, each Branch right under its Parent, siblings as listed. */
 export function storeEnvironmentTree(environments: readonly EnvironmentListing[]) {
@@ -52,31 +50,16 @@ export async function teardownStep(commit: Commit, target: TeardownTarget, accep
   const remove: ConfigCommand = target.environment === null
     ? { command: "remove_project", project: target.project }
     : { command: "remove_environment", environment: { project: target.project, environment: target.environment } };
-  try {
-    await commit(remove, ["conflict"]);
-    return { done: true };
-  } catch (error) {
-    const on = error instanceof StoreRefused ? onServers(error) : null;
-    if (on === null) throw error;
-    if (!on.deployed) return { done: false, environment: on.environment, deployment: on.deployment };
-    const id = crypto.randomUUID();
-    await commit({
-      command: "admit", admit: "remove", id, environment: { project: target.project, environment: on.environment },
-      version: null, accept_volume_loss: [...accepted[on.environment] ?? []],
-    }, ["confirmation_required", "invalid_argument"]);
-    return { done: false, environment: on.environment, deployment: id };
+  const written = await commit(remove, []);
+  if (written.written !== "environment_removed" && written.written !== "project_removed") {
+    throw new Error(`The Store answered a removal with ${written.written}`);
   }
-}
-
-const decodeOnServers = Schema.decodeUnknownOption(Schema.Struct({
-  environment: Schema.String,
-  deployment: Schema.String,
-  deployed: Schema.optional(Schema.Boolean),
-}));
-
-/** The Store's refusal to delete an Environment its Servers may still run: `deployed` when it needs a removal next. */
-function onServers(refusal: StoreRefused) {
-  if (refusal.code !== "conflict") return null;
-  const details = Option.getOrNull(decodeOnServers(refusal.details));
-  return details && { ...details, deployed: details.deployed === true };
+  if (written.teardown === "removed") return { done: true };
+  if (written.teardown === "waiting") return { done: false, environment: written.environment, deployment: written.deployment };
+  const id = crypto.randomUUID();
+  await commit({
+    command: "admit", admit: "remove", id, environment: { project: target.project, environment: written.environment },
+    version: null, accept_volume_loss: [...accepted[written.environment] ?? []],
+  }, ["confirmation_required", "invalid_argument"]);
+  return { done: false, environment: written.environment, deployment: id };
 }

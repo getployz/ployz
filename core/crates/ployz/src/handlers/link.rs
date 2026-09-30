@@ -285,9 +285,7 @@ pub(super) fn link(root: &ArgMatches) -> Result<(), Error> {
         path: None,
         all: false,
     };
-    let view = store
-        .environment(&query)
-        .map_err(failed(matches, &["link"]))?;
+    let view = store.read(&query).map_err(failed(matches, &["link"]))?;
     let linked = record(&config, view.environment)?;
     let hint = Some("ployz status".to_owned());
     crate::output::finish(&Next::new(&linked, hint), || {
@@ -425,7 +423,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     let identity = identity(&store)?;
     let scope = scope(matches)?;
     let mut attention = Vec::new();
-    let diff = match store.diff(&DiffQuery {
+    let diff = match store.read(&DiffQuery {
         environment: scope.at(),
     }) {
         Ok(diff) => Some(diff),
@@ -453,7 +451,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     let mut deploying = Vec::new();
     if diff.is_some() {
         let page = store
-            .deployments(&DeploymentsQuery {
+            .read(&DeploymentsQuery {
                 environment: scope.at(),
                 limit: Some(RECENT),
                 cursor: None,

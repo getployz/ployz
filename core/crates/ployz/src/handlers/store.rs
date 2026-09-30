@@ -2,23 +2,11 @@
 //! Organization, the `--project`/`--env` scope, and IDs for creates.
 
 use clap::{Arg, ArgMatches};
-use ployz_core::{RpcError, RpcErrorCode};
+use ployz_core::RpcErrorCode;
 use ployz_store::{
-    Actor, AddDomain, Admit, Branched, BuildLogQuery, BuildLogView, BuildOrderQuery,
-    BuildOrderView, Cancel, Command, ConfigStore, CopyNode, CreateBranch, CreateEnvironment,
-    CreateGitService, CreateProject, CreateService, CreateVolume, DeploymentId, DeploymentQuery,
-    DeploymentSummary, DeploymentView, DeploymentsQuery, DeploymentsView, DiffQuery, DiffView,
-    Discard, Discarded, DomainEvidence, DomainQuery, DomainStaged, DomainView, DomainsQuery,
-    DomainsView, Edit, Edited, EnvironmentCreated, EnvironmentQuery, EnvironmentRef,
-    EnvironmentRemoved, EnvironmentView, EnvironmentsQuery, EnvironmentsView, KeepBranch, Move,
-    MoveQuery, MoveView, Moved, NamespaceQuery, NamespaceView, OrganizationId, PlanQuery, PlanView,
-    ProjectCreated, ProjectName, ProjectRemoved, ProjectsQuery, ProjectsView, Publish, Published,
-    Query, RemovalsQuery, RemovalsView, RemoveDomain, RemoveEnvironment, RemoveProject,
-    RemoveService, RemoveVolume, RenameService, SealingKey, ServiceQuery, ServiceStaged,
-    ServiceView, ServicesQuery, ServicesView, SetBuildOrder, SetDefaultEnvironment, Start, Trusted,
-    VolumeQuery, VolumeStaged, VolumeView, VolumesQuery, VolumesView,
+    Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence,
+    EnvironmentRef, OrganizationId, ProjectName, SealingKey, Tell, Trusted, View, Written,
 };
-use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
 
 use super::{Error, config_path, leaf_matches, runtime};
@@ -73,100 +61,28 @@ pub(crate) enum Store {
 }
 
 impl Store {
-    pub(crate) fn environment(
-        &self,
-        query: &EnvironmentQuery,
-    ) -> Result<EnvironmentView, StoreCallError> {
-        let request = Query::Environment(query.clone());
-        self.call("read", &request, |store, who| store.read(who, query))
+    /// Answer `query`: a Store query payload, read as its own view.
+    pub(crate) fn read<Q: Ask>(&self, query: &Q) -> Result<Q::View, StoreCallError> {
+        match self {
+            Self::Local(store, who) => store
+                .read_trusted(who, query, &self_hosted())
+                .map_err(StoreCallError::Refused),
+            Self::Cloud(runtime, credential) => {
+                let view: View = runtime.block_on(cloud_account::config_store(
+                    credential,
+                    "read",
+                    &query.clone().query(),
+                ))?;
+                Q::view(view).map_err(StoreCallError::Refused)
+            }
+        }
     }
 
-    pub(crate) fn create_project(
-        &self,
-        create: &CreateProject,
-    ) -> Result<ProjectCreated, StoreCallError> {
-        let request = Command::CreateProject(create.clone());
-        self.call("write", &request, |store, who| store.write(who, create))
+    /// Apply `command`: a Store command payload, answered as its own result.
+    pub(crate) fn write<C: Tell>(&self, command: &C) -> Result<C::Written, StoreCallError> {
+        self.write_trusted(command, self_hosted())
     }
 
-    pub(crate) fn create_environment(
-        &self,
-        create: &CreateEnvironment,
-    ) -> Result<EnvironmentCreated, StoreCallError> {
-        let request = Command::CreateEnvironment(create.clone());
-        self.call("write", &request, |store, who| store.write(who, create))
-    }
-
-    pub(crate) fn create_service(
-        &self,
-        create: &CreateService,
-    ) -> Result<ServiceStaged, StoreCallError> {
-        let request = Command::CreateService(create.clone());
-        self.call("write", &request, |store, who| store.write(who, create))
-    }
-
-    /// Cloud checks the repository and branch for the Organization; the hidden
-    /// local Store has no way to, so it refuses every repository.
-    pub(crate) fn create_git_service(
-        &self,
-        create: &CreateGitService,
-    ) -> Result<ServiceStaged, StoreCallError> {
-        let request = Command::CreateGitService(create.clone());
-        self.call("write", &request, |store, who| {
-            store.write_trusted(who, create, &Trusted::default())
-        })
-    }
-
-    pub(crate) fn rename_service(
-        &self,
-        rename: &RenameService,
-    ) -> Result<ServiceStaged, StoreCallError> {
-        let request = Command::RenameService(rename.clone());
-        self.call("write", &request, |store, who| store.write(who, rename))
-    }
-
-    pub(crate) fn remove_service(
-        &self,
-        remove: &RemoveService,
-    ) -> Result<ServiceStaged, StoreCallError> {
-        let request = Command::RemoveService(remove.clone());
-        self.call("write", &request, |store, who| store.write(who, remove))
-    }
-
-    pub(crate) fn services(&self, query: &ServicesQuery) -> Result<ServicesView, StoreCallError> {
-        let request = Query::Services(query.clone());
-        self.call("read", &request, |store, who| store.read(who, query))
-    }
-
-    pub(crate) fn service(&self, query: &ServiceQuery) -> Result<ServiceView, StoreCallError> {
-        let request = Query::Service(query.clone());
-        self.call("read", &request, |store, who| store.read(who, query))
-    }
-
-    pub(crate) fn diff(&self, query: &DiffQuery) -> Result<DiffView, StoreCallError> {
-        let request = Query::Diff(query.clone());
-        self.call("read", &request, |store, who| store.read(who, query))
-    }
-
-    pub(crate) fn publish(&self, publish: &Publish) -> Result<Published, StoreCallError> {
-        let request = Command::Publish(publish.clone());
-        self.call("write", &request, |store, who| {
-            store.write_trusted(who, publish, &Trusted::default())
-        })
-    }
-
-    pub(crate) fn discard(&self, discard: &Discard) -> Result<Discarded, StoreCallError> {
-        let request = Command::Discard(discard.clone());
-        self.call("write", &request, |store, who| store.write(who, discard))
-    }
-
-    pub(crate) fn edit(&self, edit: &Edit) -> Result<Edited, StoreCallError> {
-        let request = Command::Edit(edit.clone());
-        self.call("write", &request, |store, who| store.write(who, edit))
-    }
-
-    /// Admit a Deployment. Only the in-process Store takes `trusted`: over HTTPS,
-    /// Cloud gathers its own evidence.
     /// Admit a Deployment. Only the in-process Store takes `volumes`, the Servers
     /// this CLI observed: over HTTPS, Cloud gathers its own evidence.
     pub(crate) fn admit(
@@ -174,61 +90,34 @@ impl Store {
         admit: &Admit,
         volumes: Option<ployz_store::VolumeObservation>,
     ) -> Result<DeploymentSummary, StoreCallError> {
-        let request = Command::Admit(admit.clone());
-        self.call("write", &request, |store, who| {
-            let trusted = Trusted {
+        self.write_trusted(
+            admit,
+            Trusted {
                 volumes,
                 ..self_hosted()
-            };
-            store.write_trusted(who, admit, &trusted)
-        })
+            },
+        )
     }
 
-    pub(crate) fn create_volume(
+    /// `trusted` is the in-process Store's evidence; Cloud gathers its own.
+    fn write_trusted<C: Tell>(
         &self,
-        create: &CreateVolume,
-    ) -> Result<VolumeStaged, StoreCallError> {
-        let request = Command::CreateVolume(create.clone());
-        self.call("write", &request, |store, who| store.write(who, create))
-    }
-
-    pub(crate) fn remove_volume(
-        &self,
-        remove: &RemoveVolume,
-    ) -> Result<VolumeStaged, StoreCallError> {
-        let request = Command::RemoveVolume(remove.clone());
-        self.call("write", &request, |store, who| store.write(who, remove))
-    }
-
-    pub(crate) fn rename_volume(
-        &self,
-        rename: &ployz_store::RenameVolume,
-    ) -> Result<VolumeStaged, StoreCallError> {
-        let request = Command::RenameVolume(rename.clone());
-        self.call("write", &request, |store, who| store.write(who, rename))
-    }
-
-    pub(crate) fn set_volume_storage(
-        &self,
-        set: &ployz_store::SetVolumeStorage,
-    ) -> Result<VolumeStaged, StoreCallError> {
-        let request = Command::SetVolumeStorage(set.clone());
-        self.call("write", &request, |store, who| store.write(who, set))
-    }
-
-    pub(crate) fn volumes(&self, query: &VolumesQuery) -> Result<VolumesView, StoreCallError> {
-        let request = Query::Volumes(query.clone());
-        self.call("read", &request, |store, who| store.read(who, query))
-    }
-
-    pub(crate) fn volume(&self, query: &VolumeQuery) -> Result<VolumeView, StoreCallError> {
-        let request = Query::Volume(query.clone());
-        self.call("read", &request, |store, who| store.read(who, query))
-    }
-
-    pub(crate) fn removals(&self, query: &RemovalsQuery) -> Result<RemovalsView, StoreCallError> {
-        let request = Query::Removals(query.clone());
-        self.call("read", &request, |store, who| store.read(who, query))
+        command: &C,
+        trusted: Trusted,
+    ) -> Result<C::Written, StoreCallError> {
+        match self {
+            Self::Local(store, who) => store
+                .write_trusted(who, command, &trusted)
+                .map_err(StoreCallError::Refused),
+            Self::Cloud(runtime, credential) => {
+                let written: Written = runtime.block_on(cloud_account::config_store(
+                    credential,
+                    "write",
+                    &command.clone().command(),
+                ))?;
+                C::written(written).map_err(StoreCallError::Refused)
+            }
+        }
     }
 
     /// Hand Cloud `archive`, the source Deployment `deployment` builds from, before
@@ -248,210 +137,12 @@ impl Store {
         }
     }
 
-    pub(crate) fn start(&self, start: &Start) -> Result<DeploymentSummary, StoreCallError> {
-        let request = Command::Start(start.clone());
-        self.call("write", &request, |store, who| store.write(who, start))
-    }
-
-    pub(crate) fn cancel(&self, cancel: &Cancel) -> Result<DeploymentSummary, StoreCallError> {
-        let request = Command::Cancel(cancel.clone());
-        self.call("write", &request, |store, who| store.write(who, cancel))
-    }
-
-    pub(crate) fn build_order(&self) -> Result<BuildOrderView, StoreCallError> {
-        let request = Query::BuildOrder(BuildOrderQuery::default());
-        self.call("read", &request, |store, who| {
-            store.read(who, &ployz_store::BuildOrderQuery {})
-        })
-    }
-
-    pub(crate) fn set_build_order(
-        &self,
-        set: &SetBuildOrder,
-    ) -> Result<BuildOrderView, StoreCallError> {
-        let request = Command::SetBuildOrder(set.clone());
-        self.call("write", &request, |store, who| store.write(who, set))
-    }
-
-    pub(crate) fn plan(&self, query: &PlanQuery) -> Result<PlanView, StoreCallError> {
-        let request = Query::Plan(query.clone());
-        self.call("read", &request, |store, who| store.read(who, query))
-    }
-
-    pub(crate) fn namespace(
-        &self,
-        query: &NamespaceQuery,
-    ) -> Result<NamespaceView, StoreCallError> {
-        let request = Query::Namespace(query.clone());
-        self.call("read", &request, |store, who| store.read(who, query))
-    }
-
-    pub(crate) fn build_log(&self, query: &BuildLogQuery) -> Result<BuildLogView, StoreCallError> {
-        let request = Query::BuildLog(query.clone());
-        self.call("read", &request, |store, who| store.read(who, query))
-    }
-
-    pub(crate) fn deployments(
-        &self,
-        query: &DeploymentsQuery,
-    ) -> Result<DeploymentsView, StoreCallError> {
-        let request = Query::Deployments(query.clone());
-        self.call("read", &request, |store, who| store.read(who, query))
-    }
-
-    pub(crate) fn deployment(&self, id: &DeploymentId) -> Result<DeploymentView, StoreCallError> {
-        let request = Query::Deployment(DeploymentQuery { id: id.clone() });
-        self.call("read", &request, |store, who| {
-            store.read(who, &ployz_store::DeploymentQuery { id: id.clone() })
-        })
-    }
-
-    /// Cloud checks the custom-domain capability; the hidden local Store stands for
-    /// a self-hosted Cloud, which always has it.
-    pub(crate) fn add_domain(&self, add: &AddDomain) -> Result<DomainStaged, StoreCallError> {
-        let request = Command::AddDomain(add.clone());
-        self.call("write", &request, |store, who| {
-            store.write_trusted(who, add, &self_hosted())
-        })
-    }
-
-    pub(crate) fn remove_domain(
-        &self,
-        remove: &RemoveDomain,
-    ) -> Result<DomainStaged, StoreCallError> {
-        let request = Command::RemoveDomain(remove.clone());
-        self.call("write", &request, |store, who| {
-            store.write_trusted(who, remove, &self_hosted())
-        })
-    }
-
-    /// Cloud observes the Cluster for each domain's status; the hidden local Store
-    /// sees nothing of it.
-    pub(crate) fn domains(&self, query: &DomainsQuery) -> Result<DomainsView, StoreCallError> {
-        let request = Query::Domains(query.clone());
-        self.call("read", &request, |store, who| {
-            store.read_trusted(who, query, &self_hosted())
-        })
-    }
-
-    /// One domain, which Cloud re-checks first: its DNS, and the Cluster Domain.
-    pub(crate) fn domain(&self, query: &DomainQuery) -> Result<DomainView, StoreCallError> {
-        let request = Query::Domain(query.clone());
-        self.call("read", &request, |store, who| {
-            store.read_trusted(who, query, &self_hosted())
-        })
-    }
-
-    pub(crate) fn create_branch(&self, create: &CreateBranch) -> Result<Branched, StoreCallError> {
-        let request = Command::CreateBranch(create.clone());
-        self.call("write", &request, |store, who| store.write(who, create))
-    }
-
-    pub(crate) fn move_changes(&self, request: &Move) -> Result<Moved, StoreCallError> {
-        let command = Command::Move(request.clone());
-        self.call("write", &command, |store, who| store.write(who, request))
-    }
-
-    pub(crate) fn move_view(&self, query: &MoveQuery) -> Result<MoveView, StoreCallError> {
-        let request = Query::Move(query.clone());
-        self.call("read", &request, |store, who| store.read(who, query))
-    }
-
-    pub(crate) fn copy_node(&self, copy: &CopyNode) -> Result<Branched, StoreCallError> {
-        let request = Command::CopyNode(copy.clone());
-        self.call("write", &request, |store, who| store.write(who, copy))
-    }
-
-    pub(crate) fn environments(
-        &self,
-        query: &EnvironmentsQuery,
-    ) -> Result<EnvironmentsView, StoreCallError> {
-        let request = Query::Environments(query.clone());
-        self.call("read", &request, |store, who| store.read(who, query))
-    }
-
-    pub(crate) fn set_branch_setup(
-        &self,
-        set: &ployz_store::SetBranchSetup,
-    ) -> Result<EnvironmentsView, StoreCallError> {
-        let request = Command::SetBranchSetup(set.clone());
-        self.call("write", &request, |store, who| store.write(who, set))
-    }
-
-    pub(crate) fn set_default_environment(
-        &self,
-        set: &SetDefaultEnvironment,
-    ) -> Result<EnvironmentsView, StoreCallError> {
-        let request = Command::SetDefaultEnvironment(set.clone());
-        self.call("write", &request, |store, who| store.write(who, set))
-    }
-
-    pub(crate) fn remove_environment(
-        &self,
-        remove: &RemoveEnvironment,
-    ) -> Result<EnvironmentRemoved, StoreCallError> {
-        let request = Command::RemoveEnvironment(remove.clone());
-        self.call("write", &request, |store, who| store.write(who, remove))
-    }
-
-    pub(crate) fn projects(&self) -> Result<ProjectsView, StoreCallError> {
-        let request = Query::Projects(ProjectsQuery {});
-        self.call("read", &request, |store, who| {
-            store.read(who, &ployz_store::ProjectsQuery {})
-        })
-    }
-
-    pub(crate) fn remove_project(
-        &self,
-        remove: &RemoveProject,
-    ) -> Result<ProjectRemoved, StoreCallError> {
-        let request = Command::RemoveProject(remove.clone());
-        self.call("write", &request, |store, who| store.write(who, remove))
-    }
-
-    pub(crate) fn pr_plans(
-        &self,
-        query: &ployz_store::PrPlansQuery,
-    ) -> Result<ployz_store::PrPlansView, StoreCallError> {
-        let request = Query::PrPlans(query.clone());
-        self.call("read", &request, |store, who| store.read(who, query))
-    }
-
-    pub(crate) fn set_pr_plan(
-        &self,
-        set: &ployz_store::SetPrPlan,
-    ) -> Result<ployz_store::PrPlansView, StoreCallError> {
-        let request = Command::SetPrPlan(set.clone());
-        self.call("write", &request, |store, who| store.write(who, set))
-    }
-
-    pub(crate) fn keep_branch(&self, keep: &KeepBranch) -> Result<Branched, StoreCallError> {
-        let request = Command::KeepBranch(keep.clone());
-        self.call("write", &request, |store, who| store.write(who, keep))
-    }
-
     /// The in-process Store, which only the hidden test mode has: there this CLI
     /// runs Deployments itself. `claim` and `record` never cross HTTPS.
     pub(crate) fn local(&self) -> Option<&std::sync::Arc<ConfigStore>> {
         match self {
             Self::Local(store, _) => Some(store),
             Self::Cloud(..) => None,
-        }
-    }
-
-    /// Run in-process, or send `request` to Cloud's `read` or `write`. Cloud answers
-    /// the tagged View or Written, which reads as the typed result.
-    fn call<T: DeserializeOwned>(
-        &self,
-        operation: &str,
-        request: &impl Serialize,
-        local: impl FnOnce(&ConfigStore, &Actor) -> Result<T, RpcError>,
-    ) -> Result<T, StoreCallError> {
-        match self {
-            Self::Local(store, who) => local(store, who).map_err(StoreCallError::Refused),
-            Self::Cloud(runtime, credential) => {
-                runtime.block_on(cloud_account::config_store(credential, operation, request))
-            }
         }
     }
 }

@@ -14,10 +14,10 @@ use ployz_core::{
 use ployz_store::{
     Actor, Admit, Cancel, ConfigStore, CreateBranch, CreateEnvironment, CreateProject,
     CreateService, CreateVolume, Deploy, DeploymentId, DeploymentStatus, EnvironmentId,
-    EnvironmentName, EnvironmentRef, EnvironmentsQuery, Mount, OrganizationId, ProjectId,
-    ProjectName, Removal, RemovalsQuery, RemoveEnvironment, RemoveProject, Retry, RunEvidence,
-    RunnerId, ServiceLineageId, SetDefaultEnvironment, Trusted, VolumeId, VolumeName,
-    VolumeObservation,
+    EnvironmentName, EnvironmentRef, EnvironmentRemoved, EnvironmentsQuery, Mount, OrganizationId,
+    ProjectId, ProjectName, Removal, RemovalsQuery, RemoveEnvironment, RemoveProject, Retry,
+    RunEvidence, RunnerId, ServiceLineageId, SetDefaultEnvironment, Teardown, Trusted, VolumeId,
+    VolumeName, VolumeObservation,
 };
 use serde_json::json;
 
@@ -197,15 +197,35 @@ fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8, services: 
     succeed(store, n, services, Vec::new());
 }
 
-fn remove(store: &ConfigStore, who: &Actor, environment: &str) -> Result<(), RpcError> {
-    store
-        .write(
-            who,
-            &RemoveEnvironment {
-                environment: at(environment),
-            },
-        )
-        .map(|_| ())
+fn remove(
+    store: &ConfigStore,
+    who: &Actor,
+    environment: &str,
+) -> Result<Teardown<EnvironmentRemoved>, RpcError> {
+    store.write(
+        who,
+        &RemoveEnvironment {
+            environment: at(environment),
+        },
+    )
+}
+
+/// What a removal deleted; any other answer fails the test.
+fn removed<T: std::fmt::Debug>(result: Result<Teardown<T>, RpcError>) -> T {
+    match result.unwrap() {
+        Teardown::Removed(removed) => removed,
+        other => panic!("not removed: {other:?}"),
+    }
+}
+
+/// The Environment still on the Servers that stops a removal, and whether it needs
+/// a removal Deployment next (else a Deployment of it hasn't ended).
+fn on_servers<T: std::fmt::Debug>(result: Result<Teardown<T>, RpcError>) -> (String, bool) {
+    match result.unwrap() {
+        Teardown::NeedsRemoval { environment, .. } => (environment.to_string(), true),
+        Teardown::Waiting { environment, .. } => (environment.to_string(), false),
+        Teardown::Removed(removed) => panic!("removed: {removed:?}"),
+    }
 }
 
 fn set_default(store: &ConfigStore, who: &Actor, environment: &str) {
@@ -270,7 +290,7 @@ fn environments_list_and_an_undeployed_one_is_removed_without_servers() {
     set_default(&store, &who, "staging");
     assert_eq!(listed(&store, &who), ["production", "staging*"]);
     // Nothing of production ever ran, so it goes at once, with no Servers.
-    remove(&store, &who, "production").unwrap();
+    removed(remove(&store, &who, "production"));
     assert_eq!(listed(&store, &who), ["staging*"]);
     assert_eq!(
         refusal(remove(&store, &who, "production")).code,
@@ -284,9 +304,10 @@ fn a_deployed_root_leaves_the_servers_before_the_store() {
     deploy(&store, &who, "production", 1, &["web", "db"]);
     set_default(&store, &who, "staging");
 
-    let deployed = refusal(remove(&store, &who, "production"));
-    assert_eq!(deployed.code, RpcErrorCode::Conflict);
-    assert_eq!(deployed.details["deployed"], json!(true));
+    assert_eq!(
+        on_servers(remove(&store, &who, "production")),
+        ("production".into(), true)
+    );
 
     // The removal deletes the deployed Volume, under the same review as any Deploy.
     let removals = store
@@ -340,15 +361,15 @@ fn a_deployed_root_leaves_the_servers_before_the_store() {
     );
     assert_eq!(refusal(branching).code, RpcErrorCode::Conflict);
     assert_eq!(
-        refusal(remove(&store, &who, "production")).code,
-        RpcErrorCode::Conflict
+        on_servers(remove(&store, &who, "production")),
+        ("production".into(), false)
     );
 
     // Cancelled, it stays deployed; retried, it runs as admitted.
     store.write(&who, &Cancel { deployment: id(2) }).unwrap();
     assert_eq!(
-        refusal(remove(&store, &who, "production")).details["deployed"],
-        json!(true)
+        on_servers(remove(&store, &who, "production")),
+        ("production".into(), true)
     );
     let retried = store
         .write_trusted(
@@ -377,7 +398,7 @@ fn a_deployed_root_leaves_the_servers_before_the_store() {
     let removal = listing.environments[0].removal.as_ref().unwrap();
     assert_eq!(removal.status, DeploymentStatus::Applied);
 
-    remove(&store, &who, "production").unwrap();
+    removed(remove(&store, &who, "production"));
     assert_eq!(listed(&store, &who), ["staging*"]);
     // Its name is free again.
     store
@@ -438,14 +459,14 @@ fn a_branch_goes_before_its_parent_and_an_unknown_removal_keeps_it() {
         DeploymentStatus::Unknown
     );
     assert_eq!(
-        refusal(remove(&store, &who, "fix")).details["deployed"],
-        json!(true)
+        on_servers(remove(&store, &who, "fix")),
+        ("fix".into(), true)
     );
 
     admit(&store, &who, "fix", 4, true, &[], None).unwrap();
     prepare(&store, 4, &["web"]);
     succeed(&store, 4, &["web"], Vec::new());
-    remove(&store, &who, "fix").unwrap();
+    removed(remove(&store, &who, "fix"));
     assert_eq!(listed(&store, &who), ["production", "staging*"]);
     // With its Branch gone, the Parent can go too.
     admit(
@@ -460,7 +481,7 @@ fn a_branch_goes_before_its_parent_and_an_unknown_removal_keeps_it() {
     .unwrap();
 }
 
-fn remove_shop(store: &ConfigStore, who: &Actor) -> Result<Vec<String>, RpcError> {
+fn remove_shop(store: &ConfigStore, who: &Actor) -> Result<Teardown<Vec<String>>, RpcError> {
     store
         .write(
             who,
@@ -468,12 +489,28 @@ fn remove_shop(store: &ConfigStore, who: &Actor) -> Result<Vec<String>, RpcError
                 project: ProjectName::parse("shop").unwrap(),
             },
         )
-        .map(|removed| {
-            removed
-                .environments
-                .iter()
-                .map(ToString::to_string)
-                .collect()
+        .map(|teardown| match teardown {
+            Teardown::Removed(removed) => Teardown::Removed(
+                removed
+                    .environments
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+            ),
+            Teardown::Waiting {
+                environment,
+                deployment,
+            } => Teardown::Waiting {
+                environment,
+                deployment,
+            },
+            Teardown::NeedsRemoval {
+                environment,
+                deployment,
+            } => Teardown::NeedsRemoval {
+                environment,
+                deployment,
+            },
         })
 }
 
@@ -527,27 +564,20 @@ fn a_project_leaves_the_servers_branches_first_and_its_default_last() {
     );
 
     // Branches come off first; the Default Environment only after the rest.
-    let next = refusal(remove_shop(&store, &who));
-    assert_eq!(next.details["deployed"], json!(true));
-    assert_eq!(next.details["environment"], json!("fix"));
+    assert_eq!(on_servers(remove_shop(&store, &who)), ("fix".into(), true));
     let parent = refusal(admit(&store, &who, "production", 4, true, &[], None));
     assert_eq!(parent.details["branches"], json!(["fix"]));
 
     // A removal in flight, then cancelled, leaves the Project whole.
     admit(&store, &who, "fix", 5, true, &[], None).unwrap();
-    let in_flight = refusal(remove_shop(&store, &who));
-    assert_eq!(in_flight.code, RpcErrorCode::Conflict);
-    assert_eq!(in_flight.details.get("deployed"), None);
+    assert_eq!(on_servers(remove_shop(&store, &who)), ("fix".into(), false));
     store.write(&who, &Cancel { deployment: id(5) }).unwrap();
-    assert_eq!(
-        refusal(remove_shop(&store, &who)).details["environment"],
-        json!("fix")
-    );
+    assert_eq!(on_servers(remove_shop(&store, &who)), ("fix".into(), true));
 
     take_off(&store, &who, "fix", 6, &["web"]);
     assert_eq!(
-        refusal(remove_shop(&store, &who)).details["environment"],
-        json!("staging")
+        on_servers(remove_shop(&store, &who)),
+        ("staging".into(), true)
     );
     let default = refusal(admit(&store, &who, "production", 7, true, &[], None));
     assert_eq!(default.details["environments"], json!(["staging"]));
@@ -586,7 +616,7 @@ fn a_project_leaves_the_servers_branches_first_and_its_default_last() {
     );
 
     assert_eq!(
-        remove_shop(&store, &who).unwrap(),
+        removed(remove_shop(&store, &who)),
         ["fix", "staging", "production"]
     );
     assert!(
@@ -614,7 +644,7 @@ fn a_project_leaves_the_servers_branches_first_and_its_default_last() {
 fn an_undeployed_project_goes_at_once_and_a_default_branch_comes_off_before_its_parent() {
     let (store, who) = shop();
     assert_eq!(
-        remove_shop(&store, &who).unwrap(),
+        removed(remove_shop(&store, &who)),
         ["staging", "production"]
     );
 
@@ -638,10 +668,7 @@ fn an_undeployed_project_goes_at_once_and_a_default_branch_comes_off_before_its_
         .unwrap();
     deploy(&store, &who, "next", 2, &["web"]);
     set_default(&store, &who, "next");
-    assert_eq!(
-        refusal(remove_shop(&store, &who)).details["environment"],
-        json!("next")
-    );
+    assert_eq!(on_servers(remove_shop(&store, &who)), ("next".into(), true));
     take_off(&store, &who, "next", 3, &["web"]);
     admit(
         &store,
@@ -664,7 +691,7 @@ fn an_undeployed_project_goes_at_once_and_a_default_branch_comes_off_before_its_
         }],
     );
     assert_eq!(
-        remove_shop(&store, &who).unwrap(),
+        removed(remove_shop(&store, &who)),
         ["staging", "next", "production"]
     );
 }

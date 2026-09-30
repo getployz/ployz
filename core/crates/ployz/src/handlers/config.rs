@@ -98,7 +98,7 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
     let path = query.path.as_ref().map(ToString::to_string);
     let mut words = vec!["get"];
     words.extend(path.as_deref());
-    let view = store.environment(&query).map_err(failed(matches, &words))?;
+    let view = store.read(&query).map_err(failed(matches, &words))?;
     crate::output::finish(&view, || {
         if view.settings.is_empty() {
             say!(
@@ -239,7 +239,7 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
         Vec::new()
     } else {
         let view = store(root)?
-            .environment(&EnvironmentQuery {
+            .read(&EnvironmentQuery {
                 environment: environment(matches)?,
                 path: Some(service.clone()),
                 all: false,
@@ -356,7 +356,7 @@ fn edit_as(root: &ArgMatches, changes: Vec<Change>, words: &[String]) -> Result<
     let words = words.iter().map(String::as_str).collect::<Vec<_>>();
     let store = store(root)?;
     let edited = store
-        .edit(&edit)
+        .write(&edit)
         .map_err(|error| failed(matches, &words)(with_refresh_hint(error, matches, "get")))?;
     let hint = (!edited.staged.is_empty()).then(|| next(matches, &["diff"]));
     crate::output::finish(&Next::new(&edited, hint), || {

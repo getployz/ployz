@@ -1,4 +1,4 @@
-import type { ConfigCommand, EnvironmentListing, JsonValue } from "@ployz/sdk";
+import type { ConfigCommand, ConfigWritten, EnvironmentListing, JsonValue } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { storeEnvironmentTree, teardownStep } from "./store-workspace";
 import { StoreRefused } from "./store-write";
@@ -6,24 +6,29 @@ import { StoreRefused } from "./store-write";
 const refused = (code: string, details: JsonValue) => new StoreRefused({ code, message: code, details });
 
 /** A Store that answers each command in turn, recording what it was sent. */
-function store(...answers: Array<StoreRefused | null>) {
+function store(...answers: Array<ConfigWritten | StoreRefused>) {
   const sent: ConfigCommand[] = [];
   const commit = (command: ConfigCommand) => {
     sent.push(command);
-    const answer = answers.shift();
-    return answer ? Promise.reject(answer) : Promise.resolve({ written: "environment_removed" } as never);
+    const answer = answers.shift() ?? admitted;
+    return answer instanceof StoreRefused ? Promise.reject(answer) : Promise.resolve(answer);
   };
   return { sent, commit };
 }
 
+const admitted = { written: "deployment" } as ConfigWritten;
+const removed = { written: "environment_removed", teardown: "removed" } as ConfigWritten;
+const onServers = (teardown: "waiting" | "needs_removal") =>
+  ({ written: "project_removed", teardown, environment: "staging", deployment: "d1" }) as ConfigWritten;
+
 it("deletes at once what never ran on the Servers", async () => {
-  const { sent, commit } = store(null);
+  const { sent, commit } = store(removed);
   expect(await teardownStep(commit, { project: "shop", environment: "staging" }, {})).toEqual({ done: true });
   expect(sent).toEqual([{ command: "remove_environment", environment: { project: "shop", environment: "staging" } }]);
 });
 
 it("takes an Environment still on the Servers off them first, accepting only its own Volumes' loss", async () => {
-  const { sent, commit } = store(refused("conflict", { deployed: true, deployment: "d1", environment: "staging" }), null);
+  const { sent, commit } = store(onServers("needs_removal"));
   const step = await teardownStep(commit, { project: "shop", environment: null }, { staging: ["pg"], production: ["files"] });
   expect(sent[0]).toEqual({ command: "remove_project", project: "shop" });
   expect(sent[1]).toMatchObject({ command: "admit", admit: "remove", environment: { project: "shop", environment: "staging" }, accept_volume_loss: ["pg"] });
@@ -31,13 +36,13 @@ it("takes an Environment still on the Servers off them first, accepting only its
 });
 
 it("waits on a Deployment that hasn't ended rather than admitting another", async () => {
-  const { sent, commit } = store(refused("conflict", { deployment: "d1", environment: "staging" }));
+  const { sent, commit } = store(onServers("waiting"));
   expect(await teardownStep(commit, { project: "shop", environment: "staging" }, {}))
     .toEqual({ done: false, environment: "staging", deployment: "d1" });
   expect(sent).toHaveLength(1);
 });
 
-it("passes any other refusal on", async () => {
+it("passes any refusal on", async () => {
   const { commit } = store(refused("conflict", { next: "ployz env default staging" }));
   await expect(teardownStep(commit, { project: "shop", environment: "production" }, {})).rejects.toThrow("conflict");
 });
