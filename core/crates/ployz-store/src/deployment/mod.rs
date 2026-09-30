@@ -439,6 +439,9 @@ impl Frozen {
 struct Run {
     preview: Option<Value>,
     outcome: Option<Outcome>,
+    /// A digest of the Executed evidence recorded: a replay must match it.
+    #[serde(default)]
+    executed: Option<String>,
     /// Each target node's Node Outcome, by node ID, once execution ran.
     #[serde(default)]
     nodes: BTreeMap<String, NodeStatus>,
