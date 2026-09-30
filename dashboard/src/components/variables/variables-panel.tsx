@@ -100,7 +100,6 @@ export function VariablesPanel({
           </DialogHeader>
           <VariableAddForm
             variables={variables}
-            collection={collection}
             onCreateVariable={(input) => {
               setDraft(undefined);
               onCreateVariable(input).isPersisted.promise.catch(() => {
