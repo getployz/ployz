@@ -572,7 +572,7 @@ pub(crate) fn auto_admit(
     let summary = deployment::admit(
         tx,
         who,
-        (&deployment, services, None),
+        (&deployment, services, None, None),
         id,
         saved.revision,
         &frozen,

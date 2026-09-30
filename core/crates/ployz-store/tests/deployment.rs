@@ -82,6 +82,7 @@ fn admit(
             version,
             upload: None,
             accept_volume_loss: Vec::new(),
+            message: None,
         }),
         &Trusted::default(),
     )
@@ -916,6 +917,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 version: None,
                 upload,
                 accept_volume_loss: Vec::new(),
+                message: None,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -1007,6 +1009,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
             // A caller can't name the uploader: only Cloud's authentication does.
             upload: Some(upload(Some("mallory"))),
             accept_volume_loss: Vec::new(),
+            message: None,
         }));
         let Written::Deployment(summary) = store.write(who, &command).unwrap() else {
             panic!("an admit writes a Deployment");
@@ -1061,4 +1064,72 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
         retry(&store, &who, 3, 2).unwrap().upload,
         Some(upload(None))
     );
+}
+
+#[test]
+fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
+    let (store, who) = shop();
+    let admit = |n: u8, message: String| {
+        store.write(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id(n),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: Some(message),
+            }),
+        )
+    };
+    let too_long = admit(1, "x".repeat(501)).unwrap_err();
+    assert_eq!(too_long.code, RpcErrorCode::InvalidArgument);
+    let admitted = admit(1, "  Ship the new header  ".into()).unwrap();
+    assert_eq!(admitted.message.as_deref(), Some("Ship the new header"));
+    store
+        .write(&who, &ployz_store::Cancel { deployment: id(1) })
+        .unwrap();
+    let retried = store
+        .write(
+            &who,
+            &Admit::Retry(ployz_store::Retry {
+                id: id(2),
+                deployment: id(1),
+            }),
+        )
+        .unwrap();
+    assert_eq!(retried.message.as_deref(), Some("Ship the new header"));
+    let shown = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
+        .unwrap();
+    assert_eq!(
+        shown.deployment.message.as_deref(),
+        Some("Ship the new header")
+    );
+}
+
+#[test]
+fn deploying_a_service_with_nothing_to_run_is_refused_naming_it() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("blank").unwrap(),
+                image: None,
+            },
+        )
+        .unwrap();
+    let refused = admit(&store, &who, 1, &[], None).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        refused.message,
+        "blank has nothing to run yet: add an image or connect a repository"
+    );
+    assert_eq!(refused.details["service"], "blank");
+    // Deploying other Services leaves it out.
+    admit(&store, &who, 1, &["web"], None).unwrap();
 }

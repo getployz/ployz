@@ -1227,9 +1227,13 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
                 failed(store, &["deploy", "--detach"], 2);
             }
             Target::Cloud { .. } => {
-                let detached = ok(store, &["deploy", "--detach"]);
+                let detached = ok(
+                    store,
+                    &["deploy", "--detach", "--message", "Ship the header"],
+                );
                 let id = detached["id"].as_str().unwrap();
                 assert_eq!(detached["number"], json!(2));
+                assert_eq!(detached["message"], json!("Ship the header"));
                 assert_eq!(
                     detached["next"],
                     json!(format!("ployz deployment show {id}"))
@@ -1868,8 +1872,8 @@ fn a_private_image_credential_arrives_on_stdin_and_rotates_at_once() {
 }
 
 /// Over Cloud, `deploy --upload` hands Cloud the directory before admitting the
-/// Deployment it's for; Cloud names the uploader. With no upload to build from, Cloud's
-/// runner says a new upload is the fix.
+/// Deployment it's for; Cloud names the uploader. With no upload to build from, the
+/// Deploy is refused up front.
 #[test]
 fn an_agent_uploads_a_directory_to_cloud_and_is_told_when_to_upload_again() {
     let cloud = Target::Cloud {
@@ -1878,13 +1882,9 @@ fn an_agent_uploads_a_directory_to_cloud_and_is_told_when_to_upload_again() {
     };
     ok(&cloud, &["project", "new", "shop"]);
     ok(&cloud, &["service", "add", "app"]);
-    let (code, never) = ployz(Some(&cloud), &["deploy"]);
-    assert_eq!(code, Some(3), "{never}");
-    assert_eq!(never["outcome"]["needs_upload"], json!(["app"]), "{never}");
-    assert_eq!(
-        never["next"],
-        json!("ployz up --project shop --env production")
-    );
+    // Nothing to build from: the Store refuses before anything queues.
+    let never = error(&cloud, &["deploy"]);
+    assert_eq!(never["details"]["service"], json!("app"), "{never}");
 
     let source = tempfile::tempdir().unwrap();
     std::fs::write(source.path().join("Dockerfile"), "FROM scratch\n").unwrap();

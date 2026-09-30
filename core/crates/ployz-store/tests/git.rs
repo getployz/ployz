@@ -291,6 +291,7 @@ fn admit(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Deployme
                 version: None,
                 upload: None,
                 accept_volume_loss: Vec::new(),
+                message: None,
             }),
             &ployz_store::Trusted::default(),
         )

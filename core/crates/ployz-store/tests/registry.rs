@@ -117,8 +117,14 @@ fn admit(store: &ConfigStore, n: u8) -> DeploymentId {
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
                 version: None,
-                upload: None,
+                // `blank` has no source of its own: it builds this upload.
+                upload: Some(ployz_store::UploadedSource {
+                    digest: "d".repeat(64),
+                    base: None,
+                    uploader: None,
+                }),
                 accept_volume_loss: Vec::new(),
+                message: None,
             }),
             &ployz_store::Trusted::default(),
         )

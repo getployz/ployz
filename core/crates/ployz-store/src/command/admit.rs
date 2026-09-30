@@ -73,6 +73,10 @@ pub struct Deploy {
     #[serde(default)]
     #[ts(as = "Option<Vec<VolumeName>>", optional)]
     pub accept_volume_loss: Vec<VolumeName>,
+    /// What this Deploy ships, in the admitter's words; shown on the Deployment.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub message: Option<String>,
 }
 
 /// Retry a failed, unknown or cancelled Deployment: its Saved revision, targets,
@@ -237,7 +241,7 @@ fn deploy(
     deployment::admit(
         tx,
         who,
-        (&admit.id, &admit.services, upload),
+        (&admit.id, &admit.services, upload, admit.message.clone()),
         id,
         saved,
         &frozen,
@@ -296,7 +300,7 @@ fn removal(
     deployment::admit(
         tx,
         who,
-        (&admit.id, &[], None),
+        (&admit.id, &[], None, None),
         id,
         deployment::NOTHING,
         &frozen,
