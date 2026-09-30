@@ -160,6 +160,10 @@ export const getBillingState = Effect.fn("Billing.getState")(function* (
   );
 });
 
+/** Checkout and the portal come back to the Organization's billing page. */
+const billingPage = (appUrl: URL, organizationSlug: string) =>
+  new URL(`/cloud/${encodeURIComponent(organizationSlug)}/~/billing`, appUrl).href;
+
 export const createEmbeddedCheckout = Effect.fn("Billing.createCheckout")(
   function* (actor: Actor, input: { readonly organizationSlug: string }) {
     const polar = yield* requireHostedPolar();
@@ -170,7 +174,7 @@ export const createEmbeddedCheckout = Effect.fn("Billing.createCheckout")(
     const profile = yield* getBillingUser(actor.userId);
     const config = yield* AppConfig;
     return yield* polar.createCheckout({
-      successUrl: config.polarSuccessUrl,
+      successUrl: `${billingPage(config.app.url, input.organizationSlug)}?checkout_id={CHECKOUT_ID}`,
       embedOrigin: config.app.url.origin,
       externalCustomerId: profile.id,
       customerEmail: profile.email,
@@ -188,7 +192,7 @@ export const createCustomerPortal = Effect.fn("Billing.createPortal")(
     const config = yield* AppConfig;
     return yield* polar.createCustomerPortal({
       externalCustomerId: actor.userId,
-      returnUrl: new URL("/cloud", config.app.url).href,
+      returnUrl: billingPage(config.app.url, input.organizationSlug),
     });
   },
 );
