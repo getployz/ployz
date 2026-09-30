@@ -19,7 +19,7 @@ use tokio::{process::Command, time::timeout};
 use super::{Error, InstallPaths, daemon_archive, run_command};
 use ployz_core::{MachineRelease, MachineUpgradeStage, MachineVersion};
 
-const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz2";
+const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz";
 const CHANNEL_URL: &str = "https://ployz.sh";
 /// Channels are scoped to this daemon's release line, so a breaking release never reaches it.
 const RELEASE_LINE: &str = concat!("v", env!("CARGO_PKG_VERSION_MAJOR"));

@@ -22,7 +22,7 @@ use ployz_core::{
 };
 use thiserror::Error;
 
-pub const IMAGE: &str = "ghcr.io/getployz/ployz2-testkit:main";
+pub const IMAGE: &str = "ghcr.io/getployz/ployz-testkit:main";
 pub const SERVICE_CONTAINER_IMAGE: &str = "alpine:3.23.3";
 pub const OWNER_LABEL: &str = "dev.ployz.testkit";
 pub const CLUSTER_LABEL: &str = "dev.ployz.testkit.cluster";

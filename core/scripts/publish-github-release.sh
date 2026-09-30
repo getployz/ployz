@@ -61,7 +61,7 @@ EOF
 
 generated_changelog() {
     local tag=$1
-    local repo=${GITHUB_REPOSITORY:-getployz/ployz2}
+    local repo=${GITHUB_REPOSITORY:-getployz/ployz}
     gh api "repos/${repo}/releases/generate-notes" -f tag_name="$tag" --jq .body
 }
 
