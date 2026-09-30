@@ -256,8 +256,8 @@ function StoreSaveSheet({ store, branch, view, deletable, onSaved, onClose }: {
 
 /**
  * Closing a Branch over the Config Store. Never deployed, or already off the Servers, it goes at once and the page
- * opens its Parent. Otherwise it comes off the Servers first, as a Deployment that asks before deleting Volume data;
- * once that's done, its panel finishes closing it.
+ * opens its Parent. Otherwise it comes off the Servers first, as a Deployment that asks before deleting Volume data and
+ * that closes it once applied: the Store deletes it then, whether or not this panel is still open to finish.
  */
 function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: BranchView) {
   const writer = useStoreWriter(params.organizationSlug);
@@ -285,9 +285,10 @@ function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: Bran
     try {
       await writer.commit({
         command: "admit", admit: "remove", id: crypto.randomUUID(), environment: store, version, accept_volume_loss: [...accept],
+        close: !shut,
       }, ["confirmation_required"]).isPersisted.promise;
       toast(`${name} is coming off the servers`,
-        { description: shut ? "The pull request's next push brings it back." : "Its panel finishes closing it once it's off." });
+        { description: shut ? "The pull request's next push brings it back." : "It closes once it's off." });
       return null;
     } catch (error) {
       return error instanceof StoreRefused ? lossOf(error) : null;
@@ -309,8 +310,9 @@ function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: Bran
     }
     setClosing(false);
     try {
-      // Awaited: the page leaves the Branch once it's gone.
-      await writer.commit({ command: "remove_environment", environment: store }).isPersisted.promise;
+      // Awaited: the page leaves the Branch once it's gone. The Store may have deleted it already: that's closed too.
+      await writer.commit({ command: "remove_environment", environment: store }, ["not_found"]).isPersisted.promise
+        .catch((error: Error) => { if (!(error instanceof StoreRefused && error.code === "not_found")) throw error; });
       toast.success(`${name} closed`);
       await leave();
     } catch {

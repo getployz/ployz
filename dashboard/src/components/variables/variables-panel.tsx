@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import type { Persistable } from "#/collections/query-collection";
 import { PlusIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import {
@@ -51,7 +52,8 @@ export function VariablesPanel({
   valueTargets?: ReferenceTarget[];
   /** Singular noun for the count heading, e.g. "Variable" or "Service Variable". */
   countNoun: string;
-  onCreateVariable: (input: VariableAddInput) => void;
+  /** Saves in the background; a refusal reopens the form with what was typed. */
+  onCreateVariable: (input: VariableAddInput) => Persistable;
   onSealVariable: (variable: PlainVariableRecord) => void;
   onUpdateMetadata?: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
   /** Show the "Sealed" toggle in the add form (owners that support sealed-on-create). */
@@ -67,6 +69,7 @@ export function VariablesPanel({
 }) {
   const supportsExport = onUpdateMetadata != null;
   const [isAdding, setIsAdding] = useState(false);
+  const [draft, setDraft] = useState<VariableAddInput>();
 
   const showEmptyState = variables.length === 0;
 
@@ -95,7 +98,14 @@ export function VariablesPanel({
           <VariableAddForm
             variables={variables}
             collection={collection}
-            onCreateVariable={onCreateVariable}
+            onCreateVariable={(input) => {
+              setDraft(undefined);
+              onCreateVariable(input).isPersisted.promise.catch(() => {
+                setDraft(input);
+                setIsAdding(true);
+              });
+            }}
+            initial={draft}
             onCancel={() => setIsAdding(false)}
             allowSealOnCreate={allowSealOnCreate}
             defaultExported={defaultExported}

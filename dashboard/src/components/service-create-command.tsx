@@ -37,7 +37,7 @@ import {
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator";
 import { DATABASE_PRESETS, type DatabasePreset } from "#/modules/config-store/database-presets";
 import { randomName, type NewServiceSource } from "#/modules/config-store/store-services";
-import { environmentsQuery, requireView, storeViewOptions } from "#/modules/config-store/store-view.queries";
+import { environmentsQuery, fetchStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import type { EnvironmentId, ProjectId } from "@ployz/sdk";
 
@@ -233,8 +233,7 @@ function useServiceCreateActions({
   }
 
   async function serviceModeTarget(props: ServiceCommandProps): Promise<CreationTarget> {
-    const listed = requireView(await collectionScope.queryClient.fetchQuery(
-      storeViewOptions(props.organizationSlug, collectionScope, environmentsQuery(props.projectSlug))));
+    const listed = await fetchStoreView(props.organizationSlug, collectionScope, environmentsQuery(props.projectSlug));
     const environment = listed.environments.find((row) => row.name === props.environmentSlug);
     if (!environment) throw new Error("Environment not found");
     return { projectSlug: props.projectSlug, environmentSlug: environment.name, environmentId: environment.id,

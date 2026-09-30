@@ -220,7 +220,7 @@ function StoreBuildLog({ deploymentId, service }: { deploymentId: string; servic
   const result = useStoreView(organizationSlug, buildLogQuery(deploymentId, service));
   if (!result.ok) return <p className="text-muted-foreground">{result.refusal.message}</p>;
   return (
-    <pre aria-label="Build logs" tabIndex={0} className="min-h-0 flex-1 overflow-auto font-mono text-xs leading-6 break-words whitespace-pre-wrap">
+    <pre aria-label={`${service} build output`} tabIndex={0} className="min-h-0 flex-1 overflow-auto font-mono text-xs leading-6 break-words whitespace-pre-wrap">
       {result.value.log || "No output yet."}
     </pre>
   );

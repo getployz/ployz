@@ -106,11 +106,15 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       const volume = node === "volumes" && setting.length === 1 ? setting[0] : null;
       const whole = (change: NodeChange) => path === null
         || (volume !== null ? change.type === "volume" && change.name === volume : setting.length === 0 && change.name === node);
-      await views<DiffView>("diff", command.environment, (view) => ({ ...view, changes: view.changes.flatMap((change) => {
-        if (whole(change)) return [];
-        const rows = change.settings.filter((row) => row.path !== path && !row.path.startsWith(`${path}.`));
-        return rows.length === 0 && change.lifecycle === "update" ? [] : [{ ...change, settings: rows }];
-      }) }));
+      await views<DiffView>("diff", command.environment, (view) => {
+        const changes = view.changes.flatMap((change) => {
+          if (whole(change)) return [];
+          const rows = change.settings.filter((row) => row.path !== path && !row.path.startsWith(`${path}.`));
+          return rows.length === 0 && change.lifecycle === "update" ? [] : [{ ...change, settings: rows }];
+        });
+        // An empty review counts nothing.
+        return changes.length === 0 ? { ...view, changes, total_count: 0 } : { ...view, changes };
+      });
       return;
     }
     case "keep_branch":

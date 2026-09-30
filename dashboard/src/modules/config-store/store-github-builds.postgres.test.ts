@@ -6,14 +6,13 @@ import type { StoreCall } from "./store.contract";
 import { expect } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { callStore, gatherTrusted } from "#/modules/config-store/config-store.server";
-import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import {
   checkInStoreGithubBuild, planStoreGithubBuilds, recordStoreGithubBuildSteps, startStoreGithubBuild,
 } from "#/modules/config-store/store-github-builds.server";
 import { GITHUB_OIDC_ISSUER, GithubOidcKeys } from "#/modules/github/github-oidc.server";
 import { type ConnectedRuntimeClient, OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import { fakeGithubApi } from "#/test/fake-github";
-import { storeTestCloud } from "#/test/store-cloud";
+import { acmeWeb, seedStoreGitService, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000b001";
 const PROJECT = "00000000-0000-4000-8000-00000000b002";
@@ -53,16 +52,8 @@ it.live(
         Effect.provide(services),
         Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
       );
-      const store = yield* provided(cloudStore);
-      const write = (command: ConfigCommand) => Effect.promise(() => store.write(ORGANIZATION, command, {
-        repositories: [{
-          repository: "acme/web", repository_id: 42, access: { type: "github-installation", installationId: 7 },
-          default_branch: "main", branches: [],
-        }],
-        domains: { custom_domains: false, cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] },
-      }));
-      yield* write({ command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT });
-      yield* write({ command: "create_git_service", id: SERVICE, environment: here, name: "web", repository: "acme/web", branch: null });
+      const store = yield* provided(seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }));
+      const write = (command: ConfigCommand) => Effect.promise(() => store.write(ORGANIZATION, command, acmeWeb()));
       yield* write({ command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [] });
       const view = () => Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: DEPLOYMENT }));
 

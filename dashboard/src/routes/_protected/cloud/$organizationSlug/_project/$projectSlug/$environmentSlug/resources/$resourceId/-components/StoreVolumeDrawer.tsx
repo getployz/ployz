@@ -17,7 +17,7 @@ import { VolumeStorageFields } from "#/modules/config-store/VolumeStorageFields"
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
 import { CanvasInspectorNotFound } from "../../../-components/CanvasInspectorRouteStates";
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
-import { dnsLabelError, settingText } from "#/modules/config-store/store-services";
+import { changedProps, dnsLabelError } from "#/modules/config-store/store-services";
 import { useStoreChangeActions } from "../../../-components/canvas/useStoreChangeActions";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../../../-components/deployment-page";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
@@ -55,7 +55,7 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
         {removing ? <p className="truncate font-semibold">{volume.name}</p> : (
           <CanvasInspectorNameEditor value={volume.name} schema={nameSchema} editTitle="Edit volume name"
             editDescription="Rename this volume. Its data and mounts stay." placeholder="Volume name"
-            isChanged={renamed !== undefined} baselineValue={renamed ? settingText(renamed.before) : undefined}
+            {...changedProps(renamed)}
             onRename={(name) => writer.commit({ command: "rename_volume", environment: store, volume: volume.name, name })} />
         )}
         <p className="truncate text-sm text-muted-foreground">Volume</p>
