@@ -95,7 +95,10 @@ export const runStoreDeployment = Effect.fn("StoreDeployment.run")(function* (
     Effect.catchIf(refusedWith("conflict"), (refused) => Effect.succeed({ nothingToRun: refused.message })),
     Effect.ensuring(released(store, data.organizationId, data.deploymentId)),
     // Its outcome may move a PR check.
-    Effect.tap(() => requestChecks(data.organizationId)),
+    Effect.tap(() => storeTry(() => store.checks(data.environmentId)).pipe(
+      Effect.flatMap((pulls) => requestChecks(data.organizationId, pulls)),
+      Effect.catch((error) => Effect.logWarning("The PR checks were not requested.", { data, error })),
+    )),
   );
 });
 

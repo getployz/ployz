@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
-import type { ConfigCommand, ConfigQuery, ConfigTrusted, ConfigWritten, SystemEvent } from "@ployz/sdk";
-import { eq, sql } from "drizzle-orm";
+import type { ConfigCommand, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigWritten, PullRequestRef, SystemEvent } from "@ployz/sdk";
+import { eq } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { gatherDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
@@ -74,26 +74,12 @@ export function admittedEvents(organizationId: string, written: ConfigWritten): 
 }
 
 /**
- * The open pull requests with PR Environments in the Organization: any write there may move their checks.
- * ponytail: every open one of the Organization, debounced per pull request; narrow to the written Project if it costs.
+ * Ask for the check of each of `pulls` to be published again, after a write or a Deployment that may move it: the
+ * Store names them. A failed request is logged: the pull request's next event publishes it anyway.
  */
-const openPullRequests = Effect.fn("ConfigStore.openPullRequests")(function* (organizationId: string) {
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle.execute<{ repository_id: string; number: string }>(sql`
-    select distinct p.repository_id::text as repository_id, p.number::text as number from config_pr_environment p
-    join config_environment_branch b on b.environment_id = p.environment_id
-    where p.organization_id = ${organizationId} and b.closing = 0`, "objects");
-  return rows.map((row) => ({ repositoryId: Number(row.repository_id), number: Number(row.number) }));
-});
-
-/**
- * Ask for each open pull request of the Organization to have its check published again, after a write or a
- * Deployment that may move it. A failed request is logged: the pull request's next event publishes it anyway.
- */
-export const requestChecks = Effect.fn("ConfigStore.requestChecks")(function* (organizationId: string) {
-  const pulls = yield* openPullRequests(organizationId);
+export const requestChecks = Effect.fn("ConfigStore.requestChecks")(function* (organizationId: string, pulls: readonly PullRequestRef[]) {
   if (pulls.length === 0) return;
-  yield* sendInngestEvent(pulls.map((pull) => createConfigPrCheckRequestedEvent({ organizationId, ...pull }))).pipe(
+  yield* sendInngestEvent(pulls.map((pull) => createConfigPrCheckRequestedEvent({ organizationId, repositoryId: pull.repository_id, number: pull.number }))).pipe(
     Effect.catch((error) => Effect.logWarning("The PR checks were not requested.", { organizationId, error })),
   );
 });
@@ -178,7 +164,7 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
 
 /** What a committed write leaves Cloud to do: stop a cancelled Deployment's GitHub builds, run an admitted one, recheck PRs. */
 const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
-  organizationId: string, command: ConfigCommand, written: ConfigWritten,
+  organizationId: string, command: ConfigCommand, written: ConfigCommitted,
 ) {
   if (command.command === "cancel") {
     // Cancellation ends outstanding Build Grants at once; best effort, as the walk's next look ends them too.
@@ -196,7 +182,7 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
     && written.written === "deployment" && written.status === "applied") {
     yield* storeSystem(organizationId, { event: "sweep", now: Math.floor(Date.now() / 1000) });
   }
-  yield* requestChecks(organizationId);
+  yield* requestChecks(organizationId, written.checks);
 });
 
 /**
