@@ -82,6 +82,12 @@ export function publicDomain(domains: readonly DomainRow[]) {
   return shown?.hostname ? { hostname: shown.hostname, live: shown.status !== "setting_up" } : null;
 }
 
+/** What the next Deploy does to a node, in colour: green when it creates it, blue when it changes it, red when it removes it. */
+type StagedColour = "success" | "info" | "destructive";
+
+const stagedColour = (change: ReviewLifecycleKind): StagedColour =>
+  change === "create" ? "success" : change === "delete" ? "destructive" : "info";
+
 /**
  * A node's chip: a Deploy in flight that targets it, running since `since` (Unix seconds) or queued, else what the next
  * Deploy does to it.
@@ -89,13 +95,14 @@ export function publicDomain(domains: readonly DomainRow[]) {
 export type DeployChipState =
   | { kind: "deploying"; since: number }
   | { kind: "queued" }
-  | { kind: "staged"; label: string; variant: "changed" | "destructive" };
+  | { kind: "staged"; label: string; variant: StagedColour };
 
 /** What the next Deploy does to a node, as its chip says it. */
 export function stagedChip(change: ReviewLifecycleKind, changeCount: number): DeployChipState {
-  if (change === "create") return { kind: "staged", label: "New", variant: "changed" };
-  if (change === "delete") return { kind: "staged", label: "Removing", variant: "destructive" };
-  return { kind: "staged", label: changeCount === 0 ? "Changed" : plural(changeCount, "change"), variant: "changed" };
+  const variant = stagedColour(change);
+  if (change === "create") return { kind: "staged", label: "New", variant };
+  if (change === "delete") return { kind: "staged", label: "Removing", variant };
+  return { kind: "staged", label: changeCount === 0 ? "Changed" : plural(changeCount, "change"), variant };
 }
 
 /**
@@ -115,10 +122,9 @@ export function deployChip(
 }
 
 /**
- * A node's staged surface: pink when the next Deploy changes it, Failure Red when it removes it. None while a
- * Deployment Page is open (`light`, anything but undefined), which lights nodes by its own outcome.
+ * A node's staged surface, in the colour of what the next Deploy does to it. None while a Deployment Page is open
+ * (`light`, anything but undefined), which lights nodes by its own outcome.
  */
-export function stagedSurface(light: Lit | null | undefined, change: ReviewLifecycleKind | null): "changed" | "destructive" | undefined {
-  if (light !== undefined || change === null) return undefined;
-  return change === "delete" ? "destructive" : "changed";
+export function stagedSurface(light: Lit | null | undefined, change: ReviewLifecycleKind | null): StagedColour | undefined {
+  return light !== undefined || change === null ? undefined : stagedColour(change);
 }

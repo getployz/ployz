@@ -16,16 +16,18 @@ export function LitVolumeProvider({ children }: { children: ReactNode }) {
   return <LitVolume value={useState<string | null>(null)}>{children}</LitVolume>;
 }
 
-/** A tray's staged surface, as the card's: pink when the next Deploy changes it, Failure Red when it removes it. */
+/** A tray's staged surface, as the card's: green when the next Deploy creates it, blue when it changes it, red when it removes it. */
 const SURFACES = {
-  changed: "border-changed-border bg-changed-soft text-changed-deep",
+  success: "border-success-border bg-success-soft text-success",
+  info: "border-info-border bg-info-soft text-info",
   destructive: "border-destructive-border bg-destructive-soft text-destructive",
 };
 
 /**
- * A Volume as a tray tucked under a Service that mounts it: its name, and only what must be said, pink when the next
- * Deploy changes it, struck and "Removing" when it deletes it, marked when other Services mount it too. Opens its panel;
- * while a Branch is picked, a click toggles it instead. Under an open Deployment Page it dims unless the attempt changed it.
+ * A Volume as a tray tucked under a Service that mounts it: its name, and only what must be said, green or blue when
+ * the next Deploy creates or changes it, red, struck and "Removing" when it deletes it, marked when other Services mount
+ * it too. Opens its panel; while a Branch is picked, a click toggles it instead. Under an open Deployment Page it dims
+ * unless the attempt changed it.
  */
 export function VolumeTray({ tray: { volume, sharedWith }, selected }: { tray: MountedVolume; selected: boolean }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });

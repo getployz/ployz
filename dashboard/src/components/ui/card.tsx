@@ -8,6 +8,8 @@ const cardVariants = cva(
   {
     variants: {
       state: {
+        success: "bg-success-soft ring-success-border",
+        info: "bg-info-soft ring-info-border",
         changed: "bg-changed-soft ring-changed-border",
         destructive: "bg-destructive-soft ring-destructive-border",
         // Branches: an Own Copy being picked is lit; a Live Node (another Environment's, used live) is dashed and translucent.

@@ -89,17 +89,18 @@ describe("deployChip", () => {
   });
 
   it("says what the next Deploy does otherwise", () => {
-    expect(deployChip({ ...service, change: "create" }, 0, [])).toEqual({ kind: "staged", label: "New", variant: "changed" });
-    expect(deployChip({ ...service, change: "update" }, 1, [])).toEqual({ kind: "staged", label: "1 change", variant: "changed" });
-    expect(deployChip({ ...service, change: "update" }, 3, [])).toEqual({ kind: "staged", label: "3 changes", variant: "changed" });
-    expect(deployChip({ ...service, change: "update" }, 0, [])).toEqual({ kind: "staged", label: "Changed", variant: "changed" });
+    expect(deployChip({ ...service, change: "create" }, 0, [])).toEqual({ kind: "staged", label: "New", variant: "success" });
+    expect(deployChip({ ...service, change: "update" }, 1, [])).toEqual({ kind: "staged", label: "1 change", variant: "info" });
+    expect(deployChip({ ...service, change: "update" }, 3, [])).toEqual({ kind: "staged", label: "3 changes", variant: "info" });
+    expect(deployChip({ ...service, change: "update" }, 0, [])).toEqual({ kind: "staged", label: "Changed", variant: "info" });
     expect(deployChip({ ...service, change: "delete" }, 0, [])).toEqual({ kind: "staged", label: "Removing", variant: "destructive" });
   });
 });
 
 describe("stagedSurface", () => {
-  it("is pink for a change and red for a removal, and none while a Deployment Page is open", () => {
-    expect(stagedSurface(undefined, "update")).toBe("changed");
+  it("is green for a new node, blue for a change and red for a removal, and none while a Deployment Page is open", () => {
+    expect(stagedSurface(undefined, "create")).toBe("success");
+    expect(stagedSurface(undefined, "update")).toBe("info");
     expect(stagedSurface(undefined, "delete")).toBe("destructive");
     expect(stagedSurface(undefined, null)).toBeUndefined();
     expect(stagedSurface(null, "delete")).toBeUndefined();
