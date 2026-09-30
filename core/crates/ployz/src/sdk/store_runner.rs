@@ -107,7 +107,15 @@ pub async fn run_deployment(
     let session = match connect_connections(connections, Arc::new(SystemConnector::default())).await
     {
         Ok(session) => session,
-        Err(error) => return run.not_executed(error.message).await,
+        // Users read it on the Deployment: plain words and one action, not transport detail.
+        Err(_) => {
+            return run
+                .not_executed(
+                    "Ployz couldn't reach your Servers. Check that they're online, then retry."
+                        .into(),
+                )
+                .await;
+        }
     };
     let recorded = run.execute(&session, claimed, targets, built).await;
     session.close().await;

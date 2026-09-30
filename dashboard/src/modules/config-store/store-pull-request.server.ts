@@ -4,7 +4,6 @@ import { and, eq, inArray } from "drizzle-orm";
 import { Effect } from "effect";
 import { gatherTrusted, organizationServers } from "#/modules/config-store/config-store.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
-import { unclaimedStoreDeployments } from "#/modules/config-store/store-deployment.server";
 import type { StoreCall, StoreRead } from "./store.contract";
 import { StoreGithubFailure, admitted, descendsFrom, pullRequestEvent } from "#/modules/config-store/store-github.server";
 import { fetchInstallationPullRequest, postInstallationCheckRun, resolveGithubRepository } from "#/modules/github/github-observation.api";
@@ -69,8 +68,7 @@ export const observeStorePullRequest = Effect.fn("StorePullRequest.observe")(fun
 });
 
 /**
- * Hourly: queued Deployments whose hand-off to the worker was lost go to it again, and each Organization's Store
- * closes Branches idle for a week, and deletes closing ones whose removal applied.
+ * Hourly: each Organization's Store closes Branches idle for a week, and deletes closing ones whose removal applied.
  * ponytail: every Organization each hour; list only those with Branches once that costs.
  */
 export const sweepStores = Effect.fn("StorePullRequest.sweep")(function* (now: Date) {
@@ -79,8 +77,6 @@ export const sweepStores = Effect.fn("StorePullRequest.sweep")(function* (now: D
   const organizations = yield* drizzle.select({ id: organization.id }).from(organization);
   const done: StoreOutcome = { deployments: [], closing: [], check: false };
   const event: SystemEvent = { event: "sweep", now: Math.floor(now.getTime() / 1000) };
-  // Before the Stores admit anything new, so only admissions whose hand-off was lost are handed over again.
-  done.deployments.push(...yield* unclaimedStoreDeployments(now));
   for (const { id } of organizations) {
     yield* organizationServers(id).pipe(
       Effect.flatMap((servers) => storeTry(() => store.system(id, event, { servers }))),
