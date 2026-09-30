@@ -234,7 +234,7 @@ _Avoid_: Pull, sync, rebase
 
 **PR Environment**:
 A Branch made automatically for one pull request from a Git branch of the same repository. Its Own Copies of the repository's Services run the pull request's code with one replica each, and it closes when the pull request closes. Its changes reach its Destination only through a Conditional Save.
-_Avoid_: Preview, preview deployment, review app
+_Avoid_: Preview, preview deployment, review app. Exception: the public site calls it a preview environment, the phrase its readers use.
 
 **Conditional Save**:
 A PR Environment's changes saved for one Destination, which go live with the pull request's merge commit: they are saved there in the same step that admits the deployment of that commit, so code and settings go out together. A push whose commit doesn't contain the merge commit lands nothing; the changes wait for one that does. A setting the Destination left alone, or only edited without deploying, is saved; one it changed live becomes an ordinary change to deploy there instead; one it did both to keeps its own edit, and the pull request's value is only offered beside it. Changing the PR Environment's settings or the pull request's target Git branch withdraws it, and a pull request closed without merging drops it.
