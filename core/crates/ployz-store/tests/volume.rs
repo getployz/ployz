@@ -14,9 +14,9 @@ use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, CreateVolume, DataEffect,
     Deploy, DeploymentId, DeploymentStatus, DiffQuery, DiffView, Discard, Edit, EnvironmentId,
     EnvironmentQuery, EnvironmentRef, Mount, NodeStatus, OrganizationId, ProjectId, ProjectName,
-    Publish, RemovalsQuery, RemoveVolume, Retry, RunEvidence, RunnerId, ServiceLineageId,
-    RenameVolume, SetVolumeStorage, SettingPath, Trusted, VolumeId, VolumeListing, VolumeName, VolumeObservation,
-    VolumeQuery, VolumesQuery,
+    Publish, RemovalsQuery, RemoveVolume, RenameVolume, Retry, RunEvidence, RunnerId,
+    ServiceLineageId, SetVolumeStorage, SettingPath, Trusted, VolumeId, VolumeListing, VolumeName,
+    VolumeObservation, VolumeQuery, VolumesQuery,
 };
 use serde_json::{Value, json};
 
@@ -736,7 +736,10 @@ fn a_deployed_volume_rename_discards_by_its_row() {
         )
         .unwrap();
     assert!(diff(&store, &who).changes.is_empty());
-    assert_eq!(texts(&[listed(&store, &who)[0].volume.name.clone()]), ["data"]);
+    assert_eq!(
+        texts(&[listed(&store, &who)[0].volume.name.clone()]),
+        ["data"]
+    );
 }
 
 #[test]

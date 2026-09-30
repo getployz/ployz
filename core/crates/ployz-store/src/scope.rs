@@ -126,7 +126,11 @@ impl Environment {
             .volumes
             .iter()
             .position(|volume| volume.name == name.as_str())
-            .ok_or_else(|| self.volume(name).err().unwrap_or_else(|| error::corrupt("Volume")))?;
+            .ok_or_else(|| {
+                self.volume(name)
+                    .err()
+                    .unwrap_or_else(|| error::corrupt("Volume"))
+            })?;
         Ok(self
             .working
             .volumes
@@ -234,7 +238,7 @@ pub(crate) fn nodes(
     like: &SavedEnvironmentIntent,
     what: &str,
 ) -> Result<SavedEnvironmentIntent, RpcError> {
-    let mut intent = crate::review::empty(&like.environment_slug);
+    let mut intent = empty(&like.environment_slug);
     for row in rows {
         match row.variant(1, what)? {
             EnvironmentNodeType::Service => intent.services.push(row.json(0, what)?),
@@ -460,4 +464,14 @@ pub(crate) fn save_working(tx: &mut dyn Tx, environment: &mut Environment) -> Re
 
 pub(crate) fn revision_param(revision: Revision) -> Result<i64, RpcError> {
     i64::try_from(revision.0).map_err(|_| error::internal("Working State revision overflowed"))
+}
+
+/// An Environment `name` with nothing in it.
+pub(crate) fn empty(name: &str) -> SavedEnvironmentIntent {
+    SavedEnvironmentIntent {
+        version: 1,
+        environment_slug: name.to_owned(),
+        services: Vec::new(),
+        volumes: Vec::new(),
+    }
 }

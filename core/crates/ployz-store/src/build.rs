@@ -80,7 +80,7 @@ pub struct BuildReport {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct BuildView {
     /// The Service's name when admitted.
-    pub service: String,
+    pub service: ServiceName,
     /// The commit it builds; none when it builds from the Deployment's upload.
     pub commit: Option<CommitSha>,
     pub status: BuildStatus,
@@ -210,7 +210,7 @@ pub(crate) fn log(
 ) -> Result<BuildLogView, RpcError> {
     let row = rows(tx, &stored.summary.id)?
         .into_iter()
-        .find(|row| row.service == *service || row.view(stored).service == service.as_str())
+        .find(|row| row.service == *service || row.view(stored).service == *service)
         .ok_or_else(|| {
             error::not_found(
                 format!(
@@ -249,12 +249,12 @@ impl BuildRow {
                     crate::deployment::TargetNode::Service { name, runtime, .. }
                         if *runtime == self.service =>
                     {
-                        Some(name.to_string())
+                        Some(name.clone())
                     }
                     crate::deployment::TargetNode::Service { .. }
                     | crate::deployment::TargetNode::Volume { .. } => None,
                 })
-                .unwrap_or_else(|| self.service.to_string()),
+                .unwrap_or_else(|| self.service.clone()),
             commit: self.commit.clone(),
             status: self.status,
             message: self.message.clone(),
@@ -317,8 +317,12 @@ pub(crate) fn sources_of(tx: &mut dyn Tx, stored: &Stored) -> Result<Vec<GitSour
         let Some(mut source) = source_of(service, row) else {
             continue;
         };
-        (source.builders, source.preferred_machine) =
-            builders::walk(tx, organization.as_str(), &stored.summary.environment_id, &service.id)?;
+        (source.builders, source.preferred_machine) = builders::walk(
+            tx,
+            organization.as_str(),
+            &stored.summary.environment_id,
+            &service.id,
+        )?;
         sources.push(source);
     }
     Ok(sources)

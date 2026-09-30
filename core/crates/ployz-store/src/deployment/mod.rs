@@ -40,7 +40,7 @@ use crate::id::{
 };
 use crate::registry;
 use crate::removal::VolumeLoss;
-use crate::review::{self, Head};
+use crate::review::Head;
 use crate::scope::{self, Environment, EnvironmentSummary, revision_param};
 use crate::sealing::SealingKey;
 use crate::storage::{Row, Tx, name_of};
@@ -642,7 +642,7 @@ pub(crate) fn saved_at(
 ) -> Result<SavedEnvironmentIntent, RpcError> {
     if revision == NOTHING {
         return scope::load_by_id(tx, environment)
-            .map(|loaded| review::empty(&loaded.working.environment_slug));
+            .map(|loaded| crate::scope::empty(&loaded.working.environment_slug));
     }
     let rows = tx.query(
         "SELECT intent FROM config_saved WHERE environment_id = ?1 AND revision = ?2",
@@ -656,7 +656,6 @@ pub(crate) fn saved_at(
         .intent(0, "Saved State")
         .map(canonicalize_environment_intent)
 }
-
 
 fn parse_stored<T: TryFrom<String, Error = RpcError>>(value: &str) -> Result<T, RpcError> {
     T::try_from(value.to_owned()).map_err(|_| error::corrupt("identity"))

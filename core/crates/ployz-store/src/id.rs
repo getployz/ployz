@@ -92,6 +92,24 @@ fn is_name(value: &str) -> bool {
 }
 
 store_string!(
+    /// GitHub's `updated_at`, like `2026-09-29T10:00:00Z`: fixed-width UTC, so it
+    /// orders as text and an older result never replaces a newer one.
+    GithubTimestamp, "GitHub's updated_at, like 2026-09-29T10:00:00Z", is_github_timestamp
+);
+
+/// GitHub's fixed-width UTC timestamps.
+fn is_github_timestamp(value: &str) -> bool {
+    value.len() == 20
+        && value.bytes().enumerate().all(|(index, byte)| match index {
+            4 | 7 => byte == b'-',
+            10 => byte == b'T',
+            13 | 16 => byte == b':',
+            19 => byte == b'Z',
+            _ => byte.is_ascii_digit(),
+        })
+}
+
+store_string!(
     /// The Organization that owns a Config Store's rows; every read and write is scoped to one.
     OrganizationId, "an Organization ID", is_id
 );

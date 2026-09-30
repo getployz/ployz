@@ -75,7 +75,6 @@ pub struct EnvironmentCreated {
     pub environment: EnvironmentSummary,
 }
 
-
 pub(crate) fn create_project(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -120,7 +119,6 @@ pub(crate) fn create_project(
         environment: default_environment,
     })
 }
-
 
 pub(crate) fn create_environment(
     tx: &mut dyn Tx,

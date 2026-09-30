@@ -29,6 +29,8 @@ pub const BRANCH_MAX: usize = 255;
 pub const HEALTHCHECK_PATH_MAX: usize = 500;
 /// The longest a healthcheck may take, in seconds.
 pub const HEALTHCHECK_TIMEOUT_MAX: u16 = 300;
+/// How long a healthcheck takes when its timeout isn't given, in seconds.
+pub const HEALTHCHECK_TIMEOUT_DEFAULT: u16 = 300;
 /// Every restart policy.
 pub const RESTART_POLICIES: [&str; 4] = ["always", "no", "on-failure", "unless-stopped"];
 

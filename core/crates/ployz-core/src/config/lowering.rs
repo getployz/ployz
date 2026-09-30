@@ -37,8 +37,11 @@ fn target_port(
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LowerDeploymentInput {
+    /// The Namespace every lowered Service runs in.
     pub namespace: Namespace,
+    /// Each Service's captured settings and resolved inputs.
     pub snapshots: Vec<LowerDeploymentSnapshot>,
+    /// The Volumes the Namespace holds; mounts of any other are left out.
     #[serde(default)]
     pub volumes: Vec<LowerDeploymentVolume>,
     /// Service ID by lineage, from the attempt's frozen variable producers. References
@@ -53,10 +56,14 @@ pub struct LowerDeploymentInput {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LowerDeploymentSnapshot {
+    /// The authored Service's ID, when it has one: references to it resolve by it.
     pub service_id: Option<String>,
+    /// Its authored Service settings, as captured.
     pub config: Value,
+    /// Replicas overriding the authored count, such as a PR Environment's one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replicas: Option<u8>,
+    /// Its variables with every reference resolved, by key.
     #[serde(default)]
     pub resolved_env: BTreeMap<String, String>,
     /// Run in order after the service's own pre-deploy command, in the same hook.
@@ -68,7 +75,9 @@ pub struct LowerDeploymentSnapshot {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LowerDeploymentVolume {
+    /// The authored Volume's ID, as mounts name it.
     pub volume_resource_id: String,
+    /// Its fixed storage.
     pub storage: VolumeKind,
 }
 
@@ -160,21 +169,17 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                 policy
             }
         };
-        let mounted: Vec<_> = configured_mounts
-            .iter()
-            .filter(|m| volume_sources.contains_key(m.volume_resource_id.as_str()))
-            .collect();
         let mut volumes = Vec::new();
         let mut mounts = Vec::new();
-        for mount in mounted {
+        for mount in configured_mounts {
+            let Some(storage) = volume_sources.get(mount.volume_resource_id.as_str()) else {
+                continue;
+            };
             let name = format!("vol-{}", mount.volume_resource_id);
             let reference: crate::ServiceVolumeReference =
                 name.clone().try_into().map_err(lowering_error)?;
             let name = name.try_into().map_err(lowering_error)?;
-            let source = match volume_sources
-                .get(mount.volume_resource_id.as_str())
-                .expect("mounted sources are filtered")
-            {
+            let source = match storage {
                 VolumeKind::Docker {} => RawVolumeSource::Ordinary {
                     name,
                     driver: VolumeDriver::parse("local", BTreeMap::new())
