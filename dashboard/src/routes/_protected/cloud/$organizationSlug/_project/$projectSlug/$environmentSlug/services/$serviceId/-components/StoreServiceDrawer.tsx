@@ -14,6 +14,7 @@ import { shownValue } from "#/modules/config-store/store-deployments";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
+import { templateLabel } from "#/modules/config-store/database-presets";
 import { changedProps, dnsLabelError, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreViews } from "#/modules/config-store/store-view.queries";
 import type { Persistable } from "#/collections/query-collection";
@@ -463,6 +464,7 @@ function StoreSourceSection({ state }: { state: StoreService }) {
           <ItemMedia variant="icon">{kind === "repository" ? <GitHubMarkIcon /> : <PackageIcon />}</ItemMedia>
           <ItemContent>
             <ItemTitle>{kind === "repository" ? <a href={`https://github.com/${value}`} target="_blank" rel="noreferrer">{value}</a> : value}</ItemTitle>
+            {state.service.template ? <ItemDescription>From template: {templateLabel(state.service.template)}</ItemDescription> : null}
           </ItemContent>
           <ItemActions>
             <Button type="button" variant="ghost" size="icon" onClick={() => setPicking(kind)}>
