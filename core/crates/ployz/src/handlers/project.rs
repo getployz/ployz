@@ -5,12 +5,12 @@ use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 use ployz_store::{
     CreateProject, DeploymentSummary, EnvironmentId, EnvironmentRef, ProjectId, ProjectName,
-    ProjectRemoved, RemoveProject,
+    ProjectRemoved, RemoveProject, RenameProject,
 };
 use serde_json::json;
 
-use super::store::{self, Store, failed, mint, store};
-use super::teardown::{accepted, confirmed, inventory, remove_all};
+use super::store::{self, Store, mint, store};
+use super::teardown::{confirmed, inventory, remove_all};
 use super::{Error, deploy, leaf_matches, required};
 use crate::cli::{base, positional, value};
 use crate::output::say;
@@ -25,6 +25,12 @@ pub(crate) fn command() -> Command {
                 .arg(positional("name", true)),
         )
         .subcommand(Command::new("ls").about("List the Organization's Projects"))
+        .subcommand(
+            Command::new("rename")
+                .about("Rename a Project; its running Environments keep their Namespaces")
+                .arg(positional("project", true))
+                .arg(positional("name", true).help("Its new name, unique in the Organization")),
+        )
         .subcommand(deploy::following(
             base(
                 "rm",
@@ -54,6 +60,7 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
     Some(match path {
         "new" => new,
         "ls" => ls,
+        "rename" => rename,
         "rm" => rm,
         _ => return None,
     })
@@ -62,14 +69,13 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
 fn new(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = ProjectName::parse(required(matches, "name")?)?;
-    let store = store(root)?;
+    let store = store(root)?.args([name.as_str()]);
     let create = CreateProject {
         id: ProjectId::parse(mint())?,
         name,
         default_environment: EnvironmentId::parse(mint())?,
     };
-    let words = ["project", "new", create.name.as_str()];
-    let created = store.write(&create).map_err(failed(matches, &words))?;
+    let created = store.write(&create)?;
     crate::output::finish(&created, || {
         say!(
             "Created Project {} with Environment {}.",
@@ -80,10 +86,7 @@ fn new(root: &ArgMatches) -> Result<(), Error> {
 }
 
 fn ls(root: &ArgMatches) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    let listed = store(root)?
-        .read(&ployz_store::ProjectsQuery {})
-        .map_err(failed(matches, &["project", "ls"]))?;
+    let listed = store(root)?.read(&ployz_store::ProjectsQuery {})?;
     crate::output::finish(&listed, || {
         if listed.projects.is_empty() {
             say!("No Projects yet. Create one: ployz project new NAME");
@@ -102,6 +105,28 @@ fn ls(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
+fn rename(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let rename = RenameProject {
+        project: ProjectName::parse(required(matches, "project")?)?,
+        name: ProjectName::parse(required(matches, "name")?)?,
+    };
+    let renamed = store(root)?
+        .args([rename.project.as_str(), rename.name.as_str()])
+        .write(&rename)?;
+    let links = super::link::rename_project(
+        &super::config_path(matches)?,
+        &rename.project,
+        &renamed.name,
+    )?;
+    crate::output::finish(&json!({ "project": renamed, "links": links }), || {
+        say!("Renamed Project {} to {}.", rename.project, renamed.name);
+        if links > 0 {
+            say!("Moved {links} linked director(ies) on this device to it.");
+        }
+    })
+}
+
 /// What `project rm` removed, and the Deployments that took it off the Servers.
 #[derive(serde::Serialize)]
 struct Removal<'a> {
@@ -115,23 +140,16 @@ struct Removal<'a> {
 fn rm(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = ProjectName::parse(required(matches, "name")?)?;
-    let store = store(root)?;
-    let words = ["project", "rm", name.as_str()];
-    let accept = accepted(matches)?;
-    let mut again = vec!["project", "rm", name.as_str(), "--confirm", name.as_str()];
+    let store = store(root)?.args([name.as_str()]);
+    let again = ["project", "rm", name.as_str(), "--confirm", name.as_str()];
     if !confirmed(matches, name.as_str(), "Project")? {
         return Err(unconfirmed(matches, &store, &name, &again)?);
     }
-    again.extend(
-        accept
-            .iter()
-            .flat_map(|name| ["--accept-volume-loss", name.as_str()]),
-    );
     let remove = RemoveProject {
         project: name.clone(),
     };
     let events = deploy::open_events(matches)?;
-    match remove_all(matches, &store, &remove, &name, events, &words, &again)? {
+    match remove_all(matches, &store, &remove, &name, events, &again)? {
         Some((removed, ran)) => finish(&removed, &ran),
         None => Ok(()),
     }
@@ -145,10 +163,7 @@ fn unconfirmed(
     project: &ProjectName,
     again: &[&str],
 ) -> Result<Error, Error> {
-    let words = ["project", "rm"];
-    let listed = store
-        .read(&ployz_store::ProjectsQuery {})
-        .map_err(failed(matches, &words))?;
+    let listed = store.read(&ployz_store::ProjectsQuery {})?;
     let Some(listing) = listed
         .projects
         .iter()
@@ -168,7 +183,7 @@ fn unconfirmed(
                 project: Some(project.clone()),
                 environment: Some(environment.clone()),
             };
-            inventory(matches, store, &at)
+            inventory(store, &at)
         })
         .collect::<Result<Vec<_>, _>>()?;
     let retry = store::next(matches, again);
@@ -178,12 +193,7 @@ fn unconfirmed(
             "Removing Project {project} deletes every Environment in it ({}) with its \
              configuration, history, Services and Volumes; this can't be undone. No changes \
              made.\nRetry: {retry}",
-            listing
-                .environments
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
+            super::env::joined(&listing.environments)
         ),
         json!({ "project": project, "environments": environments, "next": retry }),
     ))
@@ -204,12 +214,7 @@ fn finish(removed: &ProjectRemoved, ran: &[DeploymentSummary]) -> Result<(), Err
         say!(
             "Removed Project {} and its Environments ({}).",
             removed.project.name,
-            removed
-                .environments
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
+            super::env::joined(&removed.environments)
         );
     })
 }

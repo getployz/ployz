@@ -513,6 +513,7 @@ async fn railpack_preparation_derives_machine_platforms() {
             source_commits: BTreeMap::new(),
             uploads: BTreeMap::new(),
             build_receipts: BTreeMap::new(),
+            borrowed: BTreeMap::new(),
             build_index: 0,
             preferred_machine: None,
         })

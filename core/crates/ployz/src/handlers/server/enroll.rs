@@ -16,10 +16,9 @@ use serde_json::json;
 use super::super::{Error, config_path, leaf_matches, runtime};
 use crate::cli::{base, env, positional, switch, value};
 use crate::cloud_account::{self, Credential};
-use crate::cloud_login::{CredentialStore, LoginError, Organization};
+use crate::cloud_login::{CredentialStore, DEFAULT_CLOUD, LoginError, Organization};
 use crate::output::say;
 
-const DEFAULT_CLOUD: &str = "ployz.dev";
 const INSTALLER_URL: &str = "https://ployz.sh/";
 const JOIN_POLL: Duration = Duration::from_secs(2);
 
@@ -92,7 +91,8 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
     }
     let minted: Minted = runtime.block_on(acting.post("servers/enroll", json!({})))?;
     if matches.get_flag("command") {
-        return runtime.block_on(paste(&acting, &minted));
+        let storage = matches.get_one::<StorageChoice>("storage").copied();
+        return runtime.block_on(paste(&acting, &minted, storage));
     }
     drop(runtime);
     super::super::cloud::enroll(
@@ -140,8 +140,12 @@ struct PendingReport<'a> {
     next: String,
 }
 
-async fn paste(acting: &Acting, minted: &Minted) -> Result<(), Error> {
-    let line = pasted_command(&minted.token, acting.credential.cloud());
+async fn paste(
+    acting: &Acting,
+    minted: &Minted,
+    storage: Option<StorageChoice>,
+) -> Result<(), Error> {
+    let line = pasted_command(&minted.token, acting.credential.cloud(), storage);
     if crate::output::json() {
         return crate::output::emit(&PendingReport {
             status: "pending",
@@ -159,15 +163,17 @@ async fn paste(acting: &Acting, minted: &Minted) -> Result<(), Error> {
     wait_joined(acting, &minted.id).await
 }
 
-/// One line that installs exactly this CLI's release, so the Server speaks the same enrollment.
-fn pasted_command(token: &str, cloud: &str) -> String {
+/// One line that installs exactly this CLI's release, so the Server speaks the same
+/// enrollment, keeping an explicit `--storage` choice.
+fn pasted_command(token: &str, cloud: &str, storage: Option<StorageChoice>) -> String {
     let cloud_flag = if cloud == crate::cloud_enroll::cloud_origin(DEFAULT_CLOUD) {
         String::new()
     } else {
         format!(" --cloud-url '{cloud}'")
     };
+    let storage_flag = storage.map_or(String::new(), |storage| format!(" --storage {storage}"));
     format!(
-        "curl -fsSL {INSTALLER_URL} | sh -s -- {} && sudo ployz server add --token '{token}'{cloud_flag}",
+        "curl -fsSL {INSTALLER_URL} | sh -s -- {} && sudo ployz server add --token '{token}'{cloud_flag}{storage_flag}",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -247,14 +253,18 @@ mod tests {
     fn pasted_command_pins_this_release_and_names_a_non_default_cloud() {
         let version = env!("CARGO_PKG_VERSION");
         assert_eq!(
-            pasted_command("pmet_x", "https://ployz.dev"),
+            pasted_command("pmet_x", "https://ployz.dev", None),
             format!(
                 "curl -fsSL https://ployz.sh/ | sh -s -- {version} && sudo ployz server add --token 'pmet_x'"
             )
         );
         assert!(
-            pasted_command("pmet_x", "http://localhost:3000")
+            pasted_command("pmet_x", "http://localhost:3000", None)
                 .ends_with("--token 'pmet_x' --cloud-url 'http://localhost:3000'")
+        );
+        assert!(
+            pasted_command("pmet_x", "https://ployz.dev", Some(StorageChoice::None))
+                .ends_with("--token 'pmet_x' --storage none")
         );
     }
 }

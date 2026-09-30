@@ -4,7 +4,7 @@
 use clap::{ArgMatches, Command};
 use ployz_store::{DiffQuery, Discard, Publish, SettingPath};
 
-use super::store::{Next, environment, failed, next, scoped, store, with_refresh_hint};
+use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
 use crate::cli::{positional, value};
 use crate::output::say;
@@ -32,11 +32,10 @@ fn version() -> clap::Arg {
 
 pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let store = store(root)?;
     let query = DiffQuery {
         environment: environment(matches)?,
     };
-    let view = store.read(&query).map_err(failed(matches, &["diff"]))?;
+    let view = store(root)?.read(&query)?;
     let hint = (!view.changes.is_empty())
         .then(|| next(matches, &["deploy", "--expect-version", &view.version]));
     crate::output::finish(&Next::new(&view, hint.clone()), || {
@@ -112,9 +111,9 @@ pub(super) fn publish(root: &ArgMatches) -> Result<(), Error> {
         accept_volume_loss: Vec::new(),
     };
     let store = store(root)?;
-    let published = store.write(&publish).map_err(|error| {
-        failed(matches, &["publish"])(with_refresh_hint(error, matches, "diff"))
-    })?;
+    let published = store
+        .try_write(&publish)
+        .map_err(|error| store.fail(with_refresh_hint(error, matches, "diff")))?;
     let hint = Some(next(matches, &["deploy"]));
     crate::output::finish(&Next::new(&published, hint), || {
         let where_ = format!(
@@ -141,12 +140,10 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
         version: matches.get_one::<String>("version").cloned(),
     };
     let path_word = path.as_ref().map(ToString::to_string);
-    let mut words = vec!["discard"];
-    words.extend(path_word.as_deref());
-    let store = store(root)?;
+    let store = store(root)?.args(path_word.as_deref());
     let discarded = store
-        .write(&discard)
-        .map_err(|error| failed(matches, &words)(with_refresh_hint(error, matches, "diff")))?;
+        .try_write(&discard)
+        .map_err(|error| store.fail(with_refresh_hint(error, matches, "diff")))?;
     let hint = Some(next(matches, &["diff"]));
     crate::output::finish(&Next::new(&discarded, hint), || {
         say!(

@@ -129,8 +129,12 @@ async fn outside(
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubCheckIn {
+    /// The Build Grant's secret: it lets the runner push into this Service's one
+    /// repository, and nothing else.
     pub grant: String,
+    /// The pinned commit the runner checks out and builds.
     pub commit: String,
+    /// The build's fingerprint; the runner's `ployz build` refuses to build any other.
     pub fingerprint: String,
     /// The ployz version that computed the fingerprint: the runner installs it.
     pub ployz_version: String,
@@ -170,7 +174,6 @@ pub async fn github_check_in(
     let fingerprint = super::expected_fingerprints(
         deployment.clone(),
         BTreeMap::from([(id.service.clone(), commit.to_string())]),
-        BTreeMap::new(),
     )?
     .remove(&id.service)
     .ok_or_else(|| internal("The build has no fingerprint"))?;
@@ -234,7 +237,7 @@ fn repository(id: &GithubBuildId) -> Result<BuildGrantRepository, RpcError> {
 
 /// One batch of a runner's `ployz build --events` lines, from line `from`, and once
 /// its build ended, the platforms it built (empty: it failed). `installFailed`: it
-/// couldn't install ployz, which GitHub failing it, not the build.
+/// couldn't install ployz, which GitHub failing it, not the build; never both.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StepsReport {
@@ -254,7 +257,9 @@ struct Line {
 /// What a report did: how many lines were taken, and whether it was the last.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct GithubReported {
+    /// How many of the report's lines the build log took.
     pub received: u64,
+    /// Whether the report ended the build.
     pub ended: bool,
 }
 
@@ -281,18 +286,23 @@ pub async fn github_report(
         .iter()
         .map(|line| log_line(&line.event))
         .collect();
-    let run_end = match report.install_failed {
+    let run_end = match (report.install_failed, report.platforms) {
+        (Some(_), Some(_)) => {
+            return Err(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: "A report ends a build or says ployz didn't install, not both".to_owned(),
+                details: Value::Null,
+            });
+        }
         // No final report: GitHub failed it, so the next Builder takes it.
-        Some(version) => {
+        (Some(version), None) => {
             lines.push(format!("GitHub couldn't install ployz {version}\n"));
             None
         }
-        None => report
-            .platforms
-            .map(|platforms| match platforms.is_empty() {
-                true => RunEnd::Failed,
-                false => RunEnd::Built { platforms },
-            }),
+        (None, platforms) => platforms.map(|platforms| match platforms.is_empty() {
+            true => RunEnd::Failed,
+            false => RunEnd::Built { platforms },
+        }),
     };
     let ended = run_end.is_some();
     let report = GithubReport {
@@ -375,7 +385,7 @@ pub async fn github_finish(
                     );
                     let receipt = BuildReceipt {
                         fingerprint: grant.fingerprint.clone(),
-                        content: None,
+                        variables: super::BuildVariables::All,
                         machine_id: grant.machine,
                         image: ployz_build::BuiltImage {
                             reference: pushed.to_string(),

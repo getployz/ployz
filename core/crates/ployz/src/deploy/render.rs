@@ -121,7 +121,7 @@ fn volumes_to_create_lines(preview: &DeployPreview) -> String {
             Some(maximum_bytes) => {
                 let _ = writeln!(
                     out,
-                    "  + provisioned volume {} (maximum {maximum_bytes} bytes) on {machine}",
+                    "  + provisioned volume {} (maximum {maximum_bytes}) on {machine}",
                     item.name
                 );
             }

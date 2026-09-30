@@ -226,6 +226,32 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     // Applied State is the new Head: a later edit shows against it.
     set_replicas(&store, &who, "web", 3);
     assert_eq!(changed(&store, &who), ["web"]);
+
+    // A Deploy of every Service settles the ones its preview plans nothing for
+    // as soon as it records that preview, not once it ends.
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    assert_eq!(
+        nodes(&store, &who, 2),
+        [
+            ("web".to_owned(), NodeStatus::Pending),
+            ("api".to_owned(), NodeStatus::Unchanged)
+        ]
+    );
+    // Ending without executing leaves what the preview settled: nothing ran on api either way.
+    store
+        .record(&id(2), &a, RunEvidence::NotExecuted("stopped".into()))
+        .unwrap();
+    assert_eq!(
+        nodes(&store, &who, 2),
+        [
+            ("web".to_owned(), NodeStatus::NotAttempted),
+            ("api".to_owned(), NodeStatus::Unchanged)
+        ]
+    );
 }
 
 #[test]
@@ -985,7 +1011,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
     let claimed = store.claim(&id(2), &a).unwrap();
     assert_eq!(
         claimed.receipts.get(&ServiceName::parse("app").unwrap()),
-        Some(&receipt)
+        Some(&vec![receipt.clone()])
     );
     assert_eq!(
         store
@@ -1047,7 +1073,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         .unwrap();
     assert_eq!(
         store.claim(&id(5), &a).unwrap().receipts[&ServiceName::parse("app").unwrap()],
-        receipt
+        [receipt]
     );
 }
 
@@ -1279,4 +1305,40 @@ fn unclaimed_lists_queued_deployments_no_runner_took() {
 fn sources_of_an_unknown_deployment_are_not_found() {
     let (store, _) = shop();
     assert_eq!(code(store.sources(&id(9))), RpcErrorCode::NotFound);
+}
+
+#[test]
+fn a_service_confirmed_mid_run_stays_deployed_when_the_runner_is_lost() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    let web = ServiceName::parse("web").unwrap();
+    assert_eq!(
+        code(store.record(&id(1), &a, RunEvidence::Confirmed(vec![web.clone()]))),
+        RpcErrorCode::Conflict
+    );
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Confirmed(vec![web]))
+        .unwrap();
+    assert_eq!(
+        nodes(&store, &who, 1),
+        [
+            ("web".to_owned(), NodeStatus::Deployed),
+            ("api".to_owned(), NodeStatus::Pending)
+        ]
+    );
+    store.record(&id(1), &a, RunEvidence::Abandoned).unwrap();
+    assert_eq!(
+        nodes(&store, &who, 1),
+        [
+            ("web".to_owned(), NodeStatus::Deployed),
+            ("api".to_owned(), NodeStatus::Unknown)
+        ]
+    );
+    // web is in Applied State: only api is still to deploy.
+    assert_eq!(changed(&store, &who), ["api"]);
 }

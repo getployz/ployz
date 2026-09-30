@@ -10,18 +10,19 @@ use std::time::Duration;
 
 use ployz_core::{DeployOutcome, RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
-    BuildReport, BuildStatus, Builder, Claimed, ConfigStore, DeploymentId, DeploymentStatus,
-    DeploymentSummary, RunEvidence, RunnerId,
+    BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeploymentId,
+    DeploymentStatus, DeploymentSummary, RunEvidence, RunnerId,
 };
+use serde::Deserialize as _;
 use serde_json::Value;
 
 use super::build::BuildOutcome;
-use super::preparation::{BuildReceipt, PreparationInput};
+use super::preparation::{BuildReceipt, PreparationInput, UploadDigest};
 use super::{ImageCleanup, PreparedDeploy, RunningBuild, Session, connect_connections};
 use crate::connect::SystemConnector;
 use crate::context::Connection;
 
-/// How often a running Deploy checks whether it was cancelled.
+/// How often a running Deployment renews its lease and checks whether it was cancelled.
 const CANCEL_POLL: Duration = Duration::from_secs(2);
 
 /// How often a build's new log output is recorded.
@@ -50,17 +51,73 @@ enum Unbuilt {
     UploadNeeded(Vec<ServiceName>),
 }
 
-/// One Service to build: a Git Service at its pin, or an uploaded one.
+/// One Service to build.
 struct Target {
     service: ServiceName,
-    commit: Option<String>,
-    source: Option<PathBuf>,
-    /// The upload's digest, for an uploaded Service.
-    upload: Option<String>,
-    /// The Server the servers try first.
-    preferred_machine: Option<ployz_core::MachineId>,
-    /// An uploaded Service whose Build Order has GitHub, which can't build it.
-    github_skipped: bool,
+    build: Build,
+}
+
+/// What a Service builds from.
+enum Build {
+    /// A Git Service's checkout at its pinned commit.
+    Git {
+        commit: CommitSha,
+        checkout: PathBuf,
+        /// The Server the build tries first.
+        preferred_machine: Option<ployz_core::MachineId>,
+    },
+    /// An uploaded Service, from the upload when Cloud still holds it.
+    Upload {
+        digest: UploadDigest,
+        source: Option<PathBuf>,
+        /// Its Build Order has GitHub, which can't build it.
+        github_skipped: bool,
+    },
+}
+
+impl Target {
+    /// This target's part of a preparation input.
+    fn input(&self, input: &mut PreparationInput) {
+        let service = self.service.clone();
+        match &self.build {
+            Build::Git {
+                commit, checkout, ..
+            } => {
+                input
+                    .source_commits
+                    .insert(service.clone(), commit.to_string());
+                input.sources.insert(service, checkout.clone());
+            }
+            Build::Upload { digest, source, .. } => {
+                input.uploads.insert(service.clone(), digest.clone());
+                input.sources.extend(one(&service, source.clone()));
+            }
+        }
+    }
+}
+
+/// The receipts `claimed` holds for `service`, own first, that decode.
+fn receipts(claimed: &Claimed, service: &ServiceName) -> Vec<BuildReceipt> {
+    claimed
+        .receipts
+        .get(service)
+        .into_iter()
+        .flatten()
+        .filter_map(|receipt| BuildReceipt::deserialize(receipt).ok())
+        .collect()
+}
+
+/// `candidates` as preparation takes them: the first as the Service's receipt, the
+/// rest borrowed.
+fn hinted(input: &mut PreparationInput, service: &ServiceName, candidates: Vec<BuildReceipt>) {
+    let mut candidates = candidates.into_iter();
+    if let Some(first) = candidates.next() {
+        input.build_receipts.insert(service.clone(), first);
+    }
+    let rest: Vec<_> = candidates.collect();
+    if !rest.is_empty() {
+        input.borrowed.insert(service.clone(), rest);
+    }
 }
 
 /// Run Deployment `deployment` as `runner` on one of `connections`, and
@@ -186,20 +243,9 @@ impl Run {
             Ok(running) => running,
             Err(error) => return self.not_executed(error.message).await,
         };
-        let finished = running.finished();
-        tokio::pin!(finished);
-        let mut poll = tokio::time::interval(CANCEL_POLL);
-        let outcome = loop {
-            tokio::select! {
-                outcome = &mut finished => break outcome,
-                _ = poll.tick() => {
-                    // ponytail: a failed read skips one check; the next tick reads again.
-                    if self.status().await.ok() == Some(DeploymentStatus::Cancelling) {
-                        running.abort();
-                    }
-                }
-            }
-        };
+        let outcome = self
+            .renewing(self.executing(&running), || running.abort())
+            .await;
         match outcome {
             Ok(outcome) => {
                 let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
@@ -230,19 +276,25 @@ impl Run {
         let mut builds = Vec::new();
         for (index, target) in targets.iter().enumerate() {
             let service = &target.service;
-            let hint = claimed
-                .receipts
-                .get(service)
-                .and_then(|receipt| serde_json::from_value::<BuildReceipt>(receipt.clone()).ok());
-            let input = PreparationInput {
+            let candidates = receipts(claimed, service);
+            let hint = candidates.first().cloned();
+            let mut input = PreparationInput {
                 deployment: only(&claimed.input, service),
-                sources: one(service, target.source.clone()),
-                source_commits: one(service, target.commit.clone()),
-                uploads: one(service, target.upload.clone()),
-                build_receipts: one(service, hint.clone()),
+                sources: BTreeMap::new(),
+                source_commits: BTreeMap::new(),
+                uploads: BTreeMap::new(),
+                build_receipts: BTreeMap::new(),
+                borrowed: BTreeMap::new(),
                 build_index: index,
-                preferred_machine: target.preferred_machine,
+                preferred_machine: match &target.build {
+                    Build::Git {
+                        preferred_machine, ..
+                    } => *preferred_machine,
+                    Build::Upload { .. } => None,
+                },
             };
+            target.input(&mut input);
+            hinted(&mut input, service, candidates);
             builds.push((target, hint, session.build(input, None)?));
         }
         let all = futures_util::future::join_all(
@@ -250,20 +302,13 @@ impl Run {
                 .iter()
                 .map(|(target, hint, running)| self.follow(target, hint.as_ref(), running)),
         );
-        tokio::pin!(all);
-        let mut poll = tokio::time::interval(CANCEL_POLL);
-        let ended = loop {
-            tokio::select! {
-                ended = &mut all => break ended,
-                _ = poll.tick() => {
-                    if self.status().await.ok() == Some(DeploymentStatus::Cancelling) {
-                        for (_, _, running) in &builds {
-                            running.abort();
-                        }
-                    }
+        let ended = self
+            .renewing(all, || {
+                for (_, _, running) in &builds {
+                    running.abort();
                 }
-            }
-        };
+            })
+            .await;
         let mut receipts = BTreeMap::new();
         let mut failed = Vec::new();
         let mut uploads = Vec::new();
@@ -303,7 +348,14 @@ impl Run {
             .await?;
         // GitHub can't build uploaded source: the walk skips it, and says so when the
         // Build Order has it.
-        let mut log = if target.github_skipped {
+        let github_skipped = matches!(
+            target.build,
+            Build::Upload {
+                github_skipped: true,
+                ..
+            }
+        );
+        let mut log = if github_skipped {
             "GitHub can't build uploaded source: it builds on your Servers\n".to_owned()
         } else {
             String::new()
@@ -370,14 +422,12 @@ impl Run {
             sources: BTreeMap::new(),
             uploads: BTreeMap::new(),
             build_receipts: receipts,
+            borrowed: BTreeMap::new(),
             build_index: 0,
             preferred_machine: None,
         };
-        for target in targets {
-            let service = target.service;
-            input.source_commits.extend(one(&service, target.commit));
-            input.sources.extend(one(&service, target.source));
-            input.uploads.extend(one(&service, target.upload));
+        for target in &targets {
+            target.input(&mut input);
         }
         // A Service GitHub built keeps its pin, so its receipt's fingerprint matches.
         for source in &claimed.sources {
@@ -390,10 +440,66 @@ impl Run {
                     .or_insert_with(|| commit.to_string());
             }
         }
-        session
-            .prepare_with(input, claimed.intent.registry_auth)?
-            .finished()
-            .await
+        // Delivering images can outlast the lease: keep renewing it.
+        let running = session.prepare_with(input, claimed.intent.registry_auth)?;
+        self.renewing(running.finished(), || running.abort()).await
+    }
+
+    /// Await `work` while renewing this runner's lease on the Deployment; a cancel
+    /// calls `abort`.
+    /// Wait for `running`'s outcome, recording each Service once every one of its
+    /// planned operations completed: a replaced Service reads Deployed at once, and
+    /// stays so if this runner is lost before the outcome.
+    async fn executing(
+        &self,
+        running: &super::RunningDeploy,
+    ) -> Result<DeployOutcome<ployz_core::ExecutionError>, RpcError> {
+        let mut confirmed = std::collections::BTreeSet::new();
+        while let Some(event) = running.next().await {
+            let ployz_core::DeployEvent::Progress { rows, .. } = event else {
+                continue;
+            };
+            let mut done: BTreeMap<&ServiceName, bool> = BTreeMap::new();
+            for row in &rows {
+                if let Some(service) = &row.service_name {
+                    *done.entry(service).or_insert(true) &=
+                        matches!(row.status, ployz_core::OperationStatus::Completed);
+                }
+            }
+            let new: Vec<ServiceName> = done
+                .into_iter()
+                .filter(|(service, done)| *done && !confirmed.contains(*service))
+                .map(|(service, _)| service.clone())
+                .collect();
+            if new.is_empty() {
+                continue;
+            }
+            // ponytail: a refused record leaves these to the outcome, which confirms them too.
+            if self
+                .record(RunEvidence::Confirmed(new.clone()))
+                .await
+                .is_ok()
+            {
+                confirmed.extend(new);
+            }
+        }
+        running.finished().await
+    }
+
+    async fn renewing<T>(&self, work: impl std::future::Future<Output = T>, abort: impl Fn()) -> T {
+        tokio::pin!(work);
+        let mut poll = tokio::time::interval(CANCEL_POLL);
+        loop {
+            tokio::select! {
+                done = &mut work => return done,
+                _ = poll.tick() => {
+                    // ponytail: a failed read skips one check; the next tick reads again.
+                    if self.status().await.ok() == Some(DeploymentStatus::Cancelling) {
+                        abort();
+                    }
+                }
+            }
+        }
     }
 
     async fn report(
@@ -460,11 +566,10 @@ fn targets(
     let mut built = BTreeMap::new();
     let mut failed = Vec::new();
     for source in &claimed.sources {
-        let receipt = claimed
-            .receipts
-            .get(&source.service)
-            .and_then(|receipt| serde_json::from_value::<BuildReceipt>(receipt.clone()).ok());
-        match (source.status, receipt) {
+        match (
+            source.status,
+            receipts(claimed, &source.service).into_iter().next(),
+        ) {
             (Some(BuildStatus::Built | BuildStatus::Reused), Some(receipt)) => {
                 built.insert(source.service.clone(), receipt);
                 continue;
@@ -497,11 +602,11 @@ fn targets(
         };
         targets.push(Target {
             service: source.service.clone(),
-            commit: Some(commit.to_string()),
-            source: Some(checkout.clone()),
-            upload: None,
-            preferred_machine: source.preferred_machine,
-            github_skipped: false,
+            build: Build::Git {
+                commit: commit.clone(),
+                checkout: checkout.clone(),
+                preferred_machine: source.preferred_machine,
+            },
         });
     }
     if !failed.is_empty() {
@@ -516,13 +621,15 @@ fn targets(
     let Some(upload) = &claimed.deployment.upload else {
         return Err(Unbuilt::UploadNeeded(claimed.uploads.clone()));
     };
+    let digest = UploadDigest::parse(upload.digest.as_str())
+        .map_err(|error| Unbuilt::Failed(error.message))?;
     targets.extend(claimed.uploads.iter().map(|service| Target {
         service: service.clone(),
-        commit: None,
-        source: sources.upload.clone(),
-        upload: Some(upload.digest.clone()),
-        preferred_machine: None,
-        github_skipped: claimed.build_order.contains(&Builder::Github),
+        build: Build::Upload {
+            digest: digest.clone(),
+            source: sources.upload.clone(),
+            github_skipped: claimed.build_order.contains(&Builder::Github),
+        },
     }));
     Ok((targets, built))
 }

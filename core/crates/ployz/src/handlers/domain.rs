@@ -6,7 +6,7 @@
 use clap::{ArgMatches, Command};
 use ployz_store::{
     AddDomain, DomainAction, DomainQuery, DomainRow, DomainStaged, DomainStatus, DomainsQuery,
-    Hostname, RemoveDomain,
+    Hostname, RemoveDomain, SetGeneratedDomain,
 };
 
 use super::store::{self, Next};
@@ -32,6 +32,16 @@ pub(crate) fn command() -> Command {
             ),
         )
         .subcommand(
+            store::scoped(Command::new("set").about(
+                "Change a Service's generated domain to PREFIX.CLUSTER-DOMAIN; staged until you deploy",
+            ))
+            .arg(positional("service", true))
+            .arg(
+                positional("prefix", true)
+                    .help("One DNS label, unique among the Organization's generated domains"),
+            ),
+        )
+        .subcommand(
             store::scoped(
                 Command::new("ls")
                     .about("List domains: Ready, Setting up or Needs attention, and what to do"),
@@ -53,6 +63,7 @@ pub(crate) fn command() -> Command {
 pub(super) fn handler(path: &str) -> Option<super::Handler> {
     Some(match path {
         "add" => add,
+        "set" => set,
         "ls" => list,
         "rm" => remove,
         "check" => check,
@@ -77,14 +88,23 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
         hostname,
         port: matches.get_one::<u16>("port").copied(),
     };
-    let mut words = vec!["domain", "add", add.service.as_str()];
-    if let Some(hostname) = &add.hostname {
-        words.push(hostname.as_str());
-    }
-    let added = store::store(root)?
-        .write(&add)
-        .map_err(store::failed(matches, &words))?;
+    let mut args = vec![add.service.as_str()];
+    args.extend(add.hostname.as_ref().map(Hostname::as_str));
+    let added = store::store(root)?.args(args).write(&add)?;
     staged(matches, &added, "Staged domain")
+}
+
+fn set(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let set = SetGeneratedDomain {
+        environment: store::environment(matches)?,
+        service: store::service_name(matches, "service")?,
+        prefix: required(matches, "prefix")?,
+    };
+    let changed = store::store(root)?
+        .args([set.service.as_str(), "PREFIX"])
+        .write(&set)?;
+    staged(matches, &changed, "Staged generated domain")
 }
 
 fn remove(root: &ArgMatches) -> Result<(), Error> {
@@ -93,9 +113,7 @@ fn remove(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         domain: required(matches, "domain")?,
     };
-    let removed = store::store(root)?
-        .write(&remove)
-        .map_err(store::failed(matches, &["domain", "rm", "DOMAIN"]))?;
+    let removed = store::store(root)?.args(["DOMAIN"]).write(&remove)?;
     staged(matches, &removed, "Staged removal of domain")
 }
 
@@ -110,8 +128,8 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
         service,
     };
     let view = store::store(root)?
-        .read(&query)
-        .map_err(store::failed(matches, &["domain", "ls"]))?;
+        .args(query.service.as_ref().map(ployz_core::ServiceName::as_str))
+        .read(&query)?;
     let next = view
         .domains
         .iter()
@@ -136,9 +154,7 @@ fn check(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         domain: required(matches, "domain")?,
     };
-    let view = store::store(root)?
-        .read(&query)
-        .map_err(store::failed(matches, &["domain", "check", "DOMAIN"]))?;
+    let view = store::store(root)?.args(["DOMAIN"]).read(&query)?;
     let next = next(matches, view.domain.action.as_ref());
     output::finish(&Next::new(&view, next), || show(&view.domain))
 }

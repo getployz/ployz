@@ -24,3 +24,11 @@ export function formatRelativeTime(value: Date, now: Date = new Date()): string 
 
   return relativeTimeFormat.format(Math.round(diffMs / 1000), "second");
 }
+
+/** How long something ran, whole seconds: "45s", "1m 12s", "2h 5m". */
+export function formatDuration(seconds: number) {
+  const whole = Math.max(0, Math.floor(seconds));
+  if (whole < 60) return `${whole}s`;
+  if (whole < 3600) return `${Math.floor(whole / 60)}m ${whole % 60}s`;
+  return `${Math.floor(whole / 3600)}h ${Math.floor((whole % 3600) / 60)}m`;
+}

@@ -235,11 +235,7 @@ pub fn project_runtime_outcome(
         {
             return Err(invalid());
         }
-        let service = row
-            .service_name
-            .as_ref()
-            .or_else(|| operation.service_name());
-        match service {
+        match row.service_name() {
             Some(service) => {
                 let entry = services.entry(service.clone()).or_insert(progress);
                 *entry = entry.merge(progress);

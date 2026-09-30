@@ -124,7 +124,7 @@ _Avoid_: Hosted DNS hostname as runtime state, generated domain as pairing state
 `PLOYZ_PUBLIC_DOMAIN` is the last linked custom domain in a Service's captured route list, otherwise the last generated hostname expanded against the Organization's Cluster Domain during deployment preparation. DNS and certificate health do not affect selection. Domain lists retain link order; port edits retain position, removal falls back to the preceding domain, and relinking appends. With no public hostname the managed variable is absent. Cloud exposes it for references and injects it into the deployment environment; authored overrides retain the usual variable precedence. Running containers keep the value captured for their deployment.
 
 **Deployment Page**:
-The page for one Deployment: each Environment Node it changed, with its Node Outcome and Deployment Logs. While it is open, the canvas behind it lights up the nodes it changed; nodes since deleted or removed appear only in its list. The canvas never enters an attempt; it always draws the Environment as it is now.
+The page for one Deployment: each Environment Node it changed, with its Node Outcome and Deployment Logs. While it is open, the canvas behind it lights up the nodes it changed; nodes since deleted or removed appear only on the page. The canvas never enters an attempt; it always draws the Environment as it is now.
 _Avoid_: Deployment Mode, Editor Mode, deployment view of the canvas
 
 **Target Node List**:
@@ -202,6 +202,10 @@ _Avoid_: CI pipeline, build config, GitHub integration
 **Build Step**:
 One unit of an Image Build: a BuildKit step (a Dockerfile instruction, image resolution, or context transfer) or a Ployz-owned phase such as source upload, waiting for a runner, installing ployz, pushing, or sending the image to a Machine. Each is recorded where it happens, so its timing is honest: Cloud times the wait for a runner, the runner its install and push, the Engine the rest. A Build Step is keyed stably within one Builder's go at its Image Build, changes state until it completes, and owns the output attributed to it. Each go is a section of the Image Build's one log; a later one opens with why the build moved there. Build Steps are retained with the attempt, separately from lifecycle history.
 _Avoid_: Build log line, vertex, build stage (a Cloud Deployment Stage is not a Build Step)
+
+**Database Preset**:
+A built-in shortcut that creates an ordinary image Service, its Volume, and its variables for a common database (PostgreSQL, Redis, MongoDB, MySQL), mirroring Railway's templates. Nothing records the preset afterwards; the result is edited, deployed, and removed like any other Service.
+_Avoid_: Database (as a resource kind), template, add-on
 
 Git repository identity and access are separate. Cloud can read a public GitHub repository anonymously or use an Organization member's connected GitHub App installation. Public access never falls back to installation credentials. Both paths pin a commit per Deployment and materialize it through the same source acquisition module. Automatic Git deployment and CI gating require installation access; public sources deploy manually.
 

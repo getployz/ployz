@@ -4,7 +4,7 @@ use ployz_core::{
     NameMatches, QualifiedService, RpcError, RpcErrorCode, ServiceMode, op,
 };
 
-use super::super::{connect_client, runtime};
+use super::super::runtime;
 use super::{ConnectionOptions, target};
 use crate::handlers::{Error, data_loss::VolumeEffect, leaf_matches};
 use ployz_core::EnvironmentValues;
@@ -18,7 +18,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let selector = target(matches, "server")?.to_owned();
     let no_reset = matches.get_flag("no-reset");
     runtime()?.block_on(async {
-        let mut client = connect_client(matches, options.context()).await?;
+        let mut client = super::connect(matches, options.context()).await?;
         let machines = client.machines().await?;
         let selected = select_machine(&machines, &selector)?;
         let selected_target = MachineTarget::from(&selected.id);

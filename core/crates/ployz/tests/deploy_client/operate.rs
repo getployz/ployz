@@ -166,3 +166,90 @@ async fn restart_stops_then_starts_and_reports_a_start_that_failed() {
         server.abort();
     }
 }
+
+#[tokio::test]
+async fn server_clean_removes_only_a_namespace_no_environment_owns() {
+    let store = tempfile::tempdir().unwrap();
+    let db = store.path().join("store.db");
+    let machine = machine('a', "one");
+    let service = DeployService::new(machine.clone());
+    service.listed_containers().lock().unwrap().extend([
+        running_container_in(&machine, &spec("web"), "shop-production", '1'),
+        running_container_in(&machine, &spec("web"), "left-over", '2'),
+    ]);
+    let (address, server) = listening(service).await;
+    let address = address.to_string();
+    for args in [
+        &["project", "new", "shop"][..],
+        &["service", "add", "web", "--image", "web:1"],
+    ] {
+        assert_eq!(ployz(Some(&db), &address, args).await.0, 0, "{args:?}");
+    }
+    // A Deployment fixes the Environment's Namespace, whatever its outcome.
+    ployz(Some(&db), &address, &["deploy"]).await;
+
+    let (code, listed) = ployz(Some(&db), &address, &["server", "clean"]).await;
+    assert_eq!(code, 0, "{listed}");
+    assert_eq!(
+        listed["namespaces"][0]["namespace"], "left-over",
+        "{listed}"
+    );
+    assert_eq!(
+        listed["namespaces"].as_array().unwrap().len(),
+        1,
+        "{listed}"
+    );
+    assert_eq!(
+        listed["next"],
+        "ployz server clean --namespace left-over --confirm left-over"
+    );
+
+    let owned = ["server", "clean", "--namespace", "shop-production"];
+    let (code, refused) = ployz(Some(&db), &address, &owned).await;
+    assert_eq!(code, 1, "{refused}");
+    assert_eq!(refused["error"]["code"], "conflict", "{refused}");
+    assert_eq!(
+        refused["error"]["details"]["next"],
+        "ployz env rm production --project shop"
+    );
+
+    let (code, unconfirmed) = ployz(
+        Some(&db),
+        &address,
+        &["server", "clean", "--namespace", "left-over"],
+    )
+    .await;
+    assert_eq!(code, 1, "{unconfirmed}");
+    assert_eq!(
+        unconfirmed["error"]["code"], "confirmation_required",
+        "{unconfirmed}"
+    );
+    let (code, _) = ployz(
+        Some(&db),
+        &address,
+        &[
+            "server",
+            "clean",
+            "--namespace",
+            "left-over",
+            "--confirm",
+            "left",
+        ],
+    )
+    .await;
+    assert_eq!(code, 2);
+
+    let confirmed = [
+        "server",
+        "clean",
+        "--namespace",
+        "left-over",
+        "--confirm",
+        "left-over",
+    ];
+    let (code, cleaned) = ployz(Some(&db), &address, &confirmed).await;
+    assert_eq!(code, 0, "{cleaned}");
+    assert_eq!(cleaned["namespace"], "left-over", "{cleaned}");
+    assert_eq!(cleaned["removed"], true, "{cleaned}");
+    server.abort();
+}

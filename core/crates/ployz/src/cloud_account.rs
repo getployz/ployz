@@ -5,7 +5,7 @@
 //! Every call carries one credential: `PLOYZ_TOKEN` when set, else this device's
 //! approved sign-in. Either acts in exactly one Organization.
 
-use ployz_core::RpcError;
+use ployz_core::{MachineId, RpcError};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -131,9 +131,28 @@ pub(crate) struct DeviceEntry {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct RevokingEntry {
     pub(crate) id: String,
-    pub(crate) kind: String,
-    /// Machine IDs still holding its Management Client.
-    pub(crate) unconfirmed: Vec<String>,
+    pub(crate) kind: CredentialKind,
+    /// Servers still holding its Management Client.
+    pub(crate) unconfirmed: Vec<MachineId>,
+}
+
+/// What a credential is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CredentialKind {
+    /// An Organization Token (`PLOYZ_TOKEN`).
+    Token,
+    /// A signed-in device.
+    Device,
+}
+
+impl std::fmt::Display for CredentialKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Token => "token",
+            Self::Device => "device",
+        })
+    }
 }
 
 /// The Organization's tokens, the caller's signed-in devices, and revocations still to confirm.
@@ -148,16 +167,16 @@ pub(crate) struct Credentials {
 /// Cloud refuses the credential at once either way; `unconfirmed` Servers still let its key in.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct ServerClears {
-    pub(crate) confirmed: Vec<String>,
-    pub(crate) unconfirmed: Vec<String>,
+    pub(crate) confirmed: Vec<MachineId>,
+    pub(crate) unconfirmed: Vec<MachineId>,
 }
 
 /// This credential's own Management Capability on each Server Cloud could reach.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ServerAccess {
     pub(crate) connections: Vec<crate::context::Connection>,
-    /// Machine IDs Cloud couldn't provision a holder on now.
-    pub(crate) unreachable: Vec<String>,
+    /// Servers Cloud couldn't provision a holder on now.
+    pub(crate) unreachable: Vec<MachineId>,
 }
 
 /// A token just made: the one reply that carries its secret.
@@ -174,16 +193,69 @@ pub(crate) struct NewToken {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Removed {
     pub(crate) id: String,
-    pub(crate) kind: String,
+    pub(crate) kind: CredentialKind,
 }
 
 /// An Organization's Billing Plan and the capability it grants.
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(from = "BillingReply")]
 pub(crate) struct Billing {
     pub(crate) organization: String,
-    pub(crate) self_hosted: bool,
-    pub(crate) pro: bool,
+    pub(crate) plan: BillingPlan,
     pub(crate) custom_domains: bool,
+}
+
+/// An Organization's Billing Plan.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum BillingPlan {
+    /// A self-hosted Cloud bills nothing.
+    SelfHosted,
+    Pro,
+    Free,
+}
+
+impl BillingPlan {
+    /// The plan as users read it.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::SelfHosted => "self-hosted, no billing",
+            Self::Pro => "Pro",
+            Self::Free => "no plan",
+        }
+    }
+
+    /// The billing command that acts on this plan.
+    pub(crate) const fn next(self) -> Option<&'static str> {
+        match self {
+            Self::SelfHosted => None,
+            Self::Pro => Some("ployz billing manage"),
+            Self::Free => Some("ployz billing upgrade"),
+        }
+    }
+}
+
+/// Billing as Cloud answers it.
+#[derive(Deserialize)]
+struct BillingReply {
+    organization: String,
+    self_hosted: bool,
+    pro: bool,
+    custom_domains: bool,
+}
+
+impl From<BillingReply> for Billing {
+    fn from(reply: BillingReply) -> Self {
+        Self {
+            organization: reply.organization,
+            plan: match (reply.self_hosted, reply.pro) {
+                (true, _) => BillingPlan::SelfHosted,
+                (false, true) => BillingPlan::Pro,
+                (false, false) => BillingPlan::Free,
+            },
+            custom_domains: reply.custom_domains,
+        }
+    }
 }
 
 /// The Organizations this credential may act in.
@@ -646,7 +718,10 @@ mod tests {
         });
         let access = server_access(&token(&cloud)).await.unwrap();
         assert_eq!(access.connections.len(), 1);
-        assert_eq!(access.unreachable, ["b".repeat(32)]);
+        assert_eq!(
+            access.unreachable,
+            [MachineId::parse("b".repeat(32)).unwrap()]
+        );
         assert!(!format!("{access:?}").contains(&capability));
     }
 

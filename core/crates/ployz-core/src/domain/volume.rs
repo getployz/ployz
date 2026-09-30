@@ -263,9 +263,72 @@ impl ProvisionedVolumeMaximumBytes {
     }
 }
 
+/// Bytes in the GB every storage limit is written in.
+const GB: u64 = 1_000_000_000;
+
+impl ProvisionedVolumeMaximumBytes {
+    /// Parse a limit in GB, like `5`, `5GB` or `1.5 GB`, exact to the byte.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] unless `value` is a positive number of GB with at most
+    /// nine decimals.
+    pub fn parse(value: &str) -> Result<Self, ValueError> {
+        let invalid = || {
+            ValueError::new(
+                "storage limit",
+                value,
+                "a positive number of GB, like 5GB or 1.5GB",
+            )
+        };
+        let number = value.trim();
+        let number = number
+            .strip_suffix("GB")
+            .or_else(|| number.strip_suffix("gb"))
+            .unwrap_or(number)
+            .trim_end();
+        let (whole, fraction) = number.split_once('.').unwrap_or((number, ""));
+        let digits = |text: &str| text.bytes().all(|byte| byte.is_ascii_digit());
+        if (whole.is_empty() && fraction.is_empty())
+            || fraction.len() > 9
+            || !digits(whole)
+            || !digits(fraction)
+        {
+            return Err(invalid());
+        }
+        let whole = if whole.is_empty() {
+            0
+        } else {
+            whole.parse::<u64>().map_err(|_| invalid())?
+        };
+        let fraction = format!("{fraction:0<9}")
+            .parse::<u64>()
+            .map_err(|_| invalid())?;
+        whole
+            .checked_mul(GB)
+            .and_then(|bytes| bytes.checked_add(fraction))
+            .and_then(|bytes| Self::try_from(bytes).ok())
+            .ok_or_else(invalid)
+    }
+}
+
+impl std::str::FromStr for ProvisionedVolumeMaximumBytes {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
+/// The limit in GB, exact: `5 GB`, `1.5 GB`.
 impl Display for ProvisionedVolumeMaximumBytes {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
+        let (whole, fraction) = (self.get() / GB, self.get() % GB);
+        if fraction == 0 {
+            return write!(formatter, "{whole} GB");
+        }
+        let fraction = format!("{fraction:09}");
+        write!(formatter, "{whole}.{} GB", fraction.trim_end_matches('0'))
     }
 }
 
@@ -531,4 +594,42 @@ pub enum VolumeRemovalOutcome {
     Failed { error: crate::RpcError },
     /// Not attempted because the Machine was absent or did not invite RPC.
     Omitted,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_storage_limit_is_written_and_read_in_exact_gb() {
+        for (text, bytes, shown) in [
+            ("5", 5_000_000_000, "5 GB"),
+            ("5GB", 5_000_000_000, "5 GB"),
+            ("1.005 GB", 1_005_000_000, "1.005 GB"),
+            (".5", 500_000_000, "0.5 GB"),
+            ("0.000000001", 1, "0.000000001 GB"),
+        ] {
+            let limit = ProvisionedVolumeMaximumBytes::parse(text).unwrap();
+            assert_eq!(limit.get(), bytes, "{text}");
+            assert_eq!(limit.to_string(), shown);
+            assert_eq!(ProvisionedVolumeMaximumBytes::parse(shown), Ok(limit));
+        }
+        for refused in [
+            "0",
+            "0.0",
+            "",
+            "5GiB",
+            "500MB",
+            "-1",
+            "1.0000000001",
+            "1e3",
+            ".",
+            "18446744073709551615GB",
+        ] {
+            assert!(
+                ProvisionedVolumeMaximumBytes::parse(refused).is_err(),
+                "{refused}"
+            );
+        }
+    }
 }

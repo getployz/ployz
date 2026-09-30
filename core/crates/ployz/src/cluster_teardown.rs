@@ -11,6 +11,28 @@ use crate::{
 };
 
 impl Client {
+    /// Every user Namespace the Cluster runs, with its Services and Docker Volumes,
+    /// as far as the Machines that answered show it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when listing Machines fails.
+    pub async fn namespaces(&mut self) -> Result<Vec<ployz_core::NamespaceObservation>, RpcError> {
+        let machines = self.machines().await.map_err(RpcError::from)?;
+        let snapshot = self
+            .deploy_snapshot(machines)
+            .await
+            .map_err(RpcError::from)?;
+        let volumes = snapshot.volume_snapshot.observations();
+        Ok(derive_namespaces(
+            &snapshot.containers,
+            volumes.iter().map(|volume| (&volume.id, &volume.labels)),
+        )
+        .into_iter()
+        .filter(|namespace| !namespace.name.is_reserved())
+        .collect())
+    }
+
     /// Live Observation of Data Loss that destroying this Cluster would cause.
     ///
     /// Unions Docker Volumes across every visible Namespace and Machine. This is

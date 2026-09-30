@@ -17,7 +17,7 @@ use ployz_store::{DeploymentId, NamespaceQuery};
 use tokio::io::copy_bidirectional;
 
 use crate::{
-    cli::{base, env, log_flags, positional, switch, trailing, value},
+    cli::{base, log_flags, positional, switch, trailing, value},
     cloud_account::StoreCallError,
     cloud_login::LoginError,
     context::Transport,
@@ -80,14 +80,14 @@ pub(crate) fn ps_command() -> Command {
 /// means that Environment's Service. `None` keeps the whole Cluster in view: nothing
 /// was asked for, and no Config Store is reachable, it has no Project yet, or
 /// `--connect`/`--context` name a Cluster directly.
-pub(super) fn scope(root: &ArgMatches, words: &[&str]) -> Result<Option<Scoped>, Error> {
+pub(super) fn scope(root: &ArgMatches) -> Result<Option<Scoped>, Error> {
     let leaf = leaf_matches(root);
     let environment = super::store::environment(leaf)?;
     let asked = environment.project.is_some() || environment.environment.is_some();
     let direct = ["connect", "context"]
         .into_iter()
         .any(|id| matches!(leaf.try_get_one::<String>(id), Ok(Some(_))));
-    if !asked && direct && std::env::var(env::STORE).is_err() {
+    if !asked && direct && !super::store::local_mode() {
         return Ok(None);
     }
     let Some(store) = super::store::reachable(root)? else {
@@ -97,7 +97,7 @@ pub(super) fn scope(root: &ArgMatches, words: &[&str]) -> Result<Option<Scoped>,
             Ok(None)
         };
     };
-    match store.read(&NamespaceQuery { environment }) {
+    match store.try_read(&NamespaceQuery { environment }) {
         Ok(view) => Ok(Some(Scoped {
             namespace: view.namespace,
             services: view.services,
@@ -105,7 +105,7 @@ pub(super) fn scope(root: &ArgMatches, words: &[&str]) -> Result<Option<Scoped>,
         Err(StoreCallError::Refused(error)) if !asked && error.code == RpcErrorCode::NotFound => {
             Ok(None)
         }
-        Err(error) => Err(super::store::failed(leaf, words)(error)),
+        Err(error) => Err(store.fail(error)),
     }
 }
 
@@ -142,7 +142,7 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
             .cloned()
             .ok_or_else(|| Error::usage("Service selector is required"))?,
     )?;
-    let service = in_scope(service, scope(root, &["exec"])?.as_ref())?;
+    let service = in_scope(service, scope(root)?.as_ref())?;
     let container = leaf
         .get_one::<String>("container")
         .filter(|selector| !selector.is_empty())
@@ -220,15 +220,13 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
     // A Deployment names its Environment, whatever the scope says.
     let namespace = match (&deployment, &store) {
         (Some(id), Some(store)) => {
-            let view = store
-                .read(&ployz_store::DeploymentQuery { id: id.clone() })
-                .map_err(super::store::failed(leaf, &["logs"]))?;
+            let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
             Some(Scoped {
                 namespace: view.namespace,
                 services: view.runtime_names,
             })
         }
-        _ => scope(root, &["logs"])?,
+        _ => scope(root)?,
     };
     let args = parse_service_args(&named)?
         .into_iter()
@@ -262,31 +260,24 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
 
 /// Print Deployment `id`'s build logs: each Service in `named`, or every build.
 fn build_logs(root: &ArgMatches, id: &DeploymentId, named: &[String]) -> Result<(), Error> {
-    let leaf = leaf_matches(root);
     let store = super::store::store(root)?;
-    let names: Vec<String> = if named.is_empty() {
+    let services = if named.is_empty() {
         store
-            .read(&ployz_store::DeploymentQuery { id: id.clone() })
-            .map_err(super::store::failed(leaf, &["logs"]))?
+            .read(&ployz_store::DeploymentQuery { id: id.clone() })?
             .builds
             .into_iter()
-            .map(|build| build.service.to_string())
+            .map(|build| build.service)
             .collect()
     } else {
-        named.to_vec()
+        super::store::service_names(leaf_matches(root), "service-or-container")?
     };
-    let builds = names
-        .iter()
-        .map(|name| {
-            let service = ployz_core::ServiceName::parse(name.as_str())
-                .map_err(|_| Error::usage(format!("{name} is not a Service name")))?;
-            let query = ployz_store::BuildLogQuery {
+    let builds = services
+        .into_iter()
+        .map(|service| {
+            store.read(&ployz_store::BuildLogQuery {
                 deployment: id.clone(),
                 service,
-            };
-            store
-                .read(&query)
-                .map_err(super::store::failed(leaf, &["logs"]))
+            })
         })
         .collect::<Result<Vec<_>, Error>>()?;
     crate::output::finish(&serde_json::json!({ "builds": builds }), || {
@@ -338,7 +329,7 @@ pub fn port_forward(root: &ArgMatches) -> Result<(), Error> {
             .cloned()
             .ok_or_else(|| Error::usage("Service selector is required"))?,
     )?;
-    let service = in_scope(service, scope(root, &["service", "port-forward"])?.as_ref())?;
+    let service = in_scope(service, scope(root)?.as_ref())?;
     let ports = parse_proxy_ports(
         leaf.get_one::<String>("port")
             .ok_or_else(|| Error::usage("port is required"))?,
