@@ -112,8 +112,8 @@ it("shows each command of a Batch at once, as it would alone", async () => {
   const { queryClient, read } = cached();
   await applyOptimistic(queryClient, "acme", { command: "batch", environment: ref, commands: [
     { command: "create_service", id: "p", environment: ref, name: "postgres", image: "postgres:17" },
-    { command: "remove_service", environment: ref, service: "cache" },
+    { command: "edit", environment: ref, expect: null, changes: [{ op: "set", path: "postgres.replicas", value: 1 }] },
   ] });
   expect(read<ServicesView>(servicesQuery(ref))?.services.map((service) => [service.name, service.change]))
-    .toEqual([["web", "update"], ["postgres", "create"]]);
+    .toEqual([["web", "update"], ["cache", "create"], ["postgres", "create"]]);
 });
