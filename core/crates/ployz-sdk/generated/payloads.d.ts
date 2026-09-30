@@ -287,7 +287,7 @@ export type BuildLogView = { deployment: DeploymentId, log: string,
 /**
  * The Service's name when admitted.
  */
-service: string,
+service: ServiceName,
 /**
  * The commit it builds; none when it builds from the Deployment's upload.
  */
@@ -315,7 +315,7 @@ export type BuildView = {
 /**
  * The Service's name when admitted.
  */
-service: string,
+service: ServiceName,
 /**
  * The commit it builds; none when it builds from the Deployment's upload.
  */
@@ -1460,7 +1460,7 @@ data: boolean,
 /**
  * The Branch's own Services whose variables reference it, by name.
  */
-used_by: Array<string>, };
+used_by: Array<ServiceName>, };
 
 export type LiveValues = { producers: Array<SavedVariableProducer>, missing: Array<MissingLiveValue>, };
 
