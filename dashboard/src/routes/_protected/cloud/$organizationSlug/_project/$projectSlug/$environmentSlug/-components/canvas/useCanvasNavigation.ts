@@ -4,6 +4,7 @@ import {
   useReactFlow,
 } from "@xyflow/react";
 import {
+  CANVAS_FIT_VIEW,
   CANVAS_MIN_ZOOM,
   SERVICE_NODE_WIDTH,
   SERVICE_NODE_HEIGHT,
@@ -200,7 +201,7 @@ export function useCanvasNavigation(
     // A closed drawer gives the canvas back whole: undo the pan that opening it caused, and show every node again.
     // A Deployment Page or the New branch panel opening instead keeps its own focus.
     if (selectedNodeId === null && !pageOpen && previousSelectedNodeId.current !== UNSET && previousSelectedNodeId.current !== null) {
-      void flow.fitView({ duration: prefersReducedMotion() ? 0 : 360 });
+      void flow.fitView({ ...CANVAS_FIT_VIEW, duration: prefersReducedMotion() ? 0 : 360 });
     }
     previousSelectedNodeId.current = selectedNodeId;
 
