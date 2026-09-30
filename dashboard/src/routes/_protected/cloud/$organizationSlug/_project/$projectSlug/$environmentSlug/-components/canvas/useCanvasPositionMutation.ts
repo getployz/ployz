@@ -137,7 +137,7 @@ export function usePlaceNewNode(organizationSlug: string) {
   const place = createOptimisticAction<Omit<UpdateCanvasPositionInput, "organizationSlug">>({
     onMutate: (input) => {
       const now = new Date();
-      // ponytail: the organization id is Cloud's to fill; nothing reads it before the saved row replaces this one.
+      // ponytail: the organization id is Cloud's to fill; the canvas never reads it (its schema leaves it out).
       collection.insert({ ...input, id: crypto.randomUUID(), organizationId: "", x: Math.round(input.x), y: Math.round(input.y),
         createdAt: now, updatedAt: now });
     },
