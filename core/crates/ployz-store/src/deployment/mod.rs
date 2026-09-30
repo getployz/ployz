@@ -113,6 +113,8 @@ pub struct DeploymentSummary {
     pub message: Option<String>,
     /// Whether it may still run: queued, or claimed by a runner still there.
     pub in_flight: bool,
+    /// What its runner recorded at its end; none while it hasn't ended.
+    pub outcome: Option<Outcome>,
 }
 
 /// The most characters a Deployment message has.
@@ -174,7 +176,6 @@ pub struct DeploymentView {
     pub nodes: Vec<NodeOutcome>,
     /// The Deploy Preview its runner prepared, with environment values removed.
     pub preview: Option<DeployPreview>,
-    pub outcome: Option<Outcome>,
     /// Its Git Services' builds, once their commits are pinned.
     pub builds: Vec<BuildView>,
     /// Each Service's runtime name (its Private DNS name) by its name when admitted,
@@ -572,6 +573,7 @@ pub(crate) fn load(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcErro
 fn stored(row: &Row) -> Result<Stored, RpcError> {
     let status: DeploymentStatus = row.variant(3, "Deployment status")?;
     let lease = row.int(12)?;
+    let run: Run = row.json(8, "Deployment run")?;
     let status = match lapsed(status, lease) {
         true => DeploymentStatus::Unknown,
         false => status,
@@ -597,10 +599,11 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             ended_at: row.optional_int(16)?,
             message: row.optional_text(17)?.map(str::to_owned),
             in_flight: status.in_flight(),
+            outcome: run.outcome.clone(),
         },
         nodes: row.json(6, "Deployment")?,
         namespace: row.parse::<Namespace>(7, "Namespace")?,
-        run: row.json(8, "Deployment run")?,
+        run,
         cluster_domain: row.parse_optional(10, "identity")?,
         lease,
     })
