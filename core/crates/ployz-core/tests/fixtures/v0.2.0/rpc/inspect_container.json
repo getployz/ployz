@@ -1,0 +1,20 @@
+{
+  "request": {
+    "command": "inspect_container",
+    "payload": {
+      "container_id": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "protocol_major": 1
+  },
+  "response": {
+    "kind": "error",
+    "payload": {
+      "code": "not_found",
+      "details": {
+        "container_id": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "message": "container not found"
+    },
+    "protocol_major": 1
+  }
+}

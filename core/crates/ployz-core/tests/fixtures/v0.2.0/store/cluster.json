@@ -1,0 +1,4 @@
+{
+  "certificate_policy": "{\"backoff\":{\"base\":30,\"cap\":1800},\"challenge_kind\":\"http-01\",\"directory_url\":\"https://acme-staging-v02.api.letsencrypt.org/directory\",\"key_type\":\"ecdsa-p384\",\"probe_timeout\":10,\"renew_at_lifetime_fraction\":0.5}",
+  "network": "10.210.0.0/16"
+}

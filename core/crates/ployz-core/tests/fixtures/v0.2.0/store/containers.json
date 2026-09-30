@@ -1,0 +1,85 @@
+{
+  "address": null,
+  "container_id": "1111111111111111111111111111111111111111111111111111111111111111",
+  "created_at_unix_nanos": 1700000000000000000,
+  "display_name": "api-1",
+  "effective_healthcheck": null,
+  "kind": "service_container",
+  "labels": {
+    "ployz.service.name": "api"
+  },
+  "machine_id": "0123456789abcdef0123456789abcdef",
+  "namespace": "app",
+  "resolved_spec": {
+    "configs": [],
+    "container": {
+      "cap_add": [],
+      "cap_drop": [],
+      "command": [
+        "serve"
+      ],
+      "config_mounts": [],
+      "entrypoint": [],
+      "environment": {
+        "PORT": "8080"
+      },
+      "extra_hosts": [],
+      "healthcheck": null,
+      "hostname": null,
+      "image": "api:1",
+      "init": null,
+      "labels": {},
+      "log_driver": null,
+      "open_stdin": false,
+      "pid_mode": null,
+      "privileged": false,
+      "pull_policy": "missing",
+      "resources": {
+        "cpu_nanos": null,
+        "device_reservations": [],
+        "devices": [],
+        "memory_bytes": null,
+        "memory_reservation_bytes": null,
+        "shared_memory_bytes": null,
+        "ulimits": {}
+      },
+      "restart": {
+        "name": "unless-stopped"
+      },
+      "stop_timeout_secs": null,
+      "sysctls": {},
+      "tty": false,
+      "user": null,
+      "working_directory": null
+    },
+    "mode": {
+      "mode": "replicated",
+      "replicas": 1
+    },
+    "mounts": [],
+    "name": "api",
+    "placement": {
+      "constraints": []
+    },
+    "ports": [
+      {
+        "container_port": 8080,
+        "hostname": "api.example.com",
+        "http_protocol": "http",
+        "load_balancer_port": 443,
+        "mode": "ingress"
+      }
+    ],
+    "pre_deploy": null,
+    "service_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "update": {
+      "monitor_millis": null,
+      "order": "start_first"
+    },
+    "volumes": []
+  },
+  "runtime": {
+    "health": "healthy",
+    "state": "running"
+  }
+}

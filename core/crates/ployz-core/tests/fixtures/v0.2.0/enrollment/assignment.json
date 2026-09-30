@@ -1,0 +1,125 @@
+{
+  "machine": {
+    "accepts_builds": true,
+    "accepts_ingress": true,
+    "accepts_services": true,
+    "advertised_endpoints": [
+      "203.0.113.10:51820"
+    ],
+    "build_concurrency": null,
+    "id": "fedcba9876543210fedcba9876543210",
+    "labels": {
+      "zone": "us"
+    },
+    "name": "worker",
+    "public_ip": "203.0.113.10",
+    "public_key": [
+      100,
+      101,
+      102,
+      103,
+      104,
+      105,
+      106,
+      107,
+      108,
+      109,
+      110,
+      111,
+      112,
+      113,
+      114,
+      115,
+      116,
+      117,
+      118,
+      119,
+      120,
+      121,
+      122,
+      123,
+      124,
+      125,
+      126,
+      127,
+      128,
+      129,
+      130,
+      131
+    ],
+    "runtime": {
+      "architecture": "x86_64",
+      "daemon_version": "0.2.0",
+      "docker_version": "27.0.0",
+      "hostname": "edge",
+      "kernel_version": "6.1.0",
+      "memory_total_bytes": 8000000000,
+      "os_pretty_name": "Debian GNU/Linux 12 (bookworm)",
+      "running_builds": 0
+    },
+    "subnet": "10.210.2.0/24"
+  },
+  "network": "10.210.0.0/16",
+  "request": {
+    "advertised_endpoints": [
+      "198.51.100.20:51820"
+    ],
+    "assigned_subnet": "10.210.2.0/24",
+    "initial_policy": {
+      "accepts_builds": true,
+      "accepts_ingress": true,
+      "accepts_services": true,
+      "labels": {
+        "zone": "us"
+      }
+    },
+    "machine_id": "fedcba9876543210fedcba9876543210",
+    "name": "worker",
+    "public_ip": "198.51.100.20",
+    "public_key": [
+      100,
+      101,
+      102,
+      103,
+      104,
+      105,
+      106,
+      107,
+      108,
+      109,
+      110,
+      111,
+      112,
+      113,
+      114,
+      115,
+      116,
+      117,
+      118,
+      119,
+      120,
+      121,
+      122,
+      123,
+      124,
+      125,
+      126,
+      127,
+      128,
+      129,
+      130,
+      131
+    ],
+    "runtime": {
+      "architecture": "aarch64",
+      "daemon_version": "0.2.0",
+      "docker_version": "27.0.0",
+      "hostname": "worker",
+      "kernel_version": "6.8.0",
+      "memory_total_bytes": null,
+      "os_pretty_name": "Ubuntu 24.04",
+      "running_builds": 0
+    },
+    "storage": "zfs"
+  }
+}
