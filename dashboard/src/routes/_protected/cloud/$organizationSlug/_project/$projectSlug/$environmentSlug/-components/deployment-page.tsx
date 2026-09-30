@@ -2,7 +2,7 @@ import { createContext, use } from "react";
 import { useParams } from "@tanstack/react-router";
 import { Effect, Option, Schema } from "effect";
 import { deploymentQuery, useCachedStoreView } from "#/modules/config-store/store-view.queries";
-import { nodeLight, type NodeLight } from "#/modules/config-store/store-deployments";
+import { nodeLight, nodeOutcomeLabel, type NodeLight } from "#/modules/config-store/store-deployments";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 export const DEPLOYMENT_PAGE_ROUTE_TO =
@@ -18,8 +18,10 @@ export const deploymentPageSearchSchema = Schema.Struct({
   logs: Schema.optional(Schema.Literals(["build", "deploy"]).pipe(Schema.catchDecoding(() => Effect.succeed(Option.none())))),
 });
 
+/** One node an open Deployment Page lights: how its outcome shows, and its words. */
+export type Lit = { outcome: NodeLight; label: string };
 /** Which canvas nodes an open Deployment Page (`deploymentId`) lights, by Node Outcome; null when no page is open. */
-type Lighting = { deploymentId: string; lit: ReadonlyMap<string, NodeLight> } | null;
+type Lighting = { deploymentId: string; lit: ReadonlyMap<string, Lit> } | null;
 const LightingContext = createContext<Lighting>(null);
 export const DeploymentLightingProvider = LightingContext;
 
@@ -33,8 +35,7 @@ export function useDeploymentFocus() {
 export function useNodeLighting(nodeId: string) {
   const lighting = use(LightingContext);
   if (!lighting) return undefined;
-  const outcome = lighting.lit.get(nodeId);
-  return outcome === undefined ? null : { outcome };
+  return lighting.lit.get(nodeId) ?? null;
 }
 
 /**
@@ -47,5 +48,8 @@ export function useOpenDeployment(): Lighting {
   const store = useCachedStoreView(organizationSlug, deploymentId ? deploymentQuery(deploymentId) : null);
   if (!store?.ok) return null;
   const { id, status, nodes } = store.value;
-  return { deploymentId: id, lit: new Map(nodes.map((node) => [node.id, nodeLight(node.outcome, status)])) };
+  return {
+    deploymentId: id,
+    lit: new Map(nodes.map((node) => [node.id, { outcome: nodeLight(node.outcome, status), label: nodeOutcomeLabel(node.outcome, status) }])),
+  };
 }
