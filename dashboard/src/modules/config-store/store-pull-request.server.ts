@@ -1,7 +1,8 @@
 import "@tanstack/react-start/server-only";
 import type { ConfigWritten, EnvironmentSummary, PullRequestView, SystemEvent } from "@ployz/sdk";
 import { and, eq, inArray } from "drizzle-orm";
-import { Effect, Option, Schema } from "effect";
+import { Effect, Option } from "effect";
+import { volumeLoss } from "./store-volumes";
 import { admittedEvents, callStore, storeSystem } from "#/modules/config-store/config-store.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { StoreGithubFailure, descendsFrom, pullRequestEvent } from "#/modules/config-store/store-github.server";
@@ -91,9 +92,6 @@ export const sweepStore = Effect.fn("StorePullRequest.sweepOne")(function* (
   return done;
 });
 
-/** What a `confirmation_required` refusal asks to accept, and the version that binds the answer. */
-const Confirmation = Schema.Struct({ accept: Schema.Array(Schema.String), version: Schema.String });
-
 /**
  * Take each Branch the Store is closing off the Servers, admitted like any removal (and so handed to the worker): the
  * system closes it, so it accepts every Volume loss the Store asks about, bound to the version the Store gave. Resolves
@@ -110,9 +108,8 @@ export const closeStoreEnvironments = Effect.fn("StorePullRequest.close")(functi
     });
     const admitted = yield* Effect.gen(function* () {
       const first = yield* admit([], null);
-      if (first.ok || first.refusal.code !== "confirmation_required") return first;
-      const asked = Schema.decodeUnknownOption(Confirmation)(first.refusal.details);
-      return Option.isSome(asked) ? yield* admit([...asked.value.accept], asked.value.version) : first;
+      const asked = first.ok ? null : volumeLoss(first.refusal);
+      return asked ? yield* admit([...asked.accept], asked.version) : first;
     }).pipe(Effect.option);
     const result = Option.getOrUndefined(admitted);
     if (result?.ok && result.value.written === "deployment") removals.push(result.value.id);

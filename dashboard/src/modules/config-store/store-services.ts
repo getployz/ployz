@@ -87,6 +87,10 @@ export function settingText(value: JsonValue | undefined) {
   return value === null || value === undefined ? "" : String(value);
 }
 
+/** The pink trail's props for a field whose staged change is `change`: changed, and what is deployed. */
+export const changedProps = (change: { before: JsonValue } | undefined, shown: (value: JsonValue) => string = settingText) =>
+  ({ isChanged: change !== undefined, baselineValue: change ? shown(change.before) : undefined });
+
 /** A route row's value in a diff, as far as a domain needs it. */
 const decodeRoute = Schema.decodeUnknownOption(Schema.Struct({ hostname: Schema.String }));
 

@@ -9,7 +9,6 @@ const service = {
   slug: "api-service",
   privateDns: "api",
   environmentSlug: "production",
-  publicDomain: null,
 };
 
 describe("managed service exports", () => {
@@ -52,8 +51,3 @@ describe("managed service exports", () => {
   });
 });
 
-it("lists PLOYZ_PUBLIC_DOMAIN only for a Service with a public domain", () => {
-  expect(getManagedServiceExports(service).some((row) => row.key === "PLOYZ_PUBLIC_DOMAIN")).toBe(false);
-  expect(getManagedServiceExports({ ...service, publicDomain: "api.example.test" }).find((row) => row.key === "PLOYZ_PUBLIC_DOMAIN")?.value)
-    .toBe("api.example.test");
-});

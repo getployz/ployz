@@ -44,14 +44,25 @@ type VariableAddFormAction =
 function createVariableAddFormState({
   allowSealOnCreate,
   defaultExported,
-}: VariableAddFormDefaults): VariableAddFormState {
+}: VariableAddFormDefaults, draft?: VariableAddInput): VariableAddFormState {
   return {
-    key: "",
-    value: "",
-    sealed: allowSealOnCreate,
-    exported: defaultExported,
+    key: draft?.key ?? "",
+    value: draft?.value ?? "",
+    sealed: draft?.sealed ?? allowSealOnCreate,
+    exported: draft?.exported ?? defaultExported,
     overwriteCandidate: null,
   };
+}
+
+/** `${{ service.KEY }}`: a reference to another Service's variable. */
+const SERVICE_REFERENCE = /\$\{\{\s*([^.\s}]+)\.[^}\s]+\s*\}\}/gu;
+
+/** Why `value` can't be saved: it references a Service `targets` doesn't know (each Service has targets). */
+function referenceError(value: string, targets: readonly ReferenceTarget[] | undefined) {
+  if (targets === undefined) return null;
+  const owners = new Set(targets.map((target) => target.ownerSlug));
+  const unknown = [...value.matchAll(SERVICE_REFERENCE)].map((match) => match[1]).find((owner) => !owners.has(owner ?? null));
+  return unknown === undefined ? null : `There's no service named ${unknown} to reference in this environment.`;
 }
 
 function variableAddFormReducer(
@@ -88,11 +99,15 @@ export function VariableAddForm({
   defaultExported,
   supportsExport,
   valueTargets,
+  initial,
 }: {
   variables: VariableRecord[];
   collection: VariableWriter;
+  /** Saves in the background; a refusal reopens the form with `initial`. */
   onCreateVariable: (input: VariableAddInput) => void;
   onCancel: () => void;
+  /** What was typed before a refusal. */
+  initial?: VariableAddInput;
   allowSealOnCreate: boolean;
   defaultExported: boolean;
   supportsExport: boolean;
@@ -102,7 +117,7 @@ export function VariableAddForm({
   const [state, dispatch] = useReducer(
     variableAddFormReducer,
     defaults,
-    createVariableAddFormState,
+    (initialDefaults) => createVariableAddFormState(initialDefaults, initial),
   );
 
   function closeForm() {
@@ -113,11 +128,12 @@ export function VariableAddForm({
   const typedKey = state.key.trim().toUpperCase();
   const keyError = typedKey && !VARIABLE_KEY.test(typedKey)
     ? "Use letters, digits and underscores, not starting with a digit (at most 128)." : null;
+  const valueError = state.sealed ? null : referenceError(state.value, valueTargets);
 
   function handleAdd() {
     const key = typedKey;
-    // Invalid keys stay in the form, as typed, with the reason under them.
-    if (!key || keyError) return;
+    // Invalid input stays in the form, as typed, with the reason under it.
+    if (!key || keyError || valueError) return;
 
     const existing = variables.find((variable) => variable.key === key);
     if (existing) {
@@ -202,6 +218,7 @@ export function VariableAddForm({
               className="font-mono text-xs"
             />
           )}
+          {valueError ? <FieldError>{valueError}</FieldError> : null}
         </Field>
         {allowSealOnCreate || supportsExport ? (
           <FieldGroup>
@@ -246,7 +263,7 @@ export function VariableAddForm({
         <div className="flex items-center gap-2">
           <Button
             type="submit"
-            disabled={!typedKey || keyError !== null}
+            disabled={!typedKey || keyError !== null || valueError !== null}
           >
             <CheckIcon data-icon="inline-start" />
             Add
