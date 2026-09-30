@@ -225,7 +225,7 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
                 .map_err(super::store::failed(leaf, &["logs"]))?;
             Some(Scoped {
                 namespace: view.namespace,
-                services: view.services,
+                services: view.runtime_names,
             })
         }
         _ => scope(root, &["logs"])?,

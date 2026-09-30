@@ -18,7 +18,7 @@ pub(crate) fn admit(
     frozen: &Frozen,
 ) -> Result<DeploymentSummary, RpcError> {
     let intent = saved_at(tx, environment, saved)?;
-    crate::command::check_storage(tx, environment, &intent)?;
+    crate::volume::fix_storage(tx, environment, &intent, &frozen.nodes)?;
     let environment_id = environment.as_str();
     // Without a new upload, Services without a source keep building from the latest one.
     let upload = match upload {

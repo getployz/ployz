@@ -27,7 +27,7 @@ pub use crate::volume::{
     CreateVolume, Mount, RemoveVolume, RenameVolume, SetVolumeStorage, VolumeStaged, VolumeSummary,
 };
 pub(crate) use crate::volume::{
-    check_storage, create_volume, locked_storage, remove_volume, rename_volume, set_storage,
+    create_volume, remove_volume, rename_volume, set_storage,
     summary as volume_summary,
 };
 

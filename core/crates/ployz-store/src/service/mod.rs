@@ -72,8 +72,6 @@ pub struct ServiceStaged {
     /// What waits for a Deploy: every Setting of a new Service, or the Service itself
     /// for a rename or removal. Empty when nothing changed.
     pub staged: Vec<SettingPath>,
-    /// What took effect at once: never anything here.
-    pub immediate: Vec<SettingPath>,
 }
 
 /// A Service as results name it.
@@ -165,7 +163,6 @@ pub(crate) fn insert_service(
         service: summary(&node)?,
         environment: environment.summary,
         staged,
-        immediate: Vec::new(),
     })
 }
 
@@ -187,7 +184,6 @@ pub(crate) fn rename_service(
         staged: staged(changed, &service.name),
         service,
         environment: environment.summary,
-        immediate: Vec::new(),
     })
 }
 
@@ -207,7 +203,6 @@ pub(crate) fn remove_service(
         staged: staged(true, &service.name),
         service,
         environment: environment.summary,
-        immediate: Vec::new(),
     })
 }
 

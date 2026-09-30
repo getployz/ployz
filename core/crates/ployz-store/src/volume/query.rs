@@ -171,7 +171,7 @@ fn listed(
     environment: &scope::Environment,
 ) -> Result<Vec<(VolumeListing, SavedVolumeIntent)>, RpcError> {
     let review = review::review(tx, environment)?;
-    let locked = crate::command::locked_storage(tx, &environment.summary.id)?;
+    let locked = crate::volume::locked_storage(tx, &environment.summary.id)?;
     let working = &environment.working;
     let removed = review
         .head

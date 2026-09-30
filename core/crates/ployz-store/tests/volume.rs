@@ -218,30 +218,23 @@ fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
         serde_json::from_value(json!({ "id": VOLUME, "name": "data" })).unwrap();
     assert_eq!(create.storage, VolumeKind::managed_default());
     let (store, who) = shop();
-    let set = |storage, expect| {
+    let set = |storage| {
         store.write(
             &who,
             &SetVolumeStorage {
                 environment: EnvironmentRef::default(),
                 volume: VolumeName::parse("data").unwrap(),
                 storage,
-                expect,
             },
         )
     };
-    let changed = set(VolumeKind::managed_default(), None).unwrap();
+    let changed = set(VolumeKind::managed_default()).unwrap();
     assert_eq!(texts(&changed.staged), ["volumes.data"]);
     assert!(!listed(&store, &who)[0].storage_locked);
-    let stale = changed.environment.revision;
-    set(VolumeKind::Local {}, Some(stale)).unwrap();
-    assert_eq!(
-        code(set(VolumeKind::managed_default(), Some(stale))),
-        RpcErrorCode::Conflict
-    );
     let managed = VolumeKind::Provisioned {
         maximum_bytes: 7_000_000_000.try_into().unwrap(),
     };
-    set(managed, None).unwrap();
+    set(managed).unwrap();
     admit(&store, &who, 1, &[], None).unwrap();
     let runner = RunnerId::parse("runner").unwrap();
     let claimed = store.claim(&id(1), &runner).unwrap();
@@ -276,11 +269,11 @@ fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
     );
     assert!(listed(&store, &who)[0].storage_locked);
     for storage in [VolumeKind::Local {}, VolumeKind::managed_default()] {
-        let refused = set(storage, None).unwrap_err();
+        let refused = set(storage).unwrap_err();
         assert_eq!(refused.code, RpcErrorCode::Conflict);
         assert_eq!(refused.details["storage_locked"], true);
     }
-    assert!(set(managed, None).unwrap().staged.is_empty());
+    assert!(set(managed).unwrap().staged.is_empty());
     assert_eq!(listed(&store, &who)[0].volume.storage, managed);
 }
 

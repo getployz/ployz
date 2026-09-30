@@ -116,17 +116,11 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
     commit(command: ConfigCommand, handles: readonly string[] = []): { isPersisted: { promise: Promise<ConfigWritten> } } {
       const key = "environment" in command && command.environment ? environmentKey(command.environment) : "";
       applyOptimistic(queryClient, organizationSlug, command);
-      const expects = command.command === "set_volume_storage";
-      const save = async () => {
-        const written = await send(command.command === "set_volume_storage" ? { ...command, expect: expected(key) } : command);
-        if (written.written === "volume") committed.set(key, written.environment.revision);
-        return written;
-      };
+      const save = () => send(command);
       // ponytail: waits for edits in every Environment, not just the ones it touches; edits settle in a round trip.
       const work = SPANS.has(command.command) ? async () => { await Promise.all(unsettled); return save(); } : save;
       const promise = queued(key, ["store-command", organizationSlug, key], [], work,
-        () => queryClient.invalidateQueries({ queryKey: storeViewPrefix(organizationSlug) }), expects, handles);
-      if (expects) trackEdit(promise);
+        () => queryClient.invalidateQueries({ queryKey: storeViewPrefix(organizationSlug) }), false, handles);
       return observeFailure({ isPersisted: { promise } });
     },
   };
