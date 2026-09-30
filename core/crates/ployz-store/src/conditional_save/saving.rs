@@ -1,6 +1,7 @@
 //! Saving a PR Environment's changes conditionally, and taking a save's rows.
 
 use super::*;
+use ployz_core::config::BranchPickChoice;
 
 /// Save a PR Environment's picked changes for one Destination, replacing its save
 /// there; `picks: []` withdraws it.
@@ -71,7 +72,7 @@ pub(crate) fn save(
                 landed: None,
                 // Kept sealed in case the Destination gains the key before the merge:
                 // core never moves a secret over one it holds, so it lands as a hint.
-                secret: sealed(&moving, &row.key.to_string()),
+                secret: picked_secret(&moving, &picks, &row.key.to_string()),
             })
         })
         .collect();
@@ -139,6 +140,25 @@ fn sealed(moving: &Moving, key: &str) -> Option<SavedVariableIntent> {
             variable.key == name && matches!(variable.value, SavedVariableValue::Secret { .. })
         })
         .cloned()
+}
+
+/// The sealed secret row `key` lands as its pick has it: the pull request's, or the
+/// new value picked for it; none when it is left out or takes the Parent's.
+fn picked_secret(moving: &Moving, picks: &[BranchPick], key: &str) -> Option<SavedVariableIntent> {
+    let mut secret = sealed(moving, key)?;
+    match &picks.iter().find(|pick| pick.key == key)?.choice {
+        None | Some(BranchPickChoice::From) => {}
+        Some(BranchPickChoice::New { value: Some(value) }) => {
+            secret.value = value.value.clone();
+            secret.value_fingerprint.clone_from(&value.value_fingerprint);
+        }
+        Some(
+            BranchPickChoice::New { value: None }
+            | BranchPickChoice::Parent
+            | BranchPickChoice::LeaveOut,
+        ) => return None,
+    }
+    Some(secret)
 }
 
 /// The secrets the PR Environment changed that the Destination holds too: core
