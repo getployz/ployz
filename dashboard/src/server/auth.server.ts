@@ -209,7 +209,7 @@ const makeAuth = Effect.gen(function* () {
     user: {
       additionalFields: userAdditionalFields,
     },
-    advanced: { database: { generateId: "uuid" } },
+    advanced: { database: { generateId: "uuid" }, ipAddress: { ipAddressHeaders: config.auth.clientIpHeaders } },
     databaseHooks: {
       user: {
         create: { after: (createdUser) => runHook(handleUserCreated(createdUser)) },

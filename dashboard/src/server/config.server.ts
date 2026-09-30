@@ -47,6 +47,8 @@ const rawFields = {
   betterAuthTrustedOrigins: optional(
     Config.nonEmptyString("BETTER_AUTH_TRUSTED_ORIGINS"),
   ),
+  // Railway injects this; its edge sets X-Real-IP to the client's address, overwriting any sent.
+  railwayEnvironmentId: optional(Config.nonEmptyString("RAILWAY_ENVIRONMENT_ID")),
   githubClientId: Config.nonEmptyString("GITHUB_CLIENT_ID"),
   githubClientSecret: Config.schema(NonEmptySecret, "GITHUB_CLIENT_SECRET"),
   githubAppId: Config.nonEmptyString("GITHUB_APP_ID"),
@@ -149,6 +151,8 @@ const makeAppConfig = Effect.gen(function* () {
       secret: raw.betterAuthSecret,
       trustedOrigins: raw.betterAuthTrustedOrigins,
       url: raw.appUrl,
+      // Elsewhere better-auth's default: a single-address X-Forwarded-For.
+      clientIpHeaders: raw.railwayEnvironmentId === undefined ? undefined : ["x-real-ip"],
     },
     github: {
       clientId: raw.githubClientId,
