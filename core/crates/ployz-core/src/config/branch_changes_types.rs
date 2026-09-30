@@ -173,7 +173,7 @@ pub enum BranchRole {
 }
 
 /// Why a row never moves.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum BranchReason {
     Live,

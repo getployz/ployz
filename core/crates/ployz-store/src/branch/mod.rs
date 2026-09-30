@@ -20,11 +20,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::config::{
     BranchChanges, BranchChangesInput, BranchChoice, BranchHostnames, BranchNewValue,
     BranchNodeReason, BranchNodeRole, BranchOption, BranchPick, BranchPickChoice, BranchPicks,
-    BranchPlan, BranchPreset, BranchRole, BranchRow, COMMAND_MAX, ConfigError, EnvironmentNodeType,
-    LiveLineageUse, LiveValuesInput, LiveValuesOwner, SavedEnvironmentIntent, SavedServiceIntent,
-    SavedVariableProducer, SavedVariableValue, ServiceImageCredentials, ServiceSource, ValuePart,
-    ValuePartOwner, branch_changes, canonicalize_environment_intent, compile_environment_intent,
-    live_values, plan_branch,
+    BranchPlan, BranchPreset, BranchReason, BranchRole, BranchRow, COMMAND_MAX, ConfigError,
+    EnvironmentNodeType, LiveLineageUse, LiveValuesInput, LiveValuesOwner, SavedEnvironmentIntent,
+    SavedServiceIntent, SavedVariableProducer, SavedVariableValue, ServiceImageCredentials,
+    ServiceSource, ValuePart, ValuePartOwner, branch_changes, canonicalize_environment_intent,
+    compile_environment_intent, live_values, plan_branch,
 };
 use ployz_core::{Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -256,6 +256,22 @@ pub struct MoveView {
     pub version: String,
     /// Each change that moves.
     pub rows: Vec<MoveRow>,
+    /// Each setting that differs and stays: sizing, domains and the Git branch
+    /// belong to each Environment, so a Move never carries them.
+    pub differ: Vec<DifferRow>,
+}
+
+/// A setting that differs between the two and stays as it is.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct DifferRow {
+    /// `NODE.path`.
+    pub row: String,
+    /// Why it stays.
+    pub why: BranchReason,
+    /// The value on the side changes come from.
+    pub from: Value,
+    /// The receiver's value.
+    pub into: Value,
 }
 
 /// One change a Move carries.
