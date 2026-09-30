@@ -499,3 +499,60 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
         json!("pr-secret")
     );
 }
+
+#[test]
+fn a_secret_the_destination_gains_after_the_save_lands_as_a_hint() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[("web.env.TOKEN", json!({ "secret": "pr-secret" }))],
+    );
+    store.write(&who, &save(&["web.env"], None)).unwrap();
+    // Production gains its own TOKEN before the merge.
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!({ "secret": "own" }))],
+    );
+    publish(&store, &who, "production");
+    assert_eq!(push(&store, &who, 4, &[]).admitted.len(), 1);
+    observe(
+        &store,
+        &who,
+        SystemEvent::PullRequest(facts(false, Some(MERGE), Some(commit(4)), 2)),
+    );
+    let hints = store
+        .read(
+            &who,
+            &DiffQuery {
+                environment: at("production"),
+            },
+        )
+        .unwrap()
+        .hints;
+    assert_eq!(hints.len(), 1, "{hints:?}");
+    assert_eq!(
+        (hints[0].row.as_str(), hints[0].landed),
+        ("web.env.TOKEN", Landed::Hint)
+    );
+    store
+        .write(
+            &who,
+            &Move::Take(Take {
+                from: hints[0].save.clone(),
+                into: None,
+                rows: None,
+                version: None,
+            }),
+        )
+        .unwrap();
+    publish(&store, &who, "production");
+    let pushed = push(&store, &who, 5, &[]);
+    assert_eq!(
+        resolved(&store, &pushed.admitted[0].deployment.id, "TOKEN"),
+        json!("pr-secret")
+    );
+}
