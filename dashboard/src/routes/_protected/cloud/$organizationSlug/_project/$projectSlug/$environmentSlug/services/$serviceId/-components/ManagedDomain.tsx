@@ -1,4 +1,4 @@
-import { Effect, Schema, SchemaGetter, SchemaIssue } from "effect";
+import { Schema, SchemaGetter } from "effect";
 import { Button } from "#/components/ui/button";
 import {
   Dialog,
@@ -20,16 +20,19 @@ import { parseServiceSetting, type ServiceManagedHostname } from "@ployz/sdk/con
 import { strictParseOptions } from "#/lib/schema";
 import { domainPortSchema } from "./domain-port";
 
-/** A field core admits: Effect owns the form's envelope, Rust the rule. */
+/** Why core refuses `value`, in its words, or undefined when it admits it. */
+function coreRefusal(parse: (value: unknown) => unknown, value: unknown) {
+  try { parse(value); return undefined; } catch (cause) { return cause instanceof Error ? cause.message : "Invalid domain"; }
+}
+
+/** A field core admits: Effect owns the form's envelope, Rust the rule and its message. */
 function coreSetting<T>(parse: <Input>(value: Input) => T) {
-  const decoded = Schema.declare<T>((value): value is T => {
-    try { parse(value); return true; } catch { return false; }
-  });
-  return decoded.pipe(Schema.decodeTo(decoded, {
-    decode: SchemaGetter.transformOrFail((value, options) => Effect.try({
-      try: () => parse(value),
-      catch: (cause) => new SchemaIssue.InvalidValue({ message: cause instanceof Error ? cause.message : "Invalid domain" }, undefined, options),
-    })),
+  const admitted = (value: unknown): value is T => coreRefusal(parse, value) === undefined;
+  // The input side lets anything through to the check, so a refusal shows core's reason, not the declaration's
+  // generic "Expected <Declaration>".
+  const input = Schema.declare<T>((_value): _value is T => true).check(Schema.makeFilter((value) => coreRefusal(parse, value)));
+  return input.pipe(Schema.decodeTo(Schema.declare<T>(admitted), {
+    decode: SchemaGetter.transform((value) => parse(value)),
     encode: SchemaGetter.transform((value) => value),
   }));
 }
