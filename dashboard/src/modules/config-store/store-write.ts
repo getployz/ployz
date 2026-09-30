@@ -113,7 +113,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
      * Any other command: shown at once in the cached views (`applyOptimistic`), saved in the background. One naming an
      * Environment runs after that Environment's pending edits; one that reads or writes another Environment too (a
      * Move, a new Branch, a copied node: often the implied Parent) runs after every pending edit. It persists once the
-     * views it may move have refetched (its Environment's and the Organization's; every view for one spanning several),
+     * views it may move have refetched (its Environment's; every view for one spanning several or naming none),
      * which also replaces the guess. A refusal toasts here, unless its code
      * is one the caller `handles`, rolls the views back, and rejects with `StoreRefused`. UI that awaits it (a Deploy,
      * a destructive confirmation, an external service) is a listed command in the boundary test.
