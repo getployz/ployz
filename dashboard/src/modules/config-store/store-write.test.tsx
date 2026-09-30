@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import type { ConfigWritten, EnvironmentView } from "@ployz/sdk";
+import type { ConfigCommand, ConfigWritten, EnvironmentView } from "@ployz/sdk";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
 import { afterEach, expect, it, vi } from "vitest";
@@ -205,13 +205,17 @@ it("words a command's conflict as the Store does: a taken domain isn't a stale r
   expect(error).toHaveBeenCalledWith("Another Service already has this domain");
 });
 
-it("leaves a Deploy's confirmation_required to its caller: a question for the user, not a failure to toast", async () => {
+it("leaves a Deploy's confirmation_required to a caller that handles it, and toasts it for one that doesn't", async () => {
   const test = setup(view(2, 1));
   const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
   const details = { volumes: [{ id: "v", name: "pg-data", docker_volume: "ns_vol-v", deletes: [{ machine_id: "m1", name: "ns_vol-v" }] }], accept: ["pg-data"], version: "9:1:0.1" };
   test.write.mockResolvedValueOnce({ ok: false, refusal: { code: "confirmation_required", message: "This Deploy permanently deletes the data of pg-data", details } });
   const writer = renderHook(() => useStoreWriter("acme")).result.current;
-  const admitted = writer.commit({ command: "admit", admit: "deploy", id: "d", environment: ref, services: [], version: null, accept_volume_loss: [] });
+  const deploy = { command: "admit", admit: "deploy", id: "d", environment: ref, services: [], version: null, accept_volume_loss: [] } satisfies ConfigCommand;
+  const admitted = writer.commit(deploy, ["confirmation_required"]);
   await expect(admitted.isPersisted.promise).rejects.toMatchObject({ code: "confirmation_required", details });
   expect(error).not.toHaveBeenCalled();
+  test.write.mockResolvedValueOnce({ ok: false, refusal: { code: "confirmation_required", message: "This Deploy permanently deletes the data of pg-data", details } });
+  await expect(writer.commit(deploy).isPersisted.promise).rejects.toMatchObject({ code: "confirmation_required" });
+  expect(error).toHaveBeenCalledWith("This Deploy permanently deletes the data of pg-data");
 });

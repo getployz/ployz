@@ -19,10 +19,9 @@ import {
   branchQuery, environmentsQuery, fetchStoreView, saveQuery, servicesQuery, updateQuery, useStoreDeployments, useStoreViews, volumesQuery,
 } from "#/modules/config-store/store-view.queries";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { volumeLoss, type VolumeLoss } from "#/modules/config-store/store-volumes";
+import { useVolumeLossCheck, type VolumeAcceptance as Acceptance } from "#/modules/config-store/use-volume-loss-check";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
-import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { actionVariant, NewsRow } from "./BranchNews";
@@ -255,7 +254,6 @@ function StoreSaveSheet({ store, branch, view, deletable, onSaved, onClose }: {
   );
 }
 
-type Acceptance = Pick<VolumeLoss, "accept" | "version">;
 
 /**
  * Closing a Branch over the Config Store. Never deployed, or already off the Servers, it goes at once and the page
@@ -266,7 +264,7 @@ function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: Bran
   const writer = useStoreWriter(params.organizationSlug);
   const navigate = useNavigate();
   const deployments = useStoreDeployments(params.organizationSlug, store).data.pages[0]?.deployments ?? [];
-  const { machines } = useRuntimeLens(params.organizationSlug);
+  const lossOf = useVolumeLossCheck(params.organizationSlug);
   const place = `${store.project ?? ""}/${store.environment ?? ""}`;
   const [loss, setLoss] = useState<DeletionCheck<Acceptance> | null>(null);
   // Shutting down takes it off the Servers and keeps it; closing then removes it.
@@ -288,19 +286,12 @@ function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: Bran
     try {
       await writer.commit({
         command: "admit", admit: "remove", id: crypto.randomUUID(), environment: store, version, accept_volume_loss: [...accept],
-      }).isPersisted.promise;
+      }, ["confirmation_required"]).isPersisted.promise;
       toast(`${name} is coming off the servers`,
         { description: shut ? "The pull request's next push brings it back." : "Its panel finishes closing it once it's off." });
       return null;
     } catch (error) {
-      const refused = error instanceof StoreRefused ? volumeLoss(error) : null;
-      return refused ? {
-        items: refused.volumes.map((volume): DeletionItem => ({
-          kind: "volume", name: volume.name,
-          detail: volume.deletes.flatMap((held) => machines.find((machine) => machine.id === held.machine_id)?.name ?? []).join(", ") || undefined,
-        })),
-        evidence: { accept: refused.accept, version: refused.version },
-      } : null;
+      return error instanceof StoreRefused ? lossOf(error) : null;
     }
   }
 

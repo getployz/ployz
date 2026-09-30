@@ -70,9 +70,8 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
       },
       onError: async (error) => {
         // Only a write that sent `expect` meets a stale revision; a command's `conflict` (a taken name) says its own.
-        // `confirmation_required` is a question for the caller to put to the user, not a failure; so is any refusal
-        // the caller says it handles.
-        if (!(error instanceof StoreRefused && (error.code === "confirmation_required" || handled.includes(error.code)))) {
+        // A refusal the caller says it handles (`confirmation_required`, a question it puts to the user) is its to show.
+        if (!(error instanceof StoreRefused && handled.includes(error.code))) {
           toast.error(expects && error instanceof StoreRefused && error.code === "conflict" ? CONFLICT
             : error instanceof TypeError ? UNREACHABLE : error.message);
         }

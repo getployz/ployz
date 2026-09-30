@@ -1,12 +1,9 @@
 import { useRef, useState } from "react";
 import type { EnvironmentRef } from "@ployz/sdk";
-import { DeletionDialog, type DeletionCheck, type DeletionItem } from "#/components/deletion-dialog";
+import { DeletionDialog, type DeletionCheck } from "#/components/deletion-dialog";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
-import { volumeLoss, type VolumeLoss } from "#/modules/config-store/store-volumes";
-import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-
-type Acceptance = Pick<VolumeLoss, "accept" | "version">;
+import { useVolumeLossCheck, type VolumeAcceptance as Acceptance } from "#/modules/config-store/use-volume-loss-check";
 type Action = "deploy" | "publish";
 /** A Deploy's own words: what it ships (optional; the Store trims it). */
 type Message = string | null;
@@ -23,23 +20,13 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   /** The version of the review the user sees: every action acts on exactly it, and a newer one is refused. */
   version: string, onAdmitted: (deploymentId: string) => void) {
   const writer = useStoreWriter(organizationSlug);
-  const { machines } = useRuntimeLens(organizationSlug);
+  const lossOf = useVolumeLossCheck(organizationSlug);
   // What the user types to confirm: where the data goes from.
   const place = `${environment.project ?? ""}/${environment.environment ?? ""}`;
   const [loss, setLoss] = useState<{ action: Action; check: DeletionCheck<Acceptance>; message: Message } | null>(null);
   // One admission at a time: a double click must not admit two Deployments.
   const [admitting, setAdmitting] = useState(false);
   const inFlight = useRef(false);
-
-  function check(refused: VolumeLoss): DeletionCheck<Acceptance> {
-    const items = refused.volumes.map((volume): DeletionItem => ({
-      kind: "volume",
-      name: volume.name,
-      // The Servers holding its data, by name.
-      detail: volume.deletes.flatMap((held) => machines.find((machine) => machine.id === held.machine_id)?.name ?? []).join(", ") || undefined,
-    }));
-    return { items, evidence: { accept: refused.accept, version: refused.version } };
-  }
 
   /** Deploys or publishes; resolves with what it would delete when the Store asks first, else null. */
   async function run(action: Action, { accept, version }: { accept: readonly string[]; version: string }, message: Message = null) {
@@ -48,14 +35,13 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     try {
       await writer.commit(action === "deploy"
         ? { command: "admit", admit: "deploy", id, environment, services: [], version, accept_volume_loss: [...accept], message: words }
-        : { command: "publish", environment, version, accept_volume_loss: [...accept] }).isPersisted.promise;
+        : { command: "publish", environment, version, accept_volume_loss: [...accept] }, ["confirmation_required"]).isPersisted.promise;
       if (action === "deploy") onAdmitted(id);
       return null;
     } catch (error) {
-      const refused = error instanceof StoreRefused ? volumeLoss(error) : null;
-      if (refused) return { action, check: check(refused), message };
-      // The writer toasted it.
-      return null;
+      const check = error instanceof StoreRefused ? lossOf(error) : null;
+      // Anything else the writer toasted.
+      return check && { action, check, message };
     }
   }
 
