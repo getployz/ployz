@@ -296,7 +296,7 @@ fn moved_out(matches: &ArgMatches, shift: Shift, moved: &Moved) -> Result<(), Er
             _ => say!("Moved {from} → {into}."),
         }
         if !moved.staged.is_empty() {
-            say!("Staged: {}", super::joined(&moved.staged));
+            say!("Staged: {}", crate::handlers::joined(&moved.staged));
         }
         if let Some(close) = &out.close {
             say!("Close the Branch when done: {close}");
@@ -360,7 +360,7 @@ fn finish(result: &Branched, deploy: Option<String>, what: &str) -> Result<(), E
             branch.parent
         );
         if !result.staged.is_empty() {
-            say!("Staged: {}", super::joined(&result.staged));
+            say!("Staged: {}", crate::handlers::joined(&result.staged));
         }
         for live in &branch.live {
             match &live.owner {

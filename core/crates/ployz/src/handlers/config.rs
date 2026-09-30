@@ -361,12 +361,12 @@ fn edit_as(root: &ArgMatches, changes: Vec<Change>, args: &[String]) -> Result<(
         if !edited.staged.is_empty() {
             say!(
                 "Staged {} in {where_} (revision {}).",
-                join(&edited.staged),
+                super::joined(&edited.staged),
                 edited.environment.revision
             );
         }
         if !edited.immediate.is_empty() {
-            say!("Applied {} in {where_}.", join(&edited.immediate));
+            say!("Applied {} in {where_}.", super::joined(&edited.immediate));
         }
     })
 }
@@ -389,13 +389,6 @@ fn rerun(changes: &[Change]) -> Vec<String> {
     words
 }
 
-fn join(paths: &[SettingPath]) -> String {
-    paths
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(", ")
-}
 
 /// A Setting value as a person reads it: text bare, anything else as JSON.
 fn display_value(value: &Value) -> String {

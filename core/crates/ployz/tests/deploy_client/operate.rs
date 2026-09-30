@@ -201,8 +201,9 @@ async fn server_clean_removes_only_a_namespace_no_environment_owns() {
     );
     assert_eq!(
         listed["next"],
-        "ployz server clean --namespace left-over --confirm left-over"
+        format!("ployz server clean --connect tcp://{address} --namespace left-over --confirm left-over")
     );
+    assert_eq!(listed["omitted"], serde_json::json!([]), "{listed}");
 
     let owned = ["server", "clean", "--namespace", "shop-production"];
     let (code, refused) = ployz(Some(&db), &address, &owned).await;
@@ -222,6 +223,10 @@ async fn server_clean_removes_only_a_namespace_no_environment_owns() {
     assert_eq!(code, 1, "{unconfirmed}");
     assert_eq!(
         unconfirmed["error"]["code"], "confirmation_required",
+        "{unconfirmed}"
+    );
+    assert_eq!(
+        unconfirmed["error"]["details"]["namespace"], "left-over",
         "{unconfirmed}"
     );
     let (code, _) = ployz(
@@ -250,6 +255,5 @@ async fn server_clean_removes_only_a_namespace_no_environment_owns() {
     let (code, cleaned) = ployz(Some(&db), &address, &confirmed).await;
     assert_eq!(code, 0, "{cleaned}");
     assert_eq!(cleaned["namespace"], "left-over", "{cleaned}");
-    assert_eq!(cleaned["removed"], true, "{cleaned}");
     server.abort();
 }

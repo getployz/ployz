@@ -8,29 +8,49 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     cluster::{Client, evict_machine},
     deploy::{DeploySnapshot, VolumeFate},
+    output::Gaps,
 };
 
 impl Client {
     /// Every user Namespace the Cluster runs, with its Services and Docker Volumes,
-    /// as far as the Machines that answered show it.
+    /// as far as the Machines that answered show it, and the Machines whose
+    /// Containers or Volumes went unseen.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when listing Machines fails.
-    pub async fn namespaces(&mut self) -> Result<Vec<ployz_core::NamespaceObservation>, RpcError> {
+    pub(crate) async fn namespaces(
+        &mut self,
+    ) -> Result<(Vec<ployz_core::NamespaceObservation>, Gaps), RpcError> {
         let machines = self.machines().await.map_err(RpcError::from)?;
         let snapshot = self
             .deploy_snapshot(machines)
             .await
             .map_err(RpcError::from)?;
-        let volumes = snapshot.volume_snapshot.observations();
-        Ok(derive_namespaces(
+        let seen = &snapshot.volume_snapshot;
+        let mut gaps = Gaps::default();
+        gaps.extend(&snapshot.container_failures, &snapshot.container_omissions);
+        gaps.extend(seen.machine_failures(), seen.omissions());
+        // A Volume a Machine couldn't inspect has no known Namespace.
+        let unread: Vec<_> = seen
+            .named_failures()
+            .iter()
+            .map(|failure| MachineFailure {
+                machine_id: failure.id.machine_id,
+                error: failure.error.clone(),
+            })
+            .collect();
+        gaps.extend(&unread, &[]);
+        let namespaces = derive_namespaces(
             &snapshot.containers,
-            volumes.iter().map(|volume| (&volume.id, &volume.labels)),
+            seen.observations()
+                .iter()
+                .map(|volume| (&volume.id, &volume.labels)),
         )
         .into_iter()
         .filter(|namespace| !namespace.name.is_reserved())
-        .collect())
+        .collect();
+        Ok((namespaces, gaps))
     }
 
     /// Live Observation of Data Loss that destroying this Cluster would cause.

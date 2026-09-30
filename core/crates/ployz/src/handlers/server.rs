@@ -115,7 +115,7 @@ fn no_reachable_server(unreachable: Vec<ployz_core::MachineId>) -> Error {
         RpcErrorCode::Unavailable,
         format!(
             "no Server of this Organization is reachable now: {}",
-            super::env::joined(&unreachable)
+            super::joined(&unreachable)
         ),
         json!({ "unreachable": unreachable }),
     )
