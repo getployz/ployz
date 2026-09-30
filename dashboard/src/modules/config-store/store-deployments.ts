@@ -68,8 +68,10 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
         label: setting === "name" ? "Name" : title ?? untitledLabel(node.type, setting),
         currentValue: shownValue(row.before),
         newValue: shownValue(row.after),
-        // A Setting, variable or mount discards alone; a domain, a rename or a Volume's own row goes with its node.
-        canDiscard: node.type === "service" && (row.canRestore && title !== undefined || /^(env|mounts)\./u.test(setting)),
+        // A Setting, variable or mount discards alone; a domain or a rename goes with its node. A Volume's row
+        // discards alone when the Store can restore it (a deployed Volume's name or storage).
+        canDiscard: node.type === "volume" ? row.canRestore
+          : row.canRestore && title !== undefined || /^(env|mounts)\./u.test(setting),
       };
     }),
   }));

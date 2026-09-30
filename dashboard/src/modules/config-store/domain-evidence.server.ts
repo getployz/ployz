@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { Resolver } from "node:dns/promises";
-import type { ClusterDomainStatus as StoreClusterDomainStatus, ConfigDomainEvidence, DnsLookup } from "@ployz/sdk";
+import type { ClusterDomainStatus as StoreClusterDomainStatus, ConfigDomainEvidence, DnsLookup, PublishedHostname, RuntimeWatchView } from "@ployz/sdk";
 import { Clock, Effect, Option, Schema } from "effect";
 import { customDomainsAllowed } from "#/modules/billing/custom-domain-capability";
 import { clusterDomainStatus } from "#/modules/cluster-domain/cluster-domain";
@@ -18,7 +18,7 @@ const OBSERVATION_TTL_MS = 15_000;
 
 /** The parts of a call that need domain evidence; decode it with this. The Store validates the whole call. */
 const DomainCall = Schema.Union([
-  Schema.Struct({ command: Schema.Literals(["add_domain", "remove_domain"]) }),
+  Schema.Struct({ command: Schema.Literals(["add_domain", "remove_domain", "set_generated_domain"]) }),
   // Only a Deploy expands domains: a removal expands none, a retry inherits what its source froze.
   Schema.Struct({ command: Schema.Literal("admit"), admit: Schema.Literal("deploy"), environment: Schema.optional(EnvironmentRef) }),
   Schema.Struct({ query: Schema.Literal("domains") }),
@@ -37,9 +37,20 @@ function clusterDomain(row: OrganizationClusterDomain | null): ConfigDomainEvide
   return { name: row.name, status: seen };
 }
 
+/** The hostnames the Servers publish now, each with the Namespace and Service publishing it. */
+export function publishedOf(frame: RuntimeWatchView): PublishedHostname[] {
+  const seen = new Map<string, PublishedHostname>();
+  for (const container of frame.containers) {
+    for (const port of container.resolved_spec.ports) {
+      if (port.mode === "ingress") seen.set(`${container.namespace}/${port.hostname}`, { hostname: port.hostname, namespace: container.namespace, service: container.resolved_spec.name });
+    }
+  }
+  return [...seen.values()];
+}
+
 /**
- * One Runtime Watch frame: the Cluster's certificates and its ingress Servers' public addresses. Nothing when no
- * Cluster answers, so the Store reads its certificates as unobserved.
+ * One Runtime Watch frame: the Cluster's certificates, its ingress Servers' public addresses, and the hostnames its
+ * Services publish. Nothing when no Cluster answers, so the Store reads its certificates as unobserved.
  */
 const observeCluster = Effect.fn("ConfigStore.observeCluster")(function* (organizationId: string) {
   const frame = yield* firstRuntimeFrame(organizationId);
@@ -48,6 +59,7 @@ const observeCluster = Effect.fn("ConfigStore.observeCluster")(function* (organi
     certificates: frame.certificates,
     ingress_addresses: frame.machines.flatMap(({ machine }) =>
       machine.accepts_ingress && machine.public_ip !== null ? [machine.public_ip] : []),
+    published: publishedOf(frame),
   };
 }, Effect.catch((error) =>
   Effect.logWarning("No runtime frame for domain statuses; they read as unobserved.", error).pipe(Effect.as(null))));
@@ -64,6 +76,15 @@ const observeClusterRecently = (organizationId: string, fresh: boolean) => Effec
   const seen = yield* observeCluster(organizationId);
   observations.set(organizationId, { at: now, seen });
   return seen;
+});
+
+/** How old an observation's published hostnames may be for a domain edit, which never waits on the Cluster (E14). */
+const PUBLISHED_TTL_MS = 5 * 60_000;
+
+/** The hostnames the Cluster published when last observed recently; null when it wasn't, and the Store refuses nothing for them. */
+const recentlyPublished = (organizationId: string) => Effect.map(Clock.currentTimeMillis, (now) => {
+  const last = observations.get(organizationId);
+  return last?.seen && now - last.at < PUBLISHED_TTL_MS ? last.seen.published : null;
 });
 
 /** A name that doesn't resolve answers nothing; any other failure (a timeout, SERVFAIL) is no answer at all. */
@@ -100,18 +121,25 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
   if (wanted === undefined) return nothing;
   if ("command" in wanted) {
     if (wanted.command !== "admit") {
-      return {
+      const edit: ConfigDomainEvidence = {
         ...nothing,
         custom_domains: wanted.command === "add_domain" && (yield* customDomainsAllowed(organizationId)),
         cluster_domain: clusterDomain(yield* loadClusterDomain(organizationId)),
       };
+      const published = yield* recentlyPublished(organizationId);
+      if (published) edit.published = published;
+      return edit;
     }
     const domains = yield* storeTry(() => read({ query: "domains", environment: environmentOf(wanted.environment), service: null })).pipe(
       Effect.option,
     );
     const generated = Option.getOrUndefined(domains)?.domains.some((domain) => domain.kind === "generated") ?? false;
     const row = generated ? yield* reserveClusterDomain(organizationId) : yield* loadClusterDomain(organizationId);
-    return { ...nothing, cluster_domain: clusterDomain(row) };
+    // A Deploy refuses a hostname another Namespace publishes: it looks at the Cluster (or a look from seconds ago).
+    const deploy: ConfigDomainEvidence = { ...nothing, cluster_domain: clusterDomain(row) };
+    const seen = generated ? yield* observeClusterRecently(organizationId, false) : null;
+    if (seen) deploy.published = seen.published;
+    return deploy;
   }
   const evidence: ConfigDomainEvidence = {
     ...nothing,
