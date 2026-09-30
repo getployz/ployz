@@ -303,12 +303,17 @@ fn a_service_keeps_the_template_it_was_created_from_until_unset() {
             }),
         )
         .unwrap();
-    // A changed template is a diff row like any Setting.
-    edit(Change::Set {
+    // A template is a tag: changed, it takes effect at once and is no diff row.
+    let changed = edit(Change::Set {
         path: SettingPath::parse("db.template").unwrap(),
         value: json!({ "id": "postgres", "version": 2 }),
     })
     .unwrap();
+    let Written::Edited(changed) = changed else {
+        panic!("an edit writes Edited")
+    };
+    assert!(changed.staged.is_empty());
+    assert_eq!(template(), json!({ "id": "postgres", "version": 2 }));
     edit(Change::Set {
         path: SettingPath::parse("db.env.MODE").unwrap(),
         value: json!("fast"),
@@ -322,9 +327,11 @@ fn a_service_keeps_the_template_it_was_created_from_until_unset() {
         .flat_map(|change| &change.settings)
         .map(|row| (row.path.as_str(), row.can_restore))
         .collect();
-    for row in [("db.template", true), ("db.env.MODE", true)] {
-        assert!(rows.contains(&row), "{rows:?}");
-    }
+    assert!(rows.contains(&("db.env.MODE", true)), "{rows:?}");
+    assert!(
+        !rows.iter().any(|(path, _)| *path == "db.template"),
+        "{rows:?}"
+    );
     let refused = edit(Change::Set {
         path: SettingPath::parse("db.template").unwrap(),
         value: json!({ "id": "Not A Label", "version": 1 }),
