@@ -9,16 +9,15 @@ import { useNodeLighting } from "../deployment-page";
 import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
-import { stagedChip } from "./node-status";
-import { DeployChip, StatusLine } from "./service-node-helpers";
-
-const NOT_MOUNTED = { word: "Not mounted", tone: "idle", down: false, since: null } as const;
+import { NOT_MOUNTED, stagedChip, stagedSurface } from "./node-status";
+import { DeployChip, StatusLine } from "./node-status-view";
+import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 
 /** A Volume no Service here mounts, on the canvas and in its phone list: the one kind of Volume that is its own node. */
 export function StoreVolumeCard({ volume, selected, className }: { volume: VolumeListing; selected: boolean; className: string }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const light = useNodeLighting(volume.id);
-  const staged = light === undefined && volume.change !== null;
+  const surface = stagedSurface(light, volume.change);
   return (
     <Link
       to={ENVIRONMENT_RESOURCE_ROUTE_TO}
@@ -29,12 +28,12 @@ export function StoreVolumeCard({ volume, selected, className }: { volume: Volum
       draggable={false}
       className={cn("rounded-xl", className)}
     >
-      <Card size="node" state={staged ? (volume.change === "delete" ? "destructive" : "changed") : undefined}
+      <Card size="node" state={surface}
         className={cn("h-full justify-between", light === null && "opacity-40")} data-selected={selected}>
         <CardHeader>
           <div className="flex items-start gap-3">
             <Avatar><AvatarFallback><HardDriveIcon /></AvatarFallback></Avatar>
-            <CardTitle className="min-w-0 flex-1 truncate">{volume.name}</CardTitle>
+            <CardTitle className={cn("min-w-0 flex-1 truncate", surface === "destructive" && "line-through")}>{volume.name}</CardTitle>
             <DeployChip light={light} chip={volume.change === null ? null : stagedChip(volume.change, 0)} />
           </div>
         </CardHeader>
@@ -44,14 +43,15 @@ export function StoreVolumeCard({ volume, selected, className }: { volume: Volum
   );
 }
 
-export function StoreVolumeNode({ data, selected }: { data: { volume: VolumeListing }; selected?: boolean }) {
+export function StoreVolumeNode({ data }: { data: { volume: VolumeListing } }) {
   const pick = useNodePick(data.volume.name);
+  const { selectedNodeId } = useCanvasInspectorSelection();
   if (pick) return <PickedNode pick={pick} name={data.volume.name} nodeId={data.volume.id} icon={<HardDriveIcon />} />;
   return (
     <>
       <Handle type="target" position={Position.Bottom} isConnectable={false} className="opacity-0" />
       <Handle type="source" position={Position.Top} isConnectable={false} className="opacity-0" />
-      <StoreVolumeCard volume={data.volume} selected={selected ?? false} className="block h-36 w-72" />
+      <StoreVolumeCard volume={data.volume} selected={selectedNodeId === data.volume.id} className="block h-36 w-72" />
     </>
   );
 }

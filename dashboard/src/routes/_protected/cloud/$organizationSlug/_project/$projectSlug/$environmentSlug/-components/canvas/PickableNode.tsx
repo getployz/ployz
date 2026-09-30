@@ -14,8 +14,7 @@ export function PickableNode({ pick, name, nodeId, children }: { pick: NodePick;
       aria-disabled={pick.fixed || undefined}
       aria-label={`${name}, ${pick.label}${pick.ownsData ? ", real data" : ""}`}
       data-canvas-node={nodeId}
-      className={cn("block h-36 w-72 rounded-xl text-left outline-none focus-visible:ring-3 focus-visible:ring-ring",
-        pick.fixed ? "cursor-default" : "cursor-pointer")}
+      className={cn("block h-36 w-72 rounded-xl text-left", pick.fixed ? "cursor-default" : "cursor-pointer")}
       onClick={() => { if (!pick.fixed) pick.toggle(); }}
     >
       <Handle type="target" position={Position.Bottom} isConnectable={false} className="opacity-0" />

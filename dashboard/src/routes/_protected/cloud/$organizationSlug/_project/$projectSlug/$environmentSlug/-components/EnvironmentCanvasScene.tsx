@@ -20,8 +20,8 @@ import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
 import { BottomBarSlot } from "./canvas/BottomBar";
 import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
-import { buildStoreEdges, buildStoreNodes } from "./canvas/nodes";
-import type { StoreCanvasService } from "./canvas/types";
+import { buildStoreEdges, buildStoreNodes, volumeTrays } from "./canvas/nodes";
+import type { StoreCanvas } from "./canvas/types";
 import { branchQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { liveNodes } from "#/modules/config-store/store-branches";
 import { serviceChanges, serviceSettingRows } from "#/modules/config-store/store-services";
@@ -79,31 +79,36 @@ function CanvasWithData() {
       .select(({ position }) => position),
   });
   // A closed Branch is deleted under the open page; the page leaves for its Parent, the canvas just stops drawing.
-  if ([servicesResult, settingsResult, diffResult, volumesResult].some((r) => !r.ok && r.refusal.code === "not_found")) return <PendingCanvas />;
+  if ([servicesResult, settingsResult, diffResult, volumesResult, domainsResult].some((r) => !r.ok && r.refusal.code === "not_found")) {
+    return <PendingCanvas />;
+  }
   const services = requireView(servicesResult);
   const settings = requireView(settingsResult);
   const diff = requireView(diffResult);
   const volumes = requireView(volumesResult);
+  const domains = requireView(domainsResult).domains;
   const canvasPositions = positionRows.map((row) => parseLiveQueryRow(canvasPositionSchema, row));
-  // A card shows its public domain and counts the ones that need the user; without the view it shows neither.
-  const domains = domainsResult.ok ? domainsResult.value.domains : [];
-  const store = {
-    services: services.services.map((service): StoreCanvasService => {
-      const replicas = serviceSettingRows(settings, service.name).get("replicas")?.value;
+  const { trays, unmounted } = volumeTrays(services.services, volumes.volumes);
+  const store: StoreCanvas = {
+    services: services.services.map((service) => {
+      const changes = serviceChanges(diff, service.id);
+      // What runs asks for the deployed count, not one the next Deploy would set.
+      const replicas = changes.get("replicas")?.before ?? serviceSettingRows(settings, service.name).get("replicas")?.value;
       return {
-      service,
-      domains: domains.filter((domain) => domain.service === service.name),
-      changeCount: serviceChanges(diff, service.id).size,
-      runtimeIdentity: namespace.ok ? `${namespace.value.namespace}/${service.private_dns}` : null,
-      uploaded: service.source === "uploaded",
-      desiredReplicas: isReplicaCount(replicas) ? replicas : null,
+        service,
+        domains: domains.filter((domain) => domain.service === service.name),
+        changeCount: changes.size,
+        runtimeIdentity: namespace.ok ? `${namespace.value.namespace}/${service.private_dns}` : null,
+        desiredReplicas: isReplicaCount(replicas) ? replicas : null,
+        trays: trays.get(service.id) ?? [],
       };
     }),
     volumes: volumes.volumes,
+    unmountedVolumes: unmounted,
     live: branch.ok ? liveNodes(branch.value.live, services.services) : [],
     diff,
   };
-  const initialNodes = buildStoreNodes(store, canvasPositions, selectedNodeId, environmentId);
+  const initialNodes = buildStoreNodes(store, canvasPositions, environmentId);
   const initialEdges = buildStoreEdges(store);
 
   return (

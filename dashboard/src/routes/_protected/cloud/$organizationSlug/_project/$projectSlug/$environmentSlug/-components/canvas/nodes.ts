@@ -1,5 +1,5 @@
 import { Position, type Edge } from "@xyflow/react";
-import type { VolumeListing } from "@ployz/sdk";
+import type { ServiceListing, VolumeListing } from "@ployz/sdk";
 import { canvasPositionKey, type CanvasPosition } from "#/modules/canvas/canvas-positions";
 import { SERVICE_NODE_WIDTH, SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, VOLUME_TRAY_HEIGHT } from "./constants";
 import { findPlacement } from "../../-utils/node-placement";
@@ -8,11 +8,10 @@ import type {
   CanvasResourceType,
   CanvasStoreServiceNode,
   CanvasStoreVolumeNode,
+  MountedVolume,
   StoreCanvas,
-  StoreCanvasService,
   StoreLiveNode,
   CanvasStoreLiveNode,
-  VolumeTray,
 } from "./types";
 
 /** A node's link handles: out of its top, into its bottom, below any trays. */
@@ -45,35 +44,29 @@ function getPositionByCanvasResource(
  * Each Volume as a tray under every Service here that mounts it, in the Store's order, keyed by Service id; `unmounted`,
  * the Volumes no Service here mounts, which stay nodes of their own.
  */
-export function volumeTrays(services: readonly Pick<StoreCanvasService, "service">[], volumes: readonly VolumeListing[]) {
-  const idByName = new Map(services.map(({ service }) => [service.name, service.id]));
-  const trays = new Map<string, VolumeTray[]>();
-  const unmounted: VolumeListing[] = [];
-  for (const volume of volumes) {
-    const mounting = [...new Set(volume.mounts.map((mount) => mount.service))].filter((name) => idByName.has(name));
-    if (mounting.length === 0) unmounted.push(volume);
-    for (const name of mounting) {
-      const id = idByName.get(name) ?? name;
-      trays.set(id, [...trays.get(id) ?? [], { volume, sharedWith: mounting.filter((other) => other !== name) }]);
-    }
-  }
-  return { trays, unmounted };
+export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name">[], volumes: readonly VolumeListing[]) {
+  const names = new Set(services.map((service) => service.name));
+  const mounted = volumes.map((volume) => ({ volume, by: [...new Set(volume.mounts.map((mount) => mount.service))].filter((name) => names.has(name)) }));
+  return {
+    trays: new Map(services.map((service) => [service.id, mounted.flatMap(({ volume, by }): MountedVolume[] =>
+      by.includes(service.name) ? [{ volume, sharedWith: by.filter((name) => name !== service.name) }] : [])])),
+    unmounted: mounted.flatMap(({ volume, by }) => by.length === 0 ? [volume] : []),
+  };
 }
 
 /**
  * Config Store Services and Volumes where the canvas last put them; positions stay Cloud's, keyed by the node's id.
  * One made elsewhere (the CLI) has no place yet: the first free one near the origin, until someone drags it. A Volume
- * a Service here mounts is a tray under it, not a node.
+ * a Service here mounts is a tray under it, not a node. Which node is selected is the route's to say, not React Flow's.
  */
 export function buildStoreNodes(
-  store: Pick<StoreCanvas, "services" | "volumes"> & { live?: StoreLiveNode[] },
+  store: Pick<StoreCanvas, "services" | "unmountedVolumes"> & { live?: StoreLiveNode[] },
   canvasPositions: CanvasPosition[],
-  selectedNodeId: string | null,
   environmentId: string,
 ): (CanvasStoreServiceNode | CanvasStoreVolumeNode | CanvasStoreLiveNode)[] {
-  const { trays, unmounted } = volumeTrays(store.services, store.volumes);
+  const trayCount = new Map(store.services.map(({ service, trays }) => [service.id, trays.length]));
   // A Service's node grows by its trays; placing one keeps clear of each node's whole height.
-  const sizeOf = (id: string) => ({ ...SERVICE_NODE_SIZE, height: SERVICE_NODE_HEIGHT + (trays.get(id)?.length ?? 0) * VOLUME_TRAY_HEIGHT });
+  const sizeOf = (id: string) => ({ ...SERVICE_NODE_SIZE, height: SERVICE_NODE_HEIGHT + (trayCount.get(id) ?? 0) * VOLUME_TRAY_HEIGHT });
   const positionByResource = getPositionByCanvasResource(canvasPositions);
   const occupied = canvasPositions.map((position) => ({ x: position.x, y: position.y, ...sizeOf(position.resourceId) }));
   const place = (resourceType: CanvasResourceType, resourceId: string) => {
@@ -95,16 +88,14 @@ export function buildStoreNodes(
         id: service.service.id,
         type: "storeService",
         position: place("service", service.service.id),
-        selected: service.service.id === selectedNodeId,
-        data: { ...service, trays: trays.get(service.service.id) ?? [], resourceType: "service", resourceId: service.service.id, environmentId },
+        data: { ...service, resourceType: "service", resourceId: service.service.id, environmentId },
       } satisfies CanvasStoreServiceNode;
     }),
-    ...unmounted.map((volume) => ({
+    ...store.unmountedVolumes.map((volume) => ({
       ...node,
       id: volume.id,
       type: "storeVolume",
       position: place("volume", volume.id),
-      selected: volume.id === selectedNodeId,
       data: { volume, resourceType: "volume", resourceId: volume.id, environmentId },
     } satisfies CanvasStoreVolumeNode)),
     // A Branch's Live Nodes take free spots; they are their owner's to move.
@@ -114,11 +105,13 @@ export function buildStoreNodes(
       type: "storeLive",
       position: place("service", liveNodeId(live.name)),
       draggable: false,
-      selected: liveNodeId(live.name) === selectedNodeId,
       data: { live },
     } satisfies CanvasStoreLiveNode)),
   ];
 }
+
+/** Links into Live Nodes are dashed. */
+const LIVE_EDGE_STYLE = { stroke: "var(--muted-foreground)", strokeDasharray: "6 4" };
 
 /** Dashed links from each Live Node into the Services here that read it; a mount is a tray, not a link. */
 export function buildStoreEdges(store: { live?: StoreLiveNode[] }): Edge[] {
@@ -134,7 +127,9 @@ export function canvasNodeOf(nodes: readonly CanvasResourceNode[], id: string) {
   return shown?.id ?? null;
 }
 
-/** Links into Live Nodes are dashed. */
-export const LIVE_EDGE_STYLE = { stroke: "var(--muted-foreground)", strokeDasharray: "6 4" };
+/** The nodes that show `ids` on the canvas, each once: what an open Deployment Page brings into view. */
+export function shownNodeIds(nodes: readonly CanvasResourceNode[], ids: readonly string[]) {
+  return [...new Set(ids.flatMap((id) => canvasNodeOf(nodes, id) ?? []))];
+}
 
 export const liveNodeId = (lineageId: string) => `live:${lineageId}`;

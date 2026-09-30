@@ -4,13 +4,10 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "#/lib/utils.ts"
 
 const cardVariants = cva(
-  "group/card flex flex-col gap-(--card-spacing) overflow-hidden rounded-xl bg-card py-(--card-spacing) text-sm text-card-foreground ring-1 ring-foreground/10 data-[selected=true]:ring-2 data-[selected=true]:ring-foreground [--card-spacing:--spacing(4)] has-data-[slot=card-footer]:pb-0 has-[>img:first-child]:pt-0 data-[size=sm]:[--card-spacing:--spacing(3)] data-[size=sm]:has-data-[slot=card-footer]:pb-0 data-[size=node]:gap-0 data-[size=node]:py-0 data-[size=node]:text-xs *:[img:first-child]:rounded-t-xl *:[img:last-child]:rounded-b-xl",
+  "group/card flex flex-col gap-(--card-spacing) overflow-hidden rounded-xl bg-card py-(--card-spacing) text-sm text-card-foreground ring-1 ring-foreground/10 data-[selected=true]:ring-2 data-[selected=true]:ring-foreground data-[down=true]:ring-destructive data-[size=node]:not-data-state:not-data-[selected=true]:not-data-[down=true]:hover:ring-foreground/20 [--card-spacing:--spacing(4)] has-data-[slot=card-footer]:pb-0 has-[>img:first-child]:pt-0 data-[size=sm]:[--card-spacing:--spacing(3)] data-[size=sm]:has-data-[slot=card-footer]:pb-0 data-[size=node]:gap-0 data-[size=node]:py-0 data-[size=node]:text-xs *:[img:first-child]:rounded-t-xl *:[img:last-child]:rounded-b-xl",
   {
     variants: {
       state: {
-        success: "bg-success-soft ring-success-border",
-        warning: "bg-warning-soft ring-warning-border",
-        info: "bg-info-soft ring-info-border",
         changed: "bg-changed-soft ring-changed-border",
         destructive: "bg-destructive-soft ring-destructive-border",
         // Branches: an Own Copy being picked is lit; a Live Node (another Environment's, used live) is dashed and translucent.

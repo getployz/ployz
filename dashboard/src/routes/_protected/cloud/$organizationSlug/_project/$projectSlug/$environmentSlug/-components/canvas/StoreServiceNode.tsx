@@ -9,41 +9,39 @@ import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../environ
 import { ServiceContextMenu } from "./ServiceContextMenu";
 import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
-import { DeployChip, StatusLine, getServiceIcon } from "./service-node-helpers";
-import { deployChip, nodeIssues, publicDomain, runtimeEvidence, runtimeLine } from "./node-status";
-import { VolumeTray } from "./VolumeTray";
+import { getServiceIcon } from "./service-node-helpers";
+import { DeployChip, StatusLine } from "./node-status-view";
+import { deployChip, nodeIssues, publicDomain, runtimeLine, stagedSurface } from "./node-status";
+import { ServiceTrays } from "./VolumeTray";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
-import type { StoreCanvasService, VolumeTray as Tray } from "./types";
-import { isIncompleteObservation } from "#/modules/runtime/runtime.collection";
-import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
-import { useRuntimeService, useRuntimeStatus } from "#/providers/runtime-provider";
+import type { StoreCanvasService } from "./types";
+import { useInFlightDeployments } from "#/modules/config-store/store-view.queries";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
+import { useRuntimeService } from "#/providers/runtime-provider";
 
 /**
  * A Config Store Service on the canvas and in its phone list: what runs now on its status line, anything about Deploys
  * in its chip. Opens its drawer; right-click removes it. `compact`: the phone list's two rows.
  */
-export function StoreServiceCard({ service, domains, changeCount, runtimeIdentity, uploaded, desiredReplicas, selected, compact = false, className }:
+export function StoreServiceCard({ service, domains, changeCount, runtimeIdentity, desiredReplicas, selected, compact = false, className }:
   StoreCanvasService & { selected: boolean; compact?: boolean; className: string }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const remove = useRemoveStoreService(store, service);
   const { runtime } = useRuntimeService(runtimeIdentity ?? "");
-  const { lensStatus, incompleteIds, observedAt } = useRuntimeStatus();
-  const inFlight = useStoreDeployments(params.organizationSlug, store).data.pages[0]?.deployments.filter((deployment) => deployment.in_flight) ?? [];
+  const { status: lens, incomplete, observedAt, noServers } = useRuntimeLens(params.organizationSlug);
+  const inFlight = useInFlightDeployments(params.organizationSlug, store);
   // Under an open Deployment Page: its Node Outcome, or dimmed when it didn't target this Service.
   const light = useNodeLighting(service.id);
   const chip = deployChip(service, changeCount, inFlight);
-  const status = runtimeLine(service, runtime, {
-    evidence: runtimeEvidence(lensStatus, isIncompleteObservation(incompleteIds), observedAt),
-    uploaded, desiredReplicas, deploying: chip?.kind === "deploying",
-  });
+  const status = runtimeLine(service, runtime, { lens, incomplete, observedAt, noServers, desiredReplicas, deploying: chip?.kind === "deploying" });
   const issues = nodeIssues(status, domains);
-  const domain = publicDomain(domains, service.name);
-  const staged = light === undefined && service.change !== null;
+  const domain = publicDomain(domains);
+  const surface = stagedSurface(light, service.change);
   const icon = <Avatar><AvatarFallback>{getServiceIcon({ source: { type: service.source } })}</AvatarFallback></Avatar>;
-  const title = <CardTitle className="truncate">{service.name}</CardTitle>;
+  const title = <CardTitle className={cn("truncate", surface === "destructive" && "line-through")}>{service.name}</CardTitle>;
   const subtitle = domain ? <CardDescription className={cn("truncate", domain.live && "text-foreground")}>{domain.hostname}</CardDescription> : null;
-  const chipped = <DeployChip light={light} chip={chip} />;
+  const chipBadge = <DeployChip light={light} chip={chip} />;
 
   return (
     <ServiceContextMenu serviceId={service.id} onDelete={remove}>
@@ -56,13 +54,13 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
         draggable={false}
         className={cn("relative z-10 rounded-xl", className)}
       >
-        <Card size={compact ? "sm" : "node"} state={staged ? (service.change === "delete" ? "destructive" : "changed") : undefined}
-          className={cn("h-full justify-between", light === null && "opacity-40", status.down && "ring-destructive")} data-selected={selected}>
+        <Card size={compact ? "sm" : "node"} state={surface}
+          className={cn("h-full justify-between", light === null && "opacity-40")} data-selected={selected} data-down={status.down}>
           {compact ? (
             <CardContent className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3">
               <div className="row-span-2">{icon}</div>
               {title}
-              <div className="justify-self-end">{chipped}</div>
+              <div className="justify-self-end">{chipBadge}</div>
               <div className="min-w-0">{subtitle}</div>
               <StatusLine status={status} issues={issues} className="justify-self-end" />
             </CardContent>
@@ -71,7 +69,7 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
               <div className="flex items-start gap-3">
                 {icon}
                 <div className="min-w-0 flex-1 overflow-hidden">{title}{subtitle}</div>
-                {chipped}
+                {chipBadge}
               </div>
             </CardHeader>
             <CardContent><StatusLine status={status} issues={issues} /></CardContent>
@@ -82,14 +80,8 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   );
 }
 
-/** A Service's Volume trays, under its card. */
-export function ServiceTrays({ trays, selectedNodeId }: { trays: Tray[]; selectedNodeId: string | null }) {
-  return trays.map((tray) => <VolumeTray key={tray.volume.id} tray={tray} selected={tray.volume.id === selectedNodeId} />);
-}
-
-export function StoreServiceNode({ data }: { data: StoreCanvasService & { trays: Tray[] } }) {
+export function StoreServiceNode({ data }: { data: StoreCanvasService }) {
   const pick = useNodePick(data.service.name);
-  // A tray's Volume can be what's selected, so the card asks the route rather than React Flow.
   const { selectedNodeId } = useCanvasInspectorSelection();
   const trays = <ServiceTrays trays={data.trays} selectedNodeId={selectedNodeId} />;
   if (pick) {

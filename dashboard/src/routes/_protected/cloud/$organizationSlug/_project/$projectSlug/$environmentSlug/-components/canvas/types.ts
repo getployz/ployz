@@ -12,17 +12,16 @@ export type StoreCanvasService = {
   changeCount: number;
   /** How runtime evidence names it, `NAMESPACE/PRIVATE_DNS`; null when the Environment has no Namespace. */
   runtimeIdentity: string | null;
-  /** An empty Service here last deployed from an Uploaded Source (`deploy --upload`). */
-  uploaded: boolean;
-  /** How many replicas it asks for, when its Settings say. */
+  /** How many replicas its deployed Settings ask for, when they say. */
   desiredReplicas: number | null;
+  /** The Volumes it mounts, as trays under its card. */
+  trays: MountedVolume[];
 };
 
-/** A Volume as a tray under a Service that mounts it; `sharedWith`: the other Services here that mount it. */
-export type VolumeTray = { volume: VolumeListing; sharedWith: string[] };
+/** A Volume under a Service that mounts it; `sharedWith`: the other Services here that mount it. */
+export type MountedVolume = { volume: VolumeListing; sharedWith: string[] };
 
 export type CanvasStoreServiceNode = Node<StoreCanvasService & {
-  trays: VolumeTray[];
   resourceType: "service";
   resourceId: string;
   environmentId: string;
@@ -53,6 +52,8 @@ export type CanvasStoreLiveNode = Node<{ live: StoreLiveNode }, "storeLive">;
 export type StoreCanvas = {
   services: StoreCanvasService[];
   volumes: VolumeListing[];
+  /** The Volumes no Service here mounts, which are nodes of their own. */
+  unmountedVolumes: VolumeListing[];
   /** A Branch's Live Nodes; none elsewhere. */
   live: StoreLiveNode[];
   /** What the next Deploy changes: the bottom bar's count and its Details. */

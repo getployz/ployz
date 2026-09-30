@@ -1,20 +1,16 @@
-import type { VolumeListing } from "@ployz/sdk";
-import { ServiceTrays, StoreServiceCard } from "./StoreServiceNode";
+import { StoreServiceCard } from "./StoreServiceNode";
 import { StoreVolumeCard } from "./StoreVolumeNode";
-import { volumeTrays } from "./nodes";
-import type { StoreCanvasService } from "./types";
+import { ServiceTrays } from "./VolumeTray";
+import type { StoreCanvas } from "./types";
 
 /** The canvas as a list, on phones: its Services as compact cards with their Volume trays, then the Volumes nothing mounts. */
 export function CanvasNodeList({
-  services,
-  volumes,
+  store: { services, unmountedVolumes },
   selectedNodeId,
 }: {
-  services: StoreCanvasService[];
-  volumes: VolumeListing[];
+  store: Pick<StoreCanvas, "services" | "unmountedVolumes">;
   selectedNodeId: string | null;
 }) {
-  const { trays, unmounted } = volumeTrays(services, volumes);
   return (
     <div
       className="canvas-node-list absolute inset-0 overflow-y-auto px-4 pb-4 pt-16 min-[861px]:hidden"
@@ -23,10 +19,10 @@ export function CanvasNodeList({
         {services.map((service) => (
           <div key={service.service.id}>
             <StoreServiceCard {...service} selected={service.service.id === selectedNodeId} compact className="block" />
-            <ServiceTrays trays={trays.get(service.service.id) ?? []} selectedNodeId={selectedNodeId} />
+            <ServiceTrays trays={service.trays} selectedNodeId={selectedNodeId} />
           </div>
         ))}
-        {unmounted.map((volume) => (
+        {unmountedVolumes.map((volume) => (
           <StoreVolumeCard key={volume.id} volume={volume} selected={volume.id === selectedNodeId} className="block" />
         ))}
       </div>

@@ -297,6 +297,11 @@ export function useStoreDeployments(organizationSlug: string, environment: Envir
   return useSuspenseInfiniteQuery(storeDeploymentsOptions(organizationSlug, useCollectionScope(), environment));
 }
 
+/** An Environment's Deployments in flight. In-flight Deployments are the newest, so they sit on the first page. */
+export function useInFlightDeployments(organizationSlug: string, environment: EnvironmentRef) {
+  return useStoreDeployments(organizationSlug, environment).data.pages[0]?.deployments.filter((deployment) => deployment.in_flight) ?? [];
+}
+
 /** A view the page can't show without: a refusal fails the route, whose error component words it. */
 export function requireView<T>(result: StoreResult<T>): T {
   if (!result.ok) throw new Error(result.refusal.message);

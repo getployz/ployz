@@ -1,11 +1,13 @@
 import { createContext, use, useState, type ReactNode } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { HardDriveIcon, LinkIcon } from "lucide-react";
+import { listNames } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import { useNodeLighting } from "../deployment-page";
 import { useNodePick } from "../new-branch/branch-picking";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
-import type { VolumeTray as Tray } from "./types";
+import { stagedSurface } from "./node-status";
+import type { MountedVolume } from "./types";
 
 /** The Volume whose trays are lit: hovering a shared Volume's tray lights it under every Service that mounts it. */
 const LitVolume = createContext<[string | null, (id: string | null) => void]>([null, () => {}]);
@@ -14,22 +16,30 @@ export function LitVolumeProvider({ children }: { children: ReactNode }) {
   return <LitVolume value={useState<string | null>(null)}>{children}</LitVolume>;
 }
 
+/** A tray's staged surface, as the card's: pink when the next Deploy changes it, Failure Red when it removes it. */
+const SURFACES = {
+  changed: "border-changed-border bg-changed-soft text-changed-deep",
+  destructive: "border-destructive-border bg-destructive-soft text-destructive",
+};
+
 /**
  * A Volume as a tray tucked under a Service that mounts it: its name, and only what must be said, pink when the next
  * Deploy changes it, struck and "Removing" when it deletes it, marked when other Services mount it too. Opens its panel;
- * while a Branch is picked, a click toggles it instead.
+ * while a Branch is picked, a click toggles it instead. Under an open Deployment Page it dims unless the attempt changed it.
  */
-export function VolumeTray({ tray: { volume, sharedWith }, selected }: { tray: Tray; selected: boolean }) {
+export function VolumeTray({ tray: { volume, sharedWith }, selected }: { tray: MountedVolume; selected: boolean }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const [lit, light] = use(LitVolume);
+  const [litVolumeId, setLitVolumeId] = use(LitVolume);
   const lighting = useNodeLighting(volume.id);
   const pick = useNodePick(volume.name);
-  const removing = lighting === undefined && volume.change === "delete";
+  const surface = stagedSurface(lighting, volume.change);
+  const removing = surface === "destructive";
+  const alsoMounted = sharedWith.length > 0 ? `Also mounted by ${listNames(sharedWith)}` : undefined;
   const className = cn(
     "relative -mt-3 mx-1.5 flex h-13 items-end gap-2 rounded-b-xl border border-t-0 bg-muted px-4 pb-2.5 text-xs text-muted-foreground",
-    lighting === undefined && volume.change !== null && (removing ? "border-destructive-border bg-destructive-soft text-destructive" : "border-changed-border bg-changed-soft text-changed-deep"),
+    surface && SURFACES[surface],
     lighting === null && "opacity-40",
-    sharedWith.length > 0 && lit === volume.id && "border-foreground text-foreground",
+    alsoMounted && litVolumeId === volume.id && "border-foreground text-foreground",
     selected && "ring-2 ring-foreground",
     pick?.role === "own" && "ring-2 ring-foreground",
     pick?.role === "live" && "border-dashed",
@@ -39,11 +49,10 @@ export function VolumeTray({ tray: { volume, sharedWith }, selected }: { tray: T
     <HardDriveIcon className="size-3.5 shrink-0" />
     <span className={cn("min-w-0 flex-1 truncate", removing && "line-through")}>{volume.name}</span>
     {pick ? <span className="truncate">{pick.label}</span>
-      : lighting ? <span className="truncate">{lighting.label}</span>
       : removing ? <span>Removing</span>
-      : sharedWith.length > 0 ? <LinkIcon className="size-3.5 shrink-0" aria-label={`Also mounted by ${sharedWith.join(", ")}`} /> : null}
+      : alsoMounted ? <LinkIcon className="size-3.5 shrink-0" aria-label={alsoMounted} /> : null}
   </>;
-  const hover = { onMouseEnter: () => light(volume.id), onMouseLeave: () => light(null) };
+  const hover = { onMouseEnter: () => setLitVolumeId(volume.id), onMouseLeave: () => setLitVolumeId(null) };
 
   if (pick) {
     return (
@@ -58,8 +67,13 @@ export function VolumeTray({ tray: { volume, sharedWith }, selected }: { tray: T
     <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }}
       search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
       data-canvas-node={volume.id} aria-current={selected ? "page" : undefined} draggable={false} className={className} {...hover}
-      title={sharedWith.length > 0 ? `Also mounted by ${sharedWith.join(", ")}` : undefined}>
+      title={alsoMounted}>
       {content}
     </Link>
   );
+}
+
+/** A Service's Volume trays, under its card. */
+export function ServiceTrays({ trays, selectedNodeId }: { trays: MountedVolume[]; selectedNodeId: string | null }) {
+  return trays.map((tray) => <VolumeTray key={tray.volume.id} tray={tray} selected={tray.volume.id === selectedNodeId} />);
 }
