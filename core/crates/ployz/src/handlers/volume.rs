@@ -112,7 +112,7 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
         words.extend(["--mount", "SERVICE:/PATH"]);
     }
     let created = store::store(root)?
-        .create_volume(&CreateVolume {
+        .write(&CreateVolume {
             id: VolumeId::parse(store::mint())?,
             environment: store::environment(matches)?,
             name: name.clone(),
@@ -178,7 +178,7 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
     let changed = store::store(root)?
-        .set_volume_storage(&SetVolumeStorage {
+        .write(&SetVolumeStorage {
             environment: store::environment(matches)?,
             volume: volume.clone(),
             storage: requested_storage(matches),
@@ -201,7 +201,7 @@ fn storage_word(storage: VolumeKind) -> String {
 fn list(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let view = store::store(root)?
-        .volumes(&VolumesQuery {
+        .read(&VolumesQuery {
             environment: store::environment(matches)?,
         })
         .map_err(store::failed(matches, &["volume", "ls"]))?;
@@ -236,7 +236,7 @@ fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
     let view = store::store(root)?
-        .volume(&VolumeQuery {
+        .read(&VolumeQuery {
             environment: store::environment(matches)?,
             volume: volume.clone(),
         })
@@ -271,7 +271,7 @@ fn rename(root: &ArgMatches) -> Result<(), Error> {
     let volume = volume_name(matches, "volume")?;
     let name = volume_name(matches, "name")?;
     let renamed = store::store(root)?
-        .rename_volume(&ployz_store::RenameVolume {
+        .write(&ployz_store::RenameVolume {
             environment: store::environment(matches)?,
             volume: volume.clone(),
             name,
@@ -287,7 +287,7 @@ fn remove(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
     let removed = store::store(root)?
-        .remove_volume(&RemoveVolume {
+        .write(&RemoveVolume {
             environment: store::environment(matches)?,
             volume: volume.clone(),
         })

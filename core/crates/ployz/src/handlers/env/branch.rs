@@ -61,7 +61,7 @@ pub(super) fn branch(root: &ArgMatches) -> Result<(), Error> {
         words.extend(["--from", from.as_str()]);
     }
     let made = store(root)?
-        .create_branch(&create)
+        .write(&create)
         .map_err(failed(matches, &words))?;
     let deploy = store::next(matches, &["deploy", "--env", create.name.as_str()]);
     finish(&made, Some(deploy), "Made Branch")
@@ -149,7 +149,7 @@ fn shift(
                 when: None,
             },
         };
-        let view = store.move_view(&sides).map_err(failed(matches, &words))?;
+        let view = store.read(&sides).map_err(failed(matches, &words))?;
         return plan(matches, command, &view);
     }
     let picks = match shift {
@@ -190,7 +190,7 @@ fn shift(
         }),
     };
     let moved = store
-        .move_changes(&request)
+        .write(&request)
         .map_err(|error| failed(matches, &words)(reviewed(error, matches, command)))?;
     moved_out(matches, shift, &moved)
 }
@@ -324,7 +324,7 @@ pub(super) fn copy(root: &ArgMatches) -> Result<(), Error> {
     };
     let words = ["env", "copy", copy.node.as_str()];
     let copied = store(root)?
-        .copy_node(&copy)
+        .write(&copy)
         .map_err(|error| stale(error, matches))
         .map_err(failed(matches, &words))?;
     finish(
@@ -341,7 +341,7 @@ pub(super) fn keep(root: &ArgMatches) -> Result<(), Error> {
         kept: !matches.get_flag("off"),
     };
     let kept = store(root)?
-        .keep_branch(&keep)
+        .write(&keep)
         .map_err(failed(matches, &["env", "keep"]))?;
     let what = if keep.kept {
         "Keeping Branch"

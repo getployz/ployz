@@ -2,10 +2,11 @@
 //! that takes an Environment off the Servers first. `env rm` and `project rm` share it.
 
 use clap::ArgMatches;
-use ployz_core::ServiceName;
+use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Admit, DeploymentId, DeploymentView, EnvironmentRef, EnvironmentSummary, ServicesQuery,
-    VolumeName, VolumesQuery,
+    Admit, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentView, EnvironmentRef,
+    EnvironmentSummary, ProjectName, RemovalsQuery, ServicesQuery, Teardown, Tell, VolumeName,
+    VolumesQuery,
 };
 use serde_json::json;
 
@@ -34,12 +35,12 @@ pub(super) fn inventory(
 ) -> Result<Inventory, Error> {
     let words = ["env", "rm"];
     let services = store
-        .services(&ServicesQuery {
+        .read(&ServicesQuery {
             environment: at.clone(),
         })
         .map_err(failed(matches, &words))?;
     let volumes = store
-        .volumes(&VolumesQuery {
+        .read(&VolumesQuery {
             environment: at.clone(),
         })
         .map_err(failed(matches, &words))?;
@@ -73,14 +74,94 @@ pub(super) fn accepted(matches: &ArgMatches) -> Result<Vec<VolumeName>, Error> {
         .collect()
 }
 
+/// Run `remove` until the Store deletes what it names: each Environment of `project`
+/// it names as still on the Servers goes off them first through a removal Deployment,
+/// accepting the loss of the `accept` Volumes it deletes. Returns what was removed and
+/// those Deployments; `None` once a removal that didn't apply was reported (`again`
+/// finishes it).
+pub(super) fn remove_all<C, T>(
+    matches: &ArgMatches,
+    store: &Store,
+    remove: &C,
+    project: &ProjectName,
+    mut events: Option<std::io::BufWriter<std::fs::File>>,
+    words: &[&str],
+    again: &[&str],
+) -> Result<Option<(T, Vec<DeploymentSummary>)>, Error>
+where
+    C: Tell<Written = Teardown<T>>,
+{
+    let accept = accepted(matches)?;
+    // The reviewed version binds the first removal, the one whose refusal named it.
+    let mut version = matches.get_one::<String>("expect-version").cloned();
+    let mut ran = Vec::new();
+    loop {
+        let environment = match store.write(remove).map_err(failed(matches, words))? {
+            Teardown::Removed(removed) => return Ok(Some((removed, ran))),
+            Teardown::Waiting {
+                environment,
+                deployment,
+            } => {
+                return Err(Error::detailed(
+                    RpcErrorCode::Conflict,
+                    format!(
+                        "A Deployment of {environment} hasn't ended: wait for it or cancel it first"
+                    ),
+                    json!({
+                        "environment": environment,
+                        "deployment": deployment,
+                        "next": shell_words::join(["ployz", "deployment", "show", deployment.as_str()]),
+                    }),
+                ));
+            }
+            Teardown::NeedsRemoval { environment, .. } => environment,
+        };
+        let at = EnvironmentRef {
+            project: Some(project.clone()),
+            environment: Some(environment),
+        };
+        // Each removal accepts only the Volumes it deletes; a name may recur across Environments.
+        let deletes = store
+            .read(&RemovalsQuery {
+                environment: at.clone(),
+                remove: true,
+            })
+            .map_err(failed(matches, words))?;
+        let accept: Vec<_> = accept
+            .iter()
+            .filter(|name| deletes.volumes.iter().any(|volume| &volume.name == *name))
+            .cloned()
+            .collect();
+        let writer = events
+            .as_mut()
+            .map(|writer| writer.get_ref().try_clone())
+            .transpose()?
+            .map(std::io::BufWriter::new);
+        let (view, outcome) = take_off(
+            matches,
+            store,
+            &at,
+            (&accept, version.take()),
+            writer,
+            words,
+            again,
+        )?;
+        if view.deployment.status != DeploymentStatus::Applied {
+            unfinished(matches, &view, outcome, again)?;
+            return Ok(None);
+        }
+        ran.push(view.deployment);
+    }
+}
+
 /// Take Environment `at` off the Servers: admit a removal Deployment under the
-/// destructive review, accepting the loss of `accept`, then run or follow it as
+/// destructive review, accepting the loss of `accept` as reviewed at `version`, then run or follow it as
 /// `deploy` does. `again` is the command that retries the whole removal.
 pub(super) fn take_off(
     matches: &ArgMatches,
     store: &Store,
     at: &EnvironmentRef,
-    accept: &[VolumeName],
+    (accept, version): (&[VolumeName], Option<String>),
     events: Option<std::io::BufWriter<std::fs::File>>,
     words: &[&str],
     again: &[&str],
@@ -95,7 +176,7 @@ pub(super) fn take_off(
             &Admit::Remove(ployz_store::Removal {
                 id: DeploymentId::parse(mint())?,
                 environment: at.clone(),
-                version: None,
+                version,
                 accept_volume_loss: accept.to_vec(),
             }),
             volumes,

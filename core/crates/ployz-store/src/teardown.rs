@@ -87,6 +87,25 @@ pub struct EnvironmentRemoved {
     pub environment: EnvironmentSummary,
 }
 
+/// What a removal did: deleted it, or named the Environment still on the Servers
+/// that stops it. Nothing is deleted until every Environment is off them.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "teardown", rename_all = "snake_case")]
+pub enum Teardown<T> {
+    Removed(T),
+    /// `deployment` of `environment` hasn't ended: wait for it, or cancel it.
+    Waiting {
+        environment: EnvironmentName,
+        deployment: crate::DeploymentId,
+    },
+    /// `environment` may still run on the Servers, last through `deployment`: a
+    /// removal Deployment takes it off first, then the same removal goes on.
+    NeedsRemoval {
+        environment: EnvironmentName,
+        deployment: crate::DeploymentId,
+    },
+}
+
 /// List the Organization's Projects.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -239,17 +258,17 @@ pub(crate) fn remove(
     tx: &mut dyn Tx,
     who: &Actor,
     remove: &RemoveEnvironment,
-) -> Result<EnvironmentRemoved, RpcError> {
+) -> Result<Teardown<EnvironmentRemoved>, RpcError> {
     let environment = scope::lock(tx, who, &remove.environment)?;
     guard(tx, &environment)?;
     let id = &environment.summary.id;
     if let Some(running) = on_servers(tx, id)? {
-        return Err(still_on_servers(&environment.summary.name, &running));
+        return Ok(still_on_servers(&environment.summary.name, running));
     }
     purge(tx, id)?;
-    Ok(EnvironmentRemoved {
+    Ok(Teardown::Removed(EnvironmentRemoved {
         environment: environment.summary,
-    })
+    }))
 }
 
 /// The Deployment through which `environment` may still run on the Servers: one
@@ -266,22 +285,21 @@ pub(crate) fn on_servers(
         .filter(|ran| !(ran.remove && ran.status == DeploymentStatus::Applied)))
 }
 
-/// Refuse to delete `name` while `deployment` may run it: `details.deployed` when
-/// a removal Deployment is what it needs next.
-fn still_on_servers(name: &EnvironmentName, deployment: &DeploymentSummary) -> RpcError {
-    if deployment.status.in_flight() {
-        return error::conflict(
-            format!(
-                "Deployment #{} of {name} hasn't ended: wait for it or cancel it first",
-                deployment.number
-            ),
-            json!({ "deployment": deployment.id, "environment": name }),
-        );
+/// Not deleting `name` while `deployment` may run it.
+fn still_on_servers<T>(name: &EnvironmentName, deployment: DeploymentSummary) -> Teardown<T> {
+    let running = deployment.status.in_flight();
+    let (environment, deployment) = (name.clone(), deployment.id);
+    if running {
+        Teardown::Waiting {
+            environment,
+            deployment,
+        }
+    } else {
+        Teardown::NeedsRemoval {
+            environment,
+            deployment,
+        }
     }
-    error::conflict(
-        format!("{name} may still run on the Servers: remove it from them first"),
-        json!({ "deployed": true, "deployment": deployment.id, "environment": name }),
-    )
 }
 
 /// Refuse to take an Environment off the Servers while a Branch of it may still
@@ -533,7 +551,7 @@ pub(crate) fn remove_project(
     tx: &mut dyn Tx,
     who: &Actor,
     remove: &RemoveProject,
-) -> Result<ProjectRemoved, RpcError> {
+) -> Result<Teardown<ProjectRemoved>, RpcError> {
     let project = scope::project(tx, who, Some(&remove.project))?;
     let members = members(tx, &project.id)?;
     // Lock every Environment, in ID order, against a concurrent admission.
@@ -543,7 +561,7 @@ pub(crate) fn remove_project(
     let order = teardown_order(&members, &project.default_environment);
     for member in &order {
         if let Some(running) = on_servers(tx, &member.id)? {
-            return Err(still_on_servers(&member.name, &running));
+            return Ok(still_on_servers(&member.name, running));
         }
     }
     // Its Environments and PR plans go with it, and everything they own.
@@ -551,7 +569,7 @@ pub(crate) fn remove_project(
         "DELETE FROM config_project WHERE id = ?1",
         &[project.id.as_str().into()],
     )?;
-    Ok(ProjectRemoved {
+    Ok(Teardown::Removed(ProjectRemoved {
         project: ProjectSummary {
             id: project.id,
             name: project.name,
@@ -560,7 +578,7 @@ pub(crate) fn remove_project(
             .into_iter()
             .map(|member| member.name.clone())
             .collect(),
-    })
+    }))
 }
 
 pub(crate) fn remove_organization(

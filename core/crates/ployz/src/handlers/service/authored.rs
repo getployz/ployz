@@ -69,7 +69,7 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
         };
         let words = ["service", "add", name.as_str(), "--repo", "OWNER/REPO"];
         store
-            .create_git_service(&CreateGitService {
+            .write(&CreateGitService {
                 id,
                 environment,
                 name: name.clone(),
@@ -84,7 +84,7 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
             words.extend(["--image", "REF"]);
         }
         store
-            .create_service(&CreateService {
+            .write(&CreateService {
                 id,
                 environment,
                 name: name.clone(),
@@ -102,7 +102,7 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
     };
     let view = store::store(root)?
-        .services(&query)
+        .read(&query)
         .map_err(store::failed(matches, &["service", "ls"]))?;
     output::finish(&view, || {
         say!("SERVICE\tPRIVATE DNS\tSOURCE\tNEXT DEPLOY");
@@ -128,7 +128,7 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         service: service_name(matches, "service")?,
     };
-    let view = store::store(root)?.service(&query).map_err(store::failed(
+    let view = store::store(root)?.read(&query).map_err(store::failed(
         matches,
         &["service", "inspect", query.service.as_str()],
     ))?;
@@ -172,7 +172,7 @@ pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
         rename.name.as_str(),
     ];
     let renamed = store::store(root)?
-        .rename_service(&rename)
+        .write(&rename)
         .map_err(store::failed(matches, &words))?;
     staged(matches, &renamed, "Staged rename of Service")
 }
@@ -184,12 +184,10 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         service: service_name(matches, "service")?,
     };
-    let removed = store::store(root)?
-        .remove_service(&remove)
-        .map_err(store::failed(
-            matches,
-            &["service", "rm", remove.service.as_str()],
-        ))?;
+    let removed = store::store(root)?.write(&remove).map_err(store::failed(
+        matches,
+        &["service", "rm", remove.service.as_str()],
+    ))?;
     staged(matches, &removed, "Staged removal of Service")
 }
 

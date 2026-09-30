@@ -40,6 +40,7 @@ pub(crate) fn command() -> Command {
             .help("Reset the --server if it already runs Ployz, before adding it"),
     )
     .arg(crate::cli::volume_acceptance())
+    .arg(crate::cli::reviewed_version())
 }
 
 #[derive(Serialize)]
@@ -75,7 +76,7 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
         None => found_project(&store, &name, scope.environment)?,
     };
     let listed = store
-        .services(&ServicesQuery { environment })
+        .read(&ServicesQuery { environment })
         .map_err(failed(matches, &["up"]))?;
     let linked = super::link::record_unless_linked(&config, listed.environment.clone())?;
     let environment = EnvironmentRef {
@@ -92,7 +93,7 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
         Request {
             environment: environment.clone(),
             services: Vec::new(),
-            version: None,
+            version: matches.get_one::<String>("expect-version").cloned(),
             source: Some(directory),
             accept: super::teardown::accepted(matches)?,
             message: None,
@@ -102,7 +103,7 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
     let view = &shipped.view;
     // ponytail: the Deployment already ran, so a failed read only leaves the URLs out.
     let urls = store
-        .domains(&DomainsQuery {
+        .read(&DomainsQuery {
             environment,
             service: None,
         })
@@ -190,7 +191,7 @@ fn found_project(
         name: ProjectName::parse(name.as_str().to_owned())?,
         default_environment: EnvironmentId::parse(mint())?,
     };
-    let created = store.create_project(&create).map_err(|error| {
+    let created = store.write(&create).map_err(|error| {
         Error::from(super::store::with_next(
             error,
             |refusal| refusal.code == RpcErrorCode::Conflict,
@@ -215,7 +216,7 @@ fn add_service(
     directory: &Path,
 ) -> Result<(), Error> {
     store
-        .create_service(&CreateService {
+        .write(&CreateService {
             id: ServiceLineageId::parse(mint())?,
             environment: environment.clone(),
             name: name.clone(),
@@ -226,7 +227,7 @@ fn add_service(
     let dockerfile = std::fs::read_to_string(directory.join("Dockerfile")).ok();
     if dockerfile.is_some() {
         store
-            .edit(&Edit {
+            .write(&Edit {
                 environment: environment.clone(),
                 expect: None,
                 changes: vec![Change::Set {
@@ -239,7 +240,7 @@ fn add_service(
     // The hidden local Store has no Cluster Domain to generate one under.
     if store.local().is_none() {
         store
-            .add_domain(&AddDomain {
+            .write(&AddDomain {
                 environment: environment.clone(),
                 service: name,
                 hostname: None,

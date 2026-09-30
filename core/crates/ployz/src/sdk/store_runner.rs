@@ -317,10 +317,9 @@ impl Run {
         }
         let (status, message, ended) = match running.finished().await {
             Ok(BuildOutcome::Built { receipt }) => {
-                let reused = hint.is_some_and(|hint| {
-                    hint.fingerprint == receipt.fingerprint
-                        && hint.image.reference == receipt.image.reference
-                });
+                // The same image content: reused, even when only its variables changed.
+                let reused =
+                    hint.is_some_and(|hint| hint.image.reference == receipt.image.reference);
                 let status = if reused {
                     BuildStatus::Reused
                 } else {

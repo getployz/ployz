@@ -114,7 +114,7 @@ async fn an_image_service_deploys_through_the_hidden_store() {
 
     // A Volume mounted into web is created by its Deploy; removing it deletes its
     // Docker Volume only once the loss is accepted by name.
-    let added = ployz(&["volume", "add", "data", "--mount", "web:/data"]);
+    let added = ployz(&["volume", "add", "data", "--mount", "web:/data", "--docker"]);
     let docker = format!(
         "shop-production_vol-{}",
         added["volume"]["id"].as_str().unwrap()
@@ -173,7 +173,14 @@ async fn an_image_service_deploys_through_the_hidden_store() {
     };
     staging(&["service", "add", "api", "--image", SERVICE_CONTAINER_IMAGE]);
     staging(&["set", "api.startCommand=sh -c 'sleep 600'"]);
-    let cache = staging(&["volume", "add", "cache", "--mount", "api:/cache"]);
+    let cache = staging(&[
+        "volume",
+        "add",
+        "cache",
+        "--mount",
+        "api:/cache",
+        "--docker",
+    ]);
     let cache = format!(
         "shop-staging_vol-{}",
         cache["volume"]["id"].as_str().unwrap()
@@ -192,9 +199,13 @@ async fn an_image_service_deploys_through_the_hidden_store() {
         &["env", "rm", "staging", "--confirm", "shop/staging"],
     );
     assert_eq!(code, Some(1), "{refused}");
+    // The retry accepts the loss as reviewed: at the refusal's version.
+    let version = refused["error"]["details"]["version"].as_str().unwrap();
     assert_eq!(
         refused["error"]["details"]["next"],
-        json!("ployz env rm staging --confirm shop/staging --accept-volume-loss cache")
+        json!(format!(
+            "ployz env rm staging --confirm shop/staging --accept-volume-loss cache --expect-version {version}"
+        ))
     );
     let removed = ployz(&[
         "env",
@@ -204,6 +215,8 @@ async fn an_image_service_deploys_through_the_hidden_store() {
         "shop/staging",
         "--accept-volume-loss",
         "cache",
+        "--expect-version",
+        version,
     ]);
     assert_eq!(removed["deployment"]["remove"], json!(true), "{removed}");
     wait_for_web(&mut client, &api_containers, 0).await;
@@ -295,6 +308,11 @@ async fn a_directory_without_git_builds_on_a_server_through_the_hidden_store() {
     )
     .unwrap();
     std::fs::write(source.path().join("payload"), "uploaded").unwrap();
+    std::fs::copy(
+        source.path().join("Dockerfile"),
+        source.path().join("Dockerfile.alt"),
+    )
+    .unwrap();
     let upload = source.path().to_str().unwrap();
 
     ployz(&["project", "new", "shop"]);
@@ -317,8 +335,11 @@ async fn a_directory_without_git_builds_on_a_server_through_the_hidden_store() {
     let reused = ployz(&["deploy"]);
     assert_eq!(reused["status"], json!("applied"), "{reused}");
     assert_eq!(reused["upload"], deployed["upload"]);
-    // A changed build input needs a new upload.
+    // A variable changes at runtime only: the image still serves.
     ployz(&["set", "app.env.MESSAGE=changed"]);
+    assert_eq!(ployz(&["deploy"])["status"], json!("applied"));
+    // A changed build input needs a new upload.
+    ployz(&["set", "app.dockerfilePath=Dockerfile.alt"]);
     let (code, refused) = attempt(address, &store, &["deploy"]);
     assert_eq!(code, Some(3), "{refused}");
     assert_eq!(refused["outcome"]["type"], json!("not_executed"));
@@ -592,6 +613,11 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
     )
     .unwrap();
     std::fs::write(source.path().join("payload"), "uploaded").unwrap();
+    std::fs::copy(
+        source.path().join("Dockerfile"),
+        source.path().join("Dockerfile.alt"),
+    )
+    .unwrap();
     let digest = ployz::build::content_digest(source.path()).unwrap();
 
     let deploy = |n: u8, upload: bool| {
@@ -681,9 +707,18 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
     assert_eq!(reused.builds[0].status, BuildStatus::Reused);
     assert_eq!(reused.deployment.upload, built.deployment.upload);
 
-    // A changed build input rejects the old image: only a new upload builds it.
+    // A variable changes at runtime only: the image still serves.
     set("app.env.MESSAGE", json!("changed"));
-    let refused = deploy(3, false).await;
+    let varied = deploy(3, false).await;
+    assert_eq!(
+        varied.deployment.status,
+        DeploymentStatus::Applied,
+        "{varied:?}"
+    );
+    assert_eq!(varied.builds[0].status, BuildStatus::Reused);
+    // A changed build input rejects the old image: only a new upload builds it.
+    set("app.dockerfilePath", json!("Dockerfile.alt"));
+    let refused = deploy(4, false).await;
     assert_eq!(
         refused.deployment.status,
         DeploymentStatus::Failed,
