@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { ServiceListing, VolumeListing } from "@ployz/sdk";
+import type { DiffView, ServiceListing, VolumeListing } from "@ployz/sdk";
+import { asTestDouble } from "#/lib/test-double";
 import type { CanvasPosition } from "#/modules/canvas/canvas-positions";
 import { buildStoreEdges, buildStoreNodes, canvasNodeOf, shownNodeIds, volumeTrays } from "./nodes";
 
@@ -30,7 +31,10 @@ describe("Config Store nodes", () => {
     volume("loose", []),
     volume("orphan", [{ service: "gone", path: "/data" }]),
   ];
-  const { trays, unmounted } = volumeTrays(listings, volumes);
+  // The next Deploy mounts `shared` into web; postgres's mount of it stays.
+  const diff = asTestDouble<DiffView>()({ changes: [{ type: "service", id: "s2", name: "web", lifecycle: "update", comparison: "head", data: null,
+    settings: [{ path: "web.mounts.shared", kind: "add", before: null, after: "/srv", canRestore: true }] }] });
+  const { trays, unmounted } = volumeTrays(listings, volumes, diff);
   const store = {
     services: listings.map((service) => ({ service, domains: [], changeCount: 0, runtimeIdentity: null, desiredReplicas: null, trays: trays.get(service.id) ?? [] })),
     unmountedVolumes: unmounted,
@@ -40,6 +44,11 @@ describe("Config Store nodes", () => {
     expect(trays.get("s1")?.map((tray) => [tray.volume.id, tray.sharedWith])).toEqual([["shared", ["web"]], ["own", []]]);
     expect(trays.get("s2")?.map((tray) => [tray.volume.id, tray.sharedWith])).toEqual([["shared", ["postgres"]]]);
     expect(unmounted.map((listing) => listing.id)).toEqual(["loose", "orphan"]);
+  });
+
+  it("marks a tray whose mount the next Deploy stages, under that Service only", () => {
+    expect(trays.get("s2")?.map((tray) => [tray.volume.id, tray.mountChanged])).toEqual([["shared", true]]);
+    expect(trays.get("s1")?.map((tray) => [tray.volume.id, tray.mountChanged])).toEqual([["shared", false], ["own", false]]);
   });
 
   it("draws only a Volume nothing here mounts as a node, and grows each Service by its trays", () => {

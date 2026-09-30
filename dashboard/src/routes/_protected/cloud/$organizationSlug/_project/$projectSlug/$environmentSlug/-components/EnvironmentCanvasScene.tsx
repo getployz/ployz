@@ -24,7 +24,7 @@ import { buildStoreEdges, buildStoreNodes, volumeTrays } from "./canvas/nodes";
 import type { StoreCanvas } from "./canvas/types";
 import { branchQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { liveNodes } from "#/modules/config-store/store-branches";
-import { serviceChanges, serviceSettingRows } from "#/modules/config-store/store-services";
+import { serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { StorePickingProvider } from "./new-branch/StoreNewBranchPanel";
 import { StorePrPickingProvider } from "./pr-environments/StorePrPlanPanel";
@@ -89,17 +89,19 @@ function CanvasWithData() {
   const volumes = requireView(volumesResult);
   const domains = requireView(domainsResult).domains;
   const canvasPositions = positionRows.map((row) => parseLiveQueryRow(canvasPositionSchema, row));
-  const { trays, unmounted } = volumeTrays(services.services, volumes.volumes);
+  const { trays, unmounted } = volumeTrays(services.services, volumes.volumes, diff);
   const store: StoreCanvas = {
     services: services.services.map((service) => {
       const changes = serviceChanges(diff, service.id);
       // What runs asks for the deployed count, not one the next Deploy would set.
       const replicas = changes.get("replicas")?.before ?? serviceSettingRows(settings, service.name).get("replicas")?.value;
+      // Its containers are named by the deployed private DNS until the Deploy that changes it lands.
+      const privateDns = settingText(changes.get("privateDns")?.before) || service.private_dns;
       return {
         service,
         domains: domains.filter((domain) => domain.service === service.name),
         changeCount: changes.size,
-        runtimeIdentity: namespace.ok ? `${namespace.value.namespace}/${service.private_dns}` : null,
+        runtimeIdentity: namespace.ok ? `${namespace.value.namespace}/${privateDns}` : null,
         desiredReplicas: isReplicaCount(replicas) ? replicas : null,
         trays: trays.get(service.id) ?? [],
       };

@@ -23,12 +23,13 @@ export function LitVolumeProvider({ children }: { children: ReactNode }) {
  * it too. Opens its panel; while a Branch is picked, a click toggles it instead. Under an open Deployment Page it dims
  * unless the attempt changed it.
  */
-export function VolumeTray({ tray: { volume, sharedWith }, selected }: { tray: MountedVolume; selected: boolean }) {
+export function VolumeTray({ tray: { volume, sharedWith, mountChanged }, selected }: { tray: MountedVolume; selected: boolean }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const [litVolumeId, setLitVolumeId] = use(LitVolume);
   const lighting = useNodeLighting(volume.id);
   const pick = useNodePick(volume.name);
-  const surface = stagedSurface(lighting, volume.change);
+  // Staged by its own lifecycle first, else by the next Deploy adding or changing this mount of it.
+  const surface = stagedSurface(lighting, volume.change ?? (mountChanged ? "update" : null));
   const alsoMounted = sharedWith.length > 0 ? `Also mounted by ${listNames(sharedWith)}` : undefined;
   const className = cn(
     "relative -mt-3 mx-1.5 flex h-13 items-end gap-2 rounded-b-xl border border-t-0 bg-muted px-4 pb-2.5 text-xs text-muted-foreground",

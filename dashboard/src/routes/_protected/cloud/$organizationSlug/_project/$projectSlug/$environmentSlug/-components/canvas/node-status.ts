@@ -32,7 +32,8 @@ function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, 
   const serving = running.filter(containerServing).length;
   // None serves yet: Unhealthy once a health check fails, else still Starting.
   if (serving === 0) return running.some((container) => container.runtime?.health === "unhealthy") ? line("Unhealthy", "warn") : line("Starting", "quiet");
-  if (!deploying && desiredReplicas !== null && serving < desiredReplicas) return line("Degraded", "warn");
+  // A replica missing from partial evidence may be healthy on the Server that didn't report.
+  if (whole && !deploying && desiredReplicas !== null && serving < desiredReplicas) return line("Degraded", "warn");
   return line("Online", "ok");
 }
 

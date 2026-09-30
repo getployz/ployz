@@ -1,5 +1,6 @@
 import { Position, type Edge } from "@xyflow/react";
-import type { ServiceListing, VolumeListing } from "@ployz/sdk";
+import type { DiffView, ServiceListing, VolumeListing } from "@ployz/sdk";
+import { serviceChanges } from "#/modules/config-store/store-services";
 import { canvasPositionKey, type CanvasPosition } from "#/modules/canvas/canvas-positions";
 import { SERVICE_NODE_WIDTH, SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, VOLUME_TRAY_HEIGHT } from "./constants";
 import { findPlacement } from "../../-utils/node-placement";
@@ -41,15 +42,19 @@ function getPositionByCanvasResource(
 }
 
 /**
- * Each Volume as a tray under every Service here that mounts it, in the Store's order, keyed by Service id; `unmounted`,
- * the Volumes no Service here mounts, which stay nodes of their own.
+ * Each Volume as a tray under every Service here that mounts it, in the Store's order, keyed by Service id, marked where
+ * `diff` stages that Service's mount of it; `unmounted`, the Volumes no Service here mounts, which stay nodes of their own.
  */
-export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name">[], volumes: readonly VolumeListing[]) {
+export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name">[], volumes: readonly VolumeListing[], diff: DiffView) {
   const names = new Set(services.map((service) => service.name));
   const mounted = volumes.map((volume) => ({ volume, by: [...new Set(volume.mounts.map((mount) => mount.service))].filter((name) => names.has(name)) }));
   return {
-    trays: new Map(services.map((service) => [service.id, mounted.flatMap(({ volume, by }): MountedVolume[] =>
-      by.includes(service.name) ? [{ volume, sharedWith: by.filter((name) => name !== service.name) }] : [])])),
+    trays: new Map(services.map((service) => {
+      // A mount is the Service's Setting, `mounts.VOLUME`.
+      const changes = serviceChanges(diff, service.id);
+      return [service.id, mounted.flatMap(({ volume, by }): MountedVolume[] => by.includes(service.name)
+        ? [{ volume, sharedWith: by.filter((name) => name !== service.name), mountChanged: changes.has(`mounts.${volume.name}`) }] : [])];
+    })),
     unmounted: mounted.flatMap(({ volume, by }) => by.length === 0 ? [volume] : []),
   };
 }

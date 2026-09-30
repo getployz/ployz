@@ -45,11 +45,12 @@ describe("runtimeLine", () => {
     expect(runtimeLine({ ...service, change: "create" }, null, watch({ status: "unreachable" })).word).toBe("Not deployed");
   });
 
-  it("says Degraded when fewer replicas serve than it asks for, except while a Deploy rolls them", () => {
+  it("says Degraded when fewer replicas serve than it asks for, except while a Deploy rolls them or a Server didn't report", () => {
     const one = runtime(container("running", "healthy"), container("exited"));
     expect(runtimeLine(service, one, { ...seen, desiredReplicas: 2 }).word).toBe("Degraded");
     expect(runtimeLine(service, one, { ...seen, desiredReplicas: 2, deploying: true }).word).toBe("Online");
     expect(runtimeLine(service, one, { ...seen, desiredReplicas: 1 }).word).toBe("Online");
+    expect(runtimeLine(service, one, { ...watch({ incomplete: true }), desiredReplicas: 2 }).word).toBe("Online");
   });
 });
 

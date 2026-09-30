@@ -18,8 +18,11 @@ export type StoreCanvasService = {
   trays: MountedVolume[];
 };
 
-/** A Volume under a Service that mounts it; `sharedWith`: the other Services here that mount it. */
-export type MountedVolume = { volume: VolumeListing; sharedWith: string[] };
+/**
+ * A Volume under a Service that mounts it; `sharedWith`: the other Services here that mount it; `mountChanged`: the next
+ * Deploy adds or changes this Service's mount of it.
+ */
+export type MountedVolume = { volume: VolumeListing; sharedWith: string[]; mountChanged: boolean };
 
 export type CanvasStoreServiceNode = Node<StoreCanvasService & {
   resourceType: "service";
