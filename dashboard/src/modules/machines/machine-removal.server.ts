@@ -10,7 +10,7 @@ import {
 } from "#/modules/runtime/data-loss-confirm";
 import type { PloyzSdkError } from "#/modules/runtime/ployz.server";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import type {
   EnqueueMachineRemoveInput,
   GetMachineRemoveAttemptInput,
@@ -28,6 +28,8 @@ import {
   requestMachineRemoveAttempt,
 } from "#/modules/machines/machine-removal.repository";
 import { NotFound } from "#/server/public-error";
+import { forgetEmptiedCluster } from "#/modules/machines/pairing-removal.server";
+import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 
 function asMachineId(machineId: string): MachineId {
   // SAFETY: Cloud machine ids are the same strings rust brands as MachineId.
@@ -80,8 +82,12 @@ export const completeMachineRemoveAttemptActivity = Effect.fn(
 )((input: Parameters<typeof completeMachineRemoveAttempt>[0]) =>
   completeMachineRemoveAttempt(input));
 
+/**
+ * Resets the Server under Cloud's own connection. `lastServer` says it was the Cluster's only one, so the reset took
+ * the Cluster, and Cloud's hold on it, with it: the caller then forgets the pairing (`forgetEmptiedCluster`).
+ */
 export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
-  function* (attempt: MachineRemoveAttemptContext) {
+  function* (attempt: Pick<MachineRemoveAttemptContext, "organizationId" | "machineId" | "confirmDataLoss">) {
     const runtime = yield* OrganizationRuntime;
     const session = yield* runtime.open(attempt.organizationId);
     if (session.status !== "connected") {
@@ -90,13 +96,31 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
         cause: session,
       });
     }
-    return yield* asRemoveMachineOutcome(
+    const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(
+      Effect.mapError((cause) => new MachineRemovalProviderFailure({ operation: "read the cluster's servers", cause })),
+    );
+    // The only Server: its reset ends the Cluster, as no Server can join with no Server to join through.
+    const lastServer = frame.machines.length === 1 && frame.machines[0]?.machine.id === attempt.machineId;
+    const outcome = yield* asRemoveMachineOutcome(
       session.connected.removeMachine(asMachineId(attempt.machineId), {
         confirmed: [...attempt.confirmDataLoss],
       }),
     );
+    return { ...outcome, lastServer };
   },
 );
+
+/**
+ * `ployz server rm` of a Server Cloud holds as the Cluster's last: Cloud removes it itself, like the dashboard does, so it
+ * sees the reset and lets go of the Cluster. Nothing happens when fresh Data Loss isn't confirmed: its names come back.
+ */
+export const removeServerForCli = Effect.fn("MachineRemoval.removeForCli")(function* (
+  organizationId: string, machineId: string, confirmDataLoss: readonly DataLossIdentity[],
+) {
+  const removed = yield* removeMachineActivity({ organizationId, machineId, confirmDataLoss: [...confirmDataLoss] });
+  if (removed.kind === "removed" && removed.lastServer) yield* forgetEmptiedCluster(organizationId);
+  return removed;
+}, Effect.scoped);
 
 function isTerminalMachineRemove(attempt: MachineRemoveAttemptContext) {
   return (

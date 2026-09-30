@@ -22,12 +22,20 @@ import {
   retireServerAccess,
 } from "#/modules/machines/server-access.server";
 import { refusal } from "#/modules/config-store/config-store.server";
+import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { removeServerForCli } from "#/modules/machines/machine-removal.server";
+import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
 import { NotFound, Validation } from "#/server/public-error";
 
 const NewToken = Schema.Struct({
   name: Schema.Trim.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
   expires_in_days: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 365 })),
+});
+
+/** `server rm`'s DataLossConfirmation: the Volumes the user accepted losing. */
+const RemoveServer = Schema.Struct({
+  confirm_data_loss: Schema.Struct({ confirmed: Schema.Array(dataLossIdentitySchema) }),
 });
 
 const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, request: Request, message: string) =>
@@ -38,7 +46,7 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
 
 /**
  * `/api/cli/*`: the `ployz` CLI's account surface (Organizations and their removal, Organization Tokens and signed-in devices,
- * GitHub connections, billing). Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
+ * GitHub connections, billing), and removing a Server Cloud holds as its last. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
  */
 export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Request) {
   const caller = yield* resolveCaller(request.headers);
@@ -76,6 +84,17 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       }
       yield* revokeCredential(caller, caller.credential.id);
       return { signed_out: { id: caller.credential.id }, servers: yield* retireServerAccess(caller.credential.id) };
+    }
+    case "DELETE servers/:id": {
+      const machineId = decodeURIComponent(id ?? "");
+      if (!Schema.is(rustMachineIdSchema)(machineId)) return yield* new NotFound({ message: "No such Server." });
+      const input = yield* decodeBody(RemoveServer, request, "Removing a Server takes the Data Loss it confirms.");
+      const removed = yield* removeServerForCli(caller.organization.id, machineId, input.confirm_data_loss.confirmed);
+      return removed.kind === "removed" ? { removed: { id: machineId } } : refusal({
+        code: "invalid_argument",
+        message: "The Server holds Volumes this removal didn't confirm. No changes made.",
+        details: { missing: removed.identities },
+      });
     }
     case "POST server-access":
       return yield* provideServerAccess(caller);

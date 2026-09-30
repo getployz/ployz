@@ -83,7 +83,7 @@ function RouteComponent() {
       ) : null}
       <RunningHere organizationSlug={organizationSlug} server={server} servers={servers} stale={stale} />
       <ServerBuildsSection machine={machine} organizationSlug={organizationSlug} />
-      <RemoveServerSection machine={machine} organizationSlug={organizationSlug} />
+      <RemoveServerSection machine={machine} organizationSlug={organizationSlug} last={servers.length === 1} />
     </DashboardPage>
   );
 }

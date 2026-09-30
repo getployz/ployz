@@ -91,6 +91,25 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
   },
 );
 
+/**
+ * Cloud reset the Organization's last Server itself, so its Cluster is gone and with it every key Cloud held there:
+ * `cloud` and each device's `cli-*`. Cloud forgets the pairing, its Servers and enrollment tokens outright, with no Clear
+ * to confirm. The Environments keep their config; the next Server founds a new Cluster.
+ */
+export const forgetEmptiedCluster = Effect.fn("PairingRemoval.forgetEmptied")(
+  function* (organizationId: string) {
+    const database = yield* Database;
+    // Sessions on the old pairing close once the pairing watch sees it go; there is nothing left for them to reach.
+    yield* database.transaction(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      // Server Access rows cascade with their Servers.
+      yield* drizzle.delete(organizationMachine).where(eq(organizationMachine.organizationId, organizationId));
+      yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
+      yield* drizzle.delete(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
+    }));
+  },
+);
+
 const loadCurrentAttempt = Effect.fn("PairingRemoval.loadCurrent")(
   function* (attempt: RemovalAttempt) {
     const { drizzle } = yield* Database;
