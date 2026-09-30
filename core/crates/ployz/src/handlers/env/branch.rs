@@ -60,7 +60,7 @@ pub(super) fn moving(command: Command) -> Command {
         .arg(
             repeated("only")
                 .value_name("ROW[=CHOICE]")
-                .help("Move only this change, or every change under it (web, web.env); a variable may say how it lands: from, parent or leave_out"),
+                .help("Move only this change, or every change under it (web, web.env); a variable may say how it lands: from, parent, leave_out, or new=VALUE for its own value here"),
         )
         .arg(value("version", None).help("Refuse unless this is still the version --plan showed"))
         .arg(switch("plan", None).help("List the changes and the version; move nothing"))
@@ -181,16 +181,19 @@ fn shift(
     moved_out(matches, shift, &moved)
 }
 
-/// `--only ROW[=CHOICE]`.
+/// `--only ROW[=CHOICE]`, where CHOICE is `from`, `parent`, `leave_out` or `new=VALUE`.
 fn pick(only: &str) -> Result<MovePick, Error> {
     let (row, choice) = match only.split_once('=') {
         Some((row, choice)) => {
-            let choice: PickChoice = serde_json::from_value(json!(choice)).map_err(|_| {
-                Error::usage(format!(
-                    "Expected --only {row}=CHOICE with from, parent or leave_out"
-                ))
-                .with_exit(USAGE_EXIT)
-            })?;
+            let choice = match choice.split_once('=') {
+                Some(("new", value)) => PickChoice::New(value.to_owned()),
+                _ => serde_json::from_value(json!(choice)).map_err(|_| {
+                    Error::usage(format!(
+                        "Expected --only {row}=CHOICE with from, parent, leave_out or new=VALUE"
+                    ))
+                    .with_exit(USAGE_EXIT)
+                })?,
+            };
             (row, Some(choice))
         }
         None => (only, None),
@@ -389,4 +392,24 @@ pub(super) fn setups(values: &[String]) -> Result<Vec<SetupCommand>, Error> {
                 })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_takes_every_choice_a_variable_lands_as() {
+        for (only, choice) in [
+            ("web.env.A=from", Some(PickChoice::From)),
+            ("web.env.A=parent", Some(PickChoice::Parent)),
+            ("web.env.A=leave_out", Some(PickChoice::LeaveOut)),
+            ("web.env.A=new=x=1", Some(PickChoice::New("x=1".into()))),
+            ("web.env.A", None),
+        ] {
+            let picked = pick(only).unwrap();
+            assert_eq!((picked.row.as_str(), picked.choice), ("web.env.A", choice));
+        }
+        assert!(pick("web.env.A=New").is_err());
+    }
 }
