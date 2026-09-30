@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import type { MachineId } from "@ployz/sdk";
+import type { LocalMachineRemoved, MachineId } from "@ployz/sdk";
 import { Data, Effect, Exit } from "effect";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createMachineRemoveRequestedEvent } from "#/modules/inngest/events";
@@ -10,13 +10,14 @@ import {
 } from "#/modules/runtime/data-loss-confirm";
 import type { PloyzSdkError } from "#/modules/runtime/ployz.server";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
-import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type {
   EnqueueMachineRemoveInput,
   GetMachineRemoveAttemptInput,
   LoadMachineDataLossInput,
   MachineRemoveAttemptContext,
   RemoveMachineOutcome,
+  ServerRelease,
 } from "#/modules/machines/machine-removal";
 import {
   abandonPendingMachineRemoveAttempt,
@@ -28,8 +29,9 @@ import {
   requestMachineRemoveAttempt,
 } from "#/modules/machines/machine-removal.repository";
 import { NotFound } from "#/server/public-error";
-import { forgetEmptiedCluster } from "#/modules/machines/pairing-removal.server";
-import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
+import { releaseRemovedServer } from "#/modules/machines/pairing-removal.server";
+import { loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { storeSystem } from "#/modules/config-store/config-store.server";
 
 function asMachineId(machineId: string): MachineId {
   // SAFETY: Cloud machine ids are the same strings rust brands as MachineId.
@@ -43,10 +45,10 @@ export class MachineRemovalProviderFailure extends Data.TaggedError(
 }
 
 export function asRemoveMachineOutcome<R>(
-  run: Effect.Effect<unknown, PloyzSdkError, R>,
+  run: Effect.Effect<LocalMachineRemoved, PloyzSdkError, R>,
 ) {
   return run.pipe(
-    Effect.as({ kind: "removed" as const } satisfies RemoveMachineOutcome),
+    Effect.map((removed): RemoveMachineOutcome => ({ kind: "removed", resetWarning: removed.reset_warning })),
     Effect.catchTag("MissingDataLossIdentities", (cause) =>
       Effect.succeed({
         kind: "missing_identities" as const,
@@ -83,44 +85,47 @@ export const completeMachineRemoveAttemptActivity = Effect.fn(
   completeMachineRemoveAttempt(input));
 
 /**
- * Resets the Server under Cloud's own connection. `lastServer` says it was the Cluster's only one, so the reset took
- * the Cluster, and Cloud's hold on it, with it: the caller then forgets the pairing (`forgetEmptiedCluster`).
+ * Resets the Server under Cloud's own connection. The pairing generation Cloud reached it through comes back with the
+ * outcome, as the witness `releaseServerActivity` checks before it lets go of anything.
  */
 export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
   function* (attempt: Pick<MachineRemoveAttemptContext, "organizationId" | "machineId" | "confirmDataLoss">) {
+    const access = yield* loadOrganizationConnections(attempt.organizationId);
     const runtime = yield* OrganizationRuntime;
     const session = yield* runtime.open(attempt.organizationId);
-    if (session.status !== "connected") {
+    if (access.kind !== "ready" || session.status !== "connected") {
       return yield* new MachineRemovalProviderFailure({
         operation: "open organization runtime",
         cause: session,
       });
     }
-    const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(
-      Effect.mapError((cause) => new MachineRemovalProviderFailure({ operation: "read the cluster's servers", cause })),
-    );
-    // The only Server: its reset ends the Cluster, as no Server can join with no Server to join through.
-    const lastServer = frame.machines.length === 1 && frame.machines[0]?.machine.id === attempt.machineId;
     const outcome = yield* asRemoveMachineOutcome(
       session.connected.removeMachine(asMachineId(attempt.machineId), {
         confirmed: [...attempt.confirmDataLoss],
       }),
     );
-    return { ...outcome, lastServer };
+    return { ...outcome, generation: access.generation };
   },
 );
 
 /**
- * `ployz server rm` of a Server Cloud holds as the Cluster's last: Cloud removes it itself, like the dashboard does, so it
- * sees the reset and lets go of the Cluster. Nothing happens when fresh Data Loss isn't confirmed: its names come back.
+ * What a removed Server leaves of Cloud's hold. A reset that didn't finish is a partial outcome: the Server may keep
+ * Cloud's key, so Cloud keeps its row and its pairing. Otherwise `releaseRemovedServer` drops the Server's row, and
+ * forgets the Cluster when it was the pairing's last; the Store then lets go of everything that ran.
  */
-export const removeServerForCli = Effect.fn("MachineRemoval.removeForCli")(function* (
-  organizationId: string, machineId: string, confirmDataLoss: readonly DataLossIdentity[],
-) {
-  const removed = yield* removeMachineActivity({ organizationId, machineId, confirmDataLoss: [...confirmDataLoss] });
-  if (removed.kind === "removed" && removed.lastServer) yield* forgetEmptiedCluster(organizationId);
-  return removed;
-}, Effect.scoped);
+export const releaseServerActivity = Effect.fn("MachineRemoval.release")(function* (input: {
+  organizationId: string; machineId: string; generation: string; resetWarning: string | null;
+}) {
+  if (input.resetWarning !== null) {
+    return {
+      kind: "kept",
+      reason: `its reset didn't finish (${input.resetWarning}), so it may still hold Cloud's key.`,
+    } satisfies ServerRelease;
+  }
+  const release = yield* releaseRemovedServer(input);
+  if (release.kind === "released") yield* storeSystem(input.organizationId, { event: "cluster_forgotten" });
+  return release;
+});
 
 function isTerminalMachineRemove(attempt: MachineRemoveAttemptContext) {
   return (
@@ -251,12 +256,19 @@ export const enqueueMachineRemove = Effect.fn("MachineRemoval.enqueue")(
       actor,
       input.organizationSlug,
     );
-    const requested = yield* requestMachineRemoveAttempt({
+    return yield* startMachineRemove({
       organizationId: organization.id,
       requestedByUserId: actor.userId,
       machineId: input.machineId,
       confirmDataLoss: [...input.confirmDataLoss],
     });
+  },
+);
+
+/** Start the one durable removal of a Server, the dashboard's and `ployz server rm`'s alike; both follow its attempt. */
+export const startMachineRemove = Effect.fn("MachineRemoval.start")(
+  function* (input: Parameters<typeof requestMachineRemoveAttempt>[0]) {
+    const requested = yield* requestMachineRemoveAttempt(input);
     yield* dispatchMachineRemoveRequested(requested.id);
     return requested;
   },

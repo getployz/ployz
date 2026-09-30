@@ -50,6 +50,7 @@ function completionValues(completion: MachineRemoveCompletion, now: Date) {
     case "succeeded":
       return {
         state: "succeeded" as const,
+        result: completion.result,
         missingIdentities: null,
         failureCode: null,
         failureMessage: null,

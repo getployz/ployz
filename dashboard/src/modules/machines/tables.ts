@@ -3,7 +3,7 @@ import { createdAt, type EncryptedSecretValue, type MachineId, sqlStringLiterals
 
 import { user } from "#/modules/identity/tables";
 
-import { MACHINE_REMOVE_ATTEMPT_STATES, type MachineRemoveAttemptState } from "#/modules/machines/machine-removal";
+import { MACHINE_REMOVE_ATTEMPT_STATES, type MachineRemoveAttemptState, type MachineRemoveResult } from "#/modules/machines/machine-removal";
 
 import { organization } from "#/modules/organization/tables";
 
@@ -39,6 +39,8 @@ export const machineRemoveAttempt = pgTable(
     >(),
     failureCode: text("failure_code"),
     failureMessage: text("failure_message"),
+    /** A succeeded removal's result: the reset warning, and what became of Cloud's hold. */
+    result: jsonb("result").$type<MachineRemoveResult | null>(),
     startedAt: timestamp("started_at", {
       mode: "date",
       withTimezone: true,
@@ -60,6 +62,10 @@ export const machineRemoveAttempt = pgTable(
     check(
       "machine_remove_attempt_machine_id_check",
       sql`length(${table.machineId}) between 1 and 64 and ${table.machineId} !~ '[[:cntrl:]]'`,
+    ),
+    check(
+      "machine_remove_attempt_result_check",
+      sql`${table.result} is null or ${table.state} = 'succeeded'`,
     ),
     check(
       "machine_remove_attempt_confirm_data_loss_check",

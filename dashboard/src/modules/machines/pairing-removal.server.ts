@@ -12,6 +12,7 @@ import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { RemovalEndpoints, type RemovalEndpoint } from "#/modules/machines/pairing-removal";
+import type { ServerRelease } from "#/modules/machines/machine-removal";
 
 type Pairing = typeof organizationPairing.$inferSelect;
 type RemovalAttempt = Pairing & {
@@ -92,20 +93,37 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
 );
 
 /**
- * Cloud reset the Organization's last Server itself, so its Cluster is gone and with it every key Cloud held there:
- * `cloud` and each device's `cli-*`. Cloud forgets the pairing, its Servers and enrollment tokens outright, with no Clear
- * to confirm. The Environments keep their config; the next Server founds a new Cluster.
+ * Server `machineId` of the pairing whose generation Cloud witnessed, `generation`, was reset under Cloud's own
+ * connection and left the Cluster; the reset took every key Cloud held there. Cloud drops that Server's row (its
+ * device keys cascade). When no other Server of that pairing remains, the Cluster went with it: Cloud forgets the
+ * pairing and its enrollment tokens outright, with no Clear to confirm. A pairing that changed since, or another
+ * Server, keeps Cloud's hold, so a replay after a new Server was paired forgets nothing.
  */
-export const forgetEmptiedCluster = Effect.fn("PairingRemoval.forgetEmptied")(
-  function* (organizationId: string) {
+export const releaseRemovedServer = Effect.fn("PairingRemoval.releaseRemoved")(
+  function* (input: { organizationId: string; machineId: string; generation: string }) {
+    const { organizationId } = input;
     const database = yield* Database;
-    // Sessions on the old pairing close once the pairing watch sees it go; there is nothing left for them to reach.
-    yield* database.transaction(Effect.gen(function* () {
+    return yield* database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
-      // Server Access rows cascade with their Servers.
-      yield* drizzle.delete(organizationMachine).where(eq(organizationMachine.organizationId, organizationId));
+      const [pairing] = yield* drizzle.select().from(organizationPairing)
+        .where(eq(organizationPairing.organizationId, organizationId)).for("update");
+      // SAFETY: a Machine ID the SDK removed; an organization_machine row only matches the same representation.
+      yield* drizzle.delete(organizationMachine).where(and(
+        eq(organizationMachine.organizationId, organizationId),
+        eq(organizationMachine.machineId, input.machineId as MachineId),
+      ));
+      // Gone already: this is a replay of a release that forgot it.
+      if (!pairing) return { kind: "released" } satisfies ServerRelease;
+      const generation = createHash("sha256").update(yield* decrypt(pairing.encryptedPairingSecret)).digest("hex");
+      if (generation !== input.generation || pairing.removalStartedAt !== null) {
+        return { kind: "kept", reason: "Cloud was paired with a new Cluster since." } satisfies ServerRelease;
+      }
+      const [other] = yield* drizzle.select({ machineId: organizationMachine.machineId }).from(organizationMachine)
+        .where(eq(organizationMachine.organizationId, organizationId)).limit(1);
+      if (other) return { kind: "others_remain" } satisfies ServerRelease;
       yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
       yield* drizzle.delete(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
+      return { kind: "released" } satisfies ServerRelease;
     }));
   },
 );

@@ -10,6 +10,7 @@ import type {
   DataLossConfirmation,
   DeployOutcome,
   ExecutionError,
+  LocalMachineRemoved,
   MachineDetails,
   MachineTarget,
   MachineUpdate,
@@ -52,10 +53,11 @@ export interface PloyzSession {
   readonly clearManagementClient: (label: string) => Effect.Effect<void, PloyzSdkError>;
   readonly observeEnrollment: () => Effect.Effect<EnrollmentSnapshot, PloyzProviderError>;
   readonly register: (assignment: EnrollmentAssignment) => Effect.Effect<JsonValue, PloyzProviderError>;
+  /** Resolves to why the reset didn't finish, if it didn't: the Server left the Cluster, but may keep its state. */
   readonly removeMachine: (
     machine: MachineTarget,
     confirmDataLoss: DataLossConfirmation,
-  ) => Effect.Effect<void, PloyzSdkError>;
+  ) => Effect.Effect<LocalMachineRemoved, PloyzSdkError>;
   readonly dataLossIfMachineRemoved: (
     machine: MachineTarget,
   ) => Effect.Effect<ObservedDataLoss, PloyzSdkError>;
@@ -162,7 +164,7 @@ function wrapClient(client: Client): PloyzSession {
     }),
     removeMachine: (machine, confirmDataLoss) =>
       sdkPromise("remove machine", () =>
-        client.removeMachine(machine, confirmDataLoss).then(() => undefined),
+        client.removeMachine(machine, confirmDataLoss),
       ),
     dataLossIfMachineRemoved: (machine) =>
       sdkPromise("load machine data loss", () =>

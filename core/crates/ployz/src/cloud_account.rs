@@ -496,28 +496,89 @@ pub(crate) async fn remove_organization(
     .await
 }
 
-/// Have Cloud remove Server `machine` of the credential's Organization under its own
-/// connection, accepting exactly `confirmation`. Cloud witnesses the reset, so when it
-/// was the last Server Cloud lets go of it: the pairing goes, and the next Server founds
-/// a new Cluster.
+/// What Cloud's removal of a Server did.
+#[derive(Debug, Deserialize)]
+pub(crate) struct CloudRemoval {
+    /// Why the reset didn't finish, if it didn't: Cloud then keeps its hold.
+    pub(crate) reset_warning: Option<String>,
+    pub(crate) release: Release,
+}
+
+/// What became of Cloud's hold once the Server was gone.
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum Release {
+    /// Other Servers keep the Cluster; Cloud dropped only this one.
+    OthersRemain,
+    /// It was the last: Cloud forgot the Cluster, and the next Server founds a new one.
+    Released,
+    /// Cloud kept its hold, for `reason`.
+    Kept { reason: String },
+}
+
+/// Where Cloud's removal of a Server is.
+#[derive(Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+enum Progress {
+    Pending,
+    Running,
+    Succeeded(CloudRemoval),
+}
+
+/// How long `server rm` waits on Cloud's removal before it stops watching.
+const REMOVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Have Cloud remove Server `machine` of the credential's Organization, accepting
+/// exactly `confirmation`: the same durable removal the dashboard starts, which Cloud
+/// runs under its own connection. Waits for it to settle. Cloud witnesses the reset,
+/// so when it was the last Server Cloud lets go of the Cluster.
 ///
 /// # Errors
 ///
 /// Returns Cloud's refusal (`not_found` for a Server it doesn't reach, `invalid_argument`
-/// when the confirmation misses fresh Data Loss), or a Cloud failure.
+/// when the confirmation misses fresh Data Loss, `unavailable` when the removal failed),
+/// `unavailable` when it hasn't settled within [`REMOVAL_WAIT`], or a Cloud failure.
 pub(crate) async fn remove_server(
     credential: &Credential,
     machine: &MachineId,
     confirmation: &ployz_core::DataLossConfirmation,
-) -> Result<(), StoreCallError> {
+) -> Result<CloudRemoval, StoreCallError> {
+    #[derive(Deserialize)]
+    struct Queued {
+        id: String,
+    }
     let url = format!("{}/api/cli/servers/{machine}", credential.cloud());
     let body = serde_json::json!({ "confirm_data_loss": confirmation });
-    store_answer::<serde_json::Value>(
+    let queued: Queued = store_answer(
         credential,
         send(credential, Method::DELETE, &url, Some(&body)).await?,
     )
     .await?;
-    Ok(())
+    let url = format!(
+        "{}/api/cli/server-removals/{}",
+        credential.cloud(),
+        queued.id
+    );
+    let deadline = tokio::time::Instant::now() + REMOVAL_WAIT;
+    loop {
+        match store_answer(credential, send(credential, Method::GET, &url, None).await?).await? {
+            Progress::Succeeded(removal) => return Ok(removal),
+            Progress::Pending | Progress::Running if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+            Progress::Pending | Progress::Running => {
+                return Err(StoreCallError::Refused(RpcError {
+                    code: ployz_core::RpcErrorCode::Unavailable,
+                    message: format!(
+                        "Cloud is still removing Server {machine} (removal {}); it finishes on its own. \
+                         The dashboard's Servers page shows when it's done.",
+                        queued.id
+                    ),
+                    details: serde_json::Value::Null,
+                }));
+            }
+        }
+    }
 }
 
 /// Keep `archive`, a gzipped tar of a source directory, in Cloud as the upload of
