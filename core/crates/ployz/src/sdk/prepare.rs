@@ -389,9 +389,14 @@ async fn reuse_without_source(
     let Some(stores) = crate::build::image_stores(client, machines, cancellation).await else {
         return Err(PreparationError::Cancelled);
     };
-    let mut reused = Vec::new();
-    let mut missing = Vec::new();
+    let mut reused: Vec<BuiltService> = Vec::new();
+    let mut missing: Vec<ployz_core::ServiceName> = Vec::new();
+    // Each Service's receipts in order: the first usable one serves it.
     for receipt in receipts {
+        let served = reused.iter().any(|built| built.name == receipt.name);
+        if served {
+            continue;
+        }
         let holder = intent
             .target
             .iter()
@@ -400,12 +405,14 @@ async fn reuse_without_source(
                 crate::build::runs_everywhere(&receipt.built, spec, &intent.namespace, machines)
             })
             .and_then(|_| crate::build::holder(&stores, &receipt.built, receipt.machine_id));
-        match holder {
-            Some(machine_id) => reused.push(BuiltService {
+        if let Some(machine_id) = holder {
+            missing.retain(|name| name != &receipt.name);
+            reused.push(BuiltService {
                 machine_id,
                 ..(*receipt).clone()
-            }),
-            None => missing.push(receipt.name.clone()),
+            });
+        } else if !missing.contains(&receipt.name) {
+            missing.push(receipt.name.clone());
         }
     }
     if missing.is_empty() {

@@ -58,7 +58,7 @@ impl std::fmt::Display for UploadDigest {
 }
 
 /// Backend-only frozen settings and repository directories, keyed by runtime Service name.
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreparationInput {
     pub deployment: Value,
@@ -71,13 +71,11 @@ pub struct PreparationInput {
     /// exactly that content; without one only a matching, still-usable receipt serves it.
     #[serde(default)]
     pub uploads: BTreeMap<ServiceName, UploadDigest>,
-    /// Previous completed images are hints; preparation verifies their availability.
+    /// Previous completed images to try, in order: the Service's own first, then
+    /// other Environments' images of the same build inputs. Preparation verifies
+    /// each one's availability.
     #[serde(default)]
-    pub build_receipts: BTreeMap<ServiceName, BuildReceipt>,
-    /// More receipts to try, in order, when a Service's own doesn't match: other
-    /// Environments' images of the same build inputs.
-    #[serde(default)]
-    pub borrowed: BTreeMap<ServiceName, Vec<BuildReceipt>>,
+    pub build_receipts: BTreeMap<ServiceName, Vec<BuildReceipt>>,
     /// This build's position among its attempt's builds. Builds whose cache
     /// holder cannot build spread across Machines by it.
     #[serde(default)]
@@ -166,25 +164,28 @@ pub(crate) struct CapturedPreparation {
     pub build: CapturedBuild,
     /// Each Service to build: its fingerprint and the variables it reads.
     pub fingerprints: BTreeMap<ServiceName, (String, BuildVariables)>,
+    /// Every image that may serve a Service, in the order to try them.
     pub reusable: Vec<BuiltService>,
-    /// The receipt each reused image came with; it keeps its own fingerprint.
-    pub reused: BTreeMap<ServiceName, BuildReceipt>,
+    /// The receipts behind `reusable`: a reused image keeps its own fingerprint.
+    pub reused: BTreeMap<ServiceName, Vec<BuildReceipt>>,
     pub preference: BuildPreference,
 }
 
 /// A receipt for each of `builds`: a reused image keeps the receipt it came with.
 pub(crate) fn receipts(
     fingerprints: &BTreeMap<ServiceName, (String, BuildVariables)>,
-    reused: &BTreeMap<ServiceName, BuildReceipt>,
+    reused: &BTreeMap<ServiceName, Vec<BuildReceipt>>,
     builds: &[BuiltService],
 ) -> BTreeMap<ServiceName, BuildReceipt> {
     builds
         .iter()
         .filter_map(|build| {
             // Preparation may still rebuild a reused image that misses a platform.
-            let reused = reused
-                .get(&build.name)
-                .filter(|reused| reused.image.reference == build.built.reference);
+            let reused = reused.get(&build.name).and_then(|candidates| {
+                candidates
+                    .iter()
+                    .find(|reused| reused.image == build.built)
+            });
             let receipt = match reused {
                 Some(reused) => BuildReceipt {
                     machine_id: build.machine_id,
@@ -215,7 +216,7 @@ fn invalid(message: impl ToString) -> RpcError {
 
 /// Capture authorized checkouts as Builds.
 pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation, RpcError> {
-    for receipt in input.build_receipts.values() {
+    for receipt in input.build_receipts.values().flatten() {
         if !ployz_core::is_lower_hex(&receipt.fingerprint, 64)
             || !receipt
                 .image
@@ -298,40 +299,49 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
                 .build_receipts
                 .iter()
                 .find(|(name, _)| name.as_str() == target.name)
-                .map(|(_, receipt)| receipt.machine_id)
+                .and_then(|(_, receipts)| receipts.first())
+                .map(|receipt| receipt.machine_id)
         }),
         build_index: input.build_index,
         preferred: input.preferred_machine,
     };
-    // A receipt serves a Service when its image still exists and the build inputs it
-    // read are unchanged: its own first, then the borrowed ones in order.
+    // A receipt may serve a Service when the build inputs it read are unchanged;
+    // preparation then takes the first whose image is still usable.
     let mut reused = BTreeMap::new();
     for service in &intent.target {
         let Some(identity) = frozen.identities.get(&service.name) else {
             continue;
         };
-        let own = input.build_receipts.remove(&service.name);
-        let borrowed = input.borrowed.remove(&service.name).unwrap_or_default();
-        if let Some(receipt) = own.into_iter().chain(borrowed).find(|receipt| {
-            !receipt.image.platforms.is_empty()
-                && receipt.fingerprint == fingerprint(identity, service, &receipt.variables)
-        }) {
-            reused.insert(service.name.clone(), receipt);
+        let matching: Vec<_> = input
+            .build_receipts
+            .remove(&service.name)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|receipt| {
+                !receipt.image.platforms.is_empty()
+                    && receipt.fingerprint == fingerprint(identity, service, &receipt.variables)
+            })
+            .collect();
+        if !matching.is_empty() {
+            reused.insert(service.name.clone(), matching);
         }
     }
     let reusable = intent
         .target
         .iter()
-        .filter_map(|service| {
-            let receipt = reused.get(&service.name)?;
-            Some(BuiltService {
-                name: service.name.clone(),
-                machine_id: receipt.machine_id,
-                image: service.container.image.clone(),
-                placement: service.placement.clone(),
-                built: receipt.image.clone(),
-                _retention: None,
-            })
+        .flat_map(|service| {
+            reused
+                .get(&service.name)
+                .into_iter()
+                .flatten()
+                .map(|receipt| BuiltService {
+                    name: service.name.clone(),
+                    machine_id: receipt.machine_id,
+                    image: service.container.image.clone(),
+                    placement: service.placement.clone(),
+                    built: receipt.image.clone(),
+                    _retention: None,
+                })
         })
         .collect::<Vec<BuiltService>>();
     let fingerprints = intent
@@ -366,6 +376,13 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
     })
 }
 
+/// Why preparation needs something only the user can give, as its error details say.
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum Needed {
+    UploadNeeded { services: Vec<ServiceName> },
+}
+
 /// No source and no usable image for these uploaded Services: only a new upload builds them.
 pub(crate) fn upload_needed(services: &[ServiceName]) -> RpcError {
     let names = services
@@ -379,7 +396,14 @@ pub(crate) fn upload_needed(services: &[ServiceName]) -> RpcError {
             "No upload or usable image for {names}: its image is gone, or its build inputs \
              changed. Upload its source again"
         ),
-        details: json!({"preparation": {"kind": "upload_needed", "services": services}}),
+        details: json!({"preparation": Needed::UploadNeeded { services: services.to_vec() }}),
+    }
+}
+
+/// The uploaded Services `error` says need a new upload, if that's what it says.
+pub(crate) fn needs_upload(error: &RpcError) -> Option<Vec<ServiceName>> {
+    match Needed::deserialize(error.details.get("preparation")?).ok()? {
+        Needed::UploadNeeded { services } => Some(services),
     }
 }
 
@@ -574,7 +598,6 @@ mod tests {
             source_commits: BTreeMap::new(),
             uploads: BTreeMap::new(),
             build_receipts: BTreeMap::new(),
-            borrowed: BTreeMap::new(),
             build_index: 0,
             preferred_machine: None,
         })
@@ -718,10 +741,10 @@ mod tests {
         *invalid_commit.pointer_mut("/source_commits/web").unwrap() = json!("main");
         assert!(capture(serde_json::from_value(invalid_commit).unwrap()).is_err());
         let mut invalid_receipt = base;
-        invalid_receipt.as_object_mut().unwrap().insert("build_receipts".into(), json!({"web": {
+        invalid_receipt.as_object_mut().unwrap().insert("build_receipts".into(), json!({"web": [{
             "fingerprint": "a".repeat(64), "variables": "all", "machine_id": "a".repeat(32),
             "image": {"reference":"mutable:latest", "tags":[], "platforms":["linux/amd64"], "location":"unused"}
-        }}));
+        }]}));
         assert!(capture(serde_json::from_value(invalid_receipt).unwrap()).is_err());
     }
 
@@ -818,12 +841,11 @@ mod tests {
                     "platforms": ["linux/amd64"], "location": "unused"}}))
             .unwrap()
         };
-        let sourceless = |deployment: &Value, own: &str, borrowed: &[&str]| {
+        let sourceless = |deployment: &Value, receipts: &[&str]| {
             let mut sourceless = input(deployment, false, None, Some(&digest));
-            sourceless.build_receipts = BTreeMap::from([(web.clone(), receipt(own))]);
-            sourceless.borrowed = BTreeMap::from([(
+            sourceless.build_receipts = BTreeMap::from([(
                 web.clone(),
-                borrowed
+                receipts
                     .iter()
                     .map(|fingerprint| receipt(fingerprint))
                     .collect(),
@@ -832,20 +854,20 @@ mod tests {
         };
         let stale = "f".repeat(64);
         assert_eq!(
-            sourceless(&empty, &stale, &[]).err().unwrap().code,
+            sourceless(&empty, &[&stale]).err().unwrap().code,
             RpcErrorCode::NotFound
         );
-        let reused = sourceless(&empty, &stale, &[&stale, &fingerprint]).unwrap();
+        let reused = sourceless(&empty, &[&stale, &stale, &fingerprint]).unwrap();
         assert_eq!(reused.build.targets().count(), 0);
         assert_eq!(reused.reusable.len(), 1);
         assert_eq!(
-            reused.reused[&web].fingerprint, fingerprint,
+            reused.reused[&web][0].fingerprint, fingerprint,
             "a reused image keeps the receipt it came with"
         );
         // A runtime variable change still reuses it; a changed build input needs the upload.
         let runtime = with_env(json!({"TOKEN": "changed"}));
         assert_eq!(
-            sourceless(&runtime, &fingerprint, &[])
+            sourceless(&runtime, &[&fingerprint])
                 .unwrap()
                 .reusable
                 .len(),
@@ -853,7 +875,7 @@ mod tests {
         );
         let build_input = with_env(json!({"API_URL": "changed"}));
         assert_eq!(
-            sourceless(&build_input, &fingerprint, &[])
+            sourceless(&build_input, &[&fingerprint])
                 .err()
                 .unwrap()
                 .code,
@@ -863,10 +885,10 @@ mod tests {
         let mut built = input(&git, false, Some(&commit), None);
         built.build_receipts = BTreeMap::from([(
             web.clone(),
-            BuildReceipt {
+            vec![BuildReceipt {
                 variables: BuildVariables::All,
                 ..receipt(&clean.fingerprints[&web].0)
-            },
+            }],
         )]);
         assert_eq!(capture(built).unwrap().reusable.len(), 1);
         assert_eq!(
