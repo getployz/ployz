@@ -350,7 +350,7 @@ async fn node_smoke_covers_connect_about_preview_run_and_close() {
 }
 
 #[tokio::test]
-async fn node_store_seams_refuse_malformed_github_input() {
+async fn node_store_seams_refuse_malformed_input() {
     UnixSession::start()
         .await
         .assert_sdk_script("node_store.js", MachineId::random(), &[])
