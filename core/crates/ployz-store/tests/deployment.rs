@@ -1204,3 +1204,38 @@ fn deploying_a_service_with_nothing_to_run_is_refused_naming_it() {
     // Deploying other Services leaves it out.
     admit(&store, &who, 1, &["web"], None).unwrap();
 }
+
+#[test]
+fn live_commands_find_containers_by_the_runtime_name_that_deployed() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    // A staged Private DNS change isn't live until it deploys.
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("web.privateDns").unwrap(),
+                    value: json!("front"),
+                }],
+            },
+        )
+        .unwrap();
+    let web = ployz_core::ServiceName::parse("web").unwrap();
+    let namespace = store.read(&who, &NamespaceQuery::default()).unwrap();
+    assert_eq!(namespace.services.get(&web), Some(&web));
+    let deployment = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap();
+    assert_eq!(deployment.services.get(&web), Some(&web));
+}

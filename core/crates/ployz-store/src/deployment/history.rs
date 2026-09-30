@@ -189,9 +189,18 @@ pub(crate) fn view(
             },
         })
         .collect();
+    let services = stored
+        .nodes
+        .iter()
+        .filter_map(|node| match node {
+            TargetNode::Service { name, runtime, .. } => Some((name.clone(), runtime.clone())),
+            TargetNode::Volume { .. } => None,
+        })
+        .collect();
     let builds = build::views(tx, &stored)?;
     Ok(DeploymentView {
         builds,
+        services,
         deployment: stored.summary,
         environment: environment.summary,
         namespace: stored.namespace,
