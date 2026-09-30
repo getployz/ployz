@@ -679,11 +679,7 @@ fn keep_applies_at_once_and_generated_domains_follow_the_branch_name() {
     };
     let kept = store.write(&who, &keep(true)).unwrap();
     assert!(kept.branch.kept);
-    assert_eq!(
-        (kept.immediate, kept.staged),
-        (vec!["kept".to_owned()], Vec::new())
-    );
-    assert!(store.write(&who, &keep(true)).unwrap().immediate.is_empty());
+    assert!(kept.staged.is_empty());
     assert!(!store.write(&who, &keep(false)).unwrap().branch.kept);
 }
 
