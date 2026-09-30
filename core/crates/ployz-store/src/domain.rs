@@ -431,7 +431,8 @@ pub(crate) fn set_generated_domain(
     trusted: &Trusted,
 ) -> Result<DomainStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &set.environment)?;
-    let prefix = label(&set.prefix)?;
+    // Core checks it is one DNS label when Working State is saved.
+    let prefix = set.prefix.trim().to_lowercase();
     let id = environment.service(&set.service)?.id.clone();
     let taken = other_environments(tx, who, &environment)?
         .iter()
@@ -481,24 +482,6 @@ pub(crate) fn set_generated_domain(
     })
 }
 
-/// A generated domain's prefix, lowercased, or why it isn't one DNS label.
-fn label(prefix: &str) -> Result<String, RpcError> {
-    let prefix = prefix.trim().to_ascii_lowercase();
-    let valid = (1..=63).contains(&prefix.len())
-        && prefix
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        && !prefix.starts_with('-')
-        && !prefix.ends_with('-');
-    if valid {
-        return Ok(prefix);
-    }
-    Err(error::invalid(
-        "A generated domain's prefix is one DNS label: 1-63 letters, digits and hyphens, \
-         not starting or ending with a hyphen",
-        json!({ "example": "shop-api" }),
-    ))
-}
 
 /// The Cluster Domain `environment`'s generated domains live under: the one Cloud
 /// reserved, else the one its last Deploy used.
