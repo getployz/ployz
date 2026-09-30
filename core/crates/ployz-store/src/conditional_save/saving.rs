@@ -85,7 +85,9 @@ pub(crate) fn save(
                 into: row.into.clone(),
                 shown: branch::move_row(&moving, &sides.pr, &sides.into, row)?,
                 landed: None,
-                secret: None,
+                // Kept sealed in case the Destination gains the key before the merge:
+                // core never moves a secret over one it holds, so it lands as a hint.
+                secret: sealed(&moving, &row.key.to_string()),
             })
         })
         .collect();
@@ -139,6 +141,23 @@ pub(crate) fn save(
         }),
         checks,
     })
+}
+
+/// The pull request's secret that row `key` moves, if it moves one.
+fn sealed(moving: &Moving, key: &str) -> Option<SavedVariableIntent> {
+    let (lineage, path) = key.split_once(':')?;
+    let name = path.strip_prefix("variables.")?;
+    moving
+        .from
+        .services
+        .iter()
+        .find(|service| service.lineage_id == lineage)?
+        .variables
+        .iter()
+        .find(|variable| {
+            variable.key == name && matches!(variable.value, SavedVariableValue::Secret { .. })
+        })
+        .cloned()
 }
 
 /// The secrets the PR Environment changed that the Destination holds too: core
@@ -258,10 +277,17 @@ pub(crate) fn take(tx: &mut dyn Tx, who: &Actor, take: &Take) -> Result<Moved, R
     if chosen.is_empty() {
         return Err(gone());
     }
+    // A secret stages from its sealed value alone: core moves none over the Destination's.
+    let sealed: BTreeSet<&str> = stored
+        .rows
+        .iter()
+        .filter(|row| row.secret.is_some())
+        .map(|row| row.key.as_str())
+        .collect();
     let picks: Vec<BranchPick> = stored
         .picks
         .iter()
-        .filter(|pick| chosen.contains(&pick.key))
+        .filter(|pick| chosen.contains(&pick.key) && !sealed.contains(pick.key.as_str()))
         .cloned()
         .collect();
     let mut next = match picks.is_empty() {
