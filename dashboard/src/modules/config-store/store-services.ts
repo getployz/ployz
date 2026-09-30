@@ -28,19 +28,25 @@ export function dnsLabelError(name: string): string | null {
 export const randomName = () => uniqueNamesGenerator({ dictionaries: [adjectives, animals], separator: "-", length: 2, style: "lowerCase" });
 
 /**
- * A new Service's name: a DNS label from its repository or image, numbered until no Service here has it as a name or
- * Private DNS. The Store refuses a name taken meanwhile.
+ * A new Service's name: a DNS label from its repository or image, with a random suffix when a Service here has it as a
+ * name or Private DNS. The Store refuses a name taken meanwhile.
  */
 export function newServiceName(source: NewServiceSource, services: readonly ServiceListing[]) {
   return uniqueName(sourceName(source) || "service", services.flatMap((service) => [service.name, service.private_dns]));
 }
 
-/** `wanted` as a DNS label, numbered (`postgres-2`) until it is none of `taken`. */
+const SUFFIX = "abcdefghijklmnopqrstuvwxyz0123456789";
+
+/** `wanted` as a DNS label, given a random suffix (`postgres-x7kd`) until it is none of `taken`. */
 export function uniqueName(wanted: string, taken: Iterable<string>) {
   const used = new Set(taken);
   const base = slugifySegment(wanted).slice(0, MAX_NAME).replace(/-+$/u, "") || "service";
+  const stem = base.slice(0, MAX_NAME - 5).replace(/-+$/u, "");
   let name = base;
-  for (let n = 2; used.has(name); n += 1) name = `${base.slice(0, MAX_NAME - String(n).length - 1).replace(/-+$/u, "")}-${n}`;
+  while (used.has(name)) {
+    const suffix = Array.from(crypto.getRandomValues(new Uint8Array(4)), (byte) => SUFFIX[byte % SUFFIX.length]).join("");
+    name = `${stem}-${suffix}`;
+  }
   return name;
 }
 

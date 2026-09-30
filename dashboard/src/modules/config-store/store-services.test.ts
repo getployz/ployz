@@ -8,12 +8,13 @@ const listed = (name: string, privateDns = name): ServiceListing =>
   ({ id: `${name}-id`, name, private_dns: privateDns, source: "image", change: null });
 
 describe("newServiceName", () => {
-  it("names a Service from its image or repository, numbered past names and Private DNS already taken", () => {
+  it("names a Service from its image or repository, with a random suffix past names and Private DNS already taken", () => {
     expect(newServiceName({ type: "image", image: "ghcr.io/acme/API_Server:1.4" }, [])).toBe("api-server");
     expect(newServiceName({ type: "git", repository: "acme/Shop.Web", branch: null }, [])).toBe("shop-web");
     // `frontend` was `web` once: its Private DNS keeps the name taken.
-    expect(newServiceName({ type: "image", image: "web" }, [listed("frontend", "web"), listed("web-2")])).toBe("web-3");
-    expect(newServiceName({ type: "image", image: `${"a".repeat(70)}:1` }, [listed("a".repeat(63))])).toBe(`${"a".repeat(61)}-2`);
+    expect(newServiceName({ type: "image", image: "web" }, [listed("frontend", "web")])).toMatch(/^web-[a-z0-9]{4}$/u);
+    expect(newServiceName({ type: "image", image: `${"a".repeat(70)}:1` }, [listed("a".repeat(63))]))
+      .toMatch(new RegExp(`^${"a".repeat(58)}-[a-z0-9]{4}$`, "u"));
     expect(newServiceName({ type: "empty" }, [])).toMatch(/^[a-z]+-[a-z]+$/u);
   });
 });
