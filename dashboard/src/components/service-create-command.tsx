@@ -20,9 +20,11 @@ import {
   ImageSelector,
 } from "#/components/service-source-selector";
 import {
-  type CreateMenuItemId,
+  type CreateMenuItem,
+  type CreatePanel,
   getCreateMenuItems,
 } from "#/components/create-menu-items";
+import { DATABASE_LOGOS } from "#/components/icons/database-logos";
 import { Spinner } from "#/components/ui/spinner";
 import {
   ENVIRONMENT_INDEX_ROUTE_TO,
@@ -39,7 +41,7 @@ import { environmentsQuery, requireView, storeViewOptions } from "#/modules/conf
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import type { EnvironmentId, ProjectId } from "@ployz/sdk";
 
-type InitialPanel = "root" | "git" | "image" | "database";
+type InitialPanel = CreatePanel;
 type Panel = { kind: InitialPanel };
 type CreateMode = "project" | "service";
 
@@ -92,7 +94,7 @@ type ServiceCreateCommandProps = ProjectCommandProps | ServiceCommandProps;
 
 type RootPanelProps = {
   mode: CreateMode;
-  onSelectItem: (itemId: CreateMenuItemId) => void;
+  onSelectItem: (item: CreateMenuItem) => void;
   isPending: boolean;
 };
 
@@ -112,35 +114,35 @@ type GitPanelProps = GitPanelReposProps;
 
 function RootPanel({ mode, onSelectItem, isPending }: RootPanelProps) {
   const { queryClient, sessionId, userId } = useCollectionScope();
-  const [chosen, setChosen] = useState<CreateMenuItemId | null>(null);
+  const [chosen, setChosen] = useState<CreateMenuItem["id"] | null>(null);
   // "GitHub repository" is one tap away: its picker opens with repositories already read.
   useEffect(() => {
     preloadGithubRepos({ queryClient, sessionId, userId });
   }, [queryClient, sessionId, userId]);
-  const items = getCreateMenuItems({ includeEmptyProject: mode === "project" }).filter(({ id }) =>
-    mode === "service" || id === "git-repository" || id === "container-image" || id === "database" || id === "empty-project",
+  const items = getCreateMenuItems({ includeEmptyProject: mode === "project" }).filter(({ id, panel }) =>
+    mode === "service" || panel || id === "empty-project",
   );
   return (
     <CommandGroup>
       {items.map(
-        ({ id, icon: Icon, label }) => (
+        (item) => (
           <CommandItem
-            key={id}
-            value={label}
+            key={item.id}
+            value={item.label}
             keywords={["create", mode]}
             disabled={isPending}
             onSelect={() => {
-              setChosen(id);
-              onSelectItem(id);
+              setChosen(item.id);
+              onSelectItem(item);
             }}
           >
-            <Icon />
-            <span>{label}</span>
-            {id === "git-repository" || id === "container-image" || id === "database" ? (
+            <item.icon />
+            <span>{item.label}</span>
+            {item.panel ? (
               <CommandShortcut>
                 <ChevronRightIcon />
               </CommandShortcut>
-            ) : isPending && id === chosen ? (
+            ) : isPending && item.id === chosen ? (
               <CommandShortcut>
                 <Spinner />
               </CommandShortcut>
@@ -159,12 +161,15 @@ function GitPanel(props: GitPanelProps) {
 function DatabasePanel({ disabled, onSelectPreset }: { disabled: boolean; onSelectPreset: (preset: DatabasePreset) => void }) {
   return (
     <CommandGroup>
-      {DATABASE_PRESETS.map((preset) => (
-        <CommandItem key={preset.id} value={preset.label} disabled={disabled} onSelect={() => onSelectPreset(preset)}>
-          <preset.icon />
-          <span>{preset.label}</span>
-        </CommandItem>
-      ))}
+      {DATABASE_PRESETS.map((preset) => {
+        const Logo = DATABASE_LOGOS[preset.id];
+        return (
+          <CommandItem key={preset.id} value={preset.label} disabled={disabled} onSelect={() => onSelectPreset(preset)}>
+            <Logo />
+            <span>{preset.label}</span>
+          </CommandItem>
+        );
+      })}
     </CommandGroup>
   );
 }
@@ -294,24 +299,16 @@ function useServiceCreateActions({
   const createDatabase = (preset: DatabasePreset) =>
     createInTarget((placement) => createStoreDatabase(placement, preset));
 
-  function selectCreateItem(itemId: CreateMenuItemId) {
-    if (itemId === "git-repository") {
-      setActivePanel("git");
+  function selectCreateItem({ id, panel }: CreateMenuItem) {
+    if (panel) {
+      setActivePanel(panel);
       return;
     }
-    if (itemId === "container-image") {
-      setActivePanel("image");
-      return;
-    }
-    if (itemId === "database") {
-      setActivePanel("database");
-      return;
-    }
-    if (itemId === "empty-service") {
+    if (id === "empty-service") {
       void createServiceFromSource({ type: "empty" });
       return;
     }
-    if (itemId === "volume") {
+    if (id === "volume") {
       // Only the canvas offers a Volume, and it places one itself.
       if (props.mode === "service") props.onCreateVolume?.();
       return;
@@ -387,7 +384,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
       <Command key={panel.kind} shouldFilter={panel.kind === "root" || panel.kind === "database"}>
         <SourcePickerInput
             onBack={
-              panel.kind === "git" || panel.kind === "database"
+              panel.kind !== "root"
                 ? () => setActivePanel("root")
                 : undefined
             }
