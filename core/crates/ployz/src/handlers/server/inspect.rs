@@ -25,6 +25,7 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
                 .iter()
                 .map(|observation| MachineObservationOutput {
                     gateway: observation.machine.subnet.gateway().0,
+                    public_key: observation.machine.public_key.to_string(),
                     observation,
                 })
                 .collect::<Vec<_>>();
@@ -90,14 +91,16 @@ fn daemon_skew_warning(machines: &[MachineObservation], cli_version: &str) -> Op
 #[must_use]
 fn format_storage(storage: Option<MachineStorageObservation>) -> String {
     match storage {
-        None => "-".into(),
-        Some(MachineStorageObservation::Stateless) => "STATELESS".into(),
-        Some(MachineStorageObservation::Ready) => "READY (NO POOL)".into(),
+        None => "Volume support unknown".into(),
+        Some(MachineStorageObservation::Stateless) => "Docker volumes only".into(),
+        Some(MachineStorageObservation::Ready) => "Managed volumes available".into(),
         Some(MachineStorageObservation::Pool {
             size_bytes,
             used_bytes,
             free_bytes,
-        }) => format!("POOL ({size_bytes} BYTES, {used_bytes} USED, {free_bytes} FREE)"),
+        }) => format!(
+            "Managed volumes available ({size_bytes} bytes, {used_bytes} used, {free_bytes} free)"
+        ),
     }
 }
 
@@ -143,6 +146,8 @@ struct MachineObservationOutput<'a> {
     #[serde(flatten)]
     observation: &'a MachineObservation,
     gateway: Ipv4Addr,
+    /// The WireGuard public key in base64, as `wg` prints it.
+    public_key: String,
 }
 
 #[cfg(test)]
@@ -152,14 +157,14 @@ mod tests {
 
     #[test]
     fn storage_column_distinguishes_ready_without_a_pool() {
-        assert_eq!(format_storage(None), "-");
+        assert_eq!(format_storage(None), "Volume support unknown");
         assert_eq!(
             format_storage(Some(MachineStorageObservation::Stateless)),
-            "STATELESS"
+            "Docker volumes only"
         );
         assert_eq!(
             format_storage(Some(MachineStorageObservation::Ready)),
-            "READY (NO POOL)"
+            "Managed volumes available"
         );
         assert_eq!(
             format_storage(Some(MachineStorageObservation::Pool {
@@ -167,7 +172,7 @@ mod tests {
                 used_bytes: 3_865_470_566,
                 free_bytes: 429_496_730,
             })),
-            "POOL (4294967296 BYTES, 3865470566 USED, 429496730 FREE)"
+            "Managed volumes available (4294967296 bytes, 3865470566 used, 429496730 free)"
         );
     }
 
@@ -192,9 +197,14 @@ mod tests {
         );
         let output = serde_json::to_value(MachineObservationOutput {
             gateway: observation.machine.subnet.gateway().0,
+            public_key: observation.machine.public_key.to_string(),
             observation: &observation,
         })
         .unwrap();
         assert_eq!(output.get("gateway").unwrap(), "10.210.7.1");
+        assert_eq!(
+            output.get("public_key").unwrap(),
+            "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+        );
     }
 }

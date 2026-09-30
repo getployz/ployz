@@ -20,7 +20,7 @@ mod progress;
 mod render;
 mod report;
 
-pub(crate) use apply::{ApplyError, Outcome, apply_requested, execute};
+pub(crate) use apply::{Outcome, apply_requested};
 pub use pipeline::DeployError;
 pub(crate) use planning::capacity::endpoint_capacity_error;
 pub use planning::{
@@ -484,7 +484,7 @@ pub enum PlanError {
     },
     /// The selected Machine has no usable ZFS storage preparation.
     #[error(
-        "Machine '{machine}' requires storage preparation before deploying a Provisioned Volume; enroll it with --storage zfs"
+        "Server '{machine}' cannot host managed volumes yet; enable managed volumes when adding the Server"
     )]
     ProvisionedVolumeStorageRequired {
         /// Explicitly selected stateless Machine.
@@ -492,7 +492,7 @@ pub enum PlanError {
     },
     /// No observed automatically eligible Machine has usable ZFS storage preparation.
     #[error(
-        "no observed eligible Machine is storage-ready or has a Machine Pool; enroll one with --storage zfs before deploying a Provisioned Volume"
+        "No available Server can host managed volumes. Add a Server with managed volumes enabled"
     )]
     ProvisionedVolumeStorageUnavailable,
     /// Storage capability was unavailable for every otherwise eligible Machine.
@@ -506,7 +506,7 @@ pub enum PlanError {
     },
     /// An ordinary Docker Volume already owns the requested machine-local name.
     #[error(
-        "Plain Docker Volume {name} already exists on Machine '{machine}'; conversion to a Provisioned Volume is outside the Provisioned Volume MVP"
+        "Volume {name} on Server '{machine}' already uses Docker storage. Automatic conversion to managed storage is unavailable"
     )]
     ExistingPlainVolume {
         /// Existing machine-local Docker Volume name.
@@ -516,7 +516,7 @@ pub enum PlanError {
     },
     /// A Ployz-driver Volume exists with a different bound or malformed options.
     #[error(
-        "Provisioned Volume {name} on Machine '{machine}' does not have the requested {maximum_bytes}-byte bound and will not be resized or replaced"
+        "Managed Volume {name} on Server '{machine}' has a different storage limit; its data will not be resized or replaced (requested {maximum_bytes} bytes)"
     )]
     ExistingProvisionedVolumeMismatch {
         /// Existing machine-local Docker Volume name.

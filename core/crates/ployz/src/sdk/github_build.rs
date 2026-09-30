@@ -24,6 +24,7 @@ use serde_json::Value;
 
 use super::build::OutsideBuild;
 use super::preparation::{BuildReceipt, OutsideBuildInput};
+use super::store_call;
 use super::store_runner::{internal, log_line, only};
 use super::{Session, connect_connections};
 use crate::connect::SystemConnector;
@@ -53,7 +54,7 @@ pub async fn github_start(
     id: GithubBuildId,
     connections: Vec<Connection>,
 ) -> Result<GithubStart, RpcError> {
-    let (input, commit, receipt) = call(&store, {
+    let (input, commit, receipt) = store_call(&store, {
         let id = id.clone();
         move |store| store.github_input(&id)
     })
@@ -102,7 +103,7 @@ pub async fn github_start(
             GithubStart::Reused
         }
     };
-    call(&store, move |store| store.github_end(&id, None, &end)).await?;
+    store_call(&store, move |store| store.github_end(&id, None, &end)).await?;
     Ok(start)
 }
 
@@ -150,7 +151,7 @@ pub async fn github_check_in(
     claims: GithubClaims,
     connections: Vec<Connection>,
 ) -> Result<GithubCheckIn, RpcError> {
-    let build = call(&store, {
+    let build = store_call(&store, {
         let id = id.clone();
         move |store| store.github_authorize(&id, &claims)
     })
@@ -160,7 +161,7 @@ pub async fn github_check_in(
             "This build already checked in or is no longer wanted",
         ));
     }
-    let (input, commit, _) = call(&store, {
+    let (input, commit, _) = store_call(&store, {
         let id = id.clone();
         move |store| store.github_input(&id)
     })
@@ -188,7 +189,7 @@ pub async fn github_check_in(
         fingerprint: fingerprint.clone(),
     };
     let run_id = build.run.run_id;
-    let checked_in = call(&store, {
+    let checked_in = store_call(&store, {
         let id = id.clone();
         move |store| store.github_check_in(&id, run_id, &grant)
     })
@@ -299,7 +300,7 @@ pub async fn github_report(
         lines,
         ended: run_end,
     };
-    let received = call(&store, move |store| {
+    let received = store_call(&store, move |store| {
         let build = store.github_authorize(&id, &claims)?;
         store.github_report(&id, build.run.run_id, &report)
     })
@@ -330,7 +331,7 @@ pub async fn github_finish(
     timed_out: bool,
     connections: Vec<Connection>,
 ) -> Result<GithubFinish, RpcError> {
-    let build = call(&store, {
+    let build = store_call(&store, {
         let id = id.clone();
         move |store| store.github_build(&id)
     })
@@ -374,6 +375,7 @@ pub async fn github_finish(
                     );
                     let receipt = BuildReceipt {
                         fingerprint: grant.fingerprint.clone(),
+                        content: None,
                         machine_id: grant.machine,
                         image: ployz_build::BuiltImage {
                             reference: pushed.to_string(),
@@ -407,7 +409,7 @@ async fn settle(
     run_id: u64,
     end: GithubEnd,
 ) -> Result<GithubFinish, RpcError> {
-    call(store, move |store| {
+    store_call(store, move |store| {
         store.github_end(&id, Some(run_id), &end)
     })
     .await
@@ -446,7 +448,7 @@ pub async fn github_cancel(
     deployment: ployz_store::DeploymentId,
     connections: Vec<Connection>,
 ) -> Result<Vec<ployz_store::GithubBuild>, RpcError> {
-    let builds = call(&store, move |store| store.github_outstanding(&deployment)).await?;
+    let builds = store_call(&store, move |store| store.github_outstanding(&deployment)).await?;
     for build in &builds {
         if let Some(grant) = &build.grant {
             // ponytail: a Machine out of reach keeps the grant until it expires by itself.
@@ -457,7 +459,7 @@ pub async fn github_cancel(
             message: "cancelled".to_owned(),
         };
         // Another step may have ended it meanwhile.
-        let _ = call(&store, move |store| {
+        let _ = store_call(&store, move |store| {
             store.github_end(&id, Some(run_id), &end)
         })
         .await;
@@ -482,15 +484,4 @@ fn conflict(message: &str) -> RpcError {
         message: message.to_owned(),
         details: Value::Null,
     }
-}
-
-/// Store calls block on the database, so they run off the async threads.
-async fn call<T: Send + 'static>(
-    store: &Arc<ConfigStore>,
-    work: impl FnOnce(&ConfigStore) -> Result<T, RpcError> + Send + 'static,
-) -> Result<T, RpcError> {
-    let store = Arc::clone(store);
-    tokio::task::spawn_blocking(move || work(&store))
-        .await
-        .map_err(|_| internal("A Config Store call stopped unexpectedly"))?
 }

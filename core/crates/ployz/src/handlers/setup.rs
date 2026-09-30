@@ -37,9 +37,9 @@ pub(crate) fn command() -> Command {
         )
 }
 
-pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
+pub(super) fn handler(path: &str) -> Option<super::Handler> {
     match path {
-        "agent" => Some((agent, super::Json::Supported)),
+        "agent" => Some(agent),
         _ => None,
     }
 }

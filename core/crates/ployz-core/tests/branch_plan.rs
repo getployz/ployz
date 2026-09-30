@@ -34,8 +34,8 @@ fn service(n: u32, slug: &str, refs: &[u32], mounts: &[u32]) -> Value {
 fn parent() -> Value {
     json!({"version":1,"environmentSlug":"production",
         "services":[service(1,"web",&[2,99],&[10]),service(2,"api",&[3],&[]),service(3,"db",&[],&[11]),service(4,"cron",&[],&[])],
-        "volumes":[{"resourceId":id(110),"resourceLineageId":id(10),"name":"uploads"},
-                   {"resourceId":id(111),"resourceLineageId":id(11),"name":"data"}]})
+        "volumes":[{"resourceId":id(110),"resourceLineageId":id(10),"name":"uploads","storage":{"kind":"local"}},
+                   {"resourceId":id(111),"resourceLineageId":id(11),"name":"data","storage":{"kind":"local"}}]})
 }
 
 fn plan(deployed: &[u32], focus: &[u32], picks: Value) -> Result<Value, ConfigError> {

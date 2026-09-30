@@ -289,6 +289,7 @@ pub(crate) fn publish(
     latest: Option<&Saved>,
 ) -> Result<(Revision, bool), RpcError> {
     let intent = canonicalize_environment_intent(intent);
+    crate::command::check_storage(tx, environment, &intent)?;
     if let Some(latest) = latest
         && latest.intent == intent
     {

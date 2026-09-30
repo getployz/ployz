@@ -82,6 +82,7 @@ enum Landing<'a> {
 #[derive(Clone, Copy)]
 enum SettingPath<'a> {
     Name,
+    Storage,
     Mount(&'a str),
     Field(&'static str),
 }
@@ -197,6 +198,7 @@ impl Comparison<'_> {
                     RowPath::Node
                     | RowPath::Data
                     | RowPath::Name
+                    | RowPath::Storage
                     | RowPath::Mount(_)
                     | RowPath::Setting(_) => None,
                 };
@@ -341,6 +343,7 @@ impl Comparison<'_> {
                 }
                 (RowPath::Node, None, None) => Landing::Node,
                 (RowPath::Name, None, None) => Landing::Setting(SettingPath::Name),
+                (RowPath::Storage, None, None) => Landing::Setting(SettingPath::Storage),
                 (RowPath::Mount(volume), None, None) => {
                     Landing::Setting(SettingPath::Mount(volume))
                 }
@@ -407,7 +410,7 @@ impl Comparison<'_> {
                 if let Some(base) = base {
                     let mounted = match path {
                         SettingPath::Mount(volume) => Some(volume),
-                        SettingPath::Name | SettingPath::Field(_) => None,
+                        SettingPath::Name | SettingPath::Storage | SettingPath::Field(_) => None,
                     };
                     adopt_node(base, self.into, lineage, mounted);
                     move_setting(base, self.from, lineage, path)?;
@@ -635,7 +638,12 @@ fn reason(path: &RowPath) -> Option<BranchReason> {
 /// A node's comparable settings by path, normalized so copies compare with their originals.
 fn settings(env: &SavedEnvironmentIntent, node: Node, suffix: &str) -> BTreeMap<RowPath, Value> {
     let service = match node {
-        Node::Volume(volume) => return BTreeMap::from([(RowPath::Name, json!(volume.name))]),
+        Node::Volume(volume) => {
+            return BTreeMap::from([
+                (RowPath::Name, json!(volume.name)),
+                (RowPath::Storage, json!(volume.storage)),
+            ]);
+        }
         Node::Service(service) => service,
     };
     let config = json!(service.config);
@@ -774,6 +782,14 @@ fn move_setting(
     path: SettingPath,
 ) -> Result<(), ConfigError> {
     match path {
+        SettingPath::Storage => {
+            let storage = volume(from, lineage)
+                .expect("storage rows are Volumes")
+                .storage;
+            if let Some(target) = volume_mut(env, lineage) {
+                target.storage = storage;
+            }
+        }
         SettingPath::Name => {
             let name = &volume(from, lineage).expect("name rows are Volumes").name;
             if let Some(target) = volume_mut(env, lineage) {

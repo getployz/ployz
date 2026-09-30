@@ -11,7 +11,8 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { Separator } from "#/components/ui/separator";
 import { diffQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { detachedMounts, mountChange, mountPathError } from "#/modules/config-store/store-volumes";
+import { detachedMounts, mountChange, mountPathError, volumeStorage, volumeStorageText } from "#/modules/config-store/store-volumes";
+import { VolumeStorageFields } from "#/modules/config-store/VolumeStorageFields";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
 import { useStoreChangeActions } from "../../../-components/canvas/useStoreChangeActions";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../../../-components/deployment-page";
@@ -45,6 +46,8 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
         <p className="truncate text-sm text-muted-foreground">Volume</p>
       </CanvasInspectorHeader>
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+        <StoreVolumeStorage key={`${volume.id}:${JSON.stringify(volume.storage)}`} state={state} removing={removing} />
+        <div className="py-8"><Separator /></div>
         <section aria-labelledby="volume-mounts-heading">
           <h2 id="volume-mounts-heading" className="text-lg font-semibold">Mounts</h2>
           <div className="mt-4">
@@ -64,6 +67,38 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
       </div>
     </div>
   );
+}
+
+function StoreVolumeStorage({ state, removing }: { state: StoreVolume; removing: boolean }) {
+  const writer = useStoreWriter(state.organizationSlug);
+  const { storage, storage_locked } = state.volume;
+  const [managed, setManaged] = useState(storage.kind === "provisioned");
+  const [sizeGB, setSizeGB] = useState(storage.kind === "provisioned" ? String(storage.maximumBytes / 1_000_000_000) : "5");
+  const [error, setError] = useState<string | null>(null);
+  const next = volumeStorage(managed, sizeGB);
+  const changed = next !== null && (next.kind !== storage.kind || (next.kind === "provisioned"
+    && storage.kind === "provisioned" && next.maximumBytes !== storage.maximumBytes));
+
+  function save(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!next) return setError("Enter a valid storage limit of at least 0.001 GB.");
+    if (!changed) return;
+    writer.commit({ command: "set_volume_storage", environment: state.environment,
+      volume: state.volume.name, storage: next, expect: null });
+  }
+
+  return <section aria-labelledby="volume-storage-heading" className="flex flex-col gap-4">
+    <h2 id="volume-storage-heading" className="text-lg font-semibold">Storage</h2>
+    <p className="text-sm text-muted-foreground">Files stored here survive deployments and restarts. Data stays on the server that hosts this volume.</p>
+    {storage_locked || removing ? <>
+      <p className="text-sm">{managed ? "Managed · " : ""}{volumeStorageText(storage)}</p>
+      <p className="text-sm text-muted-foreground">Storage settings are fixed once deployment is requested.</p>
+    </> : <form onSubmit={save} className="flex flex-col items-start gap-4">
+      <VolumeStorageFields managed={managed} sizeGB={sizeGB} onManagedChange={setManaged}
+        onSizeChange={(value) => { setSizeGB(value); setError(null); }} error={error} />
+      <Button type="submit" disabled={!changed}>Save storage</Button>
+    </form>}
+  </section>;
 }
 
 function StoreVolumeMounts({ state, services, volumes, diff }: {

@@ -56,6 +56,10 @@ pub struct OutsideBuildInput {
 #[serde(deny_unknown_fields)]
 pub struct BuildReceipt {
     pub fingerprint: String,
+    /// An uploaded Service's fingerprint without its variables. Without the upload,
+    /// a receipt of the same content still serves it after a variable change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
     pub image: ployz_build::BuiltImage,
     pub machine_id: ployz_core::MachineId,
 }
@@ -64,12 +68,15 @@ pub(crate) struct CapturedPreparation {
     pub intent: DeployIntent,
     pub build: CapturedBuild,
     pub fingerprints: BTreeMap<ServiceName, String>,
+    /// Each uploaded Service's fingerprint without its variables.
+    pub contents: BTreeMap<ServiceName, String>,
     pub reusable: Vec<BuiltService>,
     pub preference: BuildPreference,
 }
 
 pub(crate) fn receipts(
     fingerprints: &BTreeMap<ServiceName, String>,
+    contents: &BTreeMap<ServiceName, String>,
     builds: &[BuiltService],
 ) -> BTreeMap<ServiceName, BuildReceipt> {
     fingerprints
@@ -80,6 +87,7 @@ pub(crate) fn receipts(
                 name.clone(),
                 BuildReceipt {
                     fingerprint: fingerprint.clone(),
+                    content: contents.get(name).cloned(),
                     image: build.built.clone(),
                     machine_id: build.machine_id,
                 },
@@ -120,8 +128,9 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
     let mut sourceless = Vec::new();
     for (name, (root_dir, settings)) in frozen.checkouts {
         let Some(repository) = input.sources.remove(&name) else {
-            if frozen.uploaded.contains_key(&name) {
-                // Only its receipt can serve it now; checked below.
+            // An upload, or a commit built elsewhere (GitHub): only its receipt can
+            // serve it now; checked below.
+            if frozen.identities.contains_key(&name) {
                 sourceless.push(name);
                 continue;
             }
@@ -177,13 +186,24 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
         build_index: input.build_index,
         preferred: input.preferred_machine,
     };
+    let contents = frozen
+        .identities
+        .iter()
+        .filter(|(name, _)| frozen.uploaded.contains_key(*name))
+        .map(|(name, identity)| (name.clone(), digest(identity)))
+        .collect::<BTreeMap<_, _>>();
     let fingerprints = fingerprints(&intent, frozen.identities);
     let reusable = intent
         .target
         .iter()
         .filter_map(|service| {
             let receipt = input.build_receipts.remove(&service.name)?;
-            if fingerprints.get(&service.name) != Some(&receipt.fingerprint)
+            // Without its upload, a Service's variables are runtime-only: its image
+            // keeps the build variables it was built with.
+            let same_content = sourceless.contains(&service.name)
+                && receipt.content.is_some()
+                && receipt.content.as_ref() == contents.get(&service.name);
+            if (fingerprints.get(&service.name) != Some(&receipt.fingerprint) && !same_content)
                 || receipt.image.platforms.is_empty()
             {
                 return None;
@@ -198,17 +218,21 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
             })
         })
         .collect::<Vec<BuiltService>>();
-    let missing: Vec<ServiceName> = sourceless
+    let (uploads, commits): (Vec<ServiceName>, Vec<ServiceName>) = sourceless
         .into_iter()
         .filter(|name| !reusable.iter().any(|built| &built.name == name))
-        .collect();
-    if !missing.is_empty() {
-        return Err(upload_needed(&missing));
+        .partition(|name| frozen.uploaded.contains_key(name));
+    if let Some(name) = commits.first() {
+        return Err(invalid(format!("missing checkout for {name}")));
+    }
+    if !uploads.is_empty() {
+        return Err(upload_needed(&uploads));
     }
     Ok(CapturedPreparation {
         intent,
         build,
         fingerprints,
+        contents,
         reusable,
         preference,
     })
@@ -345,11 +369,17 @@ fn fingerprints(
         .iter()
         .filter_map(|service| {
             let identity = identities.remove(&service.name)?;
-            let bytes = serde_json::to_vec(&(identity, &service.container.environment))
-                .expect("build identity serializes");
-            Some((service.name.clone(), hex::encode(Sha256::digest(bytes))))
+            Some((
+                service.name.clone(),
+                digest(&(identity, &service.container.environment)),
+            ))
         })
         .collect()
+}
+
+fn digest(value: &impl Serialize) -> String {
+    let bytes = serde_json::to_vec(value).expect("build identity serializes");
+    hex::encode(Sha256::digest(bytes))
 }
 
 /// The ployz version every fingerprint covers; a runner must install exactly this one.
@@ -659,6 +689,37 @@ mod tests {
         let reused = capture(sourceless).unwrap();
         assert_eq!(reused.build.targets().count(), 0);
         assert_eq!(reused.reusable.len(), 1);
+        // A variable change: without the upload, a receipt of the same content serves it.
+        let content = uploaded.contents[&web].clone();
+        let mut variable = empty.clone();
+        variable["snapshots"][0]["resolvedEnv"] = json!({"TOKEN": "changed"});
+        let with_content = |content: &str| {
+            let mut receipts = receipt(&fingerprint);
+            receipts["web"]["content"] = json!(content);
+            let mut sourceless = input(&variable, false, None, Some(&digest));
+            sourceless.build_receipts = serde_json::from_value(receipts).unwrap();
+            sourceless
+        };
+        assert_eq!(capture(with_content(&content)).unwrap().reusable.len(), 1);
+        assert_eq!(
+            capture(with_content(&"f".repeat(64))).err().unwrap().code,
+            RpcErrorCode::NotFound
+        );
+        // With the upload, the variable change rebuilds.
+        std::fs::remove_file(root.path().join("extra")).unwrap();
+        let mut sourced = with_content(&content);
+        sourced.sources = BTreeMap::from([(web.clone(), root.path().to_path_buf())]);
+        let rebuilt = capture(sourced).unwrap();
+        assert!(rebuilt.reusable.is_empty());
+        assert_eq!(rebuilt.build.targets().count(), 1);
+        // A commit built elsewhere (GitHub) needs no checkout while its receipt matches.
+        let mut built = input(&git, false, Some(&commit), None);
+        built.build_receipts = serde_json::from_value(receipt(&clean.fingerprints[&web])).unwrap();
+        assert_eq!(capture(built).unwrap().reusable.len(), 1);
+        let unbuilt = capture(input(&git, false, Some(&commit), None))
+            .err()
+            .unwrap();
+        assert_eq!(unbuilt.code, RpcErrorCode::InvalidArgument, "{unbuilt:?}");
         // Refused: a bad digest, a commit and an upload together, an upload for an image.
         let image = service(json!({"type":"image", "version":1, "image":"nginx",
             "credentials":{"type":"none"}}));

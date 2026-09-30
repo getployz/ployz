@@ -38,6 +38,7 @@ pub(crate) fn set_command() -> Command {
         )
         .arg(
             value("patch", None)
+                .conflicts_with_all(["secret", "from-env-file"])
                 .value_name("JSON")
                 .help("Set a Service's Settings from an object shaped like `get SERVICE --json` values; omitted Settings stay; - reads stdin"),
         )

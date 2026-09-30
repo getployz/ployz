@@ -611,6 +611,7 @@ fn lower(
             .iter()
             .map(|volume| LowerDeploymentVolume {
                 volume_resource_id: volume.resource_id.clone(),
+                storage: volume.storage.clone(),
             })
             .collect(),
         lineages: lineages.clone(),
@@ -671,6 +672,8 @@ pub(crate) fn admit(
     saved: Revision,
     frozen: &Frozen,
 ) -> Result<DeploymentSummary, RpcError> {
+    let intent = saved_at(tx, environment, saved)?;
+    crate::command::check_storage(tx, environment, &intent)?;
     let environment_id = environment.as_str();
     // Without a new upload, Services without a source keep building from the latest one.
     let upload = match upload {
@@ -1043,23 +1046,28 @@ pub(crate) fn claim(
     }))
 }
 
-/// The latest build receipt of each Service of `environment`, by runtime name.
+/// The latest build receipt of each Service of `environment`, by runtime name. A
+/// Service without one borrows another Environment of its Project's (a Branch copy,
+/// a saved change): preparation reuses it only if its fingerprint matches.
 pub(crate) fn receipts(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<BTreeMap<ServiceName, Value>, RpcError> {
-    tx.query(
-        "SELECT service, receipt FROM config_build_receipt WHERE environment_id = ?1",
+    let mut receipts = BTreeMap::new();
+    // Own receipts first; the first receipt per Service wins.
+    for row in tx.query(
+        "SELECT r.service, r.receipt FROM config_build_receipt r \
+         JOIN config_environment e ON e.id = r.environment_id \
+         WHERE e.project_id = (SELECT project_id FROM config_environment WHERE id = ?1) \
+         ORDER BY CASE WHEN r.environment_id = ?1 THEN 0 ELSE 1 END, r.environment_id",
         &[environment.as_str().into()],
-    )?
-    .iter()
-    .map(|row| {
-        Ok((
-            row.parse::<ServiceName>(0, "receipt")?,
-            row.json(1, "receipt")?,
-        ))
-    })
-    .collect()
+    )? {
+        let service = row.parse::<ServiceName>(0, "receipt")?;
+        if let std::collections::btree_map::Entry::Vacant(entry) = receipts.entry(service) {
+            entry.insert(row.json(1, "receipt")?);
+        }
+    }
+    Ok(receipts)
 }
 
 /// Replace `service`'s latest build receipt in `environment`.

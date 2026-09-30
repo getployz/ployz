@@ -137,7 +137,10 @@ async fn deploy_preview_observes_storage_before_refusing_a_stateless_explicit_ta
     );
     let error = client.preview(intent).await.unwrap_err().to_string();
 
-    assert!(error.contains("storage preparation"), "{error}");
-    assert!(error.contains("--storage zfs"), "{error}");
+    assert!(error.contains("cannot host managed volumes"), "{error}");
+    assert!(
+        error.contains("enable managed volumes when adding the Server"),
+        "{error}"
+    );
     server.abort();
 }

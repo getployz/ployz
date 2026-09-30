@@ -954,6 +954,16 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         RpcErrorCode::InvalidArgument
     );
     store.record(&id(1), &a, built(receipt.clone())).unwrap();
+    // Built from an upload, it lists as uploaded, not empty.
+    let listed = store
+        .read(&who, &ployz_store::ServicesQuery::default())
+        .unwrap();
+    let app = listed
+        .services
+        .iter()
+        .find(|listing| listing.service.name.as_str() == "app")
+        .unwrap();
+    assert_eq!(app.source, ployz_store::SourceKind::Uploaded);
     store
         .record(&id(1), &a, RunEvidence::NotExecuted("stopped".into()))
         .unwrap();
@@ -977,7 +987,56 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
     let mut newer = upload.clone();
     newer.digest = "e".repeat(64);
     with(3, Some(newer)).unwrap();
-    assert_eq!(retry(&store, &who, 4, 1).unwrap().upload, Some(upload));
+    assert_eq!(
+        retry(&store, &who, 4, 1).unwrap().upload,
+        Some(upload.clone())
+    );
+    // Another Environment of the Project without its own receipt borrows this one;
+    // preparation reuses it only if its fingerprint matches.
+    let staging = EnvironmentRef {
+        project: None,
+        environment: Some(ployz_store::EnvironmentName::parse("staging").unwrap()),
+    };
+    store
+        .write(
+            &who,
+            &ployz_store::CreateEnvironment {
+                id: EnvironmentId::parse("00000000-0000-4000-8000-000000000099").unwrap(),
+                project: None,
+                name: ployz_store::EnvironmentName::parse("staging").unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000098").unwrap(),
+                environment: staging.clone(),
+                name: ServiceName::parse("app").unwrap(),
+                image: None,
+            },
+        )
+        .unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id(5),
+                environment: staging,
+                services: Vec::new(),
+                version: None,
+                upload: Some(upload),
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &ployz_store::Trusted::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        store.claim(&id(5), &a).unwrap().receipts[&ServiceName::parse("app").unwrap()],
+        receipt
+    );
 }
 
 #[test]

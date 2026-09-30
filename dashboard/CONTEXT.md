@@ -24,6 +24,14 @@ _Avoid_: Project cluster, environment cluster, cluster draft
 The user-facing name for a host participating in an Organization Cluster. Rust calls its runtime identity a machine; Cloud does not define a separate server truth.
 _Avoid_: Machine in user-facing copy, Cloud server record
 
+**Volume**:
+An Environment resource whose files survive deployments and restarts on the Server that hosts it. It defaults to managed storage; a Docker volume remains an explicit Advanced choice. Both stay local to that Server.
+_Avoid_: Persistent storage as a resource name, network storage, replicated volume
+
+**Managed Volume**:
+A Volume whose storage Ployz prepares with an enforced storage limit. Maps to the Engine's Provisioned Volume. Its kind and limit are editable before deployment is requested, then fixed even if the attempt fails. Managed does not imply backups, replication, or resizing.
+_Avoid_: ZFS in normal product copy, smart volume, storage class
+
 **Server Policy**:
 The roles (accepts builds, services, ingress) and labels of one Server, mirroring the runtime's Machine Role and Machine Label. Cloud requests a policy change as a queued operation and reads the resulting policy back from machine observation; it keeps no separate desired-policy record and policy is not part of any Environment's Saved State.
 _Avoid_: Server settings draft, machine config, cluster-wide roles

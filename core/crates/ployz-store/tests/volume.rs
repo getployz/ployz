@@ -5,7 +5,7 @@
 //! Volumes, mounts and the destructive review of a Deploy that deletes data, through
 //! the Store's interface only, on SQLite and on Postgres (see `backend`).
 
-use ployz_core::config::ReviewLifecycleKind;
+use ployz_core::config::{ReviewLifecycleKind, VolumeKind};
 use ployz_core::{
     DeployOutcome, DeployPreview, DockerVolumeId, DockerVolumeName, MachineId, RpcError,
     RpcErrorCode, ServiceName, VolumeRemoval, VolumeRemovalOutcome,
@@ -15,8 +15,8 @@ use ployz_store::{
     Deploy, DeploymentId, DeploymentStatus, DiffQuery, DiffView, Edit, EnvironmentId,
     EnvironmentQuery, EnvironmentRef, Mount, NodeStatus, OrganizationId, ProjectId, ProjectName,
     Publish, RemovalsQuery, RemoveVolume, Retry, RunEvidence, RunnerId, ServiceLineageId,
-    SettingPath, Trusted, VolumeId, VolumeListing, VolumeName, VolumeObservation, VolumeQuery,
-    VolumesQuery,
+    SetVolumeStorage, SettingPath, Trusted, VolumeId, VolumeListing, VolumeName, VolumeObservation,
+    VolumeQuery, VolumesQuery,
 };
 use serde_json::{Value, json};
 
@@ -60,6 +60,7 @@ fn shop() -> (ConfigStore, Actor) {
         .write(
             &who,
             &CreateVolume {
+                storage: ployz_core::config::VolumeKind::Local {},
                 id: VolumeId::parse(VOLUME).unwrap(),
                 environment: EnvironmentRef::default(),
                 name: VolumeName::parse("data").unwrap(),
@@ -212,6 +213,78 @@ fn code(result: Result<impl std::fmt::Debug, RpcError>) -> RpcErrorCode {
 }
 
 #[test]
+fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
+    let create: CreateVolume =
+        serde_json::from_value(json!({ "id": VOLUME, "name": "data" })).unwrap();
+    assert_eq!(create.storage, VolumeKind::managed_default());
+    let (store, who) = shop();
+    let set = |storage, expect| {
+        store.write(
+            &who,
+            &SetVolumeStorage {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+                storage,
+                expect,
+            },
+        )
+    };
+    let changed = set(VolumeKind::managed_default(), None).unwrap();
+    assert_eq!(texts(&changed.staged), ["volumes.data"]);
+    assert!(!listed(&store, &who)[0].storage_locked);
+    let stale = changed.environment.revision;
+    set(VolumeKind::Local {}, Some(stale)).unwrap();
+    assert_eq!(
+        code(set(VolumeKind::managed_default(), Some(stale))),
+        RpcErrorCode::Conflict
+    );
+    let managed = VolumeKind::Provisioned {
+        maximum_bytes: 7_000_000_000.try_into().unwrap(),
+    };
+    set(managed, None).unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&id(1), &runner).unwrap();
+    assert_eq!(
+        claimed.input["volumes"][0]["storage"],
+        json!({ "kind": "provisioned", "maximumBytes": 7_000_000_000_i64 })
+    );
+    let lowered = serde_json::to_value(&claimed.intent).unwrap();
+    assert_eq!(
+        lowered["target"][0]["volumes"][0]["source"]["maximum_bytes"],
+        7_000_000_000_i64
+    );
+    store
+        .record(
+            &id(1),
+            &runner,
+            RunEvidence::NotExecuted("Preparation stopped".into()),
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .read(
+                &who,
+                &ployz_store::DeploymentQuery {
+                    id: ToOwned::to_owned(&id(1))
+                }
+            )
+            .unwrap()
+            .deployment
+            .status,
+        DeploymentStatus::Failed
+    );
+    assert!(listed(&store, &who)[0].storage_locked);
+    for storage in [VolumeKind::Local {}, VolumeKind::managed_default()] {
+        let refused = set(storage, None).unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Conflict);
+        assert_eq!(refused.details["storage_locked"], true);
+    }
+    assert!(set(managed, None).unwrap().staged.is_empty());
+    assert_eq!(listed(&store, &who)[0].volume.storage, managed);
+}
+
+#[test]
 fn a_volume_mounts_by_setting_and_round_trips_get_patch_get() {
     let (store, who) = shop();
     let get = |at: &str| {
@@ -272,6 +345,7 @@ fn a_volume_mounts_by_setting_and_round_trips_get_patch_get() {
     let taken = store.write(
         &who,
         &CreateVolume {
+            storage: ployz_core::config::VolumeKind::Local {},
             id: VolumeId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
             environment: EnvironmentRef::default(),
             name: VolumeName::parse("data").unwrap(),

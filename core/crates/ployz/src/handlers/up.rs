@@ -9,8 +9,9 @@ use std::path::Path;
 use clap::{ArgMatches, Command, ValueHint};
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    AddDomain, CreateProject, CreateService, DeploymentView, DomainName, DomainsQuery,
-    EnvironmentId, EnvironmentRef, ProjectId, ProjectName, ServiceLineageId, ServicesQuery,
+    AddDomain, Change, CreateProject, CreateService, DeploymentView, DomainName, DomainsQuery,
+    Edit, EnvironmentId, EnvironmentRef, ProjectId, ProjectName, ServiceLineageId, ServicesQuery,
+    SettingPath,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -19,7 +20,6 @@ use super::deploy::{Request, open_events, say_view, upload_and_ship};
 use super::store::{failed, mint, scoped, store};
 use super::{Error, config_path, leaf_matches};
 use crate::cli::{base, value};
-use crate::cloud_account::StoreCallError;
 use crate::failure::USAGE_EXIT;
 use crate::output::say;
 
@@ -34,6 +34,12 @@ pub(crate) fn command() -> Command {
             .value_hint(ValueHint::Hostname)
             .help("First add this Server over SSH, as `ployz server add` does; the first founds the Cluster"),
     )
+    .arg(
+        crate::cli::switch("reset", None)
+            .requires("server")
+            .help("Reset the --server if it already runs Ployz, before adding it"),
+    )
+    .arg(crate::cli::volume_acceptance())
 }
 
 #[derive(Serialize)]
@@ -71,13 +77,13 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
     let listed = store
         .services(&ServicesQuery { environment })
         .map_err(failed(matches, &["up"]))?;
-    let linked = super::link::record(&config, listed.environment.clone())?;
+    let linked = super::link::record_unless_linked(&config, listed.environment.clone())?;
     let environment = EnvironmentRef {
         project: Some(listed.environment.project.clone()),
         environment: Some(listed.environment.name.clone()),
     };
     if listed.services.is_empty() {
-        add_service(matches, &store, &environment, name)?;
+        add_service(matches, &store, &environment, name, &directory)?;
     }
     let identity = super::link::identity(&store)?;
     let shipped = upload_and_ship(
@@ -88,7 +94,7 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
             services: Vec::new(),
             version: None,
             source: Some(directory),
-            accept: Vec::new(),
+            accept: super::teardown::accepted(matches)?,
             message: None,
         },
         events,
@@ -118,11 +124,11 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
         .map(|(cloud, organization)| {
             format!(
                 "{cloud}/cloud/{}/{}/{}",
-                organization.slug, view.environment.project, view.namespace
+                organization.slug, view.environment.project, view.environment.name
             )
         });
     let up = Up {
-        directory: &linked.directory,
+        directory: &linked,
         server,
         deployment: view,
         urls,
@@ -149,7 +155,7 @@ fn add_server(
 ) -> Result<Option<Value>, Error> {
     let config = config.to_string_lossy();
     let timeout = crate::cli::ssh_timeout(matches).as_secs().to_string();
-    let args = [
+    let mut args = vec![
         "ployz",
         "--ployz-config",
         &config,
@@ -157,13 +163,16 @@ fn add_server(
         &timeout,
         "server",
         "add",
-        "--",
-        destination,
     ];
+    // `up --reset` is its confirmation: `up` never prompts for one it can't take.
+    if matches.get_flag("reset") {
+        args.extend(["--reset", "--yes"]);
+    }
+    args.extend(["--", destination]);
     let add = crate::cli::command()
         .try_get_matches_from(args)
         .map_err(|error| Error::usage(error.render().to_string()).with_exit(USAGE_EXIT))?;
-    let (handler, _) = super::handler_for("server add").expect("server add has a handler");
+    let handler = super::handler_for("server add").expect("server add has a handler");
     let (added, server) = crate::output::captured(|| handler(&add));
     added?;
     Ok(server)
@@ -181,15 +190,12 @@ fn found_project(
         name: ProjectName::parse(name.as_str().to_owned())?,
         default_environment: EnvironmentId::parse(mint())?,
     };
-    let created = store.create_project(&create).map_err(|mut error| {
-        if let StoreCallError::Refused(refusal) = &mut error
-            && refusal.code == RpcErrorCode::Conflict
-            && let Some(details) = refusal.details.as_object_mut()
-        {
-            let next = shell_words::join(["ployz", "up", "--project", name.as_str()]);
-            details.insert("next".into(), json!(next));
-        }
-        Error::from(error)
+    let created = store.create_project(&create).map_err(|error| {
+        Error::from(super::store::with_next(
+            error,
+            |refusal| refusal.code == RpcErrorCode::Conflict,
+            || shell_words::join(["ployz", "up", "--project", name.as_str()]),
+        ))
     })?;
     say!("Created Project {}.", created.project.name);
     Ok(EnvironmentRef {
@@ -199,12 +205,14 @@ fn found_project(
 }
 
 /// The Service the upload builds, named like the directory, and on Cloud a
-/// generated domain for it.
+/// generated domain for it. A root `Dockerfile` builds it, and its first `EXPOSE`d
+/// port is the domain's.
 fn add_service(
     matches: &ArgMatches,
     store: &super::store::Store,
     environment: &EnvironmentRef,
     name: ServiceName,
+    directory: &Path,
 ) -> Result<(), Error> {
     store
         .create_service(&CreateService {
@@ -215,6 +223,19 @@ fn add_service(
         })
         .map_err(failed(matches, &["up"]))?;
     say!("Added Service {name}.");
+    let dockerfile = std::fs::read_to_string(directory.join("Dockerfile")).ok();
+    if dockerfile.is_some() {
+        store
+            .edit(&Edit {
+                environment: environment.clone(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse(&format!("{name}.buildMethod"))?,
+                    value: json!("dockerfile"),
+                }],
+            })
+            .map_err(failed(matches, &["up"]))?;
+    }
     // The hidden local Store has no Cluster Domain to generate one under.
     if store.local().is_none() {
         store
@@ -222,11 +243,22 @@ fn add_service(
                 environment: environment.clone(),
                 service: name,
                 hostname: None,
-                port: None,
+                port: dockerfile.as_deref().and_then(exposed_port),
             })
             .map_err(failed(matches, &["up"]))?;
     }
     Ok(())
+}
+
+/// A Dockerfile's first `EXPOSE`d port.
+fn exposed_port(dockerfile: &str) -> Option<u16> {
+    dockerfile.lines().find_map(|line| {
+        let mut words = line.split_whitespace();
+        if !words.next()?.eq_ignore_ascii_case("EXPOSE") {
+            return None;
+        }
+        words.find_map(|port| port.split('/').next()?.parse().ok())
+    })
 }
 
 /// The directory's name as a Project and Service name, else `app`.
@@ -250,6 +282,18 @@ fn directory_name(directory: &Path) -> ServiceName {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_first_exposed_port_is_the_domains() {
+        for (dockerfile, port) in [
+            ("FROM nginx\nEXPOSE 80\nEXPOSE 443", Some(80)),
+            ("FROM x\n  expose 3000/tcp 9000", Some(3000)),
+            ("FROM x\nEXPOSE $PORT", None),
+            ("FROM x", None),
+        ] {
+            assert_eq!(exposed_port(dockerfile), port, "{dockerfile}");
+        }
+    }
 
     #[test]
     fn a_directory_names_its_project_or_falls_back_to_app() {

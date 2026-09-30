@@ -479,11 +479,16 @@ fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
         assert_eq!(unconfirmed["details"]["services"], json!(["web"]));
         assert_eq!(
             unconfirmed["details"]["next"],
-            json!("ployz env rm production --confirm production")
+            json!("ployz env rm production --confirm shop/production")
+        );
+        failed(
+            store,
+            &["env", "rm", "production", "--confirm", "production"],
+            2,
         );
         let default = error(
             store,
-            &["env", "rm", "production", "--confirm", "production"],
+            &["env", "rm", "production", "--confirm", "shop/production"],
         );
         assert_eq!(default["code"], json!("conflict"));
         assert_eq!(
@@ -496,7 +501,7 @@ fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
         // Nothing of production ever ran, so it goes without a Server.
         let removed = ok(
             store,
-            &["env", "rm", "production", "--confirm", "production"],
+            &["env", "rm", "production", "--confirm", "shop/production"],
         );
         assert_eq!(removed["environment"]["name"], json!("production"));
         assert_eq!(removed["deployment"], json!(null));
@@ -705,7 +710,7 @@ fn an_agent_branches_an_environment_without_servers() {
         assert_eq!(take["code"], json!("not_found"));
         assert_eq!(
             saved["close"],
-            json!("ployz env rm fix-web --confirm fix-web")
+            json!("ployz env rm fix-web --confirm shop/fix-web")
         );
         assert_eq!(
             ok(store, &["get", "web.image"])["settings"][0]["value"],
@@ -740,8 +745,28 @@ fn an_agent_adds_mounts_detaches_and_removes_volumes() {
                 "id": added["volume"]["id"], "name": "data",
                 "mounts": [{ "service": "db", "path": "/data" }],
                 "deployed": false, "change": "create",
+                "storage": { "kind": "provisioned", "maximumBytes": 5000000000_i64 }, "storage_locked": false,
             }])
         );
+        assert_eq!(
+            ok(store, &["volume", "set", "data", "--docker"])["volume"]["storage"],
+            json!({"kind":"local"})
+        );
+        assert_eq!(
+            ok(store, &["volume", "set", "data", "--size", "7GB"])["volume"]["storage"],
+            json!({"kind":"provisioned","maximumBytes":7000000000_i64})
+        );
+        failed(store, &["volume", "set", "data", "--size", "0"], 2);
+        failed(
+            store,
+            &["volume", "add", "invalid", "--docker", "--size", "5GB"],
+            2,
+        );
+        assert_eq!(
+            ok(store, &["volume", "add", "logs", "--docker"])["volume"]["storage"],
+            json!({"kind":"local"})
+        );
+        ok(store, &["volume", "rm", "logs"]);
         let inspected = ok(store, &["volume", "inspect", "data"]);
         assert_eq!(inspected["lineage"], inspected["id"]);
 
@@ -832,9 +857,10 @@ fn mistakes_fail_with_their_codes() {
             &["set", "web.replicas=2", "--expect", "SECRET-CANARY"],
             2,
         );
-        let bad_name = error(
+        let bad_name = failed(
             store,
             &["service", "add", "SECRET-CANARY", "--image", "nginx:1"],
+            2,
         );
         for error in [bad_revision, bad_name] {
             assert_eq!(error.get("code"), Some(&json!("invalid_argument")));
@@ -1072,6 +1098,11 @@ fn setting_paths_complete_from_the_store_and_the_catalog() {
         };
         assert_eq!(complete("w").trim(), "web.");
         assert_eq!(complete("web.me").trim(), "web.memLimit");
+        // The Environment's own variables and mounts complete too.
+        ok(store, &["set", "web.env.LOG_LEVEL=info"]);
+        ok(store, &["volume", "add", "data", "--mount", "web:/data"]);
+        assert!(complete("web.env").contains("web.env.LOG_LEVEL"));
+        assert_eq!(complete("web.mou").trim(), "web.mounts.data");
     }
 }
 
@@ -1220,6 +1251,13 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
         assert_eq!(listed["deployments"][0]["id"], json!(id));
         assert_eq!(listed["next_cursor"], Value::Null);
         failed(store, &["deployment", "show", "not-an-id"], 2);
+        // Its number, as everything prints it, names it too.
+        let number = shown["number"].to_string();
+        assert_eq!(ok(store, &["deployment", "show", &number])["id"], json!(id));
+        let hashed = format!("#{number}");
+        assert_eq!(ok(store, &["deployment", "show", &hashed])["id"], json!(id));
+        let missing = error(store, &["deployment", "show", "999"]);
+        assert_eq!(missing["code"], json!("not_found"), "{missing}");
 
         // Detached, `deploy` returns the Deployment Cloud's runner runs at once.
         match store {
@@ -1414,7 +1452,7 @@ fn up_ships_a_directory_without_git() {
         let (first, second) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let dir = first.path().canonicalize().unwrap().join("My Shop");
         std::fs::create_dir(&dir).unwrap();
-        std::fs::write(dir.join("Dockerfile"), "FROM scratch\n").unwrap();
+        std::fs::write(dir.join("Dockerfile"), "FROM scratch\nEXPOSE 80\n").unwrap();
 
         // No Server answers, so the Deployment doesn't apply.
         let (code, up) = in_dir(store, home.path(), &dir, &args, &[]);
@@ -1433,12 +1471,14 @@ fn up_ships_a_directory_without_git() {
             }
             Target::Cloud { url, .. } => {
                 assert_eq!(up["urls"], json!(["https://my-shop.acme.ployz.app"]));
-                let namespace = deployment["namespace"].as_str().unwrap();
                 assert_eq!(
                     up["dashboard"],
-                    json!(format!("{url}/cloud/alice/my-shop/{namespace}"))
+                    json!(format!("{url}/cloud/alice/my-shop/production"))
                 );
                 assert!(UPLOADS.lock().unwrap().contains_key(id));
+                // The domain reaches the Dockerfile's EXPOSEd port.
+                let (_, domains) = in_dir(store, home.path(), &dir, &["domain", "ls"], &[]);
+                assert_eq!(domains["domains"][0]["port"], json!(80), "{domains}");
             }
         }
 
@@ -1453,6 +1493,34 @@ fn up_ships_a_directory_without_git() {
             services["services"].as_array().map(Vec::len),
             Some(1),
             "{services}"
+        );
+        // Its root Dockerfile builds it.
+        let (_, method) = in_dir(
+            store,
+            home.path(),
+            &dir,
+            &["get", "my-shop.buildMethod"],
+            &[],
+        );
+        assert_eq!(
+            method["settings"][0]["value"],
+            json!("dockerfile"),
+            "{method}"
+        );
+        // A one-off `--env` leaves the directory's link alone.
+        in_dir(store, home.path(), &dir, &["env", "new", "staging"], &[]);
+        let staging = [&args[..], &["--env", "staging"]].concat();
+        let (_, other_env) = in_dir(store, home.path(), &dir, &staging, &[]);
+        assert_eq!(
+            other_env["deployment"]["environment"]["name"],
+            json!("staging"),
+            "{other_env}"
+        );
+        let (_, status) = in_dir(store, home.path(), &dir, &["status"], &[]);
+        assert_eq!(
+            status.pointer("/environment/name"),
+            Some(&json!("production")),
+            "{status}"
         );
 
         let other = second.path().join("My Shop");

@@ -80,7 +80,7 @@ pub(crate) fn ps_command() -> Command {
 /// means that Environment's Service. `None` keeps the whole Cluster in view: nothing
 /// was asked for, and no Config Store is reachable, it has no Project yet, or
 /// `--connect`/`--context` name a Cluster directly.
-pub(super) fn scope(root: &ArgMatches, words: &[&str]) -> Result<Option<Namespace>, Error> {
+pub(super) fn scope(root: &ArgMatches, words: &[&str]) -> Result<Option<Scoped>, Error> {
     let leaf = leaf_matches(root);
     let environment = super::store::environment(leaf)?;
     let asked = environment.project.is_some() || environment.environment.is_some();
@@ -98,7 +98,10 @@ pub(super) fn scope(root: &ArgMatches, words: &[&str]) -> Result<Option<Namespac
         };
     };
     match store.namespace(&NamespaceQuery { environment }) {
-        Ok(view) => Ok(Some(view.namespace)),
+        Ok(view) => Ok(Some(Scoped {
+            namespace: view.namespace,
+            services: view.services,
+        })),
         Err(StoreCallError::Refused(error)) if !asked && error.code == RpcErrorCode::NotFound => {
             Ok(None)
         }
@@ -106,15 +109,30 @@ pub(super) fn scope(root: &ArgMatches, words: &[&str]) -> Result<Option<Namespac
     }
 }
 
-/// `selector` in `namespace`: a bare Service Name becomes that Namespace's Service.
+/// The Namespace a live command acts in, and its Services' runtime names by the
+/// names they have now.
+pub(super) struct Scoped {
+    pub(super) namespace: Namespace,
+    services: std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::ServiceName>,
+}
+
+/// `selector` in `scoped`: a bare Service Name becomes that Namespace's Service, by
+/// its runtime name, so a renamed Service is still found.
 pub(super) fn in_scope(
     selector: ServiceSelector,
-    namespace: Option<&Namespace>,
+    scoped: Option<&Scoped>,
 ) -> Result<ServiceSelector, Error> {
-    Ok(match namespace {
-        Some(namespace) => selector.with_namespace(namespace)?,
-        None => selector,
-    })
+    let Some(scoped) = scoped else {
+        return Ok(selector);
+    };
+    let runtime = ployz_core::ServiceName::parse(selector.as_str())
+        .ok()
+        .and_then(|name| scoped.services.get(&name))
+        .map(|runtime| ServiceSelector::parse(runtime.to_string()))
+        .transpose()?;
+    Ok(runtime
+        .unwrap_or(selector)
+        .with_namespace(&scoped.namespace)?)
 }
 
 pub fn exec(root: &ArgMatches) -> Result<(), Error> {
@@ -187,23 +205,28 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let named = string_values(leaf, "service-or-container");
     let options = log_options(leaf)?;
-    let deployment = leaf
+    let store = leaf
         .get_one::<String>("deployment")
         .is_some()
-        .then(|| super::deploy::deployment_id(leaf, "deployment"))
+        .then(|| super::store::store(root))
+        .transpose()?;
+    let deployment = store
+        .as_ref()
+        .map(|store| super::deploy::deployment_id(leaf, store, "deployment"))
         .transpose()?;
     if let Some(id) = deployment.as_ref().filter(|_| leaf.get_flag("build")) {
         return build_logs(root, id, &named);
     }
     // A Deployment names its Environment, whatever the scope says.
-    let namespace = match &deployment {
-        Some(id) => Some(
-            super::store::store(root)?
+    let namespace = match (&deployment, &store) {
+        (Some(id), Some(store)) => Some(Scoped {
+            namespace: store
                 .deployment(id)
                 .map_err(super::store::failed(leaf, &["logs"]))?
                 .namespace,
-        ),
-        None => scope(root, &["logs"])?,
+            services: std::collections::BTreeMap::new(),
+        }),
+        _ => scope(root, &["logs"])?,
     };
     let args = parse_service_args(&named)?
         .into_iter()
@@ -223,7 +246,7 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
             let inputs = open_service_logs(
                 client,
                 &args,
-                namespace.as_ref(),
+                namespace.as_ref().map(|scoped| &scoped.namespace),
                 &machines,
                 options,
                 cancellation.clone(),
@@ -270,14 +293,14 @@ fn build_logs(root: &ArgMatches, id: &DeploymentId, named: &[String]) -> Result<
         }
         for build in &builds {
             crate::output::say!(
-                "== {} from {}: {:?}",
+                "== {} from {}: {}",
                 build.build.service,
                 build
                     .build
                     .commit
                     .as_ref()
                     .map_or("the upload", ployz_store::CommitSha::as_str),
-                build.build.status
+                super::store::word(&build.build.status)
             );
             crate::output::say!("{}", build.log);
         }
@@ -769,5 +792,27 @@ mod tests {
             shutdown.is_ok(),
             "runtime waited for the stalled stdin read"
         );
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn a_renamed_service_is_found_by_its_runtime_name() {
+        let name = |text: &str| ployz_core::ServiceName::parse(text).unwrap();
+        let scoped = Scoped {
+            namespace: Namespace::parse("shop-production").unwrap(),
+            services: [(name("api2"), name("api"))].into(),
+        };
+        let resolve = |selector: &str| {
+            in_scope(ServiceSelector::parse(selector).unwrap(), Some(&scoped))
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(resolve("api2"), "shop-production/api");
+        assert_eq!(resolve("web"), "shop-production/web");
+        assert_eq!(resolve("other-ns/api2"), "other-ns/api2");
     }
 }

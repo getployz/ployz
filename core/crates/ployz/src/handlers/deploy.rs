@@ -4,20 +4,18 @@
 //! hidden in-process Store this CLI is the Deployment's runner: it claims it,
 //! prepares and confirms it on the Cluster, and records what happened.
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
-use ployz_core::{RemoveVolumesRequest, RpcErrorCode, ServiceName};
+use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Admit, Cancel, Claimed, ConfigStore, Deploy, DeploymentId, DeploymentStatus, DeploymentSummary,
-    DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, RemovalsQuery, Retry, RunEvidence,
-    RunnerId, Start, UploadBase, UploadedSource, VolumeName, VolumeObservation,
+    Admit, Cancel, ConfigStore, Deploy, DeploymentId, DeploymentStatus, DeploymentSummary,
+    DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, RemovalsQuery, RunnerId, Start,
+    UploadBase, UploadedSource, VolumeName, VolumeObservation,
 };
-use serde_json::{Value, json};
 
 use super::store::{
     Next, Store, environment, failed, mint, next, scoped, store, with_refresh_hint,
@@ -25,7 +23,6 @@ use super::store::{
 use super::{Error, connect_client, leaf_matches, required, runtime};
 use crate::cli::{base, positional, switch, value};
 use crate::cloud_account::StoreCallError;
-use crate::deploy::ApplyError;
 use crate::failure::USAGE_EXIT;
 use crate::output::say;
 
@@ -99,39 +96,46 @@ pub(crate) fn deployment_command() -> Command {
                 .arg(value("cursor", None).help("The next_cursor of the previous page")),
         )
         .subcommand(
-            Command::new("show")
-                .about("Show a Deployment with its Deploy Preview and Node Outcomes")
-                .arg(positional("id", true)),
+            scoped(
+                Command::new("show")
+                    .about("Show a Deployment with its Deploy Preview and Node Outcomes"),
+            )
+            .arg(id()),
         )
         .subcommand(
-            following(base(
+            following(scoped(base(
                 "retry",
                 "Deploy again exactly what a failed, unknown or cancelled Deployment froze, and follow it",
-            ))
-            .arg(positional("id", true)),
+            )))
+            .arg(id()),
         )
         .subcommand(
-            following(base(
+            following(scoped(base(
                 "start",
                 "Hand a queued Deployment to a runner now, and follow it",
-            ))
-            .arg(positional("id", true)),
+            )))
+            .arg(id()),
         )
         .subcommand(
-            Command::new("cancel")
-                .about("Cancel a Deployment: a queued one never runs, a running one stops")
-                .arg(positional("id", true)),
+            scoped(
+                Command::new("cancel")
+                    .about("Cancel a Deployment: a queued one never runs, a running one stops"),
+            )
+            .arg(id()),
         )
 }
 
-pub(super) fn deployment_handler(path: &str) -> Option<(super::Handler, super::Json)> {
-    use super::Json::Supported;
+fn id() -> clap::Arg {
+    positional("id", true).help("The Deployment's ID, or its number in the Environment")
+}
+
+pub(super) fn deployment_handler(path: &str) -> Option<super::Handler> {
     Some(match path {
-        "ls" => (ls, Supported),
-        "show" => (show, Supported),
-        "retry" => (retry, Supported),
-        "start" => (start, Supported),
-        "cancel" => (cancel, Supported),
+        "ls" => ls,
+        "show" => show,
+        "retry" => retry,
+        "start" => start,
+        "cancel" => cancel,
         _ => return None,
     })
 }
@@ -158,17 +162,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("upload")
         .map(|dir| Path::new(dir).canonicalize())
         .transpose()?;
-    let accept = matches
-        .get_many::<String>("accept-volume-loss")
-        .into_iter()
-        .flatten()
-        .map(|name| {
-            VolumeName::parse(name.as_str()).map_err(|_| {
-                Error::usage("Expected Volume names: lowercase letters, digits and -")
-                    .with_exit(USAGE_EXIT)
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let accept = super::teardown::accepted(matches)?;
     let request = Request {
         environment: environment(matches)?,
         services,
@@ -214,8 +208,7 @@ pub(super) fn upload_and_ship(
     };
     let id = DeploymentId::parse(mint())?;
     if let Some(dir) = source.as_deref().filter(|_| store.local().is_none()) {
-        let archive = crate::build::upload_archive(dir)
-            .map_err(|error| Error::usage(format!("Could not read {}: {error}", dir.display())))?;
+        let archive = crate::build::upload_archive(dir).map_err(unreadable(dir))?;
         store
             .upload(&id, archive)
             .map_err(failed(matches, &["deploy"]))?;
@@ -238,6 +231,7 @@ pub(super) fn upload_and_ship(
                 with_refresh_hint(error, matches, "diff"),
                 matches,
                 &services,
+                source.as_deref(),
             );
             failed(matches, &["deploy"])(error)
         })?;
@@ -299,59 +293,81 @@ pub(super) fn execute(
     words: &[&str],
 ) -> Result<Shipped, Error> {
     let hint = shell_words::join(["ployz", "deployment", "show", admitted.id.as_str()]);
-    // Only the hidden in-process Store lets this CLI run the Deployment; Cloud's
-    // runner runs it otherwise, and this command follows it unless detached.
-    let (view, ran) = match store.local() {
+    // Only the hidden in-process Store lets this CLI run the Deployment, as Cloud's
+    // runner does; this command follows it either way, unless detached.
+    let runner = match store.local() {
         Some(_) if matches.get_flag("detach") => {
             return Err(Error::usage(
                 "The hidden local Store runs Deployments in this process, so it can't detach",
             )
             .with_exit(USAGE_EXIT));
         }
-        Some(local) => {
-            let runner = RunnerId::parse(format!("cli-{}", mint()))?;
-            let claimed = local.claim(&admitted.id, &runner)?;
-            let ran = runtime()?.block_on(run(matches, local, &claimed, &runner, source, events));
-            let view = store
-                .deployment(&admitted.id)
-                .map_err(failed(matches, words))?;
-            (view, ran)
-        }
-        None if matches.get_flag("detach") => {
-            let view = store
-                .deployment(&admitted.id)
-                .map_err(failed(matches, words))?;
-            (view, Ok(()))
-        }
-        None => {
-            let view = follow(matches, store, admitted, events, words)?;
-            let ran = if view.deployment.status == DeploymentStatus::Applied {
-                Ok(())
-            } else {
-                Err(Error::partial())
-            };
-            (view, ran)
-        }
+        Some(local) => Some(run_here(matches, local, admitted, source)?),
+        None => None,
     };
-    // A run that found no upload or usable image for its Services says to upload;
-    // one that names another fix says that; otherwise read the Deployment.
-    let cloud_needs_upload = matches!(
+    let view = if runner.is_none() && matches.get_flag("detach") {
+        store
+            .deployment(&admitted.id)
+            .map_err(failed(matches, words))?
+    } else {
+        follow(matches, store, admitted, events, runner.as_ref(), words)?
+    };
+    if let Some(runner) = runner {
+        runner
+            .join()
+            .map_err(|_| Error::coded(RpcErrorCode::Internal, "The Deployment runner stopped"))??;
+    }
+    let ran = if view.deployment.status == DeploymentStatus::Applied || matches.get_flag("detach") {
+        Ok(())
+    } else {
+        Err(Error::partial())
+    };
+    // A run that found no upload or usable image for its Services says to upload.
+    let needs_upload = matches!(
         &view.outcome,
         Some(ployz_store::Outcome::NotExecuted { needs_upload, .. }) if !needs_upload.is_empty()
     );
-    let details = ran.as_ref().err().map(|error| error.report().details);
-    let local_needs_upload = details.as_ref().is_some_and(|details| {
-        details.pointer("/preparation/kind") == Some(&json!("upload_needed"))
-    });
-    let hint = if cloud_needs_upload || local_needs_upload {
+    let hint = if needs_upload {
         upload_again(&view.environment)
     } else {
-        details
-            .as_ref()
-            .and_then(|details| details.get("next")?.as_str().map(str::to_owned))
-            .unwrap_or(hint)
+        hint
     };
     Ok(Shipped { view, hint, ran })
+}
+
+/// Run the Deployment in this process, as Cloud's runner does, on the Cluster the
+/// command line or context names; `source` is its upload.
+fn run_here(
+    matches: &ArgMatches,
+    local: &std::sync::Arc<ConfigStore>,
+    admitted: &DeploymentSummary,
+    source: Option<&Path>,
+) -> Result<std::thread::JoinHandle<Result<DeploymentSummary, Error>>, Error> {
+    let connections = crate::connect::resolve_connections(
+        &super::config_path(matches)?,
+        matches.get_one::<String>("connect").map(String::as_str),
+        matches.get_one::<String>("context").map(String::as_str),
+        Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+    )
+    .map(|selected| selected.connections)
+    // No Cluster to reach: the runner records that nothing ran.
+    .unwrap_or_default();
+    let runner = RunnerId::parse(format!("cli-{}", mint()))?;
+    let sources = crate::sdk::Sources {
+        checkouts: BTreeMap::new(),
+        upload: source.map(Path::to_path_buf),
+    };
+    let (local, id) = (std::sync::Arc::clone(local), admitted.id.clone());
+    let runtime = runtime()?;
+    Ok(std::thread::spawn(move || {
+        Ok(runtime.block_on(crate::sdk::run_deployment(
+            local,
+            id,
+            runner,
+            connections,
+            Ok(sources),
+        ))?)
+    }))
 }
 
 /// `ployz up` in this Environment, which uploads the directory it runs in. It names
@@ -375,12 +391,15 @@ fn follow(
     store: &Store,
     admitted: &DeploymentSummary,
     mut events: Option<std::io::BufWriter<std::fs::File>>,
+    runner: Option<&std::thread::JoinHandle<Result<DeploymentSummary, Error>>>,
     words: &[&str],
 ) -> Result<DeploymentView, Error> {
-    eprintln!(
-        "Following Deployment #{}; stopping this leaves it running.",
-        admitted.number
-    );
+    if runner.is_none() {
+        say!(
+            "Following Deployment #{}; stopping this leaves it running.",
+            admitted.number
+        );
+    }
     let mut last = None;
     loop {
         let view = store
@@ -395,11 +414,11 @@ fn follow(
             let nodes: Vec<String> = view
                 .nodes
                 .iter()
-                .map(|node| format!("{} {}", node.node.name(), json_word(&node.outcome)))
+                .map(|node| format!("{} {}", node.node.name(), super::store::word(&node.outcome)))
                 .collect();
-            eprintln!(
+            say!(
                 "{}: {}",
-                json_word(&view.deployment.status),
+                super::store::word(&view.deployment.status),
                 nodes.join(", ")
             );
             if let Some(file) = events.as_mut() {
@@ -409,19 +428,13 @@ fn follow(
             }
             last = Some(progress);
         }
-        if !view.deployment.status.in_flight() {
+        // A runner here that ended leaves nothing more to follow.
+        if !view.deployment.status.in_flight() || runner.is_some_and(|runner| runner.is_finished())
+        {
             return Ok(view);
         }
         std::thread::sleep(FOLLOW_POLL);
     }
-}
-
-/// A status as its JSON word, such as `not_applied`.
-fn json_word(value: &impl serde::Serialize) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_default()
 }
 
 fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Result<(), Error> {
@@ -447,7 +460,11 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
             say!("No authored changes to deploy in {where_}.");
         }
         for change in &plan.changes {
-            say!("{} ({:?})", change.name, change.lifecycle);
+            say!(
+                "{} ({})",
+                change.name,
+                super::store::word(&change.lifecycle)
+            );
             for row in &change.settings {
                 say!("  {}: {} -> {}", row.path, row.before, row.after);
             }
@@ -477,11 +494,25 @@ fn provenance(upload: &UploadedSource) -> String {
     }
 }
 
+/// Why `dir` couldn't be read: its ignore rules are the user's input; a missing
+/// directory is `not_found`; anything else is the CLI's own failure.
+fn unreadable(dir: &Path) -> impl Fn(crate::build::Error) -> Error + '_ {
+    move |error| {
+        let message = format!("Could not read {}: {error}", dir.display());
+        if matches!(error, crate::build::Error::Invalid(_)) {
+            Error::usage(message)
+        } else if !dir.exists() {
+            Error::not_found(message)
+        } else {
+            Error::coded(RpcErrorCode::Internal, message)
+        }
+    }
+}
+
 /// `dir` as an Uploaded Source: its content digest, and the commit it was checked out
 /// at, if any, with whether it holds changes that commit doesn't.
 fn uploaded_source(dir: &Path) -> Result<UploadedSource, Error> {
-    let digest = crate::build::content_digest(dir)
-        .map_err(|error| Error::usage(format!("Could not read {}: {error}", dir.display())))?;
+    let digest = crate::build::content_digest(dir).map_err(unreadable(dir))?;
     let git = |args: &[&str]| {
         std::process::Command::new("git")
             .arg("-C")
@@ -505,89 +536,6 @@ fn uploaded_source(dir: &Path) -> Result<UploadedSource, Error> {
         base,
         uploader: None,
     })
-}
-
-/// Build the Deployment's uploaded Services from `source`, or, without it, reuse their
-/// latest images; record the receipts, and return the plan with the images it keeps
-/// alive until execution.
-async fn build(
-    store: &ConfigStore,
-    claimed: &Claimed,
-    runner: &RunnerId,
-    client: &mut crate::connect::Client,
-    services: Vec<ServiceName>,
-    source: Option<&Path>,
-    tap: &impl Fn(Value),
-) -> Result<(crate::deploy::DeployPlan, Vec<crate::build::BuiltService>), Error> {
-    use crate::sdk::preparation::{self, BuildReceipt, PreparationInput};
-    let digest = claimed
-        .deployment
-        .upload
-        .as_ref()
-        .map(|upload| upload.digest.clone())
-        .unwrap_or_default();
-    let input = PreparationInput {
-        deployment: claimed.input.clone(),
-        sources: source.map_or_else(BTreeMap::new, |dir| {
-            services
-                .iter()
-                .map(|name| (name.clone(), PathBuf::from(dir)))
-                .collect()
-        }),
-        source_commits: BTreeMap::new(),
-        uploads: services
-            .iter()
-            .map(|name| (name.clone(), digest.clone()))
-            .collect(),
-        // A receipt this ployz can't read is only a hint lost.
-        build_receipts: claimed
-            .receipts
-            .iter()
-            .filter_map(|(name, receipt)| {
-                let receipt = serde_json::from_value::<BuildReceipt>(receipt.clone()).ok()?;
-                Some((name.clone(), receipt))
-            })
-            .collect(),
-        build_index: 0,
-        preferred_machine: None,
-    };
-    let captured = tokio::task::spawn_blocking(move || preparation::capture(input))
-        .await
-        .map_err(std::io::Error::other)??;
-    let cancel = crate::cancellation::on_ctrl_c();
-    let _stop_listener = cancel.clone().drop_guard();
-    let prepared = crate::sdk::prepare::prepare(
-        client,
-        captured.intent,
-        captured.build,
-        &captured.reusable,
-        captured.preference,
-        &cancel,
-        |progress| {
-            if let crate::sdk::prepare::Progress::Build(ployz_build::Progress::StepOutput {
-                text,
-                ..
-            }) = &progress
-            {
-                eprint!("{text}");
-            }
-            tap(json!({ "Preparation": progress }));
-        },
-    )
-    .await
-    .map_err(|error| crate::sdk::preparation_error(error, cancel.is_cancelled()))?;
-    let (plan, retained) = prepared.into_parts();
-    let receipts = preparation::receipts(&captured.fingerprints, &retained)
-        .into_iter()
-        .map(|(name, receipt)| {
-            (
-                name,
-                serde_json::to_value(receipt).expect("a build receipt is JSON"),
-            )
-        })
-        .collect();
-    store.record(&claimed.deployment.id, runner, RunEvidence::Built(receipts))?;
-    Ok((plan, retained))
 }
 
 /// When a Deploy removes deployed Volumes, observe which Servers hold their data:
@@ -628,6 +576,7 @@ fn with_retry(
     error: StoreCallError,
     matches: &ArgMatches,
     services: &[ServiceName],
+    source: Option<&Path>,
 ) -> StoreCallError {
     let version = match &error {
         StoreCallError::Refused(error) => error
@@ -638,8 +587,17 @@ fn with_retry(
             .to_owned(),
         StoreCallError::Cloud(_) => String::new(),
     };
+    // A retry uploads again: `up` does, as does the hidden `deploy --upload`.
+    let source = source.and_then(Path::to_str);
+    let up = source.is_some() && matches.try_get_one::<String>("upload").is_err();
+    if up {
+        return accepting(error, matches, &["up"]);
+    }
     let mut words = vec!["deploy"];
     words.extend(services.iter().map(ServiceName::as_str));
+    if let Some(source) = source {
+        words.extend(["--upload", source]);
+    }
     words.extend(["--expect-version", version.as_str()]);
     accepting(error, matches, &words)
 }
@@ -677,108 +635,6 @@ pub(super) fn accepting(
     StoreCallError::Refused(error)
 }
 
-/// Run a claimed Deployment on the Cluster and record each step's evidence. A
-/// successful Deploy then deletes exactly the Docker Volumes admission accepted.
-async fn run(
-    matches: &ArgMatches,
-    store: &ConfigStore,
-    claimed: &Claimed,
-    runner: &RunnerId,
-    source: Option<&Path>,
-    events: Option<std::io::BufWriter<std::fs::File>>,
-) -> Result<(), Error> {
-    let events = RefCell::new(events);
-    let tap = |event: Value| {
-        if let Some(file) = events.borrow_mut().as_mut() {
-            // ponytail: a failed event write never stops a deploy; the file is a tap.
-            let _ = serde_json::to_writer(&mut *file, &event);
-            let _ = writeln!(file);
-            let _ = file.flush();
-        }
-    };
-    let id = &claimed.deployment.id;
-    let not_executed = |error: Error| -> Error {
-        match store.record(id, runner, RunEvidence::NotExecuted(error.report().message)) {
-            Ok(_) => error,
-            Err(recording) => recording.into(),
-        }
-    };
-    let context = matches.get_one::<String>("context").map(String::as_str);
-    let mut client = match connect_client(matches, context).await {
-        Ok(client) => client,
-        Err(error) => return Err(not_executed(error)),
-    };
-    // Its containers carry its ID, which `logs --deployment` reads.
-    client.deployment_id = id.as_str().parse().ok();
-    let services = claimed
-        .deployment
-        .upload
-        .as_ref()
-        .map(|_| claimed.uploads.clone())
-        .unwrap_or_default();
-    // Built images stay retained on their Machines until execution ends.
-    let (plan, _retained) = if services.is_empty() {
-        match client.preview(claimed.intent.clone()).await {
-            Ok(plan) => (plan, Vec::new()),
-            Err(error) => return Err(not_executed(error.into())),
-        }
-    } else {
-        match build(store, claimed, runner, &mut client, services, source, &tap).await {
-            Ok(built) => built,
-            Err(error) => return Err(not_executed(error)),
-        }
-    };
-    store.record(id, runner, RunEvidence::Prepared(plan.preview().clone()))?;
-    let cancel = crate::cancellation::on_ctrl_c();
-    let _stop_listener = cancel.clone().drop_guard();
-    let executed = crate::deploy::execute(
-        &client,
-        &plan,
-        claimed.intent.namespace.as_str(),
-        &cancel,
-        |event| tap(serde_json::to_value(event).expect("a deploy event is JSON")),
-    )
-    .await;
-    let (outcome, failure) = match executed {
-        Ok(outcome) => (outcome, None),
-        Err(ApplyError::Execute {
-            outcome,
-            rows,
-            live_shown,
-        }) => {
-            let failure = Error::from(ApplyError::Execute {
-                outcome: outcome.clone(),
-                rows,
-                live_shown,
-            });
-            (*outcome, Some(failure))
-        }
-        Err(error @ ApplyError::Prepare(_)) => return Err(not_executed(error.into())),
-    };
-    let removed = if failure.is_none() && !claimed.deletes.is_empty() {
-        // ponytail: failing to reach the Cluster deletes nothing; the Volume stays
-        // deployed, and the next Deploy deletes it.
-        client
-            .remove_volumes(RemoveVolumesRequest {
-                volumes: claimed.deletes.clone(),
-                force: false,
-            })
-            .await
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    store.record(
-        id,
-        runner,
-        RunEvidence::Executed {
-            outcome: Box::new(outcome),
-            removed,
-        },
-    )?;
-    failure.map_or(Ok(()), Err)
-}
-
 fn ls(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let page = store(root)?
@@ -806,9 +662,9 @@ fn ls(root: &ArgMatches) -> Result<(), Error> {
         }
         for deployment in &page.deployments {
             say!(
-                "#{} {:?} Saved revision {} {}",
+                "#{} {} Saved revision {} {}",
                 deployment.number,
-                deployment.status,
+                super::store::word(&deployment.status),
                 deployment.saved,
                 deployment.id
             );
@@ -819,10 +675,35 @@ fn ls(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// Argument `arg`, a Deployment ID.
-pub(super) fn deployment_id(matches: &ArgMatches, arg: &str) -> Result<DeploymentId, Error> {
-    DeploymentId::parse(required(matches, arg)?)
-        .map_err(|_| Error::usage("Expected a Deployment ID (a UUID)").with_exit(USAGE_EXIT))
+/// Argument `arg`: a Deployment ID, or its number (`#N`) in the scoped Environment.
+pub(super) fn deployment_id(
+    matches: &ArgMatches,
+    store: &Store,
+    arg: &str,
+) -> Result<DeploymentId, Error> {
+    let given = required(matches, arg)?;
+    let Ok(number) = given.trim_start_matches('#').parse::<u64>() else {
+        return DeploymentId::parse(given)
+            .map_err(|_| Error::usage("Expected a Deployment ID or number").with_exit(USAGE_EXIT));
+    };
+    // Pages hold Deployments numbered below the cursor, newest first.
+    let page = store
+        .deployments(&DeploymentsQuery {
+            environment: environment(matches)?,
+            limit: Some(1),
+            cursor: number.checked_add(1).map(|cursor| cursor.to_string()),
+        })
+        .map_err(failed(matches, &["deployment", "ls"]))?;
+    page.deployments
+        .into_iter()
+        .find(|deployment| deployment.number == number)
+        .map(|deployment| deployment.id)
+        .ok_or_else(|| {
+            Error::not_found(format!(
+                "{}/{} has no Deployment #{number}",
+                page.environment.project, page.environment.name
+            ))
+        })
 }
 
 /// A refused retry, start or cancel points at the Deployment's current state.
@@ -831,29 +712,25 @@ fn refused<'a>(
     id: &'a DeploymentId,
     words: &'a [&'a str],
 ) -> impl FnOnce(StoreCallError) -> Error + 'a {
-    move |mut error| {
-        if let StoreCallError::Refused(refusal) = &mut error
-            && refusal.code == RpcErrorCode::Conflict
-            && let Some(details) = refusal.details.as_object_mut()
-        {
-            details.insert(
-                "next".into(),
-                shell_words::join(["ployz", "deployment", "show", id.as_str()]).into(),
-            );
-        }
+    move |error| {
+        let error = super::store::with_next(
+            error,
+            |refusal| refusal.code == RpcErrorCode::Conflict,
+            || shell_words::join(["ployz", "deployment", "show", id.as_str()]),
+        );
         failed(matches, words)(error)
     }
 }
 
 fn retry(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let source = deployment_id(matches, "id")?;
     let store = store(root)?;
+    let source = deployment_id(matches, &store, "id")?;
     let events = open_events(matches)?;
     let words = ["deployment", "retry"];
     let admitted = store
         .admit(
-            &Admit::Retry(Retry {
+            &Admit::Retry(ployz_store::Retry {
                 id: DeploymentId::parse(mint())?,
                 deployment: source.clone(),
             }),
@@ -865,8 +742,8 @@ fn retry(root: &ArgMatches) -> Result<(), Error> {
 
 fn start(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let id = deployment_id(matches, "id")?;
     let store = store(root)?;
+    let id = deployment_id(matches, &store, "id")?;
     let events = open_events(matches)?;
     let words = ["deployment", "start"];
     let queued = store
@@ -879,8 +756,8 @@ fn start(root: &ArgMatches) -> Result<(), Error> {
 
 fn cancel(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let id = deployment_id(matches, "id")?;
     let store = store(root)?;
+    let id = deployment_id(matches, &store, "id")?;
     store
         .cancel(&Cancel {
             deployment: id.clone(),
@@ -895,8 +772,9 @@ fn cancel(root: &ArgMatches) -> Result<(), Error> {
 
 fn show(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let id = deployment_id(matches, "id")?;
-    let view = store(root)?
+    let store = store(root)?;
+    let id = deployment_id(matches, &store, "id")?;
+    let view = store
         .deployment(&id)
         .map_err(failed(matches, &["deployment", "show"]))?;
     finish_view(&view, None)
@@ -909,17 +787,21 @@ pub(super) fn finish_view(view: &DeploymentView, hint: Option<String>) -> Result
 /// A Deployment as human text.
 pub(super) fn say_view(view: &DeploymentView) {
     say!(
-        "Deployment #{} of {}/{}: {:?}",
+        "Deployment #{} of {}/{}: {}",
         view.deployment.number,
         view.environment.project,
         view.environment.name,
-        view.deployment.status
+        super::store::word(&view.deployment.status)
     );
     if let Some(upload) = &view.deployment.upload {
         say!("  {}", provenance(upload));
     }
     for node in &view.nodes {
-        say!("  {}: {:?}", node.node.name(), node.outcome);
+        say!(
+            "  {}: {}",
+            node.node.name(),
+            super::store::word(&node.outcome)
+        );
     }
     for build in &view.builds {
         let commit = build.commit.as_ref().map_or("the upload", |commit| {
@@ -927,9 +809,9 @@ pub(super) fn say_view(view: &DeploymentView) {
         });
         let reason = build.message.as_deref().unwrap_or_default();
         say!(
-            "  build {} from {commit}: {:?} {reason}",
+            "  build {} from {commit}: {} {reason}",
             build.service,
-            build.status
+            super::store::word(&build.status)
         );
     }
 }
@@ -948,13 +830,34 @@ mod tests {
             message: "This Deploy permanently deletes the data of data".into(),
             details: serde_json::json!({ "version": "3:1:0.1", "accept": ["data"] }),
         };
-        let StoreCallError::Refused(error) =
-            with_retry(StoreCallError::Refused(refused), leaf_matches(&root), &[])
-        else {
+        let StoreCallError::Refused(error) = with_retry(
+            StoreCallError::Refused(refused.clone()),
+            leaf_matches(&root),
+            &[],
+            None,
+        ) else {
             panic!("a refusal stays a refusal");
         };
         let retry = "ployz deploy --expect-version 3:1:0.1 --accept-volume-loss data --env staging";
         assert_eq!(error.details.get("next"), Some(&serde_json::json!(retry)));
         assert!(error.message.ends_with(&format!("Retry: {retry}")));
+        // `up` uploads again, accepting the loss.
+        let root = crate::cli::command()
+            .try_get_matches_from(["ployz", "up", "--env", "staging"])
+            .unwrap();
+        let StoreCallError::Refused(error) = with_retry(
+            StoreCallError::Refused(refused),
+            leaf_matches(&root),
+            &[],
+            Some(Path::new("/src/app")),
+        ) else {
+            panic!("a refusal stays a refusal");
+        };
+        assert_eq!(
+            error.details.get("next"),
+            Some(&serde_json::json!(
+                "ployz up --accept-volume-loss data --env staging"
+            ))
+        );
     }
 }
