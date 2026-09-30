@@ -109,11 +109,7 @@ macro_rules! queries {
                 }
 
                 fn to_query(&self) -> Value {
-                    let mut query = serde_json::to_value(self).expect("queries are JSON");
-                    if let Some(fields) = query.as_object_mut() {
-                        fields.insert("query".to_owned(), crate::command::snake(stringify!($variant)).into());
-                    }
-                    query
+                    serde_json::to_value(Query::$variant(self.clone())).expect("queries are JSON")
                 }
 
                 fn view(view: View) -> Result<$answer, RpcError> {
