@@ -440,8 +440,6 @@ pub struct Branched {
     pub branch: BranchView,
     /// Nodes staged in its Working State.
     pub staged: Vec<NodeName>,
-    /// What changed at once.
-    pub immediate: Vec<String>,
 }
 
 /// A Branch's row.

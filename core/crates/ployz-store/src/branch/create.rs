@@ -190,7 +190,6 @@ pub(crate) fn create_branch(
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged,
-        immediate: Vec::new(),
     })
 }
 
@@ -313,7 +312,6 @@ pub(crate) fn copy_node(
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged,
-        immediate: Vec::new(),
     })
 }
 
@@ -324,7 +322,6 @@ pub(crate) fn keep_branch(
 ) -> Result<Branched, RpcError> {
     let branch = scope::lock(tx, who, &keep.environment)?;
     let row = branch_row(tx, &branch)?;
-    let mut immediate = Vec::new();
     if row.kept != keep.kept {
         tx.execute(
             "UPDATE config_environment_branch SET kept = ?1 WHERE environment_id = ?2",
@@ -333,12 +330,10 @@ pub(crate) fn keep_branch(
                 branch.summary.id.as_str().into(),
             ],
         )?;
-        immediate.push("kept".to_owned());
     }
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged: Vec::new(),
-        immediate,
     })
 }
 
