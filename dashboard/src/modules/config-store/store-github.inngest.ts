@@ -5,12 +5,14 @@ import {
   observeStorePullRequest,
   publishRequestedStorePrCheck,
   publishStorePrCheck,
+  sweepStore,
   sweepStores,
   type StoreOutcome,
 } from "#/modules/config-store/store-pull-request.server";
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
 import {
   configPrCheckRequestedEventType,
+  configSweepRequestedEventType,
   createConfigDeploymentAdmittedEvent,
   githubCheckSuiteReceivedEventType,
   githubPullRequestReceivedEventType,
@@ -99,4 +101,15 @@ export const createStoreSweep = (inngest: PloyzInngest, runEffect: StoreEffectRu
   inngest.createFunction(
     { id: "store-sweep", retries: 3, triggers: [{ cron: "30 * * * *" }], concurrency: [{ limit: 1 }] },
     async ({ step }) => followUp(step, await step.run("sweep", () => runEffect(sweepStores(new Date()))), runEffect),
+  );
+
+/** A write closed a Branch at once: its Organization's Store sweeps now, and Cloud does what the sweep left it. */
+export const createStoreSweepRequested = (inngest: PloyzInngest, runEffect: StoreEffectRunner = runInngestEffect) =>
+  inngest.createFunction(
+    {
+      id: "store-sweep-requested", retries: 3, triggers: [{ event: configSweepRequestedEventType }],
+      concurrency: [{ key: "event.data.organizationId", limit: 1 }],
+    },
+    async ({ event, step }) =>
+      followUp(step, await step.run("sweep", () => runEffect(sweepStore(event.data.organizationId, new Date()))), runEffect),
   );

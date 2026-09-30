@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
 import type { BranchView, DeploymentStatus, EnvironmentRef, EnvironmentsView, MoveView } from "@ployz/sdk";
@@ -15,7 +15,7 @@ import { ItemGroup } from "#/components/ui/item";
 import { plural } from "#/lib/plural";
 import { movePicks, presentMoveRow } from "#/modules/config-store/store-branches";
 import {
-  branchQuery, environmentsQuery, fetchStoreView, saveQuery, servicesQuery, updateQuery, useStoreDeployments, useStoreViews, volumesQuery,
+  branchQuery, environmentsQuery, fetchStoreView, saveQuery, servicesQuery, updateQuery, useStoreViews, volumesQuery,
 } from "#/modules/config-store/store-view.queries";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useVolumeLossCheck, type VolumeAcceptance as Acceptance } from "#/modules/config-store/use-volume-loss-check";
@@ -40,6 +40,7 @@ export function StoreBranchPanel() {
   // Read together; off a Branch the Store refuses all but the listing.
   const [branch, save, update, listing] = useStoreViews(params.organizationSlug,
     [branchQuery(store), saveQuery(store), updateQuery(store), environmentsQuery(params.projectSlug)] as const);
+  useLeaveWhenClosed(params, branch);
   if (branch.ok) return <BranchPanel params={params} store={store} branch={branch.value} save={save} update={update} listing={listing} />;
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -254,28 +255,35 @@ function StoreSaveSheet({ store, branch, view, deletable, onSaved, onClose }: {
 }
 
 
+/** Once the Branch is gone (the Store deletes a closed one), the page opens the Parent it had. */
+function useLeaveWhenClosed(params: Params, branch: StoreResult<BranchView>) {
+  const navigate = useNavigate();
+  const parent = useRef<string | null>(null);
+  const gone = !branch.ok && branch.refusal.code === "not_found";
+  useEffect(() => {
+    if (branch.ok) parent.current = branch.value.parent;
+  }, [branch]);
+  useEffect(() => {
+    if (!gone || parent.current === null) return;
+    toast.success(`${params.environmentSlug} closed`);
+    void navigate(getDashboardDestination({ ...params, kind: "environment", environmentSlug: parent.current }, "architecture"));
+  }, [gone]);
+}
+
 /**
- * Closing a Branch over the Config Store. Never deployed, or already off the Servers, it goes at once and the page
- * opens its Parent. Otherwise it comes off the Servers first, as a Deployment that asks before deleting Volume data and
- * that closes it once applied: the Store deletes it then, whether or not this panel is still open to finish.
+ * Closing a Branch over the Config Store: it comes off the Servers as a Deployment that asks before deleting Volume
+ * data and that closes it; never deployed, or already off, that applies at once. The Store deletes it then, and the
+ * page opens its Parent once it's gone.
  */
 function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: BranchView) {
   const writer = useStoreWriter(params.organizationSlug);
   const navigate = useNavigate();
-  const deployments = useStoreDeployments(params.organizationSlug, store).data.pages[0]?.deployments ?? [];
   const lossOf = useVolumeLossCheck(params.organizationSlug);
   const place = `${store.project ?? ""}/${store.environment ?? ""}`;
   const [loss, setLoss] = useState<DeletionCheck<Acceptance> | null>(null);
   // Shutting down takes it off the Servers and keeps it; closing then removes it.
   const [shutting, setShutting] = useState(false);
-  // Closing started taking it off the Servers: once it's off, the panel finishes closing it.
-  const [closing, setClosing] = useState(false);
   const name = branch.environment.name;
-  const latest = deployments[0];
-  const offServers = latest === undefined || (latest.remove && latest.status === "applied");
-  useEffect(() => {
-    if (closing && offServers) void close();
-  }, [closing, offServers]);
 
   const leave = () => navigate(getDashboardDestination({
     kind: "environment", organizationSlug: params.organizationSlug, projectSlug: params.projectSlug, environmentSlug: branch.parent,
@@ -302,22 +310,7 @@ function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: Bran
 
   async function close() {
     setShutting(false);
-    if (!offServers) {
-      const asked = await takeOff({ accept: [], version: null }, false);
-      setLoss(asked);
-      setClosing(asked === null);
-      return;
-    }
-    setClosing(false);
-    try {
-      // Awaited: the page leaves the Branch once it's gone. The Store may have deleted it already: that's closed too.
-      await writer.commit({ command: "remove_environment", environment: store }, ["not_found"]).isPersisted.promise
-        .catch((error: Error) => { if (!(error instanceof StoreRefused && error.code === "not_found")) throw error; });
-      toast.success(`${name} closed`);
-      await leave();
-    } catch {
-      // The writer toasted the refusal.
-    }
+    setLoss(await takeOff({ accept: [], version: null }, false));
   }
 
   return {
@@ -335,9 +328,7 @@ function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: Bran
         callbacks={{
           load: () => Promise.resolve(loss ?? { items: [], evidence: { accept: [], version: "" } }),
           confirm: async (evidence) => {
-            const again = await takeOff(evidence);
-            if (again === null && !shutting) setClosing(true);
-            return again ?? undefined;
+            return (await takeOff(evidence)) ?? undefined;
           },
         }}
       />

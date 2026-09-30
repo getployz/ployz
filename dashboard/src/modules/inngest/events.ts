@@ -63,6 +63,7 @@ export const configDeploymentAdmittedEvent = "config/deployment.admitted";
 export const configPrCheckRequestedEvent = "config/pr-check.requested";
 export const serverAccessRetireRequestedEvent = "server-access/retire.requested";
 export const configFirstServerJoinedEvent = "config/first-server.joined";
+export const configSweepRequestedEvent = "config/sweep.requested";
 
 export type GithubInstallationWebhookEventData = GithubInstallationWebhook & {
   deliveryId: string;
@@ -101,6 +102,11 @@ export type ConfigFirstServerJoinedEventData = {
   organizationId: string;
   /** The founding Server: a later founding (after teardown) is its own event. */
   machineId: string;
+};
+
+/** A Config Store write closed a Branch at once (nothing on a Server): its Store sweeps it away now. */
+export type ConfigSweepRequestedEventData = {
+  organizationId: string;
 };
 
 /** A Config Store write named a pull request whose check Cloud publishes again from the Store's view. */
@@ -190,6 +196,10 @@ export const configFirstServerJoinedEventType = eventType(
   configFirstServerJoinedEvent,
   { schema: staticSchema<ConfigFirstServerJoinedEventData>() },
 );
+export const configSweepRequestedEventType = eventType(
+  configSweepRequestedEvent,
+  { schema: staticSchema<ConfigSweepRequestedEventData>() },
+);
 export const clusterDomainSyncRequestedEventType = eventType(
   clusterDomainSyncRequestedEvent,
   { schema: staticSchema<ClusterDomainSyncRequestedEventData>() },
@@ -262,6 +272,10 @@ export function createServerPolicyChangeRequestedEvent(
 /** Keyed by founding: a retried completion sends it again, and Inngest runs it once. */
 export function createConfigFirstServerJoinedEvent(data: ConfigFirstServerJoinedEventData) {
   return { id: `config-first-server-joined-${data.organizationId}-${data.machineId}`, name: configFirstServerJoinedEvent, data } as const;
+}
+
+export function createConfigSweepRequestedEvent(data: ConfigSweepRequestedEventData) {
+  return { name: configSweepRequestedEvent, data } as const;
 }
 
 export function createClusterDomainSyncRequestedEvent(
@@ -423,6 +437,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createConfigDeploymentAdmittedEvent>
   | ReturnType<typeof createServerAccessRetireRequestedEvent>
   | ReturnType<typeof createConfigPrCheckRequestedEvent>
+  | ReturnType<typeof createConfigSweepRequestedEvent>
   | ReturnType<typeof createConfigDeploymentStartedEvent>
   | ReturnType<typeof createGithubPushReceivedEvent>
   | ReturnType<typeof createGithubCheckSuiteReceivedEvent>
