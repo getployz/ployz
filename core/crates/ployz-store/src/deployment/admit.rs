@@ -140,8 +140,11 @@ pub(crate) fn admit(
         // which the copied target nodes carry: nothing new, so no new review.
         Admit::Retry(retry) => {
             let retried = deployment::retry(tx, who, &retry.id, &retry.deployment)?;
-            if retried.remove && trusted.no_servers() {
-                return deployment::forget(tx, &retried.id);
+            if retried.remove
+                && let Some(outcome) =
+                    deployment::forgettable(tx, &retried.environment_id, trusted)?
+            {
+                return deployment::forget(tx, &retried.id, outcome);
             }
             trusted.runnable()?;
             Ok(retried)
@@ -247,8 +250,8 @@ fn deploy(
 /// Queue the Deployment that removes an Environment from the Servers: the empty
 /// Environment against everything Applied State holds, under the same destructive
 /// review as any Deploy. A running Deployment must end first, so the removal's
-/// targets are everything that ran. With nothing on a Server, because none is left
-/// or nothing ran, it applies at once: no runner, and no data to lose.
+/// targets are everything that ran. When nothing of it ever ran, or no Server is
+/// left, it applies at once ([`deployment::forgettable`]): no runner, no review.
 fn removal(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -272,12 +275,12 @@ fn removal(
             json!({ "deployment": running.id }),
         ));
     }
-    let forget = trusted.no_servers() || crate::teardown::on_servers(tx, id)?.is_none();
+    let forget = deployment::forgettable(tx, id, trusted)?;
     let review = review::review(tx, &environment)?;
     review::check(&review, admit.version.as_deref())?;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let empty = crate::scope::empty(&environment.working.environment_slug);
-    let losses = if forget {
+    let losses = if forget.is_some() {
         Vec::new()
     } else {
         let removed = removal::removed(&review.head.applied, &empty, &namespace)?;
@@ -310,8 +313,8 @@ fn removal(
     if admit.close {
         crate::pull_request::mark_closing(tx, id)?;
     }
-    if forget {
-        return deployment::forget(tx, &admitted.id);
+    if let Some(outcome) = forget {
+        return deployment::forget(tx, &admitted.id, outcome);
     }
     Ok(admitted)
 }

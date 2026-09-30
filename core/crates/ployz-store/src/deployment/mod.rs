@@ -249,6 +249,13 @@ pub enum Outcome {
         #[serde(default)]
         needs_upload: Vec<ServiceName>,
     },
+    /// A removal that needed no runner: nothing of its Environment ever ran on a
+    /// Server.
+    NeverRan,
+    /// A removal that completed only in configuration: Cloud counted no Server left,
+    /// so whatever the Servers that ran it still run was left there. Its nodes read
+    /// Unknown.
+    Forgotten,
 }
 
 /// Evidence a runner records about the Deployment it claimed.
