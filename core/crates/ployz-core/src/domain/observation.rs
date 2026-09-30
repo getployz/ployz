@@ -38,6 +38,10 @@ pub enum ContainerRuntimeObservation {
     Restarting,
     Exited {
         code: i64,
+        /// When it stopped (RFC 3339), if Docker reported a time.
+        stopped_at: Option<String>,
+        /// Whether the kernel killed it for running out of memory.
+        oom_killed: bool,
     },
     Removing,
     Dead,
@@ -56,7 +60,15 @@ impl fmt::Display for ContainerRuntimeObservation {
             }
             Self::Paused => f.write_str("paused"),
             Self::Restarting => f.write_str("restarting"),
-            Self::Exited { code } => write!(f, "exited with code {code}"),
+            Self::Exited {
+                code, oom_killed, ..
+            } => {
+                write!(f, "exited with code {code}")?;
+                if *oom_killed {
+                    f.write_str(" (out of memory)")?;
+                }
+                Ok(())
+            }
             Self::Removing => f.write_str("removing"),
             Self::Dead => f.write_str("dead"),
             Self::Unknown { raw } => write!(
@@ -493,7 +505,11 @@ mod tests {
             },
             ContainerRuntimeObservation::Paused,
             ContainerRuntimeObservation::Restarting,
-            ContainerRuntimeObservation::Exited { code: 0 },
+            ContainerRuntimeObservation::Exited {
+                code: 0,
+                stopped_at: None,
+                oom_killed: false,
+            },
             ContainerRuntimeObservation::Removing,
             ContainerRuntimeObservation::Dead,
             ContainerRuntimeObservation::Unknown { raw: Value::Null },
@@ -562,7 +578,14 @@ mod tests {
         assert!(!ContainerRuntimeObservation::Created.is_healthy());
         assert!(!ContainerRuntimeObservation::Paused.is_healthy());
         assert!(!ContainerRuntimeObservation::Restarting.is_healthy());
-        assert!(!ContainerRuntimeObservation::Exited { code: 0 }.is_healthy());
+        assert!(
+            !ContainerRuntimeObservation::Exited {
+                code: 0,
+                stopped_at: None,
+                oom_killed: false
+            }
+            .is_healthy()
+        );
         assert!(!ContainerRuntimeObservation::Removing.is_healthy());
         assert!(!ContainerRuntimeObservation::Dead.is_healthy());
         assert!(

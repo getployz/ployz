@@ -23,6 +23,14 @@ const line = (word: string, tone: Tone, down = false): RuntimeLine => ({ word, t
 /** A Volume's status line while nothing here mounts it. */
 export const NOT_MOUNTED = line("Not mounted", "idle");
 
+/** "Crashed" since the newest stop among its containers, "Out of memory" when that one was OOM-killed. */
+function crashedLine(containers: RuntimeServiceRecord["containers"]): RuntimeLine {
+  // RFC 3339 in UTC at one precision sorts as text.
+  const last = containers.flatMap(({ runtime }) => (runtime?.stopped_at ? [runtime] : []))
+    .sort((a, b) => (b.stopped_at ?? "").localeCompare(a.stopped_at ?? ""))[0];
+  return { ...line(last?.oom_killed ? "Out of memory" : "Crashed", "crashed", true), since: last?.stopped_at ? new Date(last.stopped_at) : null };
+}
+
 /**
  * What evidence says of a Service (`runtime`, null when none names it; `whole`, no Server is missing from it).
  * `chip`: a Deploy in flight that targets it; until its first container runs, it's Starting.
@@ -34,7 +42,7 @@ function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, 
   if (runtime.containers.length === 0) return line("Not running", "bad", true);
   const running = runtime.containers.filter((container) => container.runtime?.state === "running");
   // With a Server missing from the evidence, a replica may run there: claim no crash.
-  if (running.length === 0) return whole ? line("Crashed", "crashed", true) : line("Not seen running", "quiet");
+  if (running.length === 0) return whole ? crashedLine(runtime.containers) : line("Not seen running", "quiet");
   const serving = running.filter(containerServing).length;
   // None serves yet: Unhealthy once a health check fails, else still Starting.
   if (serving === 0) return running.some((container) => container.runtime?.health === "unhealthy") ? line("Unhealthy", "warn") : line("Starting", "quiet");

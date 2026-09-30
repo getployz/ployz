@@ -518,6 +518,9 @@ struct InspectState {
     #[serde(default)]
     status: String,
     exit_code: Option<i64>,
+    finished_at: Option<String>,
+    #[serde(rename = "OOMKilled", default)]
+    oom_killed: bool,
     health: Option<InspectHealth>,
 }
 
@@ -534,15 +537,17 @@ fn runtime_observation(state: Option<&serde_json::Value>) -> ContainerRuntimeObs
         };
     };
     let parsed = InspectState::deserialize(state).unwrap_or_default();
-    runtime_from_parts_with_raw(
-        &parsed.status,
-        parsed.exit_code,
-        parsed
-            .health
-            .as_ref()
-            .and_then(|health| health.status.as_deref()),
-        state,
-    )
+    runtime_from_state(&parsed, state)
+}
+
+/// Docker's `FinishedAt` as RFC 3339 in milliseconds; none for its zero time (never stopped) or an unreadable one.
+fn stopped_at(finished_at: Option<&str>) -> Option<String> {
+    let finished_at = chrono::DateTime::parse_from_rfc3339(finished_at?).ok()?;
+    (finished_at.timestamp() > 0).then(|| {
+        finished_at
+            .with_timezone(&chrono::Utc)
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    })
 }
 
 fn effective_healthcheck(config: Option<&RawContainerConfig>) -> Option<HealthcheckSpec> {
@@ -580,21 +585,29 @@ fn runtime_from_parts(
     exit_code: Option<i64>,
     health: Option<&str>,
 ) -> ContainerRuntimeObservation {
-    runtime_from_parts_with_raw(
-        status,
+    let state = InspectState {
+        status: status.to_owned(),
         exit_code,
-        health,
+        health: Some(InspectHealth {
+            status: health.map(str::to_owned),
+        }),
+        ..InspectState::default()
+    };
+    runtime_from_state(
+        &state,
         &json!({ "Status": status, "ExitCode": exit_code, "Health": health }),
     )
 }
 
-fn runtime_from_parts_with_raw(
-    status: &str,
-    exit_code: Option<i64>,
-    health: Option<&str>,
+fn runtime_from_state(
+    state: &InspectState,
     raw: &serde_json::Value,
 ) -> ContainerRuntimeObservation {
-    match status {
+    let health = state
+        .health
+        .as_ref()
+        .and_then(|health| health.status.as_deref());
+    match state.status.as_str() {
         "created" => ContainerRuntimeObservation::Created,
         "running" => ContainerRuntimeObservation::Running {
             health: match health {
@@ -607,8 +620,10 @@ fn runtime_from_parts_with_raw(
         },
         "paused" => ContainerRuntimeObservation::Paused,
         "restarting" => ContainerRuntimeObservation::Restarting,
-        "exited" if exit_code.is_some() => ContainerRuntimeObservation::Exited {
-            code: exit_code.expect("checked"),
+        "exited" if let Some(code) = state.exit_code => ContainerRuntimeObservation::Exited {
+            code,
+            stopped_at: stopped_at(state.finished_at.as_deref()),
+            oom_killed: state.oom_killed,
         },
         "removing" => ContainerRuntimeObservation::Removing,
         "dead" => ContainerRuntimeObservation::Dead,
@@ -1564,7 +1579,29 @@ mod tests {
         );
         assert_eq!(
             runtime_from_parts("exited", Some(17), None),
-            ContainerRuntimeObservation::Exited { code: 17 }
+            ContainerRuntimeObservation::Exited {
+                code: 17,
+                stopped_at: None,
+                oom_killed: false
+            }
+        );
+        assert_eq!(
+            runtime_observation(Some(&json!({
+                "Status": "exited",
+                "ExitCode": 137,
+                "OOMKilled": true,
+                "FinishedAt": "2024-03-15T12:34:56.123456789Z"
+            }))),
+            ContainerRuntimeObservation::Exited {
+                code: 137,
+                stopped_at: Some("2024-03-15T12:34:56.123Z".into()),
+                oom_killed: true
+            }
+        );
+        assert_eq!(
+            stopped_at(Some("0001-01-01T00:00:00Z")),
+            None,
+            "Docker's zero time is no stop"
         );
         assert_eq!(
             runtime_from_parts("removing", None, None),

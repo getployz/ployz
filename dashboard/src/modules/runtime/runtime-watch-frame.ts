@@ -265,8 +265,17 @@ function runtimeWatchContainerForTransport(container: RuntimeWatchView["containe
     machine_id: container.machine_id,
     namespace: container.namespace,
     kind: container.kind,
-    runtime: container.runtime.state === "running"
-      ? { state: container.runtime.state, health: container.runtime.health }
-      : { state: container.runtime.state },
+    runtime: runtimeStateForTransport(container.runtime),
   };
+}
+
+function runtimeStateForTransport(runtime: RuntimeWatchView["containers"][number]["runtime"]) {
+  switch (runtime.state) {
+    case "running":
+      return { state: runtime.state, health: runtime.health };
+    case "exited":
+      return { state: runtime.state, code: runtime.code, stopped_at: runtime.stopped_at, oom_killed: runtime.oom_killed };
+    default:
+      return { state: runtime.state };
+  }
 }

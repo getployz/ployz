@@ -1070,8 +1070,8 @@ async fn run_hook<C: MachineOperations>(
             observed = inspect(client, machine_id, &container_id) => observed?,
         };
         match observed.runtime {
-            ContainerRuntimeObservation::Exited { code: 0 } => return Ok(()),
-            ContainerRuntimeObservation::Exited { code } => {
+            ContainerRuntimeObservation::Exited { code: 0, .. } => return Ok(()),
+            ContainerRuntimeObservation::Exited { code, .. } => {
                 return Err(ExecutionError::Hook {
                     container_id,
                     failure: HookFailure::Exit { code },

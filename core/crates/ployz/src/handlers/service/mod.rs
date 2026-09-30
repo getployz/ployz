@@ -115,7 +115,7 @@ fn health_rank(container: ContainerRef<'_>) -> u8 {
     if let ContainerRef::Hook(container) = container
         && matches!(
             container.as_observation().runtime,
-            ContainerRuntimeObservation::Exited { code: 0 }
+            ContainerRuntimeObservation::Exited { code: 0, .. }
         )
     {
         return 3;

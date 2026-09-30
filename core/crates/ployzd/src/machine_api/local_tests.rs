@@ -354,7 +354,13 @@ async fn replicated_container_observation_wait_returns_on_change_or_timeout() {
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     let mut changed = initial.clone();
     changed
-        .try_update(|parts| parts.runtime = ContainerRuntimeObservation::Exited { code: 0 })
+        .try_update(|parts| {
+            parts.runtime = ContainerRuntimeObservation::Exited {
+                code: 0,
+                stopped_at: None,
+                oom_killed: false,
+            }
+        })
         .unwrap();
     replicated.publish_container(&changed).await.unwrap();
     let response = tokio::time::timeout(std::time::Duration::from_millis(500), waiting)

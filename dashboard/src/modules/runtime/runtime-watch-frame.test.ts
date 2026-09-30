@@ -19,7 +19,10 @@ const OBSERVED_AT = "2026-08-18T00:00:00.000Z";
 describe("runtimeSnapshotFromWatchFrame", () => {
   it("retains direct Engine observations without inferring a runtime verdict", () => {
     const api = runtimeWatchContainerFixture("machine-a", "ctr-api");
-    const hook = runtimeWatchContainerFixture("machine-b", "ctr-hook");
+    const hook = {
+      ...runtimeWatchContainerFixture("machine-b", "ctr-hook"),
+      runtime: { state: "exited", code: 137, stopped_at: "2026-08-17T23:58:00.000Z", oom_killed: true },
+    } as const;
     const volume = runtimeWatchVolumeFixture("machine-a", "data");
     const provisioned = runtimeWatchVolumeFixture("machine-a", "production_vol-pg", {
       storage: { kind: "provisioned", mountpoint: "/pool/pg", bound_bytes: 10_000, used_bytes: 9_200 },
@@ -129,7 +132,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
               machineId: "machine-b",
               namespace: "production",
               kind: "service_container",
-              runtime: { state: "running", health: "healthy" },
+              runtime: { state: "exited", code: 137, stopped_at: "2026-08-17T23:58:00.000Z", oom_killed: true },
             },
           ],
           observedAt: OBSERVED_AT,

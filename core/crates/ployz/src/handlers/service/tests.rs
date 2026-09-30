@@ -29,7 +29,11 @@ fn process_sort_orders_match_the_cli_contract() {
         'd',
         'd',
         "delta",
-        ContainerRuntimeObservation::Exited { code: 0 },
+        ContainerRuntimeObservation::Exited {
+            code: 0,
+            stopped_at: None,
+            oom_killed: false,
+        },
     );
 
     let beta = ServiceContainer::try_from(beta).unwrap();

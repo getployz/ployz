@@ -237,7 +237,7 @@ async fn health_monitor_fails_a_clean_exit_without_waiting_for_serving() {
             failed: FailedOperation::Operation {
                 error: ExecutionError::Health {
                     failure: HealthFailure::Runtime {
-                        observation: ContainerRuntimeObservation::Exited { code: 0 },
+                        observation: ContainerRuntimeObservation::Exited { code: 0, .. },
                     },
                     ..
                 },
@@ -367,7 +367,14 @@ async fn health_monitor_fails_terminal_unhealthy_and_crash_but_skip_bypasses_ins
     for (healthcheck, runtime) in [
         (Some(healthcheck()), unhealthy()),
         (None, unhealthy()),
-        (None, ContainerRuntimeObservation::Exited { code: 17 }),
+        (
+            None,
+            ContainerRuntimeObservation::Exited {
+                code: 17,
+                stopped_at: None,
+                oom_killed: false,
+            },
+        ),
     ] {
         let machine = machine('1');
         let new = container('a');

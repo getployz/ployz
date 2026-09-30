@@ -552,7 +552,15 @@ export type ContainerPath = string;
 
 export type ContainerResources = { cpu_nanos: CpuNanos | null, memory_bytes: ByteQuantity | null, memory_reservation_bytes: ByteQuantity | null, shared_memory_bytes: ByteQuantity | null, devices: Array<DeviceMapping>, device_reservations: Array<DeviceReservation>, ulimits: { [key in string]: Ulimit }, };
 
-export type ContainerRuntimeObservation = { "state": "created" } | { "state": "running", health: HealthObservation, } | { "state": "paused" } | { "state": "restarting" } | { "state": "exited", code: number, } | { "state": "removing" } | { "state": "dead" } | { "state": "unrecognized", raw: JsonValue, };
+export type ContainerRuntimeObservation = { "state": "created" } | { "state": "running", health: HealthObservation, } | { "state": "paused" } | { "state": "restarting" } | { "state": "exited", code: number,
+/**
+ * When it stopped (RFC 3339), if Docker reported a time.
+ */
+stopped_at: string | null,
+/**
+ * Whether the kernel killed it for running out of memory.
+ */
+oom_killed: boolean, } | { "state": "removing" } | { "state": "dead" } | { "state": "unrecognized", raw: JsonValue, };
 
 export type ContractDescription = { machine_id: MachineId, protocol_major: number,
 /**
