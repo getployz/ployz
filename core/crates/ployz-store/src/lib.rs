@@ -178,6 +178,42 @@ impl ConfigStore {
         })
     }
 
+    /// [`write_trusted`](Self::write_trusted) a [`Command`], answering with the pull
+    /// requests whose checks it may move, found in the same transaction.
+    ///
+    /// # Errors
+    /// As [`write`](Self::write).
+    pub fn commit(
+        &self,
+        who: &Actor,
+        command: &Command,
+        trusted: &Trusted,
+    ) -> Result<Committed, RpcError> {
+        self.storage.write(|tx| {
+            let written = command.apply(&mut Call {
+                tx,
+                who,
+                sealing: &self.sealing,
+                trusted,
+            })?;
+            let checks = match written.environment() {
+                Some(environment) => pull_request::project_checks(tx, environment)?,
+                None => Vec::new(),
+            };
+            Ok(Committed { written, checks })
+        })
+    }
+
+    /// The pull requests whose checks a change in `environment` may move: those of
+    /// the open PR Environments in its Project. In-process only.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn checks(&self, environment: &EnvironmentId) -> Result<Vec<PullRequestRef>, RpcError> {
+        self.storage
+            .read(|tx| pull_request::project_checks(tx, environment))
+    }
+
     /// Bind a queued Deployment to `runner` and return its frozen Deploy Intent, with
     /// its secrets unsealed: the only way plaintext leaves the Store. In-process only:
     /// never exposed over HTTPS. The same runner may claim again until it records a

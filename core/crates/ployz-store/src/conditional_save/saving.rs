@@ -11,10 +11,6 @@ pub(crate) fn save(
     request: &Save,
 ) -> Result<Moved, RpcError> {
     let sides = sides(tx, who, &request.from, request.into.as_ref(), true)?;
-    let checks = vec![PullRequestRef {
-        repository_id: sides.facts.repository_id,
-        number: sides.facts.number,
-    }];
     let withdraw = request.picks.as_ref().is_some_and(Vec::is_empty);
     let replace = |tx: &mut dyn Tx| {
         tx.execute(
@@ -34,7 +30,6 @@ pub(crate) fn save(
             into: sides.into.summary,
             staged: Vec::new(),
             conditional_save: None,
-            checks,
         });
     }
     if !sides.facts.open {
@@ -126,7 +121,6 @@ pub(crate) fn save(
             rows: names,
             state: SaveState::Standing,
         }),
-        checks,
     })
 }
 
@@ -317,7 +311,6 @@ pub(crate) fn take(tx: &mut dyn Tx, who: &Actor, take: &Take) -> Result<Moved, R
                 .collect(),
             state: SaveState::Landed,
         }),
-        checks: Vec::new(),
     })
 }
 

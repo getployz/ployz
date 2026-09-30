@@ -5,6 +5,8 @@ import type {
   VolumeObservation,
   ConfigView,
   ConfigWritten,
+  ConfigCommitted,
+  PullRequestRef,
   OrganizationRemoved,
   Unclaimed,
   DeploymentSummary,
@@ -266,7 +268,9 @@ export interface ConfigStore {
    * As `principal` (who Cloud authenticated; none for Cloud itself). `trusted` is evidence Cloud gathered itself, such
    * as readable repositories; never the caller's.
    */
-  write(organization: string, command: ConfigCommand, trusted?: ConfigTrusted, principal?: string | null): Promise<ConfigWritten>;
+  write(organization: string, command: ConfigCommand, trusted?: ConfigTrusted, principal?: string | null): Promise<ConfigCommitted>;
+  /** Cloud only: the pull requests whose checks a change in Environment `environment` (its ID) may move. */
+  checks(environment: string): Promise<PullRequestRef[]>;
   /** Cloud's worker only: the Git Services the Deployment builds, each with its pinned commit, if any. */
   deploymentSources(deployment: string): Promise<GitSource[]>;
   /**
