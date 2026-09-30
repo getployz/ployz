@@ -62,8 +62,13 @@ export function ServiceSettingInput({
   onCommit: (raw: string) => PersistableTransaction;
 }) {
   const [draft, setDraft] = useState<DraftState>(() => freshDraft(value));
-  const active = draft.source === value ? draft : freshDraft(value);
+  // A new value from elsewhere (another tab, the CLI) replaces the field, unless the user is typing in it: then the
+  // typing stays and says what it would replace.
+  const typing = draft.value !== draft.source;
+  const moved = draft.source !== value;
+  const active = moved && !typing ? freshDraft(value) : draft;
   const isDirty = active.value !== value;
+  const notice = moved && typing ? `Changed elsewhere to ${value || "the default"}: confirm to replace it, or cancel.` : null;
 
   function confirm(next = active.value) {
     const raw = next.trim();
@@ -90,7 +95,7 @@ export function ServiceSettingInput({
     suffix,
     isChanged,
     isDirty,
-    error: active.error,
+    error: active.error ?? notice,
     placeholder,
     onFocus,
     title:
