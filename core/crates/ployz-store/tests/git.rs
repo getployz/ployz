@@ -466,7 +466,7 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
     let claimed = store.claim(&retry, &runner).unwrap();
     assert_eq!(
         claimed.receipts[&ServiceName::parse("web").unwrap()],
-        receipt
+        [receipt]
     );
 
     // A Deployment of other Services builds nothing.

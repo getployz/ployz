@@ -315,15 +315,14 @@ pub(crate) fn claim(
     }))
 }
 
-/// The latest build receipt of each Service of `environment`, by runtime name. A
-/// Service without one borrows another Environment of its Project's (a Branch copy,
-/// a saved change): preparation reuses it only if its fingerprint matches.
+/// Every build receipt of each Service of `environment`'s Project, by runtime name:
+/// the Environment's own first, then other Environments' (a Branch copy, a saved
+/// change). Preparation reuses the first whose fingerprint matches.
 pub(crate) fn receipts(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
-) -> Result<BTreeMap<ServiceName, Value>, RpcError> {
-    let mut receipts = BTreeMap::new();
-    // Own receipts first; the first receipt per Service wins.
+) -> Result<BTreeMap<ServiceName, Vec<Value>>, RpcError> {
+    let mut receipts = BTreeMap::<_, Vec<_>>::new();
     for row in tx.query(
         "SELECT r.service, r.receipt FROM config_build_receipt r \
          JOIN config_environment e ON e.id = r.environment_id \
@@ -332,9 +331,10 @@ pub(crate) fn receipts(
         &[environment.as_str().into()],
     )? {
         let service = row.parse::<ServiceName>(0, "receipt")?;
-        if let std::collections::btree_map::Entry::Vacant(entry) = receipts.entry(service) {
-            entry.insert(row.json(1, "receipt")?);
-        }
+        receipts
+            .entry(service)
+            .or_default()
+            .push(row.json(1, "receipt")?);
     }
     Ok(receipts)
 }

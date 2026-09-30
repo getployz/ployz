@@ -52,7 +52,8 @@ pub type RunningPreparation = Running<PreparedDeploy>;
 pub type RunningBuild = Running<BuildOutcome>;
 pub use logs::{ContainerLogInput, ContainerLogRecord, ContainerLogStream};
 pub use preparation::{
-    BuildReceipt, OutsideBuildInput, PreparationInput, VERSION, expected_fingerprints,
+    BuildReceipt, BuildVariables, OutsideBuildInput, PreparationInput, UploadDigest, VERSION,
+    expected_fingerprints,
 };
 
 /// The public SDK Watch frame: the RPC frame plus what this observer derives
@@ -415,7 +416,7 @@ impl Session {
             .map_err(|error| preparation_error(error, token.is_cancelled()))?;
             let (preview, retained) = prepared.into_parts();
             let build_receipts =
-                preparation::receipts(&captured.fingerprints, &captured.contents, &retained);
+                preparation::receipts(&captured.fingerprints, &captured.reused, &retained);
             let prune_targets = crate::image::prune_targets(&preview, &retained);
             Ok(PreparedDeploy {
                 preview,
