@@ -247,10 +247,10 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
         code(store.record(&id(1), &a, succeeded(&["web"]))),
         RpcErrorCode::InvalidArgument
     );
-    let partial = RunEvidence::Executed {
+    let partial = |done: &str, failed: &str| RunEvidence::Executed {
         outcome: Box::new(outcome(json!({
-            "type": "failed", "completed": [operation("web")],
-            "failed": {"type": "operation", "operation": operation("api"), "error": {
+            "type": "failed", "completed": [operation(done)],
+            "failed": {"type": "operation", "operation": operation(failed), "error": {
                 "type": "machine", "action": "RemoveContainer",
                 "error": {"code": "internal", "message": "the daemon is busy", "details": {}}
             }},
@@ -258,7 +258,12 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
         }))),
         removed: Vec::new(),
     };
-    store.record(&id(1), &a, partial).unwrap();
+    store.record(&id(1), &a, partial("web", "api")).unwrap();
+    // The mirror image counts the same, yet says something else.
+    assert_eq!(
+        code(store.record(&id(1), &a, partial("api", "web"))),
+        RpcErrorCode::Conflict
+    );
     let view = store
         .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
         .unwrap();
