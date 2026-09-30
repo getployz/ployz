@@ -52,6 +52,7 @@ const SERVER_FN_FILE = /[.-]functions\.ts$|\.server\.ts$/;
 const COMMAND_READ_FILES = {
   "components/service-source-selector.tsx": "resolve a pasted public repository before connecting it",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "gather data-loss evidence, then wait for the confirmed removal",
+  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/stray-namespaces.tsx": "gather a Namespace's data-loss evidence before the user confirms its removal",
 };
 
 const NETWORK = /\bfetch\(|new EventSource\(/;
@@ -68,6 +69,7 @@ const ON_DEMAND_READS = {
   githubInstallUrlQueryOptions: "read together with repository access when a repository picker opens",
   githubBranchesQueryOptions: "depends on the repository the user just picked",
   githubBuildRepositoriesQueryOptions: "calls GitHub per repository; Organization Settings › Builds fills it in after hydration",
+  strayNamespacesQueryOptions: "asks about the Namespaces the Servers report live, known only once the Runtime Watch answers",
 };
 
 /** Hook files outside data files that await the server without making UI wait on it. */
@@ -84,6 +86,7 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/index.tsx": "the server creates the new organization and its slug, which the page then opens",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "over the Store the dialog stays open until the name is accepted, then opens the new environment",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "removing a server is destructive and waits on the runtime",
+  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/stray-namespaces.tsx": "removing a Namespace no Project owns deletes its Volumes' data: it reads what goes before the user confirms, then waits on the Servers",
   "routes/_protected/cloud/$organizationSlug/-components/store-teardown-section.tsx": "deleting an Environment or Project is destructive: it reads what goes before the user confirms, then waits on each removal Deployment",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useStoreChangeActions.tsx": "deploying starts runtime work and opens the admitted Deployment, and a Deploy or Publish that deletes Volume data asks the user first (Publish itself shows at once)",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/StoreDeploymentPage.tsx": "retry starts runtime work and opens the new Deployment",
