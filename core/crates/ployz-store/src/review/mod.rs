@@ -384,15 +384,6 @@ pub(crate) fn latest_saved(
     }))
 }
 
-/// An Environment `name` with nothing in it.
-pub(crate) fn empty(name: &str) -> SavedEnvironmentIntent {
-    SavedEnvironmentIntent {
-        version: 1,
-        environment_slug: name.to_owned(),
-        services: Vec::new(),
-        volumes: Vec::new(),
-    }
-}
 
 fn projection(
     environment: &EnvironmentId,

@@ -234,7 +234,7 @@ commands! {
         => crate::teardown::set_default(tx, who, c);
     /// Set the Setup Commands a Branch of an Environment runs once it is made.
     SetBranchSetup(crate::SetBranchSetup) -> BranchSetup(crate::EnvironmentsView)
-        => crate::teardown::set_branch_setup(tx, who, c);
+        => crate::branch::set_branch_setup(tx, who, c);
     /// Delete an Environment nothing of which runs on the Servers.
     RemoveEnvironment(crate::RemoveEnvironment)
         -> EnvironmentRemoved(crate::Teardown<crate::EnvironmentRemoved>)

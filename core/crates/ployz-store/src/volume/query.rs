@@ -153,7 +153,7 @@ pub(crate) fn removals(
         let namespace: Namespace =
             crate::deployment::namespace(tx, who, &environment.summary, false)?;
         let target = if query.remove {
-            review::empty(&environment.working.environment_slug)
+            crate::scope::empty(&environment.working.environment_slug)
         } else {
             environment.working.clone()
         };

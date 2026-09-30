@@ -6,9 +6,12 @@
 //! (`plan_branch`, `branch_changes`, `live_values`); this module stores and lands them.
 
 mod create;
+mod setup;
 mod live;
 mod moving;
 pub(crate) use create::*;
+pub use setup::SetBranchSetup;
+pub(crate) use setup::{branch_setup, set_branch_setup};
 pub(crate) use live::*;
 pub(crate) use moving::*;
 

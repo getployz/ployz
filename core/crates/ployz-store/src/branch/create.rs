@@ -76,7 +76,7 @@ pub(crate) fn create_branch(
     }
     // None named: the Parent's defaults, each where the Branch copies its Service.
     let defaults = match create.setup.is_empty() {
-        true => crate::teardown::branch_setup(tx, &parent.summary.id)?
+        true => branch_setup(tx, &parent.summary.id)?
             .into_iter()
             .filter(|setup| {
                 working.services.iter().any(|service| {
@@ -132,7 +132,7 @@ pub(crate) fn create_branch(
         }
     }
 
-    let into = crate::review::empty(create.name.as_str());
+    let into = crate::scope::empty(create.name.as_str());
     let hostnames = BranchHostnames {
         from: suffix(tx, &parent)?,
         into: format!("-{}", create.name),
