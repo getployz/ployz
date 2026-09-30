@@ -1,4 +1,28 @@
 /**
+ * The Config Store's organization-owned tables, keyed by the scope whose views a change invalidates. The Store
+ * creates them when Cloud first opens it, so Cloud attaches their triggers then (see config-store.server.ts).
+ * The Organization column is text there, because the Store's SQL also runs on SQLite.
+ */
+export const storeChangeSources = {
+  config_project: { key: ["id"] },
+  config_environment: { key: ["id"] },
+  config_node_introduction: { key: ["environment_id"] },
+  config_saved: { key: ["environment_id"] },
+  config_namespace: { key: ["environment_id"] },
+  config_deployment: { key: ["id"] },
+  config_build: { key: ["deployment_id"] },
+  config_applied: { key: ["environment_id"] },
+  config_registry_credential: { key: ["environment_id"] },
+  config_service_policy: { key: ["environment_id"] },
+  config_environment_branch: { key: ["environment_id"] },
+  config_build_order: { key: ["organization_id"] },
+  config_pr_plan: { key: ["project_id"] },
+  config_pr_environment: { key: ["environment_id"] },
+  config_conditional_save: { key: ["environment_id"] },
+  config_pull_request: { key: ["repository_id", "number"] },
+} satisfies Record<string, { key: readonly string[] }>;
+
+/**
  * Every organization-owned table: the column naming its Organization (`organization_id` unless given)
  * and the key columns its change trigger logs (joined with ':'). The spec logs every organization-owned
  * table (#1042 user story 21), including tables that feed no collection yet. The migration attaches each
@@ -6,46 +30,17 @@
  */
 export const changeSources = {
   organization: { organizationColumn: "id", key: ["id"] },
-  project: { key: ["id"] },
-  environment: { key: ["id"] },
-  environment_branch: { key: ["environment_id"] },
-  pr_environment: { key: ["environment_id"] },
-  pr_environment_plan: { key: ["project_id", "repository_id"] },
-  conditional_save: { key: ["id"] },
-  service: { key: ["id"] },
-  resource_lineage: { key: ["id"] },
-  environment_resource: { key: ["id"] },
   environment_canvas_node_position: { key: ["resource_type", "resource_id"] },
-  environment_deployment: { key: ["id"] },
-  environment_deployment_event: { key: ["deployment_id"] },
-  environment_saved_state_snapshot: { key: ["id"] },
-  environment_node_config_snapshot: { key: ["id"] },
-  environment_node_introduction: { key: ["node_type", "node_id"] },
-  volume_remove_attempt: { key: ["id"] },
   organization_pairing: { key: ["organization_id"] },
   organization_cluster_domain: { key: ["organization_id"] },
-  organization_build_order: { key: ["organization_id"] },
-  core_operation_event: { key: ["id"] },
-  core_operation_watch: { key: ["id"] },
   enrollment_allocation: { key: ["cluster_key"] },
-  environment_deployment_build_output: { key: ["id"] },
-  environment_deployment_build_step: { key: ["id"] },
-  environment_deployment_image_build: { key: ["id"] },
-  environment_deployment_secret: { key: ["environment_deployment_id"] },
-  environment_node_config_snapshot_secret: { key: ["snapshot_id"] },
-  environment_node_introduction_secret: { key: ["environment_id", "node_type", "node_id"] },
-  github_environment_trigger: { key: ["id"] },
   invitation: { key: ["id"] },
   machine_enrollment_token: { key: ["id"] },
   machine_remove_attempt: { key: ["id"] },
   member: { key: ["id"] },
   organization_billing_state: { key: ["organization_id"] },
   organization_machine: { key: ["machine_id"] },
-  service_lineage: { key: ["id"] },
-  service_registry_credential: { key: ["service_id"] },
-  teardown_attempt: { key: ["id"] },
-  variable: { key: ["id"] },
-  variable_secret: { key: ["variable_id"] },
+  ...storeChangeSources,
 } satisfies Record<string, { organizationColumn?: string; key: readonly string[] }>;
 
 export type ChangeSource = keyof typeof changeSources;

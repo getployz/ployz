@@ -18,9 +18,9 @@ use ployz_core::{
     ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway, MachineId, MachineImages,
     MachineName, MachineRelease, MachineSubnet, MachineSuccess, MachineTokenRequest, MachineUpdate,
     MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage,
-    MachineVersion, ManagementAddress, NameMatches, OpaquePayload, PROJECT_NAME_LABEL,
+    MachineVersion, ManagementAddress, NAMESPACE_LABEL, NameMatches, Namespace, OpaquePayload,
     PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication,
-    ProjectName, PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
+    PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
     PullImageFromMachineRequest, RESET_MACHINE_CAPABILITY, RemoveImagesRequest,
     RemoveLocalMachineRequest, RemoveMachineRequest, RequestMachineUpgradeRequest, ResetAccepted,
     ResetRequest, ResolvedServiceSpec, ResponseKind, RpcError, RpcErrorCode, RpcRequestBody,
@@ -173,9 +173,9 @@ fn container_metadata_values_reject_invalid_wire_states() {
 }
 
 #[test]
-fn qualified_service_is_project_slash_name() {
+fn qualified_service_is_namespace_slash_name() {
     let identity = ployz_core::QualifiedService::parse("shop-staging/web").unwrap();
-    assert_eq!(identity.project.as_str(), "shop-staging");
+    assert_eq!(identity.namespace.as_str(), "shop-staging");
     assert_eq!(identity.name.as_str(), "web");
     assert_eq!(identity.to_string(), "shop-staging/web");
     assert_eq!(identity.dns_name(), "web.shop-staging");
@@ -235,44 +235,44 @@ fn machine_name_accepts_lowercase_dns_labels() {
 }
 
 #[test]
-fn project_name_accepts_lowercase_dns_labels() {
-    assert_eq!(ProjectName::parse("shop").unwrap().as_str(), "shop");
-    assert_eq!(ProjectName::parse("a1").unwrap().as_str(), "a1");
+fn namespace_accepts_lowercase_dns_labels() {
+    assert_eq!(Namespace::parse("shop").unwrap().as_str(), "shop");
+    assert_eq!(Namespace::parse("a1").unwrap().as_str(), "a1");
     assert_eq!(
-        ProjectName::parse("shop-staging").unwrap().as_str(),
+        Namespace::parse("shop-staging").unwrap().as_str(),
         "shop-staging"
     );
     assert_eq!(
-        ProjectName::parse("a".repeat(63)).unwrap().as_str(),
+        Namespace::parse("a".repeat(63)).unwrap().as_str(),
         "a".repeat(63)
     );
-    assert!(ProjectName::parse("ployz-system").unwrap().is_reserved());
-    assert_eq!(ProjectName::system().as_str(), "ployz-system");
-    assert!(!ProjectName::parse("shop").unwrap().is_reserved());
+    assert!(Namespace::parse("ployz-system").unwrap().is_reserved());
+    assert_eq!(Namespace::system().as_str(), "ployz-system");
+    assert!(!Namespace::parse("shop").unwrap().is_reserved());
 }
 
 #[test]
-fn project_volume_name_includes_the_project_and_differs_across_projects() {
+fn namespace_volume_name_includes_the_namespace_and_differs_across_namespaces() {
     let logical = DockerVolumeName::parse("data").unwrap();
     assert_eq!(
-        ProjectName::parse("shop-production")
+        Namespace::parse("shop-production")
             .unwrap()
             .volume_name(&logical)
             .as_str(),
         "shop-production_data"
     );
     assert_eq!(
-        ProjectName::parse("shop-staging")
+        Namespace::parse("shop-staging")
             .unwrap()
             .volume_name(&logical)
             .as_str(),
         "shop-staging_data"
     );
     assert_ne!(
-        ProjectName::parse("shop-production")
+        Namespace::parse("shop-production")
             .unwrap()
             .volume_name(&logical),
-        ProjectName::parse("shop-staging")
+        Namespace::parse("shop-staging")
             .unwrap()
             .volume_name(&logical)
     );
@@ -281,7 +281,7 @@ fn project_volume_name_includes_the_project_and_differs_across_projects() {
 #[test]
 fn managed_volume_admission_rejects_reserved_labels_and_import_preserves_scope() {
     for owner in ["shop", "blog"] {
-        for reserved in [PROJECT_NAME_LABEL, MANAGED_LABEL] {
+        for reserved in [NAMESPACE_LABEL, MANAGED_LABEL] {
             let raw = ployz_core::RawVolumeSource::Ordinary {
                 name: DockerVolumeName::parse("data").unwrap(),
                 driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
@@ -301,13 +301,13 @@ fn managed_volume_admission_rejects_reserved_labels_and_import_preserves_scope()
     .try_into()
     .unwrap();
     assert!(named.to_create_volume_request().is_none());
-    let project = ProjectName::parse("shop").unwrap();
-    named.scope_to_project(&project);
-    named.scope_to_project(&project);
+    let namespace = Namespace::parse("shop").unwrap();
+    named.scope_to_namespace(&namespace);
+    named.scope_to_namespace(&namespace);
     let request = named.to_create_volume_request().unwrap();
     assert_eq!(request.name.as_str(), "shop_data");
     assert_eq!(
-        request.labels.get(PROJECT_NAME_LABEL).map(String::as_str),
+        request.labels.get(NAMESPACE_LABEL).map(String::as_str),
         Some("shop")
     );
     assert_eq!(request.labels.get("user").map(String::as_str), Some("kept"));
@@ -316,10 +316,10 @@ fn managed_volume_admission_rejects_reserved_labels_and_import_preserves_scope()
     let mut imported = serde_json::from_value::<ployz_core::ResolvedVolumeSource>(wire.clone())
         .unwrap()
         .into_requested();
-    imported.scope_to_project(&ProjectName::parse("blog").unwrap());
+    imported.scope_to_namespace(&Namespace::parse("blog").unwrap());
     assert_eq!(imported.to_create_volume_request(), Some(request));
     let mut forged = wire;
-    *forged.pointer_mut("/scope/project").unwrap() = serde_json::json!("blog");
+    *forged.pointer_mut("/scope/namespace").unwrap() = serde_json::json!("blog");
     assert!(serde_json::from_value::<ployz_core::ResolvedVolumeSource>(forged).is_err());
 
     let mut external: VolumeSource = ployz_core::RawVolumeSource::External {
@@ -327,26 +327,26 @@ fn managed_volume_admission_rejects_reserved_labels_and_import_preserves_scope()
     }
     .try_into()
     .unwrap();
-    external.scope_to_project(&project);
+    external.scope_to_namespace(&namespace);
     assert_eq!(external.docker_volume_name().unwrap().as_str(), "shared");
 }
 
 #[test]
-fn project_name_rejects_underscores_and_uppercase_without_normalising() {
+fn namespace_rejects_underscores_and_uppercase_without_normalising() {
     let expected =
         "a 1-63 character lowercase DNS label; underscores and uppercase are not accepted";
     for invalid in ["My_App", "SHOP", "shop_staging", "Shop", "-shop", "shop-"] {
         assert_eq!(
-            ProjectName::parse(invalid).unwrap_err().to_string(),
-            format!("invalid Project Name {invalid:?}: {expected}")
+            Namespace::parse(invalid).unwrap_err().to_string(),
+            format!("invalid Namespace {invalid:?}: {expected}")
         );
     }
     assert_eq!(
-        ProjectName::parse("").unwrap_err().to_string(),
-        format!("invalid Project Name \"\": {expected}")
+        Namespace::parse("").unwrap_err().to_string(),
+        format!("invalid Namespace \"\": {expected}")
     );
-    assert!(ProjectName::parse("a".repeat(64)).is_err());
-    assert!(ProjectName::parse("shop.staging").is_err());
+    assert!(Namespace::parse("a".repeat(64)).is_err());
+    assert!(Namespace::parse("shop.staging").is_err());
 }
 
 #[test]
@@ -1432,7 +1432,8 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
         deployment_id: None,
         creation_key: Some("deploy/slot-1".into()),
         kind: ContainerKind::ServiceContainer,
-        project_name: ProjectName::parse("shop").unwrap(),
+        namespace: Namespace::parse("shop").unwrap(),
+        registry_auth: None,
         resolved_spec: spec.clone(),
     });
     assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);

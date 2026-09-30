@@ -3,7 +3,9 @@
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 
-use ployz_core::config::config_request;
+use ployz_core::config::{
+    ConfigError, branch_changes, parse_environment_intent, redact_environment_intent,
+};
 use serde_json::{Value, json};
 
 const API: &str = "a0000000-0000-4000-8000-000000000001";
@@ -81,7 +83,7 @@ fn parent() -> Value {
     };
     json!({"version": 1, "environmentSlug": "production",
            "services": [api, web, image(3, WORKER, "worker"), image(4, CACHE, "cache")],
-           "volumes": [{"resourceId": id(seed, 30), "resourceLineageId": DATA, "name": "data"}]})
+           "volumes": [{"resourceId": id(seed, 30), "resourceLineageId": DATA, "name": "data", "storage": {"kind": "docker"}}]})
 }
 
 /// Give every node, variable, route and Volume a fresh id, keeping lineage.
@@ -159,11 +161,17 @@ fn request(base: Option<&Value>, from: &Value, into: &Value, extra: &Value) -> V
     for (k, v) in extra.as_object().unwrap() {
         value[k] = v.clone();
     }
-    json!({"operation": "branch_changes", "value": value})
+    value
+}
+
+/// Core's branch changes for a JSON input, as JSON.
+fn run(value: Value) -> Result<Value, ConfigError> {
+    branch_changes(serde_json::from_value(value).unwrap())
+        .map(|changes| serde_json::to_value(changes).unwrap())
 }
 
 fn changes(base: Option<&Value>, from: &Value, into: &Value, extra: &Value) -> Value {
-    config_request(request(base, from, into, extra)).unwrap()
+    run(request(base, from, into, extra)).unwrap()
 }
 
 /// Rows as `key role why/conflict` lines for compact table assertions.
@@ -216,8 +224,7 @@ fn own_copy_with_fresh_ids_has_only_meant_to_differ_rows() {
         row(&result, &format!("{API}:routes"))["into"],
         json!(["api.example.com"])
     );
-    let parsed =
-        config_request(json!({"operation": "parse_environment", "value": parent()})).unwrap();
+    let parsed = serde_json::to_value(parse_environment_intent(parent()).unwrap()).unwrap();
     assert_eq!(result["next"], parsed);
     assert_eq!(result["base"], parsed);
 }
@@ -376,7 +383,10 @@ fn rows_are_redacted_and_review_ignores_ids() {
         "{rows}"
     );
     let redact = |env: &Value| {
-        config_request(json!({"operation": "redact_environment", "value": env})).unwrap()
+        serde_json::to_value(redact_environment_intent(
+            parse_environment_intent(env.clone()).unwrap(),
+        ))
+        .unwrap()
     };
     let redacted = changes(
         Some(&redact(&parent())),
@@ -410,14 +420,11 @@ fn rows_are_redacted_and_review_ignores_ids() {
 fn invalid_configuration_is_refused() {
     let mut from = branch();
     from["environmentSlug"] = json!("");
-    let error = config_request(request(None, &from, &parent(), &json!({}))).unwrap_err();
+    let error = run(request(None, &from, &parent(), &json!({}))).unwrap_err();
     assert_eq!(error.path, "environment");
-    let error =
-        config_request(json!({"operation": "branch_changes", "value": {"from": 1}})).unwrap_err();
-    assert_eq!(error.path, "request");
 }
 
-/// The SDK contract test sends the same input through WebAssembly and expects this review.
+/// A review is a canonical string, stable across ids.
 #[test]
 fn contract_review_string() {
     let env = |start: &str, n: u32| {
@@ -427,18 +434,18 @@ fn contract_review_string() {
                        "healthcheck": {"type": "none"}, "restartPolicy": "unless-stopped",
                        "source": {"version": 1, "type": "image", "image": "api:1", "credentials": {"type": "none"}}}}]})
     };
-    let result = config_request(json!({"operation": "branch_changes", "value": {
+    let result = run(json!({
         "base": env("a", 1), "from": env("b", 2), "into": env("a", 3), "provided": [],
-        "hostnames": {"from": "", "into": ""}, "fromKept": false}}))
+        "hostnames": {"from": "", "into": ""}, "fromKept": false}))
     .unwrap();
     assert_eq!(
         result["review"],
         r#"{"picks":[],"rows":[{"base":"a","conflict":false,"from":"b","into":"a","key":"a0000000-0000-4000-8000-000000000001:startCommand","role":"move"}]}"#
     );
-    let picked = config_request(json!({"operation": "branch_changes", "value": {
+    let picked = run(json!({
         "base": env("a", 1), "from": env("b", 2), "into": env("a", 3), "provided": [],
         "hostnames": {"from": "", "into": ""}, "fromKept": false,
-        "picks": [{"key": format!("{API}:startCommand")}]}}))
+        "picks": [{"key": format!("{API}:startCommand")}]}))
     .unwrap();
     assert_eq!(picked["next"]["services"][0]["config"]["startCommand"], "b");
     assert_eq!(
@@ -484,12 +491,28 @@ fn with_picks(
     let mut parent_input = parent();
     var(&mut parent_input, API, "PLAIN")["value"] = literal("p");
     var(&mut parent_input, API, "PLAIN")["valueFingerprint"] = json!("fp-plain-p");
-    config_request(request(
+    run(request(
         Some(&parent()),
         from,
         into,
         &json!({"parent": parent_input, "picks": picks}),
     ))
+}
+
+#[test]
+fn volume_storage_moves_as_one_setting_with_its_exact_limit() {
+    let base = parent();
+    let mut from = branch();
+    let storage = json!({"kind":"provisioned","maximumBytes":7000000000_i64});
+    from["volumes"][0]["storage"] = storage.clone();
+    let key = format!("{DATA}:storage");
+    let result = changes(Some(&base), &from, &base, &json!({"picks":[{"key":key}]}));
+    assert_eq!(row(&result, &key)["role"], "move");
+    assert_eq!(result["next"]["volumes"][0]["storage"], storage);
+    assert_eq!(
+        result["next"]["volumes"][0]["resourceId"],
+        base["volumes"][0]["resourceId"]
+    );
 }
 
 fn table_picks() -> Value {
@@ -685,9 +708,9 @@ fn create(
         .iter()
         .map(|l| json!({"key": format!("{l}:node")}))
         .collect();
-    config_request(json!({"operation": "branch_changes", "value": {
+    run(json!({
         "base": null, "from": parent, "into": empty("pr-7"), "provided": [WORKER],
-        "hostnames": {"from": "", "into": into_suffix}, "fromKept": false, "picks": picks}}))
+        "hostnames": {"from": "", "into": into_suffix}, "fromKept": false, "picks": picks}))
 }
 
 fn find<'a>(list: &'a Value, field: &str, lineage: &str) -> &'a Value {
@@ -849,7 +872,7 @@ fn update_introduces_parent_services_with_the_branch_naming() {
         .unwrap()
         .retain(|s| s["lineageId"] != WORKER);
     let update = |provided: Value, picks: Value| {
-        config_request(request(
+        run(request(
             Some(&base),
             &from,
             &branch(),
@@ -887,10 +910,10 @@ fn contract_create_review_string() {
         "config": {"version": 2, "privateDns": "api", "preDeployCommand": null, "startCommand": null,
                    "healthcheck": {"type": "none"}, "restartPolicy": "unless-stopped",
                    "source": {"version": 1, "type": "image", "image": "api:1", "credentials": {"type": "none"}}}}]});
-    let result = config_request(json!({"operation": "branch_changes", "value": {
+    let result = run(json!({
         "base": null, "from": parent, "into": empty("pr-7"), "provided": [],
         "hostnames": {"from": "", "into": "-pr-7"}, "fromKept": false,
-        "picks": [{"key": format!("{API}:node")}]}}))
+        "picks": [{"key": format!("{API}:node")}]}))
     .unwrap();
     assert_ne!(result["next"]["services"][0]["id"], id(1, 1));
     assert_eq!(
@@ -995,9 +1018,9 @@ fn empty_picks_apply_nothing_but_still_create_the_base() {
         "the Parent minus what the Branch uses live"
     );
     // Compare-only (no picks) leaves base as given.
-    let compared = config_request(json!({"operation": "branch_changes", "value": {
+    let compared = run(json!({
         "base": null, "from": parent(), "into": empty("pr-7"), "provided": [WORKER],
-        "hostnames": {"from": "", "into": "-pr-7"}, "fromKept": false}}))
+        "hostnames": {"from": "", "into": "-pr-7"}, "fromKept": false}))
     .unwrap();
     assert_eq!(compared["base"], Value::Null);
     assert_eq!(

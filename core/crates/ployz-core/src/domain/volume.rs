@@ -11,7 +11,7 @@ use ts_rs::TS;
 
 use crate::{
     BindPropagation, BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, MANAGED_LABEL,
-    MachinePath, PROJECT_NAME_LABEL, ProjectName, ServiceVolumeReference, ValueError,
+    MachinePath, NAMESPACE_LABEL, Namespace, ServiceVolumeReference, ValueError,
 };
 
 /// A storage source declared under a service-local reference.
@@ -93,16 +93,16 @@ pub struct VolumeSource {
     scope: Option<ScopedVolumeSource>,
 }
 
-/// Checked Project and logical identity from which a physical name and owner labels derive.
+/// Checked Namespace and logical identity from which a physical name and owner labels derive.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ScopedVolumeSource {
-    project: ProjectName,
+    namespace: Namespace,
     logical_name: DockerVolumeName,
 }
 
 impl ScopedVolumeSource {
     fn physical_name(&self) -> DockerVolumeName {
-        self.project.volume_name(&self.logical_name)
+        self.namespace.volume_name(&self.logical_name)
     }
 }
 
@@ -113,7 +113,7 @@ impl TryFrom<RawVolumeSource> for VolumeSource {
         | RawVolumeSource::Provisioned { labels, .. } = &source
             && let Some(key) = labels
                 .keys()
-                .find(|key| key.as_str() == MANAGED_LABEL || key.as_str() == PROJECT_NAME_LABEL)
+                .find(|key| key.as_str() == MANAGED_LABEL || key.as_str() == NAMESPACE_LABEL)
         {
             return Err(ValueError::new(
                 "volume label",
@@ -167,7 +167,7 @@ impl VolumeSource {
     }
 
     /// Scope admitted declarations once; preserve imported observations' exact identity.
-    pub fn scope_to_project(&mut self, project: &ProjectName) {
+    pub fn scope_to_namespace(&mut self, namespace: &Namespace) {
         if self.scope.is_some() {
             return;
         }
@@ -180,9 +180,9 @@ impl VolumeSource {
             | RawVolumeSource::Tmpfs { .. } => return,
         };
         let logical_name = name.clone();
-        *name = project.volume_name(&logical_name);
+        *name = namespace.volume_name(&logical_name);
         self.scope = Some(ScopedVolumeSource {
-            project: project.clone(),
+            namespace: namespace.clone(),
             logical_name,
         });
     }
@@ -206,7 +206,7 @@ impl VolumeSource {
         };
         if let Some(scope) = &self.scope {
             labels.insert(MANAGED_LABEL.into(), String::new());
-            labels.insert(PROJECT_NAME_LABEL.into(), scope.project.to_string());
+            labels.insert(NAMESPACE_LABEL.into(), scope.namespace.to_string());
         }
         labels
     }
@@ -263,9 +263,64 @@ impl ProvisionedVolumeMaximumBytes {
     }
 }
 
+/// Bytes in the GB every storage limit is written in.
+const GB: u64 = 1_000_000_000;
+
+impl ProvisionedVolumeMaximumBytes {
+    /// Parse a limit in GB, like `5`, `5GB` or `1.5 GB`, exact to the byte.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError`] unless `value` is a positive number of GB with at most
+    /// nine decimals.
+    pub fn parse_gb(value: &str) -> Result<Self, ValueError> {
+        let invalid = || {
+            ValueError::new(
+                "storage limit",
+                value,
+                "a positive number of GB, like 5GB or 1.5GB",
+            )
+        };
+        let number = value.trim();
+        let number = number
+            .strip_suffix("GB")
+            .or_else(|| number.strip_suffix("gb"))
+            .unwrap_or(number)
+            .trim_end();
+        let (whole, fraction) = number.split_once('.').unwrap_or((number, ""));
+        let digits = |text: &str| text.bytes().all(|byte| byte.is_ascii_digit());
+        if (whole.is_empty() && fraction.is_empty())
+            || fraction.len() > 9
+            || !digits(whole)
+            || !digits(fraction)
+        {
+            return Err(invalid());
+        }
+        let whole = if whole.is_empty() {
+            0
+        } else {
+            whole.parse::<u64>().map_err(|_| invalid())?
+        };
+        let fraction = format!("{fraction:0<9}")
+            .parse::<u64>()
+            .map_err(|_| invalid())?;
+        whole
+            .checked_mul(GB)
+            .and_then(|bytes| bytes.checked_add(fraction))
+            .and_then(|bytes| Self::try_from(bytes).ok())
+            .ok_or_else(invalid)
+    }
+}
+
+/// The limit in GB, exact: `5 GB`, `1.5 GB`.
 impl Display for ProvisionedVolumeMaximumBytes {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
+        let (whole, fraction) = (self.get() / GB, self.get() % GB);
+        if fraction == 0 {
+            return write!(formatter, "{whole} GB");
+        }
+        let fraction = format!("{fraction:09}");
+        write!(formatter, "{whole}.{} GB", fraction.trim_end_matches('0'))
     }
 }
 
@@ -489,14 +544,14 @@ impl TryFrom<VolumeSource> for ResolvedVolumeSource {
             return Err(ValueError::new(
                 "resolved volume",
                 "unscoped",
-                "a Project-scoped managed source",
+                "a Namespace-scoped managed source",
             ));
         }
         Ok(Self(source))
     }
 }
 impl ResolvedVolumeSource {
-    /// Consume this source while retaining its Project ownership.
+    /// Consume this source while retaining its Namespace ownership.
     #[must_use]
     pub fn into_requested(self) -> VolumeSource {
         self.0
@@ -531,4 +586,42 @@ pub enum VolumeRemovalOutcome {
     Failed { error: crate::RpcError },
     /// Not attempted because the Machine was absent or did not invite RPC.
     Omitted,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_storage_limit_is_written_and_read_in_exact_gb() {
+        for (text, bytes, shown) in [
+            ("5", 5_000_000_000, "5 GB"),
+            ("5GB", 5_000_000_000, "5 GB"),
+            ("1.005 GB", 1_005_000_000, "1.005 GB"),
+            (".5", 500_000_000, "0.5 GB"),
+            ("0.000000001", 1, "0.000000001 GB"),
+        ] {
+            let limit = ProvisionedVolumeMaximumBytes::parse_gb(text).unwrap();
+            assert_eq!(limit.get(), bytes, "{text}");
+            assert_eq!(limit.to_string(), shown);
+            assert_eq!(ProvisionedVolumeMaximumBytes::parse_gb(shown), Ok(limit));
+        }
+        for refused in [
+            "0",
+            "0.0",
+            "",
+            "5GiB",
+            "500MB",
+            "-1",
+            "1.0000000001",
+            "1e3",
+            ".",
+            "18446744073709551615GB",
+        ] {
+            assert!(
+                ProvisionedVolumeMaximumBytes::parse_gb(refused).is_err(),
+                "{refused}"
+            );
+        }
+    }
 }

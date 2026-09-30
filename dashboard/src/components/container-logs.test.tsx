@@ -115,3 +115,43 @@ it("says a refused log stream failed instead of loading forever, and keeps retry
     await getDbClient(client).cleanup(); client.clear(); vi.unstubAllGlobals(); vi.useRealTimers();
   }
 });
+
+it("offers a service or server filter only once there is more than one to pick", async () => {
+  const sources: FakeEventSource[] = [];
+  class FakeEventSource extends EventTarget {
+    close() {}
+    constructor() { super(); sources.push(this); }
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+  const client = new QueryClient();
+  const root = createRootRoute({ loader: () => ({ timeZone: "UTC" }) });
+  const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }) });
+  const index = createRoute({ getParentRoute: () => protectedRoute, path: "/" });
+  const router = createRouter({ routeTree: root.addChildren([protectedRoute.addChildren([index])]), history: createMemoryHistory({ initialEntries: ["/"] }) });
+  await router.load();
+  const selection = { organizationSlug: "acme", environmentSlug: "varying" };
+  const stream = getContainerLogStream(selection, { queryClient: client, sessionId: "session", userId: "user" });
+  const line = (id: string, serviceName: string, machineName: string, message: string) => new MessageEvent("log", { data: JSON.stringify({ type: "record", record: {
+    id, timestamp: id, machineId: machineName, machineName, containerId: serviceName, serviceName, channel: "stdout", message,
+  } }) });
+  try {
+    render(<QueryClientProvider client={client}><DbProvider client={getDbClient(client)}><RouterContextProvider router={router}>
+      <ContainerLogs selection={selection} />
+    </RouterContextProvider></DbProvider></QueryClientProvider>);
+    const source = sources.at(-1);
+    if (!source) throw new Error("Viewer did not open its log stream");
+    // Lines naming their service and server follow the same rule; they render in a virtual list jsdom gives no height.
+    await act(async () => source.dispatchEvent(line("100", "api", "hel-1", "listening")));
+    expect(stream.collection.size).toBe(1);
+    expect(screen.queryByLabelText("All services")).toBeNull();
+    expect(screen.queryByLabelText("All servers")).toBeNull();
+    await act(async () => source.dispatchEvent(line("200", "worker", "fsn-1", "ready")));
+    expect(stream.collection.size).toBe(2);
+    expect(screen.getByLabelText("All services")).toBeTruthy();
+    expect(screen.getByLabelText("All servers")).toBeTruthy();
+  } finally {
+    cleanup();
+    await stream.collection.cleanup();
+    await getDbClient(client).cleanup(); client.clear(); vi.unstubAllGlobals();
+  }
+});

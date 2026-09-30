@@ -1,183 +1,223 @@
-use clap::ArgMatches;
-use ployz_core::{ProjectName, derive_projects};
+//! `ployz project`: Projects in the Config Store. `rm` removes a Project through
+//! the same teardown path as `env rm`, one Environment at a time.
 
-use crate::{
-    deploy::{DeploySnapshot, VolumeFate, remove_project},
-    project::refuse_reserved,
+use clap::{ArgMatches, Command};
+use ployz_core::RpcErrorCode;
+use ployz_store::{
+    CreateProject, DeploymentSummary, EnvironmentId, EnvironmentRef, ProjectId, ProjectName,
+    ProjectRemoved, RemoveProject, RenameProject,
 };
+use serde_json::json;
 
-use super::{Error, data_loss, leaf_matches, required, with_client};
-use crate::output::{self, Gaps, say};
+use super::store::{Store, mint, store};
+use super::teardown::{confirmed, inventory, remove_all};
+use super::{Error, deploy, leaf_matches, required};
+use crate::cli::{base, positional, value};
+use crate::output::say;
 
-pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
-    with_client(root, |client| {
-        Box::pin(async move {
-            let machines = client.machines().await?;
-            let snapshot = client.deploy_snapshot(machines).await?;
-            for line in observer_listing_warnings(&snapshot) {
-                eprintln!("{line}");
-            }
-            let projects = derive_projects(
-                &snapshot.containers,
-                snapshot
-                    .volume_snapshot
-                    .observations()
-                    .iter()
-                    .map(|volume| (&volume.id, &volume.labels)),
-            );
-            let mut gaps = Gaps::default();
-            gaps.extend(&snapshot.container_failures, &snapshot.container_omissions);
-            let volumes = &snapshot.volume_snapshot;
-            gaps.extend(volumes.machine_failures(), volumes.omissions());
-            gaps.unavailable_volumes = volumes.named_failures().to_vec();
-            output::finish_fanout("projects", &projects, &gaps, || {
-                say!("PROJECT\tSERVICES\tVOLUMES");
-                for project in &projects {
-                    say!(
-                        "{}\t{}\t{}",
-                        project.name,
-                        project.services.len(),
-                        project.volumes.len()
-                    );
-                }
-            })
-        })
-    })
-}
-
-pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    let name = ProjectName::parse(required(matches, "project")?)?;
-    refuse_reserved(&name)?;
-    let volumes = if matches.get_flag("volumes") {
-        VolumeFate::Destroy
-    } else {
-        VolumeFate::Preserve
-    };
-    let command = root.clone();
-    with_client(root, move |client| {
-        Box::pin(async move {
-            let observed = client
-                .data_loss_if_project_destroyed(&name, volumes)
-                .await?;
-            let Some(confirmation) = data_loss::confirm_removal(
-                &command,
-                client,
-                &observed,
-                "Remove Project",
-                &[name.to_string()],
-                if volumes == VolumeFate::Destroy {
-                    data_loss::VolumeEffect::Delete
-                } else {
-                    data_loss::VolumeEffect::Preserve
-                },
-            )?
-            else {
-                return Ok(());
-            };
-            let context = match client.connection_source() {
-                crate::context::ConnectionSource::Context(name) => name.clone(),
-                crate::context::ConnectionSource::Direct => "direct connection".into(),
-                crate::context::ConnectionSource::LocalSocket => "local socket".into(),
-            };
-            crate::deploy::emit_outcome(
-                remove_project(client, &name, volumes, &context, &confirmation).await,
-            )
-        })
-    })
-}
-
-fn observer_listing_warnings(snapshot: &DeploySnapshot) -> Vec<String> {
-    let mut lines =
-        vec!["WARNING: Live Observation is observer-relative and not globally complete".into()];
-    lines.extend(snapshot.container_failures.iter().map(|failure| {
-        format!(
-            "WARNING: Machine {} failed: {}",
-            failure.machine_id, failure.error.message
+pub(crate) fn command() -> Command {
+    Command::new("project")
+        .about("Manage Projects")
+        .arg_required_else_help(true)
+        .subcommand(
+            Command::new("new")
+                .about("Create a Project with its Default Environment, production")
+                .arg(positional("name", true)),
         )
-    }));
-    lines.extend(
-        snapshot
-            .container_omissions
-            .iter()
-            .map(|machine_id| format!("WARNING: Machine {machine_id} was omitted")),
-    );
-    lines.extend(snapshot.volume_snapshot.listing_warnings());
-    lines
+        .subcommand(Command::new("ls").about("List the Organization's Projects"))
+        .subcommand(
+            Command::new("rename")
+                .about("Rename a Project; its running Environments keep their Namespaces")
+                .arg(positional("project", true))
+                .arg(positional("name", true).help("Its new name, unique in the Organization")),
+        )
+        .subcommand(deploy::following(
+            base(
+                "rm",
+                "Remove a Project: every Environment from the Servers first, then from Ployz",
+            )
+            .long_about(
+                "Remove a Project. Each Environment that ran is taken off the Servers by \
+                 a removal Deployment, Branches before their Parents and the Default \
+                 Environment last, deleting deployed Volumes once each is accepted by \
+                 name; then the Project, its configuration and history go. Type its name \
+                 with --confirm; without it the command fails with confirmation_required, \
+                 naming what goes and the exact retry. If a removal doesn't apply, the \
+                 same command finishes it.",
+            )
+            .arg(positional("name", true))
+            .arg(
+                value("confirm", None)
+                    .value_name("PROJECT")
+                    .help("The Project's name, typed to confirm its removal"),
+            )
+            .arg(crate::cli::volume_acceptance())
+            .arg(crate::cli::reviewed_version()),
+        ))
 }
 
-#[cfg(test)]
-mod tests {
-    use ployz_core::{
-        DockerVolumeId, DockerVolumeName, MachineFailure, MachineId, RpcError, RpcErrorCode,
-        VolumeObservationFailure,
+pub(super) fn handler(path: &str) -> Option<super::Handler> {
+    Some(match path {
+        "new" => new,
+        "ls" => ls,
+        "rename" => rename,
+        "rm" => rm,
+        _ => return None,
+    })
+}
+
+fn new(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let name = ProjectName::parse(required(matches, "name")?)?;
+    let store = store(root)?;
+    let create = CreateProject {
+        id: ProjectId::parse(mint())?,
+        name,
+        default_environment: EnvironmentId::parse(mint())?,
     };
-
-    use super::*;
-
-    #[test]
-    fn listing_warnings_are_observer_relative_and_include_volume_gaps() {
-        let machine = MachineId::parse("1".repeat(32)).unwrap();
-        let omitted = MachineId::parse("2".repeat(32)).unwrap();
-        let snapshot = DeploySnapshot {
-            container_failures: vec![MachineFailure {
-                machine_id: machine,
-                error: RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: "down".into(),
-                    details: serde_json::Value::Null,
-                },
-            }],
-            volume_snapshot: crate::deploy::VolumeSnapshot::try_from_parts(
-                Vec::new(),
-                vec![VolumeObservationFailure {
-                    id: DockerVolumeId {
-                        machine_id: machine,
-                        name: DockerVolumeName::parse("data").unwrap(),
-                    },
-                    error: RpcError {
-                        code: RpcErrorCode::Unavailable,
-                        message: "inspect failed".into(),
-                        details: serde_json::Value::Null,
-                    },
-                }],
-                Vec::new(),
-                vec![omitted],
-            )
-            .expect("valid Volume Snapshot fixture"),
-            ..Default::default()
-        };
-        let warnings = observer_listing_warnings(&snapshot);
-        assert_eq!(
-            warnings.get(..3).unwrap(),
-            &[
-                "WARNING: Live Observation is observer-relative and not globally complete".into(),
-                format!("WARNING: Machine {machine} failed: down"),
-                format!("WARNING: Machine {omitted} was omitted listing volumes"),
-            ]
+    let created = store.write(&create)?;
+    crate::output::finish(&created, || {
+        say!(
+            "Created Project {} with Environment {}.",
+            created.project.name,
+            created.environment.name
         );
-        let listing = warnings.last().unwrap();
-        let (_, planning) = snapshot.volume_snapshot.named_gap(|_| true).unwrap();
-        let deploy = snapshot
-            .volume_snapshot
-            .deploy_warnings()
-            .find_map(|warning| {
-                if let crate::deploy::DeployWarning::ObservationFailed { message, .. } = warning {
-                    Some(message)
-                } else {
-                    None
-                }
-            })
-            .unwrap();
-        for message in [listing, &planning, &deploy] {
-            for hint in [
-                "data",
-                &machine.to_string(),
-                "inspect failed",
-                "inspect the Volume again",
-            ] {
-                assert!(message.contains(hint), "{message}");
+    })
+}
+
+fn ls(root: &ArgMatches) -> Result<(), Error> {
+    let listed = store(root)?.read(&ployz_store::ProjectsQuery {})?;
+    crate::output::finish(&listed, || {
+        if listed.projects.is_empty() {
+            say!("No Projects yet. Create one: ployz project new NAME");
+        }
+        for project in &listed.projects {
+            let environments: Vec<String> = project
+                .environments
+                .iter()
+                .map(|name| match name == &project.default_environment {
+                    true => format!("{name}*"),
+                    false => name.to_string(),
+                })
+                .collect();
+            say!("{}\t{}", project.name, environments.join(", "));
+        }
+    })
+}
+
+fn rename(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let rename = RenameProject {
+        project: ProjectName::parse(required(matches, "project")?)?,
+        name: ProjectName::parse(required(matches, "name")?)?,
+    };
+    let config = super::config_path(matches)?;
+    let store = store(root)?;
+    // Resolved before the write, so a failed lookup cannot strand a done rename.
+    let acting = super::link::identity(&store)?.organization;
+    let renamed = store.write(&rename)?;
+    say!("Renamed Project {} to {}.", rename.project, renamed.name);
+    // The rename is committed; moving this device's links is a follow-up.
+    let links =
+        super::link::rename_project(&config, acting.as_ref(), &rename.project, &renamed.name);
+    if let Ok(moved @ 1..) = links {
+        say!("Moved {moved} linked director(ies) on this device to it.");
+    }
+    crate::output::emit_committed(
+        json!({ "project": renamed, "links": links.as_ref().ok() }),
+        links.map(drop),
+    )
+}
+
+/// What `project rm` removed, and the Deployments that took it off the Servers.
+#[derive(serde::Serialize)]
+struct Removal<'a> {
+    #[serde(flatten)]
+    removed: &'a ProjectRemoved,
+    deployments: &'a [DeploymentSummary],
+}
+
+/// Remove a Project: while the Store names an Environment of it that may still
+/// run, take that one off the Servers (as `env rm` does), then delete it all.
+fn rm(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let name = ProjectName::parse(required(matches, "name")?)?;
+    let store = store(root)?.args([name.as_str(), "--confirm", name.as_str()]);
+    if !confirmed(matches, name.as_str(), "Project")? {
+        return Err(unconfirmed(&store, &name)?);
+    }
+    let remove = RemoveProject {
+        project: name.clone(),
+    };
+    let events = deploy::open_events(matches)?;
+    match remove_all(matches, &store, &remove, &name, events)? {
+        Some((removed, ran)) => finish(&removed, &ran),
+        None => Ok(()),
+    }
+}
+
+/// Refuse an unconfirmed `project rm`, naming every Environment with what goes
+/// with it, and the exact retry.
+fn unconfirmed(store: &Store, project: &ProjectName) -> Result<Error, Error> {
+    let listed = store.read(&ployz_store::ProjectsQuery {})?;
+    let Some(listing) = listed
+        .projects
+        .iter()
+        .find(|listing| &listing.name == project)
+    else {
+        return Err(Error::detailed(
+            RpcErrorCode::NotFound,
+            format!("No Project named {project}"),
+            json!({ "next": "ployz project ls" }),
+        ));
+    };
+    let environments = listing
+        .environments
+        .iter()
+        .map(|environment| {
+            let at = EnvironmentRef {
+                project: Some(project.clone()),
+                environment: Some(environment.clone()),
+            };
+            inventory(store, &at)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let retry = store.again(&[]);
+    Ok(Error::detailed(
+        RpcErrorCode::ConfirmationRequired,
+        format!(
+            "Removing Project {project} deletes every Environment in it ({}) with its \
+             configuration, history, Services and Volumes; this can't be undone. No changes \
+             made.\nRetry: {retry}",
+            super::joined(&listing.environments)
+        ),
+        json!({ "project": project, "environments": environments, "next": retry }),
+    ))
+}
+
+fn finish(removed: &ProjectRemoved, ran: &[DeploymentSummary]) -> Result<(), Error> {
+    let removal = Removal {
+        removed,
+        deployments: ran,
+    };
+    crate::output::finish(&removal, || {
+        for deployment in ran {
+            if super::teardown::left_on_old_servers(deployment) {
+                say!(
+                    "Left an Environment on old servers: no Server was left to take it off (Deployment #{}).",
+                    deployment.number
+                );
+            } else {
+                say!(
+                    "Took an Environment off the Servers (Deployment #{}).",
+                    deployment.number
+                );
             }
         }
-    }
+        say!(
+            "Removed Project {} and its Environments ({}).",
+            removed.project.name,
+            super::joined(&removed.environments)
+        );
+    })
 }

@@ -1,21 +1,21 @@
-import { runtimeServiceIdentity, type RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
+import type { RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
+
+/** Where Ployz runs its own Services on each Server (core's `Namespace::SYSTEM`). */
+export const SYSTEM_NAMESPACE = "ployz-system";
 
 /**
- * Each Service with a container on some Server, joined to its Cloud Service; `cloud` is null for a Service
- * this Organization's Cloud did not deploy. Hook containers are one-off jobs and do not count.
+ * Each Service with a container on some Server, named as the Engine names it: `namespace/name`. Hook containers are
+ * one-off jobs and do not count, and neither does Ployz's own ingress and DNS (`ployz-system`): nothing the user runs.
  */
-export function servicesOnServers<S extends { name: string; privateDns: string; environmentSlug: string }>(
-  runtime: readonly Pick<RuntimeServiceRecord, "identity" | "containers">[],
-  cloud: readonly S[],
-) {
-  const byIdentity = new Map(cloud.map((service) => [runtimeServiceIdentity(service), service]));
+export function servicesOnServers(runtime: readonly Pick<RuntimeServiceRecord, "identity" | "containers">[]) {
   return runtime.flatMap(({ identity, containers }) => {
-    if (containers.length === 0) return [];
-    const match = byIdentity.get(identity) ?? null;
+    const slash = identity.indexOf("/");
+    if (containers.length === 0 || (slash >= 0 && identity.slice(0, slash) === SYSTEM_NAMESPACE)) return [];
     return [{
       identity,
-      name: match?.name ?? identity,
-      cloud: match,
+      name: slash < 0 ? identity : identity.slice(slash + 1),
+      /** The Namespace it runs in; null when the Engine names none. */
+      namespace: slash < 0 ? null : identity.slice(0, slash),
       machineIds: new Set(containers.map((container) => container.machineId)),
     }];
   });

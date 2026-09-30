@@ -11,7 +11,7 @@ function queue() {
   };
 }
 function container(id, service = "service") {
-  return { machine_id: "machine", container_id: id, project_name: "env", labels: { "cloud.ployz.service.id": service, "ployz.deployment.id": "deploy" }, resolved_spec: { name: "api" }, kind: "service_container", runtime: { state: "running" } };
+  return { machine_id: "machine", container_id: id, namespace: "env", labels: { "cloud.ployz.service.id": service, "ployz.deployment.id": "deploy" }, resolved_spec: { name: "api" }, kind: "service_container", runtime: { state: "running" } };
 }
 function row(id, time, message = "output") {
   return { source: { machine_id: "machine", machine_name: "server", origin: { origin: "service", container_id: id, service_name: "api" } }, timestamp_nanos: String(time), channel: "stdout", message };
@@ -29,7 +29,7 @@ function transport() {
 const tick = () => new Promise(resolve => setImmediate(resolve));
 test("discovers late containers, keeps duplicates, replays restarts and cancels readers", async () => {
   const t = transport(); const abort = new AbortController();
-  const output = logs(t, { filter: { projectName: "env", serviceId: "service" }, signal: abort.signal });
+  const output = logs(t, { filter: { namespace: "env", serviceId: "service" }, signal: abort.signal });
   t.frames.push({ containers: [container("a"), container("excluded", "other")] });
   const first = output.next(); await tick();
   t.readers.get("a").push(row("a", 100));

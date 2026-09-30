@@ -3,7 +3,7 @@ import { createdAt, type EncryptedSecretValue, type MachineId, sqlStringLiterals
 
 import { user } from "#/modules/identity/tables";
 
-import { MACHINE_REMOVE_ATTEMPT_STATES, type MachineRemoveAttemptState } from "#/modules/machines/machine-removal";
+import { MACHINE_REMOVE_ATTEMPT_STATES, type MachineRemoveAttemptState, type MachineRemoveResult } from "#/modules/machines/machine-removal";
 
 import { organization } from "#/modules/organization/tables";
 
@@ -11,7 +11,7 @@ import { type DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 
 import { sql } from "drizzle-orm";
 
-import { boolean, check, index, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, foreignKey, index, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 
 
@@ -26,6 +26,8 @@ export const machineRemoveAttempt = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: "restrict" }),
     machineId: text("machine_id").notNull().$type<MachineId>(),
+    /** Take the Server out of the Cluster without resetting it (`ployz server rm --no-reset`). */
+    noReset: boolean("no_reset").default(false).notNull(),
     confirmDataLoss: jsonb("confirm_data_loss")
       .notNull()
       .$type<DataLossIdentity[]>(),
@@ -39,6 +41,8 @@ export const machineRemoveAttempt = pgTable(
     >(),
     failureCode: text("failure_code"),
     failureMessage: text("failure_message"),
+    /** A succeeded removal's result: the reset warning, and what became of Cloud's hold. */
+    result: jsonb("result").$type<MachineRemoveResult | null>(),
     startedAt: timestamp("started_at", {
       mode: "date",
       withTimezone: true,
@@ -60,6 +64,10 @@ export const machineRemoveAttempt = pgTable(
     check(
       "machine_remove_attempt_machine_id_check",
       sql`length(${table.machineId}) between 1 and 64 and ${table.machineId} !~ '[[:cntrl:]]'`,
+    ),
+    check(
+      "machine_remove_attempt_result_check",
+      sql`${table.result} is null or ${table.state} = 'succeeded'`,
     ),
     check(
       "machine_remove_attempt_confirm_data_loss_check",
@@ -136,6 +144,39 @@ export const organizationMachine = pgTable(
   ],
 );
 
+/**
+ * Server Access: one Server's `cli-<id>` Management Client held for one signed-in device or Organization Token.
+ * A revoked row keeps no capability and stays until its Server confirms the Clear.
+ */
+export const serverAccess = pgTable(
+  "server_access",
+  {
+    organizationId: uuid("organization_id").notNull(),
+    machineId: text("machine_id").notNull().$type<MachineId>(),
+    // No foreign keys to the credential or its user: a pending revocation outlives both.
+    credentialId: uuid("credential_id").notNull(),
+    credentialKind: text("credential_kind").notNull().$type<"session" | "token">(),
+    userId: uuid("user_id").notNull(),
+    encryptedCapability: jsonb("encrypted_capability").$type<EncryptedSecretValue>(),
+    revokedAt: timestamp("revoked_at", { mode: "date", withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    primaryKey({ columns: [table.organizationId, table.credentialId, table.machineId] }),
+    // Pairing removal clears every `cli-` slot on its Servers, so these rows go with the Server.
+    foreignKey({
+      name: "server_access_organization_machine_fkey",
+      columns: [table.organizationId, table.machineId],
+      foreignColumns: [organizationMachine.organizationId, organizationMachine.machineId],
+    }).onDelete("cascade"),
+    index("server_access_credential_idx").on(table.credentialId),
+    check("server_access_credential_kind_check", sql`${table.credentialKind} in ('session', 'token')`),
+    check("server_access_revoked_shape_check",
+      sql`(${table.revokedAt} is null) = (${table.encryptedCapability} is not null)`),
+  ],
+);
+
 export const machineEnrollmentToken = pgTable(
   "machine_enrollment_token",
   {
@@ -151,6 +192,8 @@ export const machineEnrollmentToken = pgTable(
       mode: "date",
       withTimezone: true,
     }).notNull(),
+    /** The first Server that completed enrollment with this token. */
+    joinedMachineId: text("joined_machine_id").$type<MachineId>(),
     createdAt,
     updatedAt,
   },

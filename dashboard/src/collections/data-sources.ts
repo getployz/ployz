@@ -13,34 +13,15 @@ export type DataSourceKind = "org-store" | "runtime" | "remote";
 
 export const dataSources = {
   "collections/query-collection.ts": { kind: "org-store", freshness: "table default: the Organization change stream pushes which tables changed and each reads rows changed since its cursor; no timer; refetch on focus and reconnect; land this user's writes via writeCommitted" },
-  "collections/collections.ts": { kind: "org-store", freshness: "table default for every table; deployments hold active attempts plus the latest per Environment, and deployment events push their progress" },
+  "collections/collections.ts": { kind: "org-store", freshness: "table default for every table" },
   "collections/org-store.ts": { kind: "org-store", freshness: "readiness only, once per organization; the change stream keeps tables fresh" },
-  "modules/environment-design/environment-document.collection.ts": { kind: "org-store", freshness: "derived from environments and projects" },
-  "modules/environment-design/resource.collection.ts": { kind: "org-store", freshness: "derived from resources, lineages, positions, and documents" },
-  "modules/services/services.collection.ts": { kind: "org-store", freshness: "derived from services and documents" },
-  "modules/deployments/deployment.collection.ts": { kind: "org-store", freshness: "derived from deployments (active attempts plus the latest per Environment, with their Target Node Lists); an attempt outside them and the paged deployment list come from the deployment-history.queries.ts Remote Reads, with live status from the Org Store for rows it holds" },
-  "modules/deployments/environment-change-state.queries.ts": { kind: "org-store", freshness: "server projection, refetched when the change log names environment_change_state (deployment rows or saved revisions); progress events excluded" },
+  "modules/config-store/store-view.queries.ts": { kind: "remote", freshness: "one bounded Config Store view per query (an Environment's Settings, its diff or plan, a Deployments page, one Deployment), prefetched by loaders; the change stream refetches the views each Store table family backs; a domains view polls every 30s while a domain is setting up or needs DNS (certificates and DNS change without a Store write); this tab's pending edits show over it until they commit" },
   "modules/runtime/runtime.collection.ts": { kind: "runtime", freshness: "SSE runtime watch" },
   "modules/runtime/container-log.stream.ts": { kind: "runtime", freshness: "SSE log stream, older pages on scroll" },
-  "modules/environment-design/workspace.queries.ts": { kind: "remote", freshness: "organization state: fresh on every mount; the change stream invalidates it when the organization changes" },
-  "modules/billing/billing.queries.ts": { kind: "remote", freshness: "cached briefly; the subscription changes in Polar, not here" },
+  "modules/organization/organization-state.queries.ts": { kind: "remote", freshness: "organization state: fresh on every mount; the change stream invalidates it when the organization changes" },
+  "modules/billing/billing.queries.ts": { kind: "remote", freshness: "cached briefly; the subscription and the Custom Domain Capability change in Polar, not here, and a completed checkout syncs them at once" },
   "modules/github/github.queries.ts": { kind: "remote", freshness: "access fresh on mount because installs change in GitHub; install URL never changes; branches and file search cached briefly; build workflow readiness cached 30s, refetched on focus and polled while a workflow commit is awaited" },
   "modules/github/github.collection.ts": { kind: "remote", freshness: "user repository cache: reused for a minute, polled while a picker is open so a requested sync appears; preloaded when a picker opens" },
-  "modules/pr-environments/plan.queries.ts": { kind: "remote", freshness: "installation permissions cached a minute: an owner approves them in GitHub, not here" },
-  "modules/runtime/teardown.queries.ts": { kind: "remote", freshness: "fresh on mount; polls while an attempt is busy" },
-  "modules/runtime/volume-removal.queries.ts": { kind: "remote", freshness: "fresh on mount; polls while an attempt is busy" },
-  "modules/deployments/deployment-log.collection.ts": { kind: "remote", freshness: "polls until the deployment finishes; a finished log is never refetched" },
-  "modules/deployments/deployment-build-log.queries.ts": { kind: "remote", freshness: "fresh on mount; polls until the build finishes" },
-  "modules/deployments/deployment-history.queries.ts": { kind: "remote", freshness: "an environment's deployment list pages, a node's Running attempt and History pages, and one attempt (row, target node list, service configs): kept until the change stream names environment_change_state (a deployment row changed, not a progress event), then refetched" },
+  "modules/machines/namespace-cleanup.queries.ts": { kind: "remote", freshness: "keyed by the Namespaces the Servers report, so a new one is checked afresh; an Environment deleted elsewhere shows within a minute" },
+  "modules/config-store/store-pr-grants.queries.ts": { kind: "remote", freshness: "installation permissions cached a minute: an owner approves them in GitHub, not here" },
 } satisfies Record<string, { kind: DataSourceKind; freshness: string }>;
-
-/**
- * Tables that grow with every Deploy, Save, or passing hour. Org Store views never read them: a count, a latest-of,
- * or a per-attempt status computed from them comes from the server. `collections.test.ts` checks every view.
- */
-export const historyTables = [
-  "environment_deployment_event", "environment_deployment_build_step", "environment_deployment_build_output",
-  "environment_deployment_image_build", "environment_deployment_secret", "environment_saved_state_snapshot",
-  "environment_node_config_snapshot", "volume_remove_attempt", "machine_remove_attempt", "teardown_attempt",
-  "core_operation_event", "organization_change",
-];

@@ -377,15 +377,16 @@ pub(super) fn machine() -> Machine {
 
 pub(super) fn container_request<'spec, Storage>(
     kind: ContainerKind,
-    project_name: &'spec ProjectName,
+    namespace: &'spec Namespace,
     spec: &'spec ResolvedServiceSpec,
     storage: Storage,
 ) -> ContainerRequest<'spec, Storage, std::future::Ready<Result<(), Error>>> {
     ContainerRequest {
         deployment_id: None,
+        registry_auth: None,
         creation_key: None,
         kind,
-        project_name,
+        namespace,
         spec,
         admission: std::future::ready(Ok(())),
         storage,
@@ -402,7 +403,7 @@ pub(crate) fn provisioned_source(name: &str, maximum_bytes: u64) -> VolumeSource
     }
     .admit()
     .expect("valid volume declaration");
-    source.scope_to_project(&ProjectName::parse("app").unwrap());
+    source.scope_to_namespace(&Namespace::parse("app").unwrap());
     source
 }
 
@@ -418,7 +419,7 @@ pub(crate) fn ordinary_source(name: &str) -> VolumeSource {
     }
     .admit()
     .expect("valid volume declaration");
-    source.scope_to_project(&ProjectName::parse("app").unwrap());
+    source.scope_to_namespace(&Namespace::parse("app").unwrap());
     source
 }
 
@@ -453,7 +454,7 @@ pub(crate) fn spec_with_sources(sources: Vec<VolumeSource>) -> ResolvedServiceSp
     spec.set_volume_graph(
         ployz_core::ServiceVolumeGraph::parse(volumes, mounts)
             .unwrap()
-            .scope_to_project(&ProjectName::parse("app").unwrap())
+            .scope_to_namespace(&Namespace::parse("app").unwrap())
             .unwrap()
             .try_into()
             .unwrap(),

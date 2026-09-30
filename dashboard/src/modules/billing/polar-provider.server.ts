@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
-import { Polar as PolarSdk } from "@polar-sh/sdk";
-import { Context, Data, Effect, Layer, Option, Redacted, Schema } from "effect";
+import { makePolarClient, type Polar as PolarSdk } from "#/modules/billing/polar-api";
+import { Context, Data, Effect, Layer, Option, Schema } from "effect";
 import type { PolarConfiguration } from "#/server/config.server";
 import { AppConfig } from "#/server/config.server";
 import { PolarSubscription } from "#/modules/billing/billing";
@@ -33,6 +33,11 @@ export type PolarService =
       readonly createCheckout: (
         input: CreatePolarCheckout,
       ) => Effect.Effect<{ readonly url: string }, PolarFailure>;
+      /** A customer portal session for the user who paid, where plans are changed or cancelled. */
+      readonly createCustomerPortal: (input: {
+        readonly externalCustomerId: string;
+        readonly returnUrl: string;
+      }) => Effect.Effect<{ readonly customerPortalUrl: string }, PolarFailure>;
     };
 
 export class Polar extends Context.Service<Polar, PolarService>()(
@@ -40,6 +45,9 @@ export class Polar extends Context.Service<Polar, PolarService>()(
 ) {}
 
 const Checkout = Schema.Struct({ url: Schema.String });
+const CustomerPortal = Schema.Struct({
+  customerPortalUrl: Schema.String,
+}).pipe(Schema.encodeKeys({ customerPortalUrl: "customer_portal_url" }));
 const ProviderErrorEvidence = Schema.Struct({
   status: Schema.optionalKey(Schema.Finite),
   statusCode: Schema.optionalKey(Schema.Finite),
@@ -83,12 +91,7 @@ export function makePolarService(
 ): PolarService {
   if (config.mode === "self_hosted") return { mode: "self_hosted" };
 
-  const client =
-    sdk ??
-    new PolarSdk({
-      accessToken: Redacted.value(config.accessToken),
-      server: config.server,
-    });
+  const client = sdk ?? makePolarClient(config);
   return {
     mode: "hosted",
     productId: config.productId,
@@ -96,14 +99,13 @@ export function makePolarService(
       call(
         "list active subscriptions",
         async () => {
-          const pages = await client.subscriptions.list({
+          const items: unknown[] = [];
+          for await (const subscription of client.subscriptions.iterList({
             active: true,
             limit: 100,
             metadata: { referenceId: organizationId },
-          });
-          const items: unknown[] = [];
-          for await (const page of pages) {
-            items.push(...page.result.items);
+          })) {
+            items.push(subscription);
           }
           return items;
         },
@@ -115,14 +117,24 @@ export function makePolarService(
         () =>
           client.checkouts.create({
             products: [config.productId],
-            successUrl: input.successUrl,
-            embedOrigin: input.embedOrigin,
-            externalCustomerId: input.externalCustomerId,
-            customerEmail: input.customerEmail,
-            customerName: input.customerName,
+            success_url: input.successUrl,
+            embed_origin: input.embedOrigin,
+            external_customer_id: input.externalCustomerId,
+            customer_email: input.customerEmail,
+            customer_name: input.customerName,
             metadata: { referenceId: input.referenceId },
           }),
         Checkout,
+      ),
+    createCustomerPortal: (input) =>
+      call(
+        "create customer portal",
+        () =>
+          client.customerSessions.create({
+            external_customer_id: input.externalCustomerId,
+            return_url: input.returnUrl,
+          }),
+        CustomerPortal,
       ),
   };
 }

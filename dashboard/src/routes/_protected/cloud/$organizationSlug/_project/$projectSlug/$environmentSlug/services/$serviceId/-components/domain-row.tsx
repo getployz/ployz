@@ -7,8 +7,7 @@ import { buttonVariants } from "#/components/ui/button-variants";
 import { Spinner } from "#/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "#/components/ui/table";
 import { cn } from "#/lib/utils";
-import type { DnsRecord, PublicDomainStatus } from "#/modules/services/public-domain-status";
-import { RelativeTime } from "#/components/relative-time";
+import type { DnsRecord, DomainRow } from "@ployz/sdk";
 
 export function DomainTitle({
   hostname,
@@ -60,42 +59,19 @@ export function DomainRowShell({
   );
 }
 
-type StatusView = { icon: ReactNode; phrase: ReactNode; action: "dns" | "organization_settings" | null };
-
 /** The icon is the status; one short phrase and at most one link say what's next. */
-function statusView(status: PublicDomainStatus): StatusView {
-  const warning = <AlertTriangleIcon className="text-warning" />;
-  switch (status.kind) {
-    case "live":
-      return { icon: <GlobeIcon />, phrase: status.viaProxy ? "via proxy" : null, action: null };
-    case "unknown":
-      return { icon: <GlobeIcon className="opacity-50" />, phrase: null, action: null };
-    case "not_deployed":
-      return { icon: <GlobeIcon className="opacity-50" />, phrase: "Live after your next deploy", action: null };
+export type DomainStatusView = { icon: ReactNode; phrase: ReactNode; action: "dns" | "organization_settings" | "servers" | null };
+
+/** A Store domain's status: the Store words the phrase and names the action. */
+export function storeStatusView(row: Pick<DomainRow, "status" | "reason" | "action">): DomainStatusView {
+  const action = row.action?.type === "dns" ? "dns" : row.action?.type === "add_server" ? "servers" : null;
+  switch (row.status) {
+    case "ready":
+      return { icon: <GlobeIcon />, phrase: row.reason, action };
     case "setting_up":
-      return { icon: <Spinner />, phrase: "Setting up", action: null };
-    case "issuing":
-      return { icon: <Spinner />, phrase: "Issuing certificate", action: null };
-    case "needs_dns":
-      return { icon: warning, phrase: "Waiting for DNS update", action: "dns" };
-    case "dns_elsewhere":
-      return { icon: warning, phrase: "Points to another server", action: "dns" };
-    case "port_closed":
-      return { icon: warning, phrase: "Port 80 is closed", action: null };
-    case "redirects_to_https":
-      // TODO: DOCS PAGE NEEDED on custom domains behind a proxy (see refusal_reason in
-      // core/crates/ployz-core/src/domain/hostname_verdict.rs); link it from this line.
-      return { icon: warning, phrase: "Your proxy redirects to HTTPS. Exempt /.well-known/acme-challenge/* from HTTPS redirects.", action: null };
-    case "cert_failed":
-      return {
-        icon: warning,
-        phrase: status.retryAt ? <>Certificate failed · retrying <RelativeTime date={status.retryAt} /></> : "Certificate failed",
-        action: null,
-      };
-    case "unreachable":
-      return { icon: warning, phrase: "Servers can’t receive traffic", action: "organization_settings" };
-    case "https_down":
-      return { icon: warning, phrase: "HTTPS is down · we’re fixing it", action: null };
+      return { icon: row.action?.type === "deploy" ? <GlobeIcon className="opacity-50" /> : <Spinner />, phrase: row.reason, action };
+    case "needs_attention":
+      return { icon: <AlertTriangleIcon className="text-warning" />, phrase: row.reason, action };
   }
 }
 
@@ -134,7 +110,7 @@ export function PublicDomainRow({
   title,
   label,
   portLabel,
-  status,
+  view,
   dnsRecords = [],
   changed,
   onEdit,
@@ -146,7 +122,7 @@ export function PublicDomainRow({
   /** Names the domain in the edit and remove buttons. */
   label: string;
   portLabel: string;
-  status: PublicDomainStatus;
+  view: DomainStatusView;
   /** The records that point the domain here; only custom domains have them. */
   dnsRecords?: DnsRecord[];
   changed: boolean;
@@ -154,7 +130,6 @@ export function PublicDomainRow({
   onDelete: () => void;
 }) {
   const [showDns, setShowDns] = useState(false);
-  const view = statusView(status);
   const action = view.action === "dns" && dnsRecords.length === 0 ? null : view.action;
   return (
     <div className="flex flex-col gap-2">
@@ -191,6 +166,15 @@ export function PublicDomainRow({
               className={buttonVariants({ variant: "link", size: "sm" })}
             >
               Organization › General
+            </Link>
+          ) : null}
+          {action === "servers" ? (
+            <Link
+              to="/cloud/$organizationSlug/~/servers"
+              params={{ organizationSlug }}
+              className={buttonVariants({ variant: "link", size: "sm" })}
+            >
+              Add a server
             </Link>
           ) : null}
         </div>

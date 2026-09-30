@@ -46,7 +46,7 @@ it("starts at the current horizon even with a Last-Event-ID, names changed colle
   // Polls wait on real 250 ms timers (node:timers/promises); only the heartbeat timer is faked.
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const readChanges = vi.fn<OrgChangesHandlerDeps["readChanges"]>()
-    .mockResolvedValueOnce({ cursor: "50", collections: ["service"] })
+    .mockResolvedValueOnce({ cursor: "50", collections: ["environment_canvas_node_position"] })
     .mockResolvedValue({ cursor: "51", collections: [] });
   const authorize = vi.fn().mockResolvedValue({ organizationId: "org-1" });
   const currentCursor = vi.fn().mockResolvedValue("42");
@@ -59,7 +59,7 @@ it("starts at the current horizon even with a Last-Event-ID, names changed colle
 
   await events.until("event: changes");
   expect(readChanges).toHaveBeenNthCalledWith(1, { organizationId: "org-1", since: "42" });
-  expect(events.text).toContain('event: changes\ndata: {"collections":["service"]}\n\n');
+  expect(events.text).toContain('event: changes\ndata: {"collections":["environment_canvas_node_position"]}\n\n');
   expect(events.text).not.toContain("id: ");
   await vi.waitFor(() => expect(readChanges).toHaveBeenNthCalledWith(2, { organizationId: "org-1", since: "50" }));
   expect(events.text).not.toContain(": ping");

@@ -46,13 +46,15 @@ pub fn compare_resource_settings(
         .transpose()?;
     let mut changes = Vec::new();
     if let Some(baseline) = &baseline {
-        if at(&current, "name") != at(baseline, "name") {
-            changes.push(resource_change(
-                "name".into(),
-                at(baseline, "name").clone(),
-                at(&current, "name").clone(),
-                false,
-            ));
+        for path in ["name", "storage"] {
+            if at(&current, path) != at(baseline, path) {
+                changes.push(resource_change(
+                    path.into(),
+                    at(baseline, path).clone(),
+                    at(&current, path).clone(),
+                    true,
+                ));
+            }
         }
     } else {
         changes.push(resource_change(

@@ -19,6 +19,14 @@ export const MintMachineEnrollmentInput = Schema.Struct({
 export type MintMachineEnrollmentInput =
   typeof MintMachineEnrollmentInput.Type;
 
+export const ReadMachineEnrollmentInput = Schema.Struct({
+  organizationSlug: OrganizationSlug,
+  id: Schema.String.check(Schema.isUUID()),
+});
+
+export type ReadMachineEnrollmentInput =
+  typeof ReadMachineEnrollmentInput.Type;
+
 export const ResetPendingEnrollmentInput = Schema.Struct({
   organizationSlug: OrganizationSlug,
   confirmedFounderStoppedOrErased: Schema.Literal(true),
@@ -209,25 +217,32 @@ const DEFAULT_CLOUD_URL_HOST = "ployz.dev";
 /** The installer is shared Ployz infrastructure, also for Self-hosted Cloud. */
 const INSTALLER_URL = "https://ployz.sh/";
 
+/**
+ * One line that installs `version`, the release Cloud's own SDK speaks, so the
+ * Server understands this enrollment (the stable channel can lag far behind).
+ */
 export function buildMachineJoinCommand(input: {
   token: string;
   origin: string;
+  version: string;
 }) {
   const host = new URL(input.origin).hostname;
   const cloudUrlFlag =
     host === DEFAULT_CLOUD_URL_HOST ? "" : ` --cloud-url '${input.origin}'`;
-  return `curl -fsSL ${INSTALLER_URL} | sh && sudo ployz cloud enroll '${input.token}'${cloudUrlFlag}`;
+  return `curl -fsSL ${INSTALLER_URL} | sh -s -- ${input.version} && sudo ployz server add --token '${input.token}'${cloudUrlFlag}`;
 }
 
 export function mintedEnrollment(input: {
   origin: string;
   token: string;
+  version: string;
   expiresAt: Date;
 }): MintedMachineEnrollment {
   return {
     command: buildMachineJoinCommand({
       token: input.token,
       origin: input.origin,
+      version: input.version,
     }),
     expiresAt: input.expiresAt.toISOString(),
   };

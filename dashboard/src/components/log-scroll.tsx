@@ -7,7 +7,7 @@ import { cn } from "#/lib/utils";
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { useVirtualizer, type VirtualizerOptions } from "@tanstack/react-virtual";
 
-export function useLogScroll(options: Pick<VirtualizerOptions<HTMLDivElement, HTMLDivElement>, "count" | "getItemKey" | "onChange" | "paddingStart">) {
+export function useLogScroll(options: Pick<VirtualizerOptions<HTMLDivElement, HTMLDivElement>, "count" | "getItemKey" | "onChange">) {
   const element = useRef<HTMLDivElement>(null);
   const virtual = useVirtualizer({
     ...options,
@@ -23,14 +23,15 @@ export function useLogScroll(options: Pick<VirtualizerOptions<HTMLDivElement, HT
 }
 
 /** Log columns' widths, shared by the header, the rows, and their skeleton. */
-export const LOG_TIME_COLUMN = { build: "w-24", container: "w-48" } as const;
+export const LOG_TIME_COLUMN = { container: "w-48" } as const;
 
 /** The column header a log reads under; the time column names its zone. */
 export function LogHeader({ time, children }: { time: string; children: ReactNode }) {
   const zone = zoneLabel(useTimeZone());
   return <div className="flex h-8 shrink-0 items-center gap-3 border-b px-1 font-mono text-xs text-muted-foreground">
     <span className={cn("shrink-0", time)}>Time ({zone})</span>
-    <span className="min-w-0 flex-1">{children}</span>
+    {/* A phone stacks each time over its line, so only the time's heading shows. */}
+    <span className="min-w-0 flex-1 max-sm:hidden">{children}</span>
   </div>;
 }
 
@@ -50,20 +51,6 @@ export function LogEmpty({ title, children }: { title: string; children?: ReactN
       {children ? <EmptyDescription>{children}</EmptyDescription> : null}
     </EmptyHeader>
   </Empty>;
-}
-
-export function BuildLogViewer({ children }: { children: ReactNode }) {
-  // Keep arbitrary output chunks in one measured block so split lines stay intact.
-  const { element, virtual } = useLogScroll({ count: 1, getItemKey: () => "build-output" });
-  return <>
-    <LogHeader time={LOG_TIME_COLUMN.build}>Step</LogHeader>
-    <div className="relative flex min-h-0 flex-1 flex-col">
-      <div ref={element} className="min-h-0 flex-1 overflow-auto break-words font-mono text-xs leading-6" tabIndex={0} aria-label="Build logs">
-        <div ref={virtual.measureElement} data-index={0}>{children}</div>
-      </div>
-      {virtual.isAtEnd() ? null : <LatestButton onClick={() => virtual.scrollToEnd()} />}
-    </div>
-  </>;
 }
 
 const LINE_WIDTHS = ["w-2/5", "w-3/5", "w-1/3", "w-1/2"];

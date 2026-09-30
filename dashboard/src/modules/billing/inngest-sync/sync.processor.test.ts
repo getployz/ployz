@@ -4,7 +4,7 @@ import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { describe, expect, it, vi } from "vitest";
 import { organizationBillingSyncRequestedEventType } from "#/modules/inngest/events";
-import * as workspaceRepository from "#/modules/environment-design/workspace-repository.server";
+import * as workspaceRepository from "#/modules/organization/organization-state.server";
 import {
   createScheduleNightlyBillingReconcile,
   createSyncOrganizationBillingStateFunction,

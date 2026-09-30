@@ -5,7 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
-import { disableOrganizationPairing, loadTeardownConnections, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
@@ -39,7 +39,8 @@ describe("protected pairing removal", () => {
 
   function fixture() {
     // The authenticated endpoint distinguishes a cleared Management Client from a replaced client key.
-    const endpoint = { paired: true, online: true, loseAck: false, replaced: false };
+    const endpoint = { paired: true, online: true, loseAck: false, replaced: false, devices: new Set<string>() };
+    const cleared: string[] = [];
     const dialed: ConnectOptions[] = [];
     let mutations = 0;
     const ployz = makePloyzLayer({
@@ -53,7 +54,10 @@ describe("protected pairing removal", () => {
         if (endpoint.replaced) throw Object.assign(new Error("key replaced"), { code: "unauthenticated", details: null });
         if (!endpoint.paired) throw Object.assign(new Error("management client cleared"), { code: "unauthenticated", details: { management_client: "cleared" } });
         return asTestDouble<Client>()({
+          inspect: async () => ({ management_clients: ["cloud", ...endpoint.devices] }),
           clearManagementClient: async (label: string) => {
+            cleared.push(label);
+            if (endpoint.devices.delete(label)) return;
             if (label !== "cloud") throw new Error(`unexpected Management Client ${label}`);
             mutations += 1;
             endpoint.paired = false;
@@ -65,7 +69,7 @@ describe("protected pairing removal", () => {
     });
     const layer = Layer.mergeAll(ployz, Layer.succeed(Database, harness.database), Layer.succeed(SecretEncryption, encryption));
     const makeRuntime = () => ManagedRuntime.make(OrganizationRuntimeLive.pipe(Layer.provideMerge(layer)));
-    return { endpoint, dialed, mutations: () => mutations, makeRuntime };
+    return { endpoint, dialed, cleared, mutations: () => mutations, makeRuntime };
   }
 
   it.each([
@@ -82,8 +86,6 @@ describe("protected pairing removal", () => {
     const runtime = fake.makeRuntime();
     try {
       await expect(runtime.runPromise(revokeOrganizationPairing(organizationId)))
-        .rejects.toMatchObject({ _tag: "PairingRemovalStateInvalid" });
-      await expect(runtime.runPromise(loadTeardownConnections(organizationId)))
         .rejects.toMatchObject({ _tag: "PairingRemovalStateInvalid" });
       expect(fake.dialed).toEqual([]);
       expect(fake.mutations()).toBe(0);
@@ -111,7 +113,6 @@ describe("protected pairing removal", () => {
       expect(encryption.decrypt(retained.encryptedExpected)).toBe(capability);
       expect(JSON.stringify(saved.rows)).not.toContain(capability);
       expect((await harness.pool.query("select * from organization_machine")).rows).toEqual([]);
-      expect(await runtime.runPromise(loadTeardownConnections(organizationId))).toEqual([{ machine_id: machineId, management: capability }]);
     } finally { await runtime.dispose(); }
   });
 
@@ -130,6 +131,16 @@ describe("protected pairing removal", () => {
       const next = await runtime.runPromise(loadOrganizationConnections(organizationId));
       expect(next).toMatchObject({ kind: "ready", connections: [{ management: "ployz1:next-generation" }] });
       expect((await harness.pool.query("select is_dial_entry from organization_machine")).rows).toEqual([{ is_dial_entry: true }]);
+    } finally { await runtime.dispose(); }
+  });
+
+  it("clears every device holder before Cloud's own slot", async () => {
+    const fake = fixture();
+    fake.endpoint.devices = new Set(["cli-a", "cli-b"]);
+    const runtime = fake.makeRuntime();
+    try {
+      expect((await runtime.runPromise(revokeOrganizationPairing(organizationId))).confirmed).toBe(true);
+      expect(fake.cleared).toEqual(["cli-a", "cli-b", "cloud"]);
     } finally { await runtime.dispose(); }
   });
 

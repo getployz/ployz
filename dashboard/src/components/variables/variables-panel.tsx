@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import type { Persistable } from "#/collections/query-collection";
 import { PlusIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import {
@@ -19,10 +20,10 @@ import {
   VariableRow,
   type VariableMetadataPatch,
 } from "#/components/variables/variable-row";
-import type { ReferenceTarget } from "#/modules/environment-design/variable-autocomplete";
-import type { VariableWriter } from "#/modules/environment-design/variable-collections";
-import type { PlainVariableRecord } from "#/modules/environment-design/variable-mutation-actions";
-import type { VariableRecord } from "#/modules/environment-design/variables";
+import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
+import type { VariableWriter } from "#/modules/variables/variables";
+import type { PlainVariableRecord } from "#/modules/variables/variables";
+import type { VariableRecord } from "#/modules/variables/variables";
 
 export type VariableAddInput = {
   key: string;
@@ -44,14 +45,18 @@ export function VariablesPanel({
   renderAfterList,
   emptyState,
   valueTargets,
+  serviceNames,
 }: {
   variables: VariableRecord[];
   collection: VariableWriter;
   /** Reference targets for the value `${{ }}` autocomplete (add form + rows). */
   valueTargets?: ReferenceTarget[];
+  /** Every Service of the Environment, which a value's `${{ service.KEY }}` may name; none: unchecked. */
+  serviceNames?: readonly string[];
   /** Singular noun for the count heading, e.g. "Variable" or "Service Variable". */
   countNoun: string;
-  onCreateVariable: (input: VariableAddInput) => void;
+  /** Saves in the background; a refusal reopens the form with what was typed. */
+  onCreateVariable: (input: VariableAddInput) => Persistable;
   onSealVariable: (variable: PlainVariableRecord) => void;
   onUpdateMetadata?: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
   /** Show the "Sealed" toggle in the add form (owners that support sealed-on-create). */
@@ -67,6 +72,7 @@ export function VariablesPanel({
 }) {
   const supportsExport = onUpdateMetadata != null;
   const [isAdding, setIsAdding] = useState(false);
+  const [draft, setDraft] = useState<VariableAddInput>();
 
   const showEmptyState = variables.length === 0;
 
@@ -94,13 +100,20 @@ export function VariablesPanel({
           </DialogHeader>
           <VariableAddForm
             variables={variables}
-            collection={collection}
-            onCreateVariable={onCreateVariable}
+            onCreateVariable={(input) => {
+              setDraft(undefined);
+              onCreateVariable(input).isPersisted.promise.catch(() => {
+                setDraft(input);
+                setIsAdding(true);
+              });
+            }}
+            initial={draft}
             onCancel={() => setIsAdding(false)}
             allowSealOnCreate={allowSealOnCreate}
             defaultExported={defaultExported}
             supportsExport={supportsExport}
             valueTargets={valueTargets}
+            serviceNames={serviceNames}
           />
         </DialogContent>
       </Dialog>

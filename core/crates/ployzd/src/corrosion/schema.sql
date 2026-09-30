@@ -1,43 +1,41 @@
--- Cluster state replicated by Corrosion.
-
--- Cluster settings, one row per key.
-CREATE TABLE cluster (
-  key TEXT PRIMARY KEY NOT NULL,
-  value ANY
+CREATE TABLE cluster
+(
+    key        TEXT      NOT NULL PRIMARY KEY,
+    value      ANY
 );
 
--- Machines in the Cluster; `info` is the Machine record as JSON.
-CREATE TABLE machines (
-  id TEXT PRIMARY KEY NOT NULL,
-  name TEXT GENERATED ALWAYS AS (json_extract(info, '$.name')) VIRTUAL,
-  info TEXT NOT NULL CHECK (json_valid(info)) DEFAULT '{}'
+CREATE TABLE machines
+(
+    id         TEXT      NOT NULL PRIMARY KEY,
+    name       TEXT AS (json_extract(info, '$.name')),
+    info       TEXT      NOT NULL DEFAULT '{}' CHECK (json_valid(info))
 );
 
--- Observed containers; `container` is the observation as JSON.
-CREATE TABLE containers (
-  id TEXT PRIMARY KEY NOT NULL,
-  container TEXT NOT NULL CHECK (json_valid(container)) DEFAULT '{}',
-  machine_id TEXT NOT NULL DEFAULT '',
-  service_id TEXT GENERATED ALWAYS AS (json_extract(container, '$.resolved_spec.service_id')) VIRTUAL,
-  project_name TEXT GENERATED ALWAYS AS (json_extract(container, '$.project_name')) VIRTUAL,
-  service_name TEXT GENERATED ALWAYS AS (json_extract(container, '$.resolved_spec.name')) VIRTUAL
+CREATE TABLE containers
+(
+    id                 TEXT      NOT NULL PRIMARY KEY,
+    container          TEXT      NOT NULL DEFAULT '{}' CHECK (json_valid(container)),
+    machine_id         TEXT      NOT NULL DEFAULT '',
+    service_id         TEXT AS (json_extract(container, '$.resolved_spec.service_id')),
+    namespace       TEXT AS (json_extract(container, '$.namespace')),
+    service_name       TEXT AS (json_extract(container, '$.resolved_spec.name'))
 );
 
--- Issued certificates keyed by hostname.
-CREATE TABLE certificates (
-  hostname TEXT PRIMARY KEY NOT NULL,
-  body TEXT NOT NULL CHECK (json_valid(body)) DEFAULT '{}'
+CREATE TABLE certificates
+(
+    hostname   TEXT      NOT NULL PRIMARY KEY,
+    body       TEXT      NOT NULL DEFAULT '{}' CHECK (json_valid(body))
 );
 
--- Volumes observed on each Machine.
-CREATE TABLE volumes (
-  machine_id TEXT NOT NULL,
-  name TEXT NOT NULL CHECK (name != ''),
-  volume TEXT NOT NULL CHECK (json_valid(volume)) DEFAULT '{}',
-  PRIMARY KEY (machine_id, name)
+CREATE TABLE volumes
+(
+    machine_id TEXT      NOT NULL,
+    name       TEXT      NOT NULL CHECK (name != ''),
+    volume     TEXT      NOT NULL DEFAULT '{}' CHECK (json_valid(volume)),
+    PRIMARY KEY (machine_id, name)
 );
 
 CREATE INDEX idx_machines_name ON machines (name);
 CREATE INDEX idx_containers_machine_id ON containers (machine_id);
 CREATE INDEX idx_containers_service_id ON containers (service_id);
-CREATE INDEX idx_containers_project_service ON containers (project_name, service_name);
+CREATE INDEX idx_containers_namespace_service ON containers (namespace, service_name);

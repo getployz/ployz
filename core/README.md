@@ -20,13 +20,13 @@ Services; the CLI has no deploy, build, or image command.
 
 ```text
 ployz
-├── cloud      enroll
-├── machine    init · add · ls · inspect · logs · rename · rm · rtt · update
+├── server     add
+├── cloud      reset
+├── machine    ls · inspect · logs · rename · rm · rtt · update
 │              upgrade [inspect] · build-cache-clear
 ├── service    ls · inspect · logs · exec · scale · start · stop · rm
 ├── volume     create · ls · inspect · rm
 ├── ingress    config · deploy · logs
-├── project    ls · rm
 ├── ctx        ls · show · use · rm · connection
 ├── proxy
 ├── ps
@@ -36,7 +36,7 @@ ployz
 
 `crates/ployz/tests/cli_shape.rs` pins this tree; there are no aliases.
 
-`ployz machine add` saves subnet assignments beside its configuration file in
+`ployz server add --standalone` saves subnet assignments beside its configuration file in
 `<config-stem>.enrollment/` before publishing or joining. Commands using that
 store serialize allocation, including pending work; retry with the same identity
 and inputs to resume after a network failure. Context aliases and renames share
@@ -157,7 +157,7 @@ cleans up after each Deploy by default and reports it as the last `images_pruned
 event; pass `imageCleanup: "manual"` to run `pruneImages(pruneTargets)` yourself.
 Cleanup never changes the Deploy Outcome.
 
-Run `ployz machine build-cache-clear` **on the execution host as its build user**
+Run `ployz server build-cache-clear` **on the execution host as its build user**
 to clear Ployz's retained builder cache. It preserves completed Docker images and
 unrelated Docker data, requires no running daemon, and refuses active or
 quarantined ownership. It does not accept a remote connection/context; use host

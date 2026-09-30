@@ -39,7 +39,7 @@ impl CapturedBuild {
             else {
                 continue;
             };
-            let required = machine_platforms(spec, &intent.project_name, machines)?;
+            let required = machine_platforms(spec, &intent.namespace, machines)?;
             // With no visible placement, the coverage check after the Build decides.
             if !required.is_empty() {
                 captured.target.platforms = required.into_iter().collect();
@@ -61,7 +61,7 @@ pub fn placement_platforms(
 ) -> Result<BTreeSet<String>, Error> {
     let mut required = BTreeSet::new();
     for spec in &intent.target {
-        required.extend(machine_platforms(spec, &intent.project_name, machines)?);
+        required.extend(machine_platforms(spec, &intent.namespace, machines)?);
     }
     Ok(required)
 }
@@ -73,11 +73,11 @@ pub fn placement_platforms(
 /// no rerun can cover it, so the Build is refused before compilation.
 fn machine_platforms(
     spec: &RequestedServiceSpec,
-    project: &ployz_core::ProjectName,
+    namespace: &ployz_core::Namespace,
     machines: &[MachineObservation],
 ) -> Result<BTreeSet<String>, Error> {
     let mut required = BTreeSet::new();
-    for machine in placeable(spec, project, machines) {
+    for machine in placeable(spec, namespace, machines) {
         let Machine {
             name, id, runtime, ..
         } = &machine.machine;
@@ -100,14 +100,14 @@ fn machine_platforms(
 /// Machines the Service may be placed on: not Down and not ineligible.
 pub(super) fn placeable<'observed>(
     spec: &'observed RequestedServiceSpec,
-    project: &'observed ployz_core::ProjectName,
+    namespace: &'observed ployz_core::Namespace,
     machines: &'observed [MachineObservation],
 ) -> impl Iterator<Item = &'observed MachineObservation> {
     machines.iter().filter(|machine| {
         machine.membership != MembershipObservation::Down
             && !matches!(
-                spec.placement_eligibility_in_project(
-                    project,
+                spec.placement_eligibility_in_namespace(
+                    namespace,
                     &machine.machine,
                     machine.storage.as_ref()
                 ),

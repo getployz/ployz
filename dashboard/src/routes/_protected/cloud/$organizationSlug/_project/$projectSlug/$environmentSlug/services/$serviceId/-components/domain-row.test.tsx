@@ -2,18 +2,17 @@
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { PublicDomainStatus } from "#/modules/services/public-domain-status";
-import { DomainTitle, PublicDomainRow } from "./domain-row";
+import { DomainTitle, PublicDomainRow, storeStatusView, type DomainStatusView } from "./domain-row";
 
-const row = (status: PublicDomainStatus) => (
+const row = (view: DomainStatusView, live = false) => (
   <PublicDomainRow
     organizationSlug="acme"
     title={
-      <DomainTitle hostname="www.acme.com" live={status.kind === "live"} />
+      <DomainTitle hostname="www.acme.com" live={live} />
     }
     label="www.acme.com"
     portLabel="Port 8080"
-    status={status}
+    view={view}
     dnsRecords={[{ type: "CNAME", name: "www", value: "acme.ployz.app" }]}
     changed={false}
     onEdit={vi.fn()}
@@ -28,7 +27,7 @@ describe("PublicDomainRow", () => {
   });
 
   it("opens a live domain and says nothing else", () => {
-    render(row({ kind: "live" }));
+    render(row({ icon: null, phrase: null, action: null }, true));
 
     expect(screen.getByRole("link").getAttribute("href")).toBe("https://www.acme.com");
     expect(screen.getByText("→ Port 8080")).toBeTruthy();
@@ -36,7 +35,7 @@ describe("PublicDomainRow", () => {
   });
 
   it("stays quiet when the status is unknown", () => {
-    render(row({ kind: "unknown" }));
+    render(row({ icon: null, phrase: null, action: null }));
 
     expect(screen.queryByRole("link")).toBeNull();
     expect(screen.getByText("→ Port 8080")).toBeTruthy();
@@ -44,7 +43,7 @@ describe("PublicDomainRow", () => {
   });
 
   it("shows the DNS record to add only when asked, with a copyable name and value", () => {
-    render(row({ kind: "needs_dns" }));
+    render(row({ icon: null, phrase: "Waiting for DNS update", action: "dns" }));
 
     expect(screen.queryByRole("link")).toBeNull();
     expect(screen.queryByText("CNAME")).toBeNull();
@@ -54,5 +53,17 @@ describe("PublicDomainRow", () => {
     expect(screen.getByText("acme.ployz.app")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Copy CNAME name" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Copy CNAME value" })).toBeTruthy();
+  });
+});
+
+describe("storeStatusView", () => {
+  it("shows the Store's reason and offers its DNS records, but no action to wait for a deploy", () => {
+    const records = [{ type: "CNAME" as const, name: "www", value: "acme.ployz.app" }];
+    expect(storeStatusView({ status: "needs_attention", reason: "Waiting for DNS", action: { type: "dns", records } }))
+      .toMatchObject({ phrase: "Waiting for DNS", action: "dns" });
+    expect(storeStatusView({ status: "needs_attention", reason: "No Server receives traffic", action: { type: "add_server" } }).action)
+      .toBe("servers");
+    expect(storeStatusView({ status: "setting_up", reason: "Live after your next deploy", action: { type: "deploy" } }).action)
+      .toBeNull();
   });
 });

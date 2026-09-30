@@ -40,9 +40,11 @@ const polar = {
         id: "sub-pro",
         productId: "00000000-0000-4000-8000-000000000102",
         currentPeriodEnd: new Date("2026-04-01T00:00:00.000Z"),
+        cancelAtPeriodEnd: true,
       },
     ]),
   createCheckout: () => Effect.die("unused"),
+  createCustomerPortal: () => Effect.die("unused"),
 } satisfies PolarService;
 
 it.live(
@@ -120,6 +122,7 @@ it.live(
         organizationId: "00000000-0000-4000-8000-000000000001",
         activeSubscriptionId: "sub-pro",
         currentPeriodEnd: new Date("2026-04-01T00:00:00.000Z"),
+        cancelAtPeriodEnd: true,
         hasActiveSubscription: true,
         syncedAt: storedSnapshot.syncedAt,
         sourceUpdatedAt: new Date("2026-03-27T00:00:00.000Z"),

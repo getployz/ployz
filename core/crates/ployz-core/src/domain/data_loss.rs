@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::PartialResult;
-use crate::{DockerVolumeId, LocalMachineRemoved, ProjectName, RpcError, RpcErrorCode};
+use crate::{DockerVolumeId, LocalMachineRemoved, Namespace, RpcError, RpcErrorCode};
 
 /// One named thing an operation will destroy.
 ///
@@ -134,12 +134,12 @@ impl UnconfirmedDataLoss {
 
 /// Partial Result of destroying one Cluster.
 ///
-/// Projects and Machines that completed are named. Unreachable Machines stay
+/// Namespaces and Machines that completed are named. Unreachable Machines stay
 /// in `machines.failures` rather than being omitted. `pairing_revoked` is
 /// independent of Machine reset and records confirmed Cloud endpoint revocation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct ClusterTeardown {
-    pub destroyed_projects: Vec<ProjectName>,
+    pub destroyed_namespaces: Vec<Namespace>,
     pub machines: PartialResult<LocalMachineRemoved, RpcError>,
     pub pairing_revoked: bool,
 }

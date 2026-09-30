@@ -1,10 +1,4 @@
 import type { PloyzInngest } from "#/modules/inngest/client";
-import {
-  createProcessGithubCheckSuiteReceived,
-  createProcessGithubPullRequestReceived,
-  createProcessGithubPushReceived,
-} from "#/modules/github/inngest-ingestion/process";
-import { createSweepGithubIngestionOutboxes } from "#/modules/github/inngest-ingestion/sweep";
 import { createScheduleGithubRepositorySync } from "#/modules/github/inngest-sync/scheduled";
 import { createSyncGithubRepositories } from "#/modules/github/inngest-sync/sync";
 import {
@@ -12,55 +6,46 @@ import {
   createProcessGithubInstallationRepositoriesReceived,
 } from "#/modules/github/inngest-sync/webhook";
 import {
-  createDispatchStrandedPendingDeployments,
-  createMarkCancelledRowBackedWorkflow,
-  createProcessEnvironmentDeployment,
-} from "#/modules/deployments/environment-deployment.inngest";
-import {
   createCancelMachineRemove,
   createProcessMachineRemove,
 } from "#/modules/machines/machine-removal.inngest";
 import { createApplyServerPolicyChange } from "#/modules/machines/server-policy.inngest";
 import {
-  createCancelTeardown,
-  createProcessTeardown,
-} from "#/modules/runtime/teardown.inngest";
-import {
   createScheduleClusterDomainSync,
   createSyncClusterDomain,
 } from "#/modules/cluster-domain/sync.inngest";
-import { createSweepIdleBranches } from "#/modules/branches/branch-sweep.inngest";
-import { createPostPrCheck } from "#/modules/pr-environments/pr-check.inngest";
+import { createRetireServerAccess } from "#/modules/machines/server-access.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 import {
-  createCancelVolumeRemove,
-  createProcessVolumeRemove,
-} from "#/modules/runtime/volume-removal.inngest";
+  createCancelStoreDeployment, createDeployToFirstServer, createRedispatchStoreDeployments, createRunStoreDeployment,
+} from "#/modules/config-store/store-deployment.inngest";
+import {
+  createStoreGithubCheckSuite, createStoreGithubPush, createStorePrCheck, createStorePullRequest, createStoreSweep,
+  createStoreSweepRequested,
+} from "#/modules/config-store/store-github.inngest";
 
 export function createInngestFunctions(inngest: PloyzInngest) {
   return [
     createProcessGithubInstallationReceived(inngest),
     createProcessGithubInstallationRepositoriesReceived(inngest),
-    createProcessGithubPushReceived(inngest),
-    createProcessGithubCheckSuiteReceived(inngest),
-    createProcessGithubPullRequestReceived(inngest),
-    createSweepGithubIngestionOutboxes(inngest),
     createSyncGithubRepositories(inngest),
-    createMarkCancelledRowBackedWorkflow(inngest),
-    createProcessEnvironmentDeployment(inngest),
-    createDispatchStrandedPendingDeployments(inngest),
     createScheduleGithubRepositorySync(inngest),
     createProcessMachineRemove(inngest),
     createCancelMachineRemove(inngest),
     createApplyServerPolicyChange(inngest),
-    createProcessVolumeRemove(inngest),
-    createCancelVolumeRemove(inngest),
-    createProcessTeardown(inngest),
-    createCancelTeardown(inngest),
+    createRetireServerAccess(inngest),
     createPruneOrganizationChangeLog(inngest),
-    createSweepIdleBranches(inngest),
     createSyncClusterDomain(inngest),
     createScheduleClusterDomainSync(inngest),
-    createPostPrCheck(inngest),
+    createRunStoreDeployment(inngest),
+    createCancelStoreDeployment(inngest),
+    createRedispatchStoreDeployments(inngest),
+    createDeployToFirstServer(inngest),
+    createStoreGithubPush(inngest),
+    createStoreGithubCheckSuite(inngest),
+    createStorePullRequest(inngest),
+    createStorePrCheck(inngest),
+    createStoreSweep(inngest),
+    createStoreSweepRequested(inngest),
   ];
 }

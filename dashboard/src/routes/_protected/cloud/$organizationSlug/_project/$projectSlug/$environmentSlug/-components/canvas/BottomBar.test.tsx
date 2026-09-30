@@ -6,56 +6,31 @@ import {
   createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider,
 } from "@tanstack/react-router";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import * as documents from "#/modules/environment-design/environment-document.collection";
-import * as deploymentCollections from "#/modules/deployments/deployment.collection";
-import * as conditionalSaves from "#/modules/pr-environments/conditional-save.collection";
-import * as saveCommands from "#/modules/pr-environments/conditional-save-commands";
-import * as lineageNames from "#/modules/branches/use-lineage-names";
-import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
-import type { ChangeRow } from "#/modules/branches/branch-review";
-import type { CanvasEnvironmentChangeGroup } from "#/modules/environment-design/canvas-environment-change-state";
+import type { DeploymentSummary } from "@ployz/sdk";
+import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { asTestDouble } from "#/lib/test-double";
 import { BottomBar, BottomBarSlot } from "./BottomBar";
 
 const [running, queued] = ["aaaa1111-uuid", "aaaa2222-uuid"];
-const attempt = (id: string, status: string, message: string, origin = "manual") => ({
-  deployment: { id, status, message, runtimeProgress: null, triggerOrigin: { origin } },
-  nodes: [{ nodeId: "api", name: "api" }],
-  view: { status, deployed: 0, changed: 1, nodes: [{ nodeId: "api", outcome: status }] },
+const deployment = (id: string, status: DeploymentSummary["status"], number: number) =>
+  asTestDouble<DeploymentSummary>()({ id, status, number, services: [], upload: null });
+const replicas: ChangeGroup = asTestDouble<ChangeGroup>()({
+  nodeType: "service", nodeId: "api", nodeName: "api", canDiscard: true, changeCount: 1, lifecycle: "update",
+  rows: [{ label: "Replicas", currentValue: "1", newValue: "2", kind: "update", path: "api.replicas", changeKey: "api", canDiscard: true }],
 });
-const replicas: CanvasEnvironmentChangeGroup = asTestDouble<CanvasEnvironmentChangeGroup>()({
-  nodeType: "service", nodeId: "api", nodeName: "api", canDiscard: true, changeCount: 1,
-  rows: [{ label: "Replicas", currentValue: "1", newValue: "2" }],
-});
-const cache = asTestDouble<CanvasEnvironmentChangeGroup>()({ ...replicas, nodeId: "cache", nodeName: "cache" });
+const cache = asTestDouble<ChangeGroup>()({ ...replicas, nodeId: "cache", nodeName: "cache" });
 const onDeploy = vi.fn();
-const onDiscardAll = vi.fn(async () => true);
-let attempts: ReturnType<typeof attempt>[] = [];
-let held: ConditionalSaveRow[] = [];
-const imageRow = (from: string): ChangeRow => ({ key: `web-lineage:source.image`, role: "move", conflict: false, base: "web:1", from, into: "web:1" });
+const onDiscardAll = vi.fn();
+/** In flight, newest first, as the Store lists them. */
+let active: DeploymentSummary[] = [];
 
 beforeEach(() => {
-  attempts = [];
-  held = [];
-  vi.spyOn(conditionalSaves, "useWaitingSaves").mockImplementation(() => held);
-  vi.spyOn(conditionalSaves, "useLandedSaves").mockImplementation(() => []);
-  vi.spyOn(saveCommands, "useTakePullRequestValue").mockImplementation(() =>
-    asTestDouble<ReturnType<typeof saveCommands.useTakePullRequestValue>>()({ mutate: vi.fn(), isPending: false }));
-  vi.spyOn(lineageNames, "useLineageNames").mockImplementation(() => () => "web");
-  vi.spyOn(documents, "useEnvironmentDocuments").mockImplementation(() => []);
-  vi.spyOn(documents, "useEnvironmentDocument").mockImplementation(() =>
-    asTestDouble<ReturnType<typeof documents.useEnvironmentDocument>>()({ name: "production", intent: { services: [] } }));
-  vi.spyOn(deploymentCollections, "useEnvironmentDeployments").mockImplementation(() =>
-    asTestDouble<ReturnType<typeof deploymentCollections.useEnvironmentDeployments>>()(attempts));
-  vi.spyOn(deploymentCollections, "useDeploymentAttempt").mockImplementation((_organization, _environment, id) =>
-    asTestDouble<ReturnType<typeof deploymentCollections.useDeploymentAttempt>>()({
-      attempt: attempts.find((candidate) => candidate.deployment.id === id), pending: false,
-    }));
+  active = [];
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); onDeploy.mockClear(); });
 
-function open(url: string, groups: CanvasEnvironmentChangeGroup[] = [], totalChanges = 0) {
+function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0) {
   const root = createRootRoute({ component: Outlet });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", component: Outlet });
   const organization = createRoute({ getParentRoute: () => protectedRoute, path: "cloud/$organizationSlug", component: Outlet });
@@ -66,9 +41,8 @@ function open(url: string, groups: CanvasEnvironmentChangeGroup[] = [], totalCha
     return (
       <BottomBarSlot.Provider value={slot}>
         <div ref={setSlot} />
-        <BottomBar environmentId="env-1" groups={groups} totalChanges={totalChanges} canDeploy commitMessage=""
-          canSaveWithoutDeploying={false} onCommitMessageChange={() => {}} onDeploy={onDeploy} onSaveWithoutDeploying={() => {}}
-          onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} />
+        <BottomBar groups={groups} totalChanges={totalChanges} canPublish={false} onDeploy={onDeploy} onPublish={() => {}}
+          onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={active} notes={{}} />
         <Outlet />
       </BottomBarSlot.Provider>
     );
@@ -111,22 +85,17 @@ it("shows changes to deploy first, in one row like Railway's: the count, Details
   expect(onDiscardAll).toHaveBeenCalledOnce();
 });
 
-it("holds Discard all while a discard is saving, so a second click can't fail", async () => {
-  let finish!: (discarded: boolean) => void;
-  onDiscardAll.mockClear().mockImplementationOnce(() => new Promise((done) => { finish = done; }));
+it("closes the review as Discard all is clicked: the discard shows at once and saves in the background", async () => {
+  onDiscardAll.mockClear();
   open(canvasUrl, [replicas], 1);
   fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
-  const discard = screen.getByRole("button", { name: "Discard all changes" });
-  await act(async () => { fireEvent.click(discard); });
-  expect(discard.hasAttribute("disabled")).toBe(true);
-  fireEvent.click(discard);
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Discard all changes" })); });
   expect(onDiscardAll).toHaveBeenCalledOnce();
-  await act(async () => { finish(true); });
   expect(screen.queryByRole("dialog", { name: "Environment changes" })).toBeNull();
 });
 
-it("keeps staged changes over a running Git-triggered deployment, with Deploy next", async () => {
-  attempts = [attempt(running, "deploying", "Push to main", "github")];
+it("keeps staged changes over a running Deployment, with Deploy next", async () => {
+  active = [deployment(running, "running", 1)];
   open(canvasUrl, [replicas, cache], 2);
   const staged = await bar();
   expect(staged.getByText("Apply 2 changes")).toBeTruthy();
@@ -134,48 +103,26 @@ it("keeps staged changes over a running Git-triggered deployment, with Deploy ne
   expect(staged.queryByRole("link", { name: "Logs" })).toBeNull();
 });
 
-it("otherwise shows the running attempt, and the queued one while the running one's page is open", async () => {
-  attempts = [attempt(queued, "queued", "Update nginx"), attempt(running, "deploying", "Add worker")];
+it("otherwise shows the running Deployment, and the queued one while the running one's page is open", async () => {
+  active = [deployment(queued, "queued", 2), deployment(running, "running", 1)];
   const router = open(canvasUrl);
   const shown = await bar();
-  expect(shown.getByText("Deploying · Add worker")).toBeTruthy();
-  expect(shown.getByText("api · Deploying")).toBeTruthy();
+  expect(shown.getByText("Deploying · Deployment #1")).toBeTruthy();
+  expect(shown.getByText("Deploys every service")).toBeTruthy();
   fireEvent.click(shown.getByRole("link", { name: "Logs" }));
   await screen.findByText("Deployment Page");
-  expect(router.state.location.href).toBe(`${canvasUrl}/deployments/${running}?service=api`);
-  expect((await bar()).getByText("Queued · Update nginx")).toBeTruthy();
+  expect(router.state.location.href).toBe(`${canvasUrl}/deployments/${running}`);
+  expect((await bar()).getByText("Queued · Deployment #2")).toBeTruthy();
 });
 
-it("hides while nothing is staged or running, and while the only attempt's page is open", async () => {
-  attempts = [attempt(running, "deploying", "Add worker")];
+it("hides while nothing is staged or running, and while the only Deployment's page is open", async () => {
+  active = [deployment(running, "running", 1)];
   open(`${canvasUrl}/deployments/${running}`);
   await screen.findByText("Deployment Page");
   expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
   cleanup();
-  attempts = [attempt(running, "applied", "Add worker")];
+  active = [];
   open(canvasUrl);
   await act(async () => {});
   expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
-});
-
-it("on a Destination, what goes live with a pull request: quiet, and read-only in Details beside changes to deploy", async () => {
-  const saved = asTestDouble<ConditionalSaveRow>()({
-    id: "save", prNumber: 142, prEnvironmentId: "env-1", destinationEnvironmentId: "env-0", rows: [{ row: imageRow("web:2") }, { row: imageRow("web:3") }],
-  });
-  held = [saved];
-  open(canvasUrl);
-  const quiet = await bar();
-  expect(quiet.getByText("2 changes go live with PR #142")).toBeTruthy();
-  expect(quiet.queryByRole("button", { name: /^Deploy/ })).toBeNull();
-  fireEvent.click(quiet.getByRole("button", { name: "Details" }));
-  const details = within(screen.getByRole("dialog", { name: "2 changes go live with PR #142" }));
-  expect(details.getByText("web redeploys when PR #142 merges")).toBeTruthy();
-  cleanup();
-
-  // With changes to deploy, the saves still waiting are listed read-only in their Details.
-  open(canvasUrl, [replicas], 1);
-  const staged = await bar();
-  expect(staged.queryByText("2 changes go live with PR #142")).toBeNull();
-  fireEvent.click(staged.getByRole("button", { name: "Details" }));
-  expect(within(screen.getByRole("dialog", { name: "Environment changes" })).getByRole("region", { name: "2 changes go live with PR #142" })).toBeTruthy();
 });

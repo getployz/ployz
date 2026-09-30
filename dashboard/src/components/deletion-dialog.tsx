@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useEffectEvent, useId, useState, type ReactNode } from "react";
-import { GitBranchIcon, HardDriveIcon, LayersIcon, PackageIcon, TriangleAlertIcon } from "lucide-react";
+import { GitBranchIcon, HardDriveIcon, LayersIcon, PackageIcon, ServerIcon, TriangleAlertIcon } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -21,7 +21,7 @@ import { toErrorMessage } from "#/lib/error-message";
 
 /** One thing a deletion takes with it, drawn with its canvas icon. */
 export type DeletionItem = {
-  kind: "service" | "volume" | "branch" | "environment" | "project";
+  kind: "service" | "volume" | "branch" | "environment" | "project" | "server";
   name: string;
   /** Replaces the kind's icon, such as a service's source icon. */
   icon?: ReactNode;
@@ -131,7 +131,9 @@ function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel
             {title}
           </AlertDialogTitle>
           <AlertDialogDescription>
-            {sentence ?? <>You're <span className="text-destructive">deleting</span> from <span className="text-foreground">{place}</span>:</>}
+            {sentence ?? (check.status === "ready" && items.length === 0
+              ? <><span className="text-foreground">{place}</span> is empty: nothing else goes with it.</>
+              : <>You're <span className="text-destructive">deleting</span> from <span className="text-foreground">{place}</span>:</>)}
           </AlertDialogDescription>
           {check.status === "failed" ? (
             <p className="text-sm text-destructive">
@@ -171,6 +173,7 @@ const KIND_ICON = {
   branch: <GitBranchIcon />,
   environment: <LayersIcon />,
   project: <LayersIcon />,
+  server: <ServerIcon />,
 } satisfies Record<DeletionItem["kind"], ReactNode>;
 
 export function deletionItemKey(item: DeletionItem) {
@@ -183,7 +186,7 @@ export type DeletionRow =
 
 const SHOW_ALL_UP_TO = 4;
 const NAMED_VOLUMES = 2;
-const GROUPED_KINDS = ["service", "branch", "environment", "project"] as const;
+const GROUPED_KINDS = ["service", "branch", "environment", "project", "server"] as const;
 
 const plural = (count: number, word: string) =>
   `${count} ${word}${count === 1 ? "" : word.endsWith("ch") ? "es" : "s"}`;

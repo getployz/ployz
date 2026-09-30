@@ -1,16 +1,10 @@
-import { createContext, use, useEffect, useRef } from "react";
-import { useLoaderData, useParams, type ParsedLocation } from "@tanstack/react-router";
+import { createContext, use } from "react";
+import { useParams } from "@tanstack/react-router";
 import { Effect, Option, Schema } from "effect";
-import { openStartedDeploymentsChange, setOpenStartedDeployments } from "#/auth/open-started-deployments";
-import { useCollectionScope } from "#/collections/use-collection-scope";
-import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
-import { useDeploymentAttempt, type ViewedAttempt } from "#/modules/deployments/deployment.collection";
-import { deploymentLighting, type DeploymentNodeView, type LogTab } from "#/modules/deployments/deployment-view";
-import { Uuid } from "#/modules/environment-design/schema";
+import { deploymentQuery, useCachedStoreView } from "#/modules/config-store/store-view.queries";
+import { nodeLight, nodeOutcomeLabel, type NodeLight } from "#/modules/config-store/store-deployments";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
-
-export const DEPLOYMENT_LIST_ROUTE_TO = "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments";
 export const DEPLOYMENT_PAGE_ROUTE_TO =
   "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/$deploymentId";
 
@@ -24,24 +18,10 @@ export const deploymentPageSearchSchema = Schema.Struct({
   logs: Schema.optional(Schema.Literals(["build", "deploy"]).pipe(Schema.catchDecoding(() => Effect.succeed(Option.none())))),
 });
 
-const legacyLink = Schema.Struct({ deployment: Uuid });
-const legacyTab = Schema.Struct({ tab: Schema.Literals(["build-logs", "deploy-logs"]) });
-
-/**
- * Where an old Deployment Mode link (`?deployment=<id>` on the canvas or on a service) now leads: that attempt's
- * Deployment Page, focused on the service and log tab it named. Null when the location carries no such link.
- */
-export function legacyDeploymentLink({ pathname, searchStr }: Pick<ParsedLocation, "pathname" | "searchStr">) {
-  // The raw string: the canvas route's search schema no longer knows `deployment`.
-  const search = Object.fromEntries(new URLSearchParams(searchStr));
-  if (!Schema.is(legacyLink)(search)) return null;
-  const service = /\/services\/([^/]+)\/?$/.exec(pathname)?.[1];
-  const logs: LogTab | undefined = Schema.is(legacyTab)(search) ? (search.tab === "build-logs" ? "build" : "deploy") : undefined;
-  return { deploymentId: search.deployment, search: { service, logs } };
-}
-
+/** One node an open Deployment Page lights: how its outcome shows, and its words. */
+export type Lit = { outcome: NodeLight; label: string };
 /** Which canvas nodes an open Deployment Page (`deploymentId`) lights, by Node Outcome; null when no page is open. */
-type Lighting = { deploymentId: string; lit: ReadonlyMap<string, DeploymentNodeView["outcome"]>; pending: boolean } | null;
+type Lighting = { deploymentId: string; lit: ReadonlyMap<string, Lit> } | null;
 const LightingContext = createContext<Lighting>(null);
 export const DeploymentLightingProvider = LightingContext;
 
@@ -55,8 +35,7 @@ export function useDeploymentFocus() {
 export function useNodeLighting(nodeId: string) {
   const lighting = use(LightingContext);
   if (!lighting) return undefined;
-  const outcome = lighting.lit.get(nodeId);
-  return outcome === undefined ? null : { outcome, pending: lighting.pending };
+  return lighting.lit.get(nodeId) ?? null;
 }
 
 /**
@@ -65,26 +44,12 @@ export function useNodeLighting(nodeId: string) {
  */
 export function useOpenDeployment(): Lighting {
   const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
-  const matched = useCanvasInspectorSelection().deploymentId;
-  // A malformed id is no attempt; the page itself says so.
-  const deploymentId = matched !== null && Schema.is(Uuid)(matched) ? matched : null;
-  const { attempt } = useDeploymentAttempt(organizationSlug, environmentId, deploymentId, { buildLog: true });
-  useOpenStartedDeploymentsSync(attempt, deploymentId);
-  if (!attempt) return null;
-  // Nodes the canvas no longer draws are simply never matched; the page lists them.
-  return { deploymentId: attempt.deployment.id, lit: deploymentLighting(attempt), pending: attempt.buildPending };
-}
-
-function useOpenStartedDeploymentsSync(attempt: ViewedAttempt | null, deploymentId: string | null) {
-  const { userId } = useCollectionScope();
-  const origin = attempt?.deployment.triggerOrigin;
-  const shownNow = attempt && isActiveDeployment(attempt.deployment.status)
-    && origin?.origin === "manual" && origin.actorId === userId ? attempt.deployment.id : null;
-  const shown = useRef<string | null>(null);
-  useEffect(() => {
-    const change = openStartedDeploymentsChange({ shownBefore: shown.current, shownNow, deploymentId });
-    shown.current = shownNow;
-    if (change !== null) void setOpenStartedDeployments(change);
-  }, [shownNow, deploymentId]);
+  const deploymentId = useCanvasInspectorSelection().deploymentId;
+  const store = useCachedStoreView(organizationSlug, deploymentId ? deploymentQuery(deploymentId) : null);
+  if (!store?.ok) return null;
+  const { id, nodes } = store.value;
+  return {
+    deploymentId: id,
+    lit: new Map(nodes.map((node) => [node.id, { outcome: nodeLight(node.outcome, store.value), label: nodeOutcomeLabel(node.outcome, store.value) }])),
+  };
 }

@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as ProtectedRouteRouteImport } from './routes/_protected/route'
 import { Route as PublicRouteRouteImport } from './routes/_public/route'
+import { Route as DeviceRouteImport } from './routes/device'
 import { Route as ProtectedCloudRouteRouteImport } from './routes/_protected/cloud/route'
 import { Route as ProtectedDashboardRouteImport } from './routes/_protected/dashboard'
 import { Route as PublicIndexRouteImport } from './routes/_public/index'
@@ -20,6 +21,8 @@ import { Route as ProtectedCloudIndexRouteImport } from './routes/_protected/clo
 import { Route as ProtectedCloudOrganizationSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/route'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiAuthGithubRouteImport } from './routes/api/auth/github'
+import { Route as ApiCliSplatRouteImport } from './routes/api/cli/$'
+import { Route as ApiConfigSplatRouteImport } from './routes/api/config/$'
 import { Route as ApiEnrollTokenRouteImport } from './routes/api/enroll/$token'
 import { Route as ApiGithubWebhookRouteImport } from './routes/api/github/webhook'
 import { Route as ApiOrgChangesRouteImport } from './routes/api/org/changes'
@@ -29,6 +32,9 @@ import { Route as ProtectedCloudOrganizationSlugOrgRouteRouteImport } from './ro
 import { Route as ProtectedCloudOrganizationSlugProjectRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/route'
 import { Route as ApiBuildsBuildCheckInRouteImport } from './routes/api/builds/$build/check-in'
 import { Route as ApiBuildsBuildStepsRouteImport } from './routes/api/builds/$build/steps'
+import { Route as ApiCliCloudResetRouteImport } from './routes/api/cli/cloud/reset'
+import { Route as ApiCliServersEnrollRouteImport } from './routes/api/cli/servers/enroll'
+import { Route as ApiCliServersEnrollmentRouteImport } from './routes/api/cli/servers/enrollment'
 import { Route as ApiEnrollTokenCallbackRouteImport } from './routes/api/enroll/$token/callback'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/route'
 import { Route as ProtectedCloudOrganizationSlugProjectNewRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/new'
@@ -58,6 +64,11 @@ const ProtectedRouteRoute = ProtectedRouteRouteImport.update({
 } as any)
 const PublicRouteRoute = PublicRouteRouteImport.update({
   id: '/_public',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DeviceRoute = DeviceRouteImport.update({
+  id: '/device',
+  path: '/device',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProtectedCloudRouteRoute = ProtectedCloudRouteRouteImport.update({
@@ -106,6 +117,16 @@ const ApiAuthGithubRoute = ApiAuthGithubRouteImport.update({
   path: '/api/auth/github',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiCliSplatRoute = ApiCliSplatRouteImport.update({
+  id: '/api/cli/$',
+  path: '/api/cli/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiConfigSplatRoute = ApiConfigSplatRouteImport.update({
+  id: '/api/config/$',
+  path: '/api/config/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiEnrollTokenRoute = ApiEnrollTokenRouteImport.update({
   id: '/api/enroll/$token',
   path: '/api/enroll/$token',
@@ -149,6 +170,21 @@ const ApiBuildsBuildCheckInRoute = ApiBuildsBuildCheckInRouteImport.update({
 const ApiBuildsBuildStepsRoute = ApiBuildsBuildStepsRouteImport.update({
   id: '/api/builds/$build/steps',
   path: '/api/builds/$build/steps',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCliCloudResetRoute = ApiCliCloudResetRouteImport.update({
+  id: '/api/cli/cloud/reset',
+  path: '/api/cli/cloud/reset',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCliServersEnrollRoute = ApiCliServersEnrollRouteImport.update({
+  id: '/api/cli/servers/enroll',
+  path: '/api/cli/servers/enroll',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCliServersEnrollmentRoute = ApiCliServersEnrollmentRouteImport.update({
+  id: '/api/cli/servers/enrollment',
+  path: '/api/cli/servers/enrollment',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiEnrollTokenCallbackRoute = ApiEnrollTokenCallbackRouteImport.update({
@@ -324,6 +360,7 @@ const ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasServi
 
 export interface FileRoutesByFullPath {
   '/': typeof PublicIndexRoute
+  '/device': typeof DeviceRoute
   '/cloud': typeof ProtectedCloudRouteRouteWithChildren
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
@@ -331,6 +368,8 @@ export interface FileRoutesByFullPath {
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
+  '/api/cli/$': typeof ApiCliSplatRoute
+  '/api/config/$': typeof ApiConfigSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
   '/api/github/webhook': typeof ApiGithubWebhookRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
@@ -339,6 +378,9 @@ export interface FileRoutesByFullPath {
   '/cloud/': typeof ProtectedCloudIndexRoute
   '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
   '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
+  '/api/cli/cloud/reset': typeof ApiCliCloudResetRoute
+  '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
+  '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
   '/cloud/$organizationSlug/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
@@ -363,12 +405,15 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof PublicIndexRoute
+  '/device': typeof DeviceRoute
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
   '/home': typeof PublicHomeRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
+  '/api/cli/$': typeof ApiCliSplatRoute
+  '/api/config/$': typeof ApiConfigSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
   '/api/github/webhook': typeof ApiGithubWebhookRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
@@ -377,6 +422,9 @@ export interface FileRoutesByTo {
   '/cloud': typeof ProtectedCloudIndexRoute
   '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
   '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
+  '/api/cli/cloud/reset': typeof ApiCliCloudResetRoute
+  '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
+  '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasIndexRoute
@@ -401,6 +449,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_protected': typeof ProtectedRouteRouteWithChildren
   '/_public': typeof PublicRouteRouteWithChildren
+  '/device': typeof DeviceRoute
   '/_protected/cloud': typeof ProtectedCloudRouteRouteWithChildren
   '/_protected/dashboard': typeof ProtectedDashboardRoute
   '/_public/auth': typeof PublicAuthRoute
@@ -409,6 +458,8 @@ export interface FileRoutesById {
   '/_protected/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
+  '/api/cli/$': typeof ApiCliSplatRoute
+  '/api/config/$': typeof ApiConfigSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
   '/api/github/webhook': typeof ApiGithubWebhookRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
@@ -419,6 +470,9 @@ export interface FileRoutesById {
   '/_protected/cloud/$organizationSlug/_project': typeof ProtectedCloudOrganizationSlugProjectRouteRouteWithChildren
   '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
   '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
+  '/api/cli/cloud/reset': typeof ApiCliCloudResetRoute
+  '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
+  '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_project/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
@@ -446,6 +500,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/device'
     | '/cloud'
     | '/dashboard'
     | '/auth'
@@ -453,6 +508,8 @@ export interface FileRouteTypes {
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/auth/github'
+    | '/api/cli/$'
+    | '/api/config/$'
     | '/api/enroll/$token'
     | '/api/github/webhook'
     | '/api/org/changes'
@@ -461,6 +518,9 @@ export interface FileRouteTypes {
     | '/cloud/'
     | '/api/builds/$build/check-in'
     | '/api/builds/$build/steps'
+    | '/api/cli/cloud/reset'
+    | '/api/cli/servers/enroll'
+    | '/api/cli/servers/enrollment'
     | '/api/enroll/$token/callback'
     | '/cloud/$organizationSlug/$projectSlug'
     | '/cloud/$organizationSlug/new'
@@ -485,12 +545,15 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/device'
     | '/dashboard'
     | '/auth'
     | '/home'
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/auth/github'
+    | '/api/cli/$'
+    | '/api/config/$'
     | '/api/enroll/$token'
     | '/api/github/webhook'
     | '/api/org/changes'
@@ -499,6 +562,9 @@ export interface FileRouteTypes {
     | '/cloud'
     | '/api/builds/$build/check-in'
     | '/api/builds/$build/steps'
+    | '/api/cli/cloud/reset'
+    | '/api/cli/servers/enroll'
+    | '/api/cli/servers/enrollment'
     | '/api/enroll/$token/callback'
     | '/cloud/$organizationSlug/new'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug'
@@ -522,6 +588,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_protected'
     | '/_public'
+    | '/device'
     | '/_protected/cloud'
     | '/_protected/dashboard'
     | '/_public/auth'
@@ -530,6 +597,8 @@ export interface FileRouteTypes {
     | '/_protected/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/auth/github'
+    | '/api/cli/$'
+    | '/api/config/$'
     | '/api/enroll/$token'
     | '/api/github/webhook'
     | '/api/org/changes'
@@ -540,6 +609,9 @@ export interface FileRouteTypes {
     | '/_protected/cloud/$organizationSlug/_project'
     | '/api/builds/$build/check-in'
     | '/api/builds/$build/steps'
+    | '/api/cli/cloud/reset'
+    | '/api/cli/servers/enroll'
+    | '/api/cli/servers/enrollment'
     | '/api/enroll/$token/callback'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug'
     | '/_protected/cloud/$organizationSlug/_project/new'
@@ -567,8 +639,11 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   ProtectedRouteRoute: typeof ProtectedRouteRouteWithChildren
   PublicRouteRoute: typeof PublicRouteRouteWithChildren
+  DeviceRoute: typeof DeviceRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiAuthGithubRoute: typeof ApiAuthGithubRoute
+  ApiCliSplatRoute: typeof ApiCliSplatRoute
+  ApiConfigSplatRoute: typeof ApiConfigSplatRoute
   ApiEnrollTokenRoute: typeof ApiEnrollTokenRouteWithChildren
   ApiGithubWebhookRoute: typeof ApiGithubWebhookRoute
   ApiOrgChangesRoute: typeof ApiOrgChangesRoute
@@ -576,6 +651,9 @@ export interface RootRouteChildren {
   ApiRuntimeLogsRoute: typeof ApiRuntimeLogsRoute
   ApiBuildsBuildCheckInRoute: typeof ApiBuildsBuildCheckInRoute
   ApiBuildsBuildStepsRoute: typeof ApiBuildsBuildStepsRoute
+  ApiCliCloudResetRoute: typeof ApiCliCloudResetRoute
+  ApiCliServersEnrollRoute: typeof ApiCliServersEnrollRoute
+  ApiCliServersEnrollmentRoute: typeof ApiCliServersEnrollmentRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -592,6 +670,13 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof PublicRouteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/device': {
+      id: '/device'
+      path: '/device'
+      fullPath: '/device'
+      preLoaderRoute: typeof DeviceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_protected/cloud': {
@@ -657,6 +742,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthGithubRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/cli/$': {
+      id: '/api/cli/$'
+      path: '/api/cli/$'
+      fullPath: '/api/cli/$'
+      preLoaderRoute: typeof ApiCliSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/config/$': {
+      id: '/api/config/$'
+      path: '/api/config/$'
+      fullPath: '/api/config/$'
+      preLoaderRoute: typeof ApiConfigSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/enroll/$token': {
       id: '/api/enroll/$token'
       path: '/api/enroll/$token'
@@ -718,6 +817,27 @@ declare module '@tanstack/react-router' {
       path: '/api/builds/$build/steps'
       fullPath: '/api/builds/$build/steps'
       preLoaderRoute: typeof ApiBuildsBuildStepsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/cli/cloud/reset': {
+      id: '/api/cli/cloud/reset'
+      path: '/api/cli/cloud/reset'
+      fullPath: '/api/cli/cloud/reset'
+      preLoaderRoute: typeof ApiCliCloudResetRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/cli/servers/enroll': {
+      id: '/api/cli/servers/enroll'
+      path: '/api/cli/servers/enroll'
+      fullPath: '/api/cli/servers/enroll'
+      preLoaderRoute: typeof ApiCliServersEnrollRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/cli/servers/enrollment': {
+      id: '/api/cli/servers/enrollment'
+      path: '/api/cli/servers/enrollment'
+      fullPath: '/api/cli/servers/enrollment'
+      preLoaderRoute: typeof ApiCliServersEnrollmentRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/enroll/$token/callback': {
@@ -1077,8 +1197,11 @@ const ApiEnrollTokenRouteWithChildren = ApiEnrollTokenRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   ProtectedRouteRoute: ProtectedRouteRouteWithChildren,
   PublicRouteRoute: PublicRouteRouteWithChildren,
+  DeviceRoute: DeviceRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiAuthGithubRoute: ApiAuthGithubRoute,
+  ApiCliSplatRoute: ApiCliSplatRoute,
+  ApiConfigSplatRoute: ApiConfigSplatRoute,
   ApiEnrollTokenRoute: ApiEnrollTokenRouteWithChildren,
   ApiGithubWebhookRoute: ApiGithubWebhookRoute,
   ApiOrgChangesRoute: ApiOrgChangesRoute,
@@ -1086,6 +1209,9 @@ const rootRouteChildren: RootRouteChildren = {
   ApiRuntimeLogsRoute: ApiRuntimeLogsRoute,
   ApiBuildsBuildCheckInRoute: ApiBuildsBuildCheckInRoute,
   ApiBuildsBuildStepsRoute: ApiBuildsBuildStepsRoute,
+  ApiCliCloudResetRoute: ApiCliCloudResetRoute,
+  ApiCliServersEnrollRoute: ApiCliServersEnrollRoute,
+  ApiCliServersEnrollmentRoute: ApiCliServersEnrollmentRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -15,15 +15,16 @@ const machineId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const display = "XQhwYRG/2fpuX4+RlNuIsE5SfhGdsGpMVVvwu1y2Ak0=";
 
 describe("machine enrollment command", () => {
-  it("pastes ployz cloud enroll with the token", () => {
+  it("pastes ployz server add with the token", () => {
     const minted = mintedEnrollment({
       origin: "https://ployz.dev",
       token: "pmet_secret",
+      version: "1.2.3-beta.4",
       expiresAt: new Date("2026-08-19T00:00:00.000Z"),
     });
 
     expect(minted.command).toBe(
-      "curl -fsSL https://ployz.sh/ | sh && sudo ployz cloud enroll 'pmet_secret'",
+      "curl -fsSL https://ployz.sh/ | sh -s -- 1.2.3-beta.4 && sudo ployz server add --token 'pmet_secret'",
     );
     expect(minted.expiresAt).toBe("2026-08-19T00:00:00.000Z");
   });
@@ -33,6 +34,7 @@ describe("machine enrollment command", () => {
       buildMachineJoinCommand({
         token: "pmet_secret",
         origin: "https://cloud.example",
+        version: "1.2.3",
       }),
     ).toContain("--cloud-url 'https://cloud.example'");
   });

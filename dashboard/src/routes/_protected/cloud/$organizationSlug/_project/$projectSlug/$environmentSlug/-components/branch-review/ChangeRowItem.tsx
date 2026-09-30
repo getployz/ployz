@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { TriangleAlertIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { Item, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
-import type { PresentedRow } from "#/modules/branches/branch-review";
+import type { PresentedRow } from "#/modules/config-store/store-branches";
 
 /** One setting of one node: `before` is the receiver's value, `after` the one that would land. */
 export function ChangeRowItem({ row, conflict, description }: {

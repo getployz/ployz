@@ -1,10 +1,11 @@
-//! `ployz cloud enroll` join and initialize paths against fake enroll HTTP.
+//! `ployz server add` join and initialize paths against fake enroll HTTP.
 
 mod catch_up;
 mod daemon_sync;
 mod founder_resumption;
 mod harness;
 mod policy;
+mod signed_in;
 
 use harness::{
     EnrollListen, EventLog, JoinDaemon, PAIRING, RESET_PUBLIC_KEY, TOKEN, founder_machine,
@@ -32,8 +33,9 @@ async fn cloud_init_join_participates() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -52,7 +54,7 @@ async fn cloud_init_join_participates() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains(&format!("Joined Machine joiner ({machine_id})")),
+        stdout.contains(&format!("Joined Server joiner ({machine_id})")),
         "{stdout}"
     );
     assert_eq!(
@@ -120,7 +122,7 @@ async fn cloud_zfs_rejects_a_remote_machine_before_join() {
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr).contains(
-            "zfs storage preparation requires running ployz cloud enroll on the Machine itself"
+            "zfs storage preparation requires running ployz server add on the Server itself"
         ),
         "{}",
         String::from_utf8_lossy(&output.stderr)
@@ -162,8 +164,9 @@ async fn cloud_init_initialize_participates() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -190,7 +193,7 @@ async fn cloud_init_initialize_participates() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains(&format!("Initialised Machine founder ({machine_id})")),
+        stdout.contains(&format!("Initialised Server founder ({machine_id})")),
         "{stdout}"
     );
 
@@ -301,8 +304,9 @@ async fn caddy_lookup_failure_happens_before_initialize() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -352,8 +356,9 @@ async fn cloud_init_retries_not_yet_then_joins() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -372,7 +377,7 @@ async fn cloud_init_retries_not_yet_then_joins() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains(&format!("Joined Machine joiner ({machine_id})")),
+        stdout.contains(&format!("Joined Server joiner ({machine_id})")),
         "{stdout}"
     );
 
@@ -434,8 +439,9 @@ async fn cloud_init_retries_not_yet_then_initializes() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -455,7 +461,7 @@ async fn cloud_init_retries_not_yet_then_initializes() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains(&format!("Initialised Machine founder ({machine_id})")),
+        stdout.contains(&format!("Initialised Server founder ({machine_id})")),
         "{stdout}"
     );
 
@@ -483,8 +489,9 @@ async fn init_cloud(
     command.args([
         "--connect",
         connect,
-        "cloud",
-        "enroll",
+        "server",
+        "add",
+        "--token",
         TOKEN,
         "--cloud-url",
         enroll_url,
@@ -542,12 +549,70 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("new founding claim requires an uninitialized Machine"),
+            .contains("new founding claim requires an uninitialized Server"),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(daemon.reset_count(), 0);
     assert_eq!(enroll.posts().len(), 1);
+}
+
+#[tokio::test]
+async fn rerun_on_the_founded_machine_does_not_claim_to_found_it() {
+    let founder = founder_machine();
+    let pairing = json!({ "secret": PAIRING });
+    let enroll = EnrollListen::start(
+        json!({ "kind": "initialize", "resumed": true, "storage": "none", "pairing": pairing }),
+    )
+    .await;
+    let daemon = JoinDaemon::new(Registered {
+        assigned_machine: founder.clone(),
+        visible_peers: Vec::new(),
+        target_versions: Default::default(),
+    });
+    let machine_addr = serve_machine(daemon.clone()).await;
+    let mut client = connect_daemon(machine_addr).await;
+    client
+        .call::<op::Initialize>(
+            InitializeRequest {
+                initial_policy: ployz_core::InitialMachinePolicy {
+                    accepts_ingress: false,
+                    ..Default::default()
+                },
+                name: founder.name.clone(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: founder.advertised_endpoints.clone(),
+                wireguard_mtu: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    let output = init_cloud(
+        &format!("ssh://root@{machine_addr}"),
+        &enroll.url,
+        "founder",
+        false,
+        true,
+    )
+    .await;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains(&format!("Server founder ({}) is enrolled", founder.id)),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("Initialised") && !stdout.contains("deploys"),
+        "{stdout}"
+    );
+    assert_eq!(daemon.reset_count(), 0);
 }
 
 #[tokio::test]
@@ -586,8 +651,9 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -771,8 +837,9 @@ async fn join_places_observed_ingress_on_this_machine() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -790,7 +857,7 @@ async fn join_places_observed_ingress_on_this_machine() {
         String::from_utf8_lossy(&output.stdout)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Joined Machine joiner"), "{stdout}");
+    assert!(stdout.contains("Joined Server joiner"), "{stdout}");
     let ensured = daemon.ensure_requests();
     assert_eq!(ensure_names(&ensured), [("ployz-system", "ingress")]);
 }
@@ -820,8 +887,9 @@ async fn partial_peer_observation_reports_incomplete_catch_up_before_placement()
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -865,8 +933,9 @@ async fn join_ingress_rejection_is_durable_and_still_places_other_globals() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -919,8 +988,9 @@ async fn join_fails_visibly_when_expected_ingress_cannot_be_placed() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -939,13 +1009,13 @@ async fn join_fails_visibly_when_expected_ingress_cannot_be_placed() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stdout.contains("Joined Machine"), "stdout: {stdout}");
+    assert!(stdout.contains("Joined Server"), "stdout: {stdout}");
     assert!(
         stderr.contains("Global catch-up is incomplete"),
         "stderr: {stderr}"
     );
     assert!(
-        stderr.contains("ployz-system/ingress: run `ployz ingress deploy`"),
+        stderr.contains("ployz-system/ingress: run `ployz server set "),
         "stderr: {stderr}"
     );
 }
@@ -978,8 +1048,9 @@ async fn join_starts_created_ingress_before_success() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -1048,8 +1119,9 @@ async fn join_against_founder(
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -1074,7 +1146,7 @@ fn ensure_names(requests: &[ployz_core::CreateContainerRequest]) -> Vec<(&str, &
         .iter()
         .map(|request| {
             (
-                request.project_name.as_str(),
+                request.namespace.as_str(),
                 request.resolved_spec.name.as_str(),
             )
         })
@@ -1095,7 +1167,7 @@ async fn connect_daemon(address: std::net::SocketAddr) -> ployz::connect::Client
 
 fn global_on(
     machine: &ployz_core::Machine,
-    project: &str,
+    namespace: &str,
     name: &str,
 ) -> ployz_core::ContainerObservation {
     let spec: ployz_core::RequestedServiceSpec = serde_json::from_value(json!({
@@ -1111,7 +1183,7 @@ fn global_on(
             ployz_core::ResolvedUpdateConfig::default(),
         )
         .expect("volume graph is scoped"),
-        ployz_core::ProjectName::parse(project).unwrap(),
+        ployz_core::Namespace::parse(namespace).unwrap(),
         'b',
     )
 }
@@ -1119,7 +1191,7 @@ fn global_on(
 fn container_on(
     machine: &ployz_core::Machine,
     spec: ployz_core::ResolvedServiceSpec,
-    project: ployz_core::ProjectName,
+    namespace: ployz_core::Namespace,
     hex: char,
 ) -> ployz_core::ContainerObservation {
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
@@ -1127,7 +1199,7 @@ fn container_on(
         display_name: format!("{}-{hex}", spec.name),
         created_at_unix_nanos: 1,
         machine_id: machine.id,
-        project_name: project,
+        namespace,
         kind: ployz_core::ContainerKind::ServiceContainer,
         runtime: ployz_core::ContainerRuntimeObservation::Running {
             health: ployz_core::HealthObservation::Healthy,

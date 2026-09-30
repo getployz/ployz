@@ -26,27 +26,25 @@ const CREATES_SOURCE = /\b(createApiCollection|createChangeCollection|queryColle
 const SPINNER = /<Spinner\b|Loader2Icon|animate-spin/;
 /** Spinners mean a write is in flight or a runtime process is running, never a read. */
 const SPINNER_FILES = {
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "creating a Branch in the Config Store",
   "components/ui/spinner.tsx": "the primitive",
   "components/ui/sonner.tsx": "promise toasts for writes",
-  "components/cancel-deployment-dialog.tsx": "cancel in flight",
   "components/confirm-dialog.tsx": "confirm in flight",
   "components/deletion-dialog.tsx": "deletion in flight",
-  "components/deployment-logs.tsx": "deployment step running",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/NewBranchPanel.tsx": "create in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/SaveSheet.tsx": "save in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "create in flight",
   "components/service-create-command.tsx": "create in flight",
   "components/service-source-selector.tsx": "sync and submit in flight",
   "form/index.tsx": "submit in flight",
-  "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "retry in flight; the teardown running",
+  "routes/_protected/cloud/$organizationSlug/-components/store-teardown-section.tsx": "the removal Deployment running",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/domain-row.tsx": "Setting up while the Cluster Domain sync runs; Issuing certificate while the certificate is ordered",
   "routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection.tsx": "Setting up while the sync runs; Check again until the sync lands",
   "routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection.tsx": "reset in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout or portal opening",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/CustomDomainUpsellSheet.tsx": "opening checkout and switching Pro on after payment",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog.tsx": "command mint in flight",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/VolumeCreatorDialog.tsx": "create in flight",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/VolumeDrawer.tsx": "retry in flight",
   "routes/_public/-components/LoginPanel.tsx": "sign-in in flight",
+  "routes/device.tsx": "device approval in flight",
 };
 
 const READ_SERVER_FN = /\b(get|load|list|preview|search|resolve|read)[A-Z]\w*ServerFn\b/;
@@ -54,9 +52,8 @@ const SERVER_FN_FILE = /[.-]functions\.ts$|\.server\.ts$/;
 /** Reads that are one step of a user command (preview, evidence, wait for completion), not page state. */
 const COMMAND_READ_FILES = {
   "components/service-source-selector.tsx": "resolve a pasted public repository before connecting it",
-  "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "gather data-loss evidence before confirming teardown",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "gather data-loss evidence, then wait for the confirmed removal",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/VolumeDrawer.tsx": "gather data-loss evidence before confirming removal",
+  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/stray-namespaces.tsx": "gather a Namespace's data-loss evidence before the user confirms its removal",
 };
 
 const NETWORK = /\bfetch\(|new EventSource\(/;
@@ -66,17 +63,6 @@ const NETWORK_FILES = {
   "providers/runtime-provider.tsx": "the Runtime SSE connection",
 };
 
-// Matches the conventional spellings (`environments` or an inline getter); other aliases rely on review.
-const DOCUMENT_WRITE = /\b(environments|getEnvironmentsCollection\([^)]*\))\.writeCommitted\(/;
-/** Commands that store a server-returned environment document directly; field edits go through editEnvironmentDocument. */
-const DOCUMENT_COMMAND_FILES = {
-  "modules/environment-design/environment-document-edit.ts": "the editor itself",
-  "modules/environment-design/apply-created-node.ts": "a created service or resource returns its new document",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "a created environment returns its first document",
-  "components/service-create-command.tsx": "a created project returns its first document",
-  "modules/branches/branch.collection.ts": "Branches of X defaults: the server returns the whole committed Environment row",
-};
-
 /** Remote Reads a loader cannot prefetch, and what warms them instead. */
 const ON_DEMAND_READS = {
   githubFileSearchQueryOptions: "searches as the user types",
@@ -84,30 +70,36 @@ const ON_DEMAND_READS = {
   githubInstallUrlQueryOptions: "read together with repository access when a repository picker opens",
   githubBranchesQueryOptions: "depends on the repository the user just picked",
   githubBuildRepositoriesQueryOptions: "calls GitHub per repository; Organization Settings › Builds fills it in after hydration",
+  strayNamespacesQueryOptions: "asks about the Namespaces the Servers report live, known only once the Runtime Watch answers",
 };
 
 /** Hook files outside data files that await the server without making UI wait on it. */
 const HOOK_FILES_NOT_COMMANDS = {
-  "modules/environment-design/environment-document-edit.ts": "the editor owns the optimistic save queue; edits apply before it saves",
+  "modules/config-store/store-write.ts": "the Store writer owns the per-Environment optimistic queue; edits show before they save, and UI awaiting a commit is listed itself",
 };
 
 /** UI that waits for the server, and why. Everything else applies writes optimistically. */
 const COMMAND_FILES = {
-  "components/cancel-deployment-dialog.tsx": "cancelling a deployment waits on the runtime",
-  "modules/deployments/deployment-commands.ts": "deploy and retry start runtime work",
-  "modules/pr-environments/conditional-save-commands.ts": "save: the server seals new values and assigns the save's id; Save and Undo each change the pull request's check on GitHub, an external service; Use rewrites the Destination on the server",
-  "modules/pr-environments/off-commands.ts": "Shut down and Deploy start runtime work",
-  "modules/branches/branch-commands.ts": "createBranch: the server assigns a new Branch's ids, and creating it deploys; saveBranch is destructive",
-  "components/service-create-command.tsx": "the server assigns a new project's, service's, or volume's id and slug, and the page navigates to it",
+  "components/service-create-command.tsx": "the server assigns a new project's id and slug, and its canvas can't show the new Service before the Store has it",
   "components/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",
-  "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "teardown is destructive",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout involves money",
+  "modules/billing/use-embedded-checkout.ts": "checkout involves money",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/CustomDomainUpsellSheet.tsx": "checkout involves money",
+  "routes/_protected/cloud/$organizationSlug/_org/-components/store-organization-danger.tsx": "deleting an organization is destructive and waits on its Servers letting go",
+  "routes/_protected/cloud/index.tsx": "the server creates the new organization and its slug, which the page then opens",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-settings.tsx": "renaming a Project changes its URLs: the page opens the new one once the Store has it",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "over the Store the dialog stays open until the name is accepted, then opens the new environment",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "removing a server is destructive and waits on the runtime",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useCanvasChangeActions.ts": "publishing, discarding, and destructive review span many entities and deploy",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator.ts": "the server assigns a new service's id, slug, and lineage",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useVolumeCreator.ts": "the server assigns a new volume's id and lineage",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/close-branch.ts": "closing a Branch is destructive, and the page leaves it once the close starts",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/VolumeDrawer.tsx": "deleting a volume's data is destructive",
+  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/stray-namespaces.tsx": "removing a Namespace no Project owns deletes its Volumes' data: it reads what goes before the user confirms, then waits on the Servers",
+  "routes/_protected/cloud/$organizationSlug/-components/store-teardown-section.tsx": "deleting an Environment or Project is destructive: it reads what goes before the user confirms, then waits on each removal Deployment",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useStoreChangeActions.tsx": "deploying starts runtime work and opens the admitted Deployment, and a Deploy or Publish that deletes Volume data asks the user first (Publish itself shows at once)",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/StoreDeploymentPage.tsx": "retry starts runtime work and opens the new Deployment",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/pr-environments/StorePrPlanPanel.tsx": "a new Start from shows at once; the panel watches its answer only to move back over the canvas it was on when refused",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/StorePullRequestNews.tsx": "Save for the merge seals values on the server and changes the pull request's check on GitHub, an external service",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "the page opens a new Branch's canvas once the Store has it and Cloud knows its route",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator.ts": "hands a new Project's Service save to service-create-command, whose next page can't show it before the Store has it",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useDeleteService.ts": "a Database Preset's removal shows at once; its Volume's data goes only once the Store accepts the Service's removal",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/StoreBranchPanel.tsx": "closing a Branch is destructive: it waits for its removal, and a Save that closes the Branch after waits until the Parent has it",
 };
 
 function walk(dir: string): string[] {
@@ -137,6 +129,12 @@ describe("data boundaries", () => {
     expect(filesMatching(/\buseOrgStoreGate\(/).filter((path) => path !== "collections/org-store.ts")).toEqual(["components/dashboard-shell.tsx"]);
   });
 
+  it("writes to the Config Store only through its writer", () => {
+    expect(filesMatching(/\bwriteStoreServerFn\b/), "Write through useStoreWriter").toEqual([
+      "modules/config-store/store-write.ts", "modules/config-store/store.functions.ts",
+    ]);
+  });
+
   it("reads page state only through data files", () => {
     const outside = filesMatching(READ_SERVER_FN).filter((path) => !DATA_FILE.test(path) && !SERVER_FN_FILE.test(path));
     expect(outside, "Move the read into a data file, or list a command-step read with its reason").toEqual(Object.keys(COMMAND_READ_FILES).sort());
@@ -154,10 +152,6 @@ describe("data boundaries", () => {
     // Presence check: some loader (or a route-data helper) prefetches the factory; review checks it is the page's own loader.
     const unprefetched = factories.filter((name) => !new RegExp(`(prefetchRemote\\w*\\([^;]*?|ensureQueryData\\()\\b${name}\\(`).test(loaderCode));
     expect(unprefetched.sort(), "Prefetch it with prefetchRemote in the page's loader, or list it as on demand").toEqual(Object.keys(ON_DEMAND_READS).sort());
-  });
-
-  it("edits environment documents through the queued editor", () => {
-    expect(filesMatching(DOCUMENT_WRITE), "Use editEnvironmentDocument so saves queue against the current revision").toEqual(Object.keys(DOCUMENT_COMMAND_FILES).sort());
   });
 
   it("uses spinners only for writes and running processes", () => {
@@ -178,10 +172,12 @@ describe("data boundaries", () => {
           const line = source.text.slice(0, node.pos).split("\n").length;
           violations.push(`${relative(SRC, source.fileName)}:${line} ${message}`);
         };
+        /** `x.isPersisted`, or `isPersisted` destructured from a write. */
+        const isPersistedRef = (node: Node) => (isPropertyAccessExpression(node) && node.name.text === "isPersisted")
+          || (isIdentifier(node) && node.text === "isPersisted");
         /** `x.isPersisted.promise`, directly or under `.catch(...)` and the like. */
         const persistenceChain = (node: Node): boolean => isPropertyAccessExpression(node)
-          ? (node.name.text === "promise" && isPropertyAccessExpression(node.expression) && node.expression.name.text === "isPersisted")
-            || persistenceChain(node.expression)
+          ? (node.name.text === "promise" && isPersistedRef(node.expression)) || persistenceChain(node.expression)
           : isCallExpression(node) && persistenceChain(node.expression);
         const calleeName = (node: Node) => {
           if (!isCallExpression(node)) return null;
@@ -246,11 +242,15 @@ describe("data boundaries", () => {
             if (isUi && isAwaitExpression(node)) {
               const awaited = node.expression;
               const awaitedName = calleeName(awaited);
-              const persistence = isPropertyAccessExpression(awaited) && awaited.name.text === "promise"
-                && isPropertyAccessExpression(awaited.expression) && awaited.expression.name.text === "isPersisted";
+              const persistence = isPropertyAccessExpression(awaited) && awaited.name.text === "promise" && isPersistedRef(awaited.expression);
               if (persistence || (awaitedName && (/ServerFn$/.test(awaitedName) || serverCalls.has(awaitedName)))) {
                 awaitingUi.add(relative(SRC, source.fileName));
               }
+            }
+            // A save's promise handed on (to a helper that awaits it) waits for it too; `.catch` only rolls back.
+            if (isUi && isPropertyAccessExpression(node) && node.name.text === "promise" && isPersistedRef(node.expression)
+              && !(isPropertyAccessExpression(node.parent) && node.parent.name.text === "catch")) {
+              awaitingUi.add(relative(SRC, source.fileName));
             }
             // Chaining .then or .finally on a save waits for it just as `await` does.
             if (isUi && isCallExpression(node) && isPropertyAccessExpression(node.expression)

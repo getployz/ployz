@@ -267,10 +267,7 @@ pub(crate) fn paint_closing(
     if wants_logs(cause)
         && let Some(service) = &failed_row.service
     {
-        let hint = ink.paint(
-            Role::Neutral,
-            &format!("next: ployz service logs {service}"),
-        );
+        let hint = ink.paint(Role::Neutral, &format!("next: ployz logs {service}"));
         let _ = writeln!(out, "  {hint}");
     }
     out
@@ -603,7 +600,7 @@ fn visible_name(
         return display.to_owned();
     }
     match operation {
-        DeployOperation::PrepareVolumes { .. } => "provisioned volumes".into(),
+        DeployOperation::PrepareVolumes { .. } => "Managed volumes".into(),
         DeployOperation::WaitHealthy { dependency, .. } => dependency.to_string(),
         DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => {
             spec.name.to_string()
@@ -641,9 +638,7 @@ fn logs_service(row: &OperationRow) -> Option<ServiceName> {
     if let DeployOperation::WaitHealthy { dependency, .. } = &row.operation {
         return Some(dependency.name.clone());
     }
-    row.service_name
-        .clone()
-        .or_else(|| row.operation.service_name().cloned())
+    row.service_name().cloned()
 }
 
 fn is_hex_len(value: &str, len: usize) -> bool {

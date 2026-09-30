@@ -2,11 +2,9 @@ import { environmentManager, type FetchInfiniteQueryOptions, type FetchQueryOpti
 import { notFound } from "@tanstack/react-router";
 import type { CollectionScope } from "./scope";
 import { orgStoreOptions } from "./org-store";
-import {
-  loadWorkspaceEnvironment, organizationStateQueryOptions, preloadWorkspace, readWorkspace,
-} from "#/modules/environment-design/workspace.queries";
-import type { EnvironmentBySlug } from "#/modules/environment-design/workspace-schemas";
-import { activeBuildTailReads } from "#/modules/deployments/deployment.collection";
+import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
+import type { ConfigQuery, EnvironmentRef } from "@ployz/sdk";
+import { environmentsQuery, projectsQuery, requireView, storeDeploymentsOptions, storeViewOptions } from "#/modules/config-store/store-view.queries";
 
 /**
  * Route loaders call only the helpers in this file.
@@ -23,8 +21,9 @@ function scopeOf(context: RouteDataContext): CollectionScope {
 }
 
 export async function requireOrganization(context: RouteDataContext, organizationSlug: string) {
-  const organization = await context.queryClient.ensureQueryData(organizationStateQueryOptions(organizationSlug));
-  if (organization.activeOrganization?.slug !== organizationSlug) throw notFound();
+  const { activeOrganization } = await context.queryClient.ensureQueryData(organizationStateQueryOptions(organizationSlug));
+  if (activeOrganization?.slug !== organizationSlug) throw notFound();
+  return activeOrganization;
 }
 
 /** Billing exists only on Ployz-hosted Cloud. */
@@ -33,12 +32,19 @@ export async function requireBilling(context: RouteDataContext, organizationSlug
   if (!organization.billingEnabled) throw notFound();
 }
 
-export async function requireWorkspace(context: RouteDataContext, organizationSlug: string) {
-  return readWorkspace(await preloadWorkspace(organizationSlug, scopeOf(context)));
+/** The Organization's Projects in the Config Store. */
+export async function requireStoreProjects(context: RouteDataContext, organizationSlug: string) {
+  return requireView(await context.queryClient.ensureQueryData(storeViewOptions(organizationSlug, scopeOf(context), projectsQuery()))).projects;
 }
 
-export async function requireEnvironment(context: RouteDataContext, input: EnvironmentBySlug) {
-  return loadWorkspaceEnvironment(input, scopeOf(context));
+/** The Config Store Environment a route names by its Project's name and its own; not found otherwise. */
+export async function requireStoreEnvironment(context: RouteDataContext,
+  input: { organizationSlug: string; projectSlug: string; environmentSlug: string }) {
+  const result = await context.queryClient.ensureQueryData(
+    storeViewOptions(input.organizationSlug, scopeOf(context), environmentsQuery(input.projectSlug)));
+  const environment = result.ok ? result.value.environments.find((row) => row.name === input.environmentSlug) : undefined;
+  if (!environment) throw notFound();
+  return environment;
 }
 
 /** SSR failure fails the organization route: no org page can render without the Org Store. */
@@ -59,34 +65,31 @@ export async function prefetchRemote(context: RouteDataContext, ...reads: Array<
   if (environmentManager.isServer()) await ready;
 }
 
+/** `prefetchStoreViews` and the page's other Remote Reads, all started together. */
+export async function prefetchRemoteWithStoreViews(context: RouteDataContext, organizationSlug: string, queries: ConfigQuery[],
+  ...reads: Array<Pick<FetchQueryOptions, "queryKey">>) {
+  await prefetchRemote(context, ...queries.map((query) => storeViewOptions(organizationSlug, scopeOf(context), query)), ...reads);
+}
+
+/** `prefetchRemote` for Config Store views, started together. */
+export async function prefetchStoreViews(context: RouteDataContext, organizationSlug: string, ...queries: ConfigQuery[]) {
+  await prefetchRemote(context, ...queries.map((query) => storeViewOptions(organizationSlug, scopeOf(context), query)));
+}
+
 /**
- * The build tails of the Environment's active attempts that build images, which the canvas's bottom bar and list read.
- * Finding them waits for the Org Store, so the client starts it in the background, like `prefetchOrgStore`.
+ * An Environment page's Store reads, started together: `queries`, and the first page of its Deployments (the bottom
+ * bar's in-flight one, the Deployments list).
  */
-export async function prefetchActiveBuildTails(context: RouteDataContext, input: EnvironmentBySlug) {
-  const ready = requireEnvironment(context, input)
-    .then((environment) => activeBuildTailReads(input.organizationSlug, environment.id, scopeOf(context)))
-    .then((reads) => prefetchRemote(context, ...reads));
-  if (environmentManager.isServer()) await ready;
-  else void ready.catch(() => {});
+export async function prefetchStoreEnvironment(context: RouteDataContext, organizationSlug: string, environment: EnvironmentRef,
+  ...queries: ConfigQuery[]) {
+  await Promise.all([
+    prefetchStoreViews(context, organizationSlug, ...queries),
+    prefetchRemotePages(context, storeDeploymentsOptions(organizationSlug, scopeOf(context), environment)),
+  ]);
 }
 
 /** `prefetchRemote` for a paged read: its first page. */
 export async function prefetchRemotePages<T, K extends QueryKey, P>(context: RouteDataContext, options: FetchInfiniteQueryOptions<T, Error, T, K, P>) {
   const ready = context.queryClient.prefetchInfiniteQuery(options);
   if (environmentManager.isServer()) await ready;
-}
-
-/**
- * Prefetches a loader decides from the Org Store, started together (`false` skips one). During SSR it first awaits the Org
- * Store, whose failure fails the route like `prefetchOrgStore`. On the client it never waits: the gate owns the Org Store's
- * pending and retryable error state, and `start` decides from the rows already in memory.
- */
-export async function prefetchFromOrgStore(context: RouteDataContext, organizationSlug: string,
-  start: (scope: CollectionScope) => Array<Promise<void> | false | null>) {
-  const scope = scopeOf(context);
-  const ready = context.queryClient.ensureQueryData(orgStoreOptions(organizationSlug, scope));
-  if (environmentManager.isServer()) await ready;
-  else void ready.catch(() => {});
-  await Promise.all(start(scope));
 }

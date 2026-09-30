@@ -12,6 +12,7 @@ import {
 } from "#/modules/machines/machine-removal.functions";
 import { withMissingDataLossIdentities, type DataLossList } from "#/modules/runtime/data-loss-confirm";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
+import type { MachineRemoveResult } from "#/modules/machines/machine-removal";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
 
@@ -20,7 +21,7 @@ async function waitForMachineRemoveAttempt(
   organizationSlug: string,
   attemptId: string,
   stopped: () => boolean,
-): Promise<"removed" | "aborted" | { missing: DataLossIdentity[] }> {
+): Promise<MachineRemoveResult | "aborted" | { missing: DataLossIdentity[] }> {
   for (;;) {
     if (stopped()) return "aborted";
     const attempt = await getMachineRemoveAttemptServerFn({
@@ -33,7 +34,7 @@ async function waitForMachineRemoveAttempt(
         await new Promise((resolve) => setTimeout(resolve, 1_000));
         continue;
       case "succeeded":
-        return "removed";
+        return attempt.result;
       case "missing_identities":
         return { missing: attempt.missingIdentities };
       case "failed":
@@ -51,10 +52,13 @@ const volumes = (rust: DataLossList["rust"]) =>
   rust.map((identity): DeletionItem => ({ kind: "volume", name: identity.id.name }));
 
 /**
- * Removing a Server resets it and takes it out of the cluster; its volumes stay on its disk, unused. It waits on the
- * runtime, and once the Server is gone the page returns to Servers.
+ * Removing a Server resets it and takes it out of the cluster; its volumes stay on its disk, unused. The `last` one takes
+ * everything running with it, and Cloud lets go of the cluster: Deploy asks for a server until one is added. It waits on
+ * the runtime, and once the Server is gone the page returns to Servers.
  */
-export function RemoveServerSection({ machine, organizationSlug }: { machine: RuntimeMachineRecord; organizationSlug: string }) {
+export function RemoveServerSection({ machine, organizationSlug, last }: {
+  machine: RuntimeMachineRecord; organizationSlug: string; last: boolean;
+}) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const markHere = useStillHere();
@@ -70,7 +74,9 @@ export function RemoveServerSection({ machine, organizationSlug }: { machine: Ru
       <h2 id="remove-server-heading" className="sr-only">Remove server</h2>
       <DangerRow
         title={`Remove ${machine.name}`}
-        description="Resets it and takes it out of the cluster. Services that run only here stop."
+        description={last
+          ? "Resets it. It's your only server, so everything running here stops until you add another."
+          : "Resets it and takes it out of the cluster. Services that run only here stop."}
         action={
           <Button variant="destructive" className="shrink-0" onClick={() => onOpenChange(true)}>
             <Trash2Icon data-icon="inline-start" />
@@ -84,7 +90,10 @@ export function RemoveServerSection({ machine, organizationSlug }: { machine: Ru
         title={`Remove ${machine.name}?`}
         place={machine.name}
         confirmLabel="Remove"
-        sentence={<>Its volumes stay on its disk, but your services <span className="text-destructive">lose</span> them.</>}
+        sentence={<>
+          {last ? "Everything running on it stops. " : null}
+          Its volumes stay on its disk, but your services <span className="text-destructive">lose</span> them.
+        </>}
         callbacks={{
           load: async () => {
             const { rust } = await loadMachineDataLossServerFn({
@@ -105,8 +114,11 @@ export function RemoveServerSection({ machine, organizationSlug }: { machine: Ru
             const result = await waitForMachineRemoveAttempt(organizationSlug, queued.id,
               () => abort.signal.aborted || !stillHere());
             if (result === "aborted") return;
-            if (result === "removed") {
-              toast(`${machine.name} removed`);
+            if ("release" in result) {
+              const { release } = result;
+              if (release.kind === "kept") toast.warning(`${machine.name} left the cluster. Cloud keeps its hold: ${release.reason}`);
+              else if (release.kind === "released") toast(`${machine.name} removed. Add a server to deploy again.`);
+              else toast(`${machine.name} removed`);
               void navigate({ to: "/cloud/$organizationSlug/~/servers", params: { organizationSlug } });
               return;
             }

@@ -50,7 +50,7 @@ async function expectRpc(fn, code) {
   }
 
   const intent = {
-    project_name: "app",
+    namespace: "app",
     target: [
       {
         name: "web",
@@ -99,6 +99,7 @@ async function expectRpc(fn, code) {
     await expectRpc(() => preview.confirm(), "invalid_argument");
     await expectRpc(() => client.run({ not: "a DeployIntent" }), "invalid_argument");
     await expectRpc(() => client.clearManagementClient("Cloud"), "invalid_argument");
+    await expectRpc(() => client.setManagementClient("Cloud"), "invalid_argument");
   const after = await client.about();
   if (!after.capabilities.includes("ployz.rpc.describe-contract.v1")) {
     throw new Error("Client must stay usable after deploy");

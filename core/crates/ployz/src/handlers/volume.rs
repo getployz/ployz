@@ -1,669 +1,330 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io,
-};
+//! Authored Volumes in the Config Store: add, list, inspect and remove. Every change
+//! is staged in Working State until a Deploy ships it. Mount one into a Service with
+//! `volume add --mount` or `set SERVICE.mounts.VOLUME=/PATH`; `unset` detaches it and
+//! keeps its data. Only a Deploy of a removed, deployed Volume deletes data, and it
+//! asks for `--accept-volume-loss NAME`.
 
-use clap::ArgMatches;
+use clap::{ArgAction, ArgMatches, Command};
+use ployz_core::config::VolumeKind;
 use ployz_core::{
-    CreateVolumeRequest, DockerVolumeName, DockerVolumeStorageObservation, FanoutSelector,
-    ListMachinesRequest, MachineObservation, MachineTarget, NameMatches, PartialResult,
-    QualifiedService, RemoveVolumesRequest, RpcError, RpcErrorCode, VolumeInventory, VolumeRemoval,
-    VolumeRemovalOutcome, op, resolve_machine_selectors,
+    MachineObservation, MachineStorageObservation, ProvisionedVolumeMaximumBytes, ServiceName,
+};
+use ployz_store::{
+    CreateVolume, Mount, RemoveVolume, SetVolumeStorage, VolumeId, VolumeQuery, VolumeStaged,
+    VolumesQuery,
 };
 
-use serde_json::json;
+use super::store::{self, Next};
+use super::{Error, leaf_matches};
+use crate::cli::{base, positional, switch, value};
+use crate::failure::USAGE_EXIT;
+use crate::output::{self, say};
 
-use crate::{
-    connect::{Client, TARGET_RPC_TIMEOUT},
-    output::{self, Gaps, say},
-    volume::{MachineVolume, filter_volumes, machine_volumes},
-};
+pub(crate) fn command() -> Command {
+    base("volume", "Manage Volumes")
+        .arg_required_else_help(true)
+        .subcommand(
+            storage_flags(store::scoped(
+                Command::new("add")
+                    .about("Add a Managed volume (or --docker); staged until you deploy"),
+            ))
+            .arg(positional("name", true).help("Volume name, unique in the Environment"))
+            .arg(
+                value("mount", None)
+                    .action(ArgAction::Append)
+                    .value_name("SERVICE:/PATH")
+                    .help("Mount it into a Service at an absolute path; repeatable"),
+            ),
+        )
+        .subcommand(
+            storage_flags(store::scoped(
+                Command::new("set").about("Change a Volume's storage before its first deployment"),
+            ))
+            .arg(positional("volume", true))
+            .group(
+                clap::ArgGroup::new("storage-change")
+                    .args(["size", "docker"])
+                    .required(true),
+            ),
+        )
+        .subcommand(
+            store::scoped(Command::new("inspect").about("Show a Volume and where it is mounted"))
+                .arg(positional("volume", true)),
+        )
+        .subcommand(store::scoped(
+            Command::new("ls").about("List Volumes and what the next Deploy does to them"),
+        ))
+        .subcommand(
+            store::scoped(
+                Command::new("rename").about("Rename a Volume: staged; its data and mounts stay"),
+            )
+            .arg(positional("volume", true))
+            .arg(positional("name", true)),
+        )
+        .subcommand(
+            store::scoped(
+                Command::new("rm").about(
+                    "Remove a Volume and detach it; a Deploy of the removal deletes its data",
+                ),
+            )
+            .arg(positional("volume", true)),
+        )
+}
 
-use super::{Error, data_loss, leaf_matches, required, string_values, with_client};
-
-pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    // An explicit non-empty name is required; anonymous Docker Volumes stay unsupported.
-    let name = DockerVolumeName::parse(required(matches, "volume-name")?)?;
-    let size = matches
-        .get_one::<crate::volume::ProvisionedVolumeSize>("size")
-        .cloned();
-    let (driver, options) = match &size {
-        Some(size) => (
-            "ployz".to_owned(),
-            BTreeMap::from([("size".to_owned(), size.as_str().to_owned())]),
-        ),
-        None => ("local".to_owned(), BTreeMap::new()),
-    };
-    let selector = matches.get_one::<String>("machine").cloned();
-    with_client(root, |client| {
-        Box::pin(async move {
-            let machines = client
-                .call::<op::ListMachines>(ListMachinesRequest {}, None)
-                .await?;
-            let Some(machine) = select_create_machine(&machines.machines, selector.as_deref())?
-            else {
-                say!("Cancelled. No volume was created.");
-                return Ok(());
-            };
-            let report = client
-                .invoke::<op::CreateVolume>(
-                    CreateVolumeRequest {
-                        name,
-                        driver,
-                        options,
-                        labels: BTreeMap::new(),
-                    },
-                    &MachineTarget::from(&machine.machine.id),
-                    Some(TARGET_RPC_TIMEOUT),
-                )
-                .await?;
-            let volume = crate::service::verified_created_volume(report)?;
-            if size.as_ref().is_some_and(|size| !size.matches(&volume)) {
-                return Err(Error::conflict(format!(
-                    "Docker Volume {} already exists with a different Provisioned shape; resizing is not supported",
-                    volume.id.name.as_str().escape_debug()
-                )));
-            }
-            let created = MachineVolume {
-                machine_name: machine.machine.name.clone(),
-                volume,
-            };
-            output::finish(&json!({ "volume": created }), || {
-                say!("{}\t{}", created.machine_name, created.volume.id.name);
-            })
-        })
+pub(super) fn handler(path: &str) -> Option<super::Handler> {
+    Some(match path {
+        "add" => add,
+        "set" => set,
+        "inspect" => inspect,
+        "ls" => list,
+        "rename" => rename,
+        "rm" => remove,
+        _ => return None,
     })
 }
 
-pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
+fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let selectors = string_values(matches, "machine");
-    with_client(root, |client| {
-        Box::pin(async move {
-            let (volumes, result) = discover(client, &selectors).await?;
-            let mut gaps = Gaps::of(&result);
-            gaps.unavailable_volumes = volume_failures(&result).cloned().collect();
-            let finished = output::finish_fanout("volumes", &volumes, &gaps, || {
-                say!("MACHINE\tVOLUME\tTYPE\tQUOTA\tUSED\tDRIVER");
-                for volume in &volumes {
-                    let (kind, bound, used) = format_storage(&volume.volume.storage);
-                    say!(
-                        "{}\t{}\t{}\t{}\t{}\t{}",
-                        volume.machine_name,
-                        volume.volume.id.name,
-                        kind,
-                        bound,
-                        used,
-                        volume.volume.driver()
-                    );
-                }
-                for failure in &gaps.unavailable_volumes {
-                    say!(
-                        "{}\t{}\tUNAVAILABLE\t-\t-\t-",
-                        failure.id.machine_id,
-                        failure.id.name
-                    );
-                }
-            });
-            report_failures(&result);
-            report_inventory_failures(&result);
-            finished
-        })
-    })
-}
-
-fn format_storage(storage: &DockerVolumeStorageObservation) -> (&'static str, String, String) {
-    match storage {
-        DockerVolumeStorageObservation::Plain { .. } => ("PLAIN", "-".into(), "-".into()),
-        DockerVolumeStorageObservation::Provisioned {
-            bound_bytes,
-            used_bytes,
-            ..
-        } => (
-            "PROVISIONED",
-            bound_bytes.to_string(),
-            used_bytes.to_string(),
-        ),
-    }
-}
-
-pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    let name = DockerVolumeName::parse(required(matches, "volume-name")?)?;
-    let selectors = matches
-        .get_one::<String>("machine")
-        .cloned()
-        .into_iter()
-        .collect::<Vec<_>>();
-    with_client(root, |client| {
-        Box::pin(async move {
-            let machines = selected_machines(
-                client
-                    .call::<op::ListMachines>(ListMachinesRequest {}, None)
-                    .await?
-                    .machines,
-                &selectors,
-            )?;
-            let mut result = client.inspect_volumes(&machines, &name).await;
-            // `not_found` only means the volume is not on that Machine.
-            result
-                .failures
-                .retain(|failure| failure.error.code != RpcErrorCode::NotFound);
-            let gaps = Gaps::of(&result);
-            let names = machines
-                .iter()
-                .map(|machine| (machine.machine.id, machine.machine.name.clone()))
-                .collect::<BTreeMap<_, _>>();
-            let volumes = std::mem::take(&mut result.successes)
-                .into_iter()
-                .map(|success| MachineVolume {
-                    machine_name: names
-                        .get(&success.machine_id)
-                        .cloned()
-                        .expect("inspect target came from the Machine snapshot"),
-                    volume: success.value,
-                })
-                .collect();
-            let volume = inspected(volumes, &name, &gaps)?;
-            if volume.is_none() {
-                eprintln!(
-                    "Docker Volume {} was not found on the Machines that answered; not checked: {}",
-                    name.as_str().escape_debug(),
-                    crate::failure::partial_failure_details(&result)
-                );
-            }
-            output::show_fanout("volume", &volume, &gaps)
-        })
-    })
-}
-
-/// The one inspected volume, or `None` when it was not found but some Machine never
-/// answered, so its absence is unproven.
-fn inspected(
-    volumes: Vec<MachineVolume>,
-    name: &DockerVolumeName,
-    gaps: &Gaps,
-) -> Result<Option<MachineVolume>, Error> {
-    match NameMatches::from_matches(volumes) {
-        NameMatches::None => gaps.absence(Error::not_found(format!(
-            "Docker Volume {} was not found",
-            name.as_str().escape_debug()
-        ))),
-        NameMatches::One(volume) => Ok(Some(volume)),
-        volumes @ NameMatches::Ambiguous { .. } => Err(Error::ambiguous(format!(
-            "Docker Volume {} is ambiguous; select one Machine: {}",
-            name.as_str().escape_debug(),
-            volumes
-                .iter()
-                .map(|volume| volume.machine_name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))),
-    }
-}
-
-pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    let names = matches
-        .get_many::<String>("volume-name")
+    let name = volume_name(matches, "name")?;
+    let mounts = matches
+        .get_many::<String>("mount")
         .into_iter()
         .flatten()
-        .map(|name| DockerVolumeName::parse(name.clone()))
-        .collect::<Result<Vec<_>, _>>()?;
-    let selectors = string_values(matches, "machine");
-    let force = matches.get_flag("force");
-    let command = root.clone();
-    with_client(root, |client| {
-        Box::pin(async move {
-            let (volumes, result) = discover(client, &selectors).await?;
-            let volumes = filter_volumes(&volumes, &names);
-            let unavailable = volume_failures(&result)
-                .filter(|failure| names.is_empty() || names.contains(&failure.id.name))
-                .map(ToString::to_string)
-                .reduce(|mut summary, failure| {
-                    summary.push_str("; ");
-                    summary.push_str(&failure);
-                    summary
-                });
-            if let Some(unavailable) = unavailable {
-                return Err(Error::unavailable(format!(
-                    "refusing to remove unavailable Docker Volumes: {unavailable}"
-                )));
-            }
-            if inventories_complete(&result)
-                && let Some(name) = names
-                    .iter()
-                    .find(|name| !volumes.iter().any(|volume| &volume.volume.id.name == *name))
-            {
-                return Err(Error::not_found(format!(
-                    "Docker Volume {} was not found",
-                    name.as_str().escape_debug()
-                )));
-            }
-            report_partial_removal_discovery(&result);
-            if volumes.is_empty() {
-                return Err(Error::unavailable(volume_failure_summary(&result)));
-            }
-            let context = match client.connection_source() {
-                crate::context::ConnectionSource::Context(name) => name.as_str(),
-                crate::context::ConnectionSource::Direct => "direct connection",
-                crate::context::ConnectionSource::LocalSocket => "local socket",
-            };
-            say!(
-                "Remove volumes\nContext: {context}\nBased on what the connected machine can see; other machines may have additional resources.\nPermanently delete these volumes and their data ({}):",
-                volumes.len()
-            );
-            for volume in &volumes {
-                say!(
-                    "  {} on {} (machine ID: {})",
-                    volume.volume.id.name,
-                    volume.machine_name,
-                    volume.volume.id.machine_id
-                );
-            }
-            if !data_loss::confirm_ordinary(&command, client)? {
-                return Ok(());
-            }
-            let removal = client
-                .remove_volumes(RemoveVolumesRequest {
-                    volumes: volumes.into_iter().map(|volume| volume.volume.id).collect(),
-                    force,
-                })
-                .await?;
-            let gaps = Gaps::of(&result);
-            output::emit(&json!({
-                "removals": removal,
-                "failures": gaps.failures,
-                "omitted": gaps.omitted,
-            }))?;
-            refuse_unless_removed(removal)?;
-            // A Machine that never answered may still hold a same-named volume.
-            gaps.outcome()
+        .map(|mount| {
+            let (service, path) = mount
+                .split_once(':')
+                .and_then(|(service, path)| Some((ServiceName::parse(service).ok()?, path)))
+                .ok_or_else(|| {
+                    Error::usage("Expected --mount SERVICE:/PATH, like web:/var/lib/data")
+                        .with_exit(USAGE_EXIT)
+                })?;
+            Ok(Mount {
+                service,
+                path: path.to_owned(),
+            })
         })
+        .collect::<Result<Vec<_>, Error>>()?;
+    let storage = requested_storage(matches);
+    let created = store::store(root)?.write(&CreateVolume {
+        id: VolumeId::parse(store::mint())?,
+        environment: store::environment(matches)?,
+        name: name.clone(),
+        storage,
+        mounts,
+    })?;
+    if matches!(storage, VolumeKind::Provisioned { .. }) && no_managed_host(matches) {
+        output::warn(NO_MANAGED_HOST);
+    }
+    staged(matches, &created, "Staged new Volume")
+}
+
+const NO_MANAGED_HOST: &str = "No Server here can host Managed volumes yet, so a Deploy of this one fails until one can: add a Server with Managed volumes, or use --docker instead.";
+
+/// Why `--docker` is not recommended; said when a command asks for one.
+const DOCKER_VOLUME: &str = "Docker volume (not recommended): no size limit, and it stays out of backups and Server moves as they arrive.";
+
+/// Best effort, bounded: whether every Server this reaches reports it can't host
+/// managed Volumes. Unreachable or unknown answers `false`; the Deploy still checks.
+fn no_managed_host(matches: &ArgMatches) -> bool {
+    let Ok(runtime) = super::runtime() else {
+        return false;
+    };
+    let context = matches.try_get_one::<String>("context").ok().flatten();
+    runtime.block_on(async {
+        let observe = async {
+            let mut client = super::server::connect(matches, context.map(String::as_str))
+                .await
+                .ok()?;
+            let mut machines = client.machines().await.ok()?;
+            client.observe_machine_storage(&mut machines).await;
+            Some(none_hosts_managed(&machines))
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), observe)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(false)
     })
 }
 
-async fn discover(
-    client: &mut Client,
-    selectors: &[String],
-) -> Result<(Vec<MachineVolume>, PartialResult<VolumeInventory, RpcError>), Error> {
-    let machines = selected_machines(
-        client
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
-            .await
-            .map(|list| list.machines)?,
-        selectors,
-    )?;
-    let result = client.list_volumes(&machines).await;
-    Ok((machine_volumes(&machines, &result), result))
+fn storage_flags(command: Command) -> Command {
+    command
+        .arg(
+            value("size", None)
+                .value_name("GB")
+                .value_parser(|size: &str| {
+                    ProvisionedVolumeMaximumBytes::parse_gb(size)
+                        .map_err(|_| "Use a positive size in GB, such as 5GB or 0.5GB")
+                })
+                .help("Managed volume size limit in GB, such as 10GB; new Volumes default to 5GB"),
+        )
+        .arg(
+            switch("docker", None)
+                .conflicts_with("size")
+                .help("Use a plain Docker volume, with no size limit (not recommended)"),
+        )
 }
 
-fn selected_machines(
-    machines: Vec<MachineObservation>,
-    selectors: &[String],
-) -> Result<Vec<MachineObservation>, Error> {
-    if selectors.is_empty() {
-        return Ok(machines);
+fn requested_storage(matches: &ArgMatches) -> VolumeKind {
+    if matches.get_flag("docker") {
+        output::warn(DOCKER_VOLUME);
+        VolumeKind::Docker {}
+    } else if let Some(maximum_bytes) = matches.get_one::<ProvisionedVolumeMaximumBytes>("size") {
+        VolumeKind::Provisioned {
+            maximum_bytes: *maximum_bytes,
+        }
+    } else {
+        VolumeKind::provisioned_default()
     }
-    let selectors = selectors
-        .iter()
-        .map(|selector| FanoutSelector::parse(selector.as_str()))
-        .collect::<Result<Vec<_>, _>>()?;
-    let visible = machines
-        .iter()
-        .map(|observation| observation.machine.clone())
-        .collect::<Vec<_>>();
-    let selected = resolve_machine_selectors(&visible, &selectors)?;
-    let mut observations = machines
-        .into_iter()
-        .map(|observation| (observation.machine.id, observation))
-        .collect::<BTreeMap<_, _>>();
-    selected
-        .into_iter()
-        .map(|machine| {
-            observations
-                .remove(&machine.id)
-                .ok_or_else(|| Error::usage("selected Machine disappeared from the snapshot"))
-        })
-        .collect()
 }
 
-fn select_create_machine(
-    machines: &[MachineObservation],
-    selector: Option<&str>,
-) -> Result<Option<MachineObservation>, Error> {
-    if let Some(selector) = selector {
-        let target = MachineTarget::parse(selector)?;
-        return match target.resolve(machines.iter().map(|machine| &machine.machine)) {
-            NameMatches::One(machine) => Ok(Some(
-                machines
-                    .iter()
-                    .find(|observation| observation.machine.id == machine.id)
-                    .expect("resolve returned a Machine from this snapshot")
-                    .clone(),
-            )),
-            NameMatches::None => Err(Error::not_found(format!(
-                "Machine {} was not found",
-                selector.escape_debug()
-            ))),
-            NameMatches::Ambiguous { .. } => Err(Error::ambiguous(format!(
-                "Machine Target {} matched multiple Machines",
-                selector.escape_debug()
-            ))),
-        };
-    }
-    match machines {
-        [] => Err(Error::not_found("no Machines are available")),
-        [machine] => Ok(Some(machine.clone())),
-        _ if !output::interactive() => Err(Error::usage(
-            "multiple Machines are available; specify --machine",
-        )),
-        _ => {
-            crate::output::say!("Select a Machine (blank or q cancels):");
-            for (index, machine) in machines.iter().enumerate() {
-                crate::output::say!("  {}. {}", index + 1, machine.machine.name);
-            }
-            crate::output::say_inline!("> ");
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-            let input = input.trim();
-            if input.is_empty() || input.eq_ignore_ascii_case("q") {
-                return Ok(None);
-            }
-            let index = input
-                .parse::<usize>()
-                .ok()
-                .and_then(|value| value.checked_sub(1))
-                .filter(|index| *index < machines.len())
-                .ok_or_else(|| Error::usage("invalid selection"))?;
-            Ok(machines
-                .get(index)
-                .cloned()
-                .map(Some)
-                .ok_or_else(|| Error::usage("invalid selection"))?)
+fn set(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let volume = volume_name(matches, "volume")?;
+    let changed = store::store(root)?.write(&SetVolumeStorage {
+        environment: store::environment(matches)?,
+        volume: volume.clone(),
+        storage: requested_storage(matches),
+    })?;
+    staged(matches, &changed, "Staged Volume storage")
+}
+
+fn storage_word(storage: VolumeKind) -> String {
+    match storage {
+        VolumeKind::Docker {} => "Docker volume (no size limit)".into(),
+        VolumeKind::Provisioned { maximum_bytes } => {
+            format!("Managed volume ({maximum_bytes} limit)")
         }
     }
 }
 
-fn report_failures<T>(result: &PartialResult<T, RpcError>) {
-    for failure in &result.failures {
-        eprintln!("{}: {}", failure.machine_id, failure.error.message);
-    }
-    for machine_id in &result.omissions {
-        eprintln!("{machine_id}: no terminal response");
-    }
-}
-
-fn volume_failures(
-    result: &PartialResult<VolumeInventory, RpcError>,
-) -> impl Iterator<Item = &ployz_core::VolumeObservationFailure> {
-    result
-        .successes
-        .iter()
-        .flat_map(|success| success.value.failures.iter())
-}
-
-fn inventories_complete(result: &PartialResult<VolumeInventory, RpcError>) -> bool {
-    result.all_targets_succeeded() && volume_failures(result).next().is_none()
-}
-
-fn report_inventory_failures(result: &PartialResult<VolumeInventory, RpcError>) {
-    for failure in volume_failures(result) {
-        eprintln!("{failure}");
-    }
-}
-
-fn report_partial_removal_discovery(result: &PartialResult<VolumeInventory, RpcError>) {
-    for failure in &result.failures {
-        eprintln!(
-            "WARNING: Machine {} was not checked and may hold a same-named Docker Volume: {}",
-            failure.machine_id, failure.error.message
-        );
-    }
-    for machine_id in &result.omissions {
-        eprintln!(
-            "WARNING: Machine {machine_id} was not checked and may hold a same-named Docker Volume: no terminal response"
-        );
-    }
-    for failure in volume_failures(result) {
-        eprintln!("WARNING: {failure}; this Volume will not be removed");
-    }
-}
-
-fn volume_failure_summary(result: &PartialResult<VolumeInventory, RpcError>) -> String {
-    let mut failures = crate::failure::partial_failure_details(result);
-    for failure in volume_failures(result) {
-        if !failures.is_empty() {
-            failures.push_str("; ");
-        }
-        failures.push_str(&failure.to_string());
-    }
-    format!("one or more Docker Volume observations failed: {failures}")
-}
-
-pub(super) fn refuse_unless_removed(removals: Vec<VolumeRemoval>) -> Result<(), Error> {
-    for removal in &removals {
-        if matches!(removal.outcome, VolumeRemovalOutcome::Removed) {
+fn list(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let view = store::store(root)?.read(&VolumesQuery {
+        environment: store::environment(matches)?,
+    })?;
+    output::finish(&view, || {
+        say!("VOLUME\tSTORAGE\tMOUNTS\tDEPLOYED\tNEXT DEPLOY");
+        for listing in &view.volumes {
+            let mounts: Vec<String> = listing
+                .mounts
+                .iter()
+                .map(|mount| format!("{}:{}", mount.service, mount.path))
+                .collect();
             say!(
-                "Deleted volume {} on {}",
-                removal.id.name,
-                removal.id.machine_id
+                "{}\t{}\t{}\t{}\t{}",
+                listing.volume.name,
+                storage_word(listing.volume.storage),
+                if mounts.is_empty() {
+                    "-".to_owned()
+                } else {
+                    mounts.join(",")
+                },
+                if listing.deployed { "yes" } else { "no" },
+                listing
+                    .change
+                    .as_ref()
+                    .map_or("-".to_owned(), super::store::word)
             );
         }
-    }
-    if removals
-        .iter()
-        .all(|removal| matches!(removal.outcome, VolumeRemovalOutcome::Removed))
-    {
-        Ok(())
-    } else {
-        Err(Error::conflict(removal_failure_summary(&removals)))
-    }
+    })
 }
 
-pub(super) fn removal_failure_summary(removals: &[VolumeRemoval]) -> String {
-    let failures = removals
-        .iter()
-        .filter_map(|removal| {
-            let message = match &removal.outcome {
-                VolumeRemovalOutcome::Removed => return None,
-                VolumeRemovalOutcome::Failed { error } => error.message.as_str(),
-                VolumeRemovalOutcome::Omitted => {
-                    "not attempted: Machine absent or not inviting RPC"
-                }
-            };
-            Some(format!(
-                "{}/{}: {message}",
-                removal.id.machine_id, removal.id.name
-            ))
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
-    let mut summary =
-        format!("one or more Docker Volume removals failed or were omitted: {failures}");
-    if let Some(hint) = volume_in_use_hint(removals) {
-        summary.push('\n');
-        summary.push_str(&hint);
-    }
-    summary
-}
-
-fn volume_in_use_hint(removals: &[VolumeRemoval]) -> Option<String> {
-    let mut services = BTreeSet::new();
-    for removal in removals {
-        let VolumeRemovalOutcome::Failed { error } = &removal.outcome else {
-            continue;
-        };
-        let Some(names) = error
-            .details
-            .get("in_use_by")
-            .and_then(|value| value.as_array())
-        else {
-            continue;
-        };
-        for name in names {
-            if let Some(name) = name.as_str()
-                && let Ok(service) = QualifiedService::parse(name)
-            {
-                services.insert(service);
+fn inspect(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let volume = volume_name(matches, "volume")?;
+    let view = store::store(root)?.read(&VolumeQuery {
+        environment: store::environment(matches)?,
+        volume: volume.clone(),
+    })?;
+    output::finish(&view, || {
+        let listing = &view.volume;
+        say!("Volume {} ({})", listing.volume.name, listing.volume.id);
+        say!("Storage: {}", storage_word(listing.volume.storage));
+        say!(
+            "Storage settings: {}",
+            if listing.storage_locked {
+                "locked after deployment was requested"
+            } else {
+                "editable before deployment"
             }
+        );
+        say!("Deployed: {}", if listing.deployed { "yes" } else { "no" });
+        if let Some(change) = &listing.change {
+            say!("Next Deploy: {}", super::store::word(change));
         }
-    }
-    match services.len() {
-        0 => None,
-        1 => Some(format!(
-            "remove the Service first: ployz service rm {}",
-            services.iter().next().expect("checked len")
-        )),
-        _ => Some(format!(
-            "remove the Services first: ployz service rm {}",
-            services
-                .into_iter()
-                .map(|service| service.to_string())
-                .collect::<Vec<_>>()
-                .join(" ")
-        )),
-    }
+        for mount in &listing.mounts {
+            say!("Mounted by {} at {}", mount.service, mount.path);
+        }
+    })
 }
+
+fn rename(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let volume = volume_name(matches, "volume")?;
+    let name = volume_name(matches, "name")?;
+    let renamed = store::store(root)?.write(&ployz_store::RenameVolume {
+        environment: store::environment(matches)?,
+        volume: volume.clone(),
+        name: name.clone(),
+    })?;
+    staged(matches, &renamed, "Staged rename of Volume")
+}
+
+fn remove(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let volume = volume_name(matches, "volume")?;
+    let removed = store::store(root)?.write(&RemoveVolume {
+        environment: store::environment(matches)?,
+        volume: volume.clone(),
+    })?;
+    staged(matches, &removed, "Staged removal of Volume")
+}
+
+/// A staged Volume change and `ployz diff` to review it.
+/// Servers were seen and each says it is Docker only; one not
+/// answering might host them.
+fn none_hosts_managed(machines: &[MachineObservation]) -> bool {
+    !machines.is_empty()
+        && machines
+            .iter()
+            .all(|machine| machine.storage == Some(MachineStorageObservation::Stateless))
+}
+
+fn staged(matches: &ArgMatches, result: &VolumeStaged, what: &str) -> Result<(), Error> {
+    let hint = store::next(matches, &["diff"]);
+    output::finish(&Next::new(result, Some(hint)), || {
+        say!(
+            "{what} {} in {}/{} (revision {}).",
+            result.volume.name,
+            result.environment.project,
+            result.environment.name,
+            result.environment.revision
+        );
+        say!("Storage: {}", storage_word(result.volume.storage));
+    })
+}
+
+use super::store::volume_name;
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::{
-        DockerVolumeStorageObservation, Machine, MachineId, MachineName, MachineObservation,
-        MembershipObservation, WireGuardPublicKey,
-    };
-
     use super::*;
+    use ployz_core::{Machine, MembershipObservation, WireGuardPublicKey};
 
-    #[test]
-    fn an_unfound_volume_is_not_found_only_when_every_machine_answered() {
-        let name = DockerVolumeName::parse("data").unwrap();
-        let error = inspected(Vec::new(), &name, &Gaps::default()).unwrap_err();
-        assert_eq!(error.report().code, RpcErrorCode::NotFound);
-
-        let gaps = Gaps {
-            omitted: vec![MachineId::parse("1".repeat(32)).unwrap()],
-            ..Gaps::default()
-        };
-        assert!(inspected(Vec::new(), &name, &gaps).unwrap().is_none());
-    }
-
-    #[test]
-    fn volume_selection_uses_fanout_for_lists_and_identity_for_create() {
-        let machines = [machine(1, "edge"), machine(2, "all")];
-        assert_eq!(selected_machines(machines.to_vec(), &[]).unwrap().len(), 2);
-        assert_eq!(
-            selected_machines(machines.to_vec(), &["*".into()])
-                .unwrap()
-                .len(),
-            2
-        );
-        assert_eq!(
-            selected_machines(machines.to_vec(), &["all".into()])
-                .unwrap()
-                .first()
-                .unwrap()
-                .machine
-                .name
-                .as_str(),
-            "all"
-        );
-        assert!(selected_machines(machines.to_vec(), &["missing".into()]).is_err());
-        assert!(select_create_machine(&machines, Some("*")).is_err());
-        assert_eq!(
-            select_create_machine(&machines, Some("all"))
-                .unwrap()
-                .unwrap()
-                .machine
-                .name
-                .as_str(),
-            "all"
-        );
-    }
-
-    #[test]
-    fn volume_columns_distinguish_plain_and_provisioned_usage() {
-        assert_eq!(
-            format_storage(&DockerVolumeStorageObservation::Plain {
-                driver: "local".into(),
-            }),
-            ("PLAIN", "-".into(), "-".into())
-        );
-        assert_eq!(
-            format_storage(&DockerVolumeStorageObservation::Provisioned {
-                mountpoint: ployz_core::MachinePath::parse("/var/lib/ployz-volumes/data").unwrap(),
-                bound_bytes: std::num::NonZeroU64::new(1_073_741_824).unwrap(),
-                used_bytes: 966_367_642,
-            }),
-            ("PROVISIONED", "1073741824".into(), "966367642".into())
-        );
-    }
-
-    #[test]
-    fn in_use_volume_removal_names_the_service_to_remove() {
-        let removal = VolumeRemoval {
-            id: ployz_core::DockerVolumeId {
-                machine_id: MachineId::parse("a".repeat(32)).unwrap(),
-                name: ployz_core::DockerVolumeName::parse("busy").unwrap(),
-            },
-            outcome: VolumeRemovalOutcome::Failed {
-                error: RpcError {
-                    code: RpcErrorCode::Conflict,
-                    message: "volume is in use by cashdash/cashdash-singlestore (2 containers)"
-                        .into(),
-                    details: serde_json::json!({
-                        "in_use_by": ["cashdash/cashdash-singlestore"]
-                    }),
-                },
-            },
-        };
-        let summary = removal_failure_summary(&[removal]);
-        assert!(
-            summary.contains("volume is in use by cashdash/cashdash-singlestore"),
-            "{summary}"
-        );
-        assert!(
-            summary.contains(
-                "remove the Service first: ployz service rm cashdash/cashdash-singlestore"
-            ),
-            "{summary}"
-        );
-    }
-
-    #[test]
-    fn in_use_volume_removal_names_each_service_to_remove() {
-        let removal = VolumeRemoval {
-            id: ployz_core::DockerVolumeId {
-                machine_id: MachineId::parse("a".repeat(32)).unwrap(),
-                name: ployz_core::DockerVolumeName::parse("busy").unwrap(),
-            },
-            outcome: VolumeRemovalOutcome::Failed {
-                error: RpcError {
-                    code: RpcErrorCode::Conflict,
-                    message: "volume is in use by app/web, app/db (3 containers)".into(),
-                    details: serde_json::json!({
-                        "in_use_by": ["app/db", "app/web"]
-                    }),
-                },
-            },
-        };
-        let summary = removal_failure_summary(&[removal]);
-        assert!(
-            summary.contains("remove the Services first: ployz service rm app/db app/web"),
-            "{summary}"
-        );
-    }
-
-    fn machine(seed: u8, name: &str) -> MachineObservation {
-        MachineObservation::new(
+    fn server(seed: u8, storage: Option<MachineStorageObservation>) -> MachineObservation {
+        let mut observed = MachineObservation::new(
             Machine {
                 labels: Default::default(),
                 accepts_builds: true,
                 accepts_services: true,
                 accepts_ingress: true,
-                id: MachineId::parse(format!("{seed:032x}")).unwrap(),
-                name: MachineName::parse(name).unwrap(),
+                id: char::from(b'a' + seed)
+                    .to_string()
+                    .repeat(32)
+                    .parse()
+                    .unwrap(),
+                name: format!("node-{seed}").parse().unwrap(),
                 subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
                 public_key: WireGuardPublicKey([seed; 32]),
                 public_ip: None,
@@ -672,6 +333,26 @@ mod tests {
                 build_concurrency: None,
             },
             MembershipObservation::Up,
-        )
+        );
+        observed.storage = storage;
+        observed
+    }
+
+    #[test]
+    fn only_servers_that_all_say_docker_only_warn() {
+        let stateless = Some(MachineStorageObservation::Stateless);
+        assert!(none_hosts_managed(&[
+            server(0, stateless),
+            server(1, stateless)
+        ]));
+        assert!(!none_hosts_managed(&[]));
+        assert!(!none_hosts_managed(&[
+            server(0, stateless),
+            server(1, None)
+        ]));
+        assert!(!none_hosts_managed(&[
+            server(0, stateless),
+            server(1, Some(MachineStorageObservation::Ready)),
+        ]));
     }
 }

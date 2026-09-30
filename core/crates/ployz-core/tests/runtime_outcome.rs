@@ -5,7 +5,7 @@
     reason = "Test JSON fixtures assert public response fields."
 )]
 
-use ployz_core::config::config_request;
+use ployz_core::config::{parse_runtime_preview, project_runtime_outcome};
 use serde_json::{Value, json};
 
 fn operation(id: &str) -> Value {
@@ -19,16 +19,17 @@ fn current_outcome_confirms_only_services_with_all_operations_completed() {
     let replica = operation("c");
     let preview = |operations: Vec<(&str, Value)>| {
         json!({
-            "project_name":"production", "operations":operations.into_iter().enumerate().map(|(index, (service, operation))|
+            "namespace":"production", "operations":operations.into_iter().enumerate().map(|(index, (service, operation))|
                 json!({"index":index,"machine_id":"a".repeat(32),"service_name":service,"operation":operation,"status":{"type":"pending"}})
             ).collect::<Vec<_>>(), "warnings":[]
         })
     };
     let project = |preview: Value, outcome: Value| {
-        config_request(json!({
-            "operation":"project_runtime_outcome", "preview":preview,
-            "value":{"version":1,"outcome":outcome}
-        }))
+        project_runtime_outcome(
+            &parse_runtime_preview(preview).unwrap(),
+            json!({"version":1,"outcome":outcome}),
+        )
+        .map(|projection| serde_json::to_value(projection).unwrap())
     };
     let partial = json!({"type":"failed","completed":[api.clone()],
         "failed":{"type":"operation","operation":worker.clone(),"error":{"type":"cancelled"}},"unexecuted":[]});
@@ -38,6 +39,8 @@ fn current_outcome_confirms_only_services_with_all_operations_completed() {
     )
     .unwrap();
     assert_eq!(result["confirmedServices"], json!(["api"]));
+    assert_eq!(result["failedServices"], json!(["worker"]));
+    assert_eq!(result["unattemptedServices"], json!([]));
     let mut incomplete = partial;
     incomplete["unexecuted"] = json!([replica.clone()]);
     assert_eq!(
@@ -70,16 +73,17 @@ fn current_outcome_confirms_only_services_with_all_operations_completed() {
     );
     let preflight = json!({"type":"failed","completed":[],
         "failed":{"type":"operation","operation":operation("b"),"error":{"type":"cancelled"}},"unexecuted":[operation("a")]});
-    assert_eq!(
-        project(
-            preview(vec![("api", operation("a")), ("worker", operation("b"))]),
-            preflight
-        )
-        .unwrap()["confirmedServices"],
-        json!([])
-    );
-    let invalid = config_request(
-        json!({"operation":"project_runtime_outcome","preview":preview(vec![]),"value":{"version":2,"outcome":{"type":"success","completed":[]}}}),
+    let stopped = project(
+        preview(vec![("api", operation("a")), ("worker", operation("b"))]),
+        preflight,
+    )
+    .unwrap();
+    assert_eq!(stopped["confirmedServices"], json!([]));
+    assert_eq!(stopped["failedServices"], json!(["worker"]));
+    assert_eq!(stopped["unattemptedServices"], json!(["api"]));
+    let invalid = project_runtime_outcome(
+        &parse_runtime_preview(preview(vec![])).unwrap(),
+        json!({"version":2,"outcome":{"type":"success","completed":[]}}),
     );
     assert!(invalid.is_err());
 }

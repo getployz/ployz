@@ -1,17 +1,76 @@
-import { applyCreatedService } from "#/modules/environment-design/apply-created-node";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useRef, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
-import { useNavigate } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
+import { useLoaderData, useNavigate } from "@tanstack/react-router";
+import type { EnvironmentRef } from "@ployz/sdk";
+import { createServiceCommand, newServiceName, serviceName, uniqueName, type NewServiceSource } from "#/modules/config-store/store-services";
+import { databaseCommand, randomPassword, type DatabasePreset } from "#/modules/config-store/database-presets";
+import { servicesQuery, storeViewOptions, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { useStoreWriter } from "#/modules/config-store/store-write";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
-import { createServiceServerFn } from "#/modules/environment-design/service-functions";
-import { createEmptyServiceSource } from "#/modules/environment-design/services";
-import { SERVICE_NODE_SIZE } from "./constants";
-import type { CanvasServiceNode, CreatorPanel, FlowPosition } from "./types";
+import { usePlaceNewNode } from "./useCanvasPositionMutation";
+import { SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, SNAP_GRID } from "./constants";
+import type { CreatePanel } from "#/components/create-menu-items";
+import type { CanvasResourceNode, FlowPosition } from "./types";
 import { findPlacement } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-utils/node-placement";
-import { ENVIRONMENT_SERVICE_ROUTE_TO } from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../environment-route-paths";
+
+/** Where a new Service goes: its Environment, and where the canvas put it. */
+export type NewServicePlacement = { store: EnvironmentRef; environmentId: string; position: FlowPosition };
+
+/** What creating a Service needs: the writer, canvas placement, and the names this tab has seen taken. */
+function useStoreCreate(organizationSlug: string) {
+  const scope = useCollectionScope();
+  const writer = useStoreWriter(organizationSlug);
+  const place = usePlaceNewNode(organizationSlug);
+  const cached = <Q extends Parameters<typeof storeViewOptions>[2]>(query: Q) =>
+    scope.queryClient.getQueryData(storeViewOptions(organizationSlug, scope, query).queryKey);
+  return {
+    writer,
+    place,
+    services: (store: EnvironmentRef) => {
+      const listed = cached(servicesQuery(store));
+      return listed?.ok ? listed.value.services : [];
+    },
+    volumeNames: (store: EnvironmentRef) => {
+      const listed = cached(volumesQuery(store));
+      return listed?.ok ? listed.value.volumes.map((volume) => volume.name) : [];
+    },
+  };
+}
+
+/**
+ * Creates a Service in the Config Store where the canvas put it, named from its source: on the canvas at once, saved
+ * in the background. `persisted` settles once the Store has it, for callers whose next page can't show it before.
+ */
+export function useCreateStoreService(organizationSlug: string) {
+  const { writer, place, services } = useStoreCreate(organizationSlug);
+  return (target: NewServicePlacement, source: NewServiceSource) => {
+    const id = crypto.randomUUID();
+    place({ environmentId: target.environmentId, resourceType: "service", resourceId: id, ...target.position });
+    const name = newServiceName(source, services(target.store));
+    const { isPersisted } = writer.commit(createServiceCommand(id, target.store, name, source));
+    return { service: { id }, persisted: isPersisted.promise };
+  };
+}
+
+/** Creates a Database Preset's Service, as `useCreateStoreService` does, with its Volume placed below it: one Batch. */
+export function useCreateStoreDatabase(organizationSlug: string) {
+  const { writer, place, services, volumeNames } = useStoreCreate(organizationSlug);
+  return (target: NewServicePlacement, preset: DatabasePreset) => {
+    const service = crypto.randomUUID();
+    const volume = crypto.randomUUID();
+    const { x, y } = target.position;
+    place({ environmentId: target.environmentId, resourceType: "service", resourceId: service, x, y });
+    place({ environmentId: target.environmentId, resourceType: "volume", resourceId: volume, x, y: y + SERVICE_NODE_HEIGHT + SNAP_GRID[1] * 2 });
+    const name = serviceName(preset.id, services(target.store));
+    const command = databaseCommand(preset, { service, volume, environment: target.store, name,
+      volumeName: uniqueName(`${name}-data`, volumeNames(target.store)), password: randomPassword() });
+    const { isPersisted } = writer.commit(command);
+    return { service: { id: service }, persisted: isPersisted.promise };
+  };
+}
 
 export function useServiceCreator(
   params: {
@@ -23,16 +82,16 @@ export function useServiceCreator(
   getViewportCenter: () => FlowPosition,
 ) {
   const navigate = useNavigate();
-  const collectionScope = useCollectionScope();
-  const flow = useReactFlow<CanvasServiceNode>();
-  const createService = useServerFn(createServiceServerFn);
+  const flow = useReactFlow<CanvasResourceNode>();
+  const createStoreService = useCreateStoreService(params.organizationSlug);
+  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
 
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [creatorPosition, setCreatorPosition] = useState<FlowPosition>({
     x: 0,
     y: 0,
   });
-  const [creatorPanel, setCreatorPanel] = useState<CreatorPanel>("root");
+  const [creatorPanel, setCreatorPanel] = useState<CreatePanel>("root");
   const lastRightClickFlowPosition = useRef<FlowPosition>({ x: 0, y: 0 });
 
   function computePlacement(target: FlowPosition) {
@@ -44,37 +103,20 @@ export function useServiceCreator(
     return findPlacement(target, SERVICE_NODE_SIZE, existingRects);
   }
 
-  function openCreator(position: FlowPosition, panel: CreatorPanel = "root") {
+  function openCreator(position: FlowPosition, panel: CreatePanel = "root") {
     setCreatorPosition(computePlacement(position));
     setCreatorPanel(panel);
     setCreatorOpen(true);
   }
 
-  function openCreatorAtCenter(panel: CreatorPanel = "root") {
+  function openCreatorAtCenter(panel: CreatePanel = "root") {
     openCreator(getViewportCenter(), panel);
   }
 
   async function createBlankService(position: FlowPosition) {
     const placement = computePlacement(position);
-    const receipt = await createService({
-      data: {
-        organizationSlug: params.organizationSlug,
-        environmentId,
-        source: createEmptyServiceSource(),
-        x: placement.x,
-        y: placement.y,
-      },
-    });
-    await applyCreatedService(params.organizationSlug, collectionScope, receipt.data);
-    await navigate({
-      to: ENVIRONMENT_SERVICE_ROUTE_TO,
-      params: {
-        organizationSlug: params.organizationSlug,
-        projectSlug: params.projectSlug,
-        environmentSlug: params.environmentSlug,
-        serviceId: receipt.data.service.id,
-      },
-    });
+    const created = createStoreService({ store, environmentId, position: placement }, { type: "empty" });
+    await navigate({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: created.service.id } });
   }
 
   function onPaneContextMenu(event: MouseEvent | React.MouseEvent) {
@@ -84,7 +126,7 @@ export function useServiceCreator(
     });
   }
 
-  function openCreatorAtLastRightClick(panel: CreatorPanel) {
+  function openCreatorAtLastRightClick(panel: CreatePanel) {
     openCreator(lastRightClickFlowPosition.current, panel);
   }
 

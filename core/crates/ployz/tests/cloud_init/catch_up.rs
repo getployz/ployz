@@ -10,7 +10,7 @@ use super::harness::{
 };
 use ployz::context::{Config, Connection, Context};
 use ployz_core::{
-    ContainerId, ContainerObservation, MembershipObservation, ProjectName, ServiceId, ServiceName,
+    ContainerId, ContainerObservation, MembershipObservation, Namespace, ServiceId, ServiceName,
 };
 use serde_json::json;
 
@@ -69,7 +69,7 @@ async fn machine_add_retries_target_readiness_and_reports_failure() {
     assert!(!failed.status.success());
     assert_eq!(entry.target_inspect_attempts(), 2);
     assert_eq!(entry.ensure_attempts(), 0);
-    assert!(String::from_utf8_lossy(&failed.stdout).contains("Added Machine joiner"));
+    assert!(String::from_utf8_lossy(&failed.stdout).contains("Added Server joiner"));
     assert_joined_with_incomplete_catch_up(&failed);
     target.join_request();
 }
@@ -97,7 +97,7 @@ async fn machine_add_retries_catch_up_and_reports_failure() {
     let (failed, entry, target) = machine_add(Fault::Healthy, Fault::Permanent).await;
     assert!(!failed.status.success());
     assert_eq!(entry.ensure_attempts(), 2);
-    assert!(String::from_utf8_lossy(&failed.stdout).contains("Added Machine joiner"));
+    assert!(String::from_utf8_lossy(&failed.stdout).contains("Added Server joiner"));
     assert_joined_with_incomplete_catch_up(&failed);
     target.join_request();
 }
@@ -146,8 +146,9 @@ async fn cloud_join(target_failures: Fault, ensure_failures: Fault) -> (Output, 
         .args([
             "--connect",
             &format!("ssh://root@{address}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -212,8 +213,9 @@ async fn machine_add_with_membership(
         .args([
             "--ployz-config",
             config.to_str().unwrap(),
-            "machine",
+            "server",
             "add",
+            "--standalone",
             &format!("ssh://root@{target_address}"),
             "--no-install",
             "--name",
@@ -229,15 +231,18 @@ async fn machine_add_with_membership(
 
 fn assert_joined_with_incomplete_catch_up(output: &Output) {
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Machine joined"), "stderr: {stderr}");
+    assert!(stderr.contains("Server joined"), "stderr: {stderr}");
     assert!(
         stderr.contains("remains a Cluster member"),
         "stderr: {stderr}"
     );
-    assert!(stderr.contains("ployz ingress deploy"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("--accepts-ingress=true`"),
+        "stderr: {stderr}"
+    );
     assert!(stderr.contains("shop/worker"), "stderr: {stderr}");
     assert!(
-        stderr.contains("redeploy Project Service `shop/worker`"),
+        stderr.contains("redeploy Namespace Service `shop/worker`"),
         "stderr: {stderr}"
     );
 }
@@ -249,7 +254,7 @@ fn globals_on(machine: &ployz_core::Machine) -> Vec<ContainerObservation> {
         .try_update(|parts| {
             parts.container_id = ContainerId::parse("d".repeat(64)).unwrap();
             parts.display_name = "worker-a".into();
-            parts.project_name = ProjectName::parse("shop").unwrap();
+            parts.namespace = Namespace::parse("shop").unwrap();
         })
         .unwrap();
     worker

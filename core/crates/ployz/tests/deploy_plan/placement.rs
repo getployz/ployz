@@ -1251,7 +1251,7 @@ fn host_socket_replacement_respects_explicit_order_and_other_owners() {
         assert!(plan_deploy([&service], &snapshot, PlanOptions::default()).is_ok());
         let mut foreign = container('b', '1', &service, &service_id('b'));
         foreign
-            .try_update(|parts| parts.project_name = ProjectName::parse("foreign").unwrap())
+            .try_update(|parts| parts.namespace = Namespace::parse("foreign").unwrap())
             .unwrap();
         snapshot.containers.push(foreign);
         assert!(plan_deploy([&service], &snapshot, PlanOptions::default()).is_err());
@@ -1286,7 +1286,7 @@ fn shared_volume_anchor_skips_known_host_socket_occupancy() {
     first.ports.push(host_port(8080));
     let mut foreign = container('a', '1', &first, &service_id('a'));
     foreign
-        .try_update(|parts| parts.project_name = ProjectName::parse("foreign").unwrap())
+        .try_update(|parts| parts.namespace = Namespace::parse("foreign").unwrap())
         .unwrap();
     add_named_volume(&mut first, "data");
     let mut second = first.clone();
@@ -1561,7 +1561,7 @@ fn replicated_socket_repair_keeps_explicit_order_and_foreign_claims() {
         ] if *stopped == surplus_id && *removed == surplus_id && replaced.old_container_id == selected_id && replaced.spec.update.order == UpdateOrder::StartFirst));
         let mut foreign = container('c', '1', &service, &service_id('c'));
         foreign
-            .try_update(|parts| parts.project_name = ProjectName::parse("foreign").unwrap())
+            .try_update(|parts| parts.namespace = Namespace::parse("foreign").unwrap())
             .unwrap();
         snapshot.containers.push(foreign);
         assert!(
@@ -1684,7 +1684,7 @@ fn reserved_ingress_deploy_uses_ingress_acceptance_independently() {
         ..Default::default()
     };
     let intent = DeployIntent::apply_all(
-        ployz_core::QualifiedService::system_ingress().project,
+        ployz_core::QualifiedService::system_ingress().namespace,
         [&service],
         PlanOptions::default(),
     );

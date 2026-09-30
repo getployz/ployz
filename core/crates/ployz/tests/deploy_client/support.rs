@@ -20,10 +20,10 @@ use ployz_core::{
     DockerVolumeId, DockerVolumeName, ExecResponseFrame, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
     HealthObservation, LocalMachinePhase, MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine,
     MachineDetails, MachineId, MachineImages, MachineList, MachineName, MachineObservation,
-    MachineRpc, MachineRpcServer, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR,
-    ProjectName, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeInventory, WireGuardPublicKey,
+    MachineRpc, MachineRpcServer, MembershipObservation, Namespace, OpaquePayload, PROTOCOL_MAJOR,
+    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph,
+    ServiceVolumeReference, UpdateOrder, VolumeInventory, WireGuardPublicKey,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -46,7 +46,7 @@ pub(super) struct DeployService {
     create_volume_error: Option<RpcError>,
     create_volume_verification_error: Option<RpcError>,
     containers: Arc<AtomicUsize>,
-    created_projects: Arc<Mutex<Vec<ProjectName>>>,
+    created_namespaces: Arc<Mutex<Vec<Namespace>>>,
     created_specs: Arc<Mutex<Vec<ResolvedServiceSpec>>>,
     listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
     mutating_rpcs: Arc<AtomicUsize>,
@@ -59,6 +59,10 @@ pub(super) struct DeployService {
     advertise_observations: bool,
     exec_exit: Option<i32>,
     hold_health: bool,
+    start_error: Option<RpcError>,
+    listing_failures: Vec<MachineId>,
+    /// Docker Volumes created and not yet removed.
+    pub(super) volumes: Arc<Mutex<Vec<DockerVolume>>>,
 }
 
 impl DeployService {
@@ -69,7 +73,7 @@ impl DeployService {
             create_volume_error: None,
             create_volume_verification_error: None,
             containers: Arc::new(AtomicUsize::new(0)),
-            created_projects: Arc::new(Mutex::new(Vec::new())),
+            created_namespaces: Arc::new(Mutex::new(Vec::new())),
             created_specs: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
@@ -82,6 +86,9 @@ impl DeployService {
             advertise_observations: false,
             exec_exit: None,
             hold_health: false,
+            start_error: None,
+            listing_failures: Vec::new(),
+            volumes: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -92,7 +99,7 @@ impl DeployService {
             create_volume_error: None,
             create_volume_verification_error: None,
             containers: Arc::new(AtomicUsize::new(0)),
-            created_projects: Arc::new(Mutex::new(Vec::new())),
+            created_namespaces: Arc::new(Mutex::new(Vec::new())),
             created_specs: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
@@ -105,6 +112,9 @@ impl DeployService {
             advertise_observations: false,
             exec_exit: None,
             hold_health: false,
+            start_error: None,
+            listing_failures: Vec::new(),
+            volumes: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -128,6 +138,21 @@ impl DeployService {
 
     pub(super) fn with_exec_exit(mut self, code: i32) -> Self {
         self.exec_exit = Some(code);
+        self
+    }
+
+    pub(super) fn fail_starts(mut self, message: &str) -> Self {
+        self.start_error = Some(RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: message.into(),
+            details: Value::Null,
+        });
+        self
+    }
+
+    /// `machine_id` answers every container listing with an error.
+    pub(super) fn fail_listing_on(mut self, machine_id: MachineId) -> Self {
+        self.listing_failures.push(machine_id);
         self
     }
 
@@ -189,8 +214,8 @@ impl DeployService {
         self.listed_containers.clone()
     }
 
-    pub(super) fn created_projects(&self) -> Arc<Mutex<Vec<ProjectName>>> {
-        self.created_projects.clone()
+    pub(super) fn created_namespaces(&self) -> Arc<Mutex<Vec<Namespace>>> {
+        self.created_namespaces.clone()
     }
 
     pub(super) fn created_specs(&self) -> Arc<Mutex<Vec<ResolvedServiceSpec>>> {
@@ -292,6 +317,13 @@ impl MachineRpc for DeployService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let machine_id = machine_from_metadata(&request)?;
+        if self.listing_failures.contains(&machine_id) {
+            return encoded(RpcResponse::from(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "listing failed".into(),
+                details: Value::Null,
+            }));
+        }
         encoded(RpcResponse::from(ContainerList {
             containers: self
                 .listed_containers
@@ -309,7 +341,7 @@ impl MachineRpc for DeployService {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         encoded(RpcResponse::from(VolumeInventory {
-            volumes: Vec::new(),
+            volumes: self.volumes.lock().unwrap().clone(),
             failures: Vec::new(),
         }))
     }
@@ -359,6 +391,7 @@ impl MachineRpc for DeployService {
             labels: create.labels,
             storage,
         };
+        self.volumes.lock().unwrap().push(volume.clone());
         let report = self.create_volume_verification_error.clone().map_or(
             CreateVolumeReport::Verified {
                 volume: volume.clone(),
@@ -392,10 +425,10 @@ impl MachineRpc for DeployService {
             );
             return encoded(RpcResponse::from(error));
         }
-        self.created_projects
+        self.created_namespaces
             .lock()
             .unwrap()
-            .push(create.project_name);
+            .push(create.namespace);
         self.created_specs
             .lock()
             .unwrap()
@@ -418,6 +451,9 @@ impl MachineRpc for DeployService {
         else {
             return Err(Status::invalid_argument("expected start_container"));
         };
+        if let Some(error) = &self.start_error {
+            return encoded(RpcResponse::from(error.clone()));
+        }
         encoded(RpcResponse::from(ployz_core::ContainerChanged {
             container_id: start.container_id,
         }))
@@ -540,7 +576,7 @@ impl MachineRpc for DeployService {
                         .first()
                         .map(|machine| machine.machine.id)
                         .unwrap_or_else(MachineId::random),
-                    project_name: ProjectName::parse("app").unwrap(),
+                    namespace: Namespace::parse("app").unwrap(),
                     kind: ContainerKind::ServiceContainer,
                     runtime: ContainerRuntimeObservation::Running { health },
                     effective_healthcheck: None,
@@ -608,7 +644,7 @@ impl MachineRpc for DeployService {
                                 display_name: "web-1".into(),
                                 created_at_unix_nanos: 0,
                                 machine_id,
-                                project_name: ProjectName::parse("app").unwrap(),
+                                namespace: Namespace::parse("app").unwrap(),
                                 kind: ContainerKind::ServiceContainer,
                                 runtime: ContainerRuntimeObservation::Running {
                                     health: HealthObservation::Healthy,
@@ -634,10 +670,20 @@ impl MachineRpc for DeployService {
     }
     async fn remove_volume(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.record_mutation();
-        unused()
+        let machine_id = machine_from_metadata(&request)?;
+        let RpcRequestBody::RemoveVolume(remove) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected remove_volume"));
+        };
+        self.volumes
+            .lock()
+            .unwrap()
+            .retain(|volume| volume.id.machine_id != machine_id || volume.id.name != remove.name);
+        encoded(RpcResponse::from(ployz_core::VolumeRemoved {}))
     }
     async fn stop_container(
         &self,
@@ -922,11 +968,22 @@ pub(super) fn running_container(
     machine: &MachineObservation,
     spec: &RequestedServiceSpec,
 ) -> ployz_core::ContainerObservation {
+    running_container_in(machine, spec, "app", '1')
+}
+
+/// A running Container of `spec` in `namespace`, its ID `id` repeated.
+pub(super) fn running_container_in(
+    machine: &MachineObservation,
+    spec: &RequestedServiceSpec,
+    namespace: &str,
+    id: char,
+) -> ployz_core::ContainerObservation {
+    let namespace = Namespace::parse(namespace).unwrap();
     let mut spec = spec.clone();
     spec.set_volume_graph(
         spec.volume_graph()
             .clone()
-            .scope_to_project(&ProjectName::parse("app").unwrap())
+            .scope_to_namespace(&namespace)
             .unwrap(),
     )
     .unwrap();
@@ -940,11 +997,11 @@ pub(super) fn running_container(
         )
         .expect("volume graph is scoped");
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
-        container_id: ContainerId::parse("1".repeat(64)).unwrap(),
+        container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
         display_name: format!("{}-1", spec.name),
         created_at_unix_nanos: 0,
         machine_id: machine.machine.id,
-        project_name: ProjectName::parse("app").unwrap(),
+        namespace,
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::NotConfigured,

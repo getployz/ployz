@@ -4,13 +4,16 @@ import { toast } from "sonner";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
-import { Field, FieldGroup, FieldLabel } from "#/components/ui/field";
+import { Field, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { VariableValueInput } from "#/components/variables/VariableValueInput";
-import type { ReferenceTarget } from "#/modules/environment-design/variable-autocomplete";
-import { getSealedVariableCollisionMessage } from "#/modules/environment-design/variable-raw-editor";
-import type { VariableWriter } from "#/modules/environment-design/variable-collections";
-import type { VariableRecord } from "#/modules/environment-design/variables";
+import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
+import { getSealedVariableCollisionMessage } from "#/modules/variables/variable-raw-editor";
+import { parseDisplayToParts } from "#/modules/variables/variable-template";
+import type { VariableRecord } from "#/modules/variables/variables";
+
+/** A variable's name, as the Store takes it (the settings catalog's `env` keys). */
+const VARIABLE_KEY = /^[A-Z_][A-Z0-9_]{0,127}$/u;
 import type { VariableAddInput } from "#/components/variables/variables-panel";
 
 type VariableAddFormDefaults = {
@@ -23,10 +26,8 @@ type VariableAddFormState = {
   value: string;
   sealed: boolean;
   exported: boolean;
-  overwriteCandidate: {
-    id: string;
-    value: string;
-  } | null;
+  /** The key names an existing variable: confirm before replacing it. */
+  confirmingOverwrite: boolean;
 };
 
 type VariableAddFormAction =
@@ -34,21 +35,28 @@ type VariableAddFormAction =
   | { type: "valueChanged"; value: string }
   | { type: "sealedChanged"; checked: boolean }
   | { type: "exportedChanged"; checked: boolean }
-  | { type: "overwriteRequested"; id: string; value: string }
+  | { type: "overwriteRequested" }
   | { type: "overwriteCleared" }
   | { type: "reset"; defaults: VariableAddFormDefaults };
 
 function createVariableAddFormState({
   allowSealOnCreate,
   defaultExported,
-}: VariableAddFormDefaults): VariableAddFormState {
+}: VariableAddFormDefaults, draft?: VariableAddInput): VariableAddFormState {
   return {
-    key: "",
-    value: "",
-    sealed: allowSealOnCreate,
-    exported: defaultExported,
-    overwriteCandidate: null,
+    key: draft?.key ?? "",
+    value: draft?.value ?? "",
+    sealed: draft?.sealed ?? allowSealOnCreate,
+    exported: draft?.exported ?? defaultExported,
+    confirmingOverwrite: false,
   };
+}
+
+/** Why `value` can't be saved: a `${{ service.KEY }}` names no Service of the Environment (`serviceNames`). */
+function referenceError(value: string, serviceNames: readonly string[] | undefined) {
+  if (serviceNames === undefined) return null;
+  const [unknown] = parseDisplayToParts(value, (slug) => serviceNames.includes(slug) ? { lineageId: slug, scope: "service" } : null).unresolved;
+  return unknown === undefined ? null : `There's no service named ${unknown} to reference in this environment.`;
 }
 
 function variableAddFormReducer(
@@ -65,12 +73,9 @@ function variableAddFormReducer(
     case "exportedChanged":
       return { ...state, exported: action.checked };
     case "overwriteRequested":
-      return {
-        ...state,
-        overwriteCandidate: { id: action.id, value: action.value },
-      };
+      return { ...state, confirmingOverwrite: true };
     case "overwriteCleared":
-      return { ...state, overwriteCandidate: null };
+      return { ...state, confirmingOverwrite: false };
     case "reset":
       return createVariableAddFormState(action.defaults);
   }
@@ -78,28 +83,33 @@ function variableAddFormReducer(
 
 export function VariableAddForm({
   variables,
-  collection,
   onCreateVariable,
   onCancel,
   allowSealOnCreate,
   defaultExported,
   supportsExport,
   valueTargets,
+  serviceNames,
+  initial,
 }: {
   variables: VariableRecord[];
-  collection: VariableWriter;
+  /** Saves in the background; a refusal reopens the form with `initial`. */
   onCreateVariable: (input: VariableAddInput) => void;
   onCancel: () => void;
+  /** What was typed before a refusal. */
+  initial?: VariableAddInput;
   allowSealOnCreate: boolean;
   defaultExported: boolean;
   supportsExport: boolean;
   valueTargets?: ReferenceTarget[];
+  /** Every Service of the Environment, which a value's `${{ service.KEY }}` may name; none: unchecked. */
+  serviceNames?: readonly string[];
 }) {
   const defaults = { allowSealOnCreate, defaultExported };
   const [state, dispatch] = useReducer(
     variableAddFormReducer,
     defaults,
-    createVariableAddFormState,
+    (initialDefaults) => createVariableAddFormState(initialDefaults, initial),
   );
 
   function closeForm() {
@@ -107,9 +117,17 @@ export function VariableAddForm({
     onCancel();
   }
 
+  const typedKey = state.key.trim().toUpperCase();
+  const keyError = typedKey && !VARIABLE_KEY.test(typedKey)
+    ? "Use letters, digits and underscores, not starting with a digit (at most 128)." : null;
+  const valueError = state.sealed
+    ? state.value.includes("${{") ? "A sealed value is stored as-is. Untick Sealed to use a reference." : null
+    : referenceError(state.value, serviceNames);
+
   function handleAdd() {
-    const key = state.key.trim().toUpperCase();
-    if (!key) return;
+    const key = typedKey;
+    // Invalid input stays in the form, as typed, with the reason under it.
+    if (!key || keyError || valueError) return;
 
     const existing = variables.find((variable) => variable.key === key);
     if (existing) {
@@ -117,31 +135,21 @@ export function VariableAddForm({
         toast.error(getSealedVariableCollisionMessage(existing.key));
         return;
       }
-      dispatch({
-        type: "overwriteRequested",
-        id: existing.id,
-        value: state.value,
-      });
+      dispatch({ type: "overwriteRequested" });
       return;
     }
 
+    save();
+  }
+
+  /** Writes the variable as the form has it, sealed or not; an overwrite replaces the existing one. */
+  function save() {
     // Optimistic: the writer rolls back and toasts if saving fails.
     onCreateVariable({
-      key,
+      key: typedKey,
       value: state.value,
       sealed: state.sealed,
       exported: state.exported,
-    });
-    closeForm();
-  }
-
-  function handleConfirmOverwrite() {
-    if (!state.overwriteCandidate) return;
-    const { id, value } = state.overwriteCandidate;
-    // Optimistic: the writer rolls back and toasts if saving fails.
-    collection.update(id, (draft) => {
-      draft.value = { type: "plain", value };
-      draft.updatedAt = new Date();
     });
     closeForm();
   }
@@ -166,7 +174,9 @@ export function VariableAddForm({
               dispatch({ type: "keyChanged", value: event.target.value })
             }
             className="font-mono text-xs uppercase"
+            aria-invalid={keyError ? true : undefined}
           />
+          {keyError ? <FieldError>{keyError}</FieldError> : null}
         </Field>
         <Field>
           <FieldLabel htmlFor="variable-value">Value</FieldLabel>
@@ -193,6 +203,7 @@ export function VariableAddForm({
               className="font-mono text-xs"
             />
           )}
+          {valueError ? <FieldError>{valueError}</FieldError> : null}
         </Field>
         {allowSealOnCreate || supportsExport ? (
           <FieldGroup>
@@ -237,7 +248,7 @@ export function VariableAddForm({
         <div className="flex items-center gap-2">
           <Button
             type="submit"
-            disabled={!state.key.trim()}
+            disabled={!typedKey || keyError !== null || valueError !== null}
           >
             <CheckIcon data-icon="inline-start" />
             Add
@@ -254,7 +265,7 @@ export function VariableAddForm({
       </form>
 
       <ConfirmDialog
-        open={state.overwriteCandidate !== null}
+        open={state.confirmingOverwrite}
         onOpenChange={(open) => {
           if (!open) dispatch({ type: "overwriteCleared" });
         }}
@@ -263,7 +274,7 @@ export function VariableAddForm({
         actionLabel="Overwrite"
         pendingLabel="Overwriting…"
         variant="destructive"
-        onConfirm={handleConfirmOverwrite}
+        onConfirm={save}
       />
     </>
   );

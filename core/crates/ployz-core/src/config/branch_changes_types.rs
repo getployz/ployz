@@ -124,6 +124,7 @@ pub(super) enum RowPath {
     Node,
     Data,
     Name,
+    Storage,
     Mount(String),
     Variable(String),
     Setting(&'static str),
@@ -136,6 +137,7 @@ impl fmt::Display for BranchRowKey {
             RowPath::Node => write!(f, "{lineage}:node"),
             RowPath::Data => write!(f, "{lineage}:data"),
             RowPath::Name => write!(f, "{lineage}:name"),
+            RowPath::Storage => write!(f, "{lineage}:storage"),
             RowPath::Mount(volume) => write!(f, "{lineage}:mounts.{volume}"),
             RowPath::Variable(key) => write!(f, "{lineage}:variables.{key}"),
             RowPath::Setting(path) => write!(f, "{lineage}:{path}"),
@@ -171,7 +173,7 @@ pub enum BranchRole {
 }
 
 /// Why a row never moves.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum BranchReason {
     Live,

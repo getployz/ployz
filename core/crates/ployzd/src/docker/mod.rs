@@ -35,7 +35,7 @@ use ployz_core::{
     BridgeEndpointCapacity, ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, DiskSpace, DockerVolumeId, DockerVolumeName,
     HEALTHCHECK_DISABLE_SENTINEL, HealthObservation, HealthcheckCommand, HealthcheckSpec,
-    ImageSummary, MachineId, MachineImages, MachineTelemetry, ProjectName, QualifiedService,
+    ImageSummary, MachineId, MachineImages, MachineTelemetry, Namespace, QualifiedService,
     RpcError, RpcErrorCode, ServiceId, ServiceName, ValueError,
 };
 use serde::Deserialize;
@@ -58,7 +58,7 @@ use create::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};
 pub const LABEL_MANAGED: &str = "ployz.managed";
 pub const LABEL_SERVICE_ID: &str = "ployz.service.id";
 pub const LABEL_SERVICE_NAME: &str = "ployz.service.name";
-pub const LABEL_PROJECT_NAME: &str = "ployz.project.name";
+pub const LABEL_NAMESPACE: &str = "ployz.namespace";
 pub const LABEL_HOOK: &str = "ployz.service.hook";
 pub const LABEL_HOOK_PRE_DEPLOY: &str = "pre-deploy";
 
@@ -103,7 +103,7 @@ impl LocalDocker {
     async fn managed_container_ids(&self) -> Result<Vec<ContainerId>, Error> {
         let filters = HashMap::from([(
             "label",
-            vec![LABEL_MANAGED, LABEL_PROJECT_NAME, LABEL_SERVICE_ID],
+            vec![LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_ID],
         )]);
         let options = ListContainersOptionsBuilder::default()
             .all(true)
@@ -299,7 +299,7 @@ impl ContainerRuntime {
                 display_name: display_name(inspected.name.as_deref()),
                 created_at_unix_nanos: created_at_unix_nanos(inspected.created.as_deref()),
                 machine_id: *machine_id,
-                project_name: identity.project,
+                namespace: identity.namespace,
                 kind,
                 runtime,
                 effective_healthcheck: effective_check,
@@ -475,7 +475,7 @@ impl ManagedLabels {
         if !labels.contains_key(LABEL_MANAGED) {
             return Err(Error::NotManaged);
         }
-        let project_name = required_label(labels, LABEL_PROJECT_NAME)?;
+        let namespace = required_label(labels, LABEL_NAMESPACE)?;
         let service_id = required_label(labels, LABEL_SERVICE_ID)?;
         let service_name = required_label(labels, LABEL_SERVICE_NAME)?;
         ServiceId::parse(service_id).map_err(|source| Error::InvalidValue {
@@ -484,8 +484,8 @@ impl ManagedLabels {
         })?;
         Ok(Self {
             identity: QualifiedService::new(
-                ProjectName::parse(project_name).map_err(|source| Error::InvalidValue {
-                    field: LABEL_PROJECT_NAME,
+                Namespace::parse(namespace).map_err(|source| Error::InvalidValue {
+                    field: LABEL_NAMESPACE,
                     source,
                 })?,
                 ServiceName::parse(service_name).map_err(|source| Error::InvalidValue {
@@ -928,12 +928,12 @@ mod tests {
         }))
         .unwrap();
 
-        let project_name = ployz_core::ProjectName::parse("shop").unwrap();
+        let namespace = ployz_core::Namespace::parse("shop").unwrap();
         let regular = create::container_create_body(
             &machine_id,
             gateway,
             ContainerKind::ServiceContainer,
-            &project_name,
+            &namespace,
             &spec,
         )
         .unwrap();
@@ -966,7 +966,7 @@ mod tests {
         assert!(regular_host.port_bindings.is_some());
         let regular_labels = regular.labels.as_ref().unwrap();
         assert_eq!(
-            regular_labels.get(LABEL_PROJECT_NAME).map(String::as_str),
+            regular_labels.get(LABEL_NAMESPACE).map(String::as_str),
             Some("shop")
         );
         assert_eq!(
@@ -987,7 +987,7 @@ mod tests {
             &machine_id,
             gateway,
             ContainerKind::PreDeployHook,
-            &project_name,
+            &namespace,
             &spec,
         )
         .unwrap();
@@ -1017,7 +1017,7 @@ mod tests {
         );
         let hook_labels = hook.labels.as_ref().unwrap();
         assert_eq!(
-            hook_labels.get(LABEL_PROJECT_NAME).map(String::as_str),
+            hook_labels.get(LABEL_NAMESPACE).map(String::as_str),
             Some("shop")
         );
         assert_eq!(
@@ -1055,7 +1055,7 @@ mod tests {
             &machine_id,
             gateway,
             ContainerKind::ServiceContainer,
-            &ployz_core::ProjectName::parse("app").unwrap(),
+            &ployz_core::Namespace::parse("app").unwrap(),
             &spec,
         )
         .unwrap();
@@ -1096,7 +1096,7 @@ mod tests {
             &machine_id,
             gateway,
             ContainerKind::ServiceContainer,
-            &ployz_core::ProjectName::parse("app").unwrap(),
+            &ployz_core::Namespace::parse("app").unwrap(),
             &spec,
         )
         .unwrap();
@@ -1126,7 +1126,7 @@ mod tests {
             "container": { "image": "alpine:3.23.3", "pull_policy": "missing" },
             "volumes": [
                 {"reference":"host","source":{"kind":"bind","machine_path":"/srv/api"}},
-                {"reference":"alias","source":{"kind":"ordinary","name":"app_database","scope":{"project":"app","logical_name":"database"},"driver":{"name":"local","options":{"type":"none"}},"labels":{"purpose":"db"}}},
+                {"reference":"alias","source":{"kind":"ordinary","name":"app_database","scope":{"namespace":"app","logical_name":"database"},"driver":{"name":"local","options":{"type":"none"}},"labels":{"purpose":"db"}}},
                 {"reference":"memory","source":{"kind":"tmpfs","size_bytes":4096,"mode":448}}
             ],
             "mounts": [
@@ -1299,7 +1299,7 @@ mod tests {
                 "name": "api",
                 "mode": { "mode": "replicated", "replicas": 1 },
                 "container": { "image": "alpine:3.23.3", "pull_policy": "missing" },
-                "volumes": [{"reference":"data","source":{"kind":"ordinary","name":"app_missing","scope":{"project":"app","logical_name":"missing"},"driver":{"name":"local","options":{}}}}],
+                "volumes": [{"reference":"data","source":{"kind":"ordinary","name":"app_missing","scope":{"namespace":"app","logical_name":"missing"},"driver":{"name":"local","options":{}}}}],
                 "mounts": [{"volume":"data","target":"/data"}]
             }))
             .unwrap();
@@ -1476,13 +1476,13 @@ mod tests {
         ));
         let mut labels = HashMap::from([
             (LABEL_MANAGED.to_owned(), String::new()),
-            (LABEL_PROJECT_NAME.to_owned(), "app".to_owned()),
+            (LABEL_NAMESPACE.to_owned(), "app".to_owned()),
             (LABEL_SERVICE_ID.to_owned(), "a".repeat(32)),
             (LABEL_SERVICE_NAME.to_owned(), "api".to_owned()),
         ]);
         let parsed = ManagedLabels::parse(&labels).unwrap();
         assert_eq!(parsed.kind, ContainerKind::ServiceContainer);
-        assert_eq!(parsed.identity.project.as_str(), "app");
+        assert_eq!(parsed.identity.namespace.as_str(), "app");
         assert_eq!(parsed.identity.name.as_str(), "api");
         labels.insert(LABEL_HOOK.to_owned(), LABEL_HOOK_PRE_DEPLOY.to_owned());
         assert_eq!(
@@ -1497,7 +1497,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_labels_reject_missing_project_name() {
+    fn managed_labels_reject_missing_namespace() {
         let labels = HashMap::from([
             (LABEL_MANAGED.to_owned(), String::new()),
             (LABEL_SERVICE_ID.to_owned(), "a".repeat(32)),
@@ -1505,22 +1505,22 @@ mod tests {
         ]);
         assert!(matches!(
             ManagedLabels::parse(&labels),
-            Err(Error::MissingLabel(LABEL_PROJECT_NAME))
+            Err(Error::MissingLabel(LABEL_NAMESPACE))
         ));
     }
 
     #[test]
-    fn managed_labels_reject_invalid_project_name() {
+    fn managed_labels_reject_invalid_namespace() {
         let labels = HashMap::from([
             (LABEL_MANAGED.to_owned(), String::new()),
-            (LABEL_PROJECT_NAME.to_owned(), "Not_DNS".to_owned()),
+            (LABEL_NAMESPACE.to_owned(), "Not_DNS".to_owned()),
             (LABEL_SERVICE_ID.to_owned(), "a".repeat(32)),
             (LABEL_SERVICE_NAME.to_owned(), "api".to_owned()),
         ]);
         assert!(matches!(
             ManagedLabels::parse(&labels),
             Err(Error::InvalidValue {
-                field: LABEL_PROJECT_NAME,
+                field: LABEL_NAMESPACE,
                 ..
             })
         ));
@@ -1715,7 +1715,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_and_raw_inspect_project_equivalent_observations() {
+    fn typed_and_raw_inspect_namespace_equivalent_observations() {
         let value = inspect_json();
         let typed: ContainerInspectResponse = serde_json::from_value(value.clone()).unwrap();
         let from_typed = projected(&RawContainerInspect::from_typed(&typed).unwrap());

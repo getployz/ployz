@@ -1,0 +1,504 @@
+{
+  "$defs": {
+    "service": {
+      "additionalProperties": false,
+      "description": "A Service's Settings. `get SERVICE --json` prints them as `values`; `set SERVICE --patch` takes the same shape.",
+      "properties": {
+        "autoDeploy": {
+          "default": true,
+          "description": "Deploy the Environment's Saved State when its branch gets a new commit. Takes effect at once.",
+          "examples": [
+            false
+          ],
+          "title": "Auto-deploy",
+          "type": "boolean",
+          "x-ployz-apply": "immediate",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "branch": {
+          "description": "The branch the Service builds. Ployz checks it exists.",
+          "examples": [
+            "main"
+          ],
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Branch",
+          "type": "string",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "buildCommand": {
+          "description": "Overrides Railpack's build command. Unset keeps detection; Dockerfiles ignore it.",
+          "examples": [
+            "npm run build"
+          ],
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Build command",
+          "type": "string",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "buildMethod": {
+          "default": "railpack",
+          "description": "How the image is built: Railpack detects it, or a Dockerfile.",
+          "enum": [
+            "dockerfile",
+            "railpack"
+          ],
+          "examples": [
+            "dockerfile"
+          ],
+          "title": "Build method",
+          "type": "string",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "cpuLimit": {
+          "description": "Most vCPUs each replica may use. Unset means no limit.",
+          "examples": [
+            0.5,
+            2
+          ],
+          "exclusiveMinimum": 0,
+          "maximum": 64.0,
+          "title": "CPU limit",
+          "type": "number",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "dockerfilePath": {
+          "description": "The Dockerfile to build, relative to the root directory. Unset means Dockerfile.",
+          "examples": [
+            "docker/web.Dockerfile"
+          ],
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Dockerfile path",
+          "type": "string",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "env": {
+          "additionalProperties": false,
+          "description": "Environment variables by name, each at SERVICE.env.KEY. A patch sets the ones it names and keeps the rest; unset deletes one.",
+          "examples": [
+            {
+              "LOG_LEVEL": "info",
+              "PUBLIC_URL": {
+                "exported": true,
+                "value": "http://${{ PLOYZ_PRIVATE_DOMAIN }}"
+              }
+            }
+          ],
+          "patternProperties": {
+            "^[A-Z_][A-Z0-9_]{0,127}$": {
+              "description": "An environment variable. Text may reference variables: ${{ KEY }} for this Service's, ${{ service.KEY }} for another's; $${{ is a literal ${{. A secret reads as {\"secret\": true}, and sending that back keeps it; set a new one with --secret or --from-env-file. {\"value\": …, \"exported\": true} marks one other Services are meant to reference.",
+              "examples": [
+                "postgres://${{ db.USER }}@db:5432/app",
+                {
+                  "secret": true
+                },
+                {
+                  "exported": true,
+                  "value": "info"
+                }
+              ],
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "secret": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "secret"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "exported": {
+                      "default": false,
+                      "type": "boolean"
+                    },
+                    "value": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "secret": {
+                              "const": true
+                            }
+                          },
+                          "required": [
+                            "secret"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    }
+                  },
+                  "type": "object"
+                }
+              ],
+              "title": "Variable",
+              "x-ployz-apply": "staged",
+              "x-ployz-data-loss": false,
+              "x-ployz-secret": true
+            }
+          },
+          "title": "Variables",
+          "type": "object",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": true
+        },
+        "healthcheck": {
+          "additionalProperties": false,
+          "description": "An HTTP check a new replica must pass before it takes traffic: a path on the container PORT, and how many seconds it may take (default 300). Text sets the path. Unset turns it off.",
+          "examples": [
+            {
+              "path": "/health",
+              "timeoutSeconds": 30
+            }
+          ],
+          "properties": {
+            "path": {
+              "maxLength": 500,
+              "minLength": 1,
+              "pattern": "^/",
+              "type": "string"
+            },
+            "timeoutSeconds": {
+              "default": 300,
+              "maximum": 300,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "title": "Healthcheck",
+          "type": "object",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "image": {
+          "description": "The container image each replica runs.",
+          "examples": [
+            "nginx:1.27",
+            "ghcr.io/acme/web:1.4.0"
+          ],
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Container image",
+          "type": "string",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "maxRetries": {
+          "default": 10,
+          "description": "How often an on-failure restart policy restarts a replica.",
+          "examples": [
+            3
+          ],
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Max retries",
+          "type": "integer",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "memLimit": {
+          "description": "Most memory each replica may use, in GB. Unset means no limit.",
+          "examples": [
+            0.5,
+            4
+          ],
+          "exclusiveMinimum": 0,
+          "maximum": 1024.0,
+          "title": "Memory limit",
+          "type": "number",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "mounts": {
+          "additionalProperties": false,
+          "description": "Where the Service mounts each Volume, by Volume name, each at SERVICE.mounts.VOLUME. Create a Volume with `ployz volume add`. Unset detaches it: the Volume and its data stay.",
+          "examples": [
+            {
+              "data": "/var/lib/data"
+            }
+          ],
+          "patternProperties": {
+            "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$": {
+              "description": "The absolute path the Volume is mounted at in the Service's containers. Unset detaches it: the Volume and its data stay.",
+              "examples": [
+                "/var/lib/data"
+              ],
+              "minLength": 1,
+              "pattern": "^/",
+              "title": "Mount path",
+              "type": "string",
+              "x-ployz-apply": "staged",
+              "x-ployz-data-loss": false,
+              "x-ployz-secret": false
+            }
+          },
+          "title": "Mounts",
+          "type": "object",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "preDeployCommand": {
+          "description": "Runs once in a new replica before a Deploy starts the Service.",
+          "examples": [
+            "npm run migrate"
+          ],
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Pre-deploy command",
+          "type": "string",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "preferredBuilder": {
+          "anyOf": [
+            {
+              "const": "github"
+            },
+            {
+              "pattern": "^[0-9a-f]{32}$"
+            }
+          ],
+          "description": "Who builds this Service first: \"github\" for GitHub Actions, or a Server's Machine ID; then the Organization's Build Order, without it. Unset follows the Build Order. Applies to the next build.",
+          "examples": [
+            "github"
+          ],
+          "title": "Preferred Builder",
+          "type": "string",
+          "x-ployz-apply": "immediate",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "privateDns": {
+          "description": "The name other Services in the Environment reach it at, as NAME.internal. Renaming the Service keeps it. Unset returns it to the Service's name.",
+          "examples": [
+            "api",
+            "api-v2"
+          ],
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+          "title": "Private DNS",
+          "type": "string",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "registryCredential": {
+          "additionalProperties": false,
+          "description": "The username and secret a private image is pulled with. A new secret replaces the stored one at once; turning credentials on or off is staged, and unset keeps the stored secret for {\"secret\": true} to turn back on. Reads show {\"secret\": true}; set a secret with --secret or --patch -.",
+          "examples": [
+            {
+              "secret": true
+            }
+          ],
+          "properties": {
+            "secret": {
+              "oneOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "const": true
+                }
+              ]
+            },
+            "username": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "secret"
+          ],
+          "title": "Registry credentials",
+          "type": "object",
+          "x-ployz-apply": "immediate",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": true
+        },
+        "replicas": {
+          "default": 1,
+          "description": "How many copies of the Service run.",
+          "examples": [
+            3
+          ],
+          "maximum": 50,
+          "minimum": 0,
+          "title": "Replicas",
+          "type": "integer",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "repository": {
+          "description": "The GitHub repository the Service builds, as owner/name. Ployz checks the Organization can read it; a change keeps the branch if the new repository has it, else uses its default branch.",
+          "examples": [
+            "acme/web"
+          ],
+          "maxLength": 300,
+          "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$",
+          "title": "Repository",
+          "type": "string",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "restartPolicy": {
+          "default": "unless-stopped",
+          "description": "When a stopped replica restarts.",
+          "enum": [
+            "always",
+            "no",
+            "on-failure",
+            "unless-stopped"
+          ],
+          "examples": [
+            "on-failure"
+          ],
+          "title": "Restart policy",
+          "type": "string",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "rootDir": {
+          "description": "The repository directory the build starts in. Unset means the repository root.",
+          "examples": [
+            "/apps/web"
+          ],
+          "pattern": "^/[A-Za-z0-9/._-]*$",
+          "title": "Root directory",
+          "type": "string",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "startCommand": {
+          "description": "Overrides the image's command. Unset runs the image's own.",
+          "examples": [
+            "npm start"
+          ],
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Start command",
+          "type": "string",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "template": {
+          "additionalProperties": false,
+          "description": "The Service Template it was created from, and its version. It changes nothing that runs. Unset forgets it.",
+          "examples": [
+            {
+              "id": "postgres",
+              "version": 1
+            }
+          ],
+          "properties": {
+            "id": {
+              "maxLength": 63,
+              "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+              "type": "string"
+            },
+            "version": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "version"
+          ],
+          "title": "Template",
+          "type": "object",
+          "x-ployz-apply": "immediate",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "waitForCi": {
+          "default": false,
+          "description": "Hold an auto-deploy until every GitHub check suite of the commit passes. Takes effect at once.",
+          "examples": [
+            true
+          ],
+          "title": "Wait for CI",
+          "type": "boolean",
+          "x-ployz-apply": "immediate",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "watchPaths": {
+          "default": [],
+          "description": "Gitignore-style patterns of repository paths a push must change to auto-deploy; the last matching pattern wins and ! excludes. Empty means any change. Takes effect at once.",
+          "examples": [
+            [
+              "apps/web/**",
+              "!**/*.md"
+            ]
+          ],
+          "items": {
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Watch paths",
+          "type": "array",
+          "x-ployz-apply": "immediate",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        }
+      },
+      "title": "Service",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "An Environment's Settings by Service name. A path is SERVICE.SETTING, for example web.replicas.",
+  "patternProperties": {
+    "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$": {
+      "$ref": "#/$defs/service"
+    }
+  },
+  "title": "Ployz Environment Settings",
+  "type": "object",
+  "x-ployz-version": 1
+}

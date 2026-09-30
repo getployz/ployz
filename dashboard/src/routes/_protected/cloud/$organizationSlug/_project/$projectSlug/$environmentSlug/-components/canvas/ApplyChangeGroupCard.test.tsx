@@ -2,14 +2,15 @@
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CanvasNodeDiffGroup } from "#/modules/environment-design/canvas-node-diff";
+import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { ApplyChangeGroupCard } from "./ApplyChangeGroupCard";
 
-const lifecycleOnlyGroup: CanvasNodeDiffGroup = {
+const lifecycleOnlyGroup: ChangeGroup = {
   nodeType: "service",
   nodeId: "00000000-0000-4000-8000-000000000001",
   nodeName: "nginx",
-  summaryLabel: "nginx",
+  discardPath: "nginx",
+  changeCount: 1,
   serviceSourceType: "image",
   lifecycle: "create",
   canDiscard: true,

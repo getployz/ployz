@@ -7,7 +7,7 @@ use ployz::deploy::plan_deploy;
 use ployz_core::{
     CORROSION_API_PORT, ContainerAction, ContainerId, ContainerKind, GetIngressProxyConfigRequest,
     HOSTNAME_VERIFY_PATH, INGRESS_VERIFY_PATH, ListMachinesRequest, Machine, MachineId,
-    MachineTarget, MembershipObservation, ProjectName, RequestedServiceSpec, ResolvedServiceSpec,
+    MachineTarget, MembershipObservation, Namespace, RequestedServiceSpec, ResolvedServiceSpec,
     ServiceId, StartContainerRequest, StopContainerRequest, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
@@ -35,26 +35,8 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
         .await;
     }
 
-    cli(
-        &direct,
-        &[
-            "ingress",
-            "deploy",
-            "--image",
-            "caddy:2.10.2",
-            "--constraint",
-            &format!("node.id=={}", machines[0].id),
-        ],
-    );
-    let caddy_id = wait_service(&mut client, "ingress", 1).await;
-    assert!(
-        wait_running(&mut client, &caddy_id, 1)
-            .await
-            .iter()
-            .all(|container| container.resolved_spec.container.image == "caddy:2.10.2")
-    );
-    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
-    assert_eq!(wait_service(&mut client, "ingress", 3).await, caddy_id);
+    cli(&direct, &ingress_role(&machines[0]));
+    let caddy_id = wait_service(&mut client, "ingress", 3).await;
     assert!(
         wait_running(&mut client, &caddy_id, 3)
             .await
@@ -128,10 +110,7 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
             .unwrap();
     }
 
-    let logs = run_cli(
-        &direct,
-        &["service", "logs", "ployz-system/ingress", "--tail", "1"],
-    );
+    let logs = run_cli(&direct, &["logs", "ployz-system/ingress", "--tail", "1"]);
     let logs = [logs.stdout, logs.stderr].concat();
     assert!(String::from_utf8(logs).unwrap().contains(" ingress/"));
 
@@ -171,7 +150,7 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
     .await
     .unwrap();
 
-    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    cli(&direct, &ingress_role(&first));
     wait_service(&mut client, "ingress", 1).await;
 
     let api: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
@@ -233,17 +212,7 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
     assert!(curl_https(&cluster, 0, &first_cert).trim() != "ok");
 
     let second = cluster.add_machine(0, 1, "machine-2").await.unwrap();
-    cli(
-        &direct,
-        &[
-            "ingress",
-            "deploy",
-            "--image",
-            "caddy:2.10.2",
-            "--constraint",
-            &format!("node.id=={}", second.id),
-        ],
-    );
+    cli(&direct, &ingress_role(&second));
     wait_config(&mut client, &second, |config| {
         config.contains("tls /config/caddy/certs/secure.example.test-")
     })
@@ -315,6 +284,18 @@ async fn assert_membership_blind(
             .config()
             .contains(&format!("{}:8080", retained_address.0))
     );
+}
+
+/// Give `server` the ingress role; the Ingress Proxy follows it with the preloaded Caddy image.
+fn ingress_role(server: &Machine) -> [&str; 6] {
+    [
+        "server",
+        "set",
+        server.id.as_str(),
+        "--accepts-ingress=true",
+        "--ingress-image",
+        "caddy:2.10.2",
+    ]
 }
 
 fn cli(direct: &str, args: &[&str]) -> String {
@@ -510,7 +491,7 @@ async fn deploy(
     };
     let plan = plan_deploy(
         &ployz::deploy::DeployIntent::apply_all(
-            ProjectName::parse("start-first").unwrap(),
+            Namespace::parse("start-first").unwrap(),
             [requested],
             ployz::deploy::PlanOptions {
                 skip_health_monitor: true,
@@ -570,7 +551,7 @@ async fn create_and_start(
         .create_container(
             machine.id,
             ContainerKind::ServiceContainer,
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec,
             None,
         )

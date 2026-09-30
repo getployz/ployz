@@ -4,7 +4,7 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, ContainerSelector, ContainerSelectorError, FanoutSelector,
     Machine, MachineId, MachineName, MachineRuntime, MachineSelectorError, MachineTarget,
-    NameMatches, Placement, ProjectName, ServiceId, ServiceName, ServiceSelector,
+    NameMatches, Namespace, Placement, ServiceId, ServiceName, ServiceSelector,
     ServiceSelectorError, WireGuardPublicKey, derive_services, resolve_container_selector,
     resolve_machine_selectors,
 };
@@ -183,10 +183,10 @@ fn service_selector_resolution_prefers_ids_then_qualified_then_unique_short_name
     let unique_id = ServiceId::parse("d".repeat(32)).unwrap();
     let mut staging = observation('1', &staging_id, "web", ContainerKind::ServiceContainer);
     staging
-        .try_update(|parts| parts.project_name = ProjectName::parse("shop-staging").unwrap())
+        .try_update(|parts| parts.namespace = Namespace::parse("shop-staging").unwrap())
         .unwrap();
     let mut prod = observation('2', &prod_id, "web", ContainerKind::ServiceContainer);
-    prod.try_update(|parts| parts.project_name = ProjectName::parse("shop-prod").unwrap())
+    prod.try_update(|parts| parts.namespace = Namespace::parse("shop-prod").unwrap())
         .unwrap();
     let services = derive_services([
         staging,
@@ -252,12 +252,12 @@ fn service_selector_resolution_prefers_ids_then_qualified_then_unique_short_name
 }
 
 #[test]
-fn service_selector_with_project_qualifies_names_and_rejects_invalid_names() {
-    let project = ProjectName::parse("st1").unwrap();
+fn service_selector_with_namespace_qualifies_names_and_rejects_invalid_names() {
+    let namespace = Namespace::parse("st1").unwrap();
     assert_eq!(
         ServiceSelector::parse("alpha")
             .unwrap()
-            .with_project(&project)
+            .with_namespace(&namespace)
             .unwrap()
             .as_str(),
         "st1/alpha"
@@ -265,7 +265,7 @@ fn service_selector_with_project_qualifies_names_and_rejects_invalid_names() {
     let service_id = ServiceId::parse("a".repeat(32)).unwrap();
     assert_eq!(
         ServiceSelector::from(&service_id)
-            .with_project(&project)
+            .with_namespace(&namespace)
             .unwrap()
             .as_str(),
         service_id.as_str()
@@ -273,7 +273,7 @@ fn service_selector_with_project_qualifies_names_and_rejects_invalid_names() {
     assert_eq!(
         ServiceSelector::parse("st2/alpha")
             .unwrap()
-            .with_project(&project)
+            .with_namespace(&namespace)
             .unwrap()
             .as_str(),
         "st2/alpha"
@@ -281,7 +281,7 @@ fn service_selector_with_project_qualifies_names_and_rejects_invalid_names() {
     assert_eq!(
         ServiceSelector::parse("My_App")
             .unwrap()
-            .with_project(&project)
+            .with_namespace(&namespace)
             .unwrap_err()
             .to_string(),
         "invalid Service Name \"My_App\": a 1-63 character lowercase DNS label"
@@ -401,7 +401,7 @@ fn container(
         display_name: display_name.into(),
         created_at_unix_nanos: 0,
         machine_id: MachineId::parse("2".repeat(32)).unwrap(),
-        project_name: ProjectName::parse("app").unwrap(),
+        namespace: Namespace::parse("app").unwrap(),
         kind,
         runtime: ContainerRuntimeObservation::Created,
         effective_healthcheck: None,

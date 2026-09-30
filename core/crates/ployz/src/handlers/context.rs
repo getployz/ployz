@@ -1,6 +1,8 @@
 use std::{io, path::Path};
 
-use clap::ArgMatches;
+use clap::{ArgMatches, Command};
+
+use crate::cli::{base, positional, value};
 use serde::Serialize;
 use serde_json::json;
 
@@ -223,4 +225,31 @@ fn prompt<'a>(
             .ok_or_else(|| Error::usage("invalid selection"))?
     };
     Ok(index)
+}
+
+pub(crate) fn command() -> Command {
+    base("ctx", "Show where commands act, or manage local contexts")
+        .subcommand(base("ls", "List contexts"))
+        .subcommand(
+            base(
+                "use",
+                "Select a context and optionally its default connection",
+            )
+            .arg(positional("context-name", false))
+            .arg(
+                value("connection", None)
+                    .help("Connection label or 1-based index in the selected context"),
+            ),
+        )
+        .subcommand(base("rm", "Remove a local context").arg(positional("context-name", true)))
+}
+
+pub(super) fn handler(path: &str) -> Option<super::Handler> {
+    Some(match path {
+        "" => super::link::show,
+        "ls" => list,
+        "rm" => remove,
+        "use" => select,
+        _ => return None,
+    })
 }

@@ -79,6 +79,108 @@ pub fn resolve_variables(input: &ResolveVariablesInput) -> ResolveVariablesResul
     }
 }
 
+/// A display template parsed into parts, and the Service names that matched no producer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParsedTemplate {
+    pub parts: Vec<ValuePart>,
+    /// Names in `${{ name.KEY }}` that `lineage` did not know; their tokens stay text.
+    pub unresolved: Vec<String>,
+    /// Whether a `${{` (not `$${{`) has no `}}` after it.
+    pub unterminated: bool,
+}
+
+/// Parse display text into template parts: `${{ KEY }}` reads the owner's own
+/// variable, `${{ name.KEY }}` Service `name`'s (by the lineage `lineage` returns),
+/// and `$${{` is a literal `${{`. Anything malformed stays text. Inverse of
+/// [`super::render_variable_parts`].
+#[must_use]
+pub fn parse_variable_template(
+    text: &str,
+    lineage: impl Fn(&str) -> Option<String>,
+) -> ParsedTemplate {
+    let mut parts = Vec::new();
+    let mut unresolved = Vec::new();
+    let mut unterminated = false;
+    let mut pending = String::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix("$${{") {
+            pending.push_str("${{");
+            rest = after;
+            continue;
+        }
+        let Some(after) = rest.strip_prefix("${{") else {
+            let mut chars = rest.chars();
+            pending.extend(chars.next());
+            rest = chars.as_str();
+            continue;
+        };
+        let Some((owner, key, after)) = template_token(after) else {
+            unterminated |= !after.contains("}}");
+            pending.push_str("${{");
+            rest = after;
+            continue;
+        };
+        let resolved = match owner {
+            None => Some(ValuePartOwner::Self_),
+            Some(name) => lineage(name).map(|lineage_id| ValuePartOwner::Service { lineage_id }),
+        };
+        match (resolved, owner) {
+            (Some(owner), _) => {
+                if !pending.is_empty() {
+                    parts.push(ValuePart::Text {
+                        value: std::mem::take(&mut pending),
+                    });
+                }
+                parts.push(ValuePart::Ref {
+                    owner,
+                    key: key.to_owned(),
+                });
+            }
+            (None, name) => {
+                unresolved.extend(name.map(str::to_owned));
+                pending.push_str(rest.get(..rest.len() - after.len()).unwrap_or_default());
+            }
+        }
+        rest = after;
+    }
+    if !pending.is_empty() {
+        parts.push(ValuePart::Text { value: pending });
+    }
+    ParsedTemplate {
+        parts,
+        unresolved,
+        unterminated,
+    }
+}
+
+/// `[name.]KEY }}` after a `${{`, with optional whitespace inside the braces.
+/// Returns the owner name, the key and the text after the token.
+fn template_token(text: &str) -> Option<(Option<&str>, &str, &str)> {
+    let body = text.trim_start();
+    let (first, after) = identifier(body, '-');
+    let (owner, key, after) = match after.strip_prefix('.') {
+        Some(after) if first.starts_with(|c: char| c.is_ascii_alphanumeric()) => {
+            let (key, after) = identifier(after, '_');
+            (Some(first), key, after)
+        }
+        Some(_) => return None,
+        None => (None, first, after),
+    };
+    let valid_key =
+        key.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') && !key.contains('-');
+    let after = after.trim_start().strip_prefix("}}")?;
+    valid_key.then_some((owner, key, after))
+}
+
+/// Split off the leading run of ASCII alphanumerics, `_` and `extra`.
+fn identifier(text: &str, extra: char) -> (&str, &str) {
+    let end = text
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == extra))
+        .unwrap_or(text.len());
+    text.split_at(end)
+}
+
 fn resolve_parts(
     parts: &[ValuePart],
     self_owner_id: &str,
@@ -141,4 +243,67 @@ fn resolve_parts(
         secret |= resolved.1;
     }
     Ok((value, secret))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(text: &str) -> ParsedTemplate {
+        parse_variable_template(text, |name| (name == "db").then(|| "lineage-db".to_owned()))
+    }
+
+    fn text(value: &str) -> ValuePart {
+        ValuePart::Text {
+            value: value.into(),
+        }
+    }
+
+    // The dashboard's `parseDisplayToParts` cases.
+    #[test]
+    fn display_text_parses_like_the_dashboard() {
+        let db = ValuePartOwner::Service {
+            lineage_id: "lineage-db".into(),
+        };
+        let reference = |owner: &ValuePartOwner, key: &str| ValuePart::Ref {
+            owner: owner.clone(),
+            key: key.into(),
+        };
+        let display = "postgres://${{ db.USER }}:${{db.PASSWORD}}@${{ HOST }}/app";
+        assert_eq!(
+            parse(display).parts,
+            [
+                text("postgres://"),
+                reference(&db, "USER"),
+                text(":"),
+                reference(&db, "PASSWORD"),
+                text("@"),
+                reference(&ValuePartOwner::Self_, "HOST"),
+                text("/app"),
+            ]
+        );
+        let slugs = [("lineage-db".to_owned(), "db".to_owned())].into();
+        assert_eq!(
+            super::super::render_variable_parts(&parse("a ${{ db.USER }} $${{ b").parts, &slugs),
+            "a ${{ db.USER }} $${{ b"
+        );
+        let ghost = parse("x=${{ ghost.Y }}");
+        assert_eq!(ghost.parts, [text("x=${{ ghost.Y }}")]);
+        assert_eq!(ghost.unresolved, ["ghost"]);
+        assert_eq!(parse("echo $${{ FOO }}").parts, [text("echo ${{ FOO }}")]);
+        for malformed in [
+            "${{ not-valid",
+            "${{ web. }}",
+            "${{ _x.Y }}",
+            "${{ 9X }}",
+            "${{ a-b }}",
+        ] {
+            assert_eq!(parse(malformed).parts, [text(malformed)], "{malformed}");
+        }
+        assert!(parse("${{ db.URL").unterminated);
+        assert!(!parse("${{ oops ${{ db.URL }}").unterminated);
+        assert!(!parse("$${{ literal").unterminated);
+        assert!(parse("").parts.is_empty());
+        assert_eq!(parse("é${{ K }}ü").parts.last(), Some(&text("ü")));
+    }
 }

@@ -54,7 +54,7 @@ pub enum RuntimeOutcomeSummary {
     },
 }
 
-/// Services whose complete set of planned operations is confirmed by this outcome.
+/// Each planned Service by what this outcome did to it.
 #[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeOutcomeProjection {
@@ -62,6 +62,12 @@ pub struct RuntimeOutcomeProjection {
     pub summary: RuntimeOutcomeSummary,
     /// Services whose every planned operation completed, ordered by name.
     pub confirmed_services: Vec<ServiceName>,
+    /// Services work started on but didn't finish: one of their operations
+    /// completed or failed. Ordered by name.
+    pub failed_services: Vec<ServiceName>,
+    /// Services with planned operations an earlier failure stopped before any ran.
+    /// Ordered by name.
+    pub unattempted_services: Vec<ServiceName>,
 }
 
 fn invalid() -> ConfigError {
@@ -140,34 +146,35 @@ pub fn parse_runtime_preview(value: Value) -> Result<DeployPreview, ConfigError>
     Ok(preview)
 }
 
-/// Validate one version-1 SDK outcome against its exact preview, then identify
-/// Services whose every planned operation completed. A partial replica update,
-/// failed replacement, or skipped hook cannot advance a whole Service.
+/// Validate one version-1 SDK outcome against its exact preview, as
+/// [`parse_runtime_preview`] returned it, then identify Services whose every
+/// planned operation completed. A partial replica update, failed replacement, or
+/// skipped hook cannot advance a whole Service.
 ///
 /// # Errors
 /// Rejects unsupported versions, malformed evidence, missing Service identities,
 /// and outcomes whose operations do not match the preview.
 pub fn project_runtime_outcome(
-    preview: Value,
+    preview: &DeployPreview,
     value: Value,
 ) -> Result<RuntimeOutcomeProjection, ConfigError> {
-    let preview = parse_runtime_preview(preview)?;
     let evidence: RuntimeOutcomeEvidence = decode(value)?;
     if evidence.version != 1 {
         return Err(invalid());
     }
-    let (summary, completed, pending) = match evidence.outcome {
+    let (summary, completed, failed, pending) = match evidence.outcome {
         DeployOutcome::Success { completed } => (
             RuntimeOutcomeSummary::Success {
                 completed: completed.len(),
             },
             completed,
+            None,
             Vec::new(),
         ),
         DeployOutcome::Failed {
             completed,
             failed,
-            mut unexecuted,
+            unexecuted,
         } => {
             let (operation, error) = match failed {
                 FailedOperation::Operation { operation, error } => (operation, error),
@@ -187,19 +194,27 @@ pub fn project_runtime_outcome(
                 unexecuted: unexecuted.len(),
                 reason,
             };
-            unexecuted.push(operation);
-            (summary, completed, unexecuted)
+            (summary, completed, Some(operation), unexecuted)
         }
     };
-    if completed.len() + pending.len() != preview.operations.len() {
+    if completed.len() + usize::from(failed.is_some()) + pending.len() != preview.operations.len() {
         return Err(invalid());
     }
     let mut matched = vec![false; preview.operations.len()];
-    let mut services = BTreeMap::new();
-    for (mut operation, completed) in completed
+    let mut services: BTreeMap<ServiceName, Progress> = BTreeMap::new();
+    for (mut operation, progress) in completed
         .into_iter()
-        .map(|operation| (operation, true))
-        .chain(pending.into_iter().map(|operation| (operation, false)))
+        .map(|operation| (operation, Progress::Completed))
+        .chain(
+            failed
+                .into_iter()
+                .map(|operation| (operation, Progress::Failed)),
+        )
+        .chain(
+            pending
+                .into_iter()
+                .map(|operation| (operation, Progress::Unattempted)),
+        )
     {
         redact_operation(&mut operation)?;
         // ponytail: quadratic matching for bounded plans; index operation identities if large plans make this measurable.
@@ -220,13 +235,10 @@ pub fn project_runtime_outcome(
         {
             return Err(invalid());
         }
-        let service = row
-            .service_name
-            .as_ref()
-            .or_else(|| operation.service_name());
-        match service {
+        match row.service_name() {
             Some(service) => {
-                *services.entry(service.clone()).or_insert(true) &= completed;
+                let entry = services.entry(service.clone()).or_insert(progress);
+                *entry = entry.merge(progress);
             }
             None if matches!(
                 operation,
@@ -235,11 +247,39 @@ pub fn project_runtime_outcome(
             None => return Err(invalid()),
         }
     }
+    let named = |wanted: Progress| {
+        services
+            .iter()
+            .filter(|(_, progress)| **progress == wanted)
+            .map(|(service, _)| service.clone())
+            .collect()
+    };
     Ok(RuntimeOutcomeProjection {
         summary,
-        confirmed_services: services
-            .into_iter()
-            .filter_map(|(service, complete)| complete.then_some(service))
-            .collect(),
+        confirmed_services: named(Progress::Completed),
+        failed_services: named(Progress::Failed),
+        unattempted_services: named(Progress::Unattempted),
     })
+}
+
+/// How far a Service's planned operations got.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Progress {
+    /// Every one completed.
+    Completed,
+    /// Some ran, not all completed.
+    Failed,
+    /// None ran.
+    Unattempted,
+}
+
+impl Progress {
+    /// The Service's progress with one more operation's.
+    const fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Completed, Self::Completed) => Self::Completed,
+            (Self::Unattempted, Self::Unattempted) => Self::Unattempted,
+            _ => Self::Failed,
+        }
+    }
 }

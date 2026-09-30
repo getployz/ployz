@@ -5,24 +5,135 @@ use std::{
 
 use chrono::{DateTime, Local, Utc};
 use clap::ArgMatches;
+use clap::{Arg, ArgAction, Command};
 use crossterm::terminal;
 use futures_util::StreamExt;
 use ployz_core::{
     ContainerSelector, EnvironmentValues, ExecRequestFrame, ExecResponseFrame, FanoutSelector,
-    LogBody, LogEntry, LogOrigin, LogsOptions, ServiceSelector, select_service,
+    LogBody, LogEntry, LogOrigin, LogsOptions, Namespace, RpcErrorCode, ServiceSelector,
+    select_service,
 };
+use ployz_store::{DeploymentId, NamespaceQuery};
 use tokio::io::copy_bidirectional;
 
 use crate::{
+    cli::{base, log_flags, positional, switch, trailing, value},
+    cloud_account::StoreCallError,
+    cloud_login::LoginError,
     context::Transport,
     operator::{
-        ExecMode, ProxyPorts, exec_options, merge_logs, open_exec, open_machine_logs,
+        ExecMode, ProxyPorts, ServiceArg, exec_options, merge_logs, open_exec, open_machine_logs,
         open_service_logs, parse_log_time, parse_proxy_ports, parse_service_args, parse_tail,
         select_proxy_container,
     },
 };
 
-use super::{Error, cancellation_on_ctrl_c, leaf_matches, string_values, with_client};
+use super::{
+    Error, cancellation_on_ctrl_c, leaf_matches, store::scoped, string_values, with_client,
+};
+
+pub(crate) fn exec_command() -> Command {
+    scoped(base("exec", "Run a command in a Service's container"))
+        .arg(value("container", None))
+        .arg(switch("detach", Some('d')))
+        .arg(switch("no-tty", Some('T')))
+        .arg(positional("service", true))
+        .arg(trailing("command"))
+}
+
+pub(crate) fn logs_command() -> Command {
+    scoped(log_flags(base(
+        "logs",
+        "Show Service logs; every Service of the Environment when none is named",
+    )))
+    .arg(
+        Arg::new("service-or-container")
+            .value_name("SERVICE[:CONTAINER]")
+            .num_args(0..)
+            .action(ArgAction::Append),
+    )
+    .arg(
+        value("deployment", None)
+            .value_name("ID")
+            .help("Only the running containers this Deployment created, in its Environment"),
+    )
+    .arg(
+        switch("build", None)
+            .requires("deployment")
+            .help("The Deployment's build logs instead: its Git Services' builds, or those named"),
+    )
+}
+
+pub(crate) fn ps_command() -> Command {
+    scoped(base(
+        "ps",
+        "List the Environment's containers across Servers",
+    ))
+    .arg(
+        value("sort", None)
+            .default_value("service")
+            .value_parser(["service", "machine", "health"]),
+    )
+}
+
+/// The Namespace the addressed Project and Environment run in, so a bare Service name
+/// means that Environment's Service. `None` keeps the whole Cluster in view: nothing
+/// was asked for, and no Config Store is reachable, it has no Project yet, or
+/// `--connect`/`--context` name a Cluster directly.
+pub(super) fn scope(root: &ArgMatches) -> Result<Option<Scoped>, Error> {
+    let leaf = leaf_matches(root);
+    let environment = super::store::environment(leaf)?;
+    let asked = environment.project.is_some() || environment.environment.is_some();
+    let direct = ["connect", "context"]
+        .into_iter()
+        .any(|id| matches!(leaf.try_get_one::<String>(id), Ok(Some(_))));
+    if !asked && direct && !super::store::local_mode() {
+        return Ok(None);
+    }
+    let Some(store) = super::store::reachable(root)? else {
+        return if asked {
+            Err(LoginError::SignedOut.into())
+        } else {
+            Ok(None)
+        };
+    };
+    match store.try_read(&NamespaceQuery { environment }) {
+        Ok(view) => Ok(Some(Scoped {
+            namespace: view.namespace,
+            services: view.services,
+        })),
+        Err(StoreCallError::Refused(error)) if !asked && error.code == RpcErrorCode::NotFound => {
+            Ok(None)
+        }
+        Err(error) => Err(store.fail(error)),
+    }
+}
+
+/// The Namespace a live command acts in, and its Services' runtime names by the
+/// names they have now.
+pub(super) struct Scoped {
+    pub(super) namespace: Namespace,
+    services: std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::ServiceName>,
+}
+
+/// `selector` in `scoped`: a bare Service Name becomes that Namespace's Service, by
+/// its runtime name, so a renamed Service is still found.
+pub(super) fn in_scope(
+    selector: ServiceSelector,
+    scoped: Option<&Scoped>,
+) -> Result<ServiceSelector, Error> {
+    let Some(scoped) = scoped else {
+        return Ok(selector);
+    };
+    let runtime = ployz_core::ServiceName::parse(selector.as_str())
+        .ok()
+        .and_then(|name| scoped.services.get(&name))
+        .map(|runtime| ServiceSelector::parse(runtime.to_string()))
+        .transpose()?;
+    Ok(runtime
+        .unwrap_or(selector)
+        .with_namespace(&scoped.namespace)?)
+}
 
 pub fn exec(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
@@ -31,6 +142,7 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
             .cloned()
             .ok_or_else(|| Error::usage("Service selector is required"))?,
     )?;
+    let service = in_scope(service, scope(root)?.as_ref())?;
     let container = leaf
         .get_one::<String>("container")
         .filter(|selector| !selector.is_empty())
@@ -88,29 +200,103 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-pub fn service_logs(root: &ArgMatches) -> Result<(), Error> {
+/// Stream Service logs; every Service of the Environment when none is named.
+pub fn logs(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
-    let explicit = leaf
-        .get_many::<String>("service-or-container")
-        .map(|values| values.cloned().collect::<Vec<_>>())
-        .unwrap_or_default();
-    service_logs_with(root, explicit)
-}
-
-fn service_logs_with(root: &ArgMatches, explicit: Vec<String>) -> Result<(), Error> {
-    let leaf = leaf_matches(root);
+    let named = string_values(leaf, "service-or-container");
     let options = log_options(leaf)?;
-    let args = parse_service_args(&explicit)?;
+    let store = leaf
+        .get_one::<String>("deployment")
+        .is_some()
+        .then(|| super::store::store(root))
+        .transpose()?;
+    let deployment = store
+        .as_ref()
+        .map(|store| super::deploy::deployment_id(leaf, store, "deployment"))
+        .transpose()?;
+    if let Some(id) = deployment.as_ref().filter(|_| leaf.get_flag("build")) {
+        return build_logs(root, id, &named);
+    }
+    // A Deployment names its Environment, whatever the scope says.
+    let namespace = match (&deployment, &store) {
+        (Some(id), Some(store)) => {
+            let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
+            Some(Scoped {
+                namespace: view.namespace,
+                services: view.runtime_names,
+            })
+        }
+        _ => scope(root)?,
+    };
+    let args = parse_service_args(&named)?
+        .into_iter()
+        .map(|arg| {
+            Ok(ServiceArg {
+                service: in_scope(arg.service, namespace.as_ref())?,
+                ..arg
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
     let machines = parse_fanout_selectors(string_values(leaf, "machine"))?;
     let utc = leaf.get_flag("utc");
     with_client(root, |client| {
         Box::pin(async move {
             let cancellation = cancellation_on_ctrl_c();
             let _parent = cancellation.clone().drop_guard();
-            let inputs =
-                open_service_logs(client, &args, &machines, options, cancellation.clone()).await?;
+            let inputs = open_service_logs(
+                client,
+                &args,
+                namespace.as_ref().map(|scoped| &scoped.namespace),
+                &machines,
+                options,
+                cancellation.clone(),
+                deployment.as_ref().map(DeploymentId::as_str),
+            )
+            .await?;
             print_logs(merge_logs(inputs, cancellation), utc).await
         })
+    })
+}
+
+/// Print Deployment `id`'s build logs: each Service in `named`, or every build.
+fn build_logs(root: &ArgMatches, id: &DeploymentId, named: &[String]) -> Result<(), Error> {
+    let store = super::store::store(root)?;
+    let services = if named.is_empty() {
+        store
+            .read(&ployz_store::DeploymentQuery { id: id.clone() })?
+            .builds
+            .into_iter()
+            .map(|build| build.service)
+            .collect()
+    } else {
+        super::store::service_names(leaf_matches(root), "service-or-container")?
+    };
+    let builds = services
+        .into_iter()
+        .map(|service| {
+            store.read(&ployz_store::BuildLogQuery {
+                deployment: id.clone(),
+                service,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    crate::output::finish(&serde_json::json!({ "builds": builds }), || {
+        if builds.is_empty() {
+            crate::output::say!("Deployment {id} built nothing.");
+        }
+        for build in &builds {
+            crate::output::say!(
+                "== {} from {}: {}",
+                build.build.service,
+                build
+                    .build
+                    .commit
+                    .as_ref()
+                    .map_or("the upload", ployz_store::CommitSha::as_str),
+                super::store::word(&build.build.status)
+            );
+            crate::output::say!("{}", build.log);
+        }
     })
 }
 
@@ -135,31 +321,33 @@ pub fn machine_logs(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-pub fn proxy(root: &ArgMatches) -> Result<(), Error> {
+/// Forward a loopback port to a healthy container of the Service until interrupted.
+pub fn port_forward(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let service = ServiceSelector::parse(
         leaf.get_one::<String>("service")
             .cloned()
             .ok_or_else(|| Error::usage("Service selector is required"))?,
     )?;
+    let service = in_scope(service, scope(root)?.as_ref())?;
     let ports = parse_proxy_ports(
         leaf.get_one::<String>("port")
-            .ok_or_else(|| Error::usage("proxy port is required"))?,
+            .ok_or_else(|| Error::usage("port is required"))?,
     )?;
     with_client(root, |client| {
-        Box::pin(async move { run_proxy(client, &service, ports).await })
+        Box::pin(async move { run_port_forward(client, &service, ports).await })
     })
 }
 
-async fn run_proxy(
+async fn run_port_forward(
     client: &mut crate::connect::Client,
     service_selector: &ServiceSelector,
     ports: ProxyPorts,
 ) -> Result<(), Error> {
-    if !matches!(client.connection().transport(), Transport::Ssh { .. }) {
+    if matches!(client.connection().transport(), Transport::Tcp(_)) {
         return Err(Error::coded(
             ployz_core::RpcErrorCode::Unsupported,
-            format!("proxy dialing is unsupported over {}", client.connection()),
+            format!("port-forward is unsupported over {}", client.connection()),
         ));
     }
     let live = client.live_services(EnvironmentValues::Redacted).await?;
@@ -178,30 +366,42 @@ async fn run_proxy(
         ports.local,
     ))
     .await?;
-    crate::output::say!(
-        "{} -> {remote} ({service_selector}/{})",
-        listener.local_addr()?,
-        container.container_id
-    );
+    let local = listener.local_addr()?;
+    if crate::output::json() {
+        crate::output::emit_line(&serde_json::json!({
+            "local": local,
+            "remote": remote,
+            "service": service_selector.to_string(),
+            "container": container.container_id,
+        }))?;
+    } else {
+        crate::output::say!(
+            "{local} -> {remote} ({service_selector}/{}); Ctrl-C stops",
+            container.container_id
+        );
+    }
+    let mut connections = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
             result = listener.accept() => {
                 let (mut local, _) = result?;
                 let client = client.clone();
                 let remote = remote.to_string();
-                tokio::spawn(async move {
+                connections.spawn(async move {
                     match client.dial_proxy("tcp", &remote).await {
                         Ok(mut upstream) => {
                             if let Err(error) = copy_bidirectional(&mut local, &mut upstream).await {
-                                eprintln!("WARNING: proxy connection to {remote} failed: {error}");
+                                eprintln!("WARNING: port-forward connection to {remote} failed: {error}");
                             }
                         }
-                        Err(error) => eprintln!("WARNING: proxy connection to {remote} failed: {error}"),
+                        Err(error) => eprintln!("WARNING: port-forward connection to {remote} failed: {error}"),
                     }
                 });
             }
+            Some(_) = connections.join_next(), if !connections.is_empty() => {}
             result = tokio::signal::ctrl_c() => {
                 result?;
+                // Dropping the set aborts every open connection and its tunnel.
                 return Ok(());
             }
         }
@@ -585,5 +785,27 @@ mod tests {
             shutdown.is_ok(),
             "runtime waited for the stalled stdin read"
         );
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn a_renamed_service_is_found_by_its_runtime_name() {
+        let name = |text: &str| ployz_core::ServiceName::parse(text).unwrap();
+        let scoped = Scoped {
+            namespace: Namespace::parse("shop-production").unwrap(),
+            services: [(name("api2"), name("api"))].into(),
+        };
+        let resolve = |selector: &str| {
+            in_scope(ServiceSelector::parse(selector).unwrap(), Some(&scoped))
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(resolve("api2"), "shop-production/api");
+        assert_eq!(resolve("web"), "shop-production/web");
+        assert_eq!(resolve("other-ns/api2"), "other-ns/api2");
     }
 }

@@ -1,6 +1,6 @@
 //! Session-level preview/confirm/run behaviour against a fake Machine.
-#[path = "deploy_client/removal.rs"]
-mod removal;
+#[path = "deploy_client/operate.rs"]
+mod operate;
 #[path = "deploy_client/support.rs"]
 mod support;
 use support::*;
@@ -12,7 +12,7 @@ use ployz::deploy::{
     ExecutionError, FailedOperation, OperationStatus, PlanError, PruneRefusal, VolumeFate,
 };
 use ployz_core::{
-    ContainerId, MachineId, MachineStorageObservation, OperationPhase, ProjectName,
+    ContainerId, MachineId, MachineStorageObservation, Namespace, OperationPhase,
     ProvisionedVolumeMaximumBytes, QualifiedService, RequestedServiceSpec,
 };
 use tokio_util::sync::CancellationToken;
@@ -28,7 +28,7 @@ async fn exec_honors_remote_exit_while_terminal_stdin_remains_open() {
         .push(running_container(&machine, &spec("web")));
     let (address, server) = listening(service).await;
     let command = format!(
-        "{} --connect tcp://{address} service exec -T web true",
+        "{} --connect tcp://{address} exec -T web true",
         env!("CARGO_BIN_EXE_ployz")
     );
     let mut exec = tokio::process::Command::new("script")
@@ -51,49 +51,14 @@ async fn exec_honors_remote_exit_while_terminal_stdin_remains_open() {
 }
 
 #[tokio::test]
-async fn ingress_deploy_builds_the_caddy_spec() {
+async fn deploy_creates_containers_owned_by_the_intent_namespace() {
     let service = DeployService::new(machine('a', "one"));
-    let created = service.created_specs();
-    let (address, server) = listening(service).await;
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{address}"),
-            "ingress",
-            "deploy",
-            "--image",
-            "caddy:test",
-            "--skip-health",
-        ])
-        .output()
-        .await
-        .unwrap();
-
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let specs = created.lock().unwrap();
-    let spec = specs.first().unwrap();
-    assert_eq!(spec.container.image, "caddy:test");
-    assert_eq!(
-        spec.container.command,
-        ["caddy", "run", "-c", "/config/caddy/Caddyfile"]
-    );
-    assert_eq!(spec.ports.len(), 3);
-    server.abort();
-}
-
-#[tokio::test]
-async fn deploy_creates_containers_owned_by_the_intent_project() {
-    let service = DeployService::new(machine('a', "one"));
-    let created = service.created_projects();
+    let created = service.created_namespaces();
     let (mut client, server) = connected(service).await;
     client
         .run(
             DeployIntent::apply_one(
-                ProjectName::parse("shop").unwrap(),
+                Namespace::parse("shop").unwrap(),
                 spec("web"),
                 skip_health(),
             ),
@@ -104,7 +69,7 @@ async fn deploy_creates_containers_owned_by_the_intent_project() {
         .unwrap();
     assert_eq!(
         *created.lock().unwrap(),
-        [ProjectName::parse("shop").unwrap()]
+        [Namespace::parse("shop").unwrap()]
     );
     server.abort();
 }
@@ -119,7 +84,7 @@ async fn deploy_returns_success_for_a_completed_run() {
 
     let outcome = client
         .run(
-            DeployIntent::apply_one(ProjectName::parse("app").unwrap(), spec, skip_health()),
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec, skip_health()),
             &CancellationToken::new(),
             None,
         )
@@ -151,11 +116,7 @@ async fn deploy_waits_for_the_replicated_serving_container_after_start() {
 
     let outcome = client
         .run(
-            DeployIntent::apply_one(
-                ProjectName::parse("app").unwrap(),
-                spec("web"),
-                skip_health(),
-            ),
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec("web"), skip_health()),
             &CancellationToken::new(),
             None,
         )
@@ -180,11 +141,7 @@ async fn deploy_barrier_requires_every_capable_machine_and_uses_waiting_rounds()
 
     let outcome = client
         .run(
-            DeployIntent::apply_one(
-                ProjectName::parse("app").unwrap(),
-                spec("web"),
-                skip_health(),
-            ),
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec("web"), skip_health()),
             &CancellationToken::new(),
             None,
         )
@@ -227,11 +184,7 @@ async fn deploy_barrier_propagates_a_reached_store_error() {
 
     let outcome = client
         .run(
-            DeployIntent::apply_one(
-                ProjectName::parse("app").unwrap(),
-                spec("web"),
-                skip_health(),
-            ),
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec("web"), skip_health()),
             &CancellationToken::new(),
             None,
         )
@@ -267,11 +220,7 @@ async fn deploy_cancellation_aborts_an_in_flight_observation_wait() {
 
     let outcome = client
         .run(
-            DeployIntent::apply_one(
-                ProjectName::parse("app").unwrap(),
-                spec("web"),
-                skip_health(),
-            ),
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec("web"), skip_health()),
             &cancellation,
             None,
         )
@@ -296,7 +245,7 @@ async fn deploy_cancellation_aborts_an_in_flight_observation_wait() {
 
 #[tokio::test]
 async fn service_lifecycle_commands_wait_for_their_successful_service_containers() {
-    for (action, dropped) in [("start", false), ("stop", true), ("rm", true)] {
+    for (action, dropped) in [("start", false), ("stop", true)] {
         let machine = machine('a', "one");
         let mut service = DeployService::new(machine.clone()).with_observation_barrier();
         if dropped {
@@ -314,13 +263,8 @@ async fn service_lifecycle_commands_wait_for_their_successful_service_containers
         let observation_requests = service.observation_requests();
         let (address, server) = listening(service).await;
 
-        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
-        if action == "rm" {
-            command.arg("service").arg(action).arg("--yes");
-        } else {
-            command.arg("service").arg(action);
-        }
-        let output = command
+        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .args(["service", action])
             .args(["--connect", &format!("tcp://{address}"), "web", "api"])
             .output()
             .await
@@ -351,7 +295,7 @@ async fn provisioned_volume_deploy_reaches_container_creation() {
     let mut target = machine('a', "one");
     target.storage = Some(MachineStorageObservation::Ready);
     let service = DeployService::new(target);
-    let created = service.created_projects();
+    let created = service.created_namespaces();
     let (mut client, server) = connected(service).await;
     let mut requested = spec("web");
     add_named_volume(&mut requested, "data");
@@ -381,7 +325,7 @@ async fn provisioned_volume_deploy_reaches_container_creation() {
         .set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
         .unwrap();
     let intent =
-        DeployIntent::apply_one(ProjectName::parse("app").unwrap(), requested, skip_health());
+        DeployIntent::apply_one(Namespace::parse("app").unwrap(), requested, skip_health());
 
     let outcome = client
         .run(intent, &CancellationToken::new(), None)
@@ -389,10 +333,7 @@ async fn provisioned_volume_deploy_reaches_container_creation() {
         .unwrap();
 
     assert!(matches!(outcome, DeployOutcome::Success { .. }));
-    assert_eq!(
-        *created.lock().unwrap(),
-        [ProjectName::parse("app").unwrap()]
-    );
+    assert_eq!(*created.lock().unwrap(), [Namespace::parse("app").unwrap()]);
     server.abort();
 }
 
@@ -407,7 +348,7 @@ async fn volume_ensure_failure_is_reported_on_the_container_operation() {
 
     let outcome = client
         .run(
-            DeployIntent::apply_one(ProjectName::parse("app").unwrap(), spec, skip_health()),
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec, skip_health()),
             &CancellationToken::new(),
             None,
         )
@@ -450,7 +391,7 @@ async fn created_but_unverified_volume_fails_the_container_operation() {
 
     let outcome = client
         .run(
-            DeployIntent::apply_one(ProjectName::parse("app").unwrap(), spec, skip_health()),
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec, skip_health()),
             &CancellationToken::new(),
             None,
         )
@@ -492,11 +433,7 @@ async fn deploy_surfaces_a_planning_error_instead_of_an_outcome() {
 
     let error = client
         .run(
-            DeployIntent::apply_one(
-                ProjectName::parse("app").unwrap(),
-                spec("web"),
-                skip_health(),
-            ),
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec("web"), skip_health()),
             &CancellationToken::new(),
             None,
         )
@@ -526,7 +463,7 @@ async fn preview_returns_operations_and_mutates_nothing() {
 
     let preview = client
         .preview(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec,
             skip_health(),
         ))
@@ -555,7 +492,7 @@ async fn confirm_executes_the_previewed_operations_without_re_planning() {
     let listed = service.listed_containers();
     let (mut client, server) = connected(service).await;
     let intent = DeployIntent::apply_one(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         spec.clone(),
         skip_health(),
     );
@@ -615,7 +552,7 @@ async fn preview_includes_dns_warnings() {
 
     let preview = client
         .preview(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec,
             skip_health(),
         ))
@@ -664,7 +601,7 @@ async fn preview_rejects_a_visible_owner_of_the_hostname() {
     .unwrap();
     let mut owner = running_container(&machine, &owner_spec);
     owner
-        .try_update(|parts| parts.project_name = ProjectName::parse("blog").unwrap())
+        .try_update(|parts| parts.namespace = Namespace::parse("blog").unwrap())
         .unwrap();
     service.listed_containers().lock().unwrap().push(owner);
     let (mut client, server) = connected(service).await;
@@ -672,7 +609,7 @@ async fn preview_rejects_a_visible_owner_of_the_hostname() {
 
     let error = client
         .preview(DeployIntent::apply_one(
-            ProjectName::parse("shop").unwrap(),
+            Namespace::parse("shop").unwrap(),
             owner_spec,
             skip_health(),
         ))
@@ -698,7 +635,7 @@ async fn preview_surfaces_a_planning_error_instead_of_a_preview() {
 
     let error = client
         .preview(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec("web"),
             skip_health(),
         ))
@@ -713,15 +650,15 @@ async fn preview_surfaces_a_planning_error_instead_of_a_preview() {
 }
 
 #[tokio::test]
-async fn preview_project_removal_refuses_the_reserved_project() {
+async fn preview_namespace_removal_refuses_the_reserved_namespace() {
     let (mut client, server) = connected(DeployService::empty()).await;
     let error = client
-        .preview_project_removal(&ProjectName::system(), VolumeFate::Preserve)
+        .preview_namespace_removal(&Namespace::system(), VolumeFate::Preserve)
         .await
         .unwrap_err();
     assert!(matches!(
         error,
-        DeployError::Project(ployz::project::ProjectError::Reserved { .. })
+        DeployError::Namespace(ployz::namespace::NamespaceError::Reserved { .. })
     ));
     server.abort();
 }
@@ -735,7 +672,7 @@ async fn confirm_ignores_changed_preview_payload_and_replays_with_fresh_pending_
     let (mut client, server) = connected(service).await;
     let plan = client
         .preview(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec("web"),
             skip_health(),
         ))
@@ -743,7 +680,7 @@ async fn confirm_ignores_changed_preview_payload_and_replays_with_fresh_pending_
         .unwrap();
     let mut displayed: ployz_core::DeployPreview =
         serde_json::from_value(serde_json::to_value(plan.preview()).unwrap()).unwrap();
-    displayed.project_name = ProjectName::parse("forged").unwrap();
+    displayed.namespace = Namespace::parse("forged").unwrap();
     let row = displayed.operations.first_mut().unwrap();
     row.machine_id = MachineId::random();
     row.index = 42;
@@ -799,7 +736,7 @@ async fn empty_target_is_noop_and_confirm_succeeds_with_zero_operations() {
     let (mut client, server) = connected(DeployService::new(machine)).await;
     let preview = client
         .preview(DeployIntent::new(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             Vec::new(),
             skip_health(),
         ))
@@ -831,7 +768,7 @@ async fn full_preview_confirms_prune_operations_without_replanning() {
     let (mut client, server) = connected(service).await;
     let preview = client
         .preview(DeployIntent::apply_all(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             [&spec("web")],
             skip_health(),
         ))
@@ -873,7 +810,7 @@ async fn partial_preview_does_not_prune_an_unselected_imperative_service() {
     let (mut client, server) = connected(service).await;
     let preview = client
         .preview(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec("web"),
             skip_health(),
         ))
@@ -900,7 +837,7 @@ async fn abort_during_health_wait_settles_a_cancelled_outcome() {
     options.skip_health_monitor = false;
     let preview = client
         .preview(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             health_spec("web"),
             options,
         ))
@@ -954,7 +891,7 @@ async fn wait_phases_carry_elapsed_and_deadline_clocks() {
     options.skip_health_monitor = false;
     let preview = client
         .preview(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             health_spec("web"),
             options,
         ))
@@ -993,6 +930,451 @@ async fn wait_phases_carry_elapsed_and_deadline_clocks() {
     assert!(
         saw_clocks,
         "wait phases must include elapsed_ms/deadline_ms"
+    );
+    server.abort();
+}
+
+/// Cloud's runner claims a Store Deployment, deploys it and records it into Applied
+/// State; a second delivery of the same Deployment finds nothing to run, and a
+/// cancel stops it.
+#[tokio::test]
+async fn cloud_runner_deploys_a_store_deployment_once() {
+    use ployz_store::{
+        Actor, Admit, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
+        DeploymentStatus, EnvironmentId, EnvironmentRef, NodeStatus, OrganizationId, ProjectId,
+        ProjectName, RunnerId, SealingKey, ServiceLineageId,
+    };
+    use std::sync::Arc;
+
+    let store =
+        Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_core::ServiceName::parse("web").unwrap(),
+                image: Some("nginx".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &ployz_store::Trusted::default(),
+        )
+        .unwrap();
+    let (address, server) = listening(DeployService::new(machine('a', "one"))).await;
+    let run = |runner: &str| {
+        ployz::sdk::run_deployment(
+            Arc::clone(&store),
+            id.clone(),
+            RunnerId::parse(runner).unwrap(),
+            vec![ployz::context::Connection::tcp(address)],
+            Ok(Default::default()),
+        )
+    };
+
+    let summary = run("cloud-run-1").await.unwrap();
+    assert_eq!(summary.status, DeploymentStatus::Applied);
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
+        .unwrap();
+    assert!(
+        view.nodes
+            .iter()
+            .all(|node| node.outcome == NodeStatus::Deployed)
+    );
+    assert!(view.preview.is_some());
+
+    // A duplicate delivery runs as another runner and finds it ended.
+    let duplicate = run("cloud-run-2").await.unwrap_err();
+    assert_eq!(duplicate.code, ployz_core::RpcErrorCode::Conflict);
+    assert_eq!(
+        store
+            .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
+            .unwrap()
+            .deployment
+            .status,
+        DeploymentStatus::Applied
+    );
+
+    // Cancelled while it runs, the runner stops it.
+    let second = DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap();
+    let mut admit = Deploy {
+        id: second.clone(),
+        environment: EnvironmentRef::default(),
+        services: Vec::new(),
+        version: None,
+        upload: None,
+        accept_volume_loss: Vec::new(),
+        message: None,
+    };
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(admit.clone()),
+            &ployz_store::Trusted::default(),
+        )
+        .unwrap();
+    let running = tokio::spawn(ployz::sdk::run_deployment(
+        Arc::clone(&store),
+        second.clone(),
+        RunnerId::parse("cloud-run-3").unwrap(),
+        vec![ployz::context::Connection::tcp(address)],
+        Ok(Default::default()),
+    ));
+    while store
+        .read(&who, &ployz_store::DeploymentQuery { id: second.clone() })
+        .unwrap()
+        .preview
+        .is_none()
+    {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    store
+        .write(
+            &who,
+            &ployz_store::Cancel {
+                deployment: second.clone(),
+            },
+        )
+        .unwrap();
+    let cancelled = running.await.unwrap().unwrap();
+    assert_eq!(cancelled.status, DeploymentStatus::Cancelled);
+
+    // Cancelled while queued, it never runs.
+    admit.id = DeploymentId::parse("00000000-0000-4000-8000-000000000103").unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(admit.clone()),
+            &ployz_store::Trusted::default(),
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::Cancel {
+                deployment: admit.id.clone(),
+            },
+        )
+        .unwrap();
+    let never = ployz::sdk::run_deployment(
+        Arc::clone(&store),
+        admit.id.clone(),
+        RunnerId::parse("cloud-run-4").unwrap(),
+        vec![ployz::context::Connection::tcp(address)],
+        Ok(Default::default()),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(never.code, ployz_core::RpcErrorCode::Conflict);
+    server.abort();
+}
+
+#[tokio::test]
+async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
+    use ployz_store::{
+        Actor, Admit, ConfigStore, CreateProject, CreateService, CreateVolume, Deploy,
+        DeploymentId, DeploymentStatus, EnvironmentId, EnvironmentRef, Mount, OrganizationId,
+        ProjectId, ProjectName, RemovalsQuery, RemoveVolume, RunnerId, SealingKey,
+        ServiceLineageId, Trusted, VolumeId, VolumeName, VolumesQuery,
+    };
+    use std::sync::Arc;
+
+    let store =
+        Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+    let web = ployz_core::ServiceName::parse("web").unwrap();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: web.clone(),
+                image: Some("postgres".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    let data = VolumeName::parse("data").unwrap();
+    store
+        .write(
+            &who,
+            &CreateVolume {
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: data.clone(),
+                mounts: vec![Mount {
+                    service: web,
+                    path: "/var/lib/postgresql".into(),
+                }],
+            },
+        )
+        .unwrap();
+    let service = DeployService::new(machine('a', "one"));
+    let held = Arc::clone(&service.volumes);
+    let (address, server) = listening(service).await;
+    let connections = || vec![ployz::context::Connection::tcp(address)];
+    let deploy = |n: u8, accept: Vec<VolumeName>, trusted: Trusted, version: Option<String>| {
+        let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
+        store
+            .write_trusted(
+                &who,
+                &Admit::Deploy(Deploy {
+                    id: id.clone(),
+                    environment: EnvironmentRef::default(),
+                    services: Vec::new(),
+                    version,
+                    upload: None,
+                    accept_volume_loss: accept,
+                    message: None,
+                }),
+                &trusted,
+            )
+            .map(|_| id)
+    };
+
+    let first = deploy(1, Vec::new(), Trusted::default(), None).unwrap();
+    let ran = ployz::sdk::run_deployment(
+        Arc::clone(&store),
+        first,
+        RunnerId::parse("cloud-run-1").unwrap(),
+        connections(),
+        Ok(Default::default()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(ran.status, DeploymentStatus::Applied);
+    // The Server holds the mounted Volume's data.
+    let docker = ployz_core::DockerVolumeName::parse(
+        "shop-production_vol-00000000-0000-4000-8000-000000000004",
+    )
+    .unwrap();
+    let on = |letter: char| ployz_core::DockerVolume {
+        id: ployz_core::DockerVolumeId {
+            machine_id: ployz_core::MachineId::parse(letter.to_string().repeat(32)).unwrap(),
+            name: docker.clone(),
+        },
+        options: Default::default(),
+        labels: Default::default(),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
+    };
+    held.lock().unwrap().push(on('a'));
+
+    store
+        .write(
+            &who,
+            &RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: data.clone(),
+            },
+        )
+        .unwrap();
+    let sought = store
+        .read(&who, &RemovalsQuery::default())
+        .unwrap()
+        .volumes
+        .into_iter()
+        .map(|volume| volume.docker_volume)
+        .collect();
+    let observed = ployz::sdk::observe_volumes(connections(), sought)
+        .await
+        .unwrap();
+    assert_eq!(observed.held.len(), 1);
+    let trusted = Trusted {
+        volumes: Some(observed),
+        ..Trusted::default()
+    };
+    // Unaccepted it refuses; accepted, the runner deletes exactly the reviewed one.
+    let refused = deploy(2, Vec::new(), trusted.clone(), None).unwrap_err();
+    assert_eq!(refused.code, ployz_core::RpcErrorCode::ConfirmationRequired);
+    // The acceptance is bound to the reviewed version.
+    let version = refused
+        .details
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let second = deploy(2, vec![data], trusted, version).unwrap();
+    // A same-named Docker Volume that appeared after the review is never deleted.
+    held.lock().unwrap().push(on('b'));
+    let ran = ployz::sdk::run_deployment(
+        Arc::clone(&store),
+        second,
+        RunnerId::parse("cloud-run-2").unwrap(),
+        connections(),
+        Ok(Default::default()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(ran.status, DeploymentStatus::Applied);
+    assert_eq!(*held.lock().unwrap(), [on('b')]);
+    assert!(
+        store
+            .read(&who, &VolumesQuery::default())
+            .unwrap()
+            .volumes
+            .is_empty()
+    );
+    server.abort();
+}
+
+/// A Git Service GitHub couldn't take, in an Organization that builds on GitHub only,
+/// never builds on the Servers: the runner records why nothing ran.
+#[tokio::test]
+async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
+    use ployz_core::config::ServiceGitAccess;
+    use ployz_store::{
+        Actor, Admit, AuthorizedRepository, BuildOrder, Command, ConfigStore, CreateGitService,
+        CreateProject, Deploy, DeploymentId, DeploymentStatus, EnvironmentId, EnvironmentRef,
+        GithubBuildId, GithubEnd, OrganizationId, Outcome, ProjectId, ProjectName, RunnerId,
+        SealingKey, ServiceLineageId, SetBuildOrder, Trusted,
+    };
+    use std::sync::Arc;
+
+    let store =
+        Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+    let trusted = Trusted {
+        repositories: vec![AuthorizedRepository {
+            repository: ployz_store::RepositoryName::parse("acme/web").unwrap(),
+            repository_id: ployz_store::RepositoryId::parse(11).unwrap(),
+            access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
+            default_branch: ployz_store::BranchName::parse("main").unwrap(),
+            branches: Vec::new(),
+        }],
+        ..Trusted::default()
+    };
+    store
+        .write_trusted(
+            &who,
+            &CreateGitService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_core::ServiceName::parse("web").unwrap(),
+                repository: ployz_store::RepositoryName::parse("acme/web").unwrap(),
+                branch: None,
+            },
+            &trusted,
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &Command::SetBuildOrder(SetBuildOrder {
+                build_order: Some(BuildOrder::GithubOnly),
+            }),
+        )
+        .unwrap();
+    let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let web = ployz_core::ServiceName::parse("web").unwrap();
+    store
+        .pin(
+            &id,
+            &[(
+                web.clone(),
+                ployz_store::CommitSha::parse("a".repeat(40)).unwrap(),
+            )]
+            .into(),
+        )
+        .unwrap();
+    let build = GithubBuildId {
+        deployment: id.clone(),
+        service: web,
+    };
+    let skipped = GithubEnd::Skipped {
+        message: "acme/web has no build workflow".into(),
+    };
+    store.github_end(&build, None, &skipped).unwrap();
+
+    let (address, server) = listening(DeployService::new(machine('a', "one"))).await;
+    let summary = ployz::sdk::run_deployment(
+        Arc::clone(&store),
+        id.clone(),
+        RunnerId::parse("cloud-run-1").unwrap(),
+        vec![ployz::context::Connection::tcp(address)],
+        Ok(Default::default()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(summary.status, DeploymentStatus::Failed);
+    let Some(Outcome::NotExecuted { reason, .. }) = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
+        .unwrap()
+        .deployment
+        .outcome
+    else {
+        panic!("nothing ran")
+    };
+    assert_eq!(
+        reason,
+        "Build failed. web: acme/web has no build workflow. No other Builder in your Build Order can take it"
     );
     server.abort();
 }

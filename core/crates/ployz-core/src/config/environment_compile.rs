@@ -109,6 +109,7 @@ pub struct VolumeConfig {
     #[ts(type = "2")]
     pub version: u8,
     pub name: String,
+    pub storage: VolumeKind,
 }
 
 /// A variable value associated with its stable producer owner and lineage.
@@ -167,6 +168,17 @@ fn env_value(variable: &SavedVariableIntent, slugs: &BTreeMap<String, String>) -
     }
 }
 
+/// The variables every Service provides without declaring them, which any
+/// reference may read.
+pub const BUILT_IN_VARIABLES: [&str; 6] = [
+    "PLOYZ_PRIVATE_DOMAIN",
+    "PORT",
+    "PLOYZ_ENVIRONMENT_NAME",
+    "PLOYZ_SERVICE_NAME",
+    "PLOYZ_ENVIRONMENT_ID",
+    "PLOYZ_SERVICE_ID",
+];
+
 /// Compile a validated authored document into node snapshots and variable producers.
 ///
 #[must_use]
@@ -213,17 +225,15 @@ pub fn compile_environment_intent(
             encrypted_registry_username: None,
             encrypted_registry_secret: None,
         });
-        for (key, value) in [
-            (
-                "PLOYZ_PRIVATE_DOMAIN",
-                format!("{}.internal", service.config.private_dns),
-            ),
-            ("PORT", "3000".into()),
-            ("PLOYZ_ENVIRONMENT_NAME", intent.environment_slug.clone()),
-            ("PLOYZ_SERVICE_NAME", service.slug.clone()),
-            ("PLOYZ_ENVIRONMENT_ID", environment_id.into()),
-            ("PLOYZ_SERVICE_ID", service.id.clone()),
-        ] {
+        let built_in: [String; BUILT_IN_VARIABLES.len()] = [
+            format!("{}.internal", service.config.private_dns),
+            "3000".into(),
+            intent.environment_slug.clone(),
+            service.config.private_dns.to_string(),
+            environment_id.into(),
+            service.id.clone(),
+        ];
+        for (key, value) in BUILT_IN_VARIABLES.into_iter().zip(built_in) {
             variable_producers.push(SavedVariableProducer {
                 owner_scope: "service".into(),
                 owner_id: service.id.clone(),
@@ -247,6 +257,7 @@ pub fn compile_environment_intent(
         snapshot: CompiledNodeSnapshot(CompiledNodeConfig::Volume(VolumeConfig {
             version: 2,
             name: v.name.clone(),
+            storage: v.storage,
         })),
         encrypted_registry_username: None,
         encrypted_registry_secret: None,

@@ -26,7 +26,7 @@ use hickory_server::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerObservation, Machine, MachineId, MembershipObservation, ProjectName, QualifiedService,
+    ContainerObservation, Machine, MachineId, MembershipObservation, Namespace, QualifiedService,
     ServiceId, service_containers, serving_containers, synthesize_membership,
 };
 use tokio::{
@@ -65,7 +65,7 @@ struct Projection {
     service_ids: HashMap<ServiceId, Vec<Ipv4Addr>>,
     identities: HashMap<QualifiedService, ServiceAddresses>,
     machine_identities: HashMap<MachineServiceTarget, Vec<Ipv4Addr>>,
-    caller_projects: HashMap<Ipv4Addr, ProjectName>,
+    caller_namespaces: HashMap<Ipv4Addr, Namespace>,
 }
 
 struct ProjectionInputs {
@@ -160,7 +160,7 @@ impl Projection {
             service_ids,
             identities,
             machine_identities,
-            caller_projects: unique_caller_projects(observations),
+            caller_namespaces: unique_caller_namespaces(observations),
         }
     }
 
@@ -205,10 +205,10 @@ impl Projection {
                 false,
             ),
             InternalQuery::CallerService(service) => (
-                self.caller_project(source)
-                    .and_then(|project| {
+                self.caller_namespace(source)
+                    .and_then(|namespace| {
                         self.identities
-                            .get(&QualifiedService::new(project.clone(), service))
+                            .get(&QualifiedService::new(namespace.clone(), service))
                     })
                     .map(ServiceAddresses::rotated)
                     .unwrap_or_default(),
@@ -253,16 +253,16 @@ impl Projection {
         }
     }
 
-    fn caller_project(&self, source: IpAddr) -> Option<&ProjectName> {
+    fn caller_namespace(&self, source: IpAddr) -> Option<&Namespace> {
         let IpAddr::V4(address) = source else {
             return None;
         };
-        self.caller_projects.get(&address)
+        self.caller_namespaces.get(&address)
     }
 }
 
-fn unique_caller_projects(containers: &[ContainerObservation]) -> HashMap<Ipv4Addr, ProjectName> {
-    let mut by_address = HashMap::<Ipv4Addr, Vec<ProjectName>>::new();
+fn unique_caller_namespaces(containers: &[ContainerObservation]) -> HashMap<Ipv4Addr, Namespace> {
+    let mut by_address = HashMap::<Ipv4Addr, Vec<Namespace>>::new();
     for container in containers {
         let Some(address) = container.address else {
             continue;
@@ -270,14 +270,14 @@ fn unique_caller_projects(containers: &[ContainerObservation]) -> HashMap<Ipv4Ad
         by_address
             .entry(address.0)
             .or_default()
-            .push(container.project_name.clone());
+            .push(container.namespace.clone());
     }
     by_address
         .into_iter()
-        .filter_map(|(address, projects)| {
-            <[ProjectName; 1]>::try_from(projects)
+        .filter_map(|(address, namespaces)| {
+            <[Namespace; 1]>::try_from(namespaces)
                 .ok()
-                .map(|[project]| (address, project))
+                .map(|[namespace]| (address, namespace))
         })
         .collect()
 }

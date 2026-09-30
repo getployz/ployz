@@ -9,8 +9,8 @@ use bollard::{
 };
 use ployz_core::{
     ContainerCreated, ContainerId, ContainerKind, Machine, MachineId, MachineStorageObservation,
-    ProjectName, ResolvedServiceSpec, ServicePlacementEligibility,
-    ServicePlacementIneligibleReason, ServicePlacementUnknownReason,
+    Namespace, ResolvedServiceSpec, ServicePlacementEligibility, ServicePlacementIneligibleReason,
+    ServicePlacementUnknownReason,
 };
 
 #[cfg(test)]
@@ -30,10 +30,12 @@ pub(crate) struct ContainerRequest<'spec, Storage, Admission> {
     /// Optional identity of this currently existing creation.
     pub(crate) creation_key: Option<&'spec str>,
     pub(crate) deployment_id: Option<&'spec ployz_core::DeploymentLogId>,
+    /// Credentials for pulling a private image, used for this pull only.
+    pub(crate) registry_auth: Option<&'spec ployz_core::RegistryAuth>,
     /// Whether this is a long-running Service Container or a Pre-deploy Hook.
     pub(crate) kind: ContainerKind,
-    /// Project that owns the resulting container.
-    pub(crate) project_name: &'spec ProjectName,
+    /// Namespace that owns the resulting container.
+    pub(crate) namespace: &'spec Namespace,
     /// Fully resolved Service specification to persist and execute.
     pub(crate) spec: &'spec ResolvedServiceSpec,
     /// Deferred Machine-local admission, awaited only after volume admission.
@@ -49,7 +51,7 @@ impl ContainerRuntime {
         machine_id: &MachineId,
         gateway: MachineGateway,
         kind: ContainerKind,
-        project_name: &ProjectName,
+        namespace: &Namespace,
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerCreated, Error> {
         let machine = test_machine(*machine_id, gateway);
@@ -58,8 +60,9 @@ impl ContainerRuntime {
             ContainerRequest {
                 creation_key: None,
                 deployment_id: None,
+                registry_auth: None,
                 kind,
-                project_name,
+                namespace,
                 spec,
                 admission: std::future::ready(Ok::<_, Error>(())),
                 storage: std::future::ready(None),
@@ -86,19 +89,20 @@ impl ContainerRuntime {
         let ContainerRequest {
             creation_key,
             deployment_id,
+            registry_auth,
             kind,
-            project_name,
+            namespace,
             spec,
             admission,
             storage,
         } = request;
         let reserved_name =
-            creation_key.map(|key| creation_name(&machine.id, project_name, kind, key));
+            creation_key.map(|key| creation_name(&machine.id, namespace, kind, key));
         if let (Some(name), Some(key)) = (&reserved_name, creation_key) {
             // Wait for an in-flight create to persist its spec before comparing a retry.
             let _operation = self.specs.config_operation().await;
             if let Some(existing) = self
-                .matching_creation(machine, project_name, kind, spec, name, key)
+                .matching_creation(machine, namespace, kind, spec, name, key)
                 .await
                 .map_err(E::from)?
             {
@@ -108,7 +112,7 @@ impl ContainerRuntime {
         // TODO: direct creation does not validate that an existing Service ID still uses
         // the same Service Name; that requires an observer-relative cluster snapshot.
         tracing::info!(
-            project = project_name.as_str(),
+            namespace = namespace.as_str(),
             service = spec.name.as_str(),
             kind = match kind {
                 ContainerKind::ServiceContainer => "service_container",
@@ -117,7 +121,7 @@ impl ContainerRuntime {
             "create container"
         );
         require_eligible(
-            self.admit_and_ensure_volumes(machine, project_name, spec, storage)
+            self.admit_and_ensure_volumes(machine, namespace, spec, storage)
                 .await
                 .map_err(E::from)?,
         )
@@ -126,31 +130,37 @@ impl ContainerRuntime {
         self.prepare_and_create(
             machine,
             kind,
-            project_name,
+            namespace,
             spec,
             creation_key,
             deployment_id,
+            registry_auth,
         )
         .await
         .map_err(E::from)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The request's parts, split after admission consumed its futures."
+    )]
     async fn prepare_and_create(
         &self,
         machine: &Machine,
         kind: ContainerKind,
-        project_name: &ProjectName,
+        namespace: &Namespace,
         spec: &ResolvedServiceSpec,
         creation_key: Option<&str>,
         deployment_id: Option<&ployz_core::DeploymentLogId>,
+        registry_auth: Option<&ployz_core::RegistryAuth>,
     ) -> Result<ContainerCreated, Error> {
         let reserved_name =
-            creation_key.map(|key| creation_name(&machine.id, project_name, kind, key));
+            creation_key.map(|key| creation_name(&machine.id, namespace, kind, key));
         let mut body = create::container_create_body(
             &machine.id,
             machine.subnet.gateway(),
             kind,
-            project_name,
+            namespace,
             spec,
         )?;
         if let Some(id) = deployment_id {
@@ -167,13 +177,14 @@ impl ContainerRuntime {
             &self.docker.client,
             &spec.container.image,
             spec.container.pull_policy,
+            registry_auth,
         )
         .await?;
         let mut config_operation = self.specs.config_operation().await;
         // Another request may have won while admission and image preparation ran.
         if let (Some(name), Some(key)) = (&reserved_name, creation_key)
             && let Some(existing) = self
-                .matching_creation(machine, project_name, kind, spec, name, key)
+                .matching_creation(machine, namespace, kind, spec, name, key)
                 .await?
         {
             return Ok(existing);
@@ -200,7 +211,7 @@ impl ContainerRuntime {
                                 return self
                                     .matching_creation(
                                         machine,
-                                        project_name,
+                                        namespace,
                                         kind,
                                         spec,
                                         &display_name,
@@ -268,7 +279,7 @@ impl ContainerRuntime {
     async fn matching_creation(
         &self,
         machine: &Machine,
-        project: &ProjectName,
+        namespace: &Namespace,
         kind: ContainerKind,
         spec: &ResolvedServiceSpec,
         name: &str,
@@ -299,7 +310,7 @@ impl ContainerRuntime {
             source,
         })?;
         let existing = self.inspect_managed(&container_id, &machine.id).await?;
-        if existing.project_name != *project
+        if existing.namespace != *namespace
             || existing.kind != kind
             || existing.resolved_spec != *spec
         {
@@ -314,7 +325,7 @@ impl ContainerRuntime {
     async fn admit_and_ensure_volumes(
         &self,
         machine: &Machine,
-        project: &ProjectName,
+        namespace: &Namespace,
         spec: &ResolvedServiceSpec,
         storage: impl Future<Output = Option<MachineStorageObservation>>,
     ) -> Result<ServicePlacementEligibility, Error> {
@@ -323,7 +334,8 @@ impl ContainerRuntime {
         } else {
             None
         };
-        let eligibility = spec.placement_eligibility_in_project(project, machine, storage.as_ref());
+        let eligibility =
+            spec.placement_eligibility_in_namespace(namespace, machine, storage.as_ref());
         if matches!(eligibility, ServicePlacementEligibility::Eligible) {
             self.ensure_mounted_volumes(&machine.id, spec).await?;
         }
@@ -524,13 +536,13 @@ fn retry_name_conflict(attempt: u8, error: &bollard::errors::Error) -> bool {
 
 fn creation_name(
     machine: &MachineId,
-    project: &ProjectName,
+    namespace: &Namespace,
     kind: ContainerKind,
     key: &str,
 ) -> String {
     use sha2::{Digest, Sha256};
     let scope =
-        serde_json::to_vec(&(machine, project, kind, key)).expect("creation scope serializes");
+        serde_json::to_vec(&(machine, namespace, kind, key)).expect("creation scope serializes");
     format!("ployz-create-{}", hex::encode(Sha256::digest(scope)))
 }
 

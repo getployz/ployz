@@ -1,21 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { formatRelativeTime } from "#/utils/relative-time";
+import { expect, it } from "vitest";
+import { formatDuration } from "./relative-time";
 
-describe("formatRelativeTime", () => {
-  const now = new Date("2026-05-09T12:00:00.000Z");
-
-  it("describes past times", () => {
-    expect(
-      formatRelativeTime(new Date("2026-05-09T11:04:00.000Z"), now),
-    ).toBe("56 minutes ago");
-  });
-
-  it("falls back to hours and days", () => {
-    expect(formatRelativeTime(new Date("2026-05-09T09:00:00.000Z"), now)).toBe(
-      "3 hours ago",
-    );
-    expect(formatRelativeTime(new Date("2026-05-07T12:00:00.000Z"), now)).toBe(
-      "2 days ago",
-    );
-  });
+it("words a duration in whole seconds, minutes past a minute, hours past an hour", () => {
+  expect([0, 45.9, 72, 3599, 7500].map(formatDuration)).toEqual(["0s", "45s", "1m 12s", "59m 59s", "2h 5m"]);
 });

@@ -25,7 +25,8 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                 deployment_id: None,
                 creation_key: Some("global:test".into()),
                 kind: ContainerKind::ServiceContainer,
-                project_name: ProjectName::parse("app").unwrap(),
+                namespace: Namespace::parse("app").unwrap(),
+                registry_auth: None,
                 resolved_spec: requested(ServiceMode::Global)
                     .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
                     .unwrap(),
@@ -164,7 +165,8 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
             deployment_id: None,
             creation_key: Some(crate::cluster::global_creation_key(&spec)),
             kind: ContainerKind::ServiceContainer,
-            project_name: ProjectName::parse("app").unwrap(),
+            namespace: Namespace::parse("app").unwrap(),
+            registry_auth: None,
             resolved_spec: spec.clone(),
         };
         let expected = request.clone();
@@ -273,7 +275,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                             let mut unrelated = slot.clone();
                             unrelated
                                 .try_update(|parts| {
-                                    parts.project_name = ProjectName::parse("other").unwrap();
+                                    parts.namespace = Namespace::parse("other").unwrap();
                                     parts.container_id = container_id('c');
                                 })
                                 .unwrap();
@@ -482,7 +484,8 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
             deployment_id: None,
             creation_key: Some("global:storage".into()),
             kind: ContainerKind::ServiceContainer,
-            project_name: ProjectName::parse("app").unwrap(),
+            namespace: Namespace::parse("app").unwrap(),
+            registry_auth: None,
             resolved_spec: provisioned_global_spec()
                 .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
                 .unwrap(),

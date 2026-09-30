@@ -6,7 +6,7 @@ import { Inngest } from "inngest";
 import { readCollection } from "./read.server";
 import { listCachedGithubRepositoriesForUser } from "#/modules/github/github.repository";
 import { githubRepositoryCache } from "#/modules/github/tables";
-import { project, environment } from "#/modules/project/tables";
+import { environmentCanvasNodePosition } from "#/modules/canvas/tables";
 import { member } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { Polar } from "#/modules/billing/polar-provider.server";
@@ -63,7 +63,7 @@ it.live(
       );
       yield* Effect.gen(function* () {
         const anonymous = yield* execute(new Request("http://app.test"), {
-          table: "project", userId: "nobody", organizationSlug: "acme-table-sync",
+          table: "environment_canvas_node_position", userId: "nobody", organizationSlug: "acme-table-sync",
         });
         assert.strictEqual(anonymous.status, 401);
         const auth = yield* Auth;
@@ -101,7 +101,7 @@ it.live(
         const headers = { cookie };
         const request = new Request("http://app.test", { headers });
         const userId = session.user.id;
-        const base = { table: "project", userId, organizationSlug: "acme-table-sync" };
+        const base = { table: "environment_canvas_node_position", userId, organizationSlug: "acme-table-sync" };
         for (const input of [
           { ...base, table: "session" },
           { ...base, table: "organization_machine" },
@@ -113,9 +113,9 @@ it.live(
           assert.strictEqual((yield* execute(request, input)).status, 422);
         }
         assert.strictEqual((yield* execute(request, { ...base, userId: "other" })).status, 404);
-        assert.strictEqual((yield* execute(request, { table: "project", userId })).status, 422);
+        assert.strictEqual((yield* execute(request, { table: "environment_canvas_node_position", userId })).status, 422);
         assert.strictEqual((yield* execute(request, {
-          table: "project", userId, organizationSlug: "other",
+          table: "environment_canvas_node_position", userId, organizationSlug: "other",
         })).status, 404);
         const otherSignup = yield* auth.handler(new Request("http://localhost:3000/api/auth/sign-up/email", {
           method: "POST", headers: { "content-type": "application/json" },
@@ -137,39 +137,21 @@ it.live(
         assert.deepStrictEqual((yield* listCachedGithubRepositoriesForUser(otherSession.user.id)).map((row) => row.name), ["private-other"]);
         const otherOrganizationId = crypto.randomUUID();
         yield* database.drizzle.insert(organization).values({ id: otherOrganizationId, name: "Other", slug: "other-org" });
-        const projects = yield* database.drizzle.insert(project).values([
-          { organizationId, name: "Visible", slug: "visible" },
-          { organizationId: otherOrganizationId, name: "Private", slug: "private" },
-        ]).returning();
-        for (const row of projects) {
-          yield* database.drizzle.insert(environment).values({ organizationId: row.organizationId, projectId: row.id,
-            name: row.name, namespace: "production",
-            intent: { version: 1, environmentSlug: "production", services: [], volumes: [] },
-          });
-        }
-        const visibleProject = projects.find((row) => row.organizationId === organizationId);
-        if (!visibleProject) return yield* Effect.die("Missing visible project");
-        yield* database.drizzle.insert(environment).values({ organizationId, projectId: visibleProject.id,
-          name: "Staging", namespace: "staging",
-          intent: { version: 1, environmentSlug: "staging", services: [], volumes: [] },
-        });
-        // Org Store reads are org-wide: every environment, summaries without intent documents.
-        const summaryResponse = yield* execute(request, { table: "environment_summary", userId, organizationSlug: "acme-table-sync" });
-        const summaries = yield* Effect.promise(() => summaryResponse.json());
-        assert.strictEqual(summaries.length, 2);
-        for (const row of summaries) assert.ok(!("intent" in row));
-        for (const table of ["project", "environment"]) {
-          const response = yield* execute(request, { table, userId, organizationSlug: "acme-table-sync" });
-          const rows = yield* Effect.promise(() => response.json());
-          assert.strictEqual(response.status, 200);
-          assert.strictEqual(rows.length, table === "environment" ? 2 : 1);
-          assert.strictEqual(rows[0].organizationId, organizationId);
-          assert.strictEqual(rows[0].name, "Visible");
-          assert.strictEqual(yield* Schema.decodeUnknownEffect(Schema.String)(rows[0].createdAt), rows[0].createdAt);
-          assert.strictEqual((yield* execute(request, { table, userId, organizationSlug: "other-org" })).status, 404);
-          assert.strictEqual((yield* execute(new Request("http://app.test", { headers: { cookie: otherCookie ?? "" } }),
-            { table, userId: otherSession.user.id, organizationSlug: "acme-table-sync" })).status, 404);
-        }
+        const place = { environmentId: crypto.randomUUID(), resourceType: "service", x: 1, y: 2 };
+        yield* database.drizzle.insert(environmentCanvasNodePosition).values([
+          { ...place, organizationId, resourceId: crypto.randomUUID() },
+          { ...place, organizationId: otherOrganizationId, resourceId: crypto.randomUUID() },
+        ]);
+        const table = "environment_canvas_node_position";
+        const response = yield* execute(request, { table, userId, organizationSlug: "acme-table-sync" });
+        const rows = yield* Effect.promise(() => response.json());
+        assert.strictEqual(response.status, 200);
+        assert.strictEqual(rows.length, 1);
+        assert.strictEqual(rows[0].organizationId, organizationId);
+        assert.strictEqual(yield* Schema.decodeUnknownEffect(Schema.String)(rows[0].createdAt), rows[0].createdAt);
+        assert.strictEqual((yield* execute(request, { table, userId, organizationSlug: "other-org" })).status, 404);
+        assert.strictEqual((yield* execute(new Request("http://app.test", { headers: { cookie: otherCookie ?? "" } }),
+          { table, userId: otherSession.user.id, organizationSlug: "acme-table-sync" })).status, 404);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

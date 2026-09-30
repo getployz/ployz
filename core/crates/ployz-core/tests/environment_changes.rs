@@ -3,7 +3,7 @@
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 
-use ployz_core::config::config_request;
+use ployz_core::config::project_environment_changes;
 use serde_json::{Value, json};
 
 fn service(replicas: u8) -> Value {
@@ -27,7 +27,10 @@ fn input(
 }
 
 fn project(value: Value) -> Value {
-    config_request(json!({"operation":"project_changes","value":value})).unwrap()
+    serde_json::to_value(
+        project_environment_changes(serde_json::from_value(value).unwrap()).unwrap(),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -36,10 +39,10 @@ fn lifecycle_and_settings_compare_against_submitted_or_applied_state() {
         ("service", service(1), service(2), "replicas", true),
         (
             "volume",
-            json!({"version":2,"name":"Data"}),
-            json!({"version":2,"name":"Renamed"}),
+            json!({"version":2,"name":"Data","storage":{"kind":"docker"}}),
+            json!({"version":2,"name":"Renamed","storage":{"kind":"docker"}}),
             "name",
-            false,
+            true,
         ),
     ] {
         for submitted in [false, true] {
@@ -94,4 +97,28 @@ fn lifecycle_and_settings_compare_against_submitted_or_applied_state() {
         assert_eq!(result["groups"], json!([]));
         assert_eq!(result["totalCount"], 0);
     }
+}
+
+#[test]
+fn secret_changes_are_listed_once_without_their_fingerprints() {
+    let secret = |fingerprint: &str| {
+        let mut config = service(1);
+        config["env"] = json!({"TOKEN":{"kind":"secret","fingerprint":fingerprint}});
+        config
+    };
+    let result = project(input(
+        "service",
+        &Value::Null,
+        secret("private-after"),
+        secret("private-before"),
+        None,
+    ));
+    let paths: Vec<_> = result["groups"][0]["settings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["path"].clone())
+        .collect();
+    assert_eq!(paths, vec![json!("env.TOKEN")]);
+    assert!(!result.to_string().contains("private-"));
 }

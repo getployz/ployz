@@ -18,7 +18,7 @@ use ployz_core::{
     CORROSION_GOSSIP_PORT, CapabilityName, ContainerKind, ContainerRuntimeObservation,
     ContractDescription, DescribeContractRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
     HealthObservation, LogsOptions, MACHINE_API_PORT, MachineId, MachineRpcServer,
-    MembershipObservation, PROJECT_NAME_LABEL, PROTOCOL_MAJOR, RpcError, RpcErrorCode,
+    MembershipObservation, NAMESPACE_LABEL, PROTOCOL_MAJOR, RpcError, RpcErrorCode,
     UNREGISTRY_PORT, op,
 };
 use serde_json::{Value, json};
@@ -35,7 +35,7 @@ mod removal_cli;
 mod sdk;
 mod sdk_data_loss;
 mod sdk_destroy_cluster;
-mod sdk_destroy_project;
+mod sdk_destroy_namespace;
 mod sdk_prepare;
 mod sdk_register;
 mod sdk_remove_machine;
@@ -346,7 +346,7 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
                 name: DockerVolumeName::parse("data").unwrap(),
             },
             options: BTreeMap::from([("type".into(), "none".into())]),
-            labels: BTreeMap::from([(PROJECT_NAME_LABEL.into(), "app".into())]),
+            labels: BTreeMap::from([(NAMESPACE_LABEL.into(), "app".into())]),
             storage: ployz_core::DockerVolumeStorageObservation::Plain {
                 driver: "local".into(),
             },
@@ -358,33 +358,11 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
     let (address, server) = serve_discovery(service).await;
 
     // The down Machine is omitted from every listing, so each result is partial.
-    let json_cases: &[(&[&str], &str, &str)] = &[
-        (
-            &["service", "ls", "--json"],
-            "/services/0/identity",
-            "app/api",
-        ),
-        (
-            &["service", "ls", "--json"],
-            "/services/0/containers/0/resolved_spec/container/image",
-            "alpine:3.23.3",
-        ),
-        (
-            &["service", "ps", "--json"],
-            "/containers/0/resolved_spec/container/image",
-            "alpine:3.23.3",
-        ),
-        (
-            &["volume", "ls", "--json"],
-            "/volumes/0/volume/options/type",
-            "none",
-        ),
-        (
-            &["project", "ls", "--json"],
-            "/projects/0/services/0",
-            "app/api",
-        ),
-    ];
+    let json_cases: &[(&[&str], &str, &str)] = &[(
+        &["ps", "--json"],
+        "/containers/0/resolved_spec/container/image",
+        "alpine:3.23.3",
+    )];
     for (args, pointer, expected) in json_cases {
         let output = run_ployz(address, args).await;
         assert_eq!(output.status.code(), Some(3), "{args:?}: {output:?}");
@@ -403,34 +381,18 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
         assert!(!output.stderr.is_empty(), "{args:?}: expected diagnostics");
     }
 
-    let service_id = "c".repeat(32);
     let container_id = "c".repeat(64);
     let machine_id = "a".repeat(32);
-    let services = format!(
-        "SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS\n{service_id}\tapp/api\t1/1\t0\n{}\tapp/worker\t2/3\t1\n",
-        "d".repeat(32)
-    );
-    let human_cases = [
-        (&["service", "ls"][..], services),
-        (
-            &["service", "ps"][..],
-            format!(
-                "CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE\n{container_id}\tapp/api\tServiceContainer\t{machine_id}\trunning (health: healthy)\n{}\tapp/worker\tPreDeployHook\t{machine_id}\texited with code 0\n{}\tapp/worker\tServiceContainer\t{machine_id}\trunning (health: unhealthy)\n{}\tapp/worker\tServiceContainer\t{machine_id}\trunning (health: starting)\n{}\tapp/worker\tServiceContainer\t{machine_id}\texited with code 1\n",
-                "0".repeat(64),
-                "d".repeat(64),
-                "e".repeat(64),
-                "f".repeat(64)
-            ),
+    let human_cases = [(
+        &["ps"][..],
+        format!(
+            "CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE\n{container_id}\tapp/api\tServiceContainer\t{machine_id}\trunning (health: healthy)\n{}\tapp/worker\tPreDeployHook\t{machine_id}\texited with code 0\n{}\tapp/worker\tServiceContainer\t{machine_id}\trunning (health: unhealthy)\n{}\tapp/worker\tServiceContainer\t{machine_id}\trunning (health: starting)\n{}\tapp/worker\tServiceContainer\t{machine_id}\texited with code 1\n",
+            "0".repeat(64),
+            "d".repeat(64),
+            "e".repeat(64),
+            "f".repeat(64)
         ),
-        (
-            &["volume", "ls"][..],
-            "MACHINE\tVOLUME\tTYPE\tQUOTA\tUSED\tDRIVER\none\tdata\tPLAIN\t-\t-\tlocal\n".into(),
-        ),
-        (
-            &["project", "ls"][..],
-            "PROJECT\tSERVICES\tVOLUMES\napp\t2\t1\n".into(),
-        ),
-    ];
+    )];
     for (args, expected) in human_cases {
         let output = run_ployz(address, args).await;
         assert_eq!(output.status.code(), Some(3), "{args:?}: {output:?}");
@@ -443,125 +405,6 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
     server.abort();
 }
 
-#[tokio::test]
-async fn volume_list_prints_healthy_and_unavailable_rows_then_fails() {
-    let service = DiscoveryService::new(test_description());
-    service.listed_volumes.lock().unwrap().insert(
-        machine_id('a'),
-        vec![DockerVolume {
-            id: DockerVolumeId {
-                machine_id: machine_id('a'),
-                name: DockerVolumeName::parse("healthy").unwrap(),
-            },
-            options: Default::default(),
-            labels: Default::default(),
-            storage: ployz_core::DockerVolumeStorageObservation::Plain {
-                driver: "local".into(),
-            },
-        }],
-    );
-    service.volume_observation_failures.lock().unwrap().insert(
-        machine_id('a'),
-        vec![ployz_core::VolumeObservationFailure {
-            id: DockerVolumeId {
-                machine_id: machine_id('a'),
-                name: DockerVolumeName::parse("unavailable").unwrap(),
-            },
-            error: RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "inspect payload was malformed".into(),
-                details: Value::Null,
-            },
-        }],
-    );
-    let (address, server) = serve_discovery(service).await;
-
-    let output = run_ployz(address, &["volume", "ls"]).await;
-
-    assert!(!output.status.success(), "{output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("healthy\tPLAIN"), "{stdout}");
-    assert!(stdout.contains("unavailable\tUNAVAILABLE"), "{stdout}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("unavailable"), "{stderr}");
-    assert!(stderr.contains("inspect payload was malformed"), "{stderr}");
-    assert!(stderr.contains(&machine_id('a').to_string()), "{stderr}");
-    assert!(stderr.contains("inspect the Volume again"), "{stderr}");
-    let removed = run_ployz(address, &["volume", "rm", "unavailable"]).await;
-    assert!(!removed.status.success(), "{removed:?}");
-    let stderr = String::from_utf8_lossy(&removed.stderr);
-    for hint in [
-        "unavailable",
-        "refusing to remove",
-        "inspect payload was malformed",
-        "inspect the Volume again",
-    ] {
-        assert!(stderr.contains(hint), "{stderr}");
-    }
-    server.abort();
-}
-
-#[tokio::test]
-async fn volume_inspect_uses_direct_lookup_without_enumeration() {
-    let service = DiscoveryService::new(test_description());
-    service.listed_volumes.lock().unwrap().insert(
-        machine_id('a'),
-        vec![DockerVolume {
-            id: DockerVolumeId {
-                machine_id: machine_id('a'),
-                name: DockerVolumeName::parse("data").unwrap(),
-            },
-            options: Default::default(),
-            labels: Default::default(),
-            storage: ployz_core::DockerVolumeStorageObservation::Plain {
-                driver: "local".into(),
-            },
-        }],
-    );
-    let list_calls = Arc::clone(&service.volume_list_calls);
-    let inspect_calls = Arc::clone(&service.inspect_calls);
-    let (address, server) = serve_discovery(service).await;
-
-    let output = run_ployz(address, &["volume", "inspect", "data"]).await;
-
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(list_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(inspect_calls.load(Ordering::SeqCst), 1);
-    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(
-        document
-            .pointer("/volume/volume/id/name")
-            .and_then(Value::as_str),
-        Some("data")
-    );
-    server.abort();
-}
-
-#[tokio::test]
-async fn volume_create_reports_created_but_unverified_as_failure() {
-    let mut service = DiscoveryService::new(test_description());
-    service.accept_volume_creates = true;
-    service.created_volume_verification_error = Some(RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "inspect payload was malformed".into(),
-        details: Value::Null,
-    });
-    let created = Arc::clone(&service.created_volumes);
-    let (address, server) = serve_discovery(service).await;
-
-    let output = run_ployz(address, &["volume", "create", "data"]).await;
-
-    assert!(!output.status.success(), "{output:?}");
-    assert_eq!(created.lock().unwrap().len(), 1);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("was created"), "{stderr}");
-    assert!(stderr.contains("could not be verified"), "{stderr}");
-    assert!(stderr.contains("inspect the Volume again"), "{stderr}");
-    assert!(stderr.contains("inspect payload was malformed"), "{stderr}");
-    assert!(stderr.contains(&machine_id('a').to_string()), "{stderr}");
-    server.abort();
-}
-
 async fn run_ployz(address: std::net::SocketAddr, args: &[&str]) -> std::process::Output {
     tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
         .arg("--connect")
@@ -570,98 +413,6 @@ async fn run_ployz(address: std::net::SocketAddr, args: &[&str]) -> std::process
         .output()
         .await
         .unwrap()
-}
-
-#[tokio::test]
-async fn volume_create_size_uses_the_ployz_driver_and_plain_create_stays_ordinary() {
-    let mut service = DiscoveryService::new(test_description());
-    service.accept_volume_creates = true;
-    let created = Arc::clone(&service.created_volumes);
-    let (address, server) = serve_discovery(service).await;
-
-    for (name, size) in [
-        ("kilobytes", "1k"),
-        ("mebibytes", "2m"),
-        ("gibibytes", "3g"),
-        ("tebibytes", "4t"),
-    ] {
-        let output = run_ployz(address, &["volume", "create", name, "--size", size]).await;
-        assert!(output.status.success(), "{output:?}");
-        let (_, request) = created.lock().unwrap().pop().unwrap();
-        assert_eq!(request.name.as_str(), name);
-        assert_eq!(request.driver, "ployz");
-        assert_eq!(
-            request.options,
-            BTreeMap::from([("size".into(), size.into())])
-        );
-    }
-    let ordinary = run_ployz(address, &["volume", "create", "ordinary"]).await;
-    assert!(ordinary.status.success(), "{ordinary:?}");
-
-    let (_, ordinary) = created.lock().unwrap().pop().unwrap();
-    assert_eq!(ordinary.driver, "local");
-    assert!(ordinary.options.is_empty());
-    assert!(ordinary.labels.is_empty());
-    server.abort();
-}
-
-#[tokio::test]
-async fn invalid_volume_sizes_fail_before_the_create_rpc() {
-    let mut service = DiscoveryService::new(test_description());
-    service.accept_volume_creates = true;
-    let created = Arc::clone(&service.created_volumes);
-    let (address, server) = serve_discovery(service).await;
-
-    for args in [
-        &["volume", "create", "data", "--size"][..],
-        &["volume", "create", "data", "--size", "0g"],
-        &["volume", "create", "data", "--size", "1024"],
-        &["volume", "create", "data", "--size", "1p"],
-        &[
-            "volume",
-            "create",
-            "data",
-            "--size",
-            "18446744073709551615t",
-        ],
-    ] {
-        let output = run_ployz(address, args).await;
-        assert!(!output.status.success(), "accepted {args:?}: {output:?}");
-    }
-
-    assert!(created.lock().unwrap().is_empty());
-    server.abort();
-}
-
-#[tokio::test]
-async fn existing_provisioned_volume_accepts_the_same_bound_but_never_resizes() {
-    let mut service = DiscoveryService::new(test_description());
-    service.accept_volume_creates = true;
-    service.existing_created_volume = Some(DockerVolume {
-        id: DockerVolumeId {
-            machine_id: machine_id('a'),
-            name: DockerVolumeName::parse("data").unwrap(),
-        },
-        options: BTreeMap::from([("size".into(), "2g".into())]),
-        labels: BTreeMap::new(),
-        storage: ployz_core::DockerVolumeStorageObservation::Provisioned {
-            mountpoint: ployz_core::MachinePath::parse("/var/lib/ployz-volumes/data").unwrap(),
-            bound_bytes: std::num::NonZeroU64::new(1_073_741_824).unwrap(),
-            used_bytes: 0,
-        },
-    });
-    let (address, server) = serve_discovery(service).await;
-
-    let same = run_ployz(address, &["volume", "create", "data", "--size", "1024m"]).await;
-    assert!(same.status.success(), "{same:?}");
-
-    let different = run_ployz(address, &["volume", "create", "data", "--size", "2g"]).await;
-    assert!(!different.status.success(), "{different:?}");
-    assert!(
-        String::from_utf8_lossy(&different.stderr).contains("resizing is not supported"),
-        "{different:?}"
-    );
-    server.abort();
 }
 
 fn listing_container(
@@ -678,7 +429,7 @@ fn listing_container(
         display_name: format!("{name}-{container_hex}"),
         created_at_unix_nanos: 1,
         machine_id: machine_id('a'),
-        project_name: ployz_core::ProjectName::parse("app").unwrap(),
+        namespace: ployz_core::Namespace::parse("app").unwrap(),
         kind,
         runtime,
         effective_healthcheck: None,
@@ -693,132 +444,6 @@ fn listing_container(
         labels: BTreeMap::from([("detail".into(), "preserved".into())]),
     })
     .unwrap()
-}
-
-#[tokio::test]
-async fn volume_remove_removes_a_visible_owner_and_exits_partial_when_an_unrelated_machine_is_unreachable()
- {
-    let description = test_description();
-    let mut service = DiscoveryService::new(description);
-    service.machines = vec![machine('a', "owner"), machine('b', "unreachable")];
-    let removed_volumes = Arc::clone(&service.removed_volumes);
-    let listed_volumes = Arc::clone(&service.listed_volumes);
-    let (address, server) = serve_discovery(service).await;
-
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{address}"),
-            "volume",
-            "rm",
-            "data",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
-
-    // The unchecked Machine may hold a same-named Volume, so the removal is partial.
-    assert_eq!(
-        output.status.code(),
-        Some(3),
-        "stderr: {}\nstdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    assert_eq!(
-        *removed_volumes.lock().unwrap(),
-        [DockerVolumeId {
-            machine_id: machine_id('a'),
-            name: DockerVolumeName::parse("data").unwrap(),
-        }]
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("WARNING:"), "{stderr}");
-    assert!(stderr.contains(machine_id('b').as_str()), "{stderr}");
-    assert!(stderr.contains("not checked"), "{stderr}");
-    assert!(
-        stderr.contains("may hold a same-named Docker Volume"),
-        "{stderr}"
-    );
-
-    removed_volumes.lock().unwrap().clear();
-    let exact = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{address}"),
-            "volume",
-            "rm",
-            "data",
-            "--machine",
-            "owner",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
-    assert!(exact.status.success(), "{exact:?}");
-    assert!(exact.stderr.is_empty(), "{exact:?}");
-    assert_eq!(removed_volumes.lock().unwrap().len(), 1);
-    assert!(
-        String::from_utf8_lossy(&exact.stdout)
-            .contains(&format!("Deleted volume data on {}", machine_id('a')))
-    );
-
-    removed_volumes.lock().unwrap().clear();
-    listed_volumes.lock().unwrap().insert(
-        machine_id('a'),
-        vec![DockerVolume {
-            id: DockerVolumeId {
-                machine_id: machine_id('a'),
-                name: DockerVolumeName::parse("busy").unwrap(),
-            },
-            options: Default::default(),
-            labels: Default::default(),
-            storage: ployz_core::DockerVolumeStorageObservation::Plain {
-                driver: "local".into(),
-            },
-        }],
-    );
-    let failed = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{address}"),
-            "volume",
-            "rm",
-            "busy",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
-    assert!(!failed.status.success(), "{failed:?}");
-    assert!(removed_volumes.lock().unwrap().is_empty());
-    assert!(
-        String::from_utf8_lossy(&failed.stderr)
-            .contains(&format!("{}/busy: volume is in use", machine_id('a'))),
-        "{failed:?}"
-    );
-
-    let unseen = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{address}"),
-            "volume",
-            "rm",
-            "unseen",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
-    assert!(!unseen.status.success(), "{unseen:?}");
-    assert!(
-        String::from_utf8_lossy(&unseen.stderr)
-            .contains("was not checked and may hold a same-named Docker Volume"),
-        "{unseen:?}"
-    );
-    server.abort();
 }
 
 #[tokio::test]

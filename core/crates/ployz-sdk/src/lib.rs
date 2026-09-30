@@ -3,15 +3,17 @@
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
 //! The handwritten façade is connect / session observation and registration /
-//! about / runtime.watch / prepare / build / preview / run / previewProjectRemoval /
+//! about / runtime.watch / prepare / build / preview / run / previewNamespaceRemoval /
 //! remove_volumes / pruneImages / dataLossIfMachineRemoved / removeMachine /
-//! dataLossIfProjectDestroyed / destroyProject / dataLossIfClusterDestroyed /
-//! destroyCluster / close.
+//! dataLossIfNamespaceDestroyed / destroyNamespace / dataLossIfClusterDestroyed /
+//! destroyCluster / close, and the Config Store's openConfigStore / read / write.
+pub mod config_store;
+
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz::sdk;
 use ployz_core::{
-    DataLossConfirmation, ManagementClientLabel, ProjectName, RemoveVolumesRequest, RpcError,
+    DataLossConfirmation, ManagementClientLabel, Namespace, RemoveVolumesRequest, RpcError,
     RpcErrorCode,
 };
 
@@ -165,6 +167,21 @@ impl Client {
             .map_err(rpc_to_napi)
     }
 
+    /// Set this Machine's Management Client slot named `label`; returns the secret
+    /// `ployz1:` Management Capability for it. Do not log it.
+    ///
+    /// # Errors
+    /// Returns an invalid label, transport errors or a non-participating Machine.
+    #[napi]
+    pub async fn set_management_client(&self, label: String) -> Result<String> {
+        let label = ManagementClientLabel::parse(label).map_err(invalid_argument)?;
+        self.inner
+            .set_management_client(label)
+            .await
+            .map(|capability| capability.to_secret_string())
+            .map_err(rpc_to_napi)
+    }
+
     /// Inspect identity and Management Client labels on this session.
     ///
     /// # Errors
@@ -213,38 +230,6 @@ impl Client {
             &self
                 .inner
                 .publish_certificate_material(request)
-                .await
-                .map_err(rpc_to_napi)?,
-        )
-    }
-
-    /// Mint a Build Grant on this Machine for one image push into a repository.
-    ///
-    /// # Errors
-    /// Returns malformed input, transport failures, or the Machine's refusal.
-    #[napi]
-    pub async fn mint_build_grant(&self, request: serde_json::Value) -> Result<serde_json::Value> {
-        let request = serde_json::from_value(request).map_err(invalid_argument)?;
-        to_json(
-            &self
-                .inner
-                .mint_build_grant(request)
-                .await
-                .map_err(rpc_to_napi)?,
-        )
-    }
-
-    /// End a Build Grant and read the digest this Machine received under it.
-    ///
-    /// # Errors
-    /// Returns malformed input, transport failures, or `not_found` for an expired grant.
-    #[napi]
-    pub async fn end_build_grant(&self, request: serde_json::Value) -> Result<serde_json::Value> {
-        let request = serde_json::from_value(request).map_err(invalid_argument)?;
-        to_json(
-            &self
-                .inner
-                .end_build_grant(request)
                 .await
                 .map_err(rpc_to_napi)?,
         )
@@ -318,20 +303,6 @@ impl Client {
         })
     }
 
-    /// What a Builder outside the Cluster does for the one Git Service in
-    /// `input.deployment` at `input.commit`: reuse `input.receipt`, whose image a
-    /// Machine still holds, or build the platforms its placements run.
-    ///
-    /// # Errors
-    /// Returns a generated [`RpcError`] JSON payload for a closed session,
-    /// invalid input, transport failure, or an unbuildable architecture.
-    #[napi]
-    pub async fn outside_build(&self, input: serde_json::Value) -> Result<serde_json::Value> {
-        let input = serde_json::from_value(input).map_err(invalid_argument)?;
-        let outside = self.inner.outside_build(input).await.map_err(rpc_to_napi)?;
-        serde_json::to_value(outside).map_err(invalid_argument)
-    }
-
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
     ///
     /// Confirming executes these operations. It does not re-plan.
@@ -347,24 +318,24 @@ impl Client {
         Ok(DeployPreviewHandle { inner })
     }
 
-    /// Calculate a Project-removal preview. Confirming executes these operations.
+    /// Calculate a Namespace-removal preview. Confirming executes these operations.
     ///
     /// # Errors
     ///
-    /// Returns a generated [`RpcError`] JSON payload when `project_name` is not
-    /// a Project Name, the Project is reserved, the session is closed, or
+    /// Returns a generated [`RpcError`] JSON payload when `namespace` is not
+    /// a Namespace, the Namespace is reserved, the session is closed, or
     /// planning fails.
     #[napi]
-    pub async fn preview_project_removal(
+    pub async fn preview_namespace_removal(
         &self,
-        project_name: String,
+        namespace: String,
         destroy_volumes: bool,
     ) -> Result<DeployPreviewHandle> {
-        let project_name = ProjectName::parse(project_name).map_err(invalid_argument)?;
+        let namespace = Namespace::parse(namespace).map_err(invalid_argument)?;
         let volumes = volume_fate(destroy_volumes);
         let inner = self
             .inner
-            .preview_project_removal(project_name, volumes)
+            .preview_namespace_removal(namespace, volumes)
             .await
             .map_err(rpc_to_napi)?;
         Ok(DeployPreviewHandle { inner })
@@ -454,6 +425,20 @@ impl Client {
         to_json(&removed)
     }
 
+    /// Take `machine` out of the Cluster without resetting it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when the session is closed or the
+    /// Machine can't be taken out: not visible, or the last one while held.
+    #[napi]
+    pub async fn remove_machine_membership(&self, machine: String) -> Result<()> {
+        self.inner
+            .remove_machine_membership(&machine)
+            .await
+            .map_err(rpc_to_napi)
+    }
+
     /// Apply one Machine policy edit (Machine Roles and build concurrency) to `machine`.
     ///
     /// `update` is a partial MachineUpdate; omitted fields keep their values.
@@ -478,31 +463,31 @@ impl Client {
         to_json(&updated)
     }
 
-    /// Live Observation of Data Loss that destroying `project_name` would cause.
+    /// Live Observation of Data Loss that destroying `namespace` would cause.
     ///
     /// `destroy_volumes` false is empty. Mutates nothing.
     ///
     /// # Errors
     ///
-    /// Returns a generated [`RpcError`] JSON payload when `project_name` is not
-    /// a Project Name, the Project is reserved, the session is closed, snapshot
+    /// Returns a generated [`RpcError`] JSON payload when `namespace` is not
+    /// a Namespace, the Namespace is reserved, the session is closed, snapshot
     /// gathering fails, or destroying volumes is requested against a known
     /// incomplete snapshot.
     #[napi]
-    pub async fn data_loss_if_project_destroyed(
+    pub async fn data_loss_if_namespace_destroyed(
         &self,
-        project_name: String,
+        namespace: String,
         destroy_volumes: bool,
     ) -> Result<serde_json::Value> {
         let observed = self
             .inner
-            .data_loss_if_project_destroyed(&project_name, volume_fate(destroy_volumes))
+            .data_loss_if_namespace_destroyed(&namespace, volume_fate(destroy_volumes))
             .await
             .map_err(rpc_to_napi)?;
         to_json(&observed)
     }
 
-    /// Destroy `project_name` after an exact Data Loss confirmation.
+    /// Destroy `namespace` after an exact Data Loss confirmation.
     ///
     /// `confirm_data_loss` must be a DataLossConfirmation object, not a bare
     /// Data Loss list or an ObservedDataLoss read. Confirmed identities that
@@ -512,12 +497,12 @@ impl Client {
     ///
     /// Returns a generated [`RpcError`] JSON payload when `confirm_data_loss`
     /// is not a DataLossConfirmation object, the session is closed, the
-    /// Project cannot be destroyed, or the confirmation does not cover the
+    /// Namespace cannot be destroyed, or the confirmation does not cover the
     /// fresh Data Loss.
     #[napi]
-    pub async fn destroy_project(
+    pub async fn destroy_namespace(
         &self,
-        project_name: String,
+        namespace: String,
         confirm_data_loss: serde_json::Value,
         destroy_volumes: bool,
     ) -> Result<serde_json::Value> {
@@ -525,11 +510,7 @@ impl Client {
             serde_json::from_value(confirm_data_loss).map_err(invalid_argument)?;
         let outcome = self
             .inner
-            .destroy_project(
-                &project_name,
-                &confirm_data_loss,
-                volume_fate(destroy_volumes),
-            )
+            .destroy_namespace(&namespace, &confirm_data_loss, volume_fate(destroy_volumes))
             .await
             .map_err(rpc_to_napi)?;
         to_json(&outcome)
@@ -762,47 +743,11 @@ pub fn allocate_enrollment(
     to_json(&assignment)
 }
 
-/// Fingerprints a build of these pinned commits would carry, without a checkout.
-/// Input: `{deployment, source_commits}` as in preparation.
-///
-/// # Errors
-/// Rejects an invalid deployment or a commit for a non-Git Service.
-#[napi]
-pub fn build_fingerprints(input: serde_json::Value) -> Result<serde_json::Value> {
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Input {
-        deployment: serde_json::Value,
-        source_commits: std::collections::BTreeMap<ployz_core::ServiceName, String>,
-    }
-    let input: Input = serde_json::from_value(input).map_err(invalid_argument)?;
-    to_json(
-        &sdk::expected_fingerprints(input.deployment, input.source_commits).map_err(rpc_to_napi)?,
-    )
-}
-
 /// The ployz version fingerprints cover; a GitHub runner installs exactly this one.
 #[napi]
 #[must_use]
 pub fn ployz_version() -> String {
     sdk::VERSION.to_owned()
-}
-
-/// The tag a Build Grant push retains `digest` under in `repository`, as Image
-/// Cleanup knows it: `repository:ployz-sha256-<hex>`.
-///
-/// # Errors
-/// Rejects a repository or digest a Build Grant could not have pushed.
-#[napi]
-pub fn build_grant_tag(repository: String, digest: String) -> Result<String> {
-    let repository =
-        ployz_core::BuildGrantRepository::parse(repository).map_err(invalid_argument)?;
-    let digest = ployz_core::ImageDigest::parse(digest).map_err(invalid_argument)?;
-    Ok(format!(
-        "{repository}:{}{}",
-        ployz_core::RETAINED_DIGEST_TAG_PREFIX,
-        digest.hex()
-    ))
 }
 
 /// Cancellable Container log reader.

@@ -1,38 +1,16 @@
-import { queryOptions, useQuery, useSuspenseQuery } from "@tanstack/react-query";
+import { queryOptions, useSuspenseQuery } from "@tanstack/react-query";
 import { preloadCollection } from "./query-collection";
 import type { CollectionScope } from "./scope";
 import { useCollectionScope } from "./use-collection-scope";
 import { orgStoreTables } from "./collections";
-import { preloadOrganizationEnvironmentChangeStateProjections } from "#/modules/deployments/environment-change-state.queries";
-import { getOrganizationDeploymentsCollection } from "#/modules/deployments/deployment.collection";
-import { getEnvironmentDocumentsCollection } from "#/modules/environment-design/environment-document.collection";
-import {
-  getServicesCollection, getVolumeResourcesCollection,
-} from "#/modules/services/services.collection";
-
-/** Every derived view in an org-store data file. Adding a view means adding it here. */
-export const orgStoreViews = [
-  getEnvironmentDocumentsCollection, getServicesCollection, getVolumeResourcesCollection, getOrganizationDeploymentsCollection,
-];
-
-/** Every server projection in an org-store Query file. Adding a projection means adding its preload here. */
-export const orgStoreProjections = [preloadOrganizationEnvironmentChangeStateProjections];
-
-/**
- * The Org Store's single readiness signal. Tables and the change-state projection
- * load together; derived views start once their raw rows exist.
- */
+/** The Org Store's single readiness signal: every table loaded. */
 export function orgStoreOptions(organizationSlug: string, scope: CollectionScope) {
   return queryOptions({
     queryKey: ["org-store", scope.sessionId, scope.userId, organizationSlug],
     // Readiness happens once; each table keeps itself fresh after that.
     staleTime: Infinity,
     queryFn: async () => {
-      const tables = Promise.all(Object.values(orgStoreTables).map((get) => preloadCollection(get(organizationSlug, scope))));
-      await Promise.all([
-        tables.then(() => Promise.all(orgStoreViews.map((get) => get(organizationSlug, scope).preload()))),
-        ...orgStoreProjections.map((preload) => preload(scope, organizationSlug)),
-      ]);
+      await Promise.all(Object.values(orgStoreTables).map((get) => preloadCollection(get(organizationSlug, scope))));
       return true;
     },
   });
@@ -41,9 +19,4 @@ export function orgStoreOptions(organizationSlug: string, scope: CollectionScope
 /** Suspends until the Org Store is ready. Only the dashboard shell's content gate calls this. */
 export function useOrgStoreGate(organizationSlug: string) {
   useSuspenseQuery(orgStoreOptions(organizationSlug, useCollectionScope()));
-}
-
-/** Non-suspending readiness for chrome that renders outside the content gate. */
-export function useOrgStoreStatus(organizationSlug: string) {
-  return useQuery(orgStoreOptions(organizationSlug, useCollectionScope()));
 }

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use ployz_core::{
     AdvertisedEndpoint, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
     DockerVolumeStorageObservation, HealthObservation, Machine, MachinePath, MembershipObservation,
-    ProjectName, ServiceId, ServiceName, WireGuardPublicKey,
+    Namespace, ServiceId, ServiceName, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -11,11 +11,16 @@ use super::*;
 
 #[test]
 fn unspecified_or_negative_stop_timeout_has_no_rpc_deadline() {
-    assert_eq!(stop_rpc_timeout(Some(-1)), None);
-    assert_eq!(stop_rpc_timeout(None), None);
+    assert_eq!(stop_rpc_timeout(Some(-1), 1), None);
+    assert_eq!(stop_rpc_timeout(None, 1), None);
     assert_eq!(
-        stop_rpc_timeout(Some(5)),
+        stop_rpc_timeout(Some(5), 1),
         Some(TARGET_RPC_TIMEOUT + Duration::from_secs(5))
+    );
+    // Stops on one Machine run one at a time: the last waits behind the others.
+    assert_eq!(
+        stop_rpc_timeout(Some(10), 2),
+        Some(TARGET_RPC_TIMEOUT + Duration::from_secs(20))
     );
 }
 
@@ -97,10 +102,17 @@ fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
     assert_eq!(snapshot.machines, machines);
     assert_eq!(snapshot.containers, [container]);
     assert_eq!(snapshot.volume_snapshot.observations(), [volume]);
-    assert!(snapshot.volume_snapshot.listing_warnings().any(|message| {
-        message.contains(&machine_id('a').to_string())
-            && message.contains("Docker Volume unavailable")
-    }));
+    assert!(
+        snapshot
+            .volume_snapshot
+            .named_failures()
+            .iter()
+            .any(|failure| {
+                let message = failure.to_string();
+                message.contains(&machine_id('a').to_string())
+                    && message.contains("Docker Volume unavailable")
+            })
+    );
     assert_eq!(snapshot.container_failures, expected_container_failures);
     assert_eq!(snapshot.container_omissions, expected_container_omissions);
     assert_eq!(
@@ -275,7 +287,7 @@ fn observation(id: char, machine: char) -> ContainerObservation {
         display_name: "api".into(),
         created_at_unix_nanos: 0,
         machine_id: machine_id(machine),
-        project_name: ProjectName::parse("app").unwrap(),
+        namespace: Namespace::parse("app").unwrap(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,

@@ -1,19 +1,20 @@
+import { Effect } from "effect";
 import { afterEach, expect, it } from "vitest";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { Header } from "tar";
-import { extractGithubSource, resolveSourcePaths } from "./github-source.server";
+import { extractGithubSource, extractUploadedSource, removeExtractedSource, resolveSourcePaths } from "./github-source.server";
 const directories: string[] = [];
-afterEach(async () => { await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
+afterEach(async () => { await Promise.all(directories.splice(0).map((dir) => removeExtractedSource(dir))); });
 async function workspace() { const dir = await mkdtemp(path.join(tmpdir(), "source-test-")); directories.push(dir); return dir; }
-function archive(entries: { name: string; body?: string; link?: string }[]) {
+function archive(entries: { name: string; body?: string; link?: string; mode?: number; directory?: boolean }[]) {
   const chunks: Buffer[] = [];
   for (const entry of entries) {
     const body = Buffer.from(entry.body ?? "");
-    const header = new Header({ path: entry.name, size: body.length, mode: 0o644,
-      type: entry.link ? "SymbolicLink" : "File", linkpath: entry.link });
+    const type = entry.directory ? "Directory" : entry.link ? "SymbolicLink" : "File";
+    const header = new Header({ path: entry.name, size: body.length, mode: entry.mode ?? 0o644, type, linkpath: entry.link });
     header.encode();
     if (!header.block) throw new Error("Missing header");
     chunks.push(Buffer.from(header.block), body, Buffer.alloc((512 - body.length % 512) % 512));
@@ -57,4 +58,18 @@ it("rejects root and Dockerfile symlink escapes", async () => {
   await symlink(outside, path.join(dir, "escape"));
   await expect(resolveSourcePaths(dir, "escape")).rejects.toThrow("inside the repository");
   await expect(resolveSourcePaths(dir, ".", "escape/Dockerfile")).rejects.toThrow("inside the repository");
+});
+it("keeps an upload's permission bits, which its digest covers, past the umask; submodules are just files", async () => {
+  const response = archive([{ name: "source/", directory: true, mode: 0o775 }, { name: "source/bin/", directory: true, mode: 0o500 },
+    { name: "source/bin/run", body: "#!/bin/sh", mode: 0o775 }, { name: "source/.gitmodules", body: "[submodule]", mode: 0o664 }]);
+  const chunks = async function* () { yield new Uint8Array(await response.arrayBuffer()); };
+  const previous = process.umask(0o077);
+  try {
+    const modes = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const root = yield* extractUploadedSource(chunks());
+      const mode = async (name: string) => (await stat(path.join(root, name))).mode & 0o777;
+      return yield* Effect.promise(async () => [await mode("."), await mode("bin"), await mode("bin/run"), await mode(".gitmodules")]);
+    })));
+    expect(modes).toEqual([0o775, 0o500, 0o775, 0o664]);
+  } finally { process.umask(previous); }
 });

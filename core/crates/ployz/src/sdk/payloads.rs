@@ -15,7 +15,7 @@ use super::RuntimeWatchView;
 use ployz_core::{
     ClusterTeardown, ContractDescription, DataLossConfirmation, DeployEvent, DeployIntent,
     DeployOutcome, DeployPreview, ExecutionError, LocalMachineRemoved, MachineId, MachineTarget,
-    ObservedDataLoss, PlanOptions, ProjectName, RegisterRequest, Registered, RemoveVolumesRequest,
+    Namespace, ObservedDataLoss, PlanOptions, RegisterRequest, Registered, RemoveVolumesRequest,
     RequestedServiceSpec, RpcError, VolumeRemoval,
 };
 
@@ -88,7 +88,7 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_core::CertificateMaterialPublished>();
     declarations.add::<ObservedDataLoss>();
     declarations.add::<PlanOptions>();
-    declarations.add::<ProjectName>();
+    declarations.add::<Namespace>();
     declarations.add::<RegisterRequest>();
     declarations.add::<Registered>();
     declarations.add::<ployz_core::EnrollmentAssignment>();
@@ -103,7 +103,6 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_core::config::ServiceConfig>();
     declarations.add::<ployz_core::config::SavedEnvironmentIntent>();
     declarations.add::<ployz_core::config::ChangeSetInput>();
-    declarations.add::<ployz_core::config::PublicationBasis>();
     declarations.add::<ployz_core::config::ReviewChangeSet>();
     declarations.add::<ployz_core::config::RuntimeOutcomeProjection>();
     declarations.add::<ployz_core::config::CompiledEnvironmentIntent>();
@@ -117,6 +116,18 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_core::config::BranchPlan>();
     declarations.add::<ployz_core::config::BranchChangesInput>();
     declarations.add::<ployz_core::config::BranchChanges>();
+    declarations.add::<ployz_store::Query>();
+    declarations.add::<ployz_store::View>();
+    declarations.add::<ployz_store::Command>();
+    declarations.add::<ployz_store::Written>();
+    declarations.add::<ployz_store::Committed>();
+    declarations.add::<ployz_store::Trusted>();
+    declarations.add::<ployz_store::GitSource>();
+    declarations.add::<ployz_store::SystemEvent>();
+    declarations.add::<ployz_store::GithubBuild>();
+    declarations.add::<ployz_store::GithubClaims>();
+    declarations.add::<ployz_store::Unclaimed>();
+    declarations.add::<ployz_store::OrganizationRemoved>();
 
     let mut out = String::from(HEADER);
     for declaration in declarations.by_name.values() {
