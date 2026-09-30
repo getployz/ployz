@@ -468,7 +468,15 @@ pub(crate) fn record(
                     .map_err(|_| invalid_evidence("Deploy Outcome"))?;
             let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
             let applied = applied_state(tx, &stored.environment, &saved)?;
-            let nodes = node_outcomes(&stored.nodes, &saved, &applied, &projection, &removed);
+            let nodes = node_outcomes(
+                &stored.nodes,
+                &saved,
+                &applied,
+                &Evidence::Executed {
+                    projection: &projection,
+                    removed: &removed,
+                },
+            );
             // A Deploy that left a Volume's data behind didn't finish: a retry removes it.
             let status = if success && nodes.values().all(|status| *status != NodeStatus::Failed) {
                 DeploymentStatus::Applied
@@ -581,43 +589,81 @@ fn current_name<'nodes>(nodes: &'nodes [TargetNode], runtime: &'nodes ServiceNam
         .unwrap_or(runtime.as_str())
 }
 
-/// Each target node's Node Outcome. A Service's comes from its operations: all
-/// completed is Deployed (Removed once it left Saved State), some ran is Failed,
-/// none ran is Not attempted, none planned is Unchanged. A kept Volume follows the
-/// targeted Services mounting it, and is Unchanged when Applied State already holds
-/// it as saved. A removed Volume is Removed once the Deploy succeeded and every
-/// Docker Volume it deletes is gone; Failed when one wasn't deleted, and Not
-/// attempted when the Deploy failed first.
+/// What a run recorded that settles its target nodes: the Deploy Preview it
+/// prepared, then what executing that preview did.
+pub(super) enum Evidence<'run> {
+    Planned(&'run DeployPreview),
+    Executed {
+        projection: &'run RuntimeOutcomeProjection,
+        removed: &'run [VolumeRemoval],
+    },
+}
+
+/// Each target node's Node Outcome from `evidence`. A Service the preview plans
+/// nothing for is Unchanged; one it plans for is Pending until executed, then all
+/// completed is Deployed (Removed once it left Saved State), some ran is Failed and
+/// none ran is Not attempted. A kept Volume follows the targeted Services mounting
+/// it, and is Unchanged when Applied State already holds it as saved. A removed
+/// Volume is Removed once the Deploy succeeded and every Docker Volume it deletes is
+/// gone; Failed when one wasn't deleted, and Not attempted when the Deploy failed first.
 pub(super) fn node_outcomes(
     nodes: &[TargetNode],
     saved: &SavedEnvironmentIntent,
     applied: &SavedEnvironmentIntent,
-    projection: &RuntimeOutcomeProjection,
-    removed: &[VolumeRemoval],
+    evidence: &Evidence<'_>,
 ) -> BTreeMap<String, NodeStatus> {
-    let success = matches!(
-        projection.summary,
-        ployz_core::config::RuntimeOutcomeSummary::Success { .. }
-    );
-    let service = |name: &ServiceName, kept: bool| {
-        if projection.confirmed_services.contains(name) {
-            if kept {
-                NodeStatus::Deployed
+    let service = |name: &ServiceName, kept: bool| match evidence {
+        Evidence::Planned(preview) => {
+            let planned = preview.operations.iter().any(|row| {
+                row.service_name
+                    .as_ref()
+                    .or_else(|| row.operation.service_name())
+                    == Some(name)
+            });
+            if planned {
+                NodeStatus::Pending
             } else {
-                NodeStatus::Removed
+                NodeStatus::Unchanged
             }
-        } else if projection.failed_services.contains(name) {
-            NodeStatus::Failed
-        } else if projection.unattempted_services.contains(name) {
-            NodeStatus::NotAttempted
-        } else {
-            NodeStatus::Unchanged
+        }
+        Evidence::Executed { projection, .. } => {
+            if projection.confirmed_services.contains(name) {
+                if kept {
+                    NodeStatus::Deployed
+                } else {
+                    NodeStatus::Removed
+                }
+            } else if projection.failed_services.contains(name) {
+                NodeStatus::Failed
+            } else if projection.unattempted_services.contains(name) {
+                NodeStatus::NotAttempted
+            } else {
+                NodeStatus::Unchanged
+            }
         }
     };
-    let gone = |id: &DockerVolumeId| {
-        removed.iter().any(|removal| {
-            removal.id == *id && matches!(removal.outcome, VolumeRemovalOutcome::Removed)
-        })
+    let removed_volume = |deletes: &[DockerVolumeId]| match evidence {
+        Evidence::Planned(_) => NodeStatus::Pending,
+        Evidence::Executed {
+            projection,
+            removed,
+        } => {
+            let gone = |id: &DockerVolumeId| {
+                removed.iter().any(|removal| {
+                    removal.id == *id && matches!(removal.outcome, VolumeRemovalOutcome::Removed)
+                })
+            };
+            if !matches!(
+                projection.summary,
+                ployz_core::config::RuntimeOutcomeSummary::Success { .. }
+            ) {
+                NodeStatus::NotAttempted
+            } else if deletes.iter().all(gone) {
+                NodeStatus::Removed
+            } else {
+                NodeStatus::Failed
+            }
+        }
     };
     let kept_volume = |volume: &SavedVolumeIntent| {
         let mounting: Vec<NodeStatus> = saved
@@ -632,15 +678,20 @@ pub(super) fn node_outcomes(
             })
             .map(|mounting| service(&mounting.config.private_dns, true))
             .collect();
-        if mounting.contains(&NodeStatus::Failed) {
-            NodeStatus::Failed
-        } else if mounting.contains(&NodeStatus::NotAttempted) {
-            NodeStatus::NotAttempted
-        } else if applied.volumes.contains(volume) {
+        [
+            NodeStatus::Failed,
+            NodeStatus::NotAttempted,
+            NodeStatus::Pending,
+        ]
+        .into_iter()
+        .find(|status| mounting.contains(status))
+        .unwrap_or(if applied.volumes.contains(volume) {
             NodeStatus::Unchanged
+        } else if matches!(evidence, Evidence::Planned(_)) {
+            NodeStatus::Pending
         } else {
             NodeStatus::Deployed
-        }
+        })
     };
     nodes
         .iter()
@@ -651,15 +702,9 @@ pub(super) fn node_outcomes(
                     saved.services.iter().any(|kept| kept.id == id.as_str()),
                 ),
                 TargetNode::Volume {
-                    deletes: Some(_), ..
-                } if !success => NodeStatus::NotAttempted,
-                TargetNode::Volume {
                     deletes: Some(deletes),
                     ..
-                } if deletes.iter().all(gone) => NodeStatus::Removed,
-                TargetNode::Volume {
-                    deletes: Some(_), ..
-                } => NodeStatus::Failed,
+                } => removed_volume(deletes),
                 TargetNode::Volume {
                     id, deletes: None, ..
                 } => saved
@@ -673,50 +718,44 @@ pub(super) fn node_outcomes(
         .collect()
 }
 
-/// A running Deployment's Node Outcomes its recorded Deploy Preview already
-/// settles: a Service it plans nothing for is Unchanged, and so is a kept Volume
-/// Applied State already holds that no planned target Service mounts. The rest wait.
-pub(super) fn planned_outcomes(
-    nodes: &[TargetNode],
-    saved: &SavedEnvironmentIntent,
-    applied: &SavedEnvironmentIntent,
-    preview: &Value,
-) -> Result<BTreeMap<String, NodeStatus>, RpcError> {
-    let preview: DeployPreview =
-        serde_json::from_value(preview.clone()).map_err(|_| error::corrupt("Deploy Preview"))?;
-    let planned = |name: &ServiceName| {
-        preview.operations.iter().any(|row| {
-            row.service_name
-                .as_ref()
-                .or_else(|| row.operation.service_name())
-                == Some(name)
-        })
+/// Each of `stored`'s target nodes' Node Outcome as it reads now: what its run
+/// recorded once it ended; while it runs, what its Deploy Preview already settles
+/// and Pending before that; Not attempted when it ended without running, Unknown
+/// when its runner vanished.
+pub(crate) fn current_outcomes(
+    tx: &mut dyn Tx,
+    stored: &Stored,
+) -> Result<Vec<NodeOutcome>, RpcError> {
+    let status = stored.summary.status;
+    let fallback = if status.in_flight() {
+        NodeStatus::Pending
+    } else if status == DeploymentStatus::Unknown {
+        NodeStatus::Unknown
+    } else {
+        NodeStatus::NotAttempted
     };
-    let unchanged = |node: &TargetNode| match node {
-        TargetNode::Service { runtime, .. } => !planned(runtime),
-        TargetNode::Volume {
-            id, deletes: None, ..
-        } => saved
-            .volumes
-            .iter()
-            .find(|volume| volume.resource_id == id.as_str())
-            .is_some_and(|volume| {
-                applied.volumes.contains(volume)
-                    && !saved.services.iter().any(|service| {
-                        nodes.iter().any(|node| node.id() == service.id)
-                            && planned(&service.config.private_dns)
-                            && service
-                                .volume_attachments
-                                .iter()
-                                .any(|mount| mount.volume_resource_id == volume.resource_id)
-                    })
-            }),
-        TargetNode::Volume { .. } => false,
+    let planned = match &stored.run.preview {
+        Some(preview) if status.in_flight() && stored.run.nodes.is_empty() => {
+            let preview: DeployPreview = serde_json::from_value(preview.clone())
+                .map_err(|_| error::corrupt("Deploy Preview"))?;
+            let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
+            let applied = applied_state(tx, &stored.environment, &saved)?;
+            node_outcomes(
+                &stored.nodes,
+                &saved,
+                &applied,
+                &Evidence::Planned(&preview),
+            )
+        }
+        _ => stored.run.nodes.clone(),
     };
-    Ok(nodes
+    Ok(stored
+        .nodes
         .iter()
-        .filter(|node| unchanged(node))
-        .map(|node| (node.id().to_owned(), NodeStatus::Unchanged))
+        .map(|node| NodeOutcome {
+            node: node.shown(),
+            outcome: planned.get(node.id()).copied().unwrap_or(fallback),
+        })
         .collect())
 }
 
