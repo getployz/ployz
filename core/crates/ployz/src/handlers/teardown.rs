@@ -147,7 +147,7 @@ where
             again,
         )?;
         if view.deployment.status != DeploymentStatus::Applied {
-            unfinished(matches, &view, outcome, again)?;
+            unfinished(matches, &view, &ran, outcome, again)?;
             return Ok(None);
         }
         ran.push(view.deployment);
@@ -188,15 +188,32 @@ pub(super) fn take_off(
     Ok((view, ran))
 }
 
-/// Report a removal Deployment that didn't apply (yet), naming `again` to finish
-/// it: exit 3, or 0 when `--detach` asked not to wait.
+/// Report a removal Deployment that didn't apply (yet), after the `applied` ones
+/// before it, naming `again` to finish it: exit 3, or 0 when `--detach` asked not to wait.
 pub(super) fn unfinished(
     matches: &ArgMatches,
     view: &DeploymentView,
+    applied: &[DeploymentSummary],
     ran: Result<(), Error>,
     again: &[&str],
 ) -> Result<(), Error> {
-    deploy::finish_view(view, Some(store::next(matches, again)))?;
+    #[derive(serde::Serialize)]
+    struct Unfinished<'a> {
+        #[serde(flatten)]
+        view: &'a DeploymentView,
+        #[serde(skip_serializing_if = "<[_]>::is_empty")]
+        applied: &'a [DeploymentSummary],
+    }
+    let hint = Some(store::next(matches, again));
+    crate::output::finish(
+        &store::Next::new(&Unfinished { view, applied }, hint),
+        || {
+            for deployment in applied {
+                crate::output::say!("Deployment #{} applied", deployment.number);
+            }
+            deploy::say_view(view);
+        },
+    )?;
     ran.and_then(|()| match matches.get_flag("detach") {
         true => Ok(()),
         false => Err(Error::partial()),

@@ -41,7 +41,7 @@ pub(super) fn shutdown(root: &ArgMatches) -> Result<(), Error> {
                 .iter()
                 .flat_map(|name| ["--accept-volume-loss", name.as_str()]),
         );
-        return unfinished(matches, &view, ran, &again);
+        return unfinished(matches, &view, &[], ran, &again);
     }
     let on = store::next(matches, &["deploy", "--env", name.as_str()]);
     deploy::finish_view(&view, Some(on))
