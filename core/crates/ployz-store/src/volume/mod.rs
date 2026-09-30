@@ -3,6 +3,8 @@
 //! data; only removing a deployed Volume deletes data, and a Deploy of that removal
 //! needs its destructive review (see `crate::removal`).
 
+pub(crate) mod query;
+
 use std::collections::BTreeMap;
 
 use ployz_core::config::{SavedEnvironmentIntent, SavedVolumeIntent, VolumeAttachment, VolumeKind};
@@ -11,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use super::{Command, replayable};
 use crate::Actor;
+use crate::command::{Command, replayable};
 use crate::error;
 use crate::id::{EnvironmentId, Revision, VolumeId, VolumeName};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};

@@ -5,6 +5,9 @@
 //! (what the Change Set compares against). Publish and Discard recompute the review
 //! under the Environment's lock and refuse a version that no longer matches.
 
+pub(crate) mod diff;
+pub(crate) mod publish;
+
 use ployz_core::RpcError;
 use ployz_core::config::{
     ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,

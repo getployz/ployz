@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use super::{Command, replayable};
 use crate::Actor;
+use crate::command::{Command, replayable};
 use crate::error;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectId, ProjectName, Revision};
 use crate::scope::{self, EnvironmentSummary, Project};
