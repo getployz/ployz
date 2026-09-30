@@ -3,7 +3,7 @@
 //! it lists them; removing one takes its name typed with `--confirm`.
 
 use clap::{ArgMatches, Command};
-use ployz_core::{DeployOutcome, DockerVolumeId, Namespace, NamespaceObservation, RpcErrorCode};
+use ployz_core::{DeployOutcome, DockerVolumeId, Namespace, RpcErrorCode};
 use ployz_store::{NamespacesQuery, OwnedNamespace};
 use serde::Serialize;
 use serde_json::json;
@@ -12,7 +12,7 @@ use super::super::teardown::confirmed;
 use super::super::{Error, leaf_matches, runtime, store};
 use crate::cli::{base, value};
 use crate::deploy::VolumeFate;
-use crate::output::say;
+use crate::output::{Gaps, say};
 
 pub(super) fn command() -> Command {
     base(
@@ -42,34 +42,10 @@ struct Unowned {
     volumes: Vec<DockerVolumeId>,
 }
 
-impl Unowned {
-    fn of(observed: NamespaceObservation) -> Self {
-        Self {
-            namespace: observed.name,
-            services: observed
-                .services
-                .iter()
-                .map(|service| service.name.clone())
-                .collect(),
-            volumes: observed.volumes,
-        }
-    }
-
-    fn say(&self) {
-        say!(
-            "{}: {} Service(s), Volumes {}",
-            self.namespace,
-            self.services.len(),
-            volume_names(&self.volumes)
-        );
-    }
-}
-
 /// What `--confirm` removed.
 #[derive(Serialize)]
 struct Cleaned {
     namespace: Namespace,
-    removed: bool,
     volumes: Vec<DockerVolumeId>,
     outcome: DeployOutcome<ployz_core::ExecutionError>,
 }
@@ -85,30 +61,63 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
             })
         })
         .transpose()?;
-    let owned = store::store(root)?.read(&NamespacesQuery {})?.namespaces;
+    let store = store::store(root)?;
     let context = matches.get_one::<String>("context").map(String::as_str);
+    // Ownership comes from the signed-in Organization, so the Servers read must be
+    // that Organization's: another Cluster's owned Namespaces would read as stray.
+    if matches!(store.backend(), store::Backend::Cloud(..))
+        && (context.is_some() || matches.get_one::<String>("connect").is_some())
+    {
+        return Err(Error::usage(
+            "server clean reads your Organization's Servers; drop --context and --connect",
+        )
+        .with_exit(crate::failure::USAGE_EXIT));
+    }
+    let owned = store.read(&NamespacesQuery {})?.namespaces;
     let runtime = runtime()?;
     let mut client = runtime.block_on(super::connect(matches, context))?;
-    let observed = runtime.block_on(client.namespaces())?;
+    let (observed, gaps) = runtime.block_on(client.namespaces())?;
     let unowned = observed
         .into_iter()
         .filter(|namespace| owner(&owned, &namespace.name).is_none())
-        .map(Unowned::of);
+        .map(|observed| Unowned {
+            namespace: observed.name,
+            services: observed
+                .services
+                .iter()
+                .map(|service| service.name.clone())
+                .collect(),
+            volumes: observed.volumes,
+        });
     let Some(namespace) = named else {
         let unowned: Vec<_> = unowned.collect();
-        let next = unowned.first().map(|first| retry(&first.namespace));
-        let report = json!({ "namespaces": unowned, "next": next });
-        return crate::output::finish(&report, || {
+        let next = unowned
+            .first()
+            .map(|first| retry(matches, &first.namespace));
+        let report = json!({
+            "namespaces": unowned,
+            "next": next,
+            "failures": gaps.failures,
+            "omitted": gaps.omitted,
+        });
+        crate::output::finish(&report, || {
             if unowned.is_empty() {
-                say!("Every Namespace on your Servers is in a Project.");
+                say!("Every Namespace on the Servers that answered is in a Project.");
             }
             for namespace in &unowned {
-                namespace.say();
+                say!(
+                    "{}: {} Service(s), Volumes {}",
+                    namespace.namespace,
+                    namespace.services.len(),
+                    volume_names(&namespace.volumes)
+                );
             }
             if let Some(next) = &next {
                 say!("Remove one: {next}");
             }
-        });
+            unanswered(&gaps);
+        })?;
+        return gaps.outcome();
     };
     if let Some(owner) = owner(&owned, &namespace) {
         return Err(Error::detailed(
@@ -132,12 +141,27 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
         .into_iter()
         .find(|unowned| unowned.namespace == namespace)
     else {
-        return Err(Error::not_found(format!(
-            "No Server runs Namespace {namespace}"
-        )));
+        if gaps.failures.is_empty() && gaps.omitted.is_empty() {
+            return Err(Error::not_found(format!(
+                "No Server runs Namespace {namespace}"
+            )));
+        }
+        unanswered(&gaps);
+        return Err(Error::detailed(
+            RpcErrorCode::Unavailable,
+            format!(
+                "Namespace {namespace} isn't on the Servers that answered, but some didn't; \
+                 run the same command again"
+            ),
+            json!({
+                "namespace": namespace,
+                "failures": gaps.failures,
+                "omitted": gaps.omitted,
+            }),
+        ));
     };
     if !confirmed(matches, namespace.as_str(), "Namespace")? {
-        let next = retry(&namespace);
+        let next = retry(matches, &namespace);
         return Err(Error::detailed(
             RpcErrorCode::ConfirmationRequired,
             format!(
@@ -145,7 +169,12 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
                  {}; this can't be undone. No changes made.\nRetry: {next}",
                 volume_names(&found.volumes)
             ),
-            json!({ "namespace": found, "next": next }),
+            json!({
+                "namespace": namespace,
+                "services": found.services,
+                "volumes": found.volumes,
+                "next": next,
+            }),
         ));
     }
     let (volumes, outcome) = runtime.block_on(async {
@@ -172,7 +201,6 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
     let removed = matches!(outcome, DeployOutcome::Success { .. });
     let report = Cleaned {
         namespace,
-        removed,
         volumes,
         outcome,
     };
@@ -193,29 +221,42 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
     }
 }
 
+/// Name the Servers whose Namespaces went unseen.
+fn unanswered(gaps: &Gaps) {
+    let unseen: Vec<_> = gaps
+        .failures
+        .iter()
+        .map(|failure| failure.machine_id)
+        .chain(gaps.omitted.iter().copied())
+        .collect();
+    if !unseen.is_empty() {
+        say!(
+            "Servers {} didn't answer; what they run isn't listed.",
+            super::super::joined(&unseen)
+        );
+    }
+}
+
 fn owner<'a>(owned: &'a [OwnedNamespace], namespace: &Namespace) -> Option<&'a OwnedNamespace> {
     owned.iter().find(|owned| &owned.namespace == namespace)
 }
 
-fn retry(namespace: &Namespace) -> String {
-    shell_words::join([
-        "ployz",
-        "server",
-        "clean",
-        "--namespace",
-        namespace.as_str(),
-        "--confirm",
-        namespace.as_str(),
-    ])
+/// Removing `namespace`, reaching the same Servers as this command.
+fn retry(matches: &ArgMatches, namespace: &Namespace) -> String {
+    let mut words = vec!["ployz", "server", "clean"];
+    for flag in ["context", "connect"] {
+        if let Some(value) = matches.get_one::<String>(flag) {
+            words.extend([if flag == "context" { "--context" } else { "--connect" }, value]);
+        }
+    }
+    words.extend(["--namespace", namespace.as_str(), "--confirm", namespace.as_str()]);
+    shell_words::join(words)
 }
 
 fn volume_names(volumes: &[DockerVolumeId]) -> String {
     if volumes.is_empty() {
         return "(none)".to_owned();
     }
-    volumes
-        .iter()
-        .map(|volume| volume.name.as_str())
-        .collect::<Vec<_>>()
-        .join(", ")
+    let names: Vec<_> = volumes.iter().map(|volume| &volume.name).collect();
+    super::super::joined(&names)
 }
