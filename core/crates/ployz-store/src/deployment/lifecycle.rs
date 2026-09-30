@@ -764,7 +764,7 @@ pub(super) fn finish(
                         stored.summary.id.as_str().into(),
                         node.id().into(),
                         applied.document().as_str().into(),
-                        applied.node_type().into(),
+                        name_of(applied.node_type()).as_str().into(),
                     ],
                 )?,
                 None => tx.execute(

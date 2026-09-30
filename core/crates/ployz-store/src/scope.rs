@@ -185,10 +185,10 @@ pub(crate) enum Node<'a> {
 }
 
 impl Node<'_> {
-    pub(crate) const fn node_type(self) -> &'static str {
+    pub(crate) const fn node_type(self) -> EnvironmentNodeType {
         match self {
-            Self::Service(_) => "service",
-            Self::Volume(_) => "volume",
+            Self::Service(_) => EnvironmentNodeType::Service,
+            Self::Volume(_) => EnvironmentNodeType::Volume,
         }
     }
 
@@ -220,7 +220,7 @@ pub(crate) fn introduce(
             environment.as_str().into(),
             id.into(),
             who.organization.as_str().into(),
-            node.node_type().into(),
+            crate::storage::name_of(node.node_type()).as_str().into(),
             node.document().as_str().into(),
         ],
     )?;
@@ -235,22 +235,10 @@ pub(crate) fn nodes(
     what: &str,
 ) -> Result<SavedEnvironmentIntent, RpcError> {
     let mut intent = crate::review::empty(&like.environment_slug);
-    let corrupt = |_| error::corrupt(what);
     for row in rows {
-        let node_type: EnvironmentNodeType =
-            serde_json::from_value(json!(row.text(1)?)).map_err(corrupt)?;
-        let node = row.text(0)?;
-        match node_type {
-            EnvironmentNodeType::Service => {
-                intent
-                    .services
-                    .push(serde_json::from_str(node).map_err(corrupt)?);
-            }
-            EnvironmentNodeType::Volume => {
-                intent
-                    .volumes
-                    .push(serde_json::from_str(node).map_err(corrupt)?);
-            }
+        match row.variant(1, what)? {
+            EnvironmentNodeType::Service => intent.services.push(row.json(0, what)?),
+            EnvironmentNodeType::Volume => intent.volumes.push(row.json(0, what)?),
         }
     }
     Ok(intent)
