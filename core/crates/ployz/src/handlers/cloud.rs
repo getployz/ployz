@@ -282,7 +282,7 @@ where
     let state = match (mode, details.phase) {
         (InitializeMode::Resume, LocalMachinePhase::Participating) => FounderLocalState::Resume {
             machine: Box::new(details.machine.ok_or_else(|| {
-                Error::usage(
+                Error::conflict(
                     "the matching founding Server has no participating identity".to_owned(),
                 )
             })?),
