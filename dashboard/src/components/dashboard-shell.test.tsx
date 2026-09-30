@@ -136,7 +136,7 @@ it("shows a retryable Org Store failure inside the shell and recovers", async ()
   expect(screen.queryByText("Organization data couldn’t load")).toBeNull();
 });
 
-it("puts the logo, the four places, the way back to the organization and the avatar in the rail, with the current place marked", async () => {
+it("puts the logo, the four places, the way back to the organization and the account in the rail, with the current place marked", async () => {
   const { rail } = await show();
   const links = within(rail).getAllByRole("link");
   expect(links.map((link) => link.getAttribute("aria-label") ?? link.textContent)).toEqual(
@@ -145,7 +145,10 @@ it("puts the logo, the four places, the way back to the organization and the ava
   expect(links[0]?.getAttribute("href")).toBe("/cloud/acme/~");
   expect(links[0]?.getAttribute("title")).toBe("Projects");
   expect(links.filter((link) => link.getAttribute("aria-current") === "page").map((link) => link.textContent)).toEqual(["Logs"]);
-  expect(within(rail).getByRole("button", { name: "Open account menu" }).getAttribute("title")).toBe("Test User");
+  // The wide rail's account row names you and the organization beside the avatar.
+  const account = within(rail).getByRole("button", { name: "Open account menu" });
+  expect(within(account).getByText("Test User")).toBeTruthy();
+  expect(within(account).getByText("Acme")).toBeTruthy();
   // The top bar names the place after the crumbs; no second title row.
   const banner = screen.getByRole("banner");
   expect(within(banner).getByText("Logs")).toBeTruthy();
@@ -158,6 +161,10 @@ it("narrows the rail to named icons wherever the canvas shows", async () => {
   const architecture = within(rail).getByRole("link", { name: "Architecture" });
   expect(architecture.getAttribute("aria-current")).toBe("page");
   expect(within(architecture).getByText("Architecture").className).toContain("sr-only");
+  // The narrow rail keeps the avatar alone, naming you on hover.
+  const account = within(rail).getByRole("button", { name: "Open account menu" });
+  expect(account.getAttribute("title")).toBe("Test User");
+  expect(within(account).queryByText("Acme")).toBeNull();
   await act(async () => { router.history.push("/cloud/acme/store/production/logs"); });
   await screen.findByText("Log entries");
   expect(within(within(rail).getByRole("link", { name: "Logs" })).getByText("Logs").className).not.toContain("sr-only");
@@ -189,10 +196,11 @@ it("lists Settings' sections under it in the rail, and on phones under the top b
   expect(within(rail).getByRole("link", { name: "Environment" }).getAttribute("aria-current")).toBeNull();
 });
 
-it("holds only organization switching, Theme and Log out in the avatar menu, and applies a theme choice", async () => {
+it("holds only organization switching, Theme, Home and Log out in the account menu, and applies a theme choice", async () => {
   const { rail } = await show();
   const menu = await openAccountMenu(rail);
-  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Switch organization", "Log out"]);
+  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Switch organization", "Home", "Log out"]);
+  expect(within(menu).getByRole("menuitem", { name: "Home" }).getAttribute("href")).toBe("/home");
   expect(within(menu).getAllByRole("menuitemradio").map((item) => item.textContent)).toEqual(["System", "Light", "Dark"]);
   expect(screen.getAllByText("test@example.com").length).toBeGreaterThan(0);
   fireEvent.click(within(menu).getByRole("menuitemradio", { name: "Dark" }));
