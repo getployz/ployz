@@ -251,15 +251,21 @@ fn add_service(
     Ok(())
 }
 
-/// A Dockerfile's first `EXPOSE`d port.
+/// The first port the Dockerfile's final stage `EXPOSE`s: earlier stages only build.
 fn exposed_port(dockerfile: &str) -> Option<u16> {
-    dockerfile.lines().find_map(|line| {
+    // ponytail: a port the final stage inherits from its base image isn't seen.
+    let mut port = None;
+    for line in dockerfile.lines() {
         let mut words = line.split_whitespace();
-        if !words.next()?.eq_ignore_ascii_case("EXPOSE") {
-            return None;
+        match words.next() {
+            Some(word) if word.eq_ignore_ascii_case("FROM") => port = None,
+            Some(word) if word.eq_ignore_ascii_case("EXPOSE") && port.is_none() => {
+                port = words.find_map(|port| port.split('/').next()?.parse().ok());
+            }
+            _ => {}
         }
-        words.find_map(|port| port.split('/').next()?.parse().ok())
-    })
+    }
+    port
 }
 
 /// The directory's name as a Project and Service name, else `app`.
@@ -285,12 +291,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_first_exposed_port_is_the_domains() {
+    fn the_final_stages_first_exposed_port_is_the_domains() {
         for (dockerfile, port) in [
             ("FROM nginx\nEXPOSE 80\nEXPOSE 443", Some(80)),
             ("FROM x\n  expose 3000/tcp 9000", Some(3000)),
             ("FROM x\nEXPOSE $PORT", None),
             ("FROM x", None),
+            ("FROM node AS build\nEXPOSE 3000\nFROM nginx\nEXPOSE 80", Some(80)),
+            ("FROM node AS build\nEXPOSE 3000\nFROM nginx", None),
         ] {
             assert_eq!(exposed_port(dockerfile), port, "{dockerfile}");
         }
