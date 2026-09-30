@@ -41,11 +41,29 @@ export const GetMachineRemoveAttemptInput = Schema.Struct({
 export type GetMachineRemoveAttemptInput =
   typeof GetMachineRemoveAttemptInput.Type;
 
+/** What became of Cloud's hold once a removed Server left the Cluster. */
+export type ServerRelease =
+  /** Other Servers keep the Cluster; Cloud dropped only this Server's key. */
+  | { kind: "others_remain" }
+  /** It was the last: Cloud forgot the Cluster, and the next Server founds a new one. */
+  | { kind: "released" }
+  /** Cloud kept its hold, for `reason`. */
+  | { kind: "kept"; reason: string };
+
+/** A settled removal: why the reset didn't finish, if it didn't, and what became of Cloud's hold. */
+export type MachineRemoveResult = { resetWarning: string | null; release: ServerRelease };
+
 export type MachineRemoveAttemptView =
   | {
       id: string;
       machineId: string;
-      state: "pending" | "running" | "succeeded";
+      state: "pending" | "running";
+    }
+  | {
+      id: string;
+      machineId: string;
+      state: "succeeded";
+      result: MachineRemoveResult;
     }
   | {
       id: string;
@@ -66,15 +84,23 @@ export function toMachineRemoveAttemptView(attempt: {
   state: MachineRemoveAttemptState;
   missingIdentities: DataLossIdentity[] | null;
   failureMessage: string | null;
+  result: MachineRemoveResult | null;
 }): MachineRemoveAttemptView {
   switch (attempt.state) {
     case "pending":
     case "running":
-    case "succeeded":
       return {
         id: attempt.id,
         machineId: attempt.machineId,
         state: attempt.state,
+      };
+    case "succeeded":
+      if (attempt.result === null) throw new Error("succeeded attempt has no result.");
+      return {
+        id: attempt.id,
+        machineId: attempt.machineId,
+        state: attempt.state,
+        result: attempt.result,
       };
     case "missing_identities": {
       if (
@@ -116,10 +142,12 @@ export type MachineRemoveAttemptContext = {
   state: MachineRemoveAttemptState;
   inngestRunId: string | null;
   confirmDataLoss: DataLossIdentity[];
+  /** Take the Server out without resetting it: it keeps its state, and Cloud never lets go of the Cluster for it. */
+  noReset: boolean;
 };
 
 export type MachineRemoveCompletion =
-  | { state: "succeeded" }
+  | { state: "succeeded"; result: MachineRemoveResult }
   | {
       state: "failed" | "cancelled";
       failureCode: string;
@@ -128,5 +156,5 @@ export type MachineRemoveCompletion =
   | { state: "missing_identities"; identities: DataLossIdentity[] };
 
 export type RemoveMachineOutcome =
-  | { kind: "removed" }
+  | { kind: "removed"; resetWarning: string | null }
   | { kind: "missing_identities"; identities: DataLossIdentity[] };

@@ -1545,6 +1545,19 @@
       "table": "machine_remove_attempt"
     },
     {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "no_reset",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "machine_remove_attempt"
+    },
+    {
       "type": "jsonb",
       "typeSchema": null,
       "notNull": true,
@@ -1618,6 +1631,19 @@
       "generated": null,
       "identity": null,
       "name": "failure_message",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "machine_remove_attempt"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "result",
       "entityType": "columns",
       "schema": "public",
       "table": "machine_remove_attempt"
@@ -3978,6 +4004,13 @@
     {
       "value": "length(\"machine_id\") between 1 and 64 and \"machine_id\" !~ '[[:cntrl:]]'",
       "name": "machine_remove_attempt_machine_id_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "machine_remove_attempt"
+    },
+    {
+      "value": "\"result\" is null or \"state\" = 'succeeded'",
+      "name": "machine_remove_attempt_result_check",
       "entityType": "checks",
       "schema": "public",
       "table": "machine_remove_attempt"

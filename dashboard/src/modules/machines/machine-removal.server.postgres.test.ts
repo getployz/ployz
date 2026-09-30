@@ -179,7 +179,7 @@ describe("machine removal durable ownership", () => {
       completeMachineRemoveAttemptActivity({
         attemptId: attempt.id,
         inngestRunId: "run-1",
-        completion: { state: "succeeded" },
+        completion: { state: "succeeded", result: { resetWarning: null, release: { kind: "others_remain" } } },
         now: new Date("2026-09-04T01:03:00Z"),
       }),
     );
@@ -187,7 +187,7 @@ describe("machine removal durable ownership", () => {
       completeMachineRemoveAttemptActivity({
         attemptId: attempt.id,
         inngestRunId: "run-1",
-        completion: { state: "succeeded" },
+        completion: { state: "succeeded", result: { resetWarning: null, release: { kind: "others_remain" } } },
         now: new Date("2026-09-04T01:04:00Z"),
       }),
     );

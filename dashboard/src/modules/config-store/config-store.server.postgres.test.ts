@@ -1,6 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import { expect, vi } from "vitest";
-import type { ConfigCommand, ConfigQuery, RuntimeWatchView } from "@ployz/sdk";
+import type { ConfigCommand, ConfigQuery, MachineId } from "@ployz/sdk";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -23,7 +23,8 @@ import { Auth, AuthLive } from "#/server/auth.server";
 import { githubInstallation, githubRepositoryCache } from "#/modules/github/tables";
 import { member, user } from "#/modules/identity/tables";
 import { organizationMachine } from "#/modules/machines/tables";
-import { removeServerForCli } from "#/modules/machines/machine-removal.server";
+import { releaseServerActivity, removeMachineActivity } from "#/modules/machines/machine-removal.server";
+import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -306,23 +307,49 @@ it.live(
         yield* enrollStoreServer(organizationId);
         yield* request("write", alice, shop);
         yield* request("write", alice, web);
-        // The Cluster Cloud reaches has just this Server, and resets it when asked.
+        // Cloud's Cluster has this Server and `other`, which leaves first without a reset. It resets this one when
+        // asked; the first reset doesn't finish.
         const machineId = "0".repeat(32);
-        const reset: string[] = [];
-        const connected = asTestDouble<PloyzSession>()({
-          watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({ machines: [{ machine: { id: machineId } }] })),
-          removeMachine: (machine: string) => Effect.sync(() => { reset.push(machine); }),
-        });
-        const removed = yield* removeServerForCli(organizationId, machineId, []).pipe(
-          Effect.provideService(OrganizationRuntime, {
-            cancel: () => Effect.void,
-            open: () => Effect.succeed({ status: "connected" as const, connected }),
-          }),
-        );
-        assert.deepStrictEqual(removed, { kind: "removed", lastServer: true });
-        assert.deepStrictEqual(reset, [machineId]);
-        // Cloud holds nothing of it any more: no pairing, no Server, no device key.
+        const other = "1".repeat(32);
         const { drizzle } = yield* Database;
+        const encryption = yield* SecretEncryption;
+        const [enrolled] = yield* drizzle.select().from(organizationMachine);
+        if (!enrolled) return assert.fail("no Server enrolled");
+        yield* drizzle.insert(organizationMachine).values({
+          ...enrolled, machineId: other as MachineId, isDialEntry: false, encryptedCapability: encryption.encrypt("ployz1:other"),
+        });
+        const warnings: Array<string | null> = ["Docker reset failed: busy volume", null];
+        const connected = asTestDouble<PloyzSession>()({
+          removeMachine: () => Effect.sync(() => ({ reset_warning: warnings.shift() ?? null })),
+          removeMachineMembership: () => Effect.void,
+        });
+        const runtime = {
+          cancel: () => Effect.void,
+          open: () => Effect.succeed({ status: "connected" as const, connected }),
+        };
+        const removeServer = (server: string, noReset: boolean) => Effect.gen(function* () {
+          const removal = { organizationId, machineId: server, confirmDataLoss: [], noReset };
+          const removed = yield* Effect.scoped(removeMachineActivity(removal));
+          assert.strictEqual(removed.kind, "removed");
+          if (removed.kind !== "removed") return assert.fail("not removed");
+          const release = yield* releaseServerActivity({ ...removal, ...removed });
+          return { removed, release };
+        }).pipe(Effect.provideService(OrganizationRuntime, runtime));
+        const remove = removeServer(machineId, false);
+
+        // Taken out without a reset: Cloud drops its row, and another Server keeps the Cluster.
+        assert.deepStrictEqual((yield* removeServer(other, true)).release, { kind: "others_remain" });
+        assert.deepStrictEqual((yield* drizzle.select().from(organizationMachine)).map((row) => row.machineId), [machineId]);
+
+        // A reset that didn't finish is partial: the Server may keep Cloud's key, so Cloud keeps its hold.
+        const partial = yield* remove;
+        assert.strictEqual(partial.release.kind, "kept");
+        assert.strictEqual((yield* drizzle.select().from(organizationPairing)).length, 1);
+        assert.strictEqual((yield* drizzle.select().from(organizationMachine)).length, 1);
+
+        const done = yield* remove;
+        assert.deepStrictEqual(done.release, { kind: "released" });
+        // Cloud holds nothing of it any more: no pairing, no Server, no device key.
         assert.deepStrictEqual(yield* drizzle.select().from(organizationMachine), []);
         assert.deepStrictEqual(yield* drizzle.select().from(organizationPairing), []);
 
@@ -332,6 +359,15 @@ it.live(
         assert.strictEqual(refused.status, 409);
         assert.strictEqual(refused.json.error?.code, "conflict");
         assert.strictEqual(refused.json.error?.details?.next, "ployz server add");
+
+        // A replay of that release after a new Cluster was paired forgets nothing of it.
+        yield* drizzle.insert(organizationPairing).values({
+          organizationId, encryptedPairingSecret: encryption.encrypt("ppair_replacement"),
+          founderPublicKey: "founder-key", founderClaimMachineId: "1".repeat(32) as MachineId,
+        });
+        const replay = yield* releaseServerActivity({ organizationId, machineId, generation: done.removed.generation, resetWarning: null, noReset: false });
+        assert.strictEqual(replay.kind, "kept");
+        assert.strictEqual((yield* drizzle.select().from(organizationPairing)).length, 1);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

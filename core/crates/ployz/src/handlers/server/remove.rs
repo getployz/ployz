@@ -6,9 +6,10 @@ use ployz_core::{
 
 use super::super::runtime;
 use super::{ConnectionOptions, target};
-use crate::cloud_account::{self, Credential};
+use crate::cloud_account::{self, Credential, Release};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::cluster::{CloudHold, refuse_last_managed};
+use crate::connect::Remover;
 use crate::handlers::{
     Error,
     data_loss::{VolumeEffect, VolumeLabels, volume_label},
@@ -26,7 +27,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let selector = target(matches, "server")?.to_owned();
     let no_reset = matches.get_flag("no-reset");
     let runtime = runtime()?;
-    let (mut client, selected, cloud, observed, services, replicated_services) = runtime.block_on(async {
+    let (mut client, selected, hold, cloud, observed, services, replicated_services) = runtime.block_on(async {
         let mut client = super::connect(matches, options.context()).await?;
         let machines = client.machines().await?;
         let selected = select_machine(&machines, &selector)?;
@@ -41,9 +42,11 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             ));
         }
         // Before anything is listed or confirmed: a removal that can't happen asks nothing.
-        let cloud = match refuse_last_managed(&client, &machines, selected.id).await? {
-            CloudHold::None => None,
-            CloudHold::Last => Some(cloud_removal(matches, &selected, no_reset).await?),
+        let hold = refuse_last_managed(&client, &machines, selected.id).await?;
+        let cloud = if hold == CloudHold::Last || cloud_manages(&client, current).await? {
+            Some(cloud_removal(matches, &selected, hold, no_reset).await?)
+        } else {
+            None
         };
         let observed = if no_reset {
             ployz_core::ObservedDataLoss { data_loss: Vec::new() }
@@ -62,16 +65,16 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         }
         let services = services_on(&selected.id, &live);
         let replicated_services = replicated_services_on(&selected.id, &live);
-        Ok::<_, Error>((client, selected, cloud, observed, services, replicated_services))
+        Ok::<_, Error>((client, selected, hold, cloud, observed, services, replicated_services))
     })?;
     for line in service_warnings(&selected.name, &services) {
         eprintln!("{line}");
     }
-    if cloud.is_some() {
-        eprintln!(
-            "WARNING: Server {} is the last Server: whatever runs on it stops, and nothing runs until you add a Server.",
+    if hold == CloudHold::Last {
+        output::warn(format!(
+            "Server {} is the last Server: whatever runs on it stops, and nothing runs until you add a Server.",
             selected.name
-        );
+        ));
     }
     // The Store reads block on their own runtime, so they run between the two.
     let labels = volume_labels(root, &observed);
@@ -95,23 +98,30 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let selected_target = MachineTarget::from(&selected.id);
     runtime.block_on(async {
         let mut reset_failure = None;
+        let mut cloud_released = None;
 
         // TODO: do not reroute away from the current entry before removal.
         // TODO: there is no drain or unschedulable phase before cleanup.
         if let Some(credential) = &cloud {
-            cloud_account::remove_server(credential, &selected.id, &confirmation).await?;
+            let reset = (!no_reset).then_some(&confirmation);
+            let removed = cloud_account::remove_server(credential, &selected.id, reset).await?;
+            reset_failure = removed.reset_warning;
+            if let Release::Kept { reason } = &removed.release {
+                output::warn(format!("Cloud keeps its hold on the Cluster: {reason}"));
+            }
+            cloud_released = Some(removed.release == Release::Released);
         } else if no_reset {
             client.remove_machine_membership(&selected_target).await?;
         } else {
             let removed = client
-                    .remove_machine(&selected_target, &confirmation)
+                    .remove_machine(&selected_target, &confirmation, Remover::Operator)
                     .await
                     .map_err(crate::failure::refusal_from_rpc)?;
             reset_failure = removed.reset_warning;
         }
         say!("Removed Server {} ({}) membership", selected.name, selected.id);
-        if cloud.is_some() {
-            say!("Cloud let go of it: this Organization has no Server now. Its Environments keep their config; nothing runs until you add a Server.\nnext: ployz server add");
+        if cloud_released == Some(true) {
+            say!("Cloud let go of the Cluster: this Organization has no Server now. Its Environments keep their config; nothing runs until you add a Server.\nnext: ployz server add");
         }
         if let Some(reason) = &reset_failure {
             eprintln!("Server {} cleanup/reset incomplete: {reason}. Reset does not erase volume data.", selected.id);
@@ -137,7 +147,8 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             "reset_warning": reset_failure,
             "data_loss": observed.data_loss,
             "under_replicated": replicated_services,
-            "next": cloud.is_some().then_some("ployz server add"),
+            "cloud_released": cloud_released,
+            "next": (cloud_released == Some(true)).then_some("ployz server add"),
         }))?;
         // Cleanup failure must not leave the removed Machine named in the
         // context (#249); after the printed result it is partial, not a failed removal (#449).
@@ -155,14 +166,16 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// Cloud holds this last Server, so Cloud removes it, witnessing the reset, and lets go
-/// of it. That needs the reset and a Cloud credential; without either nothing happens.
+/// Cloud manages this Server, so Cloud removes it through its durable removal and drops
+/// its own hold: its row for it, and the Cluster with its last Server. That needs a
+/// Cloud credential, and for the last Server the reset; without either nothing happens.
 async fn cloud_removal(
     matches: &ArgMatches,
     selected: &Machine,
+    hold: CloudHold,
     no_reset: bool,
 ) -> Result<Credential, Error> {
-    if no_reset {
+    if hold == CloudHold::Last && no_reset {
         return Err(Error::conflict(format!(
             "Server {} is the last Server and Cloud manages it; Cloud lets go of it only by resetting it. Drop --no-reset. No changes made.",
             selected.name
@@ -174,7 +187,7 @@ async fn cloud_removal(
         Err(LoginError::SignedOut) => Err(Error::detailed(
             RpcErrorCode::Conflict,
             format!(
-                "Server {} is the last Server and Cloud manages it, so Cloud removes it and lets go of it. \
+                "Cloud manages Server {}, so Cloud removes it and drops its hold on it. \
                  Sign in to Cloud first, or remove it from the dashboard. No changes made.",
                 selected.name
             ),
@@ -184,19 +197,42 @@ async fn cloud_removal(
     }
 }
 
+/// Whether Cloud manages this Cluster: the entry Server, which always answers, holds
+/// Cloud's key. Cloud holds every Server it enrolled, so it removes any of them itself
+/// and drops its row. Holders that can't be read refuse: they may be Cloud's.
+async fn cloud_manages(client: &crate::connect::Client, entry: MachineId) -> Result<bool, Error> {
+    let details = client
+        .invoke::<op::Inspect>(
+            ployz_core::InspectRequest::default(),
+            &MachineTarget::from(&entry),
+            Some(crate::connect::TARGET_RPC_TIMEOUT),
+        )
+        .await
+        .map_err(|error| {
+            Error::unavailable(format!(
+                "Cannot read who manages Server {entry}: {}. No changes made.",
+                error.message
+            ))
+        })?;
+    Ok(details
+        .management_clients
+        .iter()
+        .any(|label| label.as_str() == "cloud"))
+}
+
 /// Each observed Docker Volume that keeps a Volume's data, by that Volume's name, so
 /// the list and `--accept-volume-loss` speak Volume names. Best effort: without a
 /// reachable Store, or for a Docker Volume no Environment owns, the Docker name stays.
 fn volume_labels(root: &ArgMatches, observed: &ObservedDataLoss) -> VolumeLabels {
-    let mut labels = VolumeLabels::new();
+    let mut owners = Vec::new();
     if observed.data_loss.is_empty() {
-        return labels;
+        return VolumeLabels::new();
     }
     let Ok(Some(store)) = store::reachable(root) else {
-        return labels;
+        return VolumeLabels::new();
     };
     let Ok(owned) = store.try_read(&NamespacesQuery {}) else {
-        return labels;
+        return VolumeLabels::new();
     };
     for owned in owned.namespaces {
         let prefix = format!("{}_", owned.namespace);
@@ -208,19 +244,66 @@ fn volume_labels(root: &ArgMatches, observed: &ObservedDataLoss) -> VolumeLabels
             continue;
         }
         let environment = EnvironmentRef {
-            project: Some(owned.project),
-            environment: Some(owned.environment),
+            project: Some(owned.project.clone()),
+            environment: Some(owned.environment.clone()),
         };
         let Ok(view) = store.try_read(&VolumesQuery { environment }) else {
             continue;
         };
         for listing in view.volumes {
-            if let Ok(docker) = docker_volume(&owned.namespace, listing.volume.id.as_str()) {
-                labels.insert(docker.to_string(), listing.volume.name.to_string());
+            if let Ok(docker) = docker_volume(&owned.namespace, listing.volume.id.as_str())
+                && observed
+                    .data_loss
+                    .iter()
+                    .any(|loss| loss.name() == docker.as_str())
+            {
+                owners.push(VolumeOwner {
+                    docker: docker.to_string(),
+                    project: owned.project.to_string(),
+                    environment: owned.environment.to_string(),
+                    volume: listing.volume.name.to_string(),
+                });
             }
         }
     }
-    labels
+    qualified_labels(&owners)
+}
+
+/// A Volume some Environment keeps on a Docker Volume.
+struct VolumeOwner {
+    docker: String,
+    project: String,
+    environment: String,
+    volume: String,
+}
+
+/// Each Docker Volume by the shortest name that means one Volume: `VOLUME`, else
+/// `ENVIRONMENT/VOLUME`, else `PROJECT/ENVIRONMENT/VOLUME`. So one accepted name never
+/// covers a Volume of another Environment.
+fn qualified_labels(owners: &[VolumeOwner]) -> VolumeLabels {
+    let unique = |name: &dyn Fn(&VolumeOwner) -> String, owner: &VolumeOwner| {
+        owners
+            .iter()
+            .filter(|other| name(other) == name(owner))
+            .all(|other| {
+                (&other.project, &other.environment) == (&owner.project, &owner.environment)
+            })
+    };
+    let bare = |owner: &VolumeOwner| owner.volume.clone();
+    let in_environment = |owner: &VolumeOwner| format!("{}/{}", owner.environment, owner.volume);
+    owners
+        .iter()
+        .map(|owner| {
+            let label = if unique(&bare, owner) {
+                bare(owner)
+            } else if unique(&in_environment, owner) {
+                in_environment(owner)
+            } else {
+                format!("{}/{}/{}", owner.project, owner.environment, owner.volume)
+            };
+            (owner.docker.clone(), label)
+        })
+        .collect()
 }
 
 /// `--confirm` must name the Server exactly. Without it, fail with `confirmation_required`,
@@ -360,7 +443,39 @@ mod tests {
     };
     use serde_json::{Value, json};
 
-    use super::{machine_removal_refusal, replicated_services_on, service_warnings, services_on};
+    use super::{
+        VolumeOwner, machine_removal_refusal, qualified_labels, replicated_services_on,
+        service_warnings, services_on,
+    };
+
+    #[test]
+    fn a_volume_name_two_environments_share_is_qualified_by_environment() {
+        let owner = |docker: &str, project: &str, environment: &str, volume: &str| VolumeOwner {
+            docker: docker.into(),
+            project: project.into(),
+            environment: environment.into(),
+            volume: volume.into(),
+        };
+        let labels = qualified_labels(&[
+            owner("a_vol-1", "shop", "production", "data"),
+            owner("b_vol-2", "shop", "staging", "data"),
+            owner("c_vol-3", "blog", "staging", "data"),
+            owner("a_vol-4", "shop", "production", "logs"),
+        ]);
+        assert_eq!(
+            labels.get("a_vol-1").map(String::as_str),
+            Some("production/data")
+        );
+        assert_eq!(
+            labels.get("b_vol-2").map(String::as_str),
+            Some("shop/staging/data")
+        );
+        assert_eq!(
+            labels.get("c_vol-3").map(String::as_str),
+            Some("blog/staging/data")
+        );
+        assert_eq!(labels.get("a_vol-4").map(String::as_str), Some("logs"));
+    }
 
     #[test]
     fn service_warnings_are_silent_when_nothing_is_at_stake() {
