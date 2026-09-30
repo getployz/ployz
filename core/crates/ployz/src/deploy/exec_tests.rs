@@ -411,14 +411,6 @@ fn unhealthy() -> ContainerRuntimeObservation {
     }
 }
 
-fn exited(code: i64) -> ContainerRuntimeObservation {
-    ContainerRuntimeObservation::Exited {
-        code,
-        stopped_at: None,
-        oom_killed: false,
-    }
-}
-
 fn error(message: &str) -> RpcError {
     RpcError {
         code: RpcErrorCode::Internal,

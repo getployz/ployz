@@ -226,7 +226,10 @@ async fn health_monitor_fails_a_clean_exit_without_waiting_for_serving() {
     let client = Scripted::new(vec![
         created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
         ok(Call::Start(machine, new)),
-        observed(Call::Inspect(machine, new), exited(0)),
+        observed(
+            Call::Inspect(machine, new),
+            ContainerRuntimeObservation::exited(0),
+        ),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -367,14 +370,7 @@ async fn health_monitor_fails_terminal_unhealthy_and_crash_but_skip_bypasses_ins
     for (healthcheck, runtime) in [
         (Some(healthcheck()), unhealthy()),
         (None, unhealthy()),
-        (
-            None,
-            ContainerRuntimeObservation::Exited {
-                code: 17,
-                stopped_at: None,
-                oom_killed: false,
-            },
-        ),
+        (None, ContainerRuntimeObservation::exited(17)),
     ] {
         let machine = machine('1');
         let new = container('a');

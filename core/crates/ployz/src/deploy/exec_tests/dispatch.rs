@@ -100,7 +100,10 @@ async fn dispatches_the_complete_algebra() {
         ok(Call::Remove(second, hook)),
         created(Call::Create(first, ContainerKind::PreDeployHook), &new_hook),
         ok(Call::Start(first, new_hook)),
-        observed(Call::Inspect(first, new_hook), exited(0)),
+        observed(
+            Call::Inspect(first, new_hook),
+            ContainerRuntimeObservation::exited(0),
+        ),
         created(
             Call::Create(second, ContainerKind::ServiceContainer),
             &nested,
@@ -647,11 +650,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                             .find(|c| c.container_id == stop.container_id)
                             .unwrap()
                             .try_update(|parts| {
-                                parts.runtime = ContainerRuntimeObservation::Exited {
-                                    code: 0,
-                                    stopped_at: None,
-                                    oom_killed: false,
-                                }
+                                parts.runtime = ContainerRuntimeObservation::exited(0)
                             })
                             .unwrap();
                         RpcResponse::from(ContainerChanged {

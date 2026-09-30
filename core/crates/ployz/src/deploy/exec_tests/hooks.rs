@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 async fn hook_exit_zero_runs_suffix_nonzero_and_inspect_failure_retain_the_hook() {
     for reply in [
-        Reply::Observed(exited(7), None),
+        Reply::Observed(ContainerRuntimeObservation::exited(7), None),
         Reply::Error(error("inspect")),
     ] {
         let machine = machine('1');
@@ -44,7 +44,10 @@ async fn hook_exit_zero_runs_suffix_nonzero_and_inspect_failure_retain_the_hook(
             &hook_id,
         ),
         ok(Call::Start(machine, hook_id)),
-        observed(Call::Inspect(machine, hook_id), exited(0)),
+        observed(
+            Call::Inspect(machine, hook_id),
+            ContainerRuntimeObservation::exited(0),
+        ),
         ok(Call::Stop(machine, suffix)),
         dropped(suffix),
     ]);
@@ -128,10 +131,16 @@ async fn executing_the_same_plan_twice_runs_a_fresh_hook_each_time() {
     let client = Scripted::new(vec![
         created(Call::Create(machine, ContainerKind::PreDeployHook), &first),
         ok(Call::Start(machine, first)),
-        observed(Call::Inspect(machine, first), exited(0)),
+        observed(
+            Call::Inspect(machine, first),
+            ContainerRuntimeObservation::exited(0),
+        ),
         created(Call::Create(machine, ContainerKind::PreDeployHook), &second),
         ok(Call::Start(machine, second)),
-        observed(Call::Inspect(machine, second), exited(0)),
+        observed(
+            Call::Inspect(machine, second),
+            ContainerRuntimeObservation::exited(0),
+        ),
     ]);
 
     assert!(matches!(

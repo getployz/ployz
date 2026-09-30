@@ -186,11 +186,7 @@ mod tests {
             '7',
             &service_id,
             ContainerKind::ServiceContainer,
-            ContainerRuntimeObservation::Exited {
-                code: 0,
-                stopped_at: None,
-                oom_killed: false,
-            },
+            ContainerRuntimeObservation::exited(0),
             Some([10, 210, 1, 7]),
         );
 

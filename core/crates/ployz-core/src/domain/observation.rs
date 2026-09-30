@@ -120,6 +120,16 @@ impl<'de> Deserialize<'de> for ContainerRuntimeObservation {
 }
 
 impl ContainerRuntimeObservation {
+    /// Exited with `code`, with no stop time and not out of memory.
+    #[must_use]
+    pub fn exited(code: i64) -> Self {
+        Self::Exited {
+            code,
+            stopped_at: None,
+            oom_killed: false,
+        }
+    }
+
     /// Running with health Healthy or NotConfigured.
     #[must_use]
     pub fn is_healthy(&self) -> bool {
@@ -505,11 +515,7 @@ mod tests {
             },
             ContainerRuntimeObservation::Paused,
             ContainerRuntimeObservation::Restarting,
-            ContainerRuntimeObservation::Exited {
-                code: 0,
-                stopped_at: None,
-                oom_killed: false,
-            },
+            ContainerRuntimeObservation::exited(0),
             ContainerRuntimeObservation::Removing,
             ContainerRuntimeObservation::Dead,
             ContainerRuntimeObservation::Unknown { raw: Value::Null },
@@ -578,14 +584,7 @@ mod tests {
         assert!(!ContainerRuntimeObservation::Created.is_healthy());
         assert!(!ContainerRuntimeObservation::Paused.is_healthy());
         assert!(!ContainerRuntimeObservation::Restarting.is_healthy());
-        assert!(
-            !ContainerRuntimeObservation::Exited {
-                code: 0,
-                stopped_at: None,
-                oom_killed: false
-            }
-            .is_healthy()
-        );
+        assert!(!ContainerRuntimeObservation::exited(0).is_healthy());
         assert!(!ContainerRuntimeObservation::Removing.is_healthy());
         assert!(!ContainerRuntimeObservation::Dead.is_healthy());
         assert!(

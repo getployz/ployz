@@ -537,7 +537,32 @@ fn runtime_observation(state: Option<&serde_json::Value>) -> ContainerRuntimeObs
         };
     };
     let parsed = InspectState::deserialize(state).unwrap_or_default();
-    runtime_from_state(&parsed, state)
+    let health = parsed
+        .health
+        .as_ref()
+        .and_then(|health| health.status.as_deref());
+    match parsed.status.as_str() {
+        "created" => ContainerRuntimeObservation::Created,
+        "running" => ContainerRuntimeObservation::Running {
+            health: match health {
+                None | Some("none") => HealthObservation::NotConfigured,
+                Some("starting") => HealthObservation::Starting,
+                Some("healthy") => HealthObservation::Healthy,
+                Some("unhealthy") => HealthObservation::Unhealthy,
+                Some(value) => HealthObservation::Unrecognized(value.to_owned()),
+            },
+        },
+        "paused" => ContainerRuntimeObservation::Paused,
+        "restarting" => ContainerRuntimeObservation::Restarting,
+        "exited" if let Some(code) = parsed.exit_code => ContainerRuntimeObservation::Exited {
+            code,
+            stopped_at: stopped_at(parsed.finished_at.as_deref()),
+            oom_killed: parsed.oom_killed,
+        },
+        "removing" => ContainerRuntimeObservation::Removing,
+        "dead" => ContainerRuntimeObservation::Dead,
+        _ => ContainerRuntimeObservation::Unknown { raw: state.clone() },
+    }
 }
 
 /// Docker's `FinishedAt` as RFC 3339 in milliseconds; none for its zero time (never stopped) or an unreadable one.
@@ -585,50 +610,9 @@ fn runtime_from_parts(
     exit_code: Option<i64>,
     health: Option<&str>,
 ) -> ContainerRuntimeObservation {
-    let state = InspectState {
-        status: status.to_owned(),
-        exit_code,
-        health: Some(InspectHealth {
-            status: health.map(str::to_owned),
-        }),
-        ..InspectState::default()
-    };
-    runtime_from_state(
-        &state,
-        &json!({ "Status": status, "ExitCode": exit_code, "Health": health }),
-    )
-}
-
-fn runtime_from_state(
-    state: &InspectState,
-    raw: &serde_json::Value,
-) -> ContainerRuntimeObservation {
-    let health = state
-        .health
-        .as_ref()
-        .and_then(|health| health.status.as_deref());
-    match state.status.as_str() {
-        "created" => ContainerRuntimeObservation::Created,
-        "running" => ContainerRuntimeObservation::Running {
-            health: match health {
-                None | Some("none") => HealthObservation::NotConfigured,
-                Some("starting") => HealthObservation::Starting,
-                Some("healthy") => HealthObservation::Healthy,
-                Some("unhealthy") => HealthObservation::Unhealthy,
-                Some(value) => HealthObservation::Unrecognized(value.to_owned()),
-            },
-        },
-        "paused" => ContainerRuntimeObservation::Paused,
-        "restarting" => ContainerRuntimeObservation::Restarting,
-        "exited" if let Some(code) = state.exit_code => ContainerRuntimeObservation::Exited {
-            code,
-            stopped_at: stopped_at(state.finished_at.as_deref()),
-            oom_killed: state.oom_killed,
-        },
-        "removing" => ContainerRuntimeObservation::Removing,
-        "dead" => ContainerRuntimeObservation::Dead,
-        _ => ContainerRuntimeObservation::Unknown { raw: raw.clone() },
-    }
+    runtime_observation(Some(
+        &json!({ "Status": status, "ExitCode": exit_code, "Health": { "Status": health } }),
+    ))
 }
 
 fn container_address(inspected: &RawContainerInspect) -> Option<ContainerAddress> {
@@ -1579,11 +1563,7 @@ mod tests {
         );
         assert_eq!(
             runtime_from_parts("exited", Some(17), None),
-            ContainerRuntimeObservation::Exited {
-                code: 17,
-                stopped_at: None,
-                oom_killed: false
-            }
+            ContainerRuntimeObservation::exited(17)
         );
         assert_eq!(
             runtime_observation(Some(&json!({
@@ -1619,7 +1599,7 @@ mod tests {
         assert!(matches!(
             runtime_from_parts("future", None, Some("future-health")),
             ContainerRuntimeObservation::Unknown { raw }
-                if raw.get("Health") == Some(&json!("future-health"))
+                if raw.pointer("/Health/Status") == Some(&json!("future-health"))
         ));
     }
 

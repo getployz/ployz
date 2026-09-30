@@ -149,7 +149,10 @@ async fn stop_first_does_not_restart_a_previously_stopped_old_container() {
     let new = container('b');
     let plan = vec![replacement(&machine, &old, UpdateOrder::StopFirst)];
     let client = Scripted::new(vec![
-        observed(Call::Inspect(machine, old), exited(1)),
+        observed(
+            Call::Inspect(machine, old),
+            ContainerRuntimeObservation::exited(1),
+        ),
         created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
         ok(Call::Start(machine, new)),
         observed(Call::Inspect(machine, new), unhealthy()),

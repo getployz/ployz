@@ -25,16 +25,7 @@ fn process_sort_orders_match_the_cli_contract() {
         },
     );
     let gamma = observation('c', 'a', "gamma", ContainerRuntimeObservation::Created);
-    let hook = hook_observation(
-        'd',
-        'd',
-        "delta",
-        ContainerRuntimeObservation::Exited {
-            code: 0,
-            stopped_at: None,
-            oom_killed: false,
-        },
-    );
+    let hook = hook_observation('d', 'd', "delta", ContainerRuntimeObservation::exited(0));
 
     let beta = ServiceContainer::try_from(beta).unwrap();
     let alpha = ServiceContainer::try_from(alpha).unwrap();

@@ -22,11 +22,7 @@ fn pre_deploy_hook_stops_active_predecessors_and_runs_before_replacement() {
     stopped_hook
         .try_update(|parts| {
             parts.kind = ContainerKind::PreDeployHook;
-            parts.runtime = ContainerRuntimeObservation::Exited {
-                code: 0,
-                stopped_at: None,
-                oom_killed: false,
-            };
+            parts.runtime = ContainerRuntimeObservation::exited(0);
         })
         .unwrap();
     let mut paused_hook = container('e', '1', &current, &current_service_id);

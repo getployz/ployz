@@ -64,11 +64,7 @@ fn deploy_failures_keep_runtime_exit_and_secondary_stop_causes() {
     let health = ExecutionError::Health {
         container_id,
         failure: HealthFailure::Runtime {
-            observation: ContainerRuntimeObservation::Exited {
-                code: 137,
-                stopped_at: None,
-                oom_killed: false,
-            },
+            observation: ContainerRuntimeObservation::exited(137),
         },
     }
     .to_string();
