@@ -48,6 +48,7 @@ fn shop() -> (ConfigStore, Actor) {
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(name).unwrap(),
                     image: Some("nginx:1".into()),
+                    template: None,
                 },
             )
             .unwrap();
@@ -934,6 +935,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 environment: EnvironmentRef::default(),
                 name: ServiceName::parse("app").unwrap(),
                 image: None,
+                template: None,
             },
         )
         .unwrap();
@@ -1053,6 +1055,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 environment: staging.clone(),
                 name: ServiceName::parse("app").unwrap(),
                 image: None,
+                template: None,
             },
         )
         .unwrap();
@@ -1088,6 +1091,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
                 environment: EnvironmentRef::default(),
                 name: ServiceName::parse("app").unwrap(),
                 image: None,
+                template: None,
             },
         )
         .unwrap();
@@ -1217,6 +1221,7 @@ fn deploying_a_service_with_nothing_to_run_is_refused_naming_it() {
                 environment: EnvironmentRef::default(),
                 name: ServiceName::parse("blank").unwrap(),
                 image: None,
+                template: None,
             },
         )
         .unwrap();

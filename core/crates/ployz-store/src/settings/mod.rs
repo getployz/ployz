@@ -55,6 +55,8 @@ pub(crate) enum ServiceSetting {
     Replicas,
     RestartPolicy,
     StartCommand,
+    /// The Service Template it was created from.
+    Template,
     /// A Git-backed Service's source and build.
     Git(GitSetting),
     /// A Git-backed Service's Deployment Policy; see [`crate::policy`].
@@ -63,7 +65,7 @@ pub(crate) enum ServiceSetting {
 
 impl ServiceSetting {
     /// Every Setting, in the order `get` lists them.
-    pub(crate) const ALL: [Self; 21] = [
+    pub(crate) const ALL: [Self; 22] = [
         Self::CpuLimit,
         Self::Healthcheck,
         Self::Image,
@@ -75,6 +77,7 @@ impl ServiceSetting {
         Self::Replicas,
         Self::RestartPolicy,
         Self::StartCommand,
+        Self::Template,
         Self::Git(GitSetting::Repository),
         Self::Git(GitSetting::Branch),
         Self::Git(GitSetting::RootDir),
@@ -107,6 +110,7 @@ impl ServiceSetting {
             Self::Replicas => "replicas",
             Self::RestartPolicy => "restartPolicy",
             Self::StartCommand => "startCommand",
+            Self::Template => "template",
             Self::Git(git) => git.name(),
             Self::Policy(policy) => policy.name(),
         }
@@ -126,6 +130,7 @@ impl ServiceSetting {
             Self::Replicas => "Replicas",
             Self::RestartPolicy => "Restart policy",
             Self::StartCommand => "Start command",
+            Self::Template => "Template",
             Self::Git(git) => git.label(),
             Self::Policy(policy) => policy.label(),
         }
@@ -152,6 +157,9 @@ impl ServiceSetting {
             Self::Replicas => "How many copies of the Service run.",
             Self::RestartPolicy => "When a stopped replica restarts.",
             Self::StartCommand => "Overrides the image's command. Unset runs the image's own.",
+            Self::Template => {
+                "The Service Template it was created from, and its version. It changes nothing that runs. Unset forgets it."
+            }
             Self::Git(git) => git.description(),
             Self::Policy(policy) => policy.description(),
         }
@@ -172,7 +180,8 @@ impl ServiceSetting {
             | Self::PrivateDns
             | Self::Replicas
             | Self::RestartPolicy
-            | Self::StartCommand => self.name(),
+            | Self::StartCommand
+            | Self::Template => self.name(),
         }
     }
 
@@ -188,6 +197,7 @@ impl ServiceSetting {
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand
+            | Self::Template
             | Self::Git(_) => Apply::Staged,
             Self::RegistryCredential | Self::Policy(_) => Apply::Immediate,
         }
@@ -203,7 +213,8 @@ impl ServiceSetting {
             | Self::PreDeployCommand
             | Self::PrivateDns
             | Self::RegistryCredential
-            | Self::StartCommand => Value::Null,
+            | Self::StartCommand
+            | Self::Template => Value::Null,
             Self::MaxRetries => json!(default_max_retries()),
             Self::Replicas => json!(default_replicas()),
             Self::RestartPolicy => json!("unless-stopped"),
@@ -249,6 +260,15 @@ impl ServiceSetting {
                 json!({ "type": "string", "minLength": 1, "maxLength": COMMAND_MAX })
             }
             Self::RestartPolicy => json!({ "type": "string", "enum": RESTART_POLICIES }),
+            Self::Template => json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "pattern": crate::catalog::NODE_NAME, "maxLength": 63 },
+                    "version": { "type": "integer", "minimum": 1 },
+                },
+                "required": ["id", "version"],
+                "additionalProperties": false,
+            }),
             Self::PrivateDns => {
                 json!({ "type": "string", "pattern": crate::catalog::NODE_NAME, "maxLength": 63 })
             }
@@ -280,6 +300,7 @@ impl ServiceSetting {
             Self::Replicas => json!([3]),
             Self::RestartPolicy => json!(["on-failure"]),
             Self::StartCommand => json!(["npm start"]),
+            Self::Template => json!([{ "id": "postgres", "version": 1 }]),
             Self::Git(git) => git.examples(),
             Self::Policy(policy) => policy.examples(),
         }
@@ -306,7 +327,8 @@ impl ServiceSetting {
             | Self::PrivateDns
             | Self::Replicas
             | Self::RestartPolicy
-            | Self::StartCommand => true,
+            | Self::StartCommand
+            | Self::Template => true,
         }
     }
 
@@ -362,7 +384,8 @@ impl ServiceSetting {
             | Self::PrivateDns
             | Self::Replicas
             | Self::RestartPolicy
-            | Self::StartCommand => value,
+            | Self::StartCommand
+            | Self::Template => value,
         }
     }
 

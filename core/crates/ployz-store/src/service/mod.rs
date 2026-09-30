@@ -6,7 +6,8 @@
 pub(crate) mod query;
 
 use ployz_core::config::{
-    SavedServiceIntent, ServiceImageCredentials, ServiceSource, parse_service_config,
+    SavedServiceIntent, ServiceImageCredentials, ServiceSource, ServiceTemplate,
+    parse_service_config,
 };
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,10 @@ pub struct CreateService {
     /// The container image it runs; none creates an empty Service.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// The Service Template it is created from, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub template: Option<ServiceTemplate>,
 }
 
 /// Rename a Service. Its Private DNS name, and references to it, stay as they are.
@@ -102,7 +107,7 @@ pub(crate) fn create_service(
         &create.id,
         &create.environment,
         &create.name,
-        source,
+        (source, create.template.as_ref()),
     )
 }
 
@@ -113,7 +118,7 @@ pub(crate) fn insert_service(
     id: &ServiceLineageId,
     environment: &EnvironmentRef,
     name: &ServiceName,
-    source: ServiceSource,
+    (source, template): (ServiceSource, Option<&ServiceTemplate>),
 ) -> Result<ServiceStaged, RpcError> {
     let mut environment = scope::lock(tx, who, environment)?;
     refuse_taken(&environment, name, None)?;
@@ -125,6 +130,7 @@ pub(crate) fn insert_service(
         "healthcheck": { "type": "none" },
         "restartPolicy": "unless-stopped",
         "privateDns": name,
+        "template": template,
     }))
     .map_err(|error| {
         error::invalid(
@@ -282,6 +288,7 @@ mod tests {
                     environment: EnvironmentRef::default(),
                     name: ployz_core::ServiceName::parse("web").unwrap(),
                     image: Some("nginx:1".into()),
+                    template: None,
                 },
             )
             .unwrap();

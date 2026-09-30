@@ -65,6 +65,7 @@ fn shop() -> (ConfigStore, Actor) {
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(name).unwrap(),
                     image: Some(image.into()),
+                    template: None,
                 },
             )
             .unwrap();

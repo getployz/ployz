@@ -51,6 +51,7 @@ fn shop(store: &ConfigStore) {
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(name).unwrap(),
                     image: image.map(Into::into),
+                    template: None,
                 },
             )
             .unwrap();

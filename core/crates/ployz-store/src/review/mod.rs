@@ -151,13 +151,15 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                         }
                         if group.node.node_type == EnvironmentNodeType::Volume {
                             row.path = format!("volumes.{name}.{}", row.path);
-                            return row;
+                        } else {
+                            row.before = shown(&row.path, row.before);
+                            row.after = shown(&row.path, row.after);
+                            row.path = SettingPath::from_core(&name, &row.path, |id| {
+                                volume_name(&intents, id).unwrap_or_default()
+                            });
                         }
-                        row.before = shown(&row.path, row.before);
-                        row.after = shown(&row.path, row.after);
-                        row.path = SettingPath::from_core(&name, &row.path, |id| {
-                            volume_name(&intents, id).unwrap_or_default()
-                        });
+                        // `discard` takes exactly the paths that parse.
+                        row.can_restore = SettingPath::parse(&row.path).is_ok();
                         row
                     })
                     .collect();
@@ -241,7 +243,8 @@ fn renames(view: &mut DiffView, working: &SavedEnvironmentIntent, head: &SavedEn
             kind: ChangeKind::Update,
             before: json!(before.slug),
             after: json!(service.slug),
-            can_restore: true,
+            // Renaming it back undoes it: `discard` takes no name path.
+            can_restore: false,
         };
         view.total_count += 1;
         match view

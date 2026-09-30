@@ -146,18 +146,18 @@ pub fn parse_runtime_preview(value: Value) -> Result<DeployPreview, ConfigError>
     Ok(preview)
 }
 
-/// Validate one version-1 SDK outcome against its exact preview, then identify
-/// Services whose every planned operation completed. A partial replica update,
-/// failed replacement, or skipped hook cannot advance a whole Service.
+/// Validate one version-1 SDK outcome against its exact preview, as
+/// [`parse_runtime_preview`] returned it, then identify Services whose every
+/// planned operation completed. A partial replica update, failed replacement, or
+/// skipped hook cannot advance a whole Service.
 ///
 /// # Errors
 /// Rejects unsupported versions, malformed evidence, missing Service identities,
 /// and outcomes whose operations do not match the preview.
 pub fn project_runtime_outcome(
-    preview: Value,
+    preview: &DeployPreview,
     value: Value,
 ) -> Result<RuntimeOutcomeProjection, ConfigError> {
-    let preview = parse_runtime_preview(preview)?;
     let evidence: RuntimeOutcomeEvidence = decode(value)?;
     if evidence.version != 1 {
         return Err(invalid());

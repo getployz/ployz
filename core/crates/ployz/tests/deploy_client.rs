@@ -968,6 +968,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
                 environment: EnvironmentRef::default(),
                 name: ployz_core::ServiceName::parse("web").unwrap(),
                 image: Some("nginx".into()),
+                template: None,
             },
         )
         .unwrap();
@@ -1129,6 +1130,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
                 environment: EnvironmentRef::default(),
                 name: web.clone(),
                 image: Some("postgres".into()),
+                template: None,
             },
         )
         .unwrap();

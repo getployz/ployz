@@ -47,6 +47,7 @@ fn database(env: Value) -> Batch {
                 environment: EnvironmentRef::default(),
                 name: ServiceName::parse("db").unwrap(),
                 image: Some("postgres:18".into()),
+                template: None,
             }),
             BatchCommand::CreateVolume(CreateVolume {
                 id: VolumeId::parse(uuid(4)).unwrap(),

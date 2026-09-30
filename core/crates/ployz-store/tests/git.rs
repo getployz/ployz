@@ -326,6 +326,7 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
                 environment: EnvironmentRef::default(),
                 name: ServiceName::parse("api").unwrap(),
                 image: Some("nginx:1".into()),
+                template: None,
             },
         )
         .unwrap();
@@ -860,6 +861,7 @@ fn a_source_disconnects_to_empty_and_an_empty_service_connects_a_repository() {
                 environment: EnvironmentRef::default(),
                 name: ServiceName::parse("web").unwrap(),
                 image: Some("nginx:1".into()),
+                template: None,
             },
         )
         .unwrap();

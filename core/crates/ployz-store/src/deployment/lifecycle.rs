@@ -29,12 +29,12 @@ pub(crate) fn admit(
         None => match tx
             .query(
                 "SELECT upload FROM config_deployment \
-                 WHERE environment_id = ?1 AND upload <> 'null' ORDER BY number DESC LIMIT 1",
+                 WHERE environment_id = ?1 AND upload IS NOT NULL ORDER BY number DESC LIMIT 1",
                 &[environment_id.into()],
             )?
             .first()
         {
-            Some(row) => row.json(0, "Deployment upload")?,
+            Some(row) => Some(row.json(0, "Deployment upload")?),
             None => None,
         },
     };
@@ -93,7 +93,7 @@ pub(crate) fn admit(
             frozen.namespace.as_str().into(),
             json_text(&Run::default()).as_str().into(),
             json_text(&frozen.credentials).as_str().into(),
-            json_text(&summary.upload).as_str().into(),
+            summary.upload.as_ref().map(json_text).as_deref().into(),
             frozen.cluster_domain.as_ref().map(Hostname::as_str).into(),
             summary.admitted_at.into(),
             who.principal.as_ref().map(Principal::as_str).into(),
@@ -472,11 +472,11 @@ pub(crate) fn record(
             Ok(stored.summary)
         }
         RunEvidence::Prepared(preview) => {
-            let parsed = serde_json::to_value(preview)
+            // Redacted before anything keeps it.
+            let preview = serde_json::to_value(preview)
                 .ok()
                 .and_then(|preview| parse_runtime_preview(preview).ok())
                 .ok_or_else(|| invalid_evidence("Deploy Preview"))?;
-            let preview = serde_json::to_value(&parsed).expect("a Deploy Preview is JSON");
             match &stored.run.preview {
                 Some(recorded) if *recorded == preview => return Ok(stored.summary),
                 Some(_) => {
@@ -492,7 +492,7 @@ pub(crate) fn record(
             let applied = applied_state(tx, &stored.summary.environment_id, &saved)?;
             // What the preview already settles shows while it runs; the rest reads
             // as Pending until what executing it did replaces these.
-            stored.run.nodes = settled(&stored.nodes, &saved, &applied, &parsed, &[]);
+            stored.run.nodes = settled(&stored.nodes, &saved, &applied, &preview, &[]);
             stored.run.preview = Some(preview);
             save(tx, &mut stored)?;
             Ok(stored.summary)
@@ -512,7 +512,7 @@ pub(crate) fn record(
                     json!({ "deployment": id }),
                 ));
             }
-            let Some(preview) = stored.run.preview.clone() else {
+            let Some(preview) = &stored.run.preview else {
                 return Err(error::conflict(
                     "Record the Deploy Preview before what executing it did",
                     json!({ "deployment": id }),
@@ -550,18 +550,12 @@ pub(crate) fn record(
         }
         RunEvidence::Confirmed(services) => {
             running(&stored)?;
-            if stored.run.preview.is_none() || stored.run.outcome.is_some() {
+            let (Some(preview), None) = (&stored.run.preview, &stored.run.outcome) else {
                 return Err(error::conflict(
                     "Confirm Services between the Deploy Preview and the outcome",
                     json!({ "deployment": id }),
                 ));
-            }
-            let preview: DeployPreview = stored
-                .run
-                .preview
-                .clone()
-                .and_then(|preview| serde_json::from_value(preview).ok())
-                .ok_or_else(|| error::corrupt("Deploy Preview"))?;
+            };
             // Everything confirmed so far, and these now.
             let mut confirmed = services;
             for node in &stored.nodes {
