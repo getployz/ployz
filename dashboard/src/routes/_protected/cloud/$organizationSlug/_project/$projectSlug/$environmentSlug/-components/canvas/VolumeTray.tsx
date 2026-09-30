@@ -8,7 +8,7 @@ import { useNodePick } from "../new-branch/branch-picking";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { fillText, fillTone, stagedSurface } from "./node-status";
 import { FILL_CLASSES, STAGED_CLASSES } from "./node-status-view";
-import { useVolumeFill } from "./RuntimeLensProvider";
+import { useVolumeFill } from "./use-volume-fill";
 import type { MountedVolume } from "./types";
 
 /** The Volume whose trays are lit: hovering a shared Volume's tray lights it under every Service that mounts it. */

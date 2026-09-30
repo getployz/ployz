@@ -27,7 +27,7 @@ export function ServiceIssues({ service, settings, diff }: { service: ServiceLis
   if (issues.length === 0) return null;
   return (
     <ItemGroup aria-label="Issues" className="my-3">
-      {issues.map((issue) => issueRow(issue, { ...params, serviceId: service.id }))}
+      {issues.map((issue) => issueRow(issue, params, service.id))}
     </ItemGroup>
   );
 }
@@ -38,8 +38,8 @@ const domainName = (domain: Extract<NodeIssue, { kind: "domain" }>["domain"]) =>
 const ACTION = buttonVariants({ variant: "outline", size: "xs" });
 
 /** An issue's row, keyed by what it's about. */
-function issueRow(issue: NodeIssue, service: { organizationSlug: string; projectSlug: string; environmentSlug: string; serviceId: string }) {
-  const { serviceId: _, ...params } = service;
+function issueRow(issue: NodeIssue, params: { organizationSlug: string; projectSlug: string; environmentSlug: string }, serviceId: string) {
+  const service = { ...params, serviceId };
   switch (issue.kind) {
     case "runtime":
       return (
@@ -74,11 +74,11 @@ function issueRow(issue: NodeIssue, service: { organizationSlug: string; project
         </Item>
       );
     case "volume": {
-      const fill = FILL_CLASSES[issue.tone].text;
+      const toneText = FILL_CLASSES[issue.tone].text;
       return (
         <Item key={`volume:${issue.volume.id}`} variant="outline" size="xs">
-          <ItemMedia variant="icon"><HardDriveIcon className={fill} /></ItemMedia>
-          <ItemContent className={cn("min-w-0 truncate", fill)}>
+          <ItemMedia variant="icon"><HardDriveIcon className={toneText} /></ItemMedia>
+          <ItemContent className={cn("min-w-0 truncate", toneText)}>
             {issue.volume.name} is {fillText(issue.fill)}
           </ItemContent>
           {/* Its size is fixed once deployed. */}

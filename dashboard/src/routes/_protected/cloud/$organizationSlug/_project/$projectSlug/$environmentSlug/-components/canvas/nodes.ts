@@ -64,12 +64,15 @@ export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name
 /** A `replicas` Setting that says how many. */
 const isReplicaCount = Schema.is(Schema.Int);
 
+/** The Environment's views a Service's card reads. `namespace`: null when it has none. */
+type StoreCanvasViews = { settings: EnvironmentView; diff: DiffView; domains: readonly DomainRow[]; namespace: string | null };
+
 /**
  * A Service with what its card shows, given the Environment's views. `namespace`: the Environment's, null when it has
  * none, so no runtime evidence names its Services. `trays`: the Volumes it mounts.
  */
-export function storeCanvasService(service: ServiceListing, { settings, diff, domains, namespace, trays }: {
-  settings: EnvironmentView; diff: DiffView; domains: readonly DomainRow[]; namespace: string | null; trays: MountedVolume[];
+export function storeCanvasService(service: ServiceListing, { settings, diff, domains, namespace, trays }: StoreCanvasViews & {
+  trays: MountedVolume[];
 }): StoreCanvasService {
   const changes = serviceChanges(diff, service.id);
   // What runs asks for the deployed count, not one the next Deploy would set.
@@ -87,7 +90,7 @@ export function storeCanvasService(service: ServiceListing, { settings, diff, do
 }
 
 /** Each Service with what its card shows (see `storeCanvasService`), and the Volumes no Service here mounts. */
-export function storeCanvasServices({ services, volumes, ...views }: Omit<Parameters<typeof storeCanvasService>[1], "trays"> & {
+export function storeCanvasServices({ services, volumes, ...views }: StoreCanvasViews & {
   services: readonly ServiceListing[]; volumes: readonly VolumeListing[];
 }) {
   const { trays, unmounted } = volumeTrays(services, volumes, views.diff);

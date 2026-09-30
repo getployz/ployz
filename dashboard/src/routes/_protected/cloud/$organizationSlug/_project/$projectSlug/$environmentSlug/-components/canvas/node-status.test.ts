@@ -1,7 +1,7 @@
 import type { DomainRow, ServiceListing } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { RuntimeContainerRecord } from "#/modules/runtime/runtime.collection";
-import { deployChip, fillText, fillTone, nodeIssues, volumeFill, publicDomain, runtimeLine, stagedSurface, type NodeIssue, type RuntimeLens } from "./node-status";
+import { awaitsDeploy, deployChip, fillText, fillTone, nodeIssues, volumeFill, publicDomain, runtimeLine, stagedSurface, type NodeIssue, type RuntimeLens } from "./node-status";
 
 const service: ServiceListing = { source: "image", change: null, template: null, id: "web", name: "web", private_dns: "web" };
 const container = (state: "running" | "exited" | "restarting", health = "healthy"): RuntimeContainerRecord =>
@@ -9,7 +9,7 @@ const container = (state: "running" | "exited" | "restarting", health = "healthy
     : state === "exited" ? { state, code: 1, stopped_at: null, oom_killed: false } : { state } });
 const runtime = (...containers: RuntimeContainerRecord[]) => ({ containers });
 const observed: RuntimeLens = { status: "observed", incomplete: false, observedAt: "2026-09-30T10:00:00Z", noServers: false };
-const seen = { lens: observed, desiredReplicas: null, chip: null };
+const seen = { lens: observed, desiredReplicas: null, chip: null, awaited: false };
 /** The Runtime Watch saying something other than `observed`. */
 const watch = (lens: Partial<RuntimeLens>) => ({ ...seen, lens: { ...observed, ...lens } });
 
@@ -47,12 +47,11 @@ describe("runtimeLine", () => {
   });
 
   it("says Starting, not Not running, while a Deploy in flight targets it and none of its containers exist yet", () => {
-    for (const chip of [{ kind: "deploying", since: 1 }, { kind: "queued" }] as const) {
-      expect(runtimeLine(service, null, { ...seen, chip })).toMatchObject({ word: "Starting", tone: "quiet", down: false });
-      expect(runtimeLine(service, runtime(), { ...seen, chip })).toMatchObject({ word: "Starting", down: false });
-    }
-    expect(runtimeLine(service, runtime(), { ...seen, chip: { kind: "staged", label: "Changed", variant: "info" } }).word).toBe("Not running");
-    expect(runtimeLine(service, runtime(container("exited")), { ...seen, chip: { kind: "queued" } }).word).toBe("Crashed");
+    const awaited = { ...seen, awaited: true };
+    expect(runtimeLine(service, null, awaited)).toMatchObject({ word: "Starting", tone: "quiet", down: false });
+    expect(runtimeLine(service, runtime(), awaited)).toMatchObject({ word: "Starting", down: false });
+    expect(runtimeLine(service, runtime(), seen).word).toBe("Not running");
+    expect(runtimeLine(service, runtime(container("exited")), awaited).word).toBe("Crashed");
   });
 
   it("never guesses without current evidence: it waits, greys the last word with its age, or says why", () => {
@@ -134,8 +133,8 @@ describe("publicDomain", () => {
 });
 
 describe("deployChip", () => {
-  const deployment = (status: "queued" | "running", nodes: string[] | null) =>
-    ({ status, nodes, started_at: status === "running" ? 100 : null, admitted_at: 90 });
+  const deployment = (status: "queued" | "running", nodes: string[] | null, services: string[] = []) =>
+    ({ status, services, nodes, started_at: status === "running" ? 100 : null, admitted_at: 90 });
 
   it("puts a Deploy in flight that targets the Service first: running, else queued", () => {
     expect(deployChip({ ...service, change: "update" }, 2, [deployment("queued", ["web"]), deployment("running", ["web"])])).toEqual({ kind: "deploying", since: 100 });
@@ -146,6 +145,14 @@ describe("deployChip", () => {
   it("targets nothing while a Deploy's nodes haven't arrived", () => {
     expect(deployChip(service, 0, [deployment("running", null)])).toBeNull();
     expect(deployChip({ ...service, change: "update" }, 1, [deployment("queued", null)])).toEqual({ kind: "staged", label: "1 change", variant: "info" });
+  });
+
+  it("awaits a Deploy whose nodes haven't arrived when it names no Services or names this one, so a first Deploy reads Starting", () => {
+    expect(awaitsDeploy(service, [deployment("running", null)])).toBe(true);
+    expect(awaitsDeploy(service, [deployment("queued", null, ["web"])])).toBe(true);
+    expect(awaitsDeploy(service, [deployment("running", null, ["api"])])).toBe(false);
+    expect(awaitsDeploy(service, [deployment("running", ["api"])])).toBe(false);
+    expect(awaitsDeploy(service, [deployment("running", ["web"])])).toBe(true);
   });
 
   it("says what the next Deploy does otherwise", () => {

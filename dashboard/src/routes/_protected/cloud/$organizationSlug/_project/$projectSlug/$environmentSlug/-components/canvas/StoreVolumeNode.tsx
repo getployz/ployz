@@ -12,7 +12,7 @@ import { useNodePick } from "../new-branch/branch-picking";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { NOT_MOUNTED, fillText, fillTone, nodeIssues, stagedChip, stagedSurface } from "./node-status";
 import { DeployChip, FILL_CLASSES, STAGED_CLASSES, StatusLine } from "./node-status-view";
-import { useVolumeFill } from "./RuntimeLensProvider";
+import { useVolumeFill } from "./use-volume-fill";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 
 /**

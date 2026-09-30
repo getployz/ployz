@@ -26,21 +26,21 @@ export const NOT_MOUNTED = line("Not mounted", "idle");
 
 /** "Crashed" since the newest stop among its containers, "Out of memory" when that one was OOM-killed. */
 function crashedLine(containers: RuntimeServiceRecord["containers"]): RuntimeLine {
-  const stops = containers.flatMap(({ runtime }) => runtime?.state === "exited" ? [runtime] : []);
-  // RFC 3339 in UTC at one precision sorts as text; a stop with no time sorts last.
-  const last = stops.flatMap((stop) => stop.stopped_at === null ? [] : [{ ...stop, stopped_at: stop.stopped_at }])
-    .sort((a, b) => b.stopped_at.localeCompare(a.stopped_at))[0];
-  if (!last) return { ...line("Crashed", "crashed", true), code: stops[0]?.code ?? null };
-  return { ...line(last.oom_killed ? "Out of memory" : "Crashed", "crashed", true), since: new Date(last.stopped_at), code: last.code };
+  // The newest stop: RFC 3339 in UTC at one precision compares as text, and a stop with no time is older than any.
+  const last = containers.reduce<Extract<NonNullable<RuntimeServiceRecord["containers"][number]["runtime"]>, { state: "exited" }> | null>(
+    (newest, { runtime }) => runtime?.state === "exited" && (newest === null
+      || (runtime.stopped_at !== null && (newest.stopped_at === null || runtime.stopped_at > newest.stopped_at))) ? runtime : newest, null);
+  return { ...line(last?.oom_killed ? "Out of memory" : "Crashed", "crashed", true), since: last?.stopped_at ? new Date(last.stopped_at) : null,
+    code: last?.code ?? null };
 }
 
 /**
  * What evidence says of a Service (`runtime`, null when none names it; `whole`, no Server is missing from it).
- * `chip`: a Deploy in flight that targets it; until its first container runs, it's Starting.
+ * `awaited`: a Deploy in flight targets it, so until its first container exists, it's Starting. `chip`: its Deploy chip.
  */
-function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, whole: boolean, desiredReplicas: number | null, chip: DeployChipState | null) {
-  const inFlight = chip?.kind === "deploying" || chip?.kind === "queued";
-  if (inFlight && !runtime?.containers.length) return line("Starting", "quiet");
+function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, whole: boolean,
+  { desiredReplicas, chip, awaited }: { desiredReplicas: number | null; chip: DeployChipState | null; awaited: boolean }) {
+  if (awaited && !runtime?.containers.length) return line("Starting", "quiet");
   if (!runtime) return whole ? line("Not running", "bad", true) : line("Deployed", "quiet");
   if (runtime.containers.length === 0) return line("Not running", "bad", true);
   const running = runtime.containers.filter((container) => container.runtime?.state === "running");
@@ -64,12 +64,12 @@ export type RuntimeLens = Pick<ReturnType<typeof useRuntimeLens>, "status" | "in
  * A Service's status line: what runs now, from runtime evidence. Staged work and Deploys never replace it, and it never
  * guesses: before evidence it waits, and evidence that isn't current reads grey with its age.
  * `desiredReplicas`: how many it asks for, when known; fewer serving reads Degraded, except while a Deploy rolls them.
- * `chip`: its Deploy chip, which says whether a Deploy in flight targets it.
+ * `chip`: its Deploy chip, which says whether a Deploy is rolling it. `awaited`: a Deploy in flight targets it (`awaitsDeploy`).
  */
 export function runtimeLine(
   service: Pick<ServiceListing, "change" | "source">,
   runtime: Pick<RuntimeServiceRecord, "containers"> | null,
-  { lens, desiredReplicas, chip }: { lens: RuntimeLens; desiredReplicas: number | null; chip: DeployChipState | null },
+  { lens, ...deploy }: { lens: RuntimeLens; desiredReplicas: number | null; chip: DeployChipState | null; awaited: boolean },
 ): RuntimeLine {
   if (service.change === "create") return line("Not deployed", "idle");
   if (service.source === "empty") return line("No source", "idle");
@@ -84,9 +84,9 @@ export function runtimeLine(
     case "unavailable":
       // The connection dropped: the last evidence, grey, from when it was current; none seen yet, it waits.
       return lens.observedAt === null ? line("Checking", "pending")
-        : { ...evidenceLine(runtime, !lens.incomplete, desiredReplicas, chip), tone: "quiet", down: false, since: new Date(lens.observedAt) };
+        : { ...evidenceLine(runtime, !lens.incomplete, deploy), tone: "quiet", down: false, since: new Date(lens.observedAt) };
     case "observed":
-      return evidenceLine(runtime, !lens.incomplete, desiredReplicas, chip);
+      return evidenceLine(runtime, !lens.incomplete, deploy);
   }
 }
 
@@ -166,7 +166,7 @@ export function stagedChip(change: ReviewLifecycleKind, changeCount: number): De
 }
 
 /** A Deployment in flight with the ids of the nodes it targets (`nodes`), null until its view arrives. */
-export type InFlightTargets = Pick<DeploymentSummary, "status" | "started_at" | "admitted_at"> & { nodes: readonly string[] | null };
+export type InFlightTargets = Pick<DeploymentSummary, "status" | "services" | "started_at" | "admitted_at"> & { nodes: readonly string[] | null };
 
 /**
  * A Service's chip: anything about Deploys. A Deploy in flight that targets it (running, else queued), else what the
@@ -183,6 +183,15 @@ export function deployChip(
   if (targeting.length > 0) return { kind: "queued" };
   return service.change === null ? null : stagedChip(service.change, changeCount);
 }
+
+/**
+ * Whether a Deploy in flight targets a Service, for its Starting line. Until a Deployment's nodes arrive, one naming no
+ * Services, or naming it, does, so a first Deploy never flashes Not running.
+ */
+export const awaitsDeploy = (service: Pick<ServiceListing, "id" | "name">, inFlight: readonly InFlightTargets[]) =>
+  inFlight.some((deployment) => deployment.nodes === null
+    ? deployment.services.length === 0 || deployment.services.includes(service.name)
+    : deployment.nodes.includes(service.id));
 
 /**
  * A node's staged surface, in the colour of what the next Deploy does to it. None while a Deployment Page is open
