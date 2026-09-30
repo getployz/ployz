@@ -154,8 +154,8 @@ export function nodeLight(outcome: NodeStatus, deployment: DeploymentStatus): No
  */
 export function nodeOutcomeLabel(outcome: NodeStatus, deployment: DeploymentStatus) {
   if (outcome !== "pending") return nodeStatusLabels[outcome];
-  if (deployment === "queued") return "Queued";
-  return isInFlight(deployment) ? "Deploying" : nodeStatusLabels.not_attempted;
+  if (deployment === "queued") return deploymentStatusLabels.queued;
+  return isInFlight(deployment) ? deploymentStatusLabels.running : nodeStatusLabels.not_attempted;
 }
 
 /**
@@ -168,13 +168,12 @@ export function deploymentStatusLabel({ status, remove }: Pick<DeploymentSummary
   return deploymentStatusLabels[status];
 }
 
-/** What a Deployment ships, for its row: "Deploys every service"; nothing for one that takes its Environment off the Servers. */
-export const deploysLabel = (deployment: Pick<DeploymentSummary, "services" | "remove">) =>
-  deployment.remove ? null : `Deploys ${targetsLabel(deployment)}`;
-
-/** "every service", or the Services a targeted Deploy named. */
-export const targetsLabel = (deployment: Pick<DeploymentSummary, "services">) =>
-  deployment.services.length === 0 ? "every service" : deployment.services.join(", ");
+/**
+ * What a Deployment ships, for its row: "Deploys every service", or the Services a targeted Deploy named; nothing for one
+ * that takes its Environment off the Servers.
+ */
+export const deploysLabel = ({ services, remove }: Pick<DeploymentSummary, "services" | "remove">) =>
+  remove ? null : `Deploys ${services.length === 0 ? "every service" : services.join(", ")}`;
 
 const time = (seconds: number | null) => seconds === null ? null : new Date(seconds * 1000);
 
