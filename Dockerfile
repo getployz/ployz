@@ -30,7 +30,6 @@ FROM node AS dashboard
 RUN npm install --global pnpm@11.7.0
 WORKDIR /app/dashboard
 COPY dashboard/package.json dashboard/pnpm-lock.yaml dashboard/pnpm-workspace.yaml ./
-COPY dashboard/patches/ patches/
 COPY --from=sdk /app/core/crates/ployz-sdk /app/core/crates/ployz-sdk
 RUN pnpm install --frozen-lockfile
 COPY dashboard/ ./
