@@ -8,6 +8,9 @@ test("boots from SSR without waiting for the auth transport", async () => {
   const fetch = vi.fn(() => new Promise<Response>(() => {}));
   vi.stubGlobal("fetch", fetch);
   const { authClient, initializeAuthSession } = await import("./auth-client");
+  // isolate: false shares Better Auth's session store across files; start from its boot state.
+  const session = authClient.$store.atoms["session"];
+  session?.set({ ...session.get(), data: null, isPending: true });
   const data = { session: { id: "session", userId: "user" }, user: { id: "user" } } as AuthSession;
   initializeAuthSession(data);
   expect(authClient.$store.atoms["session"]?.get()).toMatchObject({ data, isPending: false });
