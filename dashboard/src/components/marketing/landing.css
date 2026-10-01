@@ -206,9 +206,9 @@
   }
 
   /* ---- a section pinned under the header while the page scrolls past it (usePinProgress) ------------ */
-  /* The frame, plus 40% of a screen to scroll while it stays put. */
+  /* The frame, plus half a screen to scroll while it stays put. */
   .lp-pin {
-    height: calc(140svh - 3.5rem);
+    height: calc(150svh - 3.5rem);
   }
   .lp-pin-frame {
     position: sticky;
@@ -245,15 +245,6 @@
     stroke-dasharray: 0.05 0.95;
     animation: lp-sheen 3s linear infinite;
   }
-  .lp-lb-sheen-back {
-    animation-direction: reverse;
-  }
-  /* light, not requests: the packets travelling the pipes */
-  .lp-lb-pulses .lp-packet {
-    fill: var(--background);
-    stroke: var(--lp-pipe-2);
-    stroke-width: 1.5;
-  }
   .lp-lb-note {
     font: 400 11px var(--font-mono);
     fill: var(--muted-foreground);
@@ -278,6 +269,9 @@
     fill: var(--secondary);
     stroke: var(--border);
   }
+  .lp-lb-logo {
+    color: var(--foreground);
+  }
   .lp-lb-chip-text {
     font: 500 11px var(--font-mono);
     fill: var(--foreground);
@@ -295,10 +289,6 @@
   .lp-lb-bar-title {
     font: 600 15px var(--font-sans);
     fill: var(--background);
-  }
-  .lp-lb-bar-sub {
-    font: 400 11px var(--font-mono);
-    fill: var(--lp-graphite-muted);
   }
   .lp-lb-sticker rect {
     fill: var(--warning-soft);

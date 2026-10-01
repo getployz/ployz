@@ -155,10 +155,10 @@ export function Wires({ wires }: { wires: readonly Wire[] }) {
 }
 
 /** A request travelling `path` on a loop, fading in at one end and out at the other. */
-export function Packet({ path, seconds, delay, reverse, r = 4.5 }: { path: string; seconds: number; delay: number; reverse: boolean; r?: number }) {
+export function Packet({ path, seconds, delay, reverse }: { path: string; seconds: number; delay: number; reverse: boolean }) {
   const timing = { dur: `${seconds}s`, begin: `-${delay.toFixed(2)}s`, repeatCount: "indefinite" };
   return (
-    <circle className="lp-packet" r={r}>
+    <circle className="lp-packet" r={4.5}>
       <animateMotion {...timing} path={path} keyPoints={reverse ? "1;0" : "0;1"} keyTimes="0;1" calcMode="linear" />
       <animate {...timing} attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" />
     </circle>

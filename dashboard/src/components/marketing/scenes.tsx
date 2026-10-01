@@ -15,6 +15,7 @@ import {
 import { useId } from "react";
 import type { ReactNode } from "react";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
+import { DATABASE_LOGOS } from "#/components/icons/database-logos";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { Badge } from "#/components/ui/badge";
 import { buttonVariants } from "#/components/ui/button-variants";
@@ -220,6 +221,8 @@ type BalancerLayout = {
    */
   pipes: { width: number; near: [number, number]; far: [number, number] };
   network: number;
+  /** Whether each app's chip names it beside its logo; phones show the logos alone. */
+  labels: boolean;
 };
 
 const WIDE: BalancerLayout = {
@@ -232,6 +235,7 @@ const WIDE: BalancerLayout = {
   badge: [110, 22],
   pipes: { width: 8, near: [56, 60], far: [44, 132] },
   network: 520,
+  labels: true,
 };
 
 const NARROW: BalancerLayout = {
@@ -244,10 +248,22 @@ const NARROW: BalancerLayout = {
   badge: [104, 20],
   pipes: { width: 5, near: [38, 34], far: [28, 76] },
   network: 438,
+  labels: false,
 };
 
+// What each server runs: a copy of web on every one, and Postgres on the last.
+const APPS = { web: { Logo: GitHubMarkIcon, width: 54 }, postgres: { Logo: DATABASE_LOGOS.postgres, width: 84 } };
+type App = keyof typeof APPS;
+const SERVER_APPS = [["web"], ["web"], ["web", "postgres"]] as const;
+
+/** Each app's chip along a server's bottom row, from its `left` edge. */
+function chipRow(apps: readonly App[], left: number, labels: boolean) {
+  const width = (app: App) => (labels ? APPS[app].width : 22);
+  return apps.map((app, n) => ({ app, w: width(app), x: left + 12 + apps.slice(0, n).reduce((sum, a) => sum + width(a) + 6, 0) }));
+}
+
 /**
- * Pinned under the header for 40% of a screen of scrolling, which splits the load balancer into three: one
+ * Pinned under the header for half a screen of scrolling, which splits the load balancer into three: one
  * inside each server. The split takes the first 80% of it, so the result holds a moment before the page
  * moves on.
  */
@@ -258,13 +274,10 @@ export function BalancerScene({ heading, caption }: { heading: ReactNode; captio
     // A margin, not padding, keeps the frame flush with the section top, which usePinProgress measures from.
     <section ref={ref} className="lp-pin mt-16 px-5 md:mt-24">
       <div className="lp-pin-frame mx-auto flex max-w-6xl flex-col justify-center gap-6 py-6 md:gap-8">
-        <div className="flex flex-wrap items-end justify-between gap-x-10 gap-y-4">
-          {heading}
-          <BalancerSteps t={t} />
-        </div>
+        {heading}
         <div
           role="img"
-          aria-label="Visitors reach three servers through one load balancer you rent; scrolling splits it into three, one inside each server, and the servers link up over a private network"
+          aria-label="Visitors reach three servers, one also running Postgres, through one load balancer you rent; scrolling splits it into three, one inside each server, and the servers link up over a private network"
           className="flex max-h-136 min-h-0 flex-1 rounded-3xl bg-(--color-paper) p-3 max-sm:max-h-96 sm:p-6"
         >
           <BalancerPicture layout={WIDE} t={t} className="size-full max-sm:hidden" />
@@ -273,19 +286,6 @@ export function BalancerScene({ heading, caption }: { heading: ReactNode; captio
         {caption}
       </div>
     </section>
-  );
-}
-
-/** "The usual way ━━ With Ployz", filling in as the split plays. */
-function BalancerSteps({ t }: { t: number }) {
-  return (
-    <div aria-hidden className="flex items-center gap-3 text-sm font-semibold">
-      <span className={cn("transition-colors", t >= 0.5 && "text-muted-foreground")}>The usual way</span>
-      <span className="h-1 w-24 overflow-hidden rounded-full bg-(--color-rule-soft)">
-        <span className="block size-full origin-left bg-foreground" style={{ transform: `scaleX(${t})` }} />
-      </span>
-      <span className={cn("transition-colors", t < 0.5 && "text-muted-foreground")}>With Ployz</span>
-    </div>
   );
 }
 
@@ -344,13 +344,7 @@ function BalancerPicture({ layout: l, t, className }: { layout: BalancerLayout; 
             <g key={d}>
               <path d={d} pathLength={1} strokeWidth={w * 2} filter={`url(#${glow})`} className="lp-lb-pipe lp-lb-glow" style={{ stroke, strokeDashoffset: unlaid }} />
               <path d={d} pathLength={1} strokeWidth={w} className="lp-lb-pipe" style={{ stroke, strokeDashoffset: unlaid }} />
-              <path
-                d={d}
-                pathLength={1}
-                strokeWidth={w * 0.35}
-                className={cn("lp-lb-sheen", i % 2 === 1 && "lp-lb-sheen-back")}
-                style={{ opacity: phase(0.94, 1), animationDelay: `${-i * 0.8}s` }}
-              />
+              <path d={d} pathLength={1} strokeWidth={w * 0.35} className="lp-lb-sheen" style={{ opacity: phase(0.94, 1), animationDelay: `${-i * 0.8}s` }} />
             </g>
           );
         })}
@@ -365,18 +359,11 @@ function BalancerPicture({ layout: l, t, className }: { layout: BalancerLayout; 
             )),
           )
         : null}
-      {t === 1 ? (
-        <>
-          {l.servers.map((x, i) =>
+      {t === 1
+        ? l.servers.map((x, i) =>
             [0, 1].map((n) => <Packet key={`${x}-${n}`} path={`M${vx} ${out}L${x} ${l.server.y}`} seconds={2} delay={i * 0.35 + n} reverse={false} />),
-          )}
-          <g className="lp-lb-pulses">
-            {pipes.map((d, i) => (
-              <Packet key={d} path={d} seconds={1.6 + i * 0.3} delay={i * 0.45} reverse={i % 2 === 0} r={w * 0.4} />
-            ))}
-          </g>
-        </>
-      ) : null}
+          )
+        : null}
       <g className="lp-lb-visitors">
         <rect x={vx - 70} y={vy - 19} width={140} height={38} rx={19} />
         {[0, 1, 2].map((i) => (
@@ -395,10 +382,20 @@ function BalancerPicture({ layout: l, t, className }: { layout: BalancerLayout; 
             <text x={left + 14} y={top + 24} className="lp-lb-name">
               server-{i + 1}
             </text>
-            <rect x={left + 12} y={bottom - 32} width={52} height={22} rx={6} className="lp-lb-chip" />
-            <text x={left + 22} y={bottom - 17} className="lp-lb-chip-text">
-              web
-            </text>
+            {chipRow(SERVER_APPS[i] ?? [], left, l.labels).map(({ app, x: chipX, w: chipW }) => {
+              const { Logo } = APPS[app];
+              return (
+                <g key={app}>
+                  <rect x={chipX} y={bottom - 32} width={chipW} height={22} rx={6} className="lp-lb-chip" />
+                  <Logo x={chipX + 3.5} y={bottom - 28.5} width={15} height={15} className="lp-lb-logo" />
+                  {l.labels ? (
+                    <text x={chipX + 24} y={bottom - 17} className="lp-lb-chip-text">
+                      {app}
+                    </text>
+                  ) : null}
+                </g>
+              );
+            })}
           </g>
         );
       })}
@@ -422,11 +419,8 @@ function BalancerPicture({ layout: l, t, className }: { layout: BalancerLayout; 
         );
       })}
       <g style={{ opacity: 1 - phase(0, 0.12) }}>
-        <text x={l.bar.x + l.bar.w / 2} y={l.bar.y + l.bar.h / 2 - 2} textAnchor="middle" className="lp-lb-bar-title">
+        <text x={l.bar.x + l.bar.w / 2} y={l.bar.y + l.bar.h / 2 + 5} textAnchor="middle" className="lp-lb-bar-title">
           Load balancer
-        </text>
-        <text x={l.bar.x + l.bar.w / 2} y={l.bar.y + l.bar.h / 2 + 16} textAnchor="middle" className="lp-lb-bar-sub">
-          every request goes through it
         </text>
       </g>
       <g transform={`translate(0 ${phase(0, 0.35) * 90})`} style={{ opacity: 1 - phase(0, 0.25) }}>
