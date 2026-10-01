@@ -1,9 +1,4 @@
 import { githubInstallUrlQueryOptions, githubRepoAccessQueryOptions } from "./github.queries";
-import { getDbClient } from "#/collections/scope";
-import {
-  type Collection,
-  collectionOptions, liveQueryCollectionOptions, type DbClient,
-} from "@tanstack/react-db";
 import { skipToken, useQuery, type QueryClient } from "@tanstack/react-query";
 import { createApiCollection, preloadCollection } from "#/collections/query-collection";
 import type { GithubRepositorySelection } from "#/modules/github/github";
@@ -11,7 +6,7 @@ import { listGithubRepositoriesServerFn } from "#/modules/github/github.function
 import { githubRepositoryCache as schemaGithubRepositoryCache } from "#/modules/github/tables";
 
 type GithubRepositoryRow = typeof schemaGithubRepositoryCache.$inferSelect;
-type GithubRepositoryView = GithubRepositorySelection & {
+export type GithubRepositoryView = GithubRepositorySelection & {
   user_id: string;
   synced_at: string;
 };
@@ -22,21 +17,33 @@ export type GithubCollectionScope = {
   sessionId: string;
 };
 
-const scopes = new WeakMap<QueryClient, Map<string, {
-  raw: ReturnType<typeof createRawGithubReposCollection>;
-  view?: Collection<GithubRepositoryView>;
-}>>();
+const scopes = new WeakMap<QueryClient, Map<string, ReturnType<typeof createGithubReposCollection>>>();
 
 export function githubReposQueryKey(scope: GithubCollectionScope) {
   return ["collections", scope.sessionId, scope.userId, "github_repository_cache"];
 }
 
-function createRawGithubReposCollection(scope: GithubCollectionScope) {
-  return createApiCollection<GithubRepositoryRow>({
+function toGithubRepositoryView(repository: GithubRepositoryRow): GithubRepositoryView {
+  return {
+    id: repository.repositoryId,
+    installation_id: repository.installationId,
+    name: repository.name,
+    full_name: repository.fullName,
+    default_branch: repository.defaultBranch,
+    private: repository.private,
+    html_url: repository.htmlUrl,
+    repo_updated_at: repository.repoUpdatedAt.toISOString(),
+    user_id: repository.userId,
+    synced_at: repository.syncedAt.toISOString(),
+  };
+}
+
+function createGithubReposCollection(scope: GithubCollectionScope) {
+  return createApiCollection({
     queryClient: scope.queryClient,
     queryKey: githubReposQueryKey(scope),
-    queryFn: ({ signal }) => listGithubRepositoriesServerFn({ signal }),
-    getKey: (row) => `${row.installationId}:${row.repositoryId}`,
+    queryFn: async ({ signal }) => (await listGithubRepositoriesServerFn({ signal })).map(toGithubRepositoryView),
+    getKey: (row: GithubRepositoryView) => `${row.installation_id}:${row.id}`,
     // Reopening a picker within a minute reuses the cache.
     staleTime: 60_000,
     // A requested sync lands rows in the background; poll only while a picker holds the collection.
@@ -44,52 +51,19 @@ function createRawGithubReposCollection(scope: GithubCollectionScope) {
   });
 }
 
-function getScope(scope: GithubCollectionScope) {
+export function getGithubReposCollection(scope: GithubCollectionScope) {
   let cache = scopes.get(scope.queryClient);
   if (!cache) {
     cache = new Map();
     scopes.set(scope.queryClient, cache);
   }
   const key = `${scope.sessionId}:${scope.userId}`;
-  let entry = cache.get(key);
-  if (!entry) {
-    entry = { raw: createRawGithubReposCollection(scope) };
-    cache.set(key, entry);
+  let collection = cache.get(key);
+  if (!collection) {
+    collection = createGithubReposCollection(scope);
+    cache.set(key, collection);
   }
-  return entry;
-}
-
-export function getRawGithubReposCollection(scope: GithubCollectionScope) {
-  return getScope(scope).raw;
-}
-
-export function createGithubReposCollection(raw: Collection<GithubRepositoryRow>, id: string, client: DbClient): Collection<GithubRepositoryView> {
-  return client.collection(collectionOptions(liveQueryCollectionOptions({
-      id,
-      query: (q) =>
-        q.from({ repository: raw }).fn.select(
-          ({ repository }): GithubRepositoryView => ({
-            id: repository.repositoryId,
-            installation_id: repository.installationId,
-            name: repository.name,
-            full_name: repository.fullName,
-            default_branch: repository.defaultBranch,
-            private: repository.private,
-            html_url: repository.htmlUrl,
-            repo_updated_at: repository.repoUpdatedAt.toISOString(),
-            user_id: repository.userId,
-            synced_at: repository.syncedAt.toISOString(),
-          }),
-        ),
-      getKey: (row: GithubRepositoryView) =>
-        `${row.installation_id}:${row.id}`,
-    })));
-}
-
-export function getGithubReposCollection(scope: GithubCollectionScope) {
-  const entry = getScope(scope);
-  entry.view ??= createGithubReposCollection(entry.raw, `${entry.raw.id}:view`, getDbClient(scope.queryClient));
-  return entry.view;
+  return collection;
 }
 
 /** Query state of the repository read; failed refreshes keep rows, so errors repaint from here. */
@@ -102,7 +76,7 @@ export function useGithubReposReadState(scope: GithubCollectionScope) {
  * failures surface through `useGithubReposReadState` and the picker's own queries.
  */
 export function preloadGithubRepos(scope: GithubCollectionScope) {
-  void preloadCollection(getRawGithubReposCollection(scope)).catch(() => {});
+  void preloadCollection(getGithubReposCollection(scope)).catch(() => {});
   void scope.queryClient.prefetchQuery(githubRepoAccessQueryOptions());
   void scope.queryClient.prefetchQuery(githubInstallUrlQueryOptions());
 }

@@ -126,6 +126,10 @@ describe("data boundaries", () => {
     expect(Object.keys(dataSources).filter((path) => !DATA_FILE.test(path)), "Name data files *.collection.ts, *.queries.ts, or *.stream.ts").toEqual([]);
   });
 
+  it("derives views in live queries, never as collections", () => {
+    expect(filesMatching(/\b(liveQueryCollectionOptions|createLiveQueryCollection)\b/), "Shape rows in the source's queryFn, or query it with useLiveQuery").toEqual([]);
+  });
+
   it("renders one shell, gated once on the Org Store", () => {
     expect(filesMatching(/<DashboardShell\b/)).toEqual(["routes/_protected/cloud/$organizationSlug/route.tsx"]);
     expect(filesMatching(/\buseOrgStoreGate\(/).filter((path) => path !== "collections/org-store.ts")).toEqual(["components/dashboard-shell.tsx"]);

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { renderToString } from "react-dom/server";
-import { DbProvider, collectionOptions, liveQueryCollectionOptions, useLiveQuery } from "@tanstack/react-db";
+import { DbProvider, useLiveQuery } from "@tanstack/react-db";
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, expect, it, vi } from "vitest";
 import { createApiCollection, preloadCollection } from "./query-collection";
@@ -63,28 +63,4 @@ it("isolates collections with the same identity between server requests", async 
   expect(second.get("one")?.name).toBe("Second request");
   await Promise.all([getDbClient(firstQuery).cleanup(), getDbClient(secondQuery).cleanup()]);
   firstQuery.clear(); secondQuery.clear();
-});
-
-it("releases dependent queries before their sources when a server request finishes", async () => {
-  const queryClient = new QueryClient();
-  const client = getDbClient(queryClient);
-  const source = rows(queryClient, async () => [{ id: "one", name: "Snapshot" }]);
-  const first = client.collection(collectionOptions(liveQueryCollectionOptions({
-    id: "first", query: (q) => q.from({ row: source }),
-  })));
-  const second = client.collection(collectionOptions(liveQueryCollectionOptions({
-    id: "second", query: (q) => q.from({ row: first }),
-  })));
-  await client.preloadLiveQuery({ query: (q) => q.from({ row: second }) });
-  const errors = vi.spyOn(console, "error");
-  try {
-    await client.cleanup();
-    expect(errors).not.toHaveBeenCalled();
-    expect([source.status, first.status, second.status]).toEqual([
-      "cleaned-up", "cleaned-up", "cleaned-up",
-    ]);
-  } finally {
-    errors.mockRestore();
-    queryClient.clear();
-  }
 });
