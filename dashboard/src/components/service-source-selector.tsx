@@ -19,7 +19,7 @@ import { Command, CommandDialog, CommandGroup, CommandItem, CommandList, Command
 import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
 import { githubBranchesQueryOptions, githubInstallUrlQueryOptions, githubRepoAccessQueryOptions, githubKeys } from "#/modules/github/github.queries";
-import { getGithubReposCollection, getRawGithubReposCollection, preloadGithubRepos, useGithubReposReadState } from "#/modules/github/github.collection";
+import { getGithubReposCollection, preloadGithubRepos, useGithubReposReadState } from "#/modules/github/github.collection";
 import { requestGithubRepoSyncServerFn } from "#/modules/github/github.functions";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { toErrorMessage } from "#/lib/error-message";
@@ -266,11 +266,10 @@ function GitRepoSelectorResults({
   onSelectRepo,
 }: GitRepoSelectorProps) {
   const scope = useCollectionScope();
-  const raw = getRawGithubReposCollection(scope);
+  const githubRepos = getGithubReposCollection(scope);
   // Query errors must repaint even when the collection retains identical rows.
   const { isError, dataUpdatedAt } = useGithubReposReadState(scope);
-  const { isReady: rawReady } = useLiveQuery(raw);
-  const githubRepos = rawReady ? getGithubReposCollection(scope) : undefined;
+  const { isReady: reposReady } = useLiveQuery(githubRepos);
   const { data: accessState } = useSuspenseQuery(
     githubRepoAccessQueryOptions()
   );
@@ -279,18 +278,15 @@ function GitRepoSelectorResults({
 
   const { data: repoCountRows } =
     useLiveQuery({
-      queryKey: ["github-repo-count", raw.id, githubRepos?.id ?? null],
+      queryKey: ["github-repo-count", githubRepos.id],
       gcTime: 1,
-      query: (q) => githubRepos
-        ? q.from({ repo: githubRepos }).select(({ repo }) => ({ count: count(repo.id) }))
-        : undefined,
+      query: (q) => q.from({ repo: githubRepos }).select(({ repo }) => ({ count: count(repo.id) })),
     });
 
   const { data: repos = [], isLoading } = useLiveQuery({
-    queryKey: ["github-repo-search", raw.id, githubRepos?.id ?? null, normalizedQuery],
+    queryKey: ["github-repo-search", githubRepos.id, normalizedQuery],
     gcTime: 1,
     query: (q) => {
-      if (!githubRepos) return undefined;
       const repoQuery = q
         .from({ repo: githubRepos })
         .orderBy(({ repo }) => repo.repo_updated_at, "desc");
@@ -312,7 +308,7 @@ function GitRepoSelectorResults({
   });
 
   if (isError && dataUpdatedAt === 0) return <GithubRepositoryRefreshNotice initial />;
-  if (!rawReady || isLoading) return <SelectorLoading />;
+  if (!reposReady || isLoading) return <SelectorLoading />;
 
   if (selectorState === "no-installations") {
     return null;

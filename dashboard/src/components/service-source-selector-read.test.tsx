@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { Command, CommandList } from "#/components/ui/command";
-import { getRawGithubReposCollection, githubReposQueryKey } from "#/modules/github/github.collection";
+import { getGithubReposCollection, githubReposQueryKey } from "#/modules/github/github.collection";
 import { githubKeys } from "#/modules/github/github.queries";
 import { GitRepoSelector } from "./service-source-selector";
 
@@ -32,7 +32,7 @@ it.each([false, true])("shows an initial read failure and recovers (empty snapsh
   Element.prototype.scrollIntoView ??= () => {};
   const queryClient = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
   const scope = { queryClient, userId: "user", sessionId: "session" };
-  const raw = getRawGithubReposCollection(scope);
+  const raw = getGithubReposCollection(scope);
   const queryKey = githubReposQueryKey(scope);
   queryClient.setQueryData(githubKeys.access(), { hasInstallations: true });
   queryClient.setQueryData(githubKeys.installUrl(), { url: "https://github.com/apps/ployz-test/installations/new" });
@@ -48,9 +48,9 @@ it.each([false, true])("shows an initial read failure and recovers (empty snapsh
     expect(screen.queryByText("No repositories found")).toBeNull();
 
     const rows = empty ? [] : [{
-      userId: "user", installationId: 12, repositoryId: 42, name: "repo", fullName: "acme/repo",
-      defaultBranch: "main", private: true, htmlUrl: "https://github.com/acme/repo",
-      repoUpdatedAt: new Date(), syncedAt: new Date(),
+      id: 42, installation_id: 12, name: "repo", full_name: "acme/repo", default_branch: "main", private: true,
+      html_url: "https://github.com/acme/repo", repo_updated_at: new Date().toISOString(),
+      user_id: "user", synced_at: new Date().toISOString(),
     }];
     await act(async () => { await queryClient.fetchQuery({ queryKey, queryFn: async () => rows, staleTime: 0 }); });
     if (empty) {
@@ -79,7 +79,7 @@ it("offers a public URL without a GitHub installation", async () => {
   Element.prototype.scrollIntoView ??= () => {};
   const queryClient = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
   const scope = { queryClient, userId: "public-user", sessionId: "public-session" };
-  getRawGithubReposCollection(scope);
+  getGithubReposCollection(scope);
   queryClient.setQueryData(githubReposQueryKey(scope), []);
   queryClient.setQueryData(githubKeys.access(), { hasInstallations: false });
   queryClient.setQueryData(githubKeys.installUrl(), { url: "https://github.com/apps/ployz-test/installations/new" });

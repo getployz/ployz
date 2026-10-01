@@ -1,39 +1,32 @@
-import { getDbClient } from "#/collections/scope";
 // @vitest-environment jsdom
 import { expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
-import { createGithubReposCollection, getRawGithubReposCollection } from "./github.collection";
-import { createApiCollection } from "#/collections/query-collection";
+import { getGithubReposCollection, githubReposQueryKey, type GithubRepositoryView } from "./github.collection";
 
-it("updates the selector projection and isolates request and authenticated session caches", async () => {
-  const client = new QueryClient();
+it("updates rows and isolates request and authenticated session caches", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
   const otherClient = new QueryClient();
   const scope = { queryClient: client, userId: "user", sessionId: "first" };
-  const row = {
-    userId: "user", installationId: 12, repositoryId: 42, name: "repo", fullName: "acme/repo",
-    defaultBranch: "main", private: true, htmlUrl: "https://github.com/acme/repo",
-    repoUpdatedAt: new Date("2026-01-01T00:00:00Z"), syncedAt: new Date("2026-01-02T00:00:00Z"),
+  const row: GithubRepositoryView = {
+    id: 42, installation_id: 12, name: "repo", full_name: "acme/repo", default_branch: "main", private: true,
+    html_url: "https://github.com/acme/repo", repo_updated_at: "2026-01-01T00:00:00.000Z",
+    user_id: "user", synced_at: "2026-01-02T00:00:00.000Z",
   };
-  let rows = [row];
-  const raw = createApiCollection({ queryClient: client, queryKey: ["test"], queryFn: async () => rows, getKey: (row: typeof rows[number]) => row.repositoryId });
-  await raw.preload();
-  const view = createGithubReposCollection(raw, "test-view", getDbClient(client));
-  const subscription = view.subscribeChanges(() => {});
-  await view.preload();
-  expect(Array.from(view.values())).toMatchObject([{ id: 42, full_name: "acme/repo", repo_updated_at: "2026-01-01T00:00:00.000Z" }]);
-  rows = [{ ...row, name: "renamed", fullName: "acme/renamed" }];
-  await raw.utils.refetch();
-  expect(Array.from(view.values())[0]?.full_name).toBe("acme/renamed");
-  rows = [];
-  await raw.utils.refetch();
-  expect(view.size).toBe(0);
-  const scoped = getRawGithubReposCollection(scope);
-  expect(getRawGithubReposCollection(scope)).toBe(scoped);
-  expect(getRawGithubReposCollection({ ...scope, queryClient: otherClient })).not.toBe(scoped);
-  expect(getRawGithubReposCollection({ ...scope, sessionId: "second" })).not.toBe(scoped);
+  const read = (rows: GithubRepositoryView[]) => client.fetchQuery({ queryKey: githubReposQueryKey(scope), queryFn: async () => rows, staleTime: 0 });
+  await read([row]);
+  const repos = getGithubReposCollection(scope);
+  const subscription = repos.subscribeChanges(() => {});
+  await repos.preload();
+  expect(Array.from(repos.values())).toMatchObject([row]);
+  await read([{ ...row, name: "renamed", full_name: "acme/renamed" }]);
+  await expect.poll(() => Array.from(repos.values())[0]?.full_name).toBe("acme/renamed");
+  await read([]);
+  await expect.poll(() => repos.size).toBe(0);
+  expect(getGithubReposCollection(scope)).toBe(repos);
+  expect(getGithubReposCollection({ ...scope, queryClient: otherClient })).not.toBe(repos);
+  expect(getGithubReposCollection({ ...scope, sessionId: "second" })).not.toBe(repos);
   subscription.unsubscribe();
-  await view.cleanup();
-  await raw.cleanup();
+  await repos.cleanup();
   client.clear();
   otherClient.clear();
 });

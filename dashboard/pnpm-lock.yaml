@@ -7,9 +7,6 @@ settings:
 overrides:
   nf3: 0.3.17
 
-patchedDependencies:
-  '@tanstack/db@0.9.2': ff51eed05a05356dcdf9b76e74862c0d7eca7a97e7e068cc38691552ac73bdff
-
 importers:
 
   .:
@@ -9542,7 +9539,7 @@ snapshots:
       sorted-btree: 1.8.1
       typescript: 7.0.1-rc
 
-  '@tanstack/db@0.9.2(patch_hash=ff51eed05a05356dcdf9b76e74862c0d7eca7a97e7e068cc38691552ac73bdff)(typescript@7.0.1-rc)':
+  '@tanstack/db@0.9.2(typescript@7.0.1-rc)':
     dependencies:
       '@standard-schema/spec': 1.1.0
       '@tanstack/db-ivm': 0.1.22(typescript@7.0.1-rc)
@@ -9702,7 +9699,7 @@ snapshots:
   '@tanstack/query-db-collection@1.2.15(@tanstack/query-core@5.104.0)(typescript@7.0.1-rc)':
     dependencies:
       '@standard-schema/spec': 1.1.0
-      '@tanstack/db': 0.9.2(patch_hash=ff51eed05a05356dcdf9b76e74862c0d7eca7a97e7e068cc38691552ac73bdff)(typescript@7.0.1-rc)
+      '@tanstack/db': 0.9.2(typescript@7.0.1-rc)
       '@tanstack/query-core': 5.104.0
       typescript: 7.0.1-rc
 
@@ -9724,7 +9721,7 @@ snapshots:
 
   '@tanstack/react-db@0.4.1(react@19.2.5)(typescript@7.0.1-rc)':
     dependencies:
-      '@tanstack/db': 0.9.2(patch_hash=ff51eed05a05356dcdf9b76e74862c0d7eca7a97e7e068cc38691552ac73bdff)(typescript@7.0.1-rc)
+      '@tanstack/db': 0.9.2(typescript@7.0.1-rc)
       react: 19.2.5
       use-sync-external-store: 1.6.0(react@19.2.5)
     transitivePeerDependencies:
