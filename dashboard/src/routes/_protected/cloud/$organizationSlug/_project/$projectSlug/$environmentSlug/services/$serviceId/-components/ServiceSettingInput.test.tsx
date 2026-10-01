@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { settingError, type SettingSchema } from "#/modules/config-store/catalog";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 
 describe("ServiceSettingInput comparison copy", () => {
@@ -39,5 +40,24 @@ describe("ServiceSettingInput comparison copy", () => {
     rerender(field("3"));
 
     expect((screen.getByLabelText("Replicas") as HTMLInputElement).value).toBe("3");
+  });
+});
+
+describe("ServiceSettingInput validation", () => {
+  afterEach(cleanup);
+  const replicas: SettingSchema = { title: "Replicas", description: "", type: "integer", minimum: 0, maximum: 50 };
+
+  // A number input would read "abc" as blank, which unsets: the text must reach validation as typed.
+  it.each(["-1", "0.5", "1e9", "abc"])("refuses %s with the reason and commits nothing", (raw) => {
+    const onCommit = vi.fn();
+    render(<ServiceSettingInput ariaLabel="Replicas" inputMode="numeric" value="1" isChanged={false}
+      validate={(next) => settingError(replicas, next)} onCommit={onCommit} />);
+    const input = screen.getByLabelText("Replicas");
+    fireEvent.change(input, { target: { value: raw } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(screen.getByRole("alert").textContent).toBe("Enter a whole number from 0 to 50.");
   });
 });

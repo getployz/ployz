@@ -1,3 +1,4 @@
+import { volumeWriters } from "#/modules/config-store/volume-sharing";
 import { Position, type Edge } from "@xyflow/react";
 import type { DiffView, ServiceListing, VolumeListing } from "@ployz/sdk";
 import { serviceChanges } from "#/modules/config-store/store-services";
@@ -45,7 +46,8 @@ function getPositionByCanvasResource(
  * Each Volume as a tray under every Service here that mounts it, in the Store's order, keyed by Service id, marked where
  * `diff` stages that Service's mount of it; `unmounted`, the Volumes no Service here mounts, which stay nodes of their own.
  */
-export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name">[], volumes: readonly VolumeListing[], diff: DiffView) {
+export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name">[], volumes: readonly VolumeListing[], diff: DiffView,
+  replicasOf: (service: string) => number = () => 1) {
   const names = new Set(services.map((service) => service.name));
   const mounted = volumes.map((volume) => ({ volume, by: [...new Set(volume.mounts.map((mount) => mount.service))].filter((name) => names.has(name)) }));
   return {
@@ -53,7 +55,8 @@ export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name
       // A mount is the Service's Setting, `mounts.VOLUME`.
       const changes = serviceChanges(diff, service.id);
       return [service.id, mounted.flatMap(({ volume, by }): MountedVolume[] => by.includes(service.name)
-        ? [{ volume, sharedWith: by.filter((name) => name !== service.name), mountChanged: changes.has(`mounts.${volume.name}`) }] : [])];
+        ? [{ volume, sharedWith: by.filter((name) => name !== service.name), mountChanged: changes.has(`mounts.${volume.name}`),
+          writers: volumeWriters(volume, replicasOf).total }] : [])];
     })),
     unmounted: mounted.flatMap(({ volume, by }) => by.length === 0 ? [volume] : []),
   };

@@ -2,6 +2,8 @@ import { useState } from "react";
 import { CheckIcon } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { Button } from "#/components/ui/button";
+import { Field, FieldContent, FieldLabel } from "#/components/ui/field";
+import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import type { BuildOrder } from "@ployz/sdk";
@@ -15,7 +17,7 @@ import { ServerLinkItem } from "./server-link-item";
 /** Where the Organization's Image Builds run: the Build Order, GitHub setup per repository, and which Servers build. */
 export function BuildsSettings({ organizationSlug }: { organizationSlug: string }) {
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-6">
       <WhereBuildsRun organizationSlug={organizationSlug} />
       <GithubActions organizationSlug={organizationSlug} />
       <BuildServers organizationSlug={organizationSlug} />
@@ -44,22 +46,18 @@ function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
   // Shown at once; the refetch after the write confirms it, and a refusal (toasted) puts the saved one back.
   const buildOrder = view.build_order ?? "github-then-servers";
   return (
-    <section aria-labelledby="build-order-heading">
-      <ItemGroup>
-        <ItemContent>
-          <ItemTitle>
-            <h2 id="build-order-heading">Where builds run</h2>
-          </ItemTitle>
-          {/* A section's intro reads in full; the two-line clamp is for rows. */}
-          <ItemDescription className="line-clamp-none">Builds try these in order and move on when one can’t start in time. A service can prefer one in its own settings.</ItemDescription>
-        </ItemContent>
+    <SettingsSection id="build-order" title="Where builds run">
+      <Field orientation="responsive">
+        <FieldContent>
+          <FieldLabel>Order</FieldLabel>
+        </FieldContent>
         <Select value={buildOrder} onValueChange={(next) => {
           const order = BUILD_ORDERS.find((candidate) => candidate === next);
           if (!order) return;
           // Shown at once; a refusal toasts and the saved order shows again.
           writer.commit({ command: "set_build_order", build_order: order });
         }}>
-          <SelectTrigger aria-label="Where builds run" className="w-full sm:w-72">
+          <SelectTrigger aria-label="Where builds run" className="w-full @md/field-group:w-72">
             <SelectValue>{BUILD_ORDER_LABELS[buildOrder]}</SelectValue>
           </SelectTrigger>
           <SelectContent>
@@ -70,8 +68,8 @@ function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
             </SelectGroup>
           </SelectContent>
         </Select>
-      </ItemGroup>
-    </section>
+      </Field>
+    </SettingsSection>
   );
 }
 
@@ -87,18 +85,10 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
   const ready = repositories?.filter((repository) => repository.readiness === "ready").length ?? 0;
 
   return (
-    <section aria-labelledby="github-actions-heading">
+    <SettingsSection id="github-actions" title="GitHub Actions" description={repositories
+      ? `${ready} of ${repositories.length} repositories set up. Each needs one small workflow file. It only runs when Ployz starts a build, and build secrets are sent to the runner.`
+      : "Could not check the repositories on GitHub."}>
       <ItemGroup>
-        <ItemContent>
-          <ItemTitle>
-            <h2 id="github-actions-heading">GitHub Actions</h2>
-          </ItemTitle>
-          <ItemDescription className="line-clamp-none">
-            {repositories
-              ? `${ready} of ${repositories.length} repositories set up. Each needs one small workflow file. It only runs when Ployz starts a build, and build secrets are sent to the runner.`
-              : "Could not check the repositories on GitHub."}
-          </ItemDescription>
-        </ItemContent>
         {repositories?.map((repository) => (
           <Item key={githubBuildRepositoryKey(repository)} variant="outline" size="sm">
             <ItemMedia variant="icon"><GitHubMarkIcon /></ItemMedia>
@@ -133,7 +123,7 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
           </Item>
         ))}
       </ItemGroup>
-    </section>
+    </SettingsSection>
   );
 }
 
@@ -149,18 +139,13 @@ function BuildServers({ organizationSlug }: { organizationSlug: string }) {
   if (servers.length === 0) return null;
   const building = servers.filter((server) => server.machine.acceptsBuilds).length;
   return (
-    <section aria-labelledby="build-servers-heading">
+    <SettingsSection id="build-servers" title="Your servers"
+      description={`${building} of ${servers.length} run builds. Turn builds on or off on each server’s page.`}>
       <ItemGroup>
-        <ItemContent>
-          <ItemTitle>
-            <h2 id="build-servers-heading">Your servers</h2>
-          </ItemTitle>
-          <ItemDescription className="line-clamp-none">{building} of {servers.length} run builds. Turn builds on or off on each server’s page.</ItemDescription>
-        </ItemContent>
         {servers.map((server) => (
           <ServerLinkItem key={server.machine.id} organizationSlug={organizationSlug} server={server} description={buildSummary(server)} />
         ))}
       </ItemGroup>
-    </section>
+    </SettingsSection>
   );
 }

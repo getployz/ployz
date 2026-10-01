@@ -236,7 +236,7 @@ A node answers two questions in two places, and neither ever stands in for the o
 - **Status line: what runs now.** One word from runtime evidence: Online, Degraded, Unhealthy, "Crashed 2 min ago", Not running, Not deployed, No source, a grey Starting while its containers run but none serves yet, or a grey "Deployed" while a Server is missing from the evidence. Staged or in-flight work never replaces it. It ends in **⚠ N** when there is something to fix, red if any of them is a crash and amber otherwise, and the card opens its panel. A service that should run and doesn't, Crashed or Not running, also turns the border red.
 - **It never guesses.** Before the first evidence it shimmers. When the connection drops, it keeps the last word in grey with its age, "Online 2 minutes ago", and a grey word is never red, never an issue. When the Servers can't be reached it says "Can't reach servers"; with no Server at all, "Needs a server".
 - **Chip: anything about Deploys.** The first that applies: "Deploying 1m 12s" or "Queued"; a green "New", a blue "N changes" or a red "Removing"; on an open Deployment Page, its Node Outcome. Otherwise nothing. A node the Deploy creates, changes or removes takes the green, blue or red surface; nothing else fills a card.
-- **Volumes are trays** under each service that mounts them: the name over a fill showing how full it is, amber from 85%. A tray speaks only when it must: green, blue or red when staged, "Removing", "N% full". A volume several services share shows under each, marked shared, and hovering one lights them all. Only a volume nothing mounts is a node of its own.
+- **Volumes are trays** under each service that mounts them: the name over a fill showing how full it is, amber from 85%. A tray speaks only when it must: green, blue or red when staged, "Removing", "N% full", and an amber "shared · N writers" when more than one container writes it. A volume several services share shows under each, marked shared, and hovering one lights them all. Only a volume nothing mounts is a node of its own.
 - **Selected**, while its panel is open: a two-pixel ink ring. **Keyboard focus:** an Intent Pink outline, drawn only while the user navigates by keyboard. A pointer press ends that, so a closed panel hands focus back to its node without drawing it.
 - Only a node being dragged casts a shadow.
 - **On phones** the canvas is a list of the same cards, compact: the name and chip on one row, the domain and status line on the next. Trays follow their cards.
@@ -248,6 +248,22 @@ A node answers two questions in two places, and neither ever stands in for the o
 - Each project card shows the Default Environment's Working State Services as centered icons on a subtle dotted surface. Reuse existing source icons; do not use canvas positions, connections, or Volumes.
 - The whole card opens that Environment. Keep card controls out of the preview.
 - Footer: `● production · 2/3 services online`; an empty Environment shows `production · No services`. Count a Service once when it has a running container whose health is healthy or not configured. Exclude hooks. When runtime evidence is disconnected or incomplete, show only the service count.
+
+### Settings panels
+
+- A panel answers three questions before it is a form: what is this, what is it doing, and what am I about to change. Under the name, one line says what runs now (the canvas card's status word, from the same evidence), where, and what it is: a service's source, replicas and private address; a volume's size and who mounts it where.
+- A row shows the value in effect. Unset shows what that means (the default, or "Image default"), never an invented example. A staged row keeps its pink control and says what it replaces, "Was 1", with Undo, which drops that one change: the panel and Details tell one story.
+- A missing value that breaks something is a row warning in Failure Red, where it's fixed: a database with no volume.
+- A volume's writers are every replica of every service that mounts it, staged values included. More than one is one amber warning per surface, on the cause: at the top of the volume's Mounts, with a replica tag on the mount it comes from, and on that volume's row in a service's Storage, with the fix beside it ("Use 1 replica", or open the volume). It warns only where a volume allows shared writes, or where writers predate the rule; everywhere else the panel prevents it: Replicas holds at 1 while such a volume is attached ("Limited to 1 while data is attached", with Allow shared writes beside it), and the mount picker greys a service that would be a second writer ("Already used by postgres").
+- Order follows the kind. A service made from a database template leads with its private address and its volume; other services lead with their public domains. A volume leads with its mounts, then its storage.
+- Every resource panel (service, volume, and any added later) lays out its settings the same way: flat sections, a hairline between them, a Title-scale heading, and a line of description only where the heading isn't enough. No cards inside settings.
+- A setting is a row: label and short hint on the left, its control on the right where the panel is wide; stacked on narrow panels and phones.
+- An optional value is an input with a placeholder, blank while unset. Only a setting most resources never need (pre-deploy command, root directory) hides behind a small link.
+- Danger comes last as plain rows: what it does, what follows in muted text, and a soft destructive button. Never red text on a red surface.
+- Panel headers are the same shape: the name, renameable, without a kind label.
+- Settings pages (Environment, Project, Organization's General and Builds, a Server) use the same sections, rows and danger rows as the panels. There is one Danger section per page, last.
+- Settings autosave, except a name: renaming changes addresses and URLs, so it waits for an explicit Rename (a project's Rename button, a service's or volume's pencil and its dialog). Everything else saves as it's set, staged where it deploys.
+- Buttons and titles use sentence case: "Forget servers", "Generate domain".
 
 ### Inputs / Fields
 
@@ -338,7 +354,15 @@ Bar text stays minimal: fewer words on mobile, and explanations belong in a pane
 
 - New Volumes default to managed storage with a limit; Docker storage is an explicit Advanced choice, never a silent fallback when no compatible Server is available. Such a Volume stays staged and says it needs a compatible Server. Unknown or incomplete runtime evidence does not establish that managed storage is unavailable.
 - Storage settings are editable until deployment is requested, then shown as fixed, including after failed or cancelled attempts.
+- New Volumes refuse a second writer unless shared writes is on: one Service with one replica. Allow shared writes, under the volume's Advanced, applies at once and is never staged; turning it off with several writers is refused, and the reason shows on the switch.
 - Product copy does not expose ZFS or imply backups, replication, or resizing.
+
+## Voice
+
+- Say the fact in as few words as possible: one short sentence, no semicolons, no clauses that explain themselves.
+- No hint unless it changes a decision. A placeholder ("No limit", "Image default") beats a hint line; most rows have none.
+- A warning says what's wrong, with the number, then offers the fix as a button. Keep the line short; put the why behind ⓘ.
+- Sentence case, verb-first buttons, product words only.
 
 ## Do's and Don'ts
 

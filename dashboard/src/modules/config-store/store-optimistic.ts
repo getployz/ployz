@@ -72,6 +72,11 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       await views<VolumesView>("volumes", command.environment, (view) => ({ ...view, volumes: view.volumes.map((volume) =>
         volume.name === command.volume ? { ...volume, storage: command.storage } : volume) }));
       return;
+    case "set_volume_shared_writes":
+      // At once, not staged: it changes what the Store allows, not what a Deploy does.
+      await views<VolumesView>("volumes", command.environment, (view) => ({ ...view, volumes: view.volumes.map((volume) =>
+        volume.name === command.volume ? { ...volume, shared_writes: command.shared_writes } : volume) }));
+      return;
     case "remove_volume":
       await views<VolumesView>("volumes", command.environment, (view) => ({ ...view, volumes: view.volumes.flatMap((volume) =>
         volume.name !== command.volume ? [volume] : volume.change === "create" ? [] : [{ ...volume, change: "delete" as const }]) }));

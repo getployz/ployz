@@ -1,3 +1,4 @@
+import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { Link } from "@tanstack/react-router";
 import type { PrPlan } from "@ployz/sdk";
 import { ChevronRightIcon } from "lucide-react";
@@ -18,12 +19,11 @@ export function StorePrEnvironmentsSection(place: Place) {
   const plans = useStoreView(place.organizationSlug, prPlansQuery(place.projectSlug));
   if (!plans.ok || plans.value.plans.length === 0) return null;
   return (
-    <section aria-labelledby="pr-environments-heading" className="flex flex-col gap-4">
-      <h2 id="pr-environments-heading" className="text-base font-semibold">PR environments</h2>
+    <SettingsSection id="pr-environments" title="PR environments">
       <ItemGroup className="gap-2">
         {plans.value.plans.map((plan) => <PlanRow key={plan.repository_id} place={place} plan={plan} />)}
       </ItemGroup>
-    </section>
+    </SettingsSection>
   );
 }
 

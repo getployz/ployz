@@ -71,7 +71,7 @@ export function VolumeCreatorDialog({
         <form onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle>Create volume</DialogTitle>
-            <DialogDescription>Files stored here survive deployments and restarts.</DialogDescription>
+            <DialogDescription>Keeps files across deploys.</DialogDescription>
           </DialogHeader>
           <FieldGroup className="py-4">
             <Field>

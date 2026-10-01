@@ -31,10 +31,6 @@ export function ServiceSettingInput({
   suggestionsNotice,
   onFocus,
   inputMode,
-  type,
-  min,
-  max,
-  step,
   suffix,
   ariaLabel,
   validate,
@@ -50,11 +46,8 @@ export function ServiceSettingInput({
   suggestionsMessage?: string;
   suggestionsNotice?: string;
   onFocus?: () => void;
+  /** The keyboard phones show. The input stays text: a number input hides what was typed from validation. */
   inputMode?: "decimal" | "numeric" | "text";
-  type?: "number" | "text";
-  min?: number;
-  max?: number;
-  step?: number | "any";
   suffix?: ReactNode;
   ariaLabel: string;
   /** Return an error message to block the commit, or null to allow it. */
@@ -88,10 +81,7 @@ export function ServiceSettingInput({
     "aria-label": ariaLabel,
     "aria-invalid": active.error ? true : undefined,
     inputMode,
-    type,
-    min,
-    max,
-    step,
+    type: "text",
     suffix,
     isChanged,
     isDirty,

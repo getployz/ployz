@@ -1,15 +1,17 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { NetworkIcon, PencilIcon, PlusIcon, ZapIcon } from "lucide-react";
-import type { DomainRow, ServiceSettingChange } from "@ployz/sdk";
+import { PencilIcon, PlusIcon, ZapIcon } from "lucide-react";
+import type { DomainRow, JsonValue, ServiceSettingChange } from "@ployz/sdk";
+import { Link } from "@tanstack/react-router";
+import { PLATFORM_HTTP_PORT } from "#/modules/variables/managed-service-exports";
 import { Button } from "#/components/ui/button";
 import { customDomainCapabilityQueryOptions } from "#/modules/billing/billing.queries";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { changedProps, settingText } from "#/modules/config-store/store-services";
 import type { StoreService } from "./StoreServiceDrawer";
 import { ServiceSettingInput } from "./ServiceSettingInput";
-import { Empty, EmptyDescription } from "#/components/ui/empty";
-import { Field, FieldDescription, FieldGroup, FieldLabel } from "#/components/ui/field";
+import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/ui/field";
+import { cn } from "#/lib/utils";
 import { Schema } from "effect";
 import { domainChanged } from "#/modules/config-store/store-services";
 import { domainsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
@@ -50,12 +52,19 @@ function removedDomains(changes: Map<string, ServiceSettingChange>, domains: rea
   });
 }
 
+/** The default port a domain routes to, when one routes to PORT and the user set none; else null. */
+export function defaultPortHint(port: JsonValue | undefined, domains: readonly Pick<DomainRow, "port">[]) {
+  return settingText(port) === "" && domains.some((domain) => domain.port === null) ? PLATFORM_HTTP_PORT : null;
+}
+
 /**
  * A Service's domains over the Config Store: at most one generated domain under the Cluster Domain and any custom
  * ones, each with the status the Store gives it. Adding, retargeting and removing one are staged for the next Deploy.
  */
-export function StoreNetworkingSection({ state, version, validatePrivateDns }: {
+export function StoreNetworkingSection({ state, version, privateFirst = false, validatePrivateDns }: {
   state: StoreService;
+  /** A database is reached privately: its address leads, and domains follow. */
+  privateFirst?: boolean;
   /** The review's version, which undoing a removal discards against. */
   version: string;
   validatePrivateDns: (raw: string) => string | null;
@@ -82,13 +91,70 @@ export function StoreNetworkingSection({ state, version, validatePrivateDns }: {
     writer.commit({ command: "add_domain", environment, service: service.name, hostname, port });
   const remove = (domain: string) => writer.commit({ command: "remove_domain", environment, domain });
 
+  const removed = removedDomains(changes, domains);
+  const addButtons = (
+    <div className="flex shrink-0 flex-wrap gap-2">
+      {generated ? null : (
+        <Button type="button" variant="outline" onClick={() => setEditor({ kind: "generate" })}>
+          <ZapIcon data-icon="inline-start" />
+          Generate domain
+        </Button>
+      )}
+      <Button type="button" variant="outline" onClick={() => openCustomDomain({ kind: "add" })}>
+        <PlusIcon data-icon="inline-start" />
+        Custom domain
+      </Button>
+    </div>
+  );
+  const none = domains.length === 0 && removed.length === 0;
+  // A domain without its own port routes to PORT, which Ployz sets when the user doesn't. Whether the app listens
+  // there is unknown, so this is a hint, never a failure.
+  const defaultPort = defaultPortHint(state.rows.get("env.PORT")?.value, domains);
+  const privateRow = (
+      <Field orientation="responsive" data-changed={privateDnsChange ? true : undefined}>
+        <FieldContent>
+          <FieldLabel>Private address</FieldLabel>
+        </FieldContent>
+        <div className={cn("flex min-w-0 shrink-0 items-center gap-1", privateDnsChange && "rounded-lg border border-changed-border bg-changed-soft px-2")}
+          title={privateDnsChange ? `Deployed: ${settingText(privateDnsChange.before) || service.name}` : undefined}>
+          <DomainTitle hostname={`${privateDns}.internal`} copyLabel="Copy private address" />
+          <Button type="button" variant="ghost" size="icon-xs" aria-label="Edit private address" onClick={() => setEditingPrivateDns(true)}>
+            <PencilIcon />
+          </Button>
+        </div>
+        {editingPrivateDns ? (
+          <Dialog open onOpenChange={(open) => { if (!open) setEditingPrivateDns(false); }}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Edit private endpoint</DialogTitle>
+                <DialogDescription>The name other services in this environment use to reach it. Blank returns it to the service's name.</DialogDescription>
+              </DialogHeader>
+              <ServiceSettingInput ariaLabel="Private endpoint name" placeholder={service.name} value={privateDns}
+                {...changedProps(privateDnsChange)}
+                validate={validatePrivateDns}
+                onCommit={(raw) => {
+                  setEditingPrivateDns(false);
+                  return state.set("privateDns", raw === "" ? null : raw);
+                }} />
+            </DialogContent>
+          </Dialog>
+        ) : null}
+      </Field>
+  );
+
   return (
-    <FieldGroup>
-      <Field data-changed={domains.some((domain) => domainChanged(changes, domain)) || undefined}>
-        <FieldLabel>Public Networking</FieldLabel>
-        <FieldDescription>Access your application over HTTP with the following domains.</FieldDescription>
-        <div className="flex flex-col gap-2">
-          {removedDomains(changes, domains).map((removed) => (
+    <>
+      {privateFirst ? privateRow : null}
+      <Field orientation="responsive" data-changed={domains.some((domain) => domainChanged(changes, domain)) || undefined}>
+        <FieldContent>
+          <FieldLabel>Public domains</FieldLabel>
+          {none ? <FieldDescription>None</FieldDescription> : null}
+        </FieldContent>
+        {addButtons}
+      </Field>
+      {none ? null : (
+        <div className="flex flex-col gap-1">
+          {removed.map((removed) => (
             <DomainRowShell key={`removed:${removed.name}`} icon={<ZapIcon className="opacity-50" />} changed actions={(
               <Button type="button" variant="ghost" size="sm"
                 onClick={() => writer.commit({ command: "discard", environment, path: removed.path, version })}>Undo</Button>
@@ -97,11 +163,6 @@ export function StoreNetworkingSection({ state, version, validatePrivateDns }: {
               <div className="truncate text-muted-foreground text-sm">Removed on your next deploy</div>
             </DomainRowShell>
           ))}
-          {domains.length === 0 && removedDomains(changes, domains).length === 0 ? (
-            <Empty>
-              <EmptyDescription>No public domains yet.</EmptyDescription>
-            </Empty>
-          ) : null}
           {domains.map((domain) => {
             const name = nameOf(domain);
             const hostname = domain.hostname;
@@ -128,18 +189,12 @@ export function StoreNetworkingSection({ state, version, validatePrivateDns }: {
             );
           })}
         </div>
-        <div className="flex flex-wrap gap-2">
-          {generated ? null : (
-            <Button type="button" variant="outline" onClick={() => setEditor({ kind: "generate" })}>
-              <ZapIcon data-icon="inline-start" />
-              Generate Domain
-            </Button>
-          )}
-          <Button type="button" variant="outline" onClick={() => openCustomDomain({ kind: "add" })}>
-            <PlusIcon data-icon="inline-start" />
-            Custom Domain
-          </Button>
-        </div>
+      )}
+      {defaultPort ? (
+        <FieldDescription>
+          Uses port {defaultPort}. <Link to="." search={(prev) => ({ ...prev, tab: "variables" })}>Change</Link>
+        </FieldDescription>
+      ) : null}
         {editor?.kind === "generate" || (editor?.kind === "generated" && generated?.kind === "generated") ? (
           <ManagedDomainDialog
             mode={editor.kind === "generate" ? "generate" : "edit"}
@@ -183,38 +238,7 @@ export function StoreNetworkingSection({ state, version, validatePrivateDns }: {
             onClose={() => setEditor(null)}
           />
         ) : null}
-      </Field>
-      <Field data-changed={privateDnsChange ? true : undefined}>
-        <FieldLabel>Private Networking</FieldLabel>
-        <FieldDescription>Communicate with this service from within the environment.</FieldDescription>
-        <DomainRowShell icon={<NetworkIcon />} changed={privateDnsChange !== undefined} actions={(
-          <Button type="button" variant="ghost" size="icon-sm" aria-label="Edit private endpoint" onClick={() => setEditingPrivateDns(true)}>
-            <PencilIcon />
-          </Button>
-        )}>
-          <DomainTitle hostname={`${privateDns}.internal`} copyLabel="Copy private hostname" />
-          <div className="truncate text-muted-foreground text-sm">
-            → or just <span className="font-mono">{privateDns}</span>
-          </div>
-        </DomainRowShell>
-        {editingPrivateDns ? (
-          <Dialog open onOpenChange={(open) => { if (!open) setEditingPrivateDns(false); }}>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Edit private endpoint</DialogTitle>
-                <DialogDescription>The name other services in this environment use to reach it. Blank returns it to the service's name.</DialogDescription>
-              </DialogHeader>
-              <ServiceSettingInput ariaLabel="Private endpoint name" placeholder={service.name} value={privateDns}
-                {...changedProps(privateDnsChange)}
-                validate={validatePrivateDns}
-                onCommit={(raw) => {
-                  setEditingPrivateDns(false);
-                  return state.set("privateDns", raw === "" ? null : raw);
-                }} />
-            </DialogContent>
-          </Dialog>
-        ) : null}
-      </Field>
-    </FieldGroup>
+      {privateFirst ? null : privateRow}
+    </>
   );
 }

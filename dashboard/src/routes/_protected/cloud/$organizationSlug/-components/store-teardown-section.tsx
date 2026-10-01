@@ -18,6 +18,8 @@ import type { ConfigQuery } from "#/modules/config-store/store.contract";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-page";
 import { getServiceIcon } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/service-node-helpers";
 import { DangerRow } from "./danger-row";
+import { SettingsSection } from "./SettingsSection";
+import { FieldDescription } from "#/components/ui/field";
 
 type Waiting = Extract<TeardownStep, { done: false }>;
 
@@ -128,9 +130,7 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
 
   return (
     <>
-      <section aria-labelledby={headingId}>
-        <h2 id={headingId} className="text-lg font-semibold text-destructive">Danger</h2>
-        <div className="mt-4 flex flex-col gap-4">
+      <SettingsSection id={headingId} title="Danger">
           {failure && <Alert variant="destructive"><AlertTitle>Deleting {name} didn't finish</AlertTitle><AlertDescription>{failure}</AlertDescription></Alert>}
           {inScope.flatMap((environment) => {
             const removal = environment.removal;
@@ -164,16 +164,15 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
             title={title}
             description={description}
             action={
-              <Button variant="destructive" className="shrink-0" disabled={busy || disabledReason !== undefined} onClick={() => setOpen(true)}>
+              <Button variant="destructive" disabled={busy || disabledReason !== undefined} onClick={() => setOpen(true)}>
                 <Trash2Icon data-icon="inline-start" />
                 {actionLabel}
               </Button>
             }
           >
-            {disabledReason && <p className="mt-1 text-sm text-muted-foreground">{disabledReason}</p>}
+            {disabledReason && <FieldDescription>{disabledReason}</FieldDescription>}
           </DangerRow>
-        </div>
-      </section>
+      </SettingsSection>
       <DeletionDialog open={open} onOpenChange={setOpen} title={`Delete ${name}?`} place={place} confirmLabel="Delete"
         callbacks={{ load, confirm }} />
     </>

@@ -1,3 +1,4 @@
+import { replicaCount } from "#/modules/config-store/volume-sharing";
 import { CANVAS_FIT_VIEW } from "./canvas/constants";
 import { Suspense, useState } from "react";
 import { Schema } from "effect";
@@ -89,7 +90,8 @@ function CanvasWithData() {
   const volumes = requireView(volumesResult);
   const domains = requireView(domainsResult).domains;
   const canvasPositions = positionRows.map((row) => parseLiveQueryRow(canvasPositionSchema, row));
-  const { trays, unmounted } = volumeTrays(services.services, volumes.volumes, diff);
+  const { trays, unmounted } = volumeTrays(services.services, volumes.volumes, diff,
+    (name) => replicaCount(serviceSettingRows(settings, name).get("replicas")));
   const store: StoreCanvas = {
     services: services.services.map((service) => {
       const changes = serviceChanges(diff, service.id);

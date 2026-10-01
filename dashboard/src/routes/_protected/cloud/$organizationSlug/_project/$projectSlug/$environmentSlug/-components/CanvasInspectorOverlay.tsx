@@ -43,7 +43,9 @@ export function CanvasInspectorOverlay({
       const inspector = inspectorRef.current;
       const exit = [...(inspector?.querySelectorAll<HTMLElement>("[data-canvas-inspector-exit]") ?? [])]
         .find((element) => element.getBoundingClientRect().width > 0);
-      (exit ?? inspector)?.focus({ preventScroll: true });
+      // The ring only for keyboard users: opened by pointer or by a link, focus lands quietly.
+      const keyboard = document.activeElement?.matches(":focus-visible") ?? false;
+      (exit ?? inspector)?.focus({ preventScroll: true, focusVisible: keyboard });
     } else if (previousNode.current && workspace) {
       const nodeId = previousNode.current;
       // Both canvas links and the mobile list expose the same stable node identity.

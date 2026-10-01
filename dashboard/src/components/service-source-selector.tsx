@@ -537,7 +537,7 @@ export function ImageSelector({
   const registryLink = imageRegistryLink(trimmedValue);
 
   return (
-    <SourcePickerLayout title="Docker Image">
+    <SourcePickerLayout title="Docker image">
       <form
         className="flex min-w-0 flex-col gap-3"
         onSubmit={(event) => {
@@ -639,7 +639,7 @@ function OpenGitRepoSelectorDialog({
       errorTitle="Couldn’t connect repository"
       error={dialog.error}
     >
-      <SourcePickerLayout title="GitHub Repository">
+      <SourcePickerLayout title="GitHub repository">
       <Command shouldFilter={false} className="gap-3 p-0">
         <SourcePickerInput onBack={() => onOpenChange(false)} disabled={dialog.isPending}>
             <CommandPrimitive.Input

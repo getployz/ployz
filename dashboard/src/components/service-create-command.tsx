@@ -47,7 +47,7 @@ type CreateMode = "project" | "service";
 function pickerPresentation(panel: Panel, mode: CreateMode) {
   if (panel.kind === "git") {
     return {
-      title: "GitHub Repository",
+      title: "GitHub repository",
       ariaLabel: "Search GitHub repositories",
       placeholder: "Search repositories or paste a GitHub URL…",
     };
@@ -60,7 +60,7 @@ function pickerPresentation(panel: Panel, mode: CreateMode) {
     };
   }
   return {
-    title: mode === "project" ? "Add your app" : "Add service",
+    title: mode === "project" ? "Add your app" : "Create",
     ariaLabel: "Choose a source",
     placeholder: "Choose a source…",
   };

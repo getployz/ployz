@@ -1,6 +1,10 @@
 import type { ReactNode } from "react";
+import { Field, FieldContent, FieldDescription, FieldTitle } from "#/components/ui/field";
 
-/** A destructive action set apart: what it does, any further lines about it, and the button that does it. */
+/**
+ * A destructive action as a plain settings row: what it does, any further lines about it, and the button that does it.
+ * The button carries the danger; the row is never red on red.
+ */
 export function DangerRow({ title, description, action, children }: {
   title: ReactNode;
   description: ReactNode;
@@ -8,13 +12,13 @@ export function DangerRow({ title, description, action, children }: {
   children?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-start justify-between gap-4 rounded-xl border border-destructive-border bg-destructive-soft p-4 sm:flex-row sm:items-center">
-      <div className="min-w-0">
-        <div className="text-sm font-semibold text-foreground">{title}</div>
-        <p className="mt-1 text-sm text-foreground">{description}</p>
+    <Field orientation="responsive">
+      <FieldContent>
+        <FieldTitle>{title}</FieldTitle>
+        <FieldDescription>{description}</FieldDescription>
         {children}
-      </div>
-      {action}
-    </div>
+      </FieldContent>
+      <div className="flex shrink-0 gap-2">{action}</div>
+    </Field>
   );
 }

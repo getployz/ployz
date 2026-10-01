@@ -1,5 +1,6 @@
 "use client";
 
+import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -7,7 +8,7 @@ import { CopyButton } from "#/components/copy-button";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
-import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
 import { toErrorMessage } from "#/lib/error-message";
 import { cn } from "#/lib/utils";
@@ -59,15 +60,8 @@ export function ClusterDomainSection({ organizationSlug, domain, onCheck }: {
   const copy = status === null ? { message: "You’ll get one on your first deploy.", action: null } as const : statusCopy(status);
 
   return (
-    <section aria-labelledby="cluster-domain-heading">
-      <ItemGroup>
-        <ItemContent>
-          <ItemTitle>
-            <h2 id="cluster-domain-heading">Domain</h2>
-          </ItemTitle>
-          <ItemDescription>Your services get free addresses under this domain.</ItemDescription>
-        </ItemContent>
-        <Item variant="outline">
+    <SettingsSection id="cluster-domain" title="Domain" description="Your services get free addresses under this domain.">
+        <Item size="sm">
           <ItemContent>
             {domain === null ? null : (
               <ItemTitle className="font-mono">
@@ -97,8 +91,7 @@ export function ClusterDomainSection({ organizationSlug, domain, onCheck }: {
             </ItemActions>
           )}
         </Item>
-      </ItemGroup>
-    </section>
+    </SettingsSection>
   );
 }
 

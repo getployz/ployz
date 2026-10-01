@@ -14,6 +14,7 @@ import { withMissingDataLossIdentities, type DataLossList } from "#/modules/runt
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import type { MachineRemoveResult } from "#/modules/machines/machine-removal";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
+import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
 
 /** Polls the removal until it settles. Closing the dialog or leaving the page aborts; polling stops within a second. */
@@ -70,20 +71,21 @@ export function RemoveServerSection({ machine, organizationSlug, last }: {
   }
 
   return (
-    <section aria-labelledby="remove-server-heading">
-      <h2 id="remove-server-heading" className="sr-only">Remove server</h2>
+    <>
+    <SettingsSection id="remove-server" title="Danger">
       <DangerRow
         title={`Remove ${machine.name}`}
         description={last
           ? "Resets it. It's your only server, so everything running here stops until you add another."
           : "Resets it and takes it out of the cluster. Services that run only here stop."}
         action={
-          <Button variant="destructive" className="shrink-0" onClick={() => onOpenChange(true)}>
+          <Button variant="destructive" onClick={() => onOpenChange(true)}>
             <Trash2Icon data-icon="inline-start" />
             Remove server
           </Button>
         }
       />
+    </SettingsSection>
       <DeletionDialog
         open={open}
         onOpenChange={onOpenChange}
@@ -127,6 +129,6 @@ export function RemoveServerSection({ machine, organizationSlug, last }: {
           },
         }}
       />
-    </section>
+  </>
   );
 }

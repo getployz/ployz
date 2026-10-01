@@ -41,7 +41,7 @@ function RouteComponent() {
     <DashboardPage width="content">
       {/* The top bar names the page; the rail, or on phones the strip under the top bar, picks the section. */}
       {section === "builds" ? <BuildsSettings organizationSlug={organizationSlug} /> : (
-        <div className="flex flex-col gap-8">
+        <div className="flex flex-col gap-6">
           <EnrollmentSection organizationSlug={organizationSlug} />
           <ClusterDomainSettings organizationSlug={organizationSlug} />
           <StoreOrganizationDanger organizationSlug={organizationSlug} />

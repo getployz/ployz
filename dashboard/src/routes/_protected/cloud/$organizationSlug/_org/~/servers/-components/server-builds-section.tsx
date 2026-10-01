@@ -1,7 +1,8 @@
+import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
+import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/ui/field";
 import { useEffect, useId, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
-import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Switch } from "#/components/ui/switch";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
@@ -73,34 +74,26 @@ export function ServerBuildsSection({ machine, organizationSlug }: { machine: Ru
     value !== "automatic" ? String(value) : policy.automatic === null ? "Auto" : `Auto (${policy.automatic})`;
 
   return (
-    <section aria-labelledby="server-builds-heading">
-      <ItemGroup>
-        <ItemContent>
-          <ItemTitle>
-            <h2 id="server-builds-heading">Builds</h2>
-          </ItemTitle>
-        </ItemContent>
-        <Item variant="outline">
-          <ItemContent>
-            <ItemTitle>
-              <label htmlFor={switchId}>Run builds here</label>
-            </ItemTitle>
-            {machine.runningBuilds > 0 ? <ItemDescription>Building {machine.runningBuilds} now</ItemDescription> : null}
-          </ItemContent>
-          <ItemActions>
-            <Switch
-              id={switchId}
-              checked={policy.acceptsBuilds}
-              onCheckedChange={(acceptsBuilds) => policy.request({ acceptsBuilds })}
-            />
-          </ItemActions>
-        </Item>
+    <SettingsSection id="server-builds" title="Builds" description={<>
+      Which builders go first is set in{" "}
+      <Link className="underline underline-offset-4" to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug }} search={{ section: "builds" }}>Organization › Builds</Link>.
+    </>}>
+        <Field orientation="horizontal">
+          <FieldContent>
+            <FieldLabel htmlFor={switchId}>Run builds here</FieldLabel>
+            {machine.runningBuilds > 0 ? <FieldDescription>Building {machine.runningBuilds} now</FieldDescription> : null}
+          </FieldContent>
+          <Switch
+            id={switchId}
+            checked={policy.acceptsBuilds}
+            onCheckedChange={(acceptsBuilds) => policy.request({ acceptsBuilds })}
+          />
+        </Field>
         {policy.acceptsBuilds ? (
-          <Item variant="outline">
-            <ItemContent>
-              <ItemTitle>Builds at once</ItemTitle>
-            </ItemContent>
-            <ItemActions>
+          <Field orientation="horizontal">
+            <FieldContent>
+              <FieldLabel>Builds at once</FieldLabel>
+            </FieldContent>
               <Select
                 value={String(policy.concurrency)}
                 onValueChange={(value) => {
@@ -120,16 +113,8 @@ export function ServerBuildsSection({ machine, organizationSlug }: { machine: Ru
                   </SelectGroup>
                 </SelectContent>
               </Select>
-            </ItemActions>
-          </Item>
+          </Field>
         ) : null}
-        <ItemContent>
-          <ItemDescription>
-            Which builders go first is set in{" "}
-            <Link to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug }} search={{ section: "builds" }}>Organization › Builds</Link>.
-          </ItemDescription>
-        </ItemContent>
-      </ItemGroup>
-    </section>
+    </SettingsSection>
   );
 }
