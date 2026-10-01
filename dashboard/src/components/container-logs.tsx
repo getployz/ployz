@@ -60,7 +60,7 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
     : offline ? <LogEmpty title="Your servers are offline">Logs stream again once a server reconnects. {offlineLink}</LogEmpty>
     : refused ? <LogEmpty title="Couldn’t load logs">Trying again…</LogEmpty>
     : !opened ? <LogSkeleton label="Loading logs" time={LOG_TIME_COLUMN.container} />
-    : loaded.length ? <LogEmpty title="No logs match your filters" />
+    : loaded.length ? <LogEmpty title="No logs match your filters">{stream.hasOlder ? "Scroll up or press Home to check older logs." : null}</LogEmpty>
     : <LogEmpty title="No logs yet">Output shows up here as soon as the service writes any.</LogEmpty>;
   return <div className="flex min-h-0 grow flex-col gap-3">
     <div className="flex flex-wrap items-center gap-2">

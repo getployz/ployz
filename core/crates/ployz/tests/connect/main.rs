@@ -46,6 +46,70 @@ mod support;
 mod unix_session;
 use support::*;
 
+#[tokio::test]
+async fn cli_exec_requires_exit_status_or_detached_start_confirmation() {
+    use ployz_core::ExecResponseFrame::{ExecId, Exit, Stdout};
+    use std::time::Duration;
+    for (detach, frames, exit) in [
+        (false, vec![], 1),
+        (
+            false,
+            vec![ExecId("started".into()), Stdout(b"partial".to_vec())],
+            1,
+        ),
+        (false, vec![ExecId("started".into()), Exit(0)], 0),
+        (false, vec![ExecId("started".into()), Exit(7)], 7),
+        (true, vec![], 1),
+        (true, vec![ExecId("started".into())], 0),
+    ] {
+        let mut service = DiscoveryService::new(test_description());
+        service.exec_frames = Some(frames);
+        service
+            .listed_containers
+            .lock()
+            .unwrap()
+            .push(listing_container(
+                'a',
+                'a',
+                "web",
+                ContainerKind::ServiceContainer,
+                ContainerRuntimeObservation::Running {
+                    health: HealthObservation::Healthy,
+                },
+            ));
+        let (address, server) = serve_discovery(service).await;
+        let config = tempfile::NamedTempFile::new().unwrap();
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command.kill_on_drop(true);
+        command.args([
+            "--connect",
+            &format!("tcp://{address}"),
+            "--ployz-config",
+            config.path().to_str().unwrap(),
+            "exec",
+            "-T",
+            "app/web",
+        ]);
+        if detach {
+            command.arg("--detach");
+        }
+        let result = tokio::time::timeout(Duration::from_secs(10), command.arg("true").output())
+            .await
+            .unwrap()
+            .unwrap();
+        server.abort();
+        assert_eq!(
+            result.status.code(),
+            Some(exit),
+            "detach={detach}: {result:?}"
+        );
+        if exit == 1 {
+            let error = String::from_utf8_lossy(&result.stderr);
+            assert!(error.contains("Exec stream ended"), "{error}");
+        }
+    }
+}
+
 struct FakeConnector {
     outcomes: Mutex<VecDeque<bool>>,
     attempts: Mutex<Vec<String>>,
@@ -381,16 +445,16 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
         assert!(!output.stderr.is_empty(), "{args:?}: expected diagnostics");
     }
 
-    let container_id = "c".repeat(64);
+    let container_id = "c".repeat(12);
     let machine_id = "a".repeat(32);
     let human_cases = [(
         &["ps"][..],
         format!(
-            "CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE\n{container_id}\tapp/api\tServiceContainer\t{machine_id}\trunning (health: healthy)\n{}\tapp/worker\tPreDeployHook\t{machine_id}\texited with code 0\n{}\tapp/worker\tServiceContainer\t{machine_id}\trunning (health: unhealthy)\n{}\tapp/worker\tServiceContainer\t{machine_id}\trunning (health: starting)\n{}\tapp/worker\tServiceContainer\t{machine_id}\texited with code 1\n",
-            "0".repeat(64),
-            "d".repeat(64),
-            "e".repeat(64),
-            "f".repeat(64)
+            "CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE\n{container_id}\tapp/api\tservice\t{machine_id}\trunning, healthy\n{}\tapp/worker\tpre-deploy hook\t{machine_id}\texited with code 0\n{}\tapp/worker\tservice\t{machine_id}\trunning, unhealthy\n{}\tapp/worker\tservice\t{machine_id}\trunning, starting\n{}\tapp/worker\tservice\t{machine_id}\texited with code 1\n",
+            "0".repeat(12),
+            "d".repeat(12),
+            "e".repeat(12),
+            "f".repeat(12)
         ),
     )];
     for (args, expected) in human_cases {

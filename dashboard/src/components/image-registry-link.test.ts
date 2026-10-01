@@ -18,7 +18,9 @@ test("rejects incomplete references while allowing tags, registries and digests"
     expect(isValidImageReference(invalid), invalid).toBe(false);
     expect(imageRegistryLink(invalid), invalid).toBeNull();
   }
-  for (const valid of ["nginx", "nginx:latest", "nginx:RC1", "registry.example.com:5000/acme/api:v1", "[::1]:5000/api", `nginx@sha256:${"a".repeat(64)}`]) {
+  for (const valid of ["nginx", "nginx:latest", "nginx:RC1", "registry.example.com:5000/acme/api:v1", `nginx@sha256:${"a".repeat(64)}`]) {
     expect(isValidImageReference(valid), valid).toBe(true);
   }
+  // Core's rule (the Store's too) doesn't take an IPv6-literal registry; Docker does. One rule, stated here.
+  expect(isValidImageReference("[::1]:5000/api")).toBe(false);
 });

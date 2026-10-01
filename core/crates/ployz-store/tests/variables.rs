@@ -134,6 +134,38 @@ fn environment_of(claimed: &ployz_store::Claimed, service: &str) -> Value {
 }
 
 #[test]
+fn null_environment_values_are_refused_before_any_setting_changes() {
+    let store = backend::open();
+    shop(&store);
+    set(&store, &[("web.env.VALID", json!("café\nbeta"))]).unwrap();
+    assert_eq!(value(&store, "web.env.VALID"), "café\nbeta");
+    let before = get(&store, None);
+    for value in [
+        json!("private\0value"),
+        json!({ "secret": "private\0value" }),
+        json!({ "value": "private\0value", "exported": true }),
+    ] {
+        let error = store
+            .write(
+                &who(),
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: vec![Change::Patch {
+                        path: SettingPath::parse("web").unwrap(),
+                        value: json!({ "cpuLimit": 0.5, "env": { "BAD": value } }),
+                    }],
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+        assert!(error.message.contains("null characters"));
+        assert!(!error.message.contains("private"));
+        assert_eq!(get(&store, None), before);
+    }
+}
+
+#[test]
 fn secrets_never_leave_reads_and_only_claim_unseals_them() {
     let dir = tempfile::tempdir().unwrap();
     let url = backend::fresh_url(&dir);
@@ -367,18 +399,20 @@ fn references_and_exports_round_trip_through_get_and_patch() {
         staged(&unset(&store, "web.env.HOST.exported")),
         ["web.env.HOST.exported"]
     );
-    // A cycle can't deploy, and names the variables in it.
-    set(
+    // A cycle can't deploy, so it isn't staged, and the refusal names its variables.
+    let error = set(
         &store,
         &[
             ("web.env.A", json!("${{ api.B }}")),
             ("api.env.B", json!("${{ web.A }}")),
         ],
     )
-    .unwrap();
-    let error = admit(&store, 1).unwrap_err();
+    .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
-    assert!(error.message.contains("web.env.A"), "{}", error.message);
+    assert_eq!(
+        error.message,
+        "api.B and web.A reference each other in a cycle"
+    );
 }
 
 #[test]
@@ -401,4 +435,25 @@ fn diff_and_plan_show_a_plain_template_opener_escaped_as_get_does() {
     let plan = json!(store.read(&who(), &PlanQuery::default()).unwrap());
     assert!(plan.to_string().contains("echo $${{ HOME }}"), "{plan}");
     assert!(!plan.to_string().contains("echo ${{ HOME }}"), "{plan}");
+}
+
+#[test]
+fn ployz_built_ins_cannot_be_set_but_port_can() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    for name in [
+        "PLOYZ_PRIVATE_DOMAIN",
+        "ployz_service_name",
+        "PLOYZ_SERVICE_ID",
+    ] {
+        let refused = set(&store, &[(&format!("web.env.{name}"), json!("evil"))]).unwrap_err();
+        assert!(
+            refused.message.contains("is set by Ployz"),
+            "{name}: {refused:?}"
+        );
+    }
+    set(&store, &[("web.env.PORT", json!("8080"))]).unwrap();
+    assert_eq!(value(&store, "web.env.PORT"), json!("8080"));
 }

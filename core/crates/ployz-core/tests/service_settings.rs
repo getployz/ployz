@@ -3,7 +3,9 @@
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 
-use ployz_core::config::{compare_service_settings, parse_service_config, restore_service_setting};
+use ployz_core::config::{
+    compare_service_settings, parse_service_config, parse_service_setting, restore_service_setting,
+};
 use serde_json::{Value, json};
 
 fn config() -> Value {
@@ -91,16 +93,60 @@ fn service_validation_normalizes_input_and_rejects_invalid_settings() {
         "/apps/api"
     );
     for (path, invalid) in [
+        ("replicas", json!(0)),
         ("replicas", json!(51)),
         ("cpuLimit", json!(0)),
         ("maxRetries", json!(-1)),
         ("startCommand", json!(" ")),
+        ("startCommand", json!("private\0value")),
+        ("preDeployCommand", json!("private\0value")),
         ("privateDns", json!("Invalid_DNS")),
         ("unexpected", json!(true)),
     ] {
         let mut bad = input.clone();
         bad[path] = invalid;
         assert!(parse_service_config(bad).is_err(), "accepted {path}");
+    }
+    for (field, value) in [
+        ("command", json!("private\0value")),
+        (
+            "build",
+            json!({"buildMethod":"dockerfile", "dockerfilePath":"Dockerfile", "command":"private\0value"}),
+        ),
+        ("healthcheckPath", json!("/private\0value")),
+    ] {
+        let error = parse_service_setting(json!({ "field": field, "value": value })).unwrap_err();
+        assert!(error.message.to_lowercase().contains("null characters"));
+        assert!(!error.message.contains("private"));
+    }
+    assert_eq!(
+        parse_service_setting(json!({ "field": "command", "value": " echo café\nprintf ok " }))
+            .unwrap(),
+        "echo café\nprintf ok"
+    );
+    for path in [
+        "/private\u{1}probe",
+        "/private\tprobe",
+        "/private\nprobe",
+        "/private\u{85}probe",
+    ] {
+        assert!(
+            serde_json::from_value::<ployz_core::HttpHealthcheck>(json!({
+                "path": path, "port": 80, "timeout_seconds": 5
+            }))
+            .is_err()
+        );
+        for (field, value) in [
+            ("healthcheckPath", json!(path)),
+            (
+                "healthcheck",
+                json!({"type":"http", "path":path, "timeoutSeconds":5}),
+            ),
+        ] {
+            let error = parse_service_setting(json!({"field":field, "value":value})).unwrap_err();
+            assert!(error.message.contains("control characters"));
+            assert!(!error.message.contains("private"));
+        }
     }
 }
 

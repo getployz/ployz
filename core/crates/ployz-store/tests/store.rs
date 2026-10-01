@@ -463,6 +463,11 @@ fn wrong_paths_and_values_name_the_fix() {
         ployz_store::NodeName::parse("volumes").unwrap_err().code,
         RpcErrorCode::InvalidArgument
     );
+    // Service names are lowercase, so a capitalised one can only mean that Service.
+    assert_eq!(
+        SettingPath::parse("WEB.replicas").unwrap(),
+        SettingPath::parse("web.replicas").unwrap()
+    );
     let error = SettingPath::parse("web.replica").unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     assert_eq!(error.details["did_you_mean"], "replicas");
@@ -505,6 +510,7 @@ fn wrong_paths_and_values_name_the_fix() {
 
     let (store, who) = shop();
     let cases = [
+        (set("web.replicas", json!(0)), RpcErrorCode::InvalidArgument),
         (set("api.replicas", json!(2)), RpcErrorCode::NotFound),
         (set("web", json!(2)), RpcErrorCode::InvalidArgument),
         (

@@ -190,14 +190,16 @@ impl GitSetting {
                 "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$",
                 "maxLength": REPOSITORY_MAX,
             }),
-            Self::Branch => json!({ "type": "string", "minLength": 1, "maxLength": BRANCH_MAX }),
+            Self::Branch => {
+                json!({ "type": "string", "pattern": "^[^\\u0000]*$", "minLength": 1, "maxLength": BRANCH_MAX })
+            }
             Self::RootDir => json!({ "type": "string", "pattern": "^/[A-Za-z0-9/._-]*$" }),
             Self::BuildMethod => json!({ "type": "string", "enum": ["dockerfile", "railpack"] }),
             Self::DockerfilePath => {
-                json!({ "type": "string", "minLength": 1, "maxLength": DOCKERFILE_PATH_MAX })
+                json!({ "type": "string", "pattern": "^[^\\u0000]*$", "minLength": 1, "maxLength": DOCKERFILE_PATH_MAX })
             }
             Self::BuildCommand => {
-                json!({ "type": "string", "minLength": 1, "maxLength": COMMAND_MAX })
+                json!({ "type": "string", "pattern": "^[^\\u0000]*$", "minLength": 1, "maxLength": COMMAND_MAX })
             }
         }
     }

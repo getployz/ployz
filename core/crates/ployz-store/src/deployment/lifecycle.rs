@@ -181,6 +181,29 @@ pub(crate) fn retry(
         }
         DeploymentStatus::Superseded => return Err(superseded(source)),
     }
+    // Shipping an older revision over one that applied since would roll it back without saying so.
+    // ponytail: any newer applied Deployment refuses, even one targeting other Services; compare targets if that bites.
+    let newer = tx
+        .query(
+            "SELECT MAX(number) FROM config_deployment \
+             WHERE environment_id = ?1 AND number > ?2 AND status = 'applied'",
+            &[
+                stored.summary.environment_id.as_str().into(),
+                i64::try_from(stored.summary.number)
+                    .map_err(|_| error::corrupt("Deployment number"))?
+                    .into(),
+            ],
+        )?
+        .first()
+        .and_then(|row| row.int(0).ok());
+    if let Some(newer) = newer {
+        return Err(error::conflict(
+            format!(
+                "Deployment #{newer} applied after this one, so retrying it would roll that back: deploy again instead"
+            ),
+            json!({ "deployment": source, "newer": newer }),
+        ));
+    }
     if stored.summary.remove {
         let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
         crate::teardown::guard_removal(tx, &environment)?;

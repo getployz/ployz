@@ -62,9 +62,9 @@ it("starts at the current horizon even with a Last-Event-ID, names changed colle
   expect(events.text).toContain('event: changes\ndata: {"collections":["environment_canvas_node_position"]}\n\n');
   expect(events.text).not.toContain("id: ");
   await vi.waitFor(() => expect(readChanges).toHaveBeenNthCalledWith(2, { organizationId: "org-1", since: "50" }));
-  expect(events.text).not.toContain(": ping");
+  expect(events.text).not.toContain("event: ping");
   await vi.advanceTimersByTimeAsync(15_000);
-  await events.until(": ping\n\n");
+  await events.until("event: ping\ndata: {}\n\n");
   // Quiet polls advance the cursor without emitting events.
   expect(events.text.match(/event: changes/g)).toHaveLength(1);
   await vi.waitFor(() => expect(readChanges).toHaveBeenLastCalledWith({ organizationId: "org-1", since: "51" }));

@@ -21,6 +21,19 @@ fn authored_service_variables_compile_with_volume_mounts() {
     .unwrap();
     assert_eq!(
         compiled
+            .get("variableProducers")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|producer| producer.get("key").and_then(|value| value.as_str()) == Some("PORT"))
+            .unwrap()
+            .pointer("/value/value")
+            .unwrap(),
+        "8080"
+    );
+    assert_eq!(
+        compiled
             .pointer("/nodeSnapshots")
             .unwrap()
             .as_array()

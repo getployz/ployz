@@ -169,8 +169,7 @@ pub(crate) fn create_branch(
         working: into,
         live: BTreeMap::new(),
     };
-    let carried = Carried::of(tx, &parent.summary.id, &from)?;
-    let staged = land(tx, who, &mut branch, (&from, &carried), changes.next, &[])?;
+    // A Branch first, so what it lands uses its Parent's nodes live.
     tx.execute(
         "INSERT INTO config_environment_branch (environment_id, organization_id, parent_id, kept, base, setup) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -186,7 +185,8 @@ pub(crate) fn create_branch(
                 .into(),
         ],
     )?;
-    branch.live = live_names(tx, &create.id, &branch.working)?;
+    let carried = Carried::of(tx, &parent.summary.id, &from)?;
+    let staged = land(tx, who, &mut branch, (&from, &carried), changes.next, &[])?;
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged,
@@ -203,6 +203,7 @@ pub(super) fn fresh_value(
     sealing: &SealingKey,
 ) -> Result<BranchNewValue, RpcError> {
     let key = crate::variables::VariableKey::parse(name.rsplit('.').next().unwrap_or(name))?;
+    crate::variables::validate_text(&key, text)?;
     let (value, value_fingerprint) = match secret {
         true => (
             SavedVariableValue::Secret {
@@ -375,15 +376,15 @@ pub(super) fn failed_services(
 
 /// A Setup Command's command, trimmed, or why it is refused.
 pub(crate) fn setup_command(setup: &SetupCommand) -> Result<String, RpcError> {
-    let command = setup.command.trim();
-    if command.is_empty() || command.chars().count() > COMMAND_MAX {
-        return Err(error::invalid(
-            format!(
-                "{}: a Setup Command has 1-{COMMAND_MAX} characters",
-                setup.service
-            ),
-            json!({ "service": setup.service }),
-        ));
-    }
-    Ok(command.to_owned())
+    parse_service_setting(json!({ "field": "command", "value": setup.command }))
+        .map(|command| command.as_str().expect("a command is text").to_owned())
+        .map_err(|error| {
+            error::invalid(
+                format!(
+                    "{}: invalid Setup Command: {}",
+                    setup.service, error.message
+                ),
+                json!({ "service": setup.service }),
+            )
+        })
 }

@@ -10,7 +10,7 @@ use crate::cli::{positional, value};
 use crate::output::say;
 
 pub(crate) fn diff_command() -> Command {
-    scoped(Command::new("diff").about("Show staged changes, grouped by Service"))
+    scoped(Command::new("diff").about("Show staged Service and Volume changes"))
 }
 
 pub(crate) fn publish_command() -> Command {
@@ -19,11 +19,12 @@ pub(crate) fn publish_command() -> Command {
 }
 
 pub(crate) fn discard_command() -> Command {
-    scoped(
-        Command::new("discard").about("Undo staged changes: all, one Service's, or one Setting's"),
-    )
-    .arg(positional("path", false).help("SERVICE or SERVICE.SETTING [default: everything]"))
-    .arg(version())
+    scoped(Command::new("discard").about("Undo staged Service, Volume or Setting changes"))
+        .arg(
+            positional("path", false)
+                .help("SERVICE, SERVICE.SETTING or volumes.VOLUME [default: everything]"),
+        )
+        .arg(version())
 }
 
 fn version() -> clap::Arg {
@@ -50,7 +51,12 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 super::store::word(&change.lifecycle)
             );
             for row in &change.settings {
-                say!("  {}: {} -> {}", row.path, row.before, row.after);
+                say!(
+                    "  {}: {} -> {}",
+                    row.path,
+                    super::store::shown(&row.before),
+                    super::store::shown(&row.after)
+                );
             }
             match change.data {
                 Some(ployz_store::DataEffect::Deleted) => say!(

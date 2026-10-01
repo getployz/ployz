@@ -1,13 +1,13 @@
-// Docker Distribution reference syntax: github.com/distribution/reference/blob/main/regexp.go
-const pathComponent = "[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*";
-const domainComponent = "(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9])";
-const registry = `(?:${domainComponent}(?:\\.${domainComponent})*|\\[[a-fA-F0-9:]+\\])(?::[0-9]+)?`;
-const imageReferencePattern = new RegExp(
-  `^(?:${registry}/)?${pathComponent}(?:/${pathComponent})*(?::[\\w][\\w.-]{0,127})?(?:@[A-Za-z][A-Za-z0-9]*(?:[-_+.][A-Za-z][A-Za-z0-9]*)*:[a-fA-F0-9]{32,})?$`,
-);
+import { parseServiceSetting } from "@ployz/sdk/config";
 
+/** Whether Docker could pull `image`: core's rule, the same one the Store applies when an image is written. */
 export function isValidImageReference(image: string): boolean {
-  return image.length <= 500 && imageReferencePattern.test(image);
+  try {
+    parseServiceSetting("imageReference", image);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function imageRegistryLink(image: string): string | null {

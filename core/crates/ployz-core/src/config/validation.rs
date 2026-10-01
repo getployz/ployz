@@ -79,6 +79,8 @@ pub enum ServiceSettingInput {
     ManagedHostnames(Vec<ServiceManagedHostname>),
     ManagedHostnameValue(ServiceManagedHostname),
     ManagedHostnamePrefix(String),
+    /// An image a Service may run: the one rule the Store and the dashboard both check.
+    ImageReference(String),
     Build(ServiceBuildConfig),
     Template(Option<ServiceTemplate>),
 }
@@ -88,8 +90,13 @@ pub enum ServiceSettingInput {
 /// # Errors
 /// Returns ConfigError for an unknown field, invalid shape, unsupported value, or out-of-range setting.
 pub fn parse_service_setting(input: Value) -> Result<Value, ConfigError> {
-    let mut setting: ServiceSettingInput = serde_json::from_value(input)
-        .map_err(|_| ConfigError::at("setting", "Invalid setting value"))?;
+    let field = input
+        .get("field")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let mut setting: ServiceSettingInput =
+        serde_json::from_value(input).map_err(|_| ConfigError::at("setting", expected(&field)))?;
     setting.normalize()?;
     Ok(serde_json::to_value(setting)
         .expect("setting is JSON")
@@ -144,11 +151,13 @@ impl ServiceSettingInput {
             Self::MaxRetries(value) => range(
                 *value <= MAX_RETRIES_MAX,
                 "maxRetries",
-                "Expected 0–100 retries",
+                expected("maxRetries"),
             ),
-            Self::Replicas(value) => {
-                range(*value <= REPLICAS_MAX, "replicas", "Expected 0–50 replicas")
-            }
+            Self::Replicas(value) => range(
+                (1..=REPLICAS_MAX).contains(value),
+                "replicas",
+                expected("replicas"),
+            ),
             Self::CpuLimit(value) => limit(*value, CPU_LIMIT_MAX, "cpuLimit"),
             Self::MemLimit(value) => limit(*value, MEM_LIMIT_MAX, "memLimit"),
             Self::Routes(routes) => {
@@ -185,6 +194,14 @@ impl ServiceSettingInput {
             }
             Self::ManagedHostnameValue(value) => managed_hostname(value),
             Self::ManagedHostnamePrefix(value) => hostname_prefix(value),
+            Self::ImageReference(value) => {
+                trimmed(value, "image", IMAGE_MAX)?;
+                range(
+                    crate::is_image_reference(value),
+                    "image",
+                    "expected an image like nginx:1.27 or ghcr.io/acme/web:1.4",
+                )
+            }
             Self::Template(_) => Ok(()),
             Self::Build(value) => {
                 optional_trimmed(&mut value.command, "build.command", COMMAND_MAX)?;
@@ -260,6 +277,11 @@ fn normalize_source(source: &mut ServiceSource) -> Result<(), ConfigError> {
 }
 
 pub(super) fn trimmed(value: &mut String, path: &str, max: usize) -> Result<(), ConfigError> {
+    range(
+        !value.contains('\0'),
+        path,
+        "Null characters are not allowed",
+    )?;
     *value = value.trim().into();
     range(
         !value.is_empty() && value.chars().count() <= max,
@@ -295,9 +317,9 @@ fn root_dir(value: &mut String) -> Result<(), ConfigError> {
 fn healthcheck_path(value: &mut String) -> Result<(), ConfigError> {
     trimmed(value, "healthcheck.path", HEALTHCHECK_PATH_MAX)?;
     range(
-        value.starts_with('/'),
+        value.starts_with('/') && !value.chars().any(char::is_control),
         "healthcheck.path",
-        "Healthcheck path must start with /",
+        "Expected an absolute HTTP path without control characters",
     )
 }
 
@@ -331,8 +353,20 @@ fn limit(value: Option<f64>, max: f64, path: &str) -> Result<(), ConfigError> {
     range(
         value.is_none_or(|n| n.is_finite() && n > 0.0 && n <= max),
         path,
-        "Expected a positive limit within the supported range",
+        expected(path),
     )
+}
+
+/// What a numeric setting takes: the same words whether the value is out of range or not a number at all.
+fn expected(field: &str) -> &'static str {
+    match field {
+        "replicas" => "Expected a whole number of replicas from 1–50",
+        "maxRetries" => "Expected a whole number of retries from 0–100",
+        "cpuLimit" => "Expected vCPUs above 0 and up to 64, for example 0.5",
+        "memLimit" => "Expected GB above 0 and up to 1024, for example 0.5 or 2",
+        "healthcheckTimeoutSeconds" => "Expected 1–300 seconds",
+        _ => "Invalid setting value",
+    }
 }
 
 fn range(valid: bool, path: &str, message: &str) -> Result<(), ConfigError> {
@@ -340,5 +374,34 @@ fn range(valid: bool, path: &str, message: &str) -> Result<(), ConfigError> {
         Ok(())
     } else {
         Err(ConfigError::at(path, message))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_value_that_is_not_a_number_says_what_the_setting_takes() {
+        let message = |field: &str, value: Value| {
+            parse_service_setting(serde_json::json!({ "field": field, "value": value }))
+                .unwrap_err()
+                .message
+        };
+        for value in [
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!(51),
+        ] {
+            assert_eq!(message("replicas", value), expected("replicas"));
+        }
+        assert_eq!(
+            message("memLimit", serde_json::json!("1x")),
+            expected("memLimit")
+        );
+        assert_eq!(
+            message("memLimit", serde_json::json!(0)),
+            expected("memLimit")
+        );
     }
 }

@@ -93,7 +93,36 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
             "ployz {path} does not support --json"
         )));
     }
+    if context_above_leaf(matches) {
+        // Store commands address a Project and Environment, never a context.
+        let takes_context = leaf_matches(matches)
+            .try_get_one::<String>("context")
+            .is_ok();
+        return Err(Error::usage(if takes_context {
+            format!("--context goes after the command: ployz {path} --context NAME")
+        } else {
+            format!("ployz {path} doesn't use a context; it takes --project and --env")
+        })
+        .with_exit(USAGE_EXIT));
+    }
     handler(matches)
+}
+
+/// Whether `--context` was typed before the last subcommand (`ployz -c prod ps`): only the leaf
+/// reads it, so it would be ignored and the command would run against the default connection.
+// ponytail: refuses rather than forwards; make --context global if the per-command copies go.
+fn context_above_leaf(root: &ArgMatches) -> bool {
+    let mut matches = root;
+    while let Some((_, child)) = matches.subcommand() {
+        // Not every group defines --context, and asking clap about one it lacks panics.
+        if matches.ids().any(|id| id == "context")
+            && matches.value_source("context") == Some(clap::parser::ValueSource::CommandLine)
+        {
+            return true;
+        }
+        matches = child;
+    }
+    false
 }
 
 /// Print the shell hook that asks `ployz` itself for completions, so Setting paths
@@ -303,6 +332,17 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+
+    #[test]
+    fn a_context_typed_before_the_last_subcommand_is_caught() {
+        let parsed = |args: &[&str]| crate::cli::command().try_get_matches_from(args).unwrap();
+        assert!(context_above_leaf(&parsed(&["ployz", "-c", "prod", "ps"])));
+        assert!(context_above_leaf(&parsed(&[
+            "ployz", "server", "-c", "prod", "ls"
+        ])));
+        assert!(!context_above_leaf(&parsed(&["ployz", "ps", "-c", "prod"])));
+        assert!(!context_above_leaf(&parsed(&["ployz", "ps"])));
+    }
 
     fn command() -> Command {
         fn isolate(command: Command) -> Command {

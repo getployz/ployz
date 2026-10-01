@@ -139,7 +139,7 @@ fn token_new(root: &ArgMatches) -> Result<(), Error> {
     crate::output::finish(&serde_json::json!({ "token": token }), || {
         say!(
             "Made token {} ({}) in Organization {}, expiring {}.",
-            token.name,
+            token.name.escape_debug(),
             token.id,
             token.organization,
             token.expires_at
@@ -161,7 +161,7 @@ fn token_list(root: &ArgMatches) -> Result<(), Error> {
             say!(
                 "token\t{}\t{}{current}\t{}{state}",
                 token.id,
-                token.name,
+                token.name.escape_debug(),
                 token.expires_at
             );
         }

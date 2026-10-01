@@ -133,7 +133,7 @@ store_string!(
 );
 store_string!(
     /// A Volume's name, unique in its Environment: a lowercase DNS label.
-    VolumeName, "a Volume name: lowercase letters, digits and -", is_name
+    VolumeName, "a Volume name: up to 63 lowercase letters, digits and -", is_name
 );
 store_string!(
     /// A Conditional Save's identity, minted by the Store when a PR Environment saves.
@@ -149,11 +149,11 @@ store_string!(
 );
 store_string!(
     /// A Project's name, unique in its Organization: a lowercase DNS label.
-    ProjectName, "a Project name: lowercase letters, digits and -", is_name
+    ProjectName, "a Project name: up to 63 lowercase letters, digits and -", is_name
 );
 store_string!(
     /// An Environment's name, unique in its Project: a lowercase DNS label.
-    EnvironmentName, "an Environment name: lowercase letters, digits and -", is_name
+    EnvironmentName, "an Environment name: up to 63 lowercase letters, digits and -", is_name
 );
 
 store_string!(

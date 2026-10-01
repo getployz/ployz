@@ -20,11 +20,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::config::{
     BranchChanges, BranchChangesInput, BranchChoice, BranchHostnames, BranchNewValue,
     BranchNodeReason, BranchNodeRole, BranchOption, BranchPick, BranchPickChoice, BranchPicks,
-    BranchPlan, BranchPreset, BranchReason, BranchRole, BranchRow, COMMAND_MAX, ConfigError,
+    BranchPlan, BranchPreset, BranchReason, BranchRole, BranchRow, ConfigError,
     EnvironmentNodeType, LiveLineageUse, LiveValuesInput, LiveValuesOwner, SavedEnvironmentIntent,
     SavedServiceIntent, SavedVariableProducer, SavedVariableValue, ServiceImageCredentials,
     ServiceSource, ValuePart, ValuePartOwner, branch_changes, canonicalize_environment_intent,
-    compile_environment_intent, live_values, plan_branch,
+    compile_environment_intent, live_values, parse_service_setting, plan_branch,
 };
 use ployz_core::{Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};

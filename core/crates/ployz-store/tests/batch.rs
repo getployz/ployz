@@ -50,6 +50,7 @@ fn database(env: Value) -> Batch {
                 template: None,
             }),
             BatchCommand::CreateVolume(CreateVolume {
+                shared_writes: false,
                 id: VolumeId::parse(uuid(4)).unwrap(),
                 environment: EnvironmentRef::default(),
                 name: VolumeName::parse("db-data").unwrap(),

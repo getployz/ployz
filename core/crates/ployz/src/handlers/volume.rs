@@ -10,8 +10,8 @@ use ployz_core::{
     MachineObservation, MachineStorageObservation, ProvisionedVolumeMaximumBytes, ServiceName,
 };
 use ployz_store::{
-    CreateVolume, Mount, RemoveVolume, SetVolumeStorage, VolumeId, VolumeQuery, VolumeStaged,
-    VolumesQuery,
+    CreateVolume, Mount, RemoveVolume, SetVolumeSharedWrites, SetVolumeStorage, VolumeId,
+    VolumeQuery, VolumeStaged, VolumesQuery,
 };
 
 use super::store::{self, Next};
@@ -34,16 +34,20 @@ pub(crate) fn command() -> Command {
                     .action(ArgAction::Append)
                     .value_name("SERVICE:/PATH")
                     .help("Mount it into a Service at an absolute path; repeatable"),
-            ),
+            )
+            .arg(shared_writes_flag()),
         )
         .subcommand(
             storage_flags(store::scoped(
-                Command::new("set").about("Change a Volume's storage before its first deployment"),
+                Command::new("set").about(
+                    "Change a Volume's storage before its first deployment, or whether it allows shared writes",
+                ),
             ))
             .arg(positional("volume", true))
+            .arg(shared_writes_flag())
             .group(
-                clap::ArgGroup::new("storage-change")
-                    .args(["size", "docker"])
+                clap::ArgGroup::new("volume-change")
+                    .args(["size", "docker", "shared-writes"])
                     .required(true),
             ),
         )
@@ -111,11 +115,12 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
         name: name.clone(),
         storage,
         mounts,
+        shared_writes: matches.get_one("shared-writes") == Some(&true),
     })?;
     if matches!(storage, VolumeKind::Provisioned { .. }) && no_managed_host(matches) {
         output::warn(NO_MANAGED_HOST);
     }
-    staged(matches, &created, "Staged new Volume")
+    staged(matches, &created, "Staged new Volume", true)
 }
 
 const NO_MANAGED_HOST: &str = "No Server here can host Managed volumes yet, so a Deploy of this one fails until one can: add a Server with Managed volumes, or use --docker instead.";
@@ -145,6 +150,16 @@ fn no_managed_host(matches: &ArgMatches) -> bool {
             .flatten()
             .unwrap_or(false)
     })
+}
+
+/// `--shared-writes[=true|false]`: let more than one container write the Volume.
+fn shared_writes_flag() -> clap::Arg {
+    value("shared-writes", None)
+        .num_args(0..=1)
+        .require_equals(true)
+        .default_missing_value("true")
+        .value_parser(clap::value_parser!(bool))
+        .help("Let more than one container write it: replicas of one Service, or several Services. =false refuses a second writer")
 }
 
 fn storage_flags(command: Command) -> Command {
@@ -181,12 +196,32 @@ fn requested_storage(matches: &ArgMatches) -> VolumeKind {
 fn set(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
+    if let Some(shared_writes) = matches.get_one::<bool>("shared-writes") {
+        let changed = store::store(root)?.write(&SetVolumeSharedWrites {
+            environment: store::environment(matches)?,
+            volume,
+            shared_writes: *shared_writes,
+        })?;
+        return output::finish(&changed, || {
+            say!(
+                "Shared writes {} for Volume {} in {}/{}; this applies now.",
+                shared_writes_word(changed.volume.shared_writes),
+                changed.volume.name,
+                changed.environment.project,
+                changed.environment.name,
+            );
+        });
+    }
     let changed = store::store(root)?.write(&SetVolumeStorage {
         environment: store::environment(matches)?,
         volume: volume.clone(),
         storage: requested_storage(matches),
     })?;
-    staged(matches, &changed, "Staged Volume storage")
+    staged(matches, &changed, "Staged Volume storage", true)
+}
+
+fn shared_writes_word(shared_writes: bool) -> &'static str {
+    if shared_writes { "on" } else { "off" }
 }
 
 fn storage_word(storage: VolumeKind) -> String {
@@ -204,7 +239,7 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
     })?;
     output::finish(&view, || {
-        say!("VOLUME\tSTORAGE\tMOUNTS\tDEPLOYED\tNEXT DEPLOY");
+        say!("VOLUME\tSTORAGE\tSHARED WRITES\tMOUNTS\tDEPLOYED\tNEXT DEPLOY");
         for listing in &view.volumes {
             let mounts: Vec<String> = listing
                 .mounts
@@ -212,9 +247,10 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
                 .map(|mount| format!("{}:{}", mount.service, mount.path))
                 .collect();
             say!(
-                "{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}",
                 listing.volume.name,
                 storage_word(listing.volume.storage),
+                shared_writes_word(listing.volume.shared_writes),
                 if mounts.is_empty() {
                     "-".to_owned()
                 } else {
@@ -249,6 +285,10 @@ fn inspect(root: &ArgMatches) -> Result<(), Error> {
                 "editable before deployment"
             }
         );
+        say!(
+            "Shared writes: {}",
+            shared_writes_word(listing.volume.shared_writes)
+        );
         say!("Deployed: {}", if listing.deployed { "yes" } else { "no" });
         if let Some(change) = &listing.change {
             say!("Next Deploy: {}", super::store::word(change));
@@ -268,7 +308,7 @@ fn rename(root: &ArgMatches) -> Result<(), Error> {
         volume: volume.clone(),
         name: name.clone(),
     })?;
-    staged(matches, &renamed, "Staged rename of Volume")
+    staged(matches, &renamed, "Staged rename of Volume", false)
 }
 
 fn remove(root: &ArgMatches) -> Result<(), Error> {
@@ -278,7 +318,7 @@ fn remove(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         volume: volume.clone(),
     })?;
-    staged(matches, &removed, "Staged removal of Volume")
+    staged(matches, &removed, "Staged removal of Volume", false)
 }
 
 /// A staged Volume change and `ployz diff` to review it.
@@ -291,7 +331,13 @@ fn none_hosts_managed(machines: &[MachineObservation]) -> bool {
             .all(|machine| machine.storage == Some(MachineStorageObservation::Stateless))
 }
 
-fn staged(matches: &ArgMatches, result: &VolumeStaged, what: &str) -> Result<(), Error> {
+/// `storage`: say the Volume's storage too, when the change set it.
+fn staged(
+    matches: &ArgMatches,
+    result: &VolumeStaged,
+    what: &str,
+    storage: bool,
+) -> Result<(), Error> {
     let hint = store::next(matches, &["diff"]);
     output::finish(&Next::new(result, Some(hint)), || {
         say!(
@@ -301,7 +347,9 @@ fn staged(matches: &ArgMatches, result: &VolumeStaged, what: &str) -> Result<(),
             result.environment.name,
             result.environment.revision
         );
-        say!("Storage: {}", storage_word(result.volume.storage));
+        if storage {
+            say!("Storage: {}", storage_word(result.volume.storage));
+        }
     })
 }
 

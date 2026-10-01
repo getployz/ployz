@@ -1,7 +1,8 @@
 import { createCollection, localOnlyCollectionOptions } from "@tanstack/react-db";
 import { Schema } from "effect";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
-import { appendContainerLogs, containerLogEventSchema, containerLogPageSchema, mergeContainerHistory, remainingHistory, type ContainerLogRow } from "./container-log.collection";
+import { liveStream } from "#/lib/live.stream";
+import { appendContainerLogs, containerLogEventSchema, containerLogPageSchema, mergeContainerHistory, remainingHistory, trimContainerLogs, type ContainerLogRow } from "./container-log.collection";
 
 export type ContainerLogSelection = { organizationSlug: string; projectSlug?: string; environmentSlug?: string; deploymentId?: string; serviceId?: string };
 
@@ -13,7 +14,6 @@ export type ContainerLogSelection = { organizationSlug: string; projectSlug?: st
 type LogStreamState = { opened: boolean; offline: boolean; refused: boolean; errors: Record<string, string>; historyPending: boolean; historyError: boolean };
 
 const INITIAL: LogStreamState = { opened: false, offline: false, refused: false, errors: {}, historyPending: false, historyError: false };
-const MAX_RETRY_MS = 30_000;
 
 function createLogStream(id: string, selection: ContainerLogSelection, scope: CollectionScope) {
   let snapshot = INITIAL;
@@ -30,34 +30,34 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
     sync: {
       sync(params) {
         const local = options.sync.sync(params);
-        let events: EventSource | undefined;
-        let retry: ReturnType<typeof setTimeout> | undefined;
-        let retryMs = 1_000;
-        const close = () => { clearTimeout(retry); events?.close(); controller.abort(); };
-        // The browser retries a dropped stream by itself, quietly; the rows' ids drop the tail it replays.
-        // Only a refused one (an error response) closes for good, so that one retries here, backing off.
-        const connect = () => {
-          controller = new AbortController();
-          events = new EventSource(`/api/runtime/logs?${query}`);
-          events.addEventListener("live", () => { retryMs = 1_000; publish({ ...snapshot, opened: true, offline: false, refused: false }); });
-          events.addEventListener("offline", () => { retryMs = 1_000; publish({ ...snapshot, opened: true, offline: true, refused: false }); });
-          events.onerror = () => {
-            if (events?.readyState !== EventSource.CLOSED) return;
-            close();
-            if (!snapshot.refused) publish({ ...snapshot, refused: true });
-            retry = setTimeout(connect, retryMs);
-            retryMs = Math.min(retryMs * 2, MAX_RETRY_MS);
-          };
-          events.addEventListener("log", (event: MessageEvent<string>) => {
-            const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(containerLogEventSchema))(event.data);
-            if (decoded._tag === "None") return;
-            if (decoded.value.type === "record") appendContainerLogs(collection, [decoded.value.record]);
-            else publish({ ...snapshot, errors: { ...snapshot.errors, [`${decoded.value.machineId}/${decoded.value.containerId}`]: decoded.value.message } });
-          });
-        };
-        // Logs stream only in the browser; SSR renders the loading state.
-        if (!import.meta.env.SSR) connect();
+        // Lines arrive one event each; land them in batches so a noisy service doesn't re-render the page per line.
+        let pending: ContainerLogRow[] = [];
+        let flush: ReturnType<typeof setTimeout> | undefined;
+        const land = () => { flush = undefined; appendContainerLogs(collection, pending); pending = []; trimContainerLogs(collection); };
+        // A replayed tail after a reconnect is dropped by the rows' ids. A refused stream ends its history reads.
+        controller = new AbortController();
+        const stop = liveStream(`/api/runtime/logs?${query}`, {
+          onOpen: () => { if (controller.signal.aborted) controller = new AbortController(); },
+          // Any loss says so, so a first connection that fails never sits on the loading skeleton; only a refused one
+          // also ends its history reads.
+          onLost: (why) => {
+            if (why === "refused") controller.abort();
+            if (!snapshot.offline && !snapshot.refused) publish({ ...snapshot, refused: true });
+          },
+          on: {
+            live: () => publish({ ...snapshot, opened: true, offline: false, refused: false }),
+            offline: () => publish({ ...snapshot, opened: true, offline: true, refused: false }),
+            log: (event) => {
+              const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(containerLogEventSchema))(event.data);
+              if (decoded._tag === "None") return;
+              if (decoded.value.type === "record") { pending.push(decoded.value.record); flush ??= setTimeout(land, 250); }
+              else publish({ ...snapshot, errors: { ...snapshot.errors, [`${decoded.value.machineId}/${decoded.value.containerId}`]: decoded.value.message } });
+            },
+          },
+        });
+        const close = () => { clearTimeout(flush); flush = undefined; pending = []; stop(); controller.abort(); };
         return () => {
+          pending = [];
           close();
           for (const source of Object.keys(exhausted)) delete exhausted[source];
           publish(INITIAL);
@@ -99,6 +99,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
   }
   return {
     collection, loadOlder,
+    get hasOlder() { return Object.keys(remainingHistory([...collection.values()], exhausted)).length > 0; },
     get signal() { return controller.signal; },
     getSnapshot: () => snapshot,
     subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },

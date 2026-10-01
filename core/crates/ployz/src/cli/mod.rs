@@ -77,7 +77,8 @@ pub(crate) fn connection_args(include_context: bool) -> Vec<Arg> {
             .help("SSH setup timeout in seconds (provisioning: network connection only)")
             .long_help("SSH setup timeout in seconds. Management commands use noninteractive authentication. During provisioning, only the network connection is timed; SSH/sudo authentication and installer execution have no deadline.")
             .value_parser(clap::value_parser!(u32).range(1..))
-            .default_value("5")
+            // A fresh SSH login to a distant Server takes 4–5s on its own (Bali → Sydney measured 4.1–4.7s).
+            .default_value("20")
             .global(true),
         value("ployz-config", None)
             .env(env::CONFIG)
@@ -140,12 +141,17 @@ pub(crate) fn trailing(name: &'static str) -> Arg {
 
 pub(crate) fn log_flags(command: Command) -> Command {
     command
-        .arg(switch("follow", Some('f')))
-        .arg(many("machine", Some('m')))
-        .arg(value("since", None))
-        .arg(value("tail", Some('n')).default_value("100"))
-        .arg(value("until", None))
-        .arg(switch("utc", None))
+        .arg(switch("follow", Some('f')).help("Keep streaming new lines"))
+        .arg(many("machine", Some('m')).help("Only these Servers"))
+        .arg(value("since", None).help("Lines after this time: 10m, 2h or an RFC 3339 timestamp"))
+        // Like `docker compose logs --tail`: per Container, not overall.
+        .arg(
+            value("tail", Some('n'))
+                .default_value("100")
+                .help("Lines from the end of each Container's log; all for everything"),
+        )
+        .arg(value("until", None).help("Lines before this time: 10m, 2h or an RFC 3339 timestamp"))
+        .arg(switch("utc", None).help("Show times in UTC"))
 }
 
 pub(crate) fn machine_policy_flags(command: Command) -> Command {

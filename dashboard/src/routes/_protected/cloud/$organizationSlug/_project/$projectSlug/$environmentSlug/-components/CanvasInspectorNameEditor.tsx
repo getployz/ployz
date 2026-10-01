@@ -116,8 +116,8 @@ export function CanvasInspectorNameEditor({
               />
           </SourcePickerInput>
           {error ? <FieldError>{error}</FieldError> : null}
+          <Button type="submit" disabled={Boolean(error) || !isDirty}>Save</Button>
         </SourcePickerLayout>
-        <button type="submit" hidden disabled={Boolean(error) || !isDirty}>Save</button>
         </form>
       </CommandDialog>
     </>

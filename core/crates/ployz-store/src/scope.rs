@@ -439,11 +439,50 @@ fn load(
 }
 
 /// Persist changed Working State as the next revision. The document is validated
-/// whole first, so the Store never holds one it cannot read back.
+/// whole first, so the Store never holds one it cannot read back, and must break no
+/// rule of [`crate::rules`] that the Working State it replaces didn't. Refreshes
+/// `environment.live` for the new Working State.
 pub(crate) fn save_working(tx: &mut dyn Tx, environment: &mut Environment) -> Result<(), RpcError> {
+    save_working_from(tx, environment, None)
+}
+
+/// [`save_working`] for Working State copied or restored from `from`: what `from`
+/// already breaks is not new.
+pub(crate) fn save_working_from(
+    tx: &mut dyn Tx,
+    environment: &mut Environment,
+    from: Option<&SavedEnvironmentIntent>,
+) -> Result<(), RpcError> {
     let document = serde_json::to_value(&environment.working).expect("Working State is JSON");
     environment.working = parse_environment_intent(document)
         .map_err(|error| error::invalid(error.message, json!({ "path": error.path })))?;
+    // What is stored now is what this write replaces: the rules compare the two.
+    let id = &environment.summary.id;
+    let rows = tx.query(
+        "SELECT working FROM config_environment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?;
+    let before = rows
+        .first()
+        .ok_or_else(|| error::corrupt("Environment"))?
+        .intent(0, "Working State")?;
+    let setup = crate::branch::branch_setup(tx, id)?;
+    let live = crate::branch::live_names(tx, id, &before)?;
+    environment.live = crate::branch::live_names(tx, id, &environment.working)?;
+    crate::rules::check_write(
+        &environment.summary,
+        crate::rules::Facts {
+            working: &before,
+            live: &live,
+            setup: &setup,
+        },
+        from,
+        crate::rules::Facts {
+            working: &environment.working,
+            live: &environment.live,
+            setup: &setup,
+        },
+    )?;
     environment.summary.revision = environment.summary.revision.next();
     tx.execute(
         "UPDATE config_environment SET working_revision = ?1, working = ?2 WHERE id = ?3",

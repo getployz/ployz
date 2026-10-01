@@ -20,6 +20,7 @@ import {
   runtimeWatchFrameSchema,
 } from "#/modules/runtime/runtime-watch-frame";
 import { buildRuntimeEventsUrl } from "#/providers/runtime-events-url";
+import { liveStream } from "#/lib/live.stream";
 
 type RuntimeContextValue = { collections: RuntimeCollections };
 
@@ -35,7 +36,6 @@ export function RuntimeProvider({
   const collections = getRuntimeCollections(organizationSlug, useCollectionScope());
 
   useEffect(() => {
-    const eventSource = new EventSource(buildRuntimeEventsUrl(organizationSlug));
     let expectIntentionalClose = false;
 
     // Keep the last direct observation visible after an EventSource failure.
@@ -92,26 +92,18 @@ export function RuntimeProvider({
       applyRuntimeSnapshot({ collections, snapshot });
     };
 
-    // EventSource reconnects itself. Its error event only changes the
-    // connection state; it never fabricates a replacement observation.
-    const handleError = () => {
-      if (expectIntentionalClose) {
-        expectIntentionalClose = false;
-        return;
-      }
-      applyUnavailable("Runtime connection lost.");
-    };
-
-    eventSource.addEventListener("runtime.watch", handleWatch);
-    eventSource.addEventListener("runtime.status", handleStatus);
-    eventSource.addEventListener("error", handleError);
-
-    return () => {
-      eventSource.removeEventListener("runtime.watch", handleWatch);
-      eventSource.removeEventListener("runtime.status", handleStatus);
-      eventSource.removeEventListener("error", handleError);
-      eventSource.close();
-    };
+    // The stream reconnects itself; a loss only changes the connection state and never fabricates an observation.
+    // A status event ends the stream on purpose, so the error that follows isn't a loss.
+    return liveStream(buildRuntimeEventsUrl(organizationSlug), {
+      on: { "runtime.watch": handleWatch, "runtime.status": handleStatus },
+      onLost: (why) => {
+        if (why === "error" && expectIntentionalClose) {
+          expectIntentionalClose = false;
+          return;
+        }
+        applyUnavailable("Runtime connection lost.");
+      },
+    });
   }, [organizationSlug, collections]);
 
   return (

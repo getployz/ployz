@@ -290,7 +290,7 @@ export function ServerFace({ name, spec, ip }: { name: string; spec: string; ip:
   );
 }
 
-export function Terminal({ title, light, className, children }: { title: string; light?: boolean; className?: string; children: ReactNode }) {
+export function Terminal({ title, light, className, children }: { title: ReactNode; light?: boolean; className?: string; children: ReactNode }) {
   return (
     <div className={cn("lp-term", !light && "dark", className)}>
       <div className="lp-term-bar">

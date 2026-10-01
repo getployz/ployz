@@ -204,6 +204,14 @@ macro_rules! validated_string_newtype {
     };
 }
 
+/// Whether `value` is an image reference Docker can pull, like `nginx:1.27` or `ghcr.io/acme/web@sha256:…`.
+/// The Store and the dashboard both check this one rule.
+// ponytail: oci-spec's parser refuses an IPv6-literal registry (`[::1]:5000/api`) that Docker accepts; widen here if anyone needs one.
+#[must_use]
+pub fn is_image_reference(value: &str) -> bool {
+    value.parse::<oci_spec::distribution::Reference>().is_ok()
+}
+
 validated_string_newtype!(
     /// An image reference pinned to a SHA-256 digest, preserving its raw repository path.
     ImageDigestReference, "image digest reference", "an image repository pinned to a SHA-256 digest",
@@ -431,14 +439,14 @@ validated_string_newtype!(
 validated_string_newtype!(
     MachinePath,
     "Bind Mount Machine path",
-    "an absolute Unix path",
-    |value| value.starts_with('/')
+    "an absolute Unix path without null characters",
+    |value| value.starts_with('/') && !value.contains('\0')
 );
 validated_string_newtype!(
     ContainerPath,
     "container mount target",
-    "an absolute Unix path",
-    |value| value.starts_with('/')
+    "an absolute Unix path without null characters",
+    |value| value.starts_with('/') && !value.contains('\0')
 );
 validated_string_newtype!(
     /// Unresolved name-or-ID text that targets one Machine. It cannot be a wildcard.
@@ -954,6 +962,20 @@ impl From<CloudEnrollToken> for String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unix_paths_refuse_nul_in_construction_and_json() {
+        for valid in ["/", "/var/lib/café"] {
+            assert!(super::MachinePath::parse(valid).is_ok());
+            assert!(super::ContainerPath::parse(valid).is_ok());
+        }
+        let invalid = "/data\u{0}bad";
+        assert!(super::MachinePath::parse(invalid).is_err());
+        assert!(super::ContainerPath::parse(invalid).is_err());
+        let json = serde_json::json!(invalid);
+        assert!(serde_json::from_value::<super::MachinePath>(json.clone()).is_err());
+        assert!(serde_json::from_value::<super::ContainerPath>(json).is_err());
+    }
+
     #[test]
     fn a_build_grant_repository_is_a_short_docker_repository_path() {
         assert!(super::BuildGrantRepository::parse("ployz-build/web").is_ok());

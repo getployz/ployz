@@ -112,7 +112,7 @@ export default function DashboardAccountMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent side={side} align="end" className="w-auto min-w-56">
         <div className="flex items-center gap-3 p-2">
-          <Avatar size="lg">
+          <Avatar size="lg" aria-hidden="true">
             <AvatarImage src={userImage} alt={userName} />
             <AvatarFallback>{userInitials}</AvatarFallback>
           </Avatar>

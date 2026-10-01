@@ -9,7 +9,7 @@ import { useNodeLighting } from "../deployment-page";
 import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
-import { NOT_MOUNTED, stagedChip, stagedSurface } from "./node-status";
+import { NO_MOUNTS_CONFIGURED, stagedChip, stagedSurface } from "./node-status";
 import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 
@@ -37,7 +37,7 @@ export function StoreVolumeCard({ volume, selected, className }: { volume: Volum
             <DeployChip light={light} chip={volume.change === null ? null : stagedChip(volume.change, 0)} />
           </div>
         </CardHeader>
-        <CardContent><StatusLine status={NOT_MOUNTED} issues={null} /></CardContent>
+        <CardContent><StatusLine status={NO_MOUNTS_CONFIGURED} issues={null} /></CardContent>
       </Card>
     </Link>
   );

@@ -50,6 +50,12 @@ pub struct SavedVolumeIntent {
     pub resource_lineage_id: String,
     pub name: String,
     pub storage: VolumeKind,
+    /// Whether more than one container may write it: replicas of one Service, or
+    /// several Services. Off, the Store refuses a second writer. Written only when on,
+    /// so documents from before it read as off.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    pub shared_writes: bool,
 }
 
 /// Storage chosen for a Volume: ordinary Docker storage or bounded, provisioned storage.

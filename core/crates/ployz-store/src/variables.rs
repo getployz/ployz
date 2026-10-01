@@ -8,9 +8,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use ployz_core::config::{
-    BUILT_IN_VARIABLES, CompiledEnvironmentIntent, ResolveVariablesInput, ResolveVariablesResult,
-    ResolverValue, SavedServiceIntent, SavedVariableIntent, SavedVariableValue, ServiceEnvValue,
-    ValuePart, ValuePartOwner, VariableProducer, parse_variable_template, render_variable_parts,
+    CompiledEnvironmentIntent, ResolveVariablesInput, ResolveVariablesResult, ResolverValue,
+    SavedServiceIntent, SavedVariableIntent, SavedVariableValue, ServiceEnvValue, ValuePart,
+    ValuePartOwner, VariableProducer, parse_variable_template, render_variable_parts,
     resolve_variables,
 };
 use ployz_core::{RpcError, ServiceName};
@@ -133,6 +133,14 @@ pub(crate) fn set(
     value: Value,
     sealing: &SealingKey,
 ) -> Result<bool, RpcError> {
+    // Ployz provides these; a Service's own value would lie about its name and address. PORT is meant to be set.
+    // Only setting is refused, so an Environment that already holds one can still unset it.
+    if key.as_str() != "PORT" && ployz_core::config::BUILT_IN_VARIABLES.contains(&key.as_str()) {
+        return Err(error::invalid(
+            format!("{key} is set by Ployz; pick another name"),
+            json!({ "reserved": key.as_str() }),
+        ));
+    }
     let (input, exported) = match value {
         Value::Object(mut fields) if !fields.contains_key("secret") => {
             if fields
@@ -175,6 +183,7 @@ pub(crate) fn set(
         }
         (Some(Input::Text(text)), _) => text_value(key, &text, &names)?,
         (Some(Input::Seal(plaintext)), current) => {
+            validate_text(key, &plaintext)?;
             let fingerprint = sealing.fingerprint(&plaintext);
             match current {
                 // Sealing the same secret again changes nothing.
@@ -222,6 +231,7 @@ pub(crate) fn text_value(
     text: &str,
     names: &BTreeMap<String, String>,
 ) -> Result<(SavedVariableValue, String), RpcError> {
+    validate_text(key, text)?;
     let template = parse_variable_template(text, |name| {
         names
             .iter()
@@ -256,65 +266,13 @@ pub(crate) fn text_value(
     Ok((value, fingerprint))
 }
 
-/// Refuse variable `key` of `service` if it references a variable its Service
-/// doesn't have. Checked once an edit is whole, so a batch may set both in any
-/// order. A node the Environment uses live isn't checked: its owner provides them.
-pub(crate) fn check_references(
-    environment: &Environment,
-    service: &ServiceName,
-    key: &VariableKey,
-) -> Result<(), RpcError> {
-    let Some(SavedVariableValue::Template { parts }) = environment
-        .service(service)?
-        .variables
-        .iter()
-        .find(|variable| variable.key == key.as_str())
-        .map(|variable| &variable.value)
-    else {
-        return Ok(());
-    };
-    for part in parts {
-        let ValuePart::Ref {
-            owner: ValuePartOwner::Service { lineage_id },
-            key: wanted,
-        } = part
-        else {
-            continue;
-        };
-        let Some(service) = environment
-            .working
-            .services
-            .iter()
-            .find(|service| service.lineage_id == *lineage_id)
-        else {
-            continue;
-        };
-        let has = |name: &str| service.variables.iter().any(|v| v.key == name);
-        if has(wanted) || BUILT_IN_VARIABLES.contains(&wanted.as_str()) {
-            continue;
-        }
-        let keys: Vec<&str> = sorted(service)
-            .into_iter()
-            .map(|variable| variable.key.as_str())
-            .collect();
-        return Err(error::invalid(
-            format!(
-                "{key}: {} has no variable {wanted}; it has {}, and the built-ins {}",
-                service.slug,
-                if keys.is_empty() {
-                    "none of its own".to_owned()
-                } else {
-                    keys.join(", ")
-                },
-                BUILT_IN_VARIABLES.join(", "),
-            ),
-            json!({
-                "variable": key.as_str(),
-                "service": service.slug,
-                "keys": keys,
-                "built_ins": BUILT_IN_VARIABLES,
-            }),
-        ));
+/// Plain and secret values must survive the container's environment unchanged.
+///
+/// # Errors
+/// Refuses NUL bytes without echoing the value.
+pub(crate) fn validate_text(key: &VariableKey, text: &str) -> Result<(), RpcError> {
+    if text.contains('\0') {
+        return Err(invalid(key, "null characters are not allowed"));
     }
     Ok(())
 }

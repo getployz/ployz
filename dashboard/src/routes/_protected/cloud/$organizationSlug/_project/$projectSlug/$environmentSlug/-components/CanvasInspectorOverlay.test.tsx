@@ -19,7 +19,7 @@ import { asTestDouble } from "#/lib/test-double";
 
 let workspaceWidth = 1000;
 const params = { organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" };
-const volume = asTestDouble<VolumeListing>()({ id: "data", name: "Database data", mounts: [{ service: "api", path: "/data" }], deployed: false, storage: { kind: "docker" }, storage_locked: false, change: "update" });
+const volume = asTestDouble<VolumeListing>()({ id: "data", name: "Database data", mounts: [], deployed: false, storage: { kind: "docker" }, storage_locked: false, change: "update" });
 
 function InspectorEditor() {
   const routeParams = useParams({ strict: false });
@@ -180,7 +180,7 @@ describe("canvas inspector presentation", () => {
   it("exposes the Volume editor in the mobile Canvas list", async () => {
     vi.stubGlobal("innerWidth", 390);
     const router = await openInspector();
-    expect(screen.getByText("Not mounted")).toBeTruthy();
+    expect(screen.getByText("No mounts configured")).toBeTruthy();
     fireEvent.click(screen.getByRole("link", { name: /Database data/ }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/cloud/acme/shop/production/resources/data"));
     expect(screen.getByRole("link", { name: /Database data/ }).getAttribute("aria-current")).toBe("page");

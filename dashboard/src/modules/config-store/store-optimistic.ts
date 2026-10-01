@@ -60,7 +60,7 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
     }
     case "create_volume": {
       const volume: VolumeListing = { id: command.id, name: command.name, storage: command.storage,
-        storage_locked: false, mounts: [], deployed: false, change: "create" };
+        storage_locked: false, shared_writes: command.shared_writes ?? false, mounts: [], deployed: false, change: "create" };
       await views<VolumesView>("volumes", command.environment, (view) => ({ ...view, volumes: [...view.volumes, volume] }));
       return;
     }

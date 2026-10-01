@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { getDbClient } from "#/collections/scope";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, RouterProvider } from "@tanstack/react-router";
@@ -8,7 +8,7 @@ import type { ReactNode } from "react";
 import { Command, CommandList } from "#/components/ui/command";
 import { getRawGithubReposCollection, githubReposQueryKey } from "#/modules/github/github.collection";
 import { githubKeys } from "#/modules/github/github.queries";
-import { GitRepoSelector } from "./service-source-selector";
+import { GitRepoSelector, ImageSelector } from "./service-source-selector";
 
 /** The selector reads its scope from the authenticated `/_protected` route, as in the app. */
 function selectorRoutes(session: { userId: string; sessionId: string }, render: () => ReactNode) {
@@ -24,6 +24,25 @@ function selectorRoutes(session: { userId: string; sessionId: string }, render: 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+});
+
+it("lets pointer users submit a valid image and blocks invalid or pending selections", () => {
+  const select = vi.fn();
+  const view = render(<ImageSelector onSelectImage={select} />);
+  const input = screen.getByRole("textbox", { name: "Container image" });
+  const submit = screen.getByRole("button", { name: "Continue" });
+  expect(submit.hasAttribute("disabled")).toBe(true);
+  fireEvent.change(input, { target: { value: "not an image" } });
+  fireEvent.click(submit);
+  expect(select).not.toHaveBeenCalled();
+  fireEvent.change(input, { target: { value: " nginx:alpine " } });
+  expect(submit.hasAttribute("disabled")).toBe(false);
+  fireEvent.click(submit);
+  expect(select).toHaveBeenCalledExactlyOnceWith("nginx:alpine");
+  view.rerender(<ImageSelector onSelectImage={select} disabled />);
+  expect(submit.hasAttribute("disabled")).toBe(true);
+  fireEvent.click(submit);
+  expect(select).toHaveBeenCalledTimes(1);
 });
 
 it.each([false, true])("shows an initial read failure and recovers (empty snapshot: %s)", async (empty) => {

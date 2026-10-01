@@ -23,10 +23,24 @@ describe("catalog fields", () => {
   it("checks text against the catalog's bounds and turns it into the Store's change", () => {
     const replicas = serviceSetting("replicas");
     expect(settingError(replicas, "3")).toBeNull();
-    expect(settingError(replicas, "1.5")).toBe("Enter a whole number from 0 to 50.");
+    expect(settingError(replicas, "1.5")).toBe("Enter a whole number from 1 to 50.");
+    expect(settingError(replicas, "0")).toBe("Enter a whole number from 1 to 50.");
     expect(settingError(serviceSetting("cpuLimit"), "0")).toBe("Enter a number above 0, up to 64.");
     expect(settingError(serviceSetting("rootDir"), "app")).toBe("That isn't a valid root directory.");
     expect(settingError(replicas, "")).toBeNull();
+    for (const field of ["startCommand", "preDeployCommand", "buildCommand", "dockerfilePath", "image", "branch"] as const) {
+      expect(settingError(serviceSetting(field), "private\u0000value")).not.toBeNull();
+    }
+    expect(settingError(serviceSetting("startCommand"), "echo café\nprintf ok")).toBeNull();
+    const unicodeCommand = `echo ${"💾".repeat(1995)}`;
+    expect(settingError(serviceSetting("startCommand"), unicodeCommand)).toBeNull();
+    expect(settingError(serviceSetting("startCommand"), `${unicodeCommand}💾`)).toBe("Use at most 2000 characters.");
+    expect(settingError(serviceSetting("startCommand"), "a".repeat(10000))).toBe("Use at most 2000 characters.");
+    const healthcheckPath = { title: "Healthcheck path", description: serviceSetting("healthcheck").description, ...serviceSetting("healthcheck").properties.path };
+    for (const path of ["/ready\u0001probe", "/ready\tprobe", "/ready\nprobe", "/ready\u0085probe"]) {
+      expect(settingError(healthcheckPath, path)).not.toBeNull();
+    }
+    expect(settingError(healthcheckPath, "/café?escaped=%0A")).toBeNull();
     expect(settingChange("web.replicas", replicas, "3")).toEqual({ op: "set", path: "web.replicas", value: 3 });
     expect(settingChange("web.startCommand", serviceSetting("startCommand"), "npm start")).toEqual({ op: "set", path: "web.startCommand", value: "npm start" });
     expect(settingChange("web.replicas", replicas, "")).toEqual({ op: "unset", path: "web.replicas" });

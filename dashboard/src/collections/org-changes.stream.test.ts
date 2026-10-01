@@ -36,6 +36,29 @@ it("refetches every change-log collection on every open", async () => {
   }
 });
 
+it("starts a fresh stream after a silent stretch, not while pings arrive", async () => {
+  vi.stubGlobal("EventSource", FakeEventSource);
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+  const queryClient = new QueryClient();
+  const scope = { queryClient, sessionId: "session", userId: "user" };
+  for (const get of Object.values(orgStoreTables)) vi.spyOn(get("acme", scope).utils, "refetch").mockResolvedValue([]);
+  const stop = watchOrganizationChanges("acme", scope);
+  try {
+    const first = FakeEventSource.latest;
+    vi.advanceTimersByTime(30_000);
+    first?.dispatchEvent(new Event("ping"));
+    vi.advanceTimersByTime(30_000);
+    expect(FakeEventSource.latest).toBe(first);
+    vi.advanceTimersByTime(30_000);
+    expect(FakeEventSource.latest).not.toBe(first);
+  } finally {
+    stop();
+    vi.useRealTimers();
+    await getDbClient(queryClient).cleanup();
+    queryClient.clear();
+  }
+});
+
 it("refetches only the named collections and re-reads a renamed organization's state", async () => {
   const queryClient = new QueryClient();
   const scope = { queryClient, sessionId: "session", userId: "user" };

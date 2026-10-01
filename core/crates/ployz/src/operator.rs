@@ -222,9 +222,17 @@ pub fn select_exec_container<'a>(
     selector: Option<&ContainerSelector>,
 ) -> Result<&'a ServiceContainer, OperatorError> {
     match selector {
+        // A running one: a failed Deploy can leave an exited Container first in line.
         None => service
             .containers
-            .first()
+            .iter()
+            .find(|container| {
+                matches!(
+                    container.as_observation().runtime,
+                    ployz_core::ContainerRuntimeObservation::Running { .. }
+                )
+            })
+            .or_else(|| service.containers.first())
             .ok_or(OperatorError::NoRegularContainer),
         Some(selector) => Ok(resolve_container_selector(
             service.containers.iter(),

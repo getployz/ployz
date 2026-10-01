@@ -5,6 +5,7 @@ mod branch_changes_types;
 mod branch_plan;
 mod change_set;
 mod change_set_types;
+mod env_file;
 mod environment;
 mod environment_compile;
 mod environment_restore;
@@ -22,6 +23,7 @@ pub use branch_changes_types::*;
 pub use branch_plan::*;
 pub use change_set::*;
 pub use change_set_types::*;
+pub use env_file::*;
 pub use environment::*;
 pub use environment_compile::*;
 pub use environment_restore::*;
@@ -38,6 +40,7 @@ pub use variables::*;
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum ConfigRequest {
     ParseSetting { value: serde_json::Value },
+    ParseEnvFile { text: String },
 }
 
 /// The JSON ABI behind the SDK's WASM config export; it validates before policy.
@@ -50,5 +53,8 @@ pub fn config_request(input: serde_json::Value) -> Result<serde_json::Value, Con
         .map_err(|_| ConfigError::at("request", "Invalid configuration request"))?;
     match input {
         ConfigRequest::ParseSetting { value } => parse_service_setting(value),
+        ConfigRequest::ParseEnvFile { text } => {
+            Ok(serde_json::to_value(parse_env_file(&text)?).expect("env entries are JSON"))
+        }
     }
 }

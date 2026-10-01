@@ -644,7 +644,8 @@ pub(crate) fn land(
 ) -> Result<Vec<NodeName>, RpcError> {
     let before = std::mem::replace(&mut branch.working, next);
     crate::volume::check_storage(tx, &branch.summary.id, &branch.working)?;
-    scope::save_working(tx, branch)?;
+    // What arrives from `from` may bring a rule it already broke; that's not new.
+    scope::save_working_from(tx, branch, Some(from))?;
     let id = branch.summary.id.clone();
     let source_of = |lineage: &str| {
         from.services
@@ -705,7 +706,6 @@ pub(crate) fn land(
             scope::introduce(tx, who, &id, scope::Node::Volume(volume))?;
         }
     }
-    branch.live = live_names(tx, &id, &branch.working)?;
     staged.sort();
     Ok(staged)
 }

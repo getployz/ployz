@@ -24,6 +24,14 @@ describe("runtimeLine", () => {
     expect(runtimeLine(service, runtime(container("running", "starting")), seen)).toMatchObject({ word: "Starting", tone: "quiet", down: false });
   });
 
+  it("distinguishes clean exits from failure exits and crash loops without hiding downtime", () => {
+    const exited = (code: number) => ({ ...container("exited"), runtime: { state: "exited", code } });
+    expect(runtimeLine(service, runtime(exited(0)), seen)).toMatchObject({ word: "Stopped", tone: "bad", down: true });
+    expect(runtimeLine(service, runtime(exited(0), exited(1)), seen)).toMatchObject({ word: "Crashed", tone: "crashed", down: true });
+    expect(runtimeLine(service, runtime(exited(0), container("restarting")), seen).word).toBe("Crashed");
+    expect(runtimeLine(service, runtime(exited(0)), watch({ status: "unavailable" }))).toMatchObject({ word: "Stopped", tone: "quiet", down: false });
+  });
+
   it("says Not running once the Servers' whole evidence has none of it, and Deployed while a Server is missing from it", () => {
     expect(runtimeLine(service, null, seen)).toMatchObject({ word: "Not running", down: true });
     expect(runtimeLine(service, null, watch({ incomplete: true }))).toMatchObject({ word: "Deployed", down: false });
@@ -34,7 +42,7 @@ describe("runtimeLine", () => {
     expect(runtimeLine(service, null, watch({ status: "connecting", observedAt: null })).tone).toBe("pending");
     expect(runtimeLine(service, runtime(container("exited")), watch({ status: "unavailable" }))).toEqual({ word: "Crashed", tone: "quiet", down: false, since });
     expect(runtimeLine(service, null, watch({ status: "unavailable" }))).toEqual({ word: "Not running", tone: "quiet", down: false, since });
-    expect(runtimeLine(service, null, watch({ status: "unavailable", observedAt: null })).tone).toBe("pending");
+    expect(runtimeLine(service, null, watch({ status: "unavailable", observedAt: null }))).toEqual({ word: "Status unavailable", tone: "quiet", down: false, since: null });
     expect(runtimeLine(service, null, watch({ status: "unreachable" }))).toMatchObject({ word: "Can't reach servers", tone: "unreachable" });
     expect(runtimeLine(service, null, watch({ status: "no_connection", noServers: true }))).toMatchObject({ word: "Needs a server", down: false });
   });
@@ -43,6 +51,10 @@ describe("runtimeLine", () => {
     expect(runtimeLine({ ...service, change: "create" }, null, seen).word).toBe("Not deployed");
     expect(runtimeLine({ ...service, source: "empty" }, null, seen).word).toBe("No source");
     expect(runtimeLine({ ...service, change: "create" }, null, watch({ status: "unreachable" })).word).toBe("Not deployed");
+  });
+
+  it("says what runs for a new Service a failed Deploy still started", () => {
+    expect(runtimeLine({ ...service, change: "create" }, runtime(container("restarting")), seen)).toMatchObject({ word: "Crashed", down: true });
   });
 
   it("says Degraded when fewer replicas serve than it asks for, except while a Deploy rolls them or a Server didn't report", () => {

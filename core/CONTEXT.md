@@ -231,12 +231,16 @@ _Avoid_: Deployable name, DNS alias
 The explicit, user-chosen kind of an Environment's Volume: a Provisioned Volume (sized, quota-enforced, hosted only on a Server with a managed pool) or a plain Docker Volume (unsized, any Server). Both are machine-local. Creation defaults to a Provisioned Volume; plain Docker storage requires an explicit opt-out. The kind and maximum can change in Working State until the first Deployment targeting that Volume is admitted. Admission fixes both, including failed, cancelled and pending attempts, because frozen attempts can prepare storage or be retried. Saved documents always carry the explicit kind and never infer it from a missing size.
 _Avoid_: Storage class, volume type dropdown
 
+**Shared Writes**:
+A Volume's opt-in to more than one writer: several replicas of one Service, or several Services mounting it. Off by default; while off, the Config Store refuses a change that adds a second writer or turns it off over several. Working State that already had several writers keeps them and still deploys. It changes nothing that runs, so it applies at once and is no diff row; discarding the whole Volume or Environment returns it to the deployed value.
+_Avoid_: Multi-attach, ReadWriteMany, shared volume
+
 **Registry Credential**:
 Current encrypted authentication material owned by a Service identity, with a new revision on rotation. Deployable configuration contains only its stable credential reference. Connecting or disconnecting that reference is staged; rotating its contents is immediate. Admission freezes the credential revision and encrypted material with the deployment snapshots. Discard cannot undo a rotation.
 _Avoid_: Saved credential contents, credential revision as configuration
 
 **Working State**:
-The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment. Removing a Volume from Working State also deletes its draft identity and Node Introduction when no Saved revision, deployment snapshot, removal attempt, or other Node Introduction retains it. Retained identity alone does not make a Volume visible on the canvas; runtime connectivity does not determine draft retention.
+The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment. Removing a Volume from Working State also deletes its draft identity and Node Introduction when no Saved revision, deployment snapshot, removal attempt, or other Node Introduction retains it. Retained identity alone does not make a Volume visible on the canvas; runtime connectivity does not determine draft retention. Every write keeps the Environment's rules: one writer per Volume without Shared Writes, references only to Services and variables that exist, no reference cycle, and Setup Commands only in Services it has. A write is refused only for a rule it breaks that neither the Working State it replaces nor what it copies or restores already broke, so older or inherited breaks keep editing and deploying.
 _Avoid_: Saved State, deployable revision, client diff ledger
 
 **Saved State**:
@@ -285,7 +289,8 @@ _Avoid_: Initial diff, creation event log, default config
 
 **Derived Service Configuration**:
 The disposable compiler output produced from a complete Saved State authoring graph. It resolves attached Volumes into each Service's environment, mounts, and variable producer index. It belongs to an Attempt Target and is never independently edited or read as Saved authority.
-At runtime lowering, Core supplies `PORT=8080` only when resolved authored variables omit `PORT`. Generated and custom domains with a null target port follow this container `PORT`; explicit targets override routing only. HTTP healthchecks use the container `PORT`. Invalid authored values are not replaced by the default and fail lowering when a port is required.
+At runtime lowering, Core supplies `PORT=8080` only when resolved authored variables omit `PORT`. The built-in `PORT` reference default uses the same value; authored variables override reference defaults. Built-in reference values do not by themselves add environment entries to containers. Generated and custom domains with a null target port follow this container `PORT`; explicit targets override routing only. HTTP healthchecks use the container `PORT`. Invalid authored values are not replaced by the default and fail lowering when a port is required.
+Authoring and runtime both require 1–50 replicas; zero is refused by the Setting validator.
 _Avoid_: Saved Service config, copied consumer snapshot, second source of truth
 
 **Branch**:
@@ -426,6 +431,7 @@ _Avoid_: Management Address, globally unique container address
 
 **Serving Container**:
 A Service Container that is healthy, has a Container Address, and carries this observer's selected Serving Shape for its Qualified Service. It is observer-derived eligibility to receive traffic, not a replica identity.
+The selected shape is the newest traffic-eligible shape observed for that Qualified Service. A starting, unhealthy, or stopped replacement does not exclude healthy older Containers; once a newer shape can take traffic, only that shape serves.
 _Avoid_: replica, endpoint, upstream
 
 **Serving Shape**:

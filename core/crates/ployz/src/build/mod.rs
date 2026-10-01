@@ -49,16 +49,18 @@ pub enum Recipe {
 }
 
 /// Remote failure evidence cannot contain a successful build outcome.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, Error, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RemoteBuildFailure {
     /// The Build Machine confirmed the attempt ended without an image.
+    #[error("{message}")]
     Failed {
         stage: Stage,
         message: String,
         work: WorkEvidence,
     },
     /// The attempt's termination was not confirmed.
+    #[error("{message}; whether the Build stopped isn't confirmed")]
     Unknown {
         stage: Stage,
         message: String,
@@ -69,7 +71,7 @@ pub enum RemoteBuildFailure {
 /// Why a Build could not be captured, run, or bound to its Service.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum Error {
-    #[error("Build {outcome:?}")]
+    #[error("{outcome}")]
     RemoteBuild { outcome: Box<RemoteBuildFailure> },
     #[error("invalid Build: {0}")]
     Invalid(String),
@@ -470,6 +472,38 @@ fn invalid(message: impl Into<String>) -> Error {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn remote_build_failure_reads_as_its_message() {
+        let failure = |unknown: bool| {
+            let (stage, message, work) = (
+                Stage::Building,
+                "the build failed: exit status 1".to_owned(),
+                WorkEvidence(BTreeMap::new()),
+            );
+            Error::RemoteBuild {
+                outcome: Box::new(if unknown {
+                    RemoteBuildFailure::Unknown {
+                        stage,
+                        message,
+                        work,
+                    }
+                } else {
+                    RemoteBuildFailure::Failed {
+                        stage,
+                        message,
+                        work,
+                    }
+                }),
+            }
+            .to_string()
+        };
+        assert_eq!(failure(false), "the build failed: exit status 1");
+        assert_eq!(
+            failure(true),
+            "the build failed: exit status 1; whether the Build stopped isn't confirmed"
+        );
+    }
+
     #[test]
     fn dockerfile_instructions_join_continuations_and_drop_comments() {
         let instructions = super::dockerfile_instructions(

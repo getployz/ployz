@@ -83,52 +83,65 @@ where
     // The reviewed version binds the first removal, the one whose refusal named it.
     let mut version = matches.get_one::<String>("expect-version").cloned();
     let mut ran = Vec::new();
-    loop {
-        let environment = match store.write(remove)? {
-            Teardown::Removed(removed) => return Ok(Some((removed, ran))),
-            Teardown::Waiting {
-                environment,
-                deployment,
-            } => {
-                return Err(Error::detailed(
-                    RpcErrorCode::Conflict,
-                    format!(
-                        "A Deployment of {environment} hasn't ended: wait for it or cancel it first"
-                    ),
-                    json!({
-                        "environment": environment,
-                        "deployment": deployment,
-                        "next": deploy::show_hint(&deployment),
-                    }),
-                ));
+    let result = (|| {
+        loop {
+            let environment = match store.write(remove)? {
+                Teardown::Removed(removed) => return Ok(Some((removed, std::mem::take(&mut ran)))),
+                Teardown::Waiting {
+                    environment,
+                    deployment,
+                } => {
+                    return Err(Error::detailed(
+                        RpcErrorCode::Conflict,
+                        format!(
+                            "A Deployment of {environment} hasn't ended: wait for it or cancel it first"
+                        ),
+                        json!({
+                            "environment": environment,
+                            "deployment": deployment,
+                            "next": deploy::show_hint(&deployment),
+                        }),
+                    ));
+                }
+                Teardown::NeedsRemoval { environment, .. } => environment,
+            };
+            let at = EnvironmentRef {
+                project: Some(project.clone()),
+                environment: Some(environment),
+            };
+            // Each removal accepts only the Volumes it deletes; a name may recur across Environments.
+            let deletes = store.read(&RemovalsQuery {
+                environment: at.clone(),
+                remove: true,
+            })?;
+            let accept: Vec<_> = accept
+                .iter()
+                .filter(|name| deletes.volumes.iter().any(|volume| &volume.name == *name))
+                .cloned()
+                .collect();
+            let writer = events
+                .as_mut()
+                .map(|writer| writer.get_ref().try_clone())
+                .transpose()?
+                .map(std::io::BufWriter::new);
+            let (view, outcome) = take_off(matches, store, &at, (&accept, version.take()), writer)?;
+            if view.deployment.status != DeploymentStatus::Applied {
+                let reported = unfinished(matches, &view, &ran, outcome, &again);
+                ran.clear();
+                reported?;
+                return Ok(None);
             }
-            Teardown::NeedsRemoval { environment, .. } => environment,
-        };
-        let at = EnvironmentRef {
-            project: Some(project.clone()),
-            environment: Some(environment),
-        };
-        // Each removal accepts only the Volumes it deletes; a name may recur across Environments.
-        let deletes = store.read(&RemovalsQuery {
-            environment: at.clone(),
-            remove: true,
-        })?;
-        let accept: Vec<_> = accept
-            .iter()
-            .filter(|name| deletes.volumes.iter().any(|volume| &volume.name == *name))
-            .cloned()
-            .collect();
-        let writer = events
-            .as_mut()
-            .map(|writer| writer.get_ref().try_clone())
-            .transpose()?
-            .map(std::io::BufWriter::new);
-        let (view, outcome) = take_off(matches, store, &at, (&accept, version.take()), writer)?;
-        if view.deployment.status != DeploymentStatus::Applied {
-            unfinished(matches, &view, &ran, outcome, &again)?;
-            return Ok(None);
+            ran.push(view.deployment);
         }
-        ran.push(view.deployment);
+    })();
+    match result {
+        Err(error) if !ran.is_empty() => {
+            for deployment in &ran {
+                crate::output::say!("Deployment #{} applied", deployment.number);
+            }
+            crate::output::emit_committed(json!({ "applied": ran }), Err(error)).map(|()| None)
+        }
+        result => result,
     }
 }
 

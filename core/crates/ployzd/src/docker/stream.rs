@@ -262,18 +262,27 @@ async fn forward_attached_exec(
         },
         Completion::Failed(error) => send_exec_error(sender, error).await,
         Completion::ProcessExited(exit_code) => {
-            // ponytail: one bounded drain preserves buffered frames without waiting on a held hijack.
-            let deadline = tokio::time::Instant::now() + Duration::from_millis(100);
-            while tokio::time::Instant::now() < deadline {
-                match tokio::time::timeout_at(deadline, output.next()).await {
-                    Ok(Some(Ok(output))) => send_exec(sender, exec_output(output, tty)).await?,
-                    Ok(Some(Err(error))) => return send_exec_error(sender, error).await,
-                    Ok(None) | Err(_) => break,
-                }
-            }
-            send_exec_exit(sender, exit_code).await
+            finish_exec_output(output, tty, sender, exit_code).await
         }
     }
+}
+
+async fn finish_exec_output(
+    output: &mut (impl Stream<Item = Result<LogOutput, bollard::errors::Error>> + Unpin),
+    tty: bool,
+    sender: &mpsc::Sender<Result<OpaquePayload, Status>>,
+    exit_code: Option<i64>,
+) -> Result<(), Status> {
+    // ponytail: 100 ms idle ends a held hijack; use a Docker output-complete signal if added.
+    // Forwarding buffered output may take longer under downstream backpressure.
+    loop {
+        match tokio::time::timeout(Duration::from_millis(100), output.next()).await {
+            Ok(Some(Ok(output))) => send_exec(sender, exec_output(output, tty)).await?,
+            Ok(Some(Err(error))) => return send_exec_error(sender, error).await,
+            Ok(None) | Err(_) => break,
+        }
+    }
+    send_exec_exit(sender, exit_code).await
 }
 
 async fn wait_for_exec_exit(
@@ -418,6 +427,42 @@ mod tests {
     use bytes::Bytes;
 
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn exited_exec_drains_buffered_output_under_backpressure_then_closes_a_held_hijack() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let forwarding = tokio::spawn(async move {
+            let mut output = tokio_stream::iter((0..5).map(|byte| {
+                Ok(LogOutput::StdOut {
+                    message: Bytes::from(vec![byte; 4096]),
+                })
+            }))
+            .chain(futures_util::stream::pending());
+            finish_exec_output(&mut output, false, &sender, Some(0)).await
+        });
+        let mut bytes = Vec::new();
+        let mut exit = None;
+        while let Some(payload) = receiver.recv().await {
+            match ExecResponseFrame::decode(&payload.unwrap()).unwrap() {
+                ExecResponseFrame::Stdout(output) => {
+                    bytes.extend(output);
+                    // The downstream reader takes longer than the old entire-drain deadline.
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                }
+                ExecResponseFrame::Exit(code) => exit = Some(code),
+                other @ (ExecResponseFrame::ExecId(_)
+                | ExecResponseFrame::Stderr(_)
+                | ExecResponseFrame::Error(_)) => panic!("unexpected exec frame: {other:?}"),
+            }
+        }
+        forwarding.await.unwrap().unwrap();
+        assert_eq!(bytes.len(), 5 * 4096);
+        assert_eq!(
+            bytes,
+            (0..5).flat_map(|byte| vec![byte; 4096]).collect::<Vec<_>>()
+        );
+        assert_eq!(exit, Some(0));
+    }
 
     #[test]
     fn docker_log_parser_keeps_binary_messages_and_streams() {

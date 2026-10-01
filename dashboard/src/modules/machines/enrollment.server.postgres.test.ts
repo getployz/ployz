@@ -504,7 +504,7 @@ describe("organization enrollment coordinator", () => {
     expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: founder.machineId } });
     expect(await fake.coordinator.read(minted.id)).toMatchObject({ success: { status: "joined", machineId: founder.machineId } });
 
-    await harness.pool.query("update machine_enrollment_token set joined_machine_id = null, expires_at = now() where id = $1", [minted.id]);
+    await harness.pool.query("update machine_enrollment_token set joined_machine_id = null, expires_at = now() - interval '1 second' where id = $1", [minted.id]);
     expect(await fake.coordinator.read(minted.id)).toMatchObject({ success: { status: "expired" } });
     expect(await fake.coordinator.read("00000000-0000-4000-8000-000000000498")).toMatchObject({ failure: { _tag: "NotFound" } });
   });

@@ -13,6 +13,11 @@ export function isNotFound<T>(error: T) {
   return isPublicError(error) && error.code === "NOT_FOUND";
 }
 
+/** The session ended: the way on is signing in again. */
+export function isUnauthorized<T>(error: T) {
+  return isPublicError(error) && error.code === "UNAUTHORIZED";
+}
+
 export function describeFailureCause(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }

@@ -156,7 +156,7 @@ function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel
             <CopyButton value={place} label={`Copy ${place}`} />
             to confirm
           </FieldLabel>
-          <Input id={inputId} autoFocus autoComplete="off" spellCheck={false} placeholder={place} value={typed}
+          <Input id={inputId} aria-label={`Type ${place} to confirm`} autoFocus autoComplete="off" spellCheck={false} placeholder={place} value={typed}
             onChange={(event) => setTyped(event.target.value)} />
         </Field>
         <AlertDialogFooter>
@@ -237,6 +237,7 @@ function DeletionList({ items, fresh }: { items: readonly DeletionItem[]; fresh:
             <span className="min-w-0 flex-1 truncate">{row.label}</span>
             {row.bytes !== undefined ? <span className="font-mono text-muted-foreground">{formatBytes(row.bytes)}</span> : null}
             <Button type="button" variant="link" className="h-auto p-0 text-muted-foreground" aria-expanded={shown}
+              aria-label={`${shown ? "Hide" : "Show"} ${row.label}`}
               onClick={() => setOpen((current) => {
                 const next = new Set(current);
                 if (shown) next.delete(row.kind);

@@ -11,6 +11,8 @@ use std::{
 
 use serde_json::{Value, json};
 
+const TOKEN_NAME: &str = "soak\nspoof\t\u{1b}[31mX café";
+
 #[derive(Clone, Copy, PartialEq)]
 enum Browser {
     Waiting,
@@ -80,6 +82,22 @@ fn fake_cloud(browser: Arc<Mutex<Browser>>, routes: Arc<Mutex<Vec<String>>>) -> 
                         "servers": { "confirmed": ["1".repeat(32)], "unconfirmed": ["2".repeat(32)] },
                     }),
                 ),
+                "POST /api/cli/tokens" => (
+                    200,
+                    json!({ "token": {
+                        "id": "t1", "name": TOKEN_NAME, "organization": "acme",
+                        "expires_at": "2030-01-01", "secret": "test-token-secret",
+                    } }),
+                ),
+                "GET /api/cli/tokens" => (
+                    200,
+                    json!({
+                        "tokens": [{ "id": "t1", "name": TOKEN_NAME,
+                            "created_at": "2026-01-01", "expires_at": "2030-01-01",
+                            "expired": false, "current": false }],
+                        "devices": [], "revoking": [],
+                    }),
+                ),
                 _ => (404, json!({})),
             };
             let body = body.to_string();
@@ -111,6 +129,38 @@ fn json_of(output: &Output) -> Value {
             String::from_utf8_lossy(&output.stderr)
         )
     })
+}
+
+#[test]
+fn token_names_cannot_inject_terminal_controls_but_json_preserves_them() {
+    let cloud = fake_cloud(Arc::new(Mutex::new(Browser::Approved)), Arc::default());
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.yaml");
+    for args in [
+        vec!["login", "--json", "--cloud-url", &cloud],
+        vec!["login", "--json"],
+    ] {
+        assert!(ployz(&config, &args).status.success());
+    }
+
+    for args in [vec!["token", "new", TOKEN_NAME], vec!["token", "ls"]] {
+        let human = ployz(&config, &args);
+        assert!(human.status.success());
+        let stdout = String::from_utf8(human.stdout).unwrap();
+        assert!(
+            stdout.contains(&TOKEN_NAME.escape_debug().to_string()),
+            "{stdout:?}"
+        );
+        assert!(!stdout.contains('\u{1b}'), "{stdout:?}");
+        let json = ployz(&config, &[args.as_slice(), &["--json"]].concat());
+        assert!(json.status.success());
+        let pointer = if args.get(1) == Some(&"new") {
+            "/token/name"
+        } else {
+            "/tokens/0/name"
+        };
+        assert_eq!(json_of(&json).pointer(pointer).unwrap(), TOKEN_NAME);
+    }
 }
 
 #[test]

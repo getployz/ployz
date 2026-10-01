@@ -77,11 +77,22 @@ describe("DeletionDialog", () => {
 
     const button = screen.getByRole("button", { name: "Delete" });
     expect(button.hasAttribute("disabled")).toBe(true);
-    fireEvent.change(screen.getByRole("textbox", { name: /to confirm/ }), { target: { value: "shop/staging" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Type shop/staging to confirm" }), { target: { value: "shop/staging" } });
     fireEvent.click(button);
 
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
     expect(confirm).toHaveBeenCalledWith("evidence:2");
+  });
+
+  it("names disclosure controls by the group they show and hide", async () => {
+    const items = [service("web"), service("api"), service("worker"), branch("preview-one"), branch("preview-two")];
+    render(<DeletionDialog open onOpenChange={vi.fn()} title="Delete shop?" place="shop" confirmLabel="Delete" items={items}
+      callbacks={{ load: vi.fn().mockResolvedValue(check(items)), confirm: vi.fn() }} />);
+    const services = await screen.findByRole("button", { name: "Show 3 services" });
+    expect(screen.getByRole("button", { name: "Show 2 branches" })).toBeTruthy();
+    fireEvent.click(services);
+    expect(screen.getByText("api")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Hide 3 services" }).getAttribute("aria-expanded")).toBe("true");
   });
 
   it("marks what the servers add to Cloud's list as new, first", async () => {

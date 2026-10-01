@@ -8,6 +8,7 @@ import type { CollectionScope } from "./scope";
 import { useCollectionScope } from "./use-collection-scope";
 import { organizationKeys } from "#/modules/organization/organization-state.queries";
 import { refetchStoreViews } from "#/modules/config-store/store-view.queries";
+import { liveStream } from "#/lib/live.stream";
 
 const orgChangesEventSchema = Schema.Struct({ collections: Schema.Array(changeNameSchema) });
 const decodeOrgChangesEvent = Schema.decodeUnknownOption(Schema.fromJsonString(orgChangesEventSchema));
@@ -44,15 +45,16 @@ export function useOrganizationChanges(organizationSlug: string) {
 }
 
 export function watchOrganizationChanges(organizationSlug: string, scope: CollectionScope) {
-  const source = new EventSource(buildOrgChangesUrl(organizationSlug));
-  const refetchAll = () => applyOrganizationChanges(EffectRecord.keys(refetches), organizationSlug, scope);
-  const handleChanges = (event: MessageEvent<string>) => {
-    const changes = decodeOrgChangesEvent(event.data);
-    if (Option.isSome(changes)) applyOrganizationChanges(changes.value.collections, organizationSlug, scope);
-  };
   // The stream never resumes: each connect starts at the server's current horizon. `open` fires on every
   // connect and reconnect, and refetching each collection since its own cursor is the only gap recovery.
-  source.addEventListener("open", refetchAll);
-  source.addEventListener("changes", handleChanges);
-  return () => source.close();
+  return liveStream(buildOrgChangesUrl(organizationSlug), {
+    onOpen: () => applyOrganizationChanges(EffectRecord.keys(refetches), organizationSlug, scope),
+    on: {
+      changes: (event) => {
+        const changes = decodeOrgChangesEvent(event.data);
+        if (Option.isSome(changes)) applyOrganizationChanges(changes.value.collections, organizationSlug, scope);
+      },
+    },
+    silenceMs: 45_000,
+  });
 }

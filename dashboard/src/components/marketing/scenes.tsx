@@ -29,6 +29,8 @@ import type { Tone, Wire } from "#/components/marketing/kit";
 // Addresses sit under up.ployz.app, where Hosted DNS grants Cluster Domains.
 
 const gitIcon = <GitHubMarkIcon />;
+// ponytail: "root@" and the host stay separate text nodes so Cloudflare's email obfuscation doesn't rewrite them (hydration error #418).
+const SSH_HOST = "203.0.113.12";
 const imageIcon = <PackageIcon />;
 
 // ---- the hero: the dashboard running an app, and the server it runs on --------------------------------
@@ -145,7 +147,7 @@ export function GetStartedScene() {
   return (
     <div ref={ref} data-inview={inview} role="img" aria-label="A bare server's root prompt, then ployz login and ployz up turn it into a live https address" className="relative isolate grid grid-cols-1 items-center gap-6 lg:grid-cols-[minmax(0,15rem)_minmax(0,1.3fr)_1fr] lg:gap-12">
       <div data-node="bare">
-        <Terminal title="ssh root@203.0.113.12">
+        <Terminal title={<>ssh root@{SSH_HOST}</>}>
           <Line prompt="root@server:~#">
             <span className="lp-caret" />
           </Line>
@@ -157,7 +159,7 @@ export function GetStartedScene() {
             ployz login
           </Line>
           <Line order={1} prompt="$">
-            ployz up --server root@203.0.113.12
+            ployz up --server root@{SSH_HOST}
           </Line>
           <Line order={2} className="lp-dim">
             Installing Ployz on 203.0.113.12
@@ -638,7 +640,7 @@ export function ReceiptScene() {
 
 export function ExitPrompt() {
   return (
-    <Terminal title="ssh root@203.0.113.12" className="w-full max-w-xs text-left">
+    <Terminal title={<>ssh root@{SSH_HOST}</>} className="w-full max-w-xs text-left">
       <Line prompt="root@server:~#">exit</Line>
     </Terminal>
   );

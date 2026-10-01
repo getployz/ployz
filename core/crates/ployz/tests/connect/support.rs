@@ -164,6 +164,7 @@ pub(super) struct DiscoveryService {
     pub(super) volume_observation_failures:
         Arc<Mutex<BTreeMap<MachineId, Vec<VolumeObservationFailure>>>>,
     pub(super) listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
+    pub(super) exec_frames: Option<Vec<ployz_core::ExecResponseFrame>>,
     pub(super) accept_volume_creates: bool,
     pub(super) existing_created_volume: Option<DockerVolume>,
     pub(super) created_volume_verification_error: Option<RpcError>,
@@ -210,6 +211,7 @@ impl DiscoveryService {
             listed_volumes: Arc::new(Mutex::new(BTreeMap::new())),
             volume_observation_failures: Arc::new(Mutex::new(BTreeMap::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
+            exec_frames: None,
             accept_volume_creates: false,
             existing_created_volume: None,
             created_volume_verification_error: None,
@@ -306,7 +308,7 @@ impl Connector for CountingConnector {
 
 #[tonic::async_trait]
 impl MachineRpc for DiscoveryService {
-    type ExecStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type ExecStream = tokio_stream::Iter<std::vec::IntoIter<Result<OpaquePayload, Status>>>;
     type BuildStream = ReceiverStream<Result<OpaquePayload, Status>>;
 
     async fn build(
@@ -963,11 +965,26 @@ impl MachineRpc for DiscoveryService {
         Err(Status::unimplemented("unused"))
     }
 
+    #[expect(clippy::result_large_err)] // tonic fixes the public RPC error type.
     async fn exec(
         &self,
-        _request: Request<Streaming<OpaquePayload>>,
+        request: Request<Streaming<OpaquePayload>>,
     ) -> Result<Response<Self::ExecStream>, Status> {
-        Err(Status::unimplemented("unused"))
+        let frames = self
+            .exec_frames
+            .as_ref()
+            .ok_or_else(|| Status::unimplemented("unused"))?;
+        request
+            .into_inner()
+            .message()
+            .await?
+            .ok_or_else(|| Status::invalid_argument("missing exec config"))?;
+        Ok(Response::new(tokio_stream::iter(
+            frames
+                .iter()
+                .map(|frame| Ok(frame.encode().unwrap()))
+                .collect::<Vec<_>>(),
+        )))
     }
 
     async fn container_logs(

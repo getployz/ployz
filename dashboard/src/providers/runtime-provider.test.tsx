@@ -140,6 +140,32 @@ function watchFrame() {
 }
 
 describe("RuntimeProvider", () => {
+  it("greys the evidence and reconnects when the stream goes silent or the browser goes offline", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    try {
+      const eventSource = await renderProvider("runtime-provider-silent");
+      act(() => { eventSource.emit("runtime.watch", JSON.stringify(watchFrame())); });
+      await vi.waitFor(() => expect(screen.getByTestId("runtime").getAttribute("data-status")).toBe("observed"));
+
+      // Pings keep it live.
+      act(() => { vi.advanceTimersByTime(50_000); eventSource.emit("ping", "{}"); vi.advanceTimersByTime(50_000); });
+      expect(screen.getByTestId("runtime").getAttribute("data-status")).toBe("observed");
+      expect(eventSources).toHaveLength(1);
+
+      // A silent minute: unavailable, and a fresh stream.
+      act(() => { vi.advanceTimersByTime(70_000); });
+      await vi.waitFor(() => expect(screen.getByTestId("runtime").getAttribute("data-status")).toBe("unavailable"));
+      expect(eventSources).toHaveLength(2);
+
+      act(() => { latestEventSource().emit("runtime.watch", JSON.stringify(watchFrame())); });
+      await vi.waitFor(() => expect(screen.getByTestId("runtime").getAttribute("data-status")).toBe("observed"));
+      act(() => { window.dispatchEvent(new Event("offline")); });
+      await vi.waitFor(() => expect(screen.getByTestId("runtime").getAttribute("data-status")).toBe("unavailable"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("decodes a direct Runtime Watch event and clears it for an unreachable status", async () => {
     const eventSource = await renderProvider("runtime-provider-observed");
 

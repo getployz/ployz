@@ -106,6 +106,17 @@ it("undoes an edit the Store refuses as a conflict and shows what changed elsewh
   expect(error).toHaveBeenCalledWith("Changed elsewhere, so this edit was undone. You're seeing the latest now.");
 });
 
+it("says a signed-out edit wasn't saved and offers to sign in", async () => {
+  const test = setup(view(2, 1));
+  const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
+  test.write.mockImplementationOnce(() => Promise.reject({ _tag: "PublicError", code: "UNAUTHORIZED", message: "Authentication is required." }));
+  let edit!: ReturnType<ReturnType<typeof useStoreWriter>["edit"]>;
+  act(() => { edit = test.edit({ environment: ref, changes: replicas(3) }); });
+  await expect(edit.isPersisted.promise).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  expect(error).toHaveBeenCalledWith("You're signed out. Nothing was saved.", expect.objectContaining({ action: expect.objectContaining({ label: "Sign in" }) }));
+  await waitFor(() => expect(test.replicas()).toBe(1));
+});
+
 it("seals a variable at once, and a refused seal leaves it as it was", async () => {
   const plain = view(2, 1);
   plain.settings.push({ path: "web.env.TOKEN", value: "abc", default: null, apply: "staged" });

@@ -71,6 +71,7 @@ fn shop() -> (ConfigStore, Actor) {
         .write(
             &who,
             &CreateVolume {
+                shared_writes: false,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse(uuid(5)).unwrap(),
                 environment: EnvironmentRef::default(),

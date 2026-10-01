@@ -247,6 +247,8 @@ function runtimeWatchContainerForTransport(container: RuntimeWatchView["containe
     kind: container.kind,
     runtime: container.runtime.state === "running"
       ? { state: container.runtime.state, health: container.runtime.health }
+      : container.runtime.state === "exited"
+      ? { state: container.runtime.state, code: container.runtime.code }
       : { state: container.runtime.state },
   };
 }

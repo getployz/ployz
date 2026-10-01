@@ -131,6 +131,38 @@ fn an_empty_service_lists_without_a_source_until_it_gets_an_image() {
 }
 
 #[test]
+fn an_image_docker_cannot_pull_is_refused_when_written() {
+    let (store, who) = shop();
+    let set = |image: &str| {
+        store.write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("web.image").unwrap(),
+                    value: json!(image),
+                }],
+            },
+        )
+    };
+    let refused = set("not a valid image ref!!").unwrap_err();
+    assert!(refused.message.contains("expected an image"), "{refused:?}");
+    assert_eq!(
+        inspect(&store, &who, "web").values["image"],
+        json!("nginx:1")
+    );
+    for image in [
+        "nginx",
+        "nginx:1.27-alpine",
+        "ghcr.io/acme/web:1.4.0",
+        "localhost:5000/team/app",
+    ] {
+        set(image).unwrap_or_else(|error| panic!("{image}: {error:?}"));
+    }
+}
+
+#[test]
 fn a_rename_keeps_the_private_dns_name() {
     let (store, who) = shop();
     let Ok(Written::ServiceRenamed(renamed)) = rename(&store, &who, "web", "frontend") else {

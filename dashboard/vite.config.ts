@@ -34,6 +34,18 @@ const config = defineConfig({
     tanstackStart({ client: { entry: './client.tsx' } }),
     nitro({
       rollupConfig: { external: [/^@ployz\/sdk(?:\/|$)/] },
+      // No page of ours may be framed (clickjacking the Deploy and delete dialogs), always over HTTPS.
+      routeRules: {
+        '/**': {
+          headers: {
+            'content-security-policy': "frame-ancestors 'none'",
+            'x-frame-options': 'DENY',
+            'x-content-type-options': 'nosniff',
+            'referrer-policy': 'strict-origin-when-cross-origin',
+            'strict-transport-security': 'max-age=31536000',
+          },
+        },
+      },
     }),
     viteReact(),
   ],

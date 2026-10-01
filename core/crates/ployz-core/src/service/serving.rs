@@ -37,7 +37,7 @@ impl<'serving> ServingContainer<'serving> {
 }
 
 /// Serving Containers for this observer: healthy, addressed, and of the newest
-/// observed Serving Shape per Qualified Service.
+/// traffic-eligible Serving Shape per Qualified Service.
 #[must_use]
 pub fn serving_containers<'serving>(
     containers: impl IntoIterator<Item = &'serving ServiceContainer>,
@@ -51,13 +51,17 @@ pub fn serving_containers<'serving>(
     }
     let mut serving = Vec::new();
     for members in by_identity.into_values() {
-        let Some(newest) = members.iter().max_by_key(|container| {
-            let observation = container.as_observation();
-            (
-                observation.created_at_unix_nanos,
-                observation.container_id.as_str(),
-            )
-        }) else {
+        let Some(newest) = members
+            .iter()
+            .filter(|container| container.traffic_address().is_some())
+            .max_by_key(|container| {
+                let observation = container.as_observation();
+                (
+                    observation.created_at_unix_nanos,
+                    observation.container_id.as_str(),
+                )
+            })
+        else {
             continue;
         };
         let selected = newest.as_observation().resolved_spec.serving_shape();
@@ -211,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn serving_containers_isolate_older_shapes_once_a_newer_shape_is_observed() {
+    fn serving_containers_cut_over_only_when_a_newer_shape_can_take_traffic() {
         let service_id = ServiceId::parse("a".repeat(32)).unwrap();
         let mut v3 = serving_observation(
             '1',
@@ -267,8 +271,43 @@ mod tests {
             vec![&v4]
         );
 
-        let unready_newest = service_containers([v3.clone(), unready_v4]);
-        assert!(serving_containers(&unready_newest).is_empty());
+        for runtime in [
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Starting,
+            },
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Unhealthy,
+            },
+            ContainerRuntimeObservation::Exited { code: 0 },
+        ] {
+            unready_v4
+                .try_update(|parts| parts.runtime = runtime)
+                .unwrap();
+            let unready_newest = service_containers([v3.clone(), unready_v4.clone()]);
+            assert_eq!(
+                serving_containers(&unready_newest)
+                    .into_iter()
+                    .map(super::ServingContainer::as_observation)
+                    .collect::<Vec<_>>(),
+                vec![&v3]
+            );
+        }
+        unready_v4
+            .try_update(|parts| {
+                parts.runtime = ContainerRuntimeObservation::Running {
+                    health: HealthObservation::Healthy,
+                };
+                parts.address = None;
+            })
+            .unwrap();
+        let unaddressed_newest = service_containers([v3.clone(), unready_v4]);
+        assert_eq!(
+            serving_containers(&unaddressed_newest)
+                .into_iter()
+                .map(super::ServingContainer::as_observation)
+                .collect::<Vec<_>>(),
+            vec![&v3]
+        );
     }
 
     #[test]

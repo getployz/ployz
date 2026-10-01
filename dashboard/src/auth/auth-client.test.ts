@@ -5,6 +5,7 @@ import type { AuthSession } from "./auth";
 afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); });
 
 test("boots from SSR without waiting for the auth transport", async () => {
+  vi.resetModules();
   const fetch = vi.fn(() => new Promise<Response>(() => {}));
   vi.stubGlobal("fetch", fetch);
   const { authClient, initializeAuthSession } = await import("./auth-client");
