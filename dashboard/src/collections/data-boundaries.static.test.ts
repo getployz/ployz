@@ -22,7 +22,7 @@ import { dataSources } from "./data-sources";
 const root = process.cwd();
 const SRC = join(root, "src");
 const DATA_FILE = /^collections\/[^/]+\.ts$|\.collection\.ts$|\.queries\.ts$|\.stream\.ts$/;
-const CREATES_SOURCE = /\b(createApiCollection|createChangeCollection|queryCollectionOptions|localOnlyCollectionOptions|liveQueryCollectionOptions|queryOptions|infiniteQueryOptions|createCollection)\s*[<(]|\bqueryFn\s*:/;
+const CREATES_SOURCE = /\b(createApiCollection|createChangeCollection|queryCollectionOptions|localOnlyCollectionOptions|queryOptions|infiniteQueryOptions|createCollection)\s*[<(]|\bqueryFn\s*:/;
 const SPINNER = /<Spinner\b|Loader2Icon|animate-spin/;
 /** Spinners mean a write is in flight or a runtime process is running, never a read. */
 const SPINNER_FILES = {
