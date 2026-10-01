@@ -210,9 +210,12 @@ type BalancerLayout = {
   visitors: [number, number];
   bar: { x: number; y: number; w: number; h: number };
   sticker: [number, number];
-  /** Each server's centre x; `server` is their shared centre y and size. */
+  /**
+   * Each server's centre x; `server` is their shared centre y and size, drawn as the hero's ServerFace.
+   * `detail` adds its spec line and activity lights, where there's room for them.
+   */
   servers: [number, number, number];
-  server: { y: number; w: number; h: number };
+  server: { y: number; w: number; h: number; detail: boolean };
   badge: [number, number];
   /**
    * The private network: a pipe between each pair of servers, as [where it plugs in, measured from the
@@ -224,27 +227,27 @@ type BalancerLayout = {
 };
 
 const WIDE: BalancerLayout = {
-  box: [1000, 530],
-  visitors: [500, 44],
-  bar: { x: 150, y: 142, w: 700, h: 56 },
-  sticker: [805, 142],
-  servers: [230, 500, 770],
-  server: { y: 350, w: 200, h: 84 },
-  badge: [110, 22],
-  pipes: { width: 5, near: [56, 60], far: [44, 132] },
-  network: 520,
+  box: [1000, 520],
+  visitors: [500, 40],
+  bar: { x: 70, y: 120, w: 860, h: 52 },
+  sticker: [880, 118],
+  servers: [210, 500, 790],
+  server: { y: 326, w: 270, h: 116, detail: true },
+  badge: [120, 24],
+  pipes: { width: 5, near: [70, 56], far: [60, 120] },
+  network: 506,
 };
 
 const NARROW: BalancerLayout = {
-  box: [400, 448],
-  visitors: [200, 30],
-  bar: { x: 16, y: 104, w: 368, h: 52 },
-  sticker: [330, 102],
-  servers: [72, 200, 328],
-  server: { y: 318, w: 116, h: 76 },
-  badge: [104, 20],
-  pipes: { width: 3.5, near: [38, 34], far: [28, 76] },
-  network: 438,
+  box: [400, 426],
+  visitors: [200, 28],
+  bar: { x: 10, y: 92, w: 380, h: 46 },
+  sticker: [338, 90],
+  servers: [70, 200, 330],
+  server: { y: 276, w: 122, h: 104, detail: false },
+  badge: [100, 20],
+  pipes: { width: 3.5, near: [40, 34], far: [30, 76] },
+  network: 414,
 };
 
 // Next.js and Laravel's marks from Simple Icons 16.33 (CC0), drawn as database-logos.tsx draws Postgres.
@@ -267,6 +270,7 @@ function LaravelLogo(props: SVGProps<SVGSVGElement>) {
 // What each server runs: a copy of the app (Next.js and Laravel) on every one, and Postgres on the last.
 const APPS = { nextjs: NextjsLogo, laravel: LaravelLogo, postgres: DATABASE_LOGOS.postgres };
 const SERVER_APPS = [["nextjs", "laravel"], ["nextjs", "laravel"], ["nextjs", "laravel", "postgres"]] as const;
+const SERVER_SPECS = ["8 vCPU · 32 GB", "4 vCPU · 16 GB", "16 vCPU · 64 GB"];
 
 /**
  * Pinned under the header for half a screen of scrolling, which splits the load balancer into three: one
@@ -374,21 +378,52 @@ function BalancerPicture({ layout: l, t, className }: { layout: BalancerLayout; 
         </text>
       </g>
       <rect x={l.bar.x} y={l.bar.y} width={l.bar.w} height={l.bar.h} rx={12} className="lp-lb-piece" style={{ opacity: t === 0 ? 1 : 0 }} />
+      {/* Each server as the hero draws one (ServerFace): graphite, rack screws, its lights, and the apps it runs. */}
       {l.servers.map((x, i) => {
         const left = x - l.server.w / 2;
+        const right = x + l.server.w / 2;
+        const { detail } = l.server;
+        const inset = detail ? 30 : 18;
+        const tile = detail ? 26 : 22;
         return (
           <g key={x}>
-            <rect x={left} y={top} width={l.server.w} height={l.server.h} rx={12} className="lp-lb-card" />
-            <text x={left + 14} y={top + 24} className="lp-lb-name">
+            <rect x={left} y={top} width={l.server.w} height={l.server.h} rx={12} className="lp-lb-face" />
+            {[top + 18, bottom - 18].flatMap((y) =>
+              [left + 11, right - 11].map((screwX) => <circle key={`${screwX}-${y}`} cx={screwX} cy={y} r={3.5} className="lp-lb-screw" />),
+            )}
+            <text x={left + inset} y={top + (detail ? 36 : 30)} className="lp-lb-name">
               server-{i + 1}
             </text>
+            {detail ? (
+              <text x={left + inset} y={top + 56} className="lp-lb-spec">
+                {SERVER_SPECS[i]}
+              </text>
+            ) : null}
+            {[0, 1, 2].map((k) => (
+              <circle key={k} cx={right - (detail ? 60 : 36) + k * (detail ? 13 : 9)} cy={top + (detail ? 31 : 25)} r={detail ? 4 : 2.8} className={`lp-lb-led lp-lb-led-${k}`} />
+            ))}
+            {detail
+              ? Array.from({ length: 8 }, (_, k) => (
+                  <rect
+                    key={k}
+                    x={right - 74 + k * 8}
+                    y={top + 48}
+                    width={5}
+                    height={12}
+                    rx={1.5}
+                    className="lp-lb-act"
+                    style={{ animationDuration: `${[1.3, 1.7, 0.9][k % 3]}s`, animationDelay: `${(-k * 0.29 - i * 0.4).toFixed(2)}s` }}
+                  />
+                ))
+              : null}
             {(SERVER_APPS[i] ?? []).map((app, n) => {
               const Logo = APPS[app];
-              const chipX = left + 12 + n * 30;
+              const tileX = left + inset + n * (tile + 6);
+              const logo = tile - 10;
               return (
                 <g key={app}>
-                  <rect x={chipX} y={bottom - 34} width={24} height={24} rx={6} className="lp-lb-chip" />
-                  <Logo x={chipX + 4} y={bottom - 30} width={16} height={16} className="lp-lb-logo" />
+                  <rect x={tileX} y={bottom - tile - 12} width={tile} height={tile} rx={6} className="lp-lb-chip" />
+                  <Logo x={tileX + 5} y={bottom - tile - 7} width={logo} height={logo} className="lp-lb-logo" />
                 </g>
               );
             })}
