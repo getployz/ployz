@@ -585,7 +585,7 @@ mod tests {
 
     #[test]
     fn provisioning_ssh_allows_interactive_authentication_with_shared_options() {
-        for (extra, seconds) in [(vec![], "5"), (vec!["--ssh-timeout", "17"], "17")] {
+        for (extra, seconds) in [(vec![], "20"), (vec!["--ssh-timeout", "17"], "17")] {
             let mut args = vec!["ployz", "server", "add", "root@host"];
             args.extend(extra);
             let root = crate::cli::command().try_get_matches_from(args).unwrap();
