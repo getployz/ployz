@@ -206,9 +206,9 @@
   }
 
   /* ---- a section pinned under the header while the page scrolls past it (usePinProgress) ------------ */
-  /* The frame, plus 40% of a screen to scroll while it stays put. */
+  /* The frame, plus half a screen to scroll while it stays put. */
   .lp-pin {
-    height: calc(140svh - 3.5rem);
+    height: calc(150svh - 3.5rem);
   }
   .lp-pin-frame {
     position: sticky;
@@ -235,9 +235,6 @@
     stroke-linecap: round;
     stroke-dasharray: 1;
   }
-  .lp-lb-glow {
-    opacity: 0.22;
-  }
   .lp-lb-sheen {
     fill: none;
     stroke: var(--background);
@@ -245,21 +242,11 @@
     stroke-dasharray: 0.05 0.95;
     animation: lp-sheen 3s linear infinite;
   }
-  .lp-lb-sheen-back {
-    animation-direction: reverse;
-  }
-  /* light, not requests: the packets travelling the pipes */
-  .lp-lb-pulses .lp-packet {
-    fill: var(--background);
-    stroke: var(--lp-pipe-2);
-    stroke-width: 1.5;
-  }
   .lp-lb-note {
     font: 400 11px var(--font-mono);
     fill: var(--muted-foreground);
   }
-  .lp-lb-visitors rect,
-  .lp-lb-card {
+  .lp-lb-visitors rect {
     fill: var(--background);
     stroke: var(--border);
   }
@@ -270,20 +257,47 @@
     font: 500 12px var(--font-mono);
     fill: var(--foreground);
   }
+  /* each server, as .lp-face draws one */
+  .lp-lb-face {
+    fill: var(--lp-graphite);
+  }
+  .lp-lb-screw {
+    fill: var(--lp-screw);
+    stroke: var(--lp-screw-edge);
+  }
   .lp-lb-name {
-    font: 600 14px var(--font-sans);
-    fill: var(--foreground);
+    font: 600 15px var(--font-sans);
+    fill: var(--lp-graphite-ink);
+  }
+  .lp-lb-spec {
+    font: 400 12px var(--font-mono);
+    fill: var(--lp-graphite-muted);
+  }
+  .lp-lb-led {
+    fill: var(--lp-led);
+  }
+  .lp-lb-led-1 {
+    animation: lp-blink 0.7s steps(2, jump-none) infinite;
+  }
+  .lp-lb-led-2 {
+    animation: lp-blink 1.9s steps(2, jump-none) infinite;
+  }
+  .lp-lb-act {
+    fill: var(--lp-led);
+    opacity: 0.15;
+    animation: lp-flicker 1.3s steps(1, end) infinite;
   }
   .lp-lb-chip {
-    fill: var(--secondary);
-    stroke: var(--border);
+    fill: var(--background);
   }
-  .lp-lb-chip-text {
-    font: 500 11px var(--font-mono);
-    fill: var(--foreground);
+  .lp-lb-logo {
+    color: var(--foreground);
   }
+  /* outlined in paper, so a badge reads apart from the graphite it lands on */
   .lp-lb-piece {
     fill: var(--foreground);
+    stroke: var(--color-paper);
+    stroke-width: 2;
   }
   .lp-lb-badge circle {
     fill: var(--lp-led);
@@ -295,10 +309,6 @@
   .lp-lb-bar-title {
     font: 600 15px var(--font-sans);
     fill: var(--background);
-  }
-  .lp-lb-bar-sub {
-    font: 400 11px var(--font-mono);
-    fill: var(--lp-graphite-muted);
   }
   .lp-lb-sticker rect {
     fill: var(--warning-soft);
@@ -496,7 +506,8 @@
     .lp-packet {
       display: none;
     }
-    .lp-act i {
+    .lp-act i,
+    .lp-lb-act {
       opacity: 0.8;
     }
   }

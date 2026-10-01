@@ -13,8 +13,9 @@ import {
   WorkflowIcon,
 } from "lucide-react";
 import { useId } from "react";
-import type { ReactNode } from "react";
+import type { ReactNode, SVGProps } from "react";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
+import { DATABASE_LOGOS } from "#/components/icons/database-logos";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { Badge } from "#/components/ui/badge";
 import { buttonVariants } from "#/components/ui/button-variants";
@@ -209,9 +210,12 @@ type BalancerLayout = {
   visitors: [number, number];
   bar: { x: number; y: number; w: number; h: number };
   sticker: [number, number];
-  /** Each server's centre x; `server` is their shared centre y and size. */
+  /**
+   * Each server's centre x; `server` is their shared centre y and size, drawn as the hero's ServerFace.
+   * `detail` adds its spec line and activity lights, where there's room for them.
+   */
   servers: [number, number, number];
-  server: { y: number; w: number; h: number };
+  server: { y: number; w: number; h: number; detail: boolean };
   badge: [number, number];
   /**
    * The private network: a pipe between each pair of servers, as [where it plugs in, measured from the
@@ -223,31 +227,53 @@ type BalancerLayout = {
 };
 
 const WIDE: BalancerLayout = {
-  box: [1000, 530],
-  visitors: [500, 44],
-  bar: { x: 150, y: 142, w: 700, h: 56 },
-  sticker: [805, 142],
-  servers: [230, 500, 770],
-  server: { y: 350, w: 200, h: 84 },
-  badge: [110, 22],
-  pipes: { width: 8, near: [56, 60], far: [44, 132] },
-  network: 520,
+  box: [1000, 520],
+  visitors: [500, 40],
+  bar: { x: 70, y: 120, w: 860, h: 52 },
+  sticker: [880, 118],
+  servers: [210, 500, 790],
+  server: { y: 326, w: 270, h: 116, detail: true },
+  badge: [120, 24],
+  pipes: { width: 5, near: [70, 56], far: [60, 120] },
+  network: 506,
 };
 
 const NARROW: BalancerLayout = {
-  box: [400, 448],
-  visitors: [200, 30],
-  bar: { x: 16, y: 104, w: 368, h: 52 },
-  sticker: [330, 102],
-  servers: [72, 200, 328],
-  server: { y: 318, w: 116, h: 76 },
-  badge: [104, 20],
-  pipes: { width: 5, near: [38, 34], far: [28, 76] },
-  network: 438,
+  box: [400, 426],
+  visitors: [200, 28],
+  bar: { x: 10, y: 92, w: 380, h: 46 },
+  sticker: [338, 90],
+  servers: [70, 200, 330],
+  server: { y: 276, w: 122, h: 104, detail: false },
+  badge: [100, 20],
+  pipes: { width: 3.5, near: [40, 34], far: [30, 76] },
+  network: 414,
 };
 
+// Next.js and Laravel's marks from Simple Icons 16.33 (CC0), drawn as database-logos.tsx draws Postgres.
+function NextjsLogo(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
+      <path d="M18.665 21.978C16.758 23.255 14.465 24 12 24 5.377 24 0 18.623 0 12S5.377 0 12 0s12 5.377 12 12c0 3.583-1.574 6.801-4.067 9.001L9.219 7.2H7.2v9.596h1.615V9.251l9.85 12.727Zm-3.332-8.533 1.6 2.061V7.2h-1.6v6.245Z" />
+    </svg>
+  );
+}
+
+function LaravelLogo(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="#FF2D20" aria-hidden="true" {...props}>
+      <path d="M23.642 5.43a.364.364 0 01.014.1v5.149c0 .135-.073.26-.189.326l-4.323 2.49v4.934a.378.378 0 01-.188.326L9.93 23.949a.316.316 0 01-.066.027c-.008.002-.016.008-.024.01a.348.348 0 01-.192 0c-.011-.002-.02-.008-.03-.012-.02-.008-.042-.014-.062-.025L.533 18.755a.376.376 0 01-.189-.326V2.974c0-.033.005-.066.014-.098.003-.012.01-.02.014-.032a.369.369 0 01.023-.058c.004-.013.015-.022.023-.033l.033-.045c.012-.01.025-.018.037-.027.014-.012.027-.024.041-.034H.53L5.043.05a.375.375 0 01.375 0L9.93 2.647h.002c.015.01.027.021.04.033l.038.027c.013.014.02.03.033.045.008.011.02.021.025.033.01.02.017.038.024.058.003.011.01.021.013.032.01.031.014.064.014.098v9.652l3.76-2.164V5.527c0-.033.004-.066.013-.098.003-.01.01-.02.013-.032a.487.487 0 01.024-.059c.007-.012.018-.02.025-.033.012-.015.021-.03.033-.043.012-.012.025-.02.037-.028.014-.01.026-.023.041-.032h.001l4.513-2.598a.375.375 0 01.375 0l4.513 2.598c.016.01.027.021.042.031.012.01.025.018.036.028.013.014.022.03.034.044.008.012.019.021.024.033.011.02.018.04.024.06.006.01.012.021.015.032zm-.74 5.032V6.179l-1.578.908-2.182 1.256v4.283zm-4.51 7.75v-4.287l-2.147 1.225-6.126 3.498v4.325zM1.093 3.624v14.588l8.273 4.761v-4.325l-4.322-2.445-.002-.003H5.04c-.014-.01-.025-.021-.04-.031-.011-.01-.024-.018-.035-.027l-.001-.002c-.013-.012-.021-.025-.031-.04-.01-.011-.021-.022-.028-.036h-.002c-.008-.014-.013-.031-.02-.047-.006-.016-.014-.027-.018-.043a.49.49 0 01-.008-.057c-.002-.014-.006-.027-.006-.041V5.789l-2.18-1.257zM5.23.81L1.47 2.974l3.76 2.164 3.758-2.164zm1.956 13.505l2.182-1.256V3.624l-1.58.91-2.182 1.255v9.435zm11.581-10.95l-3.76 2.163 3.76 2.163 3.759-2.164zm-.376 4.978L16.21 7.087 14.63 6.18v4.283l2.182 1.256 1.58.908zm-8.65 9.654l5.514-3.148 2.756-1.572-3.757-2.163-4.323 2.489-3.941 2.27z" />
+    </svg>
+  );
+}
+
+// What each server runs: a copy of the app (Next.js and Laravel) on every one, and Postgres on the last.
+const APPS = { nextjs: NextjsLogo, laravel: LaravelLogo, postgres: DATABASE_LOGOS.postgres };
+const SERVER_APPS = [["nextjs", "laravel"], ["nextjs", "laravel"], ["nextjs", "laravel", "postgres"]] as const;
+const SERVER_SPECS = ["8 vCPU · 32 GB", "4 vCPU · 16 GB", "16 vCPU · 64 GB"];
+
 /**
- * Pinned under the header for 40% of a screen of scrolling, which splits the load balancer into three: one
+ * Pinned under the header for half a screen of scrolling, which splits the load balancer into three: one
  * inside each server. The split takes the first 80% of it, so the result holds a moment before the page
  * moves on.
  */
@@ -258,13 +284,10 @@ export function BalancerScene({ heading, caption }: { heading: ReactNode; captio
     // A margin, not padding, keeps the frame flush with the section top, which usePinProgress measures from.
     <section ref={ref} className="lp-pin mt-16 px-5 md:mt-24">
       <div className="lp-pin-frame mx-auto flex max-w-6xl flex-col justify-center gap-6 py-6 md:gap-8">
-        <div className="flex flex-wrap items-end justify-between gap-x-10 gap-y-4">
-          {heading}
-          <BalancerSteps t={t} />
-        </div>
+        {heading}
         <div
           role="img"
-          aria-label="Visitors reach three servers through one load balancer you rent; scrolling splits it into three, one inside each server, and the servers link up over a private network"
+          aria-label="Visitors reach three servers running Next.js and Laravel, one also running Postgres, through one load balancer you rent; scrolling splits it into three, one inside each server, and the servers link up over a private network"
           className="flex max-h-136 min-h-0 flex-1 rounded-3xl bg-(--color-paper) p-3 max-sm:max-h-96 sm:p-6"
         >
           <BalancerPicture layout={WIDE} t={t} className="size-full max-sm:hidden" />
@@ -273,19 +296,6 @@ export function BalancerScene({ heading, caption }: { heading: ReactNode; captio
         {caption}
       </div>
     </section>
-  );
-}
-
-/** "The usual way ━━ With Ployz", filling in as the split plays. */
-function BalancerSteps({ t }: { t: number }) {
-  return (
-    <div aria-hidden className="flex items-center gap-3 text-sm font-semibold">
-      <span className={cn("transition-colors", t >= 0.5 && "text-muted-foreground")}>The usual way</span>
-      <span className="h-1 w-24 overflow-hidden rounded-full bg-(--color-rule-soft)">
-        <span className="block size-full origin-left bg-foreground" style={{ transform: `scaleX(${t})` }} />
-      </span>
-      <span className={cn("transition-colors", t < 0.5 && "text-muted-foreground")}>With Ployz</span>
-    </div>
   );
 }
 
@@ -312,7 +322,6 @@ function BalancerPicture({ layout: l, t, className }: { layout: BalancerLayout; 
   // Both layouts are on the page at once, so each needs its own ids.
   const id = useId();
   const shade = `${id}-shade`;
-  const glow = `${id}-glow`;
   const stroke = `url(#${shade})`;
   return (
     <svg viewBox={`0 0 ${l.box[0]} ${l.box[1]}`} className={className}>
@@ -322,9 +331,6 @@ function BalancerPicture({ layout: l, t, className }: { layout: BalancerLayout; 
             <stop key={n} offset={(n - 1) / 4} style={{ stopColor: `var(--lp-pipe-${n})` }} />
           ))}
         </linearGradient>
-        <filter id={glow} x="-20%" y="-60%" width="140%" height="220%">
-          <feGaussianBlur stdDeviation={w * 0.8} />
-        </filter>
       </defs>
       <g style={{ opacity: 1 - phase(0, 0.3) }}>
         <path d={`M${vx} ${out}V${l.bar.y}`} className="lp-lb-line" />
@@ -337,20 +343,12 @@ function BalancerPicture({ layout: l, t, className }: { layout: BalancerLayout; 
           <path key={x} d={`M${vx} ${out}L${x} ${top - bh / 2}`} className="lp-lb-dns" />
         ))}
         {pipes.map((d, i) => {
-          // Each pipe lays itself in just after the one before: a pearly tube over its own glow, with a glint
-          // sweeping through once it's in.
+          // Each pipe lays itself in just after the one before, with a glint sweeping through once it's in.
           const unlaid = 1 - phase(0.74 + i * 0.04, 0.92 + i * 0.03);
           return (
             <g key={d}>
-              <path d={d} pathLength={1} strokeWidth={w * 2} filter={`url(#${glow})`} className="lp-lb-pipe lp-lb-glow" style={{ stroke, strokeDashoffset: unlaid }} />
               <path d={d} pathLength={1} strokeWidth={w} className="lp-lb-pipe" style={{ stroke, strokeDashoffset: unlaid }} />
-              <path
-                d={d}
-                pathLength={1}
-                strokeWidth={w * 0.35}
-                className={cn("lp-lb-sheen", i % 2 === 1 && "lp-lb-sheen-back")}
-                style={{ opacity: phase(0.94, 1), animationDelay: `${-i * 0.8}s` }}
-              />
+              <path d={d} pathLength={1} strokeWidth={w * 0.4} className="lp-lb-sheen" style={{ opacity: phase(0.94, 1), animationDelay: `${-i * 0.8}s` }} />
             </g>
           );
         })}
@@ -365,18 +363,11 @@ function BalancerPicture({ layout: l, t, className }: { layout: BalancerLayout; 
             )),
           )
         : null}
-      {t === 1 ? (
-        <>
-          {l.servers.map((x, i) =>
+      {t === 1
+        ? l.servers.map((x, i) =>
             [0, 1].map((n) => <Packet key={`${x}-${n}`} path={`M${vx} ${out}L${x} ${l.server.y}`} seconds={2} delay={i * 0.35 + n} reverse={false} />),
-          )}
-          <g className="lp-lb-pulses">
-            {pipes.map((d, i) => (
-              <Packet key={d} path={d} seconds={1.6 + i * 0.3} delay={i * 0.45} reverse={i % 2 === 0} r={w * 0.4} />
-            ))}
-          </g>
-        </>
-      ) : null}
+          )
+        : null}
       <g className="lp-lb-visitors">
         <rect x={vx - 70} y={vy - 19} width={140} height={38} rx={19} />
         {[0, 1, 2].map((i) => (
@@ -387,18 +378,55 @@ function BalancerPicture({ layout: l, t, className }: { layout: BalancerLayout; 
         </text>
       </g>
       <rect x={l.bar.x} y={l.bar.y} width={l.bar.w} height={l.bar.h} rx={12} className="lp-lb-piece" style={{ opacity: t === 0 ? 1 : 0 }} />
+      {/* Each server as the hero draws one (ServerFace): graphite, rack screws, its lights, and the apps it runs. */}
       {l.servers.map((x, i) => {
         const left = x - l.server.w / 2;
+        const right = x + l.server.w / 2;
+        const { detail } = l.server;
+        const inset = detail ? 30 : 18;
+        const tile = detail ? 26 : 22;
         return (
           <g key={x}>
-            <rect x={left} y={top} width={l.server.w} height={l.server.h} rx={12} className="lp-lb-card" />
-            <text x={left + 14} y={top + 24} className="lp-lb-name">
+            <rect x={left} y={top} width={l.server.w} height={l.server.h} rx={12} className="lp-lb-face" />
+            {[top + 18, bottom - 18].flatMap((y) =>
+              [left + 11, right - 11].map((screwX) => <circle key={`${screwX}-${y}`} cx={screwX} cy={y} r={3.5} className="lp-lb-screw" />),
+            )}
+            <text x={left + inset} y={top + (detail ? 36 : 30)} className="lp-lb-name">
               server-{i + 1}
             </text>
-            <rect x={left + 12} y={bottom - 32} width={52} height={22} rx={6} className="lp-lb-chip" />
-            <text x={left + 22} y={bottom - 17} className="lp-lb-chip-text">
-              web
-            </text>
+            {detail ? (
+              <text x={left + inset} y={top + 56} className="lp-lb-spec">
+                {SERVER_SPECS[i]}
+              </text>
+            ) : null}
+            {[0, 1, 2].map((k) => (
+              <circle key={k} cx={right - (detail ? 60 : 36) + k * (detail ? 13 : 9)} cy={top + (detail ? 31 : 25)} r={detail ? 4 : 2.8} className={`lp-lb-led lp-lb-led-${k}`} />
+            ))}
+            {detail
+              ? Array.from({ length: 8 }, (_, k) => (
+                  <rect
+                    key={k}
+                    x={right - 74 + k * 8}
+                    y={top + 48}
+                    width={5}
+                    height={12}
+                    rx={1.5}
+                    className="lp-lb-act"
+                    style={{ animationDuration: `${[1.3, 1.7, 0.9][k % 3]}s`, animationDelay: `${(-k * 0.29 - i * 0.4).toFixed(2)}s` }}
+                  />
+                ))
+              : null}
+            {(SERVER_APPS[i] ?? []).map((app, n) => {
+              const Logo = APPS[app];
+              const tileX = left + inset + n * (tile + 6);
+              const logo = tile - 10;
+              return (
+                <g key={app}>
+                  <rect x={tileX} y={bottom - tile - 12} width={tile} height={tile} rx={6} className="lp-lb-chip" />
+                  <Logo x={tileX + 5} y={bottom - tile - 7} width={logo} height={logo} className="lp-lb-logo" />
+                </g>
+              );
+            })}
           </g>
         );
       })}
@@ -422,11 +450,8 @@ function BalancerPicture({ layout: l, t, className }: { layout: BalancerLayout; 
         );
       })}
       <g style={{ opacity: 1 - phase(0, 0.12) }}>
-        <text x={l.bar.x + l.bar.w / 2} y={l.bar.y + l.bar.h / 2 - 2} textAnchor="middle" className="lp-lb-bar-title">
+        <text x={l.bar.x + l.bar.w / 2} y={l.bar.y + l.bar.h / 2 + 5} textAnchor="middle" className="lp-lb-bar-title">
           Load balancer
-        </text>
-        <text x={l.bar.x + l.bar.w / 2} y={l.bar.y + l.bar.h / 2 + 16} textAnchor="middle" className="lp-lb-bar-sub">
-          every request goes through it
         </text>
       </g>
       <g transform={`translate(0 ${phase(0, 0.35) * 90})`} style={{ opacity: 1 - phase(0, 0.25) }}>
