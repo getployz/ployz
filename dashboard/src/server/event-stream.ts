@@ -7,7 +7,8 @@ export function sseEvent(input: { event: string; data: object }) {
  * Serves server-sent events as they are pulled from `events`, so a slow client applies backpressure.
  * `events` gets a signal that aborts when the request ends or the client cancels; the stream then
  * ends at once, even while `events` waits on a hung upstream. When no event arrives for `heartbeatMs`,
- * a `: ping` comment keeps proxies from closing the idle stream; the pending event carries over.
+ * a `ping` event keeps proxies from closing the idle stream and tells the page it is still live (a comment
+ * would reach proxies but never the page); the pending event carries over.
  *
  * `onClose` runs exactly once however the stream ends. It lives here, not in a generator's `finally`:
  * `return()` on a generator that never started skips its `finally`, and on one awaiting a hung upstream
@@ -42,7 +43,7 @@ export function eventStreamResponse(
       });
       const next = await Promise.race([pending, heartbeat, aborted]).finally(() => clearTimeout(timer));
       if (next === "heartbeat") {
-        controller.enqueue(encoder.encode(": ping\n\n"));
+        controller.enqueue(encoder.encode(sseEvent({ event: "ping", data: {} })));
         return;
       }
       pending = undefined;

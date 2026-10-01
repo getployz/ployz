@@ -20,15 +20,16 @@ export type RuntimeLine = { word: string; tone: Tone; down: boolean; since: Date
 
 const line = (word: string, tone: Tone, down = false): RuntimeLine => ({ word, tone, down, since: null });
 
-/** A Volume's status line while nothing here mounts it. */
-export const NOT_MOUNTED = line("Not mounted", "idle");
+/** No Service is configured to mount the Volume; deployed containers may still use it. */
+export const NO_MOUNTS_CONFIGURED = line("No mounts configured", "idle");
 
 /** What evidence says of a Service (`runtime`, null when none names it; `whole`, no Server is missing from it). */
 function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, whole: boolean, desiredReplicas: number | null, deploying: boolean) {
   if (!runtime) return whole ? line("Not running", "bad", true) : line("Deployed", "quiet");
   if (runtime.containers.length === 0) return line("Not running", "bad", true);
   const running = runtime.containers.filter((container) => container.runtime?.state === "running");
-  if (running.length === 0) return line("Crashed", "crashed", true);
+  if (running.length === 0) return runtime.containers.every((container) => container.runtime?.state === "exited" && container.runtime.code === 0)
+    ? line("Stopped", "bad", true) : line("Crashed", "crashed", true);
   const serving = running.filter(containerServing).length;
   // None serves yet: Unhealthy once a health check fails, else still Starting.
   if (serving === 0) return running.some((container) => container.runtime?.health === "unhealthy") ? line("Unhealthy", "warn") : line("Starting", "quiet");
@@ -53,7 +54,8 @@ export function runtimeLine(
   runtime: Pick<RuntimeServiceRecord, "containers"> | null,
   { lens, desiredReplicas, deploying }: { lens: RuntimeLens; desiredReplicas: number | null; deploying: boolean },
 ): RuntimeLine {
-  if (service.change === "create") return line("Not deployed", "idle");
+  // A new Service a failed Deploy still started has containers: say what they do.
+  if (service.change === "create" && !runtime) return line("Not deployed", "idle");
   if (service.source === "empty") return line("No source", "idle");
   if (lens.noServers) return line("Needs a server", "idle");
   switch (lens.status) {
@@ -64,8 +66,8 @@ export function runtimeLine(
     case "connecting":
       return line("Checking", "pending");
     case "unavailable":
-      // The connection dropped: the last evidence, grey, from when it was current; none seen yet, it waits.
-      return lens.observedAt === null ? line("Checking", "pending")
+      // The connection dropped: retain the last evidence, or explain why none is available.
+      return lens.observedAt === null ? line("Status unavailable", "quiet")
         : { ...evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying), tone: "quiet", down: false, since: new Date(lens.observedAt) };
     case "observed":
       return evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying);

@@ -1,6 +1,6 @@
 import { createCollection, localOnlyCollectionOptions } from "@tanstack/react-db";
 import { expect, it } from "vitest";
-import { appendContainerLogs, historyBoundaries, remainingHistory, mergeContainerHistory, type ContainerLogRow } from "./container-log.collection";
+import { appendContainerLogs, historyBoundaries, remainingHistory, mergeContainerHistory, trimContainerLogs, type ContainerLogRow } from "./container-log.collection";
 
 const row = (containerId: string, timestamp: string, ordinal = 0): ContainerLogRow => ({
   id: `server/${containerId}/${timestamp}/${ordinal}`, timestamp,
@@ -16,6 +16,16 @@ it("extends per-container history without clearing live output or collapsing ide
   expect(collection.has("server/busy/110/0")).toBe(true);
   expect(collection.has("server/busy/100/1")).toBe(true);
   expect(historyBoundaries([...collection.values()])).toEqual({ "server/busy": "99", "server/quiet": "9" });
+  await collection.cleanup();
+});
+
+it("keeps only the newest lines past the limit, and a batch with repeats lands once", async () => {
+  const collection = createCollection(localOnlyCollectionOptions({ id: "log-trim-test", getKey: (row: ContainerLogRow) => row.id }));
+  await collection.preload();
+  appendContainerLogs(collection, [row("a", "30"), row("a", "10"), row("a", "20"), row("a", "20")]);
+  expect(collection.size).toBe(3);
+  trimContainerLogs(collection, 2);
+  expect([...collection.values()].map(kept => kept.timestamp).sort()).toEqual(["20", "30"]);
   await collection.cleanup();
 });
 

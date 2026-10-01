@@ -21,6 +21,19 @@ pub(crate) fn set_branch_setup(
     for setup in &set.setup {
         setup_command(setup)?;
     }
+    // Setup Commands live beside Working State, so they pass the same rules here.
+    let facts = |setup| crate::rules::Facts {
+        working: &environment.working,
+        live: &environment.live,
+        setup,
+    };
+    let before = branch_setup(tx, &environment.summary.id)?;
+    crate::rules::check_write(
+        &environment.summary,
+        facts(&before),
+        None,
+        facts(&set.setup),
+    )?;
     let setup = (!set.setup.is_empty())
         .then(|| serde_json::to_string(&set.setup).expect("Setup Commands are JSON"));
     tx.execute(

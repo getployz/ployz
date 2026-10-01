@@ -223,7 +223,10 @@ fn code(error: &(dyn Error + 'static)) -> RpcErrorCode {
     if let Some(error) = error.downcast_ref::<io::Error>() {
         return io_code(error);
     }
-    if error.is::<TransportError>() || error.is::<IngressImageError>() {
+    if let Some(error) = error.downcast_ref::<TransportError>() {
+        return error.to_rpc_error().code;
+    }
+    if error.is::<IngressImageError>() {
         return RpcErrorCode::Unavailable;
     }
     if error.is::<ValueError>()
@@ -242,6 +245,7 @@ fn code(error: &(dyn Error + 'static)) -> RpcErrorCode {
 fn connect_code(error: &ConnectError) -> RpcErrorCode {
     match error {
         ConnectError::Remote(error) => error.code.clone(),
+        ConnectError::Rpc(error) => error.to_rpc_error().code,
         ConnectError::ClientRefused | ConnectError::ClientCleared => RpcErrorCode::Unauthenticated,
         ConnectError::ProxyUnsupported(_) | ConnectError::UnsupportedNetwork(_) => {
             RpcErrorCode::Unsupported
@@ -267,7 +271,6 @@ fn connect_code(error: &ConnectError) -> RpcErrorCode {
         | ConnectError::Routing(_)
         | ConnectError::Path { .. }
         | ConnectError::AllFailed { last: None, .. }
-        | ConnectError::Rpc(_)
         | ConnectError::Framing(_) => RpcErrorCode::Unavailable,
     }
 }
@@ -285,6 +288,7 @@ fn machine_selector_code(error: &MachineSelectorError) -> RpcErrorCode {
 fn operator_code(error: &OperatorError) -> RpcErrorCode {
     match error {
         OperatorError::Connect(error) => connect_code(error),
+        OperatorError::Rpc(error) => error.to_rpc_error().code,
         OperatorError::Selector(error) => code(error),
         OperatorError::MachineSelector(error) => machine_selector_code(error),
         OperatorError::Container(error) => code(error),
@@ -305,8 +309,7 @@ fn operator_code(error: &OperatorError) -> RpcErrorCode {
         | OperatorError::NoMachines
         | OperatorError::NoServices
         | OperatorError::NoDeploymentContainers => RpcErrorCode::NotFound,
-        OperatorError::Rpc(_)
-        | OperatorError::StreamClosed
+        OperatorError::StreamClosed
         | OperatorError::NoHealthyContainer
         | OperatorError::SnapshotStale => RpcErrorCode::Unavailable,
         OperatorError::Protocol(_) => RpcErrorCode::Internal,
@@ -827,6 +830,32 @@ mod tests {
     fn bad_log_tail_is_invalid_argument() {
         let failure = Failure::from(OperatorError::InvalidTail("bad".into()));
         assert_eq!(failure.report().code, RpcErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn machine_rpc_refusals_keep_their_codes_through_cli_wrappers() {
+        for (status, expected) in [
+            (tonic::Code::InvalidArgument, RpcErrorCode::InvalidArgument),
+            (tonic::Code::NotFound, RpcErrorCode::NotFound),
+            (tonic::Code::Unauthenticated, RpcErrorCode::Unauthenticated),
+            (tonic::Code::Unimplemented, RpcErrorCode::Unsupported),
+            (tonic::Code::Unavailable, RpcErrorCode::Unavailable),
+        ] {
+            let transport = || TransportError::from(tonic::Status::new(status, "refused"));
+            let failures = [
+                Failure::from(transport()),
+                Failure::from(ConnectError::Rpc(transport())),
+                Failure::from(OperatorError::Rpc(transport())),
+                Failure::from(OperatorError::OpenContainerLogs {
+                    machine_id: ployz_core::MachineId::parse("1".repeat(32)).unwrap(),
+                    container_id: ployz_core::ContainerId::parse("2".repeat(64)).unwrap(),
+                    source: Box::new(OperatorError::Rpc(transport())),
+                }),
+            ];
+            for failure in failures {
+                assert_eq!(failure.report().code, expected, "{status:?}: {failure}");
+            }
+        }
     }
 
     #[test]

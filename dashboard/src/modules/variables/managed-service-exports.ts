@@ -1,5 +1,6 @@
 
-const PLATFORM_HTTP_PORT = 3000;
+// Keep the reference default aligned with Core's DEFAULT_SERVICE_PORT.
+const PLATFORM_HTTP_PORT = 8080;
 
 type ServiceExportContext = {
   id: string;
@@ -37,7 +38,7 @@ export function getManagedServiceExports(service: ServiceExportContext): Managed
     },
     {
       key: "PORT",
-      description: "The platform HTTP port exposed by the service.",
+      description: "The default HTTP port when PORT is unset.",
       value: String(PLATFORM_HTTP_PORT),
     },
     {

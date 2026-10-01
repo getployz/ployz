@@ -11,7 +11,7 @@ import { useMutation, useQueryClient, useSuspenseQueries, useSuspenseQuery } fro
 import { count, ilike, useLiveQuery } from "@tanstack/react-db";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
-import { InputGroupAddon, InputGroupInput } from "#/components/ui/input-group";
+import { InputGroupAddon, InputGroupButton, InputGroupInput } from "#/components/ui/input-group";
 import { Item, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { imageRegistryLink, isValidImageReference } from "#/components/image-registry-link";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
@@ -558,7 +558,12 @@ export function ImageSelector({
             onChange={(event) => setValue(event.target.value)}
             placeholder="nginx:latest"
           />
-          {disabled ? <InputGroupAddon align="inline-end"><Spinner /></InputGroupAddon> : null}
+          <InputGroupAddon align="inline-end">
+            <InputGroupButton type="submit" disabled={disabled || !validImage}>
+              {disabled ? <Spinner data-icon="inline-start" /> : null}
+              Continue
+            </InputGroupButton>
+          </InputGroupAddon>
         </SourcePickerInput>
         {invalidImage ? (
           <Item state="warning" role="status" id="invalid-docker-image">

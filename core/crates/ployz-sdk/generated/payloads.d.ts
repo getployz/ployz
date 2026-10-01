@@ -445,7 +445,7 @@ rows: Array<string>, state: SaveState, };
 
 export type ConditionalSaveId = string;
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "rename_project" } & RenameProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "set_volume_storage" } & SetVolumeStorage | { "command": "remove_volume" } & RemoveVolume | { "command": "rename_volume" } & RenameVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "set_generated_domain" } & SetGeneratedDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "move" } & Move | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "set_branch_setup" } & SetBranchSetup | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "set_pr_plan" } & SetPrPlan | { "command": "batch" } & Batch;
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "rename_project" } & RenameProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "set_volume_storage" } & SetVolumeStorage | { "command": "set_volume_shared_writes" } & SetVolumeSharedWrites | { "command": "remove_volume" } & RemoveVolume | { "command": "rename_volume" } & RenameVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "set_generated_domain" } & SetGeneratedDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "move" } & Move | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "set_branch_setup" } & SetBranchSetup | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "set_pr_plan" } & SetPrPlan | { "command": "batch" } & Batch;
 
 export type ConfigCommitted = {
 /**
@@ -706,7 +706,11 @@ storage: VolumeKind,
 /**
  * Where Services mount it.
  */
-mounts: Array<Mount>, };
+mounts: Array<Mount>,
+/**
+ * Let more than one container write it; off refuses a second writer.
+ */
+shared_writes?: boolean, };
 
 export type DataEffect = "deleted" | "kept";
 
@@ -2566,7 +2570,13 @@ export type SavedVariableValue = { "kind": "literal", value: string, } | { "kind
  */
 encryptedValue: EncryptedSecretValue | null, };
 
-export type SavedVolumeIntent = { resourceId: string, resourceLineageId: string, name: string, storage: VolumeKind, };
+export type SavedVolumeIntent = { resourceId: string, resourceLineageId: string, name: string, storage: VolumeKind,
+/**
+ * Whether more than one container may write it: replicas of one Service, or
+ * several Services. Off, the Store refuses a second writer. Written only when on,
+ * so documents from before it read as off.
+ */
+sharedWrites?: boolean, };
 
 export type ScopedVolumeSource = { namespace: Namespace, logical_name: DockerVolumeName, };
 
@@ -2704,7 +2714,7 @@ export type ServiceRoute = { id: string, hostname: string, targetPort: number | 
 
 export type ServiceSettingChange = { path: string, kind: ChangeKind, before: JsonValue, after: JsonValue, canRestore: boolean, };
 
-export type ServiceSettingInput = { "field": "name", "value": string } | { "field": "source", "value": ServiceSource } | { "field": "rootDir", "value": string } | { "field": "command", "value": string } | { "field": "preDeployCommand", "value": string | null } | { "field": "startCommand", "value": string | null } | { "field": "healthcheck", "value": ServiceHealthcheck } | { "field": "healthcheckPath", "value": string } | { "field": "healthcheckTimeoutSeconds", "value": number } | { "field": "restartPolicy", "value": ServiceRestartPolicy } | { "field": "maxRetries", "value": number } | { "field": "replicas", "value": number } | { "field": "cpuLimit", "value": number | null } | { "field": "memLimit", "value": number | null } | { "field": "privateDns", "value": ServiceName } | { "field": "routes", "value": Array<ServiceRoute> } | { "field": "managedHostnames", "value": Array<ServiceManagedHostname> } | { "field": "managedHostnameValue", "value": ServiceManagedHostname } | { "field": "managedHostnamePrefix", "value": string } | { "field": "build", "value": ServiceBuildConfig } | { "field": "template", "value": ServiceTemplate | null };
+export type ServiceSettingInput = { "field": "name", "value": string } | { "field": "source", "value": ServiceSource } | { "field": "rootDir", "value": string } | { "field": "command", "value": string } | { "field": "preDeployCommand", "value": string | null } | { "field": "startCommand", "value": string | null } | { "field": "healthcheck", "value": ServiceHealthcheck } | { "field": "healthcheckPath", "value": string } | { "field": "healthcheckTimeoutSeconds", "value": number } | { "field": "restartPolicy", "value": ServiceRestartPolicy } | { "field": "maxRetries", "value": number } | { "field": "replicas", "value": number } | { "field": "cpuLimit", "value": number | null } | { "field": "memLimit", "value": number | null } | { "field": "privateDns", "value": ServiceName } | { "field": "routes", "value": Array<ServiceRoute> } | { "field": "managedHostnames", "value": Array<ServiceManagedHostname> } | { "field": "managedHostnameValue", "value": ServiceManagedHostname } | { "field": "managedHostnamePrefix", "value": string } | { "field": "imageReference", "value": string } | { "field": "build", "value": ServiceBuildConfig } | { "field": "template", "value": ServiceTemplate | null };
 
 export type ServiceSource = { "type": "empty", version: 1, rootDir: string, } | { "type": "git", version: 2, repository: string, repositoryId: number, access: ServiceGitAccess, rootDir: string, branch: ServiceGitBranch, } | { "type": "image", version: 1, image: string, credentials: ServiceImageCredentials, };
 
@@ -2863,6 +2873,20 @@ remove_on_close: boolean | null,
  * Make PR Environments for bots' pull requests too.
  */
 include_bots: boolean | null, };
+
+export type SetVolumeSharedWrites = {
+/**
+ * The Environment containing the Volume.
+ */
+environment: EnvironmentRef,
+/**
+ * The Volume, by name.
+ */
+volume: VolumeName,
+/**
+ * On allows several writers; off refuses while it has more than one.
+ */
+shared_writes: boolean, };
 
 export type SetVolumeStorage = {
 /**
@@ -3118,7 +3142,11 @@ name: VolumeName,
 /**
  * Its chosen storage, including the maximum for a Provisioned Volume.
  */
-storage: VolumeKind, };
+storage: VolumeKind,
+/**
+ * Whether more than one container may write it.
+ */
+shared_writes: boolean, };
 
 export type VolumeName = string;
 
@@ -3191,7 +3219,11 @@ name: VolumeName,
 /**
  * Its chosen storage, including the maximum for a Provisioned Volume.
  */
-storage: VolumeKind, };
+storage: VolumeKind,
+/**
+ * Whether more than one container may write it.
+ */
+shared_writes: boolean, };
 
 export type VolumeToCreate = {
 /**
@@ -3247,7 +3279,11 @@ name: VolumeName,
 /**
  * Its chosen storage, including the maximum for a Provisioned Volume.
  */
-storage: VolumeKind, };
+storage: VolumeKind,
+/**
+ * Whether more than one container may write it.
+ */
+shared_writes: boolean, };
 
 export type VolumesQuery = {
 /**

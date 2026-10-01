@@ -315,7 +315,17 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             update: Default::default(),
         };
         spec.set_volume_graph(ServiceVolumeGraph::parse(volumes, mounts).map_err(lowering_error)?)
-            .map_err(lowering_error)?;
+            .map_err(|error| match error {
+                crate::ServiceSpecGraphError::RootMountTarget => {
+                    ConfigError::at("mounts", "A volume cannot mount at the container root /")
+                }
+                crate::ServiceSpecGraphError::DuplicateMountTarget { .. } => ConfigError::at(
+                    "mounts",
+                    "Two volume mounts resolve to the same container path",
+                ),
+                error @ (crate::ServiceSpecGraphError::Volume(_)
+                | crate::ServiceSpecGraphError::Config(_)) => lowering_error(error),
+            })?;
         target.push(spec);
     }
     let selected = input.selected.unwrap_or_else(|| {

@@ -74,6 +74,7 @@ fn shop() -> (ConfigStore, Actor) {
         .write(
             &who,
             &CreateVolume {
+                shared_writes: false,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse(uuid(5)).unwrap(),
                 environment: EnvironmentRef::default(),
@@ -882,6 +883,18 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
         code(store.write(&who, &picked(vec![fresh("web.env", "x")]))),
         RpcErrorCode::InvalidArgument
     );
+    let parent_before = values(&store, &who, "production", "web");
+    let branch_before = values(&store, &who, "fix-web", "web");
+    for row in ["web.env.SESSION_KEY", "web.env.HOST"] {
+        let error = store
+            .write(&who, &picked(vec![fresh(row, "private\0value")]))
+            .unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+        assert!(error.message.contains("null characters"));
+        assert!(!error.message.contains("private"));
+        assert_eq!(values(&store, &who, "production", "web"), parent_before);
+        assert_eq!(values(&store, &who, "fix-web", "web"), branch_before);
+    }
     store
         .write(
             &who,
@@ -994,12 +1007,21 @@ fn a_branch_naming_no_setup_runs_its_parents_defaults_for_what_it_copies() {
         service: ServiceName::parse(service).unwrap(),
         command: command.into(),
     };
+    // A Setup Command runs in a Service the Environment has.
+    let refused = store.write(
+        &who,
+        &ployz_store::SetBranchSetup {
+            environment: at("production"),
+            setup: vec![setup("web", "true"), setup("gone", "true")],
+        },
+    );
+    assert_eq!(code(refused), RpcErrorCode::NotFound);
     let listed = store
         .write(
             &who,
             &ployz_store::SetBranchSetup {
                 environment: at("production"),
-                setup: vec![setup("web", " pnpm db:seed "), setup("gone", "true")],
+                setup: vec![setup("web", " pnpm db:seed ")],
             },
         )
         .unwrap();
@@ -1008,15 +1030,20 @@ fn a_branch_naming_no_setup_runs_its_parents_defaults_for_what_it_copies() {
         .iter()
         .find(|listing| listing.name.as_str() == "production")
         .unwrap();
-    assert_eq!(production.branch_setup.len(), 2);
-    let refused = store.write(
-        &who,
-        &ployz_store::SetBranchSetup {
-            environment: at("production"),
-            setup: vec![setup("web", "  ")],
-        },
-    );
-    assert_eq!(code(refused), RpcErrorCode::InvalidArgument);
+    assert_eq!(production.branch_setup.len(), 1);
+    for invalid in ["  ", "private\0value"] {
+        let refused = store
+            .write(
+                &who,
+                &ployz_store::SetBranchSetup {
+                    environment: at("production"),
+                    setup: vec![setup("web", invalid)],
+                },
+            )
+            .unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+        assert!(!refused.message.contains("private"));
+    }
 
     // Only what the Branch copies runs, and a Branch naming its own replaces them.
     let made = store

@@ -54,7 +54,8 @@ export function settingError(setting: SettingSchema, raw: string): string | null
       && (setting.maximum === undefined || value <= setting.maximum);
     return fits ? null : `Enter a ${whole ? "whole number" : "number"}${bounds(setting)}.`;
   }
-  if (setting.maxLength !== undefined && raw.length > setting.maxLength) return `Use at most ${setting.maxLength} characters.`;
+  // A code point uses at most two UTF-16 units; reject huge pastes before allocating.
+  if (setting.maxLength !== undefined && (raw.length > setting.maxLength * 2 || [...raw].length > setting.maxLength)) return `Use at most ${setting.maxLength} characters.`;
   if (setting.pattern !== undefined && !new RegExp(setting.pattern, "u").test(raw)) return `That isn't a valid ${setting.title.toLowerCase()}.`;
   return null;
 }

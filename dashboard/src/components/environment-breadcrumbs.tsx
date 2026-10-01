@@ -56,7 +56,7 @@ export function Crumbs({ items, branchAt }: { items: ReactNode[]; branchAt?: num
           {index > 0 ? <BreadcrumbSeparator className={index <= collapsed.length ? phonesHidden : undefined}>
             {index === branchAt ? <GitBranchIcon /> : "/"}
           </BreadcrumbSeparator> : null}
-          <BreadcrumbItem className={index < collapsed.length ? phonesHidden : "min-w-0"}>{item}</BreadcrumbItem>
+          <BreadcrumbItem className={cn("min-w-0 *:max-w-full *:truncate", index < collapsed.length && phonesHidden)}>{item}</BreadcrumbItem>
         </Fragment>)}
       </BreadcrumbList>
     </Breadcrumb>

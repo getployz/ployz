@@ -72,7 +72,7 @@ export function StoreDeploymentRows({ service, returnTo }: { service: ServiceLis
           search={{ service: service?.id, returnTo }} />}>
           <ItemContent className="min-w-0">
             <ItemTitle className="w-full"><span className="truncate">{deployment.message ? `#${deployment.number} · ${deployment.message}` : `Deployment #${deployment.number}`}</span></ItemTitle>
-            <ItemDescription className="flex items-center gap-1.5 [&_svg]:size-3.5">
+            <ItemDescription className="flex items-center gap-1.5 whitespace-nowrap [&_svg]:size-3.5">
               <DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />{deploymentStatusLabel(deployment)}
               {detail ? <>{" · "}<span className="truncate">{detail}</span></> : null}
             </ItemDescription>

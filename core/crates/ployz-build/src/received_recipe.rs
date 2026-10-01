@@ -19,6 +19,10 @@ pub fn validate_capture(
     root: &Path,
     definition: &Definition,
 ) -> Result<Vec<crate::Railpack>, InputError> {
+    let root = root
+        .canonicalize()
+        .map_err(|_| "Build capture directory is unavailable")?;
+    let root = root.as_path();
     let names: BTreeSet<_> = definition
         .targets
         .iter()
@@ -519,6 +523,27 @@ mod tests {
         )
         .unwrap();
         validate_capture(&root, &definition).unwrap();
+        #[cfg(unix)]
+        {
+            let alias = root.with_extension("alias");
+            std::os::unix::fs::symlink(&root, &alias).unwrap();
+            validate_capture(&alias, &definition).unwrap();
+            fs::remove_file(alias).unwrap();
+            fs::create_dir(root.join("outside")).unwrap();
+            std::os::unix::fs::symlink(root.join("outside"), root.join("source/escape")).unwrap();
+            fs::write(
+                root.join("compose.yaml"),
+                "services:\n  api:\n    build: {context: source/escape}\n",
+            )
+            .unwrap();
+            let escaping = serde_json::json!({"name":"api", "context":"source/escape", "variables":{}, "refresh_cache":false});
+            fs::write(
+                root.join("private/railpack.json"),
+                serde_json::to_vec(&vec![escaping]).unwrap(),
+            )
+            .unwrap();
+            assert!(validate_capture(&root, &definition).is_err());
+        }
         fs::remove_dir_all(root).unwrap();
     }
 

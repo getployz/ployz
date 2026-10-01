@@ -23,6 +23,7 @@ mod query;
 mod registry;
 mod removal;
 mod review;
+mod rules;
 mod scope;
 mod sealing;
 mod service;

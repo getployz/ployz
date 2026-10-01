@@ -78,8 +78,10 @@ export function databaseCommand(preset: DatabasePreset, target: {
   service: string; volume: string; environment: EnvironmentRef; name: string; volumeName: string; password: string;
 }): ConfigCommand {
   const { service, volume, environment, name, volumeName } = target;
+  // The generated password is sealed like any secret: reads show {"secret": true}, and references to it
+  // (DATABASE_URL and the like) still resolve when a Deploy claims it.
   const env = Object.fromEntries(Object.entries(preset.env(target.password))
-    .map(([key, value]) => [key, { value, exported: true }]));
+    .map(([key, value]) => [key, { value: value === target.password ? { secret: value } : value, exported: true }]));
   return {
     command: "batch",
     environment,

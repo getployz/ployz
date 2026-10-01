@@ -36,8 +36,11 @@ export type TeardownTarget = { project: string; environment: string | null };
 /** The Volumes whose data the user accepted losing, by Environment: each removal accepts only its own. */
 export type AcceptedLoss = Readonly<Record<string, readonly string[]>>;
 
-/** Done, or waiting on the Deployment taking `environment` off the Servers. */
-export type TeardownStep = { done: true } | { done: false; environment: string; deployment: string };
+/**
+ * Done, or waiting on `deployment` of `environment`: the removal this step `admitted`, or one already there, which is
+ * also how the Store answers while an ordinary Deploy of it hasn't ended.
+ */
+export type TeardownStep = { done: true } | { done: false; environment: string; deployment: string; admitted: boolean };
 
 type Commit = (command: ConfigCommand, handles: readonly string[]) => Promise<ConfigWritten>;
 
@@ -60,7 +63,7 @@ export async function teardownStep(commit: Commit, target: TeardownTarget, accep
     throw new Error(`The Store answered a removal with ${written.written}`);
   }
   if (written.teardown === "removed") return { done: true };
-  if (written.teardown === "waiting") return { done: false, environment: written.environment, deployment: written.deployment };
+  if (written.teardown === "waiting") return { done: false, environment: written.environment, deployment: written.deployment, admitted: false };
   const id = crypto.randomUUID();
   await commit({
     command: "admit", admit: "remove", id, environment: { project: target.project, environment: written.environment },
@@ -68,5 +71,5 @@ export async function teardownStep(commit: Commit, target: TeardownTarget, accep
     // Deleting one Environment: the Store finishes a Branch itself once this applied, even if this tab is gone.
     close: target.environment !== null,
   }, ["confirmation_required", "invalid_argument"]);
-  return { done: false, environment: written.environment, deployment: id };
+  return { done: false, environment: written.environment, deployment: id, admitted: true };
 }

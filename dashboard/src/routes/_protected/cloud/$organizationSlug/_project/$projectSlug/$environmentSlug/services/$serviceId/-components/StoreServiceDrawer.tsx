@@ -172,8 +172,8 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
           onValueChange={(value) => {
             if (Schema.is(servicePageSchema)(value)) void navigate({ search: (prev) => ({ ...prev, tab: value }), replace: true });
           }}
-          className="flex min-h-0 flex-1 flex-col overflow-clip">
-          <TabsList variant="line" className="max-w-full shrink-0 overflow-x-auto">
+          className="flex min-h-0 flex-1 flex-col overflow-visible sm:overflow-clip">
+          <TabsList variant="line" className="-mx-4 max-w-none shrink-0 overflow-x-auto sm:mx-0 sm:max-w-full">
             {SERVICE_PAGES.map((page) => <TabsTrigger key={page.id} value={page.id}>{page.label}</TabsTrigger>)}
           </TabsList>
           <TabsContent value="deployments" className="mt-4 min-h-0 flex-1 overflow-y-auto">
@@ -418,7 +418,6 @@ function StoreSourceSection({ state }: { state: StoreService }) {
   if (state.source === "uploaded") {
     return (
       <Field>
-        <FieldLabel>Source</FieldLabel>
         <FieldDescription>Uploaded from a directory with <code>ployz up</code>; run it again there to ship new code.</FieldDescription>
       </Field>
     );

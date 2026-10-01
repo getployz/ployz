@@ -40,7 +40,7 @@ export const SERVICE_SETTINGS_SECTIONS = [
   },
   {
     id: "danger",
-    description: "Destructive actions. There is no undo.",
+    description: "Deletions take effect on your next deploy. Discard changes to undo them first.",
     label: "Danger",
   },
 ] as const satisfies readonly ServiceSettingsSectionMeta[];

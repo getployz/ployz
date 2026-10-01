@@ -21,6 +21,7 @@ use crate::{
     cloud_account::StoreCallError,
     cloud_login::LoginError,
     context::Transport,
+    failure::USAGE_EXIT,
     operator::{
         ExecMode, ProxyPorts, ServiceArg, exec_options, merge_logs, open_exec, open_machine_logs,
         open_service_logs, parse_log_time, parse_proxy_ports, parse_service_args, parse_tail,
@@ -174,16 +175,20 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
                 (!detach && stdin_is_readable()).then(|| spawn_stdin(session.input.clone()));
             let resize_task = tty.then(|| spawn_resize(session.input.clone()));
             drop(session.input);
-            let mut exit = 0;
+            let mut exit = None;
             while let Some(payload) = session.output.next().await {
                 match ExecResponseFrame::decode(&payload?)? {
-                    ExecResponseFrame::ExecId(_) => {}
+                    ExecResponseFrame::ExecId(_) => {
+                        if detach {
+                            exit = Some(0);
+                        }
+                    }
                     ExecResponseFrame::Stdout(bytes) => {
                         write_stdout_frame(&mut std::io::stdout(), &bytes)?
                     }
                     ExecResponseFrame::Stderr(bytes) => std::io::stderr().write_all(&bytes)?,
                     ExecResponseFrame::Exit(code) => {
-                        exit = code;
+                        exit = Some(code);
                         break;
                     }
                     ExecResponseFrame::Error(error) => return Err(error.into()),
@@ -192,6 +197,16 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
             if let Some(task) = resize_task {
                 task.abort();
             }
+            let exit = exit.ok_or_else(|| {
+                Error::coded(
+                    RpcErrorCode::Unavailable,
+                    if detach {
+                        "Exec stream ended before command start was confirmed"
+                    } else {
+                        "Exec stream ended without an exit status"
+                    },
+                )
+            })?;
             if !detach && exit != 0 {
                 return Err(Error::exit(u8::try_from(exit).unwrap_or(1)));
             }
@@ -416,7 +431,23 @@ fn parse_fanout_selectors(values: Vec<String>) -> Result<Vec<FanoutSelector>, Er
 }
 
 fn log_options(matches: &ArgMatches) -> Result<LogsOptions, Error> {
-    let now = Utc::now().timestamp();
+    let options = log_window(matches, Utc::now().timestamp())?;
+    // A window with no time in it would print nothing and look like an empty log.
+    let follow = options.follow;
+    match (options.since_unix_seconds, options.until_unix_seconds) {
+        (Some(since), Some(until)) if until < since => Err(Error::usage(
+            "--until is before --since, so no line fits; swap them",
+        )
+        .with_exit(USAGE_EXIT)),
+        (Some(since), _) if !follow && since > Utc::now().timestamp() => Err(Error::usage(
+            "--since is in the future, so no line fits yet; add --follow to wait for them",
+        )
+        .with_exit(USAGE_EXIT)),
+        _ => Ok(options),
+    }
+}
+
+fn log_window(matches: &ArgMatches, now: i64) -> Result<LogsOptions, Error> {
     Ok(LogsOptions {
         follow: matches.get_flag("follow"),
         tail: parse_tail(
@@ -454,29 +485,30 @@ async fn print_logs(
             continue;
         }
         let timestamp = timestamp(&entry, utc);
-        let (service_name, service_id, container, hook) = match &entry.metadata.origin {
+        // The Service and a `ps`-length container ID; --json carries the full IDs.
+        let (service_name, container, hook) = match &entry.metadata.origin {
             LogOrigin::Service {
-                service_id,
                 service_name,
                 container_id,
                 hook,
+                ..
             } => (
                 service_name.as_str(),
-                service_id.as_str(),
-                format!("/{container_id}"),
+                format!(
+                    "/{}",
+                    container_id
+                        .as_str()
+                        .get(..12)
+                        .unwrap_or(container_id.as_str())
+                ),
                 hook.as_deref()
                     .map_or(String::new(), |hook| format!(" ({hook})")),
             ),
-            LogOrigin::Machine { service } => (
-                service.as_str(),
-                service.as_str(),
-                String::new(),
-                String::new(),
-            ),
+            LogOrigin::Machine { service } => (service.as_str(), String::new(), String::new()),
         };
         let prefix = format!(
-            "{timestamp} {} {}/{}{}{} | ",
-            entry.metadata.machine_name, service_name, service_id, container, hook,
+            "{timestamp} {} {}{}{} | ",
+            entry.metadata.machine_name, service_name, container, hook,
         );
         let Some((message, stderr)) = printable_log_bytes(&entry.body) else {
             continue;
@@ -791,6 +823,29 @@ mod tests {
 #[cfg(test)]
 mod scope_tests {
     use super::*;
+
+    #[test]
+    fn a_log_window_with_no_time_in_it_is_refused() {
+        let options = |args: &[&str]| {
+            let root = crate::cli::command().try_get_matches_from(args).unwrap();
+            log_options(leaf_matches(&root)).is_ok()
+        };
+        assert!(!options(&[
+            "ployz", "logs", "web", "--since", "1m", "--until", "5m"
+        ]));
+        assert!(!options(&["ployz", "logs", "web", "--since", "2999-01-01"]));
+        assert!(options(&[
+            "ployz",
+            "logs",
+            "web",
+            "--since",
+            "2999-01-01",
+            "-f"
+        ]));
+        assert!(options(&[
+            "ployz", "logs", "web", "--since", "5m", "--until", "1m"
+        ]));
+    }
 
     #[test]
     fn a_renamed_service_is_found_by_its_runtime_name() {

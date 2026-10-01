@@ -20,6 +20,7 @@ const NonnegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 export const runtimeContainerStateSchema = Schema.Struct({
   state: Schema.String,
   health: Schema.optionalKey(Schema.String),
+  code: Schema.optionalKey(Schema.Int),
 });
 
 /** Direct container evidence, without historical specs or inferred Service state. */

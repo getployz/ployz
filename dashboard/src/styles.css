@@ -74,7 +74,9 @@
   color-scheme: light;
 }
 
-.dark {
+/* React Flow marks its wrapper .light by default, which would reset the canvas to light tokens. */
+.dark,
+.dark .react-flow {
   --background: #0a0a0a;
   --foreground: #ededed;
   --card: #161616;
@@ -89,8 +91,8 @@
   --muted-foreground: #a1a1a1;
   --accent: var(--muted);
   --accent-foreground: #ededed;
-  --destructive: hsl(1 62% 44%);
-  --destructive-foreground: hsl(0 0% 100%);
+  --destructive: hsl(1 62% 80%);
+  --destructive-foreground: #0a0a0a;
   --destructive-soft: hsl(1 45% 12%);
   --destructive-border: hsl(1 55% 20%);
   --success: hsl(152 38% 60%);
@@ -107,7 +109,7 @@
   --info-border: hsl(220 62% 25%);
   --changed: hsl(324 69% 60%);
   --changed-deep: hsl(326 80% 78%);
-  --changed-foreground: hsl(0 0% 100%);
+  --changed-foreground: #0a0a0a;
   --changed-soft: hsl(330 28% 18%);
   --changed-border: hsl(330 32% 28%);
   --live-soft: color-mix(in srgb, var(--card) 60%, transparent);
@@ -325,11 +327,12 @@
     box-shadow: none;
   }
 }
-/* Desktop panels stop above the bottom bar; the mobile full-screen panel leaves room under it. */
-.canvas-inspector-pane, .canvas-inspector-pane[data-takeover="true"] { margin-bottom: 5rem; }
+/* Desktop panels stop above the bottom bar; the mobile full-screen panel leaves room under it. Only while there is a
+   bar: with nothing to deploy the panel runs to the bottom. */
+.environment-canvas-scene:has(.bottom-bar) .canvas-inspector-pane { margin-bottom: 5rem; }
 @media (max-width: 860px) {
   .bottom-bar { left: 0.75rem; right: 0.75rem; bottom: 0.75rem; translate: none; width: auto; min-width: 0; max-width: none; }
-  .canvas-inspector-pane, .canvas-inspector-pane[data-takeover="true"] { margin-bottom: 0; padding-bottom: 5rem; }
+  .environment-canvas-scene:has(.bottom-bar) .canvas-inspector-pane { margin-bottom: 0; padding-bottom: 5rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   .canvas-inspector-pane { transition: none; }
@@ -506,6 +509,15 @@
     margin: 0;
     position: relative;
     overflow-x: clip;
+  }
+
+  /* Geist Mono joins "--" into one dash; commands must show every character a user types. */
+  code,
+  pre,
+  kbd,
+  samp,
+  .font-mono {
+    font-variant-ligatures: none;
   }
 
   .hljs {

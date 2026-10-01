@@ -38,10 +38,25 @@ export function projectContainerLog(record: LogRecord): ContainerLogRow {
 
 export type ContainerLogs = Collection<ContainerLogRow, string>;
 
+/** One insert for the whole batch: a live query recomputes once, not once per line. */
 export function appendContainerLogs(collection: ContainerLogs, rows: readonly ContainerLogRow[]) {
-  for (const row of rows) {
-    if (!collection.has(row.id)) collection.insert(row);
-  }
+  const fresh = new Map(rows.filter(row => !collection.has(row.id)).map(row => [row.id, row]));
+  if (fresh.size) collection.insert([...fresh.values()]);
+}
+
+// ponytail: the page keeps the newest 10k lines; a busy service drops older ones it had loaded. Page from the server if that bites.
+export const LIVE_LOG_LIMIT = 10_000;
+
+/**
+ * Drop the oldest lines back to `limit`, so a service printing thousands a second can't grow the page without end. It
+ * waits for 10% slack first, so the sort runs once per thousand lines, not on every batch.
+ */
+export function trimContainerLogs(collection: ContainerLogs, limit = LIVE_LOG_LIMIT) {
+  if (collection.size <= limit * 1.1) return;
+  const over = collection.size - limit;
+  const oldest = [...collection.values()].map(row => ({ id: row.id, at: BigInt(row.timestamp) }))
+    .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)).slice(0, over).map(row => row.id);
+  collection.delete(oldest);
 }
 
 /** Each container starts with its own tail, so each needs its own history boundary. */

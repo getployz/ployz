@@ -32,13 +32,13 @@ it("takes an Environment still on the Servers off them first, accepting only its
   const step = await teardownStep(commit, { project: "shop", environment: null }, { staging: ["pg"], production: ["files"] });
   expect(sent[0]).toEqual({ command: "remove_project", project: "shop" });
   expect(sent[1]).toMatchObject({ command: "admit", admit: "remove", environment: { project: "shop", environment: "staging" }, accept_volume_loss: ["pg"] });
-  expect(step).toEqual({ done: false, environment: "staging", deployment: (sent[1] as { id: string }).id });
+  expect(step).toEqual({ done: false, environment: "staging", deployment: (sent[1] as { id: string }).id, admitted: true });
 });
 
 it("waits on a Deployment that hasn't ended rather than admitting another", async () => {
   const { sent, commit } = store(onServers("waiting"));
   expect(await teardownStep(commit, { project: "shop", environment: "staging" }, {}))
-    .toEqual({ done: false, environment: "staging", deployment: "d1" });
+    .toEqual({ done: false, environment: "staging", deployment: "d1", admitted: false });
   expect(sent).toHaveLength(1);
 });
 

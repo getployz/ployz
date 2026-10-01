@@ -150,6 +150,21 @@ pub(super) fn explain(root: &ArgMatches) -> Result<(), Error> {
         if let Some(values) = schema.get("enum") {
             say!("Allowed: {values}");
         }
+        // The bounds the Store enforces, so a refused value needs no second read.
+        let low = schema
+            .get("minimum")
+            .map(|low| format!("at least {low}"))
+            .or_else(|| {
+                schema
+                    .get("exclusiveMinimum")
+                    .map(|low| format!("above {low}"))
+            });
+        let high = schema.get("maximum").map(|high| format!("at most {high}"));
+        match (low, high) {
+            (Some(low), Some(high)) => say!("Range: {low}, {high}"),
+            (Some(bound), None) | (None, Some(bound)) => say!("Range: {bound}"),
+            (None, None) => {}
+        }
         if let Some(default) = schema.get("default") {
             say!("Default: {default}");
         }

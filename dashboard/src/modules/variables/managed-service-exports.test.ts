@@ -29,7 +29,7 @@ describe("managed service exports", () => {
         }),
         expect.objectContaining({
           key: "PORT",
-          value: "3000",
+          value: "8080",
           exported: true,
           managed: true,
         }),
@@ -50,4 +50,3 @@ describe("managed service exports", () => {
     ]);
   });
 });
-

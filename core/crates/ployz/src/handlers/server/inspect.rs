@@ -89,8 +89,22 @@ fn format_storage(storage: Option<MachineStorageObservation>) -> String {
             used_bytes,
             free_bytes,
         }) => format!(
-            "Managed volumes available ({size_bytes} bytes, {used_bytes} used, {free_bytes} free)"
+            "Managed volumes available ({}, {} used, {} free)",
+            size(size_bytes.get()),
+            size(used_bytes),
+            size(free_bytes)
         ),
+    }
+}
+
+/// Bytes in the decimal GB storage limits are written in (MB under one GB); --json keeps the bytes.
+fn size(bytes: u64) -> String {
+    #[expect(clippy::cast_precision_loss, reason = "display rounding only")]
+    let bytes = bytes as f64;
+    if bytes >= 1e9 {
+        format!("{:.1} GB", bytes / 1e9)
+    } else {
+        format!("{:.0} MB", bytes / 1e6)
     }
 }
 
@@ -175,7 +189,7 @@ mod tests {
                 used_bytes: 3_865_470_566,
                 free_bytes: 429_496_730,
             })),
-            "Managed volumes available (4294967296 bytes, 3865470566 used, 429496730 free)"
+            "Managed volumes available (4.3 GB, 3.9 GB used, 429 MB free)"
         );
     }
 

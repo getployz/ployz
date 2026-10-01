@@ -129,9 +129,9 @@ function ServiceVariablesView({
 function ManagedVariables({ managed }: { managed: readonly { key: string; value: string }[] }) {
   return (
     <section>
-      <h2 className="font-medium">{managed.length} Ployz variables</h2>
+      <h2 className="font-medium">{managed.length} Ployz reference defaults</h2>
       <div className="pt-2">
-        <p className="text-sm text-muted-foreground">Ployz adds these system variables to every build and deploy.</p>
+        <p className="text-sm text-muted-foreground">Available in {"${{ }}"} references. Variables you set take precedence.</p>
         <div className="mt-4">
           {managed.map((variable) => (
             <div key={variable.key} className="grid grid-cols-2 items-center gap-3 border-b py-2 last:border-b-0">

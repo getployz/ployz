@@ -137,8 +137,8 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
             say!(
                 "staged {}: {} -> {}",
                 change.path,
-                change.before,
-                change.after
+                crate::handlers::store::shown(&change.before),
+                crate::handlers::store::shown(&change.after)
             );
         }
     })
@@ -171,6 +171,16 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
 fn staged(matches: &ArgMatches, result: &ServiceStaged, what: &str) -> Result<(), Error> {
     let hint = (!result.staged.is_empty()).then(|| store::next(matches, &["diff"]));
     output::finish(&Next::new(result, hint), || {
+        // A mutation always says what it did, nothing included.
+        if result.staged.is_empty() {
+            say!(
+                "No change in {}/{}: {} already has that name.",
+                result.environment.project,
+                result.environment.name,
+                result.service.name
+            );
+            return;
+        }
         say!(
             "{what} {} in {}/{} (revision {}).",
             result.service.name,

@@ -190,6 +190,43 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     assert!(frames.contains(&ExecResponseFrame::Stderr(b"err".to_vec())));
     assert!(matches!(frames.last(), Some(ExecResponseFrame::Exit(42))));
 
+    let channel = tonic::transport::Endpoint::from_shared(format!("http://{address}"))
+        .unwrap()
+        .initial_stream_window_size(1024)
+        .initial_connection_window_size(1024)
+        .connect()
+        .await
+        .unwrap();
+    let mut slow_client = MachineRpcClient::new(channel);
+    let config = exec_config(
+        &created.container_id,
+        ["sh", "-c", "head -c 8388608 /dev/zero"],
+        false,
+    );
+    let mut output = slow_client
+        .exec(Request::new(tokio_stream::iter([config])))
+        .await
+        .unwrap()
+        .into_inner();
+    let mut bytes = 0;
+    let mut exit = None;
+    while let Some(frame) = output.message().await.unwrap() {
+        match ExecResponseFrame::decode(&frame).unwrap() {
+            ExecResponseFrame::ExecId(_) => {}
+            ExecResponseFrame::Stdout(output) => {
+                assert!(output.iter().all(|byte| *byte == 0));
+                bytes += output.len();
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            ExecResponseFrame::Exit(code) => exit = Some(code),
+            other @ (ExecResponseFrame::Stderr(_) | ExecResponseFrame::Error(_)) => {
+                panic!("unexpected exec frame: {other:?}")
+            }
+        }
+    }
+    assert_eq!(bytes, 8_388_608);
+    assert_eq!(exit, Some(0));
+
     let open_config = exec_config(
         &created.container_id,
         ["sh", "-c", "sleep 30 & exit 7"],

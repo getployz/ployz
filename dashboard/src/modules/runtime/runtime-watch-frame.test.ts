@@ -17,6 +17,19 @@ import {
 const OBSERVED_AT = "2026-08-18T00:00:00.000Z";
 
 describe("runtimeSnapshotFromWatchFrame", () => {
+  it("retains exit codes across the redacted watch and browser snapshot", () => {
+    const container = runtimeWatchContainerFixture("machine-a", "ctr-stopped");
+    container.runtime = { state: "exited", code: 0 };
+    const frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({
+      services: [{ identity: "production/api", service_id: container.resolved_spec.service_id, containers: [container], hook_containers: [] }],
+      containers: [container],
+    }));
+    const parsed = Schema.decodeUnknownSync(runtimeWatchFrameSchema)(frame);
+    expect(parsed.containers[0]?.runtime).toEqual({ state: "exited", code: 0 });
+    expect(runtimeSnapshotFromWatchFrame(parsed).services[0]?.containers[0]?.runtime).toEqual({ state: "exited", code: 0 });
+    expect(frame.containers[0]).not.toHaveProperty("resolved_spec");
+  });
+
   it("retains direct Engine observations without inferring a runtime verdict", () => {
     const api = runtimeWatchContainerFixture("machine-a", "ctr-api");
     const hook = runtimeWatchContainerFixture("machine-b", "ctr-hook");

@@ -103,7 +103,8 @@ export function createRuntimeEventsResponse(input: RuntimeEventsSource) {
         }\n\n`,
       );
       heartbeatInterval = setInterval(() => {
-        if ((controller.desiredSize ?? 0) > 0) write(": keepalive\n\n");
+        // A named event, not an SSE comment: the page watches for it to notice a stream gone silent.
+        if ((controller.desiredSize ?? 0) > 0) write("event: ping\ndata: {}\n\n");
       }, 25_000);
 
       if (input.status === "no_connection") {

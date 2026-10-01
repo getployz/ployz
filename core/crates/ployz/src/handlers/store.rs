@@ -403,12 +403,26 @@ pub(crate) fn with_next(
     StoreCallError::Refused(error)
 }
 
-/// A unit enum variant as the word its JSON uses, such as `not_applied`.
+/// A unit enum variant as a person reads it: its JSON word with spaces, such as `not applied` for `not_applied`.
 pub(crate) fn word(value: &impl serde::Serialize) -> String {
     serde_json::to_value(value)
         .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
+        .and_then(|value| value.as_str().map(|word| word.replace('_', " ")))
         .unwrap_or_default()
+}
+
+/// A value as a change line shows it: a long one cut to its start and length, so one big variable doesn't fill the terminal.
+pub(crate) fn shown(value: &serde_json::Value) -> String {
+    const SHOWN: usize = 80;
+    let length = value.as_str().map_or_else(
+        || value.to_string().chars().count(),
+        |text| text.chars().count(),
+    );
+    if length <= SHOWN {
+        return value.to_string();
+    }
+    let start: String = value.to_string().chars().take(SHOWN).collect();
+    format!("{start}… ({length} chars)")
 }
 
 /// Argument `arg`, a Service name. Core's name error quotes the value; a rejected
@@ -418,7 +432,7 @@ pub(crate) fn service_name(
     arg: &str,
 ) -> Result<ployz_core::ServiceName, Error> {
     ployz_core::ServiceName::parse(super::required(matches, arg)?).map_err(|_| {
-        Error::usage("Expected a Service name: lowercase letters, digits and -, like web")
+        Error::usage("Expected a Service name: up to 63 lowercase letters, digits and -, like web")
             .with_exit(crate::failure::USAGE_EXIT)
     })
 }
@@ -475,7 +489,7 @@ pub(crate) fn volume_name(
     arg: &str,
 ) -> Result<ployz_store::VolumeName, Error> {
     ployz_store::VolumeName::parse(super::required(matches, arg)?).map_err(|_| {
-        Error::usage("Expected a Volume name: lowercase letters, digits and -, like data")
+        Error::usage("Expected a Volume name: up to 63 lowercase letters, digits and -, like data")
             .with_exit(crate::failure::USAGE_EXIT)
     })
 }
@@ -483,6 +497,16 @@ pub(crate) fn volume_name(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_value_shows_its_start_and_length() {
+        assert_eq!(shown(&json!("short")), "\"short\"");
+        assert_eq!(shown(&json!(3)), "3");
+        let long = shown(&json!("a".repeat(70_000)));
+        assert!(long.starts_with("\"aaa"));
+        assert!(long.ends_with("… (70000 chars)"));
+        assert!(long.chars().count() < 100);
+    }
 
     #[test]
     fn a_refused_volume_loss_names_the_exact_retry() {

@@ -104,7 +104,7 @@ impl SystemConnector {
     pub fn new(ssh_program: impl Into<PathBuf>) -> Self {
         Self {
             ssh_program: ssh_program.into(),
-            ssh_timeout: Duration::from_secs(5),
+            ssh_timeout: Duration::from_secs(20),
             relay: ManagementRelay::default(),
         }
     }
@@ -155,7 +155,7 @@ impl Connector for SystemConnector {
                 io::Error::new(
                     io::ErrorKind::TimedOut,
                     format!(
-                        "SSH connection to {} timed out after {} seconds",
+                        "SSH connection to {} timed out after {} seconds; a slow or distant Server may need --ssh-timeout 60",
                         destination.target(),
                         self.ssh_timeout.as_secs()
                     ),

@@ -118,6 +118,8 @@ pub(crate) fn discard(
     let review = review::review(tx, &environment)?;
     review::check(&review, discard.version.as_deref())?;
     let Review { saved, head, .. } = review;
+    // Head is what runs: what it already breaks, a discard may bring back.
+    let runs = head.intent.clone();
     let (working, restored) = match &discard.path {
         // Everything returns to Head, in Working and Saved State alike.
         None => (head.intent.clone(), saved.as_ref().map(|_| head.intent)),
@@ -138,7 +140,7 @@ pub(crate) fn discard(
         != canonicalize_environment_intent(environment.working.clone())
     {
         environment.working = working;
-        scope::save_working(tx, &mut environment)?;
+        scope::save_working_from(tx, &mut environment, Some(&runs))?;
     }
     Ok(Discarded {
         environment: environment.summary,

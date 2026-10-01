@@ -135,6 +135,46 @@ fn lowering_retains_commands_limits_restart_and_network_ownership() {
     );
 }
 
+#[test]
+fn lowering_explains_root_and_colliding_mount_destinations() {
+    for (paths, message) in [
+        (
+            vec!["/data/.."],
+            "A volume cannot mount at the container root /",
+        ),
+        (
+            vec!["/data", "/x/../data"],
+            "Two volume mounts resolve to the same container path",
+        ),
+    ] {
+        let ids = [
+            "00000000-0000-4000-8000-000000000002",
+            "00000000-0000-4000-8000-000000000003",
+        ];
+        let mounts: Vec<_> = paths
+            .iter()
+            .zip(ids)
+            .map(|(path, id)| {
+                json!({
+                    "volumeResourceId": id, "volumeName": "data", "mountPath": path,
+                })
+            })
+            .collect();
+        let error = lowered(json!({
+            "namespace": "production",
+            "snapshots": [{ "config": {
+                "version": 2, "privateDns": "api",
+                "source": { "version": 1, "type": "image", "image": "nginx:stable", "credentials": { "type": "none" } },
+                "healthcheck": { "type": "none" }, "restartPolicy": "on-failure",
+                "mounts": mounts,
+            } }],
+            "volumes": ids.map(|id| json!({ "volumeResourceId": id, "storage": { "kind": "docker" } })),
+        })).unwrap_err();
+        assert_eq!(error.path, "mounts", "{paths:?}: {error}");
+        assert_eq!(error.message, message);
+    }
+}
+
 fn lower_hook(pre_deploy: Option<&str>, setup: Value) -> Result<Value, ConfigError> {
     let config = json!({"version":2,"privateDns":"api",
         "source":{"version":1,"type":"image","image":"nginx:stable","credentials":{"type":"none"}},

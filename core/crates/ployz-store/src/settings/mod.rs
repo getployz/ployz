@@ -237,7 +237,7 @@ impl ServiceSetting {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "pattern": "^/",
+                        "pattern": "^/[^\\u0000-\\u001f\\u007f-\\u009f]*$",
                         "minLength": 1,
                         "maxLength": HEALTHCHECK_PATH_MAX,
                     },
@@ -251,13 +251,15 @@ impl ServiceSetting {
                 "required": ["path"],
                 "additionalProperties": false,
             }),
-            Self::Image => json!({ "type": "string", "minLength": 1, "maxLength": IMAGE_MAX }),
+            Self::Image => {
+                json!({ "type": "string", "pattern": "^[^\\u0000]*$", "minLength": 1, "maxLength": IMAGE_MAX })
+            }
             Self::MaxRetries => {
                 json!({ "type": "integer", "minimum": 0, "maximum": MAX_RETRIES_MAX })
             }
-            Self::Replicas => json!({ "type": "integer", "minimum": 0, "maximum": REPLICAS_MAX }),
+            Self::Replicas => json!({ "type": "integer", "minimum": 1, "maximum": REPLICAS_MAX }),
             Self::PreDeployCommand | Self::StartCommand => {
-                json!({ "type": "string", "minLength": 1, "maxLength": COMMAND_MAX })
+                json!({ "type": "string", "pattern": "^[^\\u0000]*$", "minLength": 1, "maxLength": COMMAND_MAX })
             }
             Self::RestartPolicy => json!({ "type": "string", "enum": RESTART_POLICIES }),
             Self::Template => json!({
@@ -606,6 +608,9 @@ pub(crate) fn image_source(
     credentials: ServiceImageCredentials,
 ) -> Result<ServiceSource, RpcError> {
     let setting = ServiceSetting::Image;
+    // Checked where an image is written, not where Saved State is read, so an Environment holding one from
+    // before this check still opens.
+    setting.validated("imageReference", json!(image))?;
     let source = ServiceSource::Image {
         version: 1,
         image,
@@ -761,12 +766,14 @@ impl SettingPath {
             return Ok(Self(Addressed::Volume(VolumeName::parse(volume)?, field)));
         }
         let (service, rest) = path.split_once('.').unzip();
-        let service = ServiceName::parse(service.unwrap_or(path)).map_err(|_| {
-            error::invalid(
-                "Expected a path like SERVICE.SETTING",
-                json!({ "example": "web.replicas" }),
-            )
-        })?;
+        // Service names are lowercase, so `REDIS.replicas` can only mean `redis`.
+        let service =
+            ServiceName::parse(service.unwrap_or(path).to_ascii_lowercase()).map_err(|_| {
+                error::invalid(
+                    "Expected a path like SERVICE.SETTING",
+                    json!({ "example": "web.replicas" }),
+                )
+            })?;
         let target = match rest {
             None => None,
             Some("env") => {

@@ -132,6 +132,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         };
         let value: Value = serde_json::from_str(&patch).map_err(|_| {
             Error::usage("--patch expects a JSON object, for example '{\"replicas\":3}'")
+                .with_exit(USAGE_EXIT)
         })?;
         // A new secret on the command line would land in shell history.
         let sealing = |variable: &Value| {
@@ -201,7 +202,21 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
+    if let Some(path) = repeated(&changes) {
+        return Err(
+            Error::usage(format!("{path} is given twice; set it once")).with_exit(USAGE_EXIT)
+        );
+    }
     edit(root, changes)
+}
+
+/// A path two of `changes` set: only the last would land, without a word.
+fn repeated(changes: &[Change]) -> Option<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    changes.iter().find_map(|change| match change {
+        Change::Set { path, .. } => (!seen.insert(path.to_string())).then(|| path.to_string()),
+        Change::Unset { .. } | Change::Patch { .. } => None,
+    })
 }
 
 /// The one positional a flag applies to.
@@ -269,48 +284,27 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
     edit(root, changes)
 }
 
-/// `KEY=VALUE` lines of a .env file: `#` comments and blank lines skipped, an
-/// optional `export `, values optionally quoted. Errors name the line, never its text.
+/// `KEY=VALUE` lines of a .env file, read by core's one parser (the dashboard's raw editor uses it too).
+/// Errors name the line, never its text.
 fn env_file(text: &str) -> Result<Vec<(String, String)>, Error> {
-    let mut variables = Vec::new();
-    for (number, line) in text.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let line = line.strip_prefix("export ").unwrap_or(line);
-        let Some((key, value)) = line.split_once('=') else {
-            return Err(
-                Error::usage(format!("Env file line {}: expected KEY=VALUE", number + 1))
-                    .with_exit(USAGE_EXIT),
-            );
-        };
-        let value = value.trim();
-        let quoted = |quote: char| {
-            value
-                .strip_prefix(quote)
-                .and_then(|value| value.strip_suffix(quote))
-        };
-        let value = if let Some(inner) = quoted('"') {
-            inner
-                .replace("\\\\", "\u{0}")
-                .replace("\\n", "\n")
-                .replace("\\\"", "\"")
-                .replace('\u{0}', "\\")
-        } else if let Some(inner) = quoted('\'') {
-            inner.to_owned()
-        } else {
-            // An unquoted value ends at a ` #` comment.
-            value
-                .split(" #")
-                .next()
-                .unwrap_or_default()
-                .trim_end()
-                .to_owned()
-        };
-        variables.push((key.trim().to_owned(), value));
-    }
-    Ok(variables)
+    ployz_core::config::parse_env_file(text)
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(|entry| (entry.key, entry.value))
+                .collect()
+        })
+        .map_err(|error| {
+            Error::usage(format!("Env file {}", lowercase_first(&error.message)))
+                .with_exit(USAGE_EXIT)
+        })
+}
+
+fn lowercase_first(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_lowercase().chain(chars).collect()
+    })
 }
 
 pub(super) fn unset(root: &ArgMatches) -> Result<(), Error> {
@@ -353,14 +347,39 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
         if !edited.immediate.is_empty() {
             say!("Applied {} in {where_}.", super::joined(&edited.immediate));
         }
+        // A mutation always says what it did, nothing included.
+        if edited.staged.is_empty() && edited.immediate.is_empty() {
+            say!("No change in {where_}: already set.");
+        }
     })
 }
 
-/// A Setting value as a person reads it: text bare, anything else as JSON.
+/// A Setting value as a person reads it: escaped text, anything else as JSON.
 fn display_value(value: &Value) -> String {
     match value {
-        Value::String(text) => text.clone(),
+        Value::String(text) => text.escape_debug().to_string(),
         Value::Null => "-".to_owned(),
         Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => value.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_path_set_twice_is_named() {
+        let set = |path: &str, value: &str| Change::Set {
+            path: SettingPath::parse(path).unwrap(),
+            value: json!(value),
+        };
+        assert_eq!(
+            repeated(&[set("web.replicas", "2"), set("web.image", "a")]),
+            None
+        );
+        assert_eq!(
+            repeated(&[set("web.replicas", "2"), set("WEB.replicas", "3")]).as_deref(),
+            Some("web.replicas")
+        );
     }
 }

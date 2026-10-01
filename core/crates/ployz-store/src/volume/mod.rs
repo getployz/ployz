@@ -37,6 +37,10 @@ pub struct CreateVolume {
     /// Where Services mount it.
     #[serde(default)]
     pub mounts: Vec<Mount>,
+    /// Let more than one container write it; off refuses a second writer.
+    #[serde(default)]
+    #[ts(as = "Option<bool>", optional)]
+    pub shared_writes: bool,
 }
 
 /// One Service mounting a Volume at a path.
@@ -88,6 +92,20 @@ pub struct SetVolumeStorage {
     pub storage: VolumeKind,
 }
 
+/// Allow or refuse more than one writer of a Volume: replicas of one Service, or
+/// several Services. It changes nothing that runs, so it applies at once.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SetVolumeSharedWrites {
+    /// The Environment containing the Volume.
+    #[serde(default)]
+    pub environment: EnvironmentRef,
+    /// The Volume, by name.
+    pub volume: VolumeName,
+    /// On allows several writers; off refuses while it has more than one.
+    pub shared_writes: bool,
+}
+
 /// A Volume created or removed in Working State, staged until a Deploy.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct VolumeStaged {
@@ -109,6 +127,9 @@ pub struct VolumeSummary {
     pub name: VolumeName,
     /// Its chosen storage, including the maximum for a Provisioned Volume.
     pub storage: VolumeKind,
+    /// Whether more than one container may write it.
+    #[serde(default)]
+    pub shared_writes: bool,
 }
 
 pub(crate) fn create_volume(
@@ -124,6 +145,7 @@ pub(crate) fn create_volume(
         resource_lineage_id: create.id.to_string(),
         name: create.name.to_string(),
         storage: create.storage,
+        shared_writes: create.shared_writes,
     };
     environment.working.volumes.push(node.clone());
     let mut staged = vec![SettingPath::volume(&create.name)];
@@ -138,14 +160,25 @@ pub(crate) fn create_volume(
     scope::save_working(tx, &mut environment)?;
     scope::introduce(tx, who, &environment.summary.id, scope::Node::Volume(&node))?;
     Ok(VolumeStaged {
-        volume: VolumeSummary {
-            id: create.id.clone(),
-            name: create.name.clone(),
-            storage: create.storage,
-        },
+        volume: summary(&node)?,
         environment: environment.summary,
         staged,
     })
+}
+
+pub(crate) fn set_shared_writes(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    set: &SetVolumeSharedWrites,
+) -> Result<VolumeStaged, RpcError> {
+    let mut environment = scope::lock(tx, who, &set.environment)?;
+    let before = environment.working.clone();
+    environment.volume_mut(&set.volume)?.shared_writes = set.shared_writes;
+    if environment.working != before {
+        scope::save_working(tx, &mut environment)?;
+    }
+    // It applies at once: nothing waits for a Deploy.
+    staged(environment, &set.volume, false)
 }
 
 pub(crate) fn rename_volume(
@@ -318,7 +351,7 @@ pub(crate) fn attach(
 ) -> Result<bool, RpcError> {
     let path = ContainerPath::parse(path).map_err(|_| {
         error::invalid(
-            format!("{service}.mounts.{volume}: expected an absolute path"),
+            format!("{service}.mounts.{volume}: expected an absolute path without null characters"),
             json!({ "example": "/var/lib/data" }),
         )
     })?;
@@ -357,5 +390,104 @@ pub(crate) fn summary(node: &SavedVolumeIntent) -> Result<VolumeSummary, RpcErro
         id: VolumeId::parse(node.resource_id.as_str()).map_err(|_| error::corrupt("Volume ID"))?,
         name: VolumeName::parse(node.name.as_str()).map_err(|_| error::corrupt("Volume name"))?,
         storage: node.storage,
+        shared_writes: node.shared_writes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::{
+        Actor, Admit, Change, ConfigStore, CreateProject, CreateService, CreateVolume, Deploy,
+        DeploymentId, Edit, EnvironmentId, EnvironmentRef, Mount, OrganizationId, ProjectId,
+        ProjectName, ServiceLineageId, SettingPath, Trusted, VolumeId, VolumeName,
+    };
+
+    /// Working State saved before shared writes existed can hold two writers of a
+    /// Volume without it; only the Store's own storage can write one now.
+    #[test]
+    fn an_environment_already_sharing_a_volume_keeps_editing_and_deploying() {
+        let store =
+            ConfigStore::open("sqlite::memory:", crate::SealingKey::new(b"test").unwrap()).unwrap();
+        let who = Actor::system(OrganizationId::parse("org").unwrap());
+        let uuid = |n: u8| format!("00000000-0000-4000-8000-00000000000{n}");
+        store
+            .write(
+                &who,
+                &CreateProject {
+                    id: ProjectId::parse(uuid(1)).unwrap(),
+                    name: ProjectName::parse("shop").unwrap(),
+                    default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(uuid(3)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ployz_core::ServiceName::parse("db").unwrap(),
+                    image: Some("postgres:17".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &CreateVolume {
+                    id: VolumeId::parse(uuid(4)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: VolumeName::parse("data").unwrap(),
+                    storage: ployz_core::config::VolumeKind::Docker {},
+                    mounts: vec![Mount {
+                        service: ployz_core::ServiceName::parse("db").unwrap(),
+                        path: "/data".into(),
+                    }],
+                    shared_writes: false,
+                },
+            )
+            .unwrap();
+        crate::rules::tests::seed(&store, &who, |working| {
+            for service in &mut working.services {
+                service.config.replicas = 2;
+            }
+        });
+        let set = |path: &str, value| {
+            store.write(
+                &who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: vec![Change::Set {
+                        path: SettingPath::parse(path).unwrap(),
+                        value,
+                    }],
+                },
+            )
+        };
+        set("db.env.MODE", json!("fast")).unwrap();
+        // A third writer is still refused.
+        assert_eq!(
+            set("db.replicas", json!(3)).unwrap_err().code,
+            ployz_core::RpcErrorCode::Conflict
+        );
+        store
+            .write_trusted(
+                &who,
+                &Admit::Deploy(Deploy {
+                    id: DeploymentId::parse(uuid(5)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    services: Vec::new(),
+                    version: None,
+                    upload: None,
+                    accept_volume_loss: Vec::new(),
+                    message: None,
+                }),
+                &Trusted::default(),
+            )
+            .unwrap();
+    }
 }

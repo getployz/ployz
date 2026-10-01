@@ -227,7 +227,7 @@ pub fn compile_environment_intent(
         });
         let built_in: [String; BUILT_IN_VARIABLES.len()] = [
             format!("{}.internal", service.config.private_dns),
-            "3000".into(),
+            DEFAULT_SERVICE_PORT.to_string(),
             intent.environment_slug.clone(),
             service.config.private_dns.to_string(),
             environment_id.into(),

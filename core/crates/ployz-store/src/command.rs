@@ -19,7 +19,8 @@ pub use crate::service::{
 };
 pub use crate::settings::edit::{Change, Edit, Edited};
 pub use crate::volume::{
-    CreateVolume, Mount, RemoveVolume, RenameVolume, SetVolumeStorage, VolumeStaged, VolumeSummary,
+    CreateVolume, Mount, RemoveVolume, RenameVolume, SetVolumeSharedWrites, SetVolumeStorage,
+    VolumeStaged, VolumeSummary,
 };
 
 use crate::error;
@@ -167,6 +168,9 @@ commands! {
     /// Change a Volume's storage before its first Deployment is requested.
     SetVolumeStorage(SetVolumeStorage) -> Volume(VolumeStaged)
         => crate::volume::set_storage(tx, who, c);
+    /// Allow or refuse more than one writer of a Volume; applies at once.
+    SetVolumeSharedWrites(SetVolumeSharedWrites) -> Volume(VolumeStaged)
+        => crate::volume::set_shared_writes(tx, who, c);
     /// Remove a Volume from Working State; a Deploy deletes its data.
     RemoveVolume(RemoveVolume) -> VolumeRemoved(VolumeStaged)
         => crate::volume::remove_volume(tx, who, c);

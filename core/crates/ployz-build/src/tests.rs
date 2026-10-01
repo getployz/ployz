@@ -132,7 +132,7 @@ fn cancellation_does_not_wait_for_a_surviving_output_writer() {
     let program = directory.join("docker");
     executable(
         &program,
-        "#!/bin/sh\ncase \"$1\" in --ready) exit 0 ;; esac\n/usr/bin/timeout 4 /usr/bin/yes output &\nwait\n",
+        "#!/bin/sh\ncase \"$1\" in --ready) exit 0 ;; esac\n(/usr/bin/yes output & writer=$!; sleep 4; kill \"$writer\" 2>/dev/null; wait) &\nwait\n",
     );
     let cancellation = Cancellation::default();
     let progress = |event| {

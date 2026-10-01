@@ -23,7 +23,7 @@ describe("Config Store nodes", () => {
   // SAFETY: test ids stand in for the Store's minted Service ids.
   const listing = (id: string, name: string): ServiceListing => ({ id: id, name, private_dns: name, source: "image", change: null, template: null });
   const volume = (id: string, mounts: { service: string; path: string }[]): VolumeListing =>
-    ({ id, name: id, mounts, deployed: false, storage: { kind: "docker" }, storage_locked: false, change: "create" });
+    ({ id, name: id, mounts, deployed: false, storage: { kind: "docker" }, storage_locked: false, shared_writes: false, change: "create" });
   const listings = [listing("s1", "postgres"), listing("s2", "web")];
   const volumes = [
     volume("shared", [{ service: "postgres", path: "/data" }, { service: "web", path: "/srv" }]),

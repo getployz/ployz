@@ -10,6 +10,8 @@ pub fn compare_specs(
 ) -> SpecChange {
     if requested.container.pull_policy == PullPolicy::Always
         || current.serving_shape() != requested.serving_shape()
+        // A new hook runs with new Containers; it isn't serving shape, so traffic stays on the old ones meanwhile.
+        || current.pre_deploy != requested.pre_deploy
     {
         SpecChange::NeedsRecreate
     } else {
@@ -58,7 +60,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn command_edits_recreate_and_resource_edits_update() {
+    fn command_and_hook_edits_recreate_and_resource_edits_update() {
         let current: ResolvedServiceSpec = serde_json::from_value(json!({
             "service_id": "a".repeat(32), "name": "api",
             "mode": {"mode": "replicated", "replicas": 1},
@@ -82,5 +84,12 @@ mod tests {
         candidate.container.resources.memory_bytes =
             Some(crate::ByteQuantity::try_from(64).unwrap());
         assert_eq!(compare_specs(&current, &candidate), SpecChange::NeedsUpdate);
+        candidate = current.to_requested();
+        candidate.pre_deploy =
+            Some(serde_json::from_value(json!({"command": ["migrate"]})).unwrap());
+        assert_eq!(
+            compare_specs(&current, &candidate),
+            SpecChange::NeedsRecreate
+        );
     }
 }

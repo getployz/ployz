@@ -64,7 +64,7 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
         <StoreVolumeStorage key={`${volume.id}:${JSON.stringify(volume.storage)}`} state={state} removing={removing} />
         <div className="py-8"><Separator /></div>
         <section aria-labelledby="volume-mounts-heading">
-          <h2 id="volume-mounts-heading" className="text-lg font-semibold">Mounts</h2>
+          <h2 id="volume-mounts-heading" className="text-base font-medium">Mounts</h2>
           <div className="mt-4">
             {removing ? (
               <Empty>
@@ -103,7 +103,7 @@ function StoreVolumeStorage({ state, removing }: { state: StoreVolume; removing:
   }
 
   return <section aria-labelledby="volume-storage-heading" className="flex flex-col gap-4">
-    <h2 id="volume-storage-heading" className="text-lg font-semibold">Storage</h2>
+    <h2 id="volume-storage-heading" className="text-base font-medium">Storage</h2>
     <p className="text-sm text-muted-foreground">Files stored here survive deployments and restarts. Data stays on the server that hosts this volume.</p>
     {storage_locked || removing ? <>
       <p className="text-sm">{managed ? "Managed · " : ""}{volumeStorageText(storage)}</p>
@@ -165,13 +165,15 @@ function StoreVolumeMounts({ state, services, volumes, diff }: {
         </div>
       )}
       {available.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Every service in this environment already mounts this volume.</p>
+        <p className="text-sm text-muted-foreground">{services.some((service) => service.change !== "delete")
+          ? "Every remaining service already mounts this volume."
+          : "Add a service to mount this volume."}</p>
       ) : (
         <Field data-invalid={adding.error ? true : undefined}>
           <FieldLabel>Mount on a service</FieldLabel>
-          <div className="flex gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row">
             <Select value={adding.service} onValueChange={(service) => setAdding({ ...adding, service: service ?? "", error: null })}>
-              <SelectTrigger className="flex-1" aria-label="Service"><SelectValue placeholder="Select a service" /></SelectTrigger>
+              <SelectTrigger className="w-full sm:w-auto sm:flex-1" aria-label="Service"><SelectValue placeholder="Select a service" /></SelectTrigger>
               <SelectContent>
                 <SelectGroup>
                   {available.map((service) => <SelectItem key={service.id} value={service.name}>{service.name}</SelectItem>)}
@@ -255,7 +257,7 @@ function StoreVolumeDanger({ state, params, version }: { state: StoreVolume; par
 
   return (
     <section aria-labelledby="volume-danger-heading">
-      <h2 id="volume-danger-heading" className="text-lg font-semibold text-destructive">Danger</h2>
+      <h2 id="volume-danger-heading" className="text-base font-medium text-destructive">Danger</h2>
       <div className="mt-4 flex flex-col items-start justify-between gap-4 rounded-xl border border-destructive-border bg-destructive-soft p-4 sm:flex-row sm:items-center">
         <div className="min-w-0">
           <div className="text-sm font-semibold text-destructive">

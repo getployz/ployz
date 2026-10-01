@@ -12,11 +12,12 @@ it("submits the rename form once and lets the dialog handle Escape without savin
     editTitle="Rename service" editDescription="Choose a name" placeholder="Name" />);
   fireEvent.click(screen.getByRole("button", { name: "api" }));
   const input = await screen.findByRole("textbox", { name: "Rename service" });
+  expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
   fireEvent.change(input, { target: { value: "worker" } });
   const form = input.closest("form");
   if (!form) throw new Error("Rename must use a native form");
   expect(form.querySelector('button[type="submit"]')).toBeTruthy();
-  fireEvent.submit(form);
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(() => expect(rename).toHaveBeenCalledExactlyOnceWith("worker"));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   fireEvent.click(screen.getByRole("button", { name: "api" }));

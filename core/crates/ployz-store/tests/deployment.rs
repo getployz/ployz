@@ -639,6 +639,27 @@ fn a_retry_ships_exactly_what_the_failed_deployment_froze() {
 }
 
 #[test]
+fn a_retry_is_refused_once_a_newer_deployment_applied() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    fail_api(&store, 1);
+    admit(&store, &who, 2, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(2), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    // Shipping #1's revision now would undo #2.
+    let refused = retry(&store, &who, 3, 1).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert!(refused.message.contains("#2"), "{}", refused.message);
+    assert_eq!(code(start(&store, &who, 3)), RpcErrorCode::NotFound);
+}
+
+#[test]
 fn a_retry_is_refused_unless_its_deployment_ended_without_applying() {
     let (store, who) = shop();
     let other = Actor::system(OrganizationId::parse("other").unwrap());

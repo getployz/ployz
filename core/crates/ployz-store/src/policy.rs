@@ -278,7 +278,7 @@ pub(crate) fn set(
 ) -> Result<bool, RpcError> {
     if !PolicySetting::applies(&service.config) {
         return Err(ServiceSetting::Policy(setting)
-            .invalid("only a Service that builds a repository deploys on push"));
+            .invalid("this Setting requires a Service connected to a repository"));
     }
     let before = load(tx, environment, &service.id)?;
     let mut policy = before.clone();

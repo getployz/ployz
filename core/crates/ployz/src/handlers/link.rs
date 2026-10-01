@@ -570,6 +570,9 @@ fn print(status: &Status, hint: Option<&str>) {
         .account
         .as_ref()
         .map_or(identity.credential, |account| account.email.as_str());
+    if let Some(cloud) = &identity.cloud {
+        say!("Cloud: {cloud}");
+    }
     say!("Organization {organization} ({who}).");
     if let Some(environment) = &status.environment {
         say!("Environment {}/{}.", environment.project, environment.name);
@@ -578,7 +581,15 @@ fn print(status: &Status, hint: Option<&str>) {
         say!("Linked from {link}.");
     }
     if let Some(staged) = &status.staged {
-        say!("{} staged change(s).", staged.changes);
+        say!(
+            "{} staged {}.",
+            staged.changes,
+            if staged.changes == 1 {
+                "change"
+            } else {
+                "changes"
+            }
+        );
     }
     for deployment in &status.deploying {
         say!(

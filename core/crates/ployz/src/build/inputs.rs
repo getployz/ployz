@@ -307,10 +307,7 @@ fn fingerprint(path: &Path, selection: Option<&Selection>) -> io::Result<Vec<u8>
                 digest.update(buffer.get(..read).expect("read fits the supplied buffer"));
             }
         } else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "build inputs contain a socket or special file",
-            ));
+            return Err(special_file(path, root));
         }
         Ok(())
     }
@@ -353,11 +350,18 @@ fn copy(
         io::copy(&mut input, &mut output)?;
         fs::set_permissions(target, metadata.permissions())
     } else {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "build inputs contain a socket or special file",
-        ))
+        Err(special_file(source, root))
     }
+}
+
+fn special_file(path: &Path, root: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "build inputs contain a socket or special file at {:?}",
+            path.strip_prefix(root).expect("input is under its root")
+        ),
+    )
 }
 
 /// An Uploaded Source's content digest: lowercase hex sha256 over every path, byte,
@@ -673,8 +677,8 @@ mod tests {
 
     #[test]
     fn included_special_files_and_invalid_patterns_still_fail() {
-        let fixture = BuildInputs::new().unwrap();
-        let source = &fixture.root;
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path();
         let _socket = UnixListener::bind(source.join("socket")).unwrap();
         let mut inputs = BuildInputs::new().unwrap();
         assert!(
@@ -694,5 +698,20 @@ mod tests {
         );
         fs::write(source.join(".dockerignore"), "[\n").unwrap();
         assert!(inputs.context(source, &source.join("Dockerfile")).is_err());
+        fs::remove_file(source.join(".dockerignore")).unwrap();
+        fs::remove_file(source.join("socket")).unwrap();
+        fs::create_dir(source.join("cache")).unwrap();
+        let _named_socket = UnixListener::bind(source.join("cache/run\nsocket")).unwrap();
+        for error in [
+            content_digest(source).unwrap_err(),
+            inputs
+                .context(source, &source.join("Dockerfile"))
+                .unwrap_err(),
+        ] {
+            let message = error.to_string();
+            assert!(message.contains("cache/run\\nsocket"), "{message}");
+            assert!(!message.contains('\n'), "filename controls must be escaped");
+            assert!(!message.contains(source.to_str().unwrap()));
+        }
     }
 }

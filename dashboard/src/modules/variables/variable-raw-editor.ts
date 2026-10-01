@@ -1,8 +1,8 @@
 import { Data, Result } from "effect";
+import { parseEnvFile } from "@ployz/sdk/config";
 import { asRecord, asString } from "#/lib/json";
 import type { VariableRecord } from "./variables";
 
-const ENV_LINE_RE = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/;
 const VARIABLE_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SAFE_UNQUOTED_RE = /^[A-Za-z0-9_./:@-]*$/;
 
@@ -100,91 +100,27 @@ export function findSealedVariableNameCollisions(
   return collisions;
 }
 
-function parseQuotedValueOrThrow(
-  input: string,
-  quote: '"' | "'",
-  lineNo: number,
-  nextLine: () => string | undefined,
-): string {
-  let result = "";
-  let i = 1;
-  while (true) {
-    if (i === input.length) {
-      const continuation = nextLine();
-      if (continuation === undefined) break;
-      result += "\n";
-      input = continuation;
-      i = 0;
-    }
-    if (i === input.length) continue;
-    const ch = input[i];
-    if (ch === "\\" && quote === '"' && i + 1 < input.length) {
-      const next = input[i + 1];
-      if (next === "n") result += "\n";
-      else if (next === "r") result += "\r";
-      else if (next === "t") result += "\t";
-      else result += next;
-      i += 2;
-      continue;
-    }
-    if (ch === quote) {
-      const tail = input.slice(i + 1).trim();
-      if (tail !== "" && !tail.startsWith("#")) {
-        throw new RawEditorParseError(
-          `Line ${lineNo}: unexpected text after closing ${quote}.`,
-        );
-      }
-      return result;
-    }
-    result += ch;
-    i += 1;
-  }
-  throw new RawEditorParseError(
-    `Line ${lineNo}: unterminated ${quote === '"' ? "double" : "single"}-quoted value.`,
-  );
-}
-
-function parseEnvValueOrThrow(rawValue: string, lineNo: number, nextLine: () => string | undefined): string {
-  const value = rawValue.trimStart();
-  if (value === "") return "";
-  const first = value[0];
-  if (first === '"' || first === "'") {
-    return parseQuotedValueOrThrow(value, first, lineNo, nextLine);
-  }
-  // Bare value — strip an inline comment if present.
-  const commentIdx = value.indexOf(" #");
-  const trimmed = commentIdx >= 0 ? value.slice(0, commentIdx) : value;
-  return trimmed.trim();
-}
-
-function* envEntries(text: string): Generator<Result.Result<ParsedEntry, RawEditorParseError>> {
-  const lines = text.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i += 1) {
-    const lineNo = i + 1;
-    const trimmed = (lines[i] ?? "").trimStart();
-    if (trimmed.trim() === "" || trimmed.startsWith("#")) continue;
-    try {
-      const match = ENV_LINE_RE.exec(trimmed);
-      if (!match) throw new RawEditorParseError(`Line ${lineNo}: expected KEY=VALUE.`);
-      const key = (match[1] ?? "").toUpperCase();
-      const value = parseEnvValueOrThrow(match[2] ?? "", lineNo, () => lines[++i]);
-      yield Result.succeed({ key, value });
-    } catch (cause) {
-      if (!(cause instanceof RawEditorParseError)) throw cause;
-      yield Result.fail(cause);
-    }
+/**
+ * Core's one `.env` reader (`ployz set --from-env-file` uses it too), with keys upper-cased: the dashboard treats
+ * `foo` and `FOO` as one variable. A bad line fails the whole text, naming it by number.
+ */
+function envEntries(text: string): Result.Result<ParsedEntry[], RawEditorParseError> {
+  try {
+    return Result.succeed(parseEnvFile(text).map(({ key, value }) => ({ key: key.toUpperCase(), value })));
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message.replace(/^env: /, "") : "Couldn't read the text.";
+    return Result.fail(new RawEditorParseError(`${message}.`));
   }
 }
 
 export function parseEnv(
   text: string,
 ): Result.Result<ParsedEntry[], RawEditorParseError> {
+  const parsed = envEntries(text);
+  if (Result.isFailure(parsed)) return parsed;
+  // Last value wins while retaining the key's original position.
   const entries = new Map<string, ParsedEntry>();
-  for (const entry of envEntries(text)) {
-    if (Result.isFailure(entry)) return Result.fail(entry.failure);
-    // Last value wins while retaining the key's original position.
-    entries.set(entry.success.key, entry.success);
-  }
+  for (const entry of parsed.success) entries.set(entry.key, entry);
   return Result.succeed([...entries.values()]);
 }
 
@@ -242,16 +178,16 @@ export function parseJson(
 /**
  * Keys (upper-cased) that appear more than once in ENV text. Used to surface a
  * non-blocking "merged duplicate keys" notice; parsing keeps the last value.
- * Mirrors parseEnv's line handling but never throws — it ignores invalid lines
+ * Reads like parseEnv but never fails — it ignores invalid lines
  * so the notice stays quiet while the user is mid-edit.
  */
 export function findDuplicateEnvKeys(text: string): string[] {
+  // Mid-edit the text often has a bad line; the notice then reads line by line and skips the bad ones.
+  const whole = envEntries(text);
+  const entries = Result.isSuccess(whole) ? whole.success
+    : text.split(/\r?\n/).flatMap((line) => { const one = envEntries(line); return Result.isSuccess(one) ? one.success : []; });
   const counts = new Map<string, number>();
-  for (const entry of envEntries(text)) {
-    if (Result.isFailure(entry)) continue;
-    const key = entry.success.key;
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
+  for (const { key } of entries) counts.set(key, (counts.get(key) ?? 0) + 1);
   return [...counts.entries()].flatMap(([key, n]) => (n > 1 ? [key] : []));
 }
 

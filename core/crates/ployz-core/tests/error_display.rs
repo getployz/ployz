@@ -26,7 +26,10 @@ fn selector_errors_list_plain_targets_and_ids() {
         matches: ids.to_vec(),
     }
     .to_string();
-    assert!(ambiguous.contains("selector edge"), "{ambiguous}");
+    assert!(
+        ambiguous.starts_with("edge matches more than one Server"),
+        "{ambiguous}"
+    );
     assert!(
         ambiguous.contains(&format!("{}, {}", ids[0], ids[1])),
         "{ambiguous}"

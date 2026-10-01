@@ -1,6 +1,7 @@
 import { MutationObserver } from "@tanstack/react-query";
 import type { Change, ConfigCommand, ConfigWritten, EnvironmentRef } from "@ployz/sdk";
 import { toast } from "sonner";
+import { isUnauthorized } from "#/lib/error-message";
 import { observeFailure, type Persistable } from "#/collections/query-collection";
 import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -86,7 +87,9 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
       onError: async (error) => {
         // Only a write that sent `expect` meets a stale revision; a command's `conflict` (a taken name) says its own.
         // A refusal the caller says it handles (`confirmation_required`, a question it puts to the user) is its to show.
-        if (!(error instanceof StoreRefused && handled.includes(error.code))) {
+        if (isUnauthorized(error)) {
+          toast.error("You're signed out. Nothing was saved.", { action: { label: "Sign in", onClick: () => window.location.assign("/auth") } });
+        } else if (!(error instanceof StoreRefused && handled.includes(error.code))) {
           toast.error(expects && error instanceof StoreRefused && error.code === "conflict" ? CONFLICT
             : error instanceof TypeError ? UNREACHABLE : error.message);
         }

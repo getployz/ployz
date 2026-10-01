@@ -61,7 +61,6 @@ const NETWORK = /\bfetch\(|new EventSource\(/;
 /** Raw network access outside data files and server code. */
 const NETWORK_FILES = {
   "modules/github/github-observation.api.ts": "server-only GitHub API client",
-  "providers/runtime-provider.tsx": "the Runtime SSE connection",
 };
 
 /** Remote Reads a loader cannot prefetch, and what warms them instead. */

@@ -108,6 +108,10 @@ fn failed(store: &Target, args: &[&str], exit: i32) -> Value {
 /// Its worker runs each admitted Deployment with Cloud's runner, on a Cluster
 /// whose only Server never answers.
 fn fake_cloud() -> String {
+    fake_cloud_with_dispatch(dispatch)
+}
+
+fn fake_cloud_with_dispatch(worker: fn(&std::sync::Arc<ConfigStore>, &Written)) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let store = std::sync::Arc::new(
@@ -115,7 +119,7 @@ fn fake_cloud() -> String {
     );
     std::thread::spawn(move || {
         for stream in listener.incoming() {
-            serve(&store, stream.unwrap()).unwrap();
+            serve(&store, stream.unwrap(), worker).unwrap();
         }
     });
     url
@@ -141,7 +145,11 @@ fn dispatch(store: &std::sync::Arc<ConfigStore>, written: &Written) {
     });
 }
 
-fn serve(store: &std::sync::Arc<ConfigStore>, mut stream: TcpStream) -> std::io::Result<()> {
+fn serve(
+    store: &std::sync::Arc<ConfigStore>,
+    mut stream: TcpStream,
+    worker: fn(&std::sync::Arc<ConfigStore>, &Written),
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request = String::new();
     reader.read_line(&mut request)?;
@@ -180,7 +188,7 @@ fn serve(store: &std::sync::Arc<ConfigStore>, mut stream: TcpStream) -> std::io:
             if let (StoreCommand::Admit(_) | StoreCommand::Start(_), Ok(written)) =
                 (&command, &written)
             {
-                dispatch(store, written);
+                worker(store, written);
             }
             answer(written)
         }
@@ -343,10 +351,42 @@ fn an_agent_creates_and_edits_an_image_service() {
         );
         ok(store, &["unset", "web.healthcheck"]);
         assert_eq!(value("web.healthcheck"), Value::Null);
+        let before_invalid = ok(store, &["diff"]);
+        for path in [
+            "/private\u{1}probe",
+            "/private\tprobe",
+            "/private\nprobe",
+            "/private\u{85}probe",
+        ] {
+            let patch = json!({"cpuLimit":1, "healthcheck":{"path":path}}).to_string();
+            let refused = error(store, &["set", "web", "--patch", &patch]);
+            assert_eq!(refused["code"], "invalid_argument");
+            assert!(!refused.to_string().contains("private"));
+            assert_eq!(ok(store, &["diff"]), before_invalid);
+        }
+        ok(store, &["set", "web.healthcheck=/café?escaped=%0A"]);
+        assert_eq!(value("web.healthcheck")["path"], "/café?escaped=%0A");
+        ok(store, &["unset", "web.healthcheck"]);
         ok(store, &["set", "web.privateDns=front"]);
         assert_eq!(value("web.privateDns"), json!("front"));
         ok(store, &["unset", "web.privateDns"]);
         assert_eq!(value("web.privateDns"), json!("web"));
+
+        let text = "alpha\nweb.env.SPOOF = true\t\u{1b}[31mcafé";
+        ok(store, &["set", &format!("web.env.DISPLAY={text}")]);
+        assert_eq!(value("web.env.DISPLAY"), text);
+        let home = tempfile::tempdir().unwrap();
+        let human = store
+            .command(home.path())
+            .args(["get", "web.env.DISPLAY"])
+            .output()
+            .unwrap();
+        assert!(human.status.success());
+        let human = String::from_utf8(human.stdout).unwrap();
+        assert_eq!(human.lines().count(), 1);
+        assert!(!human.contains('\u{1b}'));
+        assert!(!human.contains('\t'));
+        assert!(human.contains("alpha\\nweb.env.SPOOF = true\\t\\u{1b}[31mcafé"));
 
         // Unsetting the image disconnects the source: the Service is empty again.
         ok(store, &["unset", "web.image"]);
@@ -548,6 +588,96 @@ fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
         let listed = ok(store, &["env", "ls"]);
         assert_eq!(listed["environments"].as_array().unwrap().len(), 1);
     }
+}
+
+#[test]
+fn a_project_removal_reports_applied_environments_before_a_later_refusal() {
+    fn worker(store: &std::sync::Arc<ConfigStore>, written: &Written) {
+        let Written::Deployment(admitted) = written else {
+            return;
+        };
+        // Keep the second authored Deployment queued, so production refuses removal.
+        if admitted.number == 2 && !admitted.remove {
+            return;
+        }
+        let runner = RunnerId::parse("successful-worker").unwrap();
+        let claimed = store.claim(&admitted.id, &runner).unwrap();
+        let preview = serde_json::from_value(json!({
+            "namespace": claimed.intent.namespace, "operations": [],
+            "warnings": [], "would_remove": [], "preserved_volumes": []
+        }))
+        .unwrap();
+        store
+            .record(
+                &admitted.id,
+                &runner,
+                ployz_store::RunEvidence::Prepared(preview),
+            )
+            .unwrap();
+        let outcome = serde_json::from_value(json!({"type": "success", "completed": []})).unwrap();
+        store
+            .record(
+                &admitted.id,
+                &runner,
+                ployz_store::RunEvidence::Executed {
+                    outcome: Box::new(outcome),
+                    removed: Vec::new(),
+                },
+            )
+            .unwrap();
+    }
+    let cloud = Target::Cloud {
+        url: fake_cloud_with_dispatch(worker),
+        token: "ployz_alice",
+    };
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["env", "new", "before-root"]);
+    for environment in ["production", "before-root"] {
+        ok(
+            &cloud,
+            &[
+                "service",
+                "add",
+                "web",
+                "--image",
+                "nginx:alpine",
+                "--env",
+                environment,
+            ],
+        );
+        ok(&cloud, &["deploy", "--env", environment]);
+    }
+    ok(&cloud, &["set", "web.cpuLimit=0.2", "--env", "production"]);
+    ok(&cloud, &["deploy", "--env", "production", "--detach"]);
+    let (exit, result) = ployz(
+        Some(&cloud),
+        &["project", "rm", "shop", "--confirm", "shop"],
+    );
+    assert_eq!(exit, Some(3), "{result}");
+    assert_eq!(result["applied"].as_array().unwrap().len(), 1);
+    assert_eq!(result["applied"][0]["status"], "applied");
+    assert_eq!(result["applied"][0]["remove"], true);
+    assert_eq!(result["follow_up_error"]["code"], "conflict");
+    assert!(
+        result["follow_up_error"]["details"]["next"]
+            .as_str()
+            .unwrap()
+            .contains("deployment show")
+    );
+    let listed = ok(&cloud, &["deployment", "ls", "--env", "before-root"]);
+    assert_eq!(listed["deployments"][0]["id"], result["applied"][0]["id"]);
+    assert_eq!(listed["deployments"][0]["status"], "applied");
+    // Retrying now refuses before new progress and keeps the ordinary error contract.
+    let refused = error(&cloud, &["project", "rm", "shop", "--confirm", "shop"]);
+    assert_eq!(refused["code"], "conflict");
+    assert_eq!(refused["details"], result["follow_up_error"]["details"]);
+    assert_eq!(
+        ok(&cloud, &["project", "ls"])["projects"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -785,6 +915,7 @@ fn an_agent_adds_mounts_detaches_and_removes_volumes() {
                 "mounts": [{ "service": "db", "path": "/data" }],
                 "deployed": false, "change": "create",
                 "storage": { "kind": "provisioned", "maximumBytes": 5000000000_i64 }, "storage_locked": false,
+                "shared_writes": false,
             }])
         );
         assert_eq!(
@@ -825,6 +956,51 @@ fn an_agent_adds_mounts_detaches_and_removes_volumes() {
         let accept = error(store, &["deploy", "--accept-volume-loss", "data"]);
         assert_eq!(accept["code"], json!("invalid_argument"));
         failed(store, &["deploy", "--yes"], 2);
+    }
+}
+
+#[test]
+fn an_agent_allows_shared_writes_before_a_second_writer() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "db", "--image", "postgres:17"]);
+        ok(store, &["volume", "add", "data", "--mount", "db:/data"]);
+        let refused = error(store, &["set", "db.replicas=2"]);
+        assert_eq!(refused["code"], "conflict", "{refused}");
+        assert_eq!(
+            refused["details"]["next"],
+            "ployz volume set data --shared-writes --env production --project shop"
+        );
+
+        let allowed = ok(store, &["volume", "set", "data", "--shared-writes"]);
+        assert_eq!(allowed["volume"]["shared_writes"], true);
+        assert_eq!(allowed["staged"], json!([]));
+        ok(store, &["set", "db.replicas=2"]);
+        let off = error(store, &["volume", "set", "data", "--shared-writes=false"]);
+        assert_eq!(off["code"], "conflict", "{off}");
+        assert_eq!(
+            ok(store, &["volume", "inspect", "data"])["shared_writes"],
+            true
+        );
+
+        let added = ok(
+            store,
+            &[
+                "volume",
+                "add",
+                "uploads",
+                "--shared-writes",
+                "--mount",
+                "db:/up",
+            ],
+        );
+        assert_eq!(added["volume"]["shared_writes"], true);
+        // One change at a time: storage and shared writes are separate writes.
+        failed(
+            store,
+            &["volume", "set", "data", "--shared-writes", "--docker"],
+            2,
+        );
     }
 }
 
@@ -1038,13 +1214,27 @@ fn get_patch_get_round_trips_and_the_environment_shows_only_what_is_set() {
             12
         );
 
-        for patch in [r#"{"memLimit": null}"#, "not json"] {
-            let refused = error(store, &["set", "web", "--patch", patch]);
+        for (patch, exit) in [(r#"{"memLimit": null}"#, 1), ("not json", 2)] {
+            let refused = failed(store, &["set", "web", "--patch", patch], exit);
             assert_eq!(
                 refused.get("code"),
                 Some(&json!("invalid_argument")),
                 "{patch}"
             );
+        }
+        let before = ok(store, &["diff"]);
+        for patch in [
+            "{\"env\":{\"PRIVATE\":\"fixture-private-value\"",
+            &format!("{{\"cpuLimit\":{}0{}}}", "[".repeat(140), "]".repeat(140)),
+        ] {
+            let (exit, output) = piped(store, &["set", "web", "--patch", "-"], patch);
+            assert_eq!(exit, Some(2));
+            assert_eq!(
+                serde_json::from_str::<Value>(&output).unwrap()["error"]["code"],
+                "invalid_argument"
+            );
+            assert!(!output.contains("fixture-private-value"));
+            assert_eq!(ok(store, &["diff"]), before);
         }
     }
 }
@@ -1676,6 +1866,20 @@ fn missing_ambiguous_and_foreign_scope_name_the_fix() {
             Some(&json!("not_found"))
         );
         assert_eq!(status.get("next"), Some(&json!("ployz project new NAME")));
+        let human = store
+            .command(home.path())
+            .current_dir(dir.path())
+            .arg("status")
+            .output()
+            .unwrap();
+        assert!(human.status.success());
+        let human = String::from_utf8(human.stdout).unwrap();
+        match store {
+            Target::Cloud { url, .. } => {
+                assert!(human.contains(&format!("Cloud: {url}")), "{human}")
+            }
+            Target::Local(_) => assert!(!human.contains("Cloud:"), "{human}"),
+        }
         let (code, refused) = run(&["link"]);
         assert_eq!(code, Some(1));
         assert_eq!(refused.pointer("/error/code"), Some(&json!("not_found")));
@@ -1884,7 +2088,7 @@ fn secrets_arrive_on_stdin_or_an_env_file_and_never_print() {
         let file = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(
             file.path(),
-            "# app\nexport QUOTED=\"a b\\n\"\nRAW='lit ${{ x }}'\nTOKEN=rotated-s3cr3t\nLEVEL=info # comment\n",
+            "\u{feff}# app\nexport QUOTED=\"a b\\n\" # comment\nRAW='lit ${{ LEVEL }} # inside' # comment\nTOKEN=rotated-s3cr3t\nLEVEL=info # comment\nexport\tTAB_EXPORT=works\nTAB_COMMENT=first\t# ignored # later\n",
         )
         .unwrap();
         let path = file.path().to_str().unwrap();
@@ -1895,7 +2099,9 @@ fn secrets_arrive_on_stdin_or_an_env_file_and_never_print() {
                 "web.env.QUOTED",
                 "web.env.RAW",
                 "web.env.TOKEN",
-                "web.env.LEVEL"
+                "web.env.LEVEL",
+                "web.env.TAB_EXPORT",
+                "web.env.TAB_COMMENT"
             ])
         );
         let env = ok(store, &["get", "web"])["values"]["env"].clone();
@@ -1905,8 +2111,10 @@ fn secrets_arrive_on_stdin_or_an_env_file_and_never_print() {
                 "DB_HOST": "db",
                 "LEVEL": "info",
                 "QUOTED": "a b\n",
-                "RAW": "lit ${{ x }}",
+                "RAW": "lit ${{ LEVEL }} # inside",
                 "TOKEN": { "secret": true },
+                "TAB_EXPORT": "works",
+                "TAB_COMMENT": "first",
             })
         );
         failed(
@@ -1914,6 +2122,53 @@ fn secrets_arrive_on_stdin_or_an_env_file_and_never_print() {
             &["set", "web", "--from-env-file", "/nonexistent/.env"],
             2,
         );
+
+        let before_invalid = ok(store, &["diff"]);
+        for (invalid, why) in [
+            (
+                "\"unterminated-test-secret",
+                "unterminated double-quoted value",
+            ),
+            (
+                "'unterminated-test-secret",
+                "unterminated single-quoted value",
+            ),
+            (
+                "\"test-secret\" trailing",
+                "unexpected text after the closing quote",
+            ),
+        ] {
+            std::fs::write(file.path(), format!("LEVEL=changed\nTOKEN={invalid}\n")).unwrap();
+            let refused = failed(store, &["set", "web", "--from-env-file", path], 2);
+            assert_eq!(refused["code"], "invalid_argument");
+            assert_eq!(refused["message"], format!("Env file line 2: {why}"));
+            assert!(!refused.to_string().contains("test-secret"));
+            assert_eq!(ok(store, &["diff"]), before_invalid);
+        }
+        std::fs::write(file.path(), "LEVEL=changed\nTOKEN=\"test\u{0}secret\"\n").unwrap();
+        let refused = failed(store, &["set", "web", "--from-env-file", path], 2);
+        assert_eq!(
+            refused["message"],
+            "Env file line 2: null characters are not allowed"
+        );
+        assert_eq!(ok(store, &["diff"]), before_invalid);
+
+        for key in [
+            "DB_HOST.exported",
+            "",
+            "1KEY",
+            "KEY-",
+            "KEY\u{0}",
+            "KEY\u{feff}",
+        ] {
+            std::fs::write(file.path(), format!("LEVEL=changed\n{key}=true\n")).unwrap();
+            let refused = failed(store, &["set", "web", "--from-env-file", path], 2);
+            assert_eq!(
+                refused["message"],
+                "Env file line 2: a variable name is letters, digits and _, not starting with a digit"
+            );
+            assert_eq!(ok(store, &["diff"]), before_invalid);
+        }
 
         let diff = ok(store, &["diff"]).to_string();
         assert!(!diff.contains("s3cr3t"), "{diff}");

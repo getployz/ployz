@@ -13,7 +13,6 @@ import { RelativeTime, RunningTime } from "#/components/relative-time";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
-import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
@@ -25,6 +24,7 @@ import { buildLogQuery, deploymentQuery, useStoreView } from "#/modules/config-s
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { formatDuration } from "#/utils/relative-time";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
+import { CanvasInspectorNotFound } from "./CanvasInspectorRouteStates";
 import { DEPLOYMENT_PAGE_ROUTE_TO, type deploymentPageSearchSchema } from "./deployment-page";
 import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
 
@@ -44,12 +44,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
   const result = useStoreView(params.organizationSlug, deploymentQuery(deploymentId));
   // With no Server, nothing can run it: the way on is adding one.
   const { noServers } = useRuntimeLens(params.organizationSlug);
-  if (!result.ok) {
-    return <>
-      <CanvasInspectorHeader params={params}><span className="font-medium">Deployment</span></CanvasInspectorHeader>
-      <Empty variant="placeholder"><EmptyDescription>This environment has no such deployment.</EmptyDescription></Empty>
-    </>;
-  }
+  if (!result.ok) return <CanvasInspectorNotFound noun="Deployment" />;
   const deployment = result.value;
   const services = deployment.nodes.filter((node) => node.type === "service");
   const volumes = deployment.nodes.filter((node) => node.type === "volume");
@@ -204,7 +199,8 @@ function ServiceLogs({ deployment, node, picked, onPick }: {
         <TabsTrigger value="deploy">Deploy</TabsTrigger>
       </TabsList>
       <TabsContent value="build" className="flex min-h-0 flex-col gap-2">
-        {build.message ? <p className="break-words text-destructive">{build.message}</p> : null}
+        {/* Said once: the header's reason already carries a failed build's message. */}
+        {build.message && !outcomeReason(deployment.outcome)?.includes(build.message) ? <p className="break-words text-destructive">{build.message}</p> : null}
         <Suspense fallback={<Skeleton className="h-24 w-full" />}>
           <StoreBuildLog deploymentId={deployment.id} service={build.service} />
         </Suspense>

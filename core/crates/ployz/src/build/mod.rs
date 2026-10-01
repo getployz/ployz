@@ -49,16 +49,18 @@ pub enum Recipe {
 }
 
 /// Remote failure evidence cannot contain a successful build outcome.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, Error, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RemoteBuildFailure {
     /// The Build Machine confirmed the attempt ended without an image.
+    #[error("Build failed: {message}")]
     Failed {
         stage: Stage,
         message: String,
         work: WorkEvidence,
     },
     /// The attempt's termination was not confirmed.
+    #[error("Build outcome unknown: {message}")]
     Unknown {
         stage: Stage,
         message: String,
@@ -69,7 +71,7 @@ pub enum RemoteBuildFailure {
 /// Why a Build could not be captured, run, or bound to its Service.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum Error {
-    #[error("Build {outcome:?}")]
+    #[error("{outcome}")]
     RemoteBuild { outcome: Box<RemoteBuildFailure> },
     #[error("invalid Build: {0}")]
     Invalid(String),

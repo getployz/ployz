@@ -17,12 +17,26 @@ export function OrganizationCollectionRefreshNotice({
     }).length > 0,
     () => false,
   );
-  if (!hasError) return null;
+  const mutations = scope.queryClient.getMutationCache();
+  const hasQueuedChanges = useSyncExternalStore(
+    (onChange) => mutations.subscribe(onChange),
+    () => mutations.findAll({
+      status: "pending",
+      predicate: (mutation) => mutation.state.isPaused
+        && mutation.options.mutationKey?.[1] === organizationSlug
+        && (mutation.options.mutationKey?.[0] === "store-edit" || mutation.options.mutationKey?.[0] === "store-command"),
+    }).length > 0,
+    () => false,
+  );
+  if (!hasError && !hasQueuedChanges) return null;
   return (
     <Alert>
-      <AlertDescription>
+      {hasQueuedChanges ? <AlertDescription>
+        Changes are queued and not saved yet. Keep this tab open; saving resumes automatically.
+      </AlertDescription> : null}
+      {hasError ? <AlertDescription>
         Could not refresh organization data. Shown results may be out of date. Retrying automatically.
-      </AlertDescription>
+      </AlertDescription> : null}
     </Alert>
   );
 }

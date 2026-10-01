@@ -57,13 +57,17 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
                     say!("CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE");
                     for container in &containers {
                         let observation = container.as_observation();
+                        // Scoped to one Environment, its Namespace on every row says nothing.
+                        let service = match &namespace {
+                            Some(_) => observation.service_name().to_string(),
+                            None => observation.identity().to_string(),
+                        };
                         say!(
-                            "{}\t{}\t{}\t{}\t{}",
-                            observation.container_id,
-                            observation.identity(),
+                            "{}\t{service}\t{}\t{}\t{}",
+                            short(observation.container_id.as_str()),
                             process_kind(*container),
                             observation.machine_id,
-                            observation.runtime
+                            process_state(&observation.runtime)
                         );
                     }
                 },
@@ -106,8 +110,30 @@ fn sort_processes(containers: &mut [ContainerRef<'_>], sort: &str) {
 
 fn process_kind(container: ContainerRef<'_>) -> &'static str {
     match container {
-        ContainerRef::Service(_) => "ServiceContainer",
-        ContainerRef::Hook(_) => "PreDeployHook",
+        ContainerRef::Service(_) => "service",
+        ContainerRef::Hook(_) => "pre-deploy hook",
+    }
+}
+
+/// An ID as `docker ps` shows it: the first 12 characters; `exec` and `--json` take the whole one.
+fn short(id: &str) -> &str {
+    id.get(..12).unwrap_or(id)
+}
+
+/// A runtime state in words: `running`, `running, unhealthy`, `exited with code 1`.
+fn process_state(runtime: &ContainerRuntimeObservation) -> String {
+    match runtime {
+        ContainerRuntimeObservation::Running {
+            health: HealthObservation::NotConfigured,
+        } => "running".into(),
+        ContainerRuntimeObservation::Running { health } => format!("running, {}", health.as_str()),
+        other @ (ContainerRuntimeObservation::Created
+        | ContainerRuntimeObservation::Paused
+        | ContainerRuntimeObservation::Restarting
+        | ContainerRuntimeObservation::Exited { .. }
+        | ContainerRuntimeObservation::Removing
+        | ContainerRuntimeObservation::Dead
+        | ContainerRuntimeObservation::Unknown { .. }) => other.to_string(),
     }
 }
 
@@ -162,18 +188,46 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
             print_observation_warning(&live);
             let observed = live.services();
             let services = select_services(&observed, &selectors)?;
-            let mut outcome: Option<ServiceActionOutcome> = None;
-            for &action in actions {
-                let (signal, timeout) = match action {
-                    ContainerAction::Stop => (signal.clone(), timeout),
-                    ContainerAction::Start | ContainerAction::Remove => (None, None),
+            // A restart rolls: each Container is stopped, then started and serving, before the next one stops,
+            // so a Service with more than one replica keeps serving throughout.
+            let rolling: Vec<ServiceObservation> =
+                if actions == [ContainerAction::Stop, ContainerAction::Start] {
+                    services
+                        .iter()
+                        .flat_map(|service| {
+                            service
+                                .containers
+                                .iter()
+                                .map(|container| ServiceObservation {
+                                    containers: vec![container.clone()],
+                                    hook_containers: Vec::new(),
+                                    ..(*service).clone()
+                                })
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
                 };
-                let step =
-                    apply_service_action(client, &live, &services, action, signal, timeout).await?;
-                outcome = Some(match outcome {
-                    Some(before) => before.then(step),
-                    None => step,
-                });
+            let batches: Vec<Vec<&ServiceObservation>> = if rolling.is_empty() {
+                vec![services]
+            } else {
+                rolling.iter().map(|one| vec![one]).collect()
+            };
+            let mut outcome: Option<ServiceActionOutcome> = None;
+            for services in &batches {
+                for &action in actions {
+                    let (signal, timeout) = match action {
+                        ContainerAction::Stop => (signal.clone(), timeout),
+                        ContainerAction::Start | ContainerAction::Remove => (None, None),
+                    };
+                    let step =
+                        apply_service_action(client, &live, services, action, signal, timeout)
+                            .await?;
+                    outcome = Some(match outcome {
+                        Some(before) => before.then(step),
+                        None => step,
+                    });
+                }
             }
             let outcome = outcome.expect("a lifecycle command has an action");
             output::emit(&ServiceActionResult {

@@ -106,7 +106,7 @@ fn system_ssh_command_uses_noninteractive_authentication() {
         args,
         [
             "-o",
-            "ConnectTimeout=5",
+            "ConnectTimeout=20",
             "-o",
             "BatchMode=yes",
             "-o",
@@ -355,7 +355,7 @@ async fn stalled_ssh_probe_obeys_configured_timeout() {
 #[test]
 fn ssh_timeout_flag_is_global_and_reaches_transport_arguments() {
     for (args, seconds) in [
-        (vec!["ployz", "ps"], 5),
+        (vec!["ployz", "ps"], 20),
         (vec!["ployz", "--ssh-timeout", "17", "ps"], 17),
         (vec!["ployz", "ps", "--ssh-timeout", "17"], 17),
         (vec!["ployz", "server", "ls", "--ssh-timeout", "17"], 17),

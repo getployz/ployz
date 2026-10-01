@@ -38,7 +38,7 @@ export const DEFAULT_VOLUME_GB = "5";
  */
 export function volumeStorage(managed: boolean, sizeGB: string): VolumeKind | null {
   if (!managed) return { kind: "docker" };
-  const typed = /^(\d+)(?:\.(\d{1,9}))?$/.exec(sizeGB.trim());
+  const typed = /^(\d+)(?:\.(\d{1,9}))?$/.exec(sizeGB.trim().replace(/^\./u, "0."));
   if (!typed) return null;
   const maximumBytes = Number(typed[1]) * GB + Number((typed[2] ?? "").padEnd(9, "0"));
   return Number.isSafeInteger(maximumBytes) && maximumBytes >= 1_000_000 ? { kind: "provisioned", maximumBytes } : null;

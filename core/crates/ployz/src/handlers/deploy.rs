@@ -379,10 +379,22 @@ fn follow(
         );
     }
     let mut last = None;
+    let mut id = admitted.id.clone();
     loop {
-        let view = store.read(&ployz_store::DeploymentQuery {
-            id: admitted.id.clone(),
-        })?;
+        let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
+        // A newer Deploy replaced this one before it started; follow that one when it ships these Services too.
+        if view.deployment.status == DeploymentStatus::Superseded
+            && let Some(newer) = replacement(store, &view)?
+        {
+            say!(
+                "Deployment #{} was replaced by #{}, which ships its changes too; following #{}.",
+                view.deployment.number,
+                newer.number,
+                newer.number
+            );
+            id = newer.id;
+            continue;
+        }
         let progress = serde_json::json!({
             "type": "deployment",
             "status": view.deployment.status,
@@ -415,6 +427,27 @@ fn follow(
     }
 }
 
+/// The Environment's newest Deployment when it is newer than superseded `view` and targets every Service `view` did.
+fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<DeploymentSummary>, Error> {
+    let page = store.read(&DeploymentsQuery {
+        environment: EnvironmentRef {
+            project: Some(view.environment.project.clone()),
+            environment: Some(view.environment.name.clone()),
+        },
+        limit: Some(1),
+        cursor: None,
+    })?;
+    Ok(page.deployments.into_iter().next().filter(|newer| {
+        newer.number > view.deployment.number
+            && ships_all(&view.deployment.services, &newer.services)
+    }))
+}
+
+/// Whether a Deployment targeting `newer` ships every Service one targeting `ours` would; empty targets every Service.
+fn ships_all(ours: &[ServiceName], newer: &[ServiceName]) -> bool {
+    newer.is_empty() || !ours.is_empty() && ours.iter().all(|service| newer.contains(service))
+}
+
 fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Result<(), Error> {
     let plan = store.read(&PlanQuery {
         environment: environment(matches)?,
@@ -433,7 +466,12 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
                 super::store::word(&change.lifecycle)
             );
             for row in &change.settings {
-                say!("  {}: {} -> {}", row.path, row.before, row.after);
+                say!(
+                    "  {}: {} -> {}",
+                    row.path,
+                    super::store::shown(&row.before),
+                    super::store::shown(&row.after)
+                );
             }
         }
         say!(
@@ -679,5 +717,26 @@ pub(super) fn say_view(view: &DeploymentView) {
             build.service,
             super::store::word(&build.status)
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ships_all;
+    use ployz_core::ServiceName;
+
+    #[test]
+    fn a_newer_deployment_carries_a_superseded_one_only_when_it_ships_its_services() {
+        let names = |names: &[&str]| -> Vec<ServiceName> {
+            names
+                .iter()
+                .map(|name| ServiceName::parse(*name).unwrap())
+                .collect()
+        };
+        assert!(ships_all(&names(&[]), &names(&[])));
+        assert!(ships_all(&names(&["web"]), &names(&[])));
+        assert!(ships_all(&names(&["web"]), &names(&["web", "db"])));
+        assert!(!ships_all(&names(&["web", "db"]), &names(&["web"])));
+        assert!(!ships_all(&names(&[]), &names(&["web"])));
     }
 }

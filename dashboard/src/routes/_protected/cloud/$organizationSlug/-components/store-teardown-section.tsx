@@ -59,6 +59,11 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
 
   async function advance(accepted: AcceptedLoss, at: TeardownTarget = target) {
     const step = await teardownStep(commit, at, accepted);
+    // Waiting on a Deploy still running there, not on its removal: nothing here would ever carry on, so say so, as
+    // `ployz env rm` does.
+    if (!step.done && !step.admitted && environments.find((row) => row.name === step.environment)?.removal?.id !== step.deployment) {
+      throw new Error(`A Deployment of ${step.environment} is still running. Wait for it or cancel it, then delete again.`);
+    }
     if (!step.done) setRun({ accepted, waiting: step });
     else if (at === target) onCompleted();
     else setRun(null);

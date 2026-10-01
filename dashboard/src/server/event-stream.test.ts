@@ -24,7 +24,7 @@ it("pings while no event arrives and delivers the pending event on a later pull"
   expect(await read()).toBe("retry: 1000\n\n");
   const ping = read();
   await vi.advanceTimersByTimeAsync(15_000);
-  expect(await ping).toBe(": ping\n\n");
+  expect(await ping).toBe("event: ping\ndata: {}\n\n");
   const late = read();
   await vi.advanceTimersByTimeAsync(5_000);
   expect(await late).toBe("event: late\ndata: {}\n\n");

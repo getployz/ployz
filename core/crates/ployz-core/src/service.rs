@@ -235,7 +235,8 @@ pub fn service_containers(
 #[derive(Clone, Debug, Eq, Error, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "error")]
 pub enum ServiceSelectorError {
-    #[error("Service \"{selector}\" was not found")]
+    // The name the person typed, not the runtime Namespace the CLI scoped it to.
+    #[error("No running Service \"{}\"; ployz ps lists what's running", .selector.as_str().rsplit('/').next().unwrap_or_default().escape_debug())]
     NotFound { selector: ServiceSelector },
     #[error(
         "Service Name \"{selector}\" matches multiple Services: {}",

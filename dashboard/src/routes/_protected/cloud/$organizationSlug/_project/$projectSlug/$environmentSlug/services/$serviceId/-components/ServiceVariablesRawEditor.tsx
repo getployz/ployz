@@ -284,7 +284,8 @@ export function ServiceVariablesRawEditor({
         />
 
         <ServiceVariablesRawEditorFooter
-          envText={editor.envText}
+          text={editor.mode === "env" ? editor.envText : editor.jsonText}
+          mode={editor.mode}
           onCancel={() => handleOpenChange(false)}
           onSubmit={handleSubmit}
         />

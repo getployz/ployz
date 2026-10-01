@@ -2,12 +2,30 @@
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { ServiceVariablesRawEditor } from "./ServiceVariablesRawEditor";
 
+const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+
 afterEach(() => {
+  if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
+  else Reflect.deleteProperty(navigator, "clipboard");
   cleanup();
   document.body.replaceChildren();
+});
+
+it("copies the active format's current draft after editing JSON", async () => {
+  const writeText = vi.fn(async () => undefined);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  render(<Harness onApply={() => ({ isPersisted: { promise: Promise.resolve() } })} />);
+  fireEvent.change(screen.getByLabelText("Service variables in ENV format"), { target: { value: "A=old" } });
+  fireEvent.click(screen.getByRole("button", { name: "Copy ENV" }));
+  await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("A=old"));
+  fireEvent.click(screen.getByRole("tab", { name: "JSON" }));
+  const current = '{"A":"current"}';
+  fireEvent.change(screen.getByLabelText("Service variables in JSON format"), { target: { value: current } });
+  fireEvent.click(screen.getByRole("button", { name: "Copy JSON" }));
+  await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(current));
 });
 
 function Harness({ onApply }: { onApply: () => { isPersisted: { promise: Promise<unknown> } } }) {

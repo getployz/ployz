@@ -404,6 +404,39 @@ fn no_op_plan_does_not_run_a_pre_deploy_hook() {
 }
 
 #[test]
+fn a_changed_pre_deploy_hook_alone_runs_it_and_replaces_the_container() {
+    let current = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let mut requested = current.clone();
+    requested.pre_deploy = Some(PreDeployHook {
+        command: vec!["db".into(), "migrate".into()].try_into().unwrap(),
+        environment: Default::default(),
+        privileged: None,
+        timeout_millis: None,
+        user: None,
+    });
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![container('b', '1', &current, &service_id('a'))],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        operations(&plan).as_slice(),
+        [
+            DeployOperation::RunHook { .. },
+            DeployOperation::ReplaceContainer(..),
+        ]
+    ));
+}
+
+#[test]
 fn existing_service_mode_cannot_change() {
     let current = requested(ServiceMode::Global);
     let requested = requested(ServiceMode::Replicated {

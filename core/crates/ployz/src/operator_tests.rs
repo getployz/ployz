@@ -17,6 +17,26 @@ use ployz_core::{
 use super::*;
 
 #[test]
+fn exec_without_a_container_picks_a_running_one() {
+    let mut service = observed_service();
+    // A failed Deploy's Container, exited, first in line.
+    let mut exited = service.containers.remove(0).into_observation();
+    exited
+        .try_update(|parts| parts.runtime = ContainerRuntimeObservation::Exited { code: 0 })
+        .unwrap();
+    service
+        .containers
+        .insert(0, ServiceContainer::try_from(exited).unwrap());
+    assert_eq!(
+        select_exec_container(&service, None)
+            .unwrap()
+            .as_observation()
+            .display_name,
+        "api-two"
+    );
+}
+
+#[test]
 fn exec_mapping_and_container_selection_match_the_operator_contract() {
     let service = observed_service();
     assert_eq!(
