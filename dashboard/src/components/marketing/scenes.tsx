@@ -13,7 +13,7 @@ import {
   WorkflowIcon,
 } from "lucide-react";
 import { useId } from "react";
-import type { ReactNode } from "react";
+import type { ReactNode, SVGProps } from "react";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { DATABASE_LOGOS } from "#/components/icons/database-logos";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
@@ -221,8 +221,6 @@ type BalancerLayout = {
    */
   pipes: { width: number; near: [number, number]; far: [number, number] };
   network: number;
-  /** Whether each app's chip names it beside its logo; phones show the logos alone. */
-  labels: boolean;
 };
 
 const WIDE: BalancerLayout = {
@@ -233,9 +231,8 @@ const WIDE: BalancerLayout = {
   servers: [230, 500, 770],
   server: { y: 350, w: 200, h: 84 },
   badge: [110, 22],
-  pipes: { width: 8, near: [56, 60], far: [44, 132] },
+  pipes: { width: 5, near: [56, 60], far: [44, 132] },
   network: 520,
-  labels: true,
 };
 
 const NARROW: BalancerLayout = {
@@ -246,21 +243,30 @@ const NARROW: BalancerLayout = {
   servers: [72, 200, 328],
   server: { y: 318, w: 116, h: 76 },
   badge: [104, 20],
-  pipes: { width: 5, near: [38, 34], far: [28, 76] },
+  pipes: { width: 3.5, near: [38, 34], far: [28, 76] },
   network: 438,
-  labels: false,
 };
 
-// What each server runs: a copy of web on every one, and Postgres on the last.
-const APPS = { web: { Logo: GitHubMarkIcon, width: 54 }, postgres: { Logo: DATABASE_LOGOS.postgres, width: 84 } };
-type App = keyof typeof APPS;
-const SERVER_APPS = [["web"], ["web"], ["web", "postgres"]] as const;
-
-/** Each app's chip along a server's bottom row, from its `left` edge. */
-function chipRow(apps: readonly App[], left: number, labels: boolean) {
-  const width = (app: App) => (labels ? APPS[app].width : 22);
-  return apps.map((app, n) => ({ app, w: width(app), x: left + 12 + apps.slice(0, n).reduce((sum, a) => sum + width(a) + 6, 0) }));
+// Next.js and Laravel's marks from Simple Icons 16.33 (CC0), drawn as database-logos.tsx draws Postgres.
+function NextjsLogo(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
+      <path d="M18.665 21.978C16.758 23.255 14.465 24 12 24 5.377 24 0 18.623 0 12S5.377 0 12 0s12 5.377 12 12c0 3.583-1.574 6.801-4.067 9.001L9.219 7.2H7.2v9.596h1.615V9.251l9.85 12.727Zm-3.332-8.533 1.6 2.061V7.2h-1.6v6.245Z" />
+    </svg>
+  );
 }
+
+function LaravelLogo(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="#FF2D20" aria-hidden="true" {...props}>
+      <path d="M23.642 5.43a.364.364 0 01.014.1v5.149c0 .135-.073.26-.189.326l-4.323 2.49v4.934a.378.378 0 01-.188.326L9.93 23.949a.316.316 0 01-.066.027c-.008.002-.016.008-.024.01a.348.348 0 01-.192 0c-.011-.002-.02-.008-.03-.012-.02-.008-.042-.014-.062-.025L.533 18.755a.376.376 0 01-.189-.326V2.974c0-.033.005-.066.014-.098.003-.012.01-.02.014-.032a.369.369 0 01.023-.058c.004-.013.015-.022.023-.033l.033-.045c.012-.01.025-.018.037-.027.014-.012.027-.024.041-.034H.53L5.043.05a.375.375 0 01.375 0L9.93 2.647h.002c.015.01.027.021.04.033l.038.027c.013.014.02.03.033.045.008.011.02.021.025.033.01.02.017.038.024.058.003.011.01.021.013.032.01.031.014.064.014.098v9.652l3.76-2.164V5.527c0-.033.004-.066.013-.098.003-.01.01-.02.013-.032a.487.487 0 01.024-.059c.007-.012.018-.02.025-.033.012-.015.021-.03.033-.043.012-.012.025-.02.037-.028.014-.01.026-.023.041-.032h.001l4.513-2.598a.375.375 0 01.375 0l4.513 2.598c.016.01.027.021.042.031.012.01.025.018.036.028.013.014.022.03.034.044.008.012.019.021.024.033.011.02.018.04.024.06.006.01.012.021.015.032zm-.74 5.032V6.179l-1.578.908-2.182 1.256v4.283zm-4.51 7.75v-4.287l-2.147 1.225-6.126 3.498v4.325zM1.093 3.624v14.588l8.273 4.761v-4.325l-4.322-2.445-.002-.003H5.04c-.014-.01-.025-.021-.04-.031-.011-.01-.024-.018-.035-.027l-.001-.002c-.013-.012-.021-.025-.031-.04-.01-.011-.021-.022-.028-.036h-.002c-.008-.014-.013-.031-.02-.047-.006-.016-.014-.027-.018-.043a.49.49 0 01-.008-.057c-.002-.014-.006-.027-.006-.041V5.789l-2.18-1.257zM5.23.81L1.47 2.974l3.76 2.164 3.758-2.164zm1.956 13.505l2.182-1.256V3.624l-1.58.91-2.182 1.255v9.435zm11.581-10.95l-3.76 2.163 3.76 2.163 3.759-2.164zm-.376 4.978L16.21 7.087 14.63 6.18v4.283l2.182 1.256 1.58.908zm-8.65 9.654l5.514-3.148 2.756-1.572-3.757-2.163-4.323 2.489-3.941 2.27z" />
+    </svg>
+  );
+}
+
+// What each server runs: a copy of the app (Next.js and Laravel) on every one, and Postgres on the last.
+const APPS = { nextjs: NextjsLogo, laravel: LaravelLogo, postgres: DATABASE_LOGOS.postgres };
+const SERVER_APPS = [["nextjs", "laravel"], ["nextjs", "laravel"], ["nextjs", "laravel", "postgres"]] as const;
 
 /**
  * Pinned under the header for half a screen of scrolling, which splits the load balancer into three: one
@@ -277,7 +283,7 @@ export function BalancerScene({ heading, caption }: { heading: ReactNode; captio
         {heading}
         <div
           role="img"
-          aria-label="Visitors reach three servers, one also running Postgres, through one load balancer you rent; scrolling splits it into three, one inside each server, and the servers link up over a private network"
+          aria-label="Visitors reach three servers running Next.js and Laravel, one also running Postgres, through one load balancer you rent; scrolling splits it into three, one inside each server, and the servers link up over a private network"
           className="flex max-h-136 min-h-0 flex-1 rounded-3xl bg-(--color-paper) p-3 max-sm:max-h-96 sm:p-6"
         >
           <BalancerPicture layout={WIDE} t={t} className="size-full max-sm:hidden" />
@@ -312,7 +318,6 @@ function BalancerPicture({ layout: l, t, className }: { layout: BalancerLayout; 
   // Both layouts are on the page at once, so each needs its own ids.
   const id = useId();
   const shade = `${id}-shade`;
-  const glow = `${id}-glow`;
   const stroke = `url(#${shade})`;
   return (
     <svg viewBox={`0 0 ${l.box[0]} ${l.box[1]}`} className={className}>
@@ -322,9 +327,6 @@ function BalancerPicture({ layout: l, t, className }: { layout: BalancerLayout; 
             <stop key={n} offset={(n - 1) / 4} style={{ stopColor: `var(--lp-pipe-${n})` }} />
           ))}
         </linearGradient>
-        <filter id={glow} x="-20%" y="-60%" width="140%" height="220%">
-          <feGaussianBlur stdDeviation={w * 0.8} />
-        </filter>
       </defs>
       <g style={{ opacity: 1 - phase(0, 0.3) }}>
         <path d={`M${vx} ${out}V${l.bar.y}`} className="lp-lb-line" />
@@ -337,14 +339,12 @@ function BalancerPicture({ layout: l, t, className }: { layout: BalancerLayout; 
           <path key={x} d={`M${vx} ${out}L${x} ${top - bh / 2}`} className="lp-lb-dns" />
         ))}
         {pipes.map((d, i) => {
-          // Each pipe lays itself in just after the one before: a pearly tube over its own glow, with a glint
-          // sweeping through once it's in.
+          // Each pipe lays itself in just after the one before, with a glint sweeping through once it's in.
           const unlaid = 1 - phase(0.74 + i * 0.04, 0.92 + i * 0.03);
           return (
             <g key={d}>
-              <path d={d} pathLength={1} strokeWidth={w * 2} filter={`url(#${glow})`} className="lp-lb-pipe lp-lb-glow" style={{ stroke, strokeDashoffset: unlaid }} />
               <path d={d} pathLength={1} strokeWidth={w} className="lp-lb-pipe" style={{ stroke, strokeDashoffset: unlaid }} />
-              <path d={d} pathLength={1} strokeWidth={w * 0.35} className="lp-lb-sheen" style={{ opacity: phase(0.94, 1), animationDelay: `${-i * 0.8}s` }} />
+              <path d={d} pathLength={1} strokeWidth={w * 0.4} className="lp-lb-sheen" style={{ opacity: phase(0.94, 1), animationDelay: `${-i * 0.8}s` }} />
             </g>
           );
         })}
@@ -382,17 +382,13 @@ function BalancerPicture({ layout: l, t, className }: { layout: BalancerLayout; 
             <text x={left + 14} y={top + 24} className="lp-lb-name">
               server-{i + 1}
             </text>
-            {chipRow(SERVER_APPS[i] ?? [], left, l.labels).map(({ app, x: chipX, w: chipW }) => {
-              const { Logo } = APPS[app];
+            {(SERVER_APPS[i] ?? []).map((app, n) => {
+              const Logo = APPS[app];
+              const chipX = left + 12 + n * 30;
               return (
                 <g key={app}>
-                  <rect x={chipX} y={bottom - 32} width={chipW} height={22} rx={6} className="lp-lb-chip" />
-                  <Logo x={chipX + 3.5} y={bottom - 28.5} width={15} height={15} className="lp-lb-logo" />
-                  {l.labels ? (
-                    <text x={chipX + 24} y={bottom - 17} className="lp-lb-chip-text">
-                      {app}
-                    </text>
-                  ) : null}
+                  <rect x={chipX} y={bottom - 34} width={24} height={24} rx={6} className="lp-lb-chip" />
+                  <Logo x={chipX + 4} y={bottom - 30} width={16} height={16} className="lp-lb-logo" />
                 </g>
               );
             })}

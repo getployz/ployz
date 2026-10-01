@@ -235,9 +235,6 @@
     stroke-linecap: round;
     stroke-dasharray: 1;
   }
-  .lp-lb-glow {
-    opacity: 0.22;
-  }
   .lp-lb-sheen {
     fill: none;
     stroke: var(--background);
@@ -271,10 +268,6 @@
   }
   .lp-lb-logo {
     color: var(--foreground);
-  }
-  .lp-lb-chip-text {
-    font: 500 11px var(--font-mono);
-    fill: var(--foreground);
   }
   .lp-lb-piece {
     fill: var(--foreground);
