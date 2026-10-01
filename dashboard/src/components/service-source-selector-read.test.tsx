@@ -32,7 +32,7 @@ it.each([false, true])("shows an initial read failure and recovers (empty snapsh
   Element.prototype.scrollIntoView ??= () => {};
   const queryClient = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
   const scope = { queryClient, userId: "user", sessionId: "session" };
-  const raw = getGithubReposCollection(scope);
+  const githubRepos = getGithubReposCollection(scope);
   const queryKey = githubReposQueryKey(scope);
   queryClient.setQueryData(githubKeys.access(), { hasInstallations: true });
   queryClient.setQueryData(githubKeys.installUrl(), { url: "https://github.com/apps/ployz-test/installations/new" });
@@ -68,7 +68,7 @@ it.each([false, true])("shows an initial read failure and recovers (empty snapsh
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   } finally {
     cleanup();
-    await raw.cleanup();
+    await githubRepos.cleanup();
     queryClient.clear();
   }
 });
