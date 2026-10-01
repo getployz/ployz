@@ -127,7 +127,7 @@ describe("data boundaries", () => {
   });
 
   it("derives views in live queries, never as collections", () => {
-    expect(filesMatching(/\b(liveQueryCollectionOptions|createLiveQueryCollection)\b/), "Shape rows in the source's queryFn, or query it with useLiveQuery").toEqual([]);
+    expect(filesMatching(/\b(liveQueryCollectionOptions|createLiveQueryCollection)\b/), "Reshape rows where the source fetches them, or query it with useLiveQuery").toEqual([]);
   });
 
   it("renders one shell, gated once on the Org Store", () => {
