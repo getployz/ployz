@@ -14,6 +14,13 @@
     --lp-led: #4fd08a;
     --lp-dot: #c4c4c4;
     --lp-wire: #3a3a3a;
+    /* the private network's pipes (BalancerScene), across each: the brand's ink at the servers, paper where
+       they dip, with a dusty take on its pink between (Intent Pink itself stays on Deploy) */
+    --lp-pipe-1: var(--color-ink-soft);
+    --lp-pipe-2: oklch(58% 0.12 338);
+    --lp-pipe-3: var(--color-rule);
+    --lp-pipe-4: oklch(58% 0.12 338);
+    --lp-pipe-5: var(--color-ink-soft);
   }
 
   /* ---- the canvas floor: the product's dot grid ---------------------------------------------------- */
@@ -198,6 +205,110 @@
     animation: lp-words 16s cubic-bezier(0.7, 0, 0.2, 1) infinite;
   }
 
+  /* ---- a section pinned under the header while the page scrolls past it (usePinProgress) ------------ */
+  /* The frame, plus 40% of a screen to scroll while it stays put. */
+  .lp-pin {
+    height: calc(140svh - 3.5rem);
+  }
+  .lp-pin-frame {
+    position: sticky;
+    top: 3.5rem; /* the public header's height */
+    height: calc(100svh - 3.5rem);
+  }
+
+  /* ---- the load balancer that splits into every server (BalancerScene) -------------------------------- */
+  .lp-lb-line {
+    fill: none;
+    stroke: var(--foreground);
+    stroke-width: 1.5;
+  }
+  .lp-lb-dns {
+    fill: none;
+    stroke: var(--muted-foreground);
+    stroke-width: 1.25;
+    stroke-dasharray: 3 5;
+  }
+  /* The private network's pipes: laid in by their dash offset over a pathLength of 1, then a glint sweeps
+     through each. Their widths are attributes, per layout; their gradient is inline. */
+  .lp-lb-pipe {
+    fill: none;
+    stroke-linecap: round;
+    stroke-dasharray: 1;
+  }
+  .lp-lb-glow {
+    opacity: 0.22;
+  }
+  .lp-lb-sheen {
+    fill: none;
+    stroke: var(--background);
+    stroke-linecap: round;
+    stroke-dasharray: 0.05 0.95;
+    animation: lp-sheen 3s linear infinite;
+  }
+  .lp-lb-sheen-back {
+    animation-direction: reverse;
+  }
+  /* light, not requests: the packets travelling the pipes */
+  .lp-lb-pulses .lp-packet {
+    fill: var(--background);
+    stroke: var(--lp-pipe-2);
+    stroke-width: 1.5;
+  }
+  .lp-lb-note {
+    font: 400 11px var(--font-mono);
+    fill: var(--muted-foreground);
+  }
+  .lp-lb-visitors rect,
+  .lp-lb-card {
+    fill: var(--background);
+    stroke: var(--border);
+  }
+  .lp-lb-visitors circle {
+    fill: var(--color-rule);
+  }
+  .lp-lb-visitors text {
+    font: 500 12px var(--font-mono);
+    fill: var(--foreground);
+  }
+  .lp-lb-name {
+    font: 600 14px var(--font-sans);
+    fill: var(--foreground);
+  }
+  .lp-lb-chip {
+    fill: var(--secondary);
+    stroke: var(--border);
+  }
+  .lp-lb-chip-text {
+    font: 500 11px var(--font-mono);
+    fill: var(--foreground);
+  }
+  .lp-lb-piece {
+    fill: var(--foreground);
+  }
+  .lp-lb-badge circle {
+    fill: var(--lp-led);
+  }
+  .lp-lb-badge text {
+    font: 500 10.5px var(--font-mono);
+    fill: var(--background);
+  }
+  .lp-lb-bar-title {
+    font: 600 15px var(--font-sans);
+    fill: var(--background);
+  }
+  .lp-lb-bar-sub {
+    font: 400 11px var(--font-mono);
+    fill: var(--lp-graphite-muted);
+  }
+  .lp-lb-sticker rect {
+    fill: var(--warning-soft);
+    stroke: var(--warning-border);
+  }
+  .lp-lb-sticker text {
+    font: 600 11px var(--font-mono);
+    fill: var(--foreground);
+  }
+
   /* ---- terminals, in theme tokens: a server's root prompt adds `.dark` (Terminal), your laptop's doesn't -- */
   .lp-term {
     overflow: hidden;
@@ -363,6 +474,12 @@
     }
     100% {
       transform: translateY(calc(var(--lp-word) * -8));
+    }
+  }
+  /* one dash and its gap over a pathLength of 1 (lp-lb-sheen), so the loop is seamless */
+  @keyframes lp-sheen {
+    to {
+      stroke-dashoffset: -1;
     }
   }
   @keyframes lp-appear {

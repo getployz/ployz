@@ -4,6 +4,7 @@ import { Position, getBezierPath, getSmoothStepPath } from "@xyflow/react";
 import { LockIcon } from "lucide-react";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
+import { prefersReducedMotion } from "#/lib/motion";
 import { cn } from "#/lib/utils";
 
 // The lander's building blocks: pictures of the dashboard and of the servers under it. Canvas cards
@@ -153,10 +154,11 @@ export function Wires({ wires }: { wires: readonly Wire[] }) {
   );
 }
 
-function Packet({ path, seconds, delay, reverse }: { path: string; seconds: number; delay: number; reverse: boolean }) {
+/** A request travelling `path` on a loop, fading in at one end and out at the other. */
+export function Packet({ path, seconds, delay, reverse, r = 4.5 }: { path: string; seconds: number; delay: number; reverse: boolean; r?: number }) {
   const timing = { dur: `${seconds}s`, begin: `-${delay.toFixed(2)}s`, repeatCount: "indefinite" };
   return (
-    <circle className="lp-packet" r={4.5}>
+    <circle className="lp-packet" r={r}>
       <animateMotion {...timing} path={path} keyPoints={reverse ? "1;0" : "0;1"} keyTimes="0;1" calcMode="linear" />
       <animate {...timing} attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" />
     </circle>
@@ -223,6 +225,41 @@ export function useLoop<F extends { ms: number }>(frames: readonly [F, ...F[]], 
     return () => window.clearTimeout(timer);
   }, [active, frames]);
   return (index === undefined ? undefined : frames[index]) ?? rest;
+}
+
+/**
+ * How far the page has scrolled through a pinned section (landing.css's lp-pin, whose first child is the
+ * frame that pins): 0 as the frame pins under the header, 1 as it lets go. 0 while server-rendered. Under
+ * reduced motion it jumps from 0 to 1 halfway through, so nothing moves with the scroll.
+ */
+export function usePinProgress<T extends HTMLElement>(): [RefObject<T | null>, number] {
+  const ref = useRef<T>(null);
+  const [progress, setProgress] = useState(0);
+  useEffect(() => {
+    const section = ref.current;
+    const frame = section?.firstElementChild;
+    if (!section || !(frame instanceof HTMLElement)) return;
+    let pending = 0;
+    const measure = () => {
+      pending = 0;
+      const travel = section.offsetHeight - frame.offsetHeight;
+      const pinnedAt = parseFloat(getComputedStyle(frame).top);
+      const p = travel > 0 ? Math.min(1, Math.max(0, (pinnedAt - section.getBoundingClientRect().top) / travel)) : 1;
+      setProgress(prefersReducedMotion() ? Math.round(p) : p);
+    };
+    const schedule = () => {
+      pending ||= requestAnimationFrame(measure);
+    };
+    measure();
+    window.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+    return () => {
+      cancelAnimationFrame(pending);
+      window.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+    };
+  }, []);
+  return [ref, progress];
 }
 
 // ---- props --------------------------------------------------------------------------------------------

@@ -12,13 +12,15 @@ import {
   TerminalIcon,
   WorkflowIcon,
 } from "lucide-react";
+import { useId } from "react";
+import type { ReactNode } from "react";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { Badge } from "#/components/ui/badge";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { Kbd } from "#/components/ui/kbd";
 import { cn } from "#/lib/utils";
-import { BrowserWindow, Line, ServerFace, ServiceCard, StatusDot, Terminal, Wires, revealDelay, useInView, useLoop } from "#/components/marketing/kit";
+import { BrowserWindow, Line, Packet, ServerFace, ServiceCard, StatusDot, Terminal, Wires, revealDelay, useInView, useLoop, usePinProgress } from "#/components/marketing/kit";
 import type { Tone, Wire } from "#/components/marketing/kit";
 
 // The lander's pictures. Each is the dashboard, or the server under it, doing one thing in the
@@ -195,6 +197,247 @@ export function DeployTicker() {
         </span>
       </span>
     </div>
+  );
+}
+
+// ---- no load balancer to rent: scrolling splits it into every server -------------------------------------
+// What core does: each server runs the proxy (Caddy) and picks a healthy copy on any server over WireGuard.
+
+/** The picture's layout in viewBox units: a wide one, and a narrow one for phones. */
+type BalancerLayout = {
+  box: [number, number];
+  visitors: [number, number];
+  bar: { x: number; y: number; w: number; h: number };
+  sticker: [number, number];
+  /** Each server's centre x; `server` is their shared centre y and size. */
+  servers: [number, number, number];
+  server: { y: number; w: number; h: number };
+  badge: [number, number];
+  /**
+   * The private network: a pipe between each pair of servers, as [where it plugs in, measured from the
+   * server's centre, how deep it dips]. Neighbours plug in on their facing sides; the pipe between the ends
+   * plugs in on the outer sides and wraps underneath.
+   */
+  pipes: { width: number; near: [number, number]; far: [number, number] };
+  network: number;
+};
+
+const WIDE: BalancerLayout = {
+  box: [1000, 530],
+  visitors: [500, 44],
+  bar: { x: 150, y: 142, w: 700, h: 56 },
+  sticker: [805, 142],
+  servers: [230, 500, 770],
+  server: { y: 350, w: 200, h: 84 },
+  badge: [110, 22],
+  pipes: { width: 8, near: [56, 60], far: [44, 132] },
+  network: 520,
+};
+
+const NARROW: BalancerLayout = {
+  box: [400, 448],
+  visitors: [200, 30],
+  bar: { x: 16, y: 104, w: 368, h: 52 },
+  sticker: [330, 102],
+  servers: [72, 200, 328],
+  server: { y: 318, w: 116, h: 76 },
+  badge: [104, 20],
+  pipes: { width: 5, near: [38, 34], far: [28, 76] },
+  network: 438,
+};
+
+/**
+ * Pinned under the header for 40% of a screen of scrolling, which splits the load balancer into three: one
+ * inside each server. The split takes the first 80% of it, so the result holds a moment before the page
+ * moves on.
+ */
+export function BalancerScene({ heading, caption }: { heading: ReactNode; caption: ReactNode }) {
+  const [ref, progress] = usePinProgress<HTMLElement>();
+  const t = Math.min(1, progress / 0.8);
+  return (
+    // A margin, not padding, keeps the frame flush with the section top, which usePinProgress measures from.
+    <section ref={ref} className="lp-pin mt-16 px-5 md:mt-24">
+      <div className="lp-pin-frame mx-auto flex max-w-6xl flex-col justify-center gap-6 py-6 md:gap-8">
+        <div className="flex flex-wrap items-end justify-between gap-x-10 gap-y-4">
+          {heading}
+          <BalancerSteps t={t} />
+        </div>
+        <div
+          role="img"
+          aria-label="Visitors reach three servers through one load balancer you rent; scrolling splits it into three, one inside each server, and the servers link up over a private network"
+          className="flex max-h-136 min-h-0 flex-1 rounded-3xl bg-(--color-paper) p-3 max-sm:max-h-96 sm:p-6"
+        >
+          <BalancerPicture layout={WIDE} t={t} className="size-full max-sm:hidden" />
+          <BalancerPicture layout={NARROW} t={t} className="size-full sm:hidden" />
+        </div>
+        {caption}
+      </div>
+    </section>
+  );
+}
+
+/** "The usual way ━━ With Ployz", filling in as the split plays. */
+function BalancerSteps({ t }: { t: number }) {
+  return (
+    <div aria-hidden className="flex items-center gap-3 text-sm font-semibold">
+      <span className={cn("transition-colors", t >= 0.5 && "text-muted-foreground")}>The usual way</span>
+      <span className="h-1 w-24 overflow-hidden rounded-full bg-(--color-rule-soft)">
+        <span className="block size-full origin-left bg-foreground" style={{ transform: `scaleX(${t})` }} />
+      </span>
+      <span className={cn("transition-colors", t < 0.5 && "text-muted-foreground")}>With Ployz</span>
+    </div>
+  );
+}
+
+const lerp = (a: number, b: number, x: number) => a + (b - a) * x;
+const easeInOut = (x: number) => (x < 0.5 ? 4 * x ** 3 : 1 - (-2 * x + 2) ** 3 / 2);
+
+/** The picture at `t`: 0 is the usual way, 1 is with Ployz. Requests only flow at either end. */
+function BalancerPicture({ layout: l, t, className }: { layout: BalancerLayout; t: number; className: string }) {
+  const phase = (from: number, to: number) => Math.min(1, Math.max(0, (t - from) / (to - from)));
+  const [vx, vy] = l.visitors;
+  const out = vy + 19;
+  const top = l.server.y - l.server.h / 2;
+  const bottom = l.server.y + l.server.h / 2;
+  const [bw, bh] = l.badge;
+  const third = l.bar.w / 3;
+  const [sx, sy] = l.sticker;
+  const [s1, s2, s3] = l.servers;
+  const w = l.pipes.width;
+  const [nearPlug, nearDepth] = l.pipes.near;
+  const [farPlug, farDepth] = l.pipes.far;
+  // A U from one server's bottom edge down and across to another's.
+  const pipe = (x1: number, x2: number, depth: number) => `M${x1} ${bottom}C${x1} ${bottom + depth} ${x2} ${bottom + depth} ${x2} ${bottom}`;
+  const pipes = [pipe(s1 + nearPlug, s2 - nearPlug, nearDepth), pipe(s2 + nearPlug, s3 - nearPlug, nearDepth), pipe(s1 - farPlug, s3 + farPlug, farDepth)];
+  // Both layouts are on the page at once, so each needs its own ids.
+  const id = useId();
+  const shade = `${id}-shade`;
+  const glow = `${id}-glow`;
+  const stroke = `url(#${shade})`;
+  return (
+    <svg viewBox={`0 0 ${l.box[0]} ${l.box[1]}`} className={className}>
+      <defs>
+        <linearGradient id={shade}>
+          {[1, 2, 3, 4, 5].map((n) => (
+            <stop key={n} offset={(n - 1) / 4} style={{ stopColor: `var(--lp-pipe-${n})` }} />
+          ))}
+        </linearGradient>
+        <filter id={glow} x="-20%" y="-60%" width="140%" height="220%">
+          <feGaussianBlur stdDeviation={w * 0.8} />
+        </filter>
+      </defs>
+      <g style={{ opacity: 1 - phase(0, 0.3) }}>
+        <path d={`M${vx} ${out}V${l.bar.y}`} className="lp-lb-line" />
+        {l.servers.map((x) => (
+          <path key={x} d={`M${x} ${l.bar.y + l.bar.h}V${top}`} className="lp-lb-line" />
+        ))}
+      </g>
+      <g style={{ opacity: phase(0.7, 0.85) }}>
+        {l.servers.map((x) => (
+          <path key={x} d={`M${vx} ${out}L${x} ${top - bh / 2}`} className="lp-lb-dns" />
+        ))}
+        {pipes.map((d, i) => {
+          // Each pipe lays itself in just after the one before: a pearly tube over its own glow, with a glint
+          // sweeping through once it's in.
+          const unlaid = 1 - phase(0.74 + i * 0.04, 0.92 + i * 0.03);
+          return (
+            <g key={d}>
+              <path d={d} pathLength={1} strokeWidth={w * 2} filter={`url(#${glow})`} className="lp-lb-pipe lp-lb-glow" style={{ stroke, strokeDashoffset: unlaid }} />
+              <path d={d} pathLength={1} strokeWidth={w} className="lp-lb-pipe" style={{ stroke, strokeDashoffset: unlaid }} />
+              <path
+                d={d}
+                pathLength={1}
+                strokeWidth={w * 0.35}
+                className={cn("lp-lb-sheen", i % 2 === 1 && "lp-lb-sheen-back")}
+                style={{ opacity: phase(0.94, 1), animationDelay: `${-i * 0.8}s` }}
+              />
+            </g>
+          );
+        })}
+        <text x={l.servers[1]} y={l.network} textAnchor="middle" className="lp-lb-note">
+          private network
+        </text>
+      </g>
+      {t === 0
+        ? l.servers.map((x, i) =>
+            [0, 1].map((n) => (
+              <Packet key={`${x}-${n}`} path={`M${vx} ${out}V${l.bar.y + l.bar.h / 2}H${x}V${l.server.y}`} seconds={2.4} delay={(i + 3 * n) * 0.4} reverse={false} />
+            )),
+          )
+        : null}
+      {t === 1 ? (
+        <>
+          {l.servers.map((x, i) =>
+            [0, 1].map((n) => <Packet key={`${x}-${n}`} path={`M${vx} ${out}L${x} ${l.server.y}`} seconds={2} delay={i * 0.35 + n} reverse={false} />),
+          )}
+          <g className="lp-lb-pulses">
+            {pipes.map((d, i) => (
+              <Packet key={d} path={d} seconds={1.6 + i * 0.3} delay={i * 0.45} reverse={i % 2 === 0} r={w * 0.4} />
+            ))}
+          </g>
+        </>
+      ) : null}
+      <g className="lp-lb-visitors">
+        <rect x={vx - 70} y={vy - 19} width={140} height={38} rx={19} />
+        {[0, 1, 2].map((i) => (
+          <circle key={i} cx={vx - 46 + i * 11} cy={vy} r={5} />
+        ))}
+        <text x={vx - 12} y={vy + 4.5}>
+          visitors
+        </text>
+      </g>
+      <rect x={l.bar.x} y={l.bar.y} width={l.bar.w} height={l.bar.h} rx={12} className="lp-lb-piece" style={{ opacity: t === 0 ? 1 : 0 }} />
+      {l.servers.map((x, i) => {
+        const left = x - l.server.w / 2;
+        return (
+          <g key={x}>
+            <rect x={left} y={top} width={l.server.w} height={l.server.h} rx={12} className="lp-lb-card" />
+            <text x={left + 14} y={top + 24} className="lp-lb-name">
+              server-{i + 1}
+            </text>
+            <rect x={left + 12} y={bottom - 32} width={52} height={22} rx={6} className="lp-lb-chip" />
+            <text x={left + 22} y={bottom - 17} className="lp-lb-chip-text">
+              web
+            </text>
+          </g>
+        );
+      })}
+      {/* Each third of the bar drops into a server as its badge, carrying the name down with it. */}
+      {l.servers.map((x, i) => {
+        const p = easeInOut(phase(0.08 + i * 0.06, 0.62 + i * 0.06));
+        const px = lerp(l.bar.x + i * third, x - bw / 2, p);
+        const py = lerp(l.bar.y, top - bh / 2, p);
+        const pw = lerp(third, bw, p);
+        const ph = lerp(l.bar.h, bh, p);
+        return (
+          <g key={x} style={{ opacity: t === 0 ? 0 : 1 }}>
+            <rect x={px} y={py} width={pw} height={ph} rx={lerp(12, bh / 2, p)} className="lp-lb-piece" />
+            <g transform={`translate(${px + pw / 2} ${py + ph / 2})`} style={{ opacity: phase(0.04, 0.14) }} className="lp-lb-badge">
+              <circle cx={-40} r={3} />
+              <text x={-32} y={3.8}>
+                load balancer
+              </text>
+            </g>
+          </g>
+        );
+      })}
+      <g style={{ opacity: 1 - phase(0, 0.12) }}>
+        <text x={l.bar.x + l.bar.w / 2} y={l.bar.y + l.bar.h / 2 - 2} textAnchor="middle" className="lp-lb-bar-title">
+          Load balancer
+        </text>
+        <text x={l.bar.x + l.bar.w / 2} y={l.bar.y + l.bar.h / 2 + 16} textAnchor="middle" className="lp-lb-bar-sub">
+          every request goes through it
+        </text>
+      </g>
+      <g transform={`translate(0 ${phase(0, 0.35) * 90})`} style={{ opacity: 1 - phase(0, 0.25) }}>
+        <g transform={`rotate(-7 ${sx} ${sy})`} className="lp-lb-sticker">
+          <rect x={sx - 54} y={sy - 12} width={108} height={24} rx={5} />
+          <text x={sx} y={sy + 4} textAnchor="middle">
+            $ every month
+          </text>
+        </g>
+      </g>
+    </svg>
   );
 }
 
