@@ -13,6 +13,7 @@ import type { DeploymentSummary } from "@ployz/sdk";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { deploymentStatusIcons, deploymentStatusLabel, deploysLabel, uploadLabel, type ChangeGroup } from "#/modules/config-store/store-deployments";
 import { listNames, plural } from "#/lib/plural";
+import { cn } from "#/lib/utils";
 import { goLiveWhen } from "#/modules/config-store/store-pull-requests";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
@@ -133,7 +134,8 @@ export function BottomBar({
   });
 
   const row = hasChanges ? (
-    <Row staged title={totalChanges > 0 ? `Apply ${plural(totalChanges, "change")}` : "Changes to publish"} detail={null}>
+    <Row staged title={totalChanges > 0 ? `Apply ${plural(totalChanges, "change")}` : "Changes to publish"}
+      shortTitle={totalChanges > 0 ? plural(totalChanges, "change") : "To publish"} detail={null}>
       <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
       {noServers ? (
@@ -205,14 +207,15 @@ function AttemptState({ deployment }: { deployment: DeploymentSummary }) {
 
 
 /** One row: what, in a few words, then its actions. Changes to deploy take the staged-intent surface. */
-function Row({ staged = false, icon, title, detail, children }: {
-  staged?: boolean; icon?: ReactNode; title: string; detail: string | null; children: ReactNode;
+function Row({ staged = false, icon, title, shortTitle, detail, children }: {
+  staged?: boolean; icon?: ReactNode; title: string; /** Fewer words on phones. */ shortTitle?: string; detail: string | null; children: ReactNode;
 }) {
   return (
     <div className="bottom-bar-row" data-staged={staged || undefined}>
       {icon ? <span className="flex">{icon}</span> : null}
       <div className="min-w-0 flex-1 pr-3">
-        <p className={staged ? "truncate text-sm font-medium text-changed-deep tabular-nums" : "truncate text-sm font-medium"}>{title}</p>
+        <p className={cn(staged ? "truncate text-sm font-medium text-changed-deep tabular-nums" : "truncate text-sm font-medium", shortTitle && "max-sm:hidden")}>{title}</p>
+        {shortTitle ? <p className="truncate text-sm font-medium text-changed-deep tabular-nums sm:hidden">{shortTitle}</p> : null}
         {detail ? <p className="truncate text-xs text-muted-foreground">{detail}</p> : null}
       </div>
       {children}

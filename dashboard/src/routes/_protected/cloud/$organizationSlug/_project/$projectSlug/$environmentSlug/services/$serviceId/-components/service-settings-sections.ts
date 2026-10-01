@@ -1,6 +1,7 @@
 export type ServiceSettingsSectionId =
   | "source"
   | "networking"
+  | "storage"
   | "scale"
   | "build"
   | "deploy"
@@ -9,38 +10,14 @@ export type ServiceSettingsSectionId =
 export type ServiceSettingsSectionMeta = {
   id: ServiceSettingsSectionId;
   label: string;
-  description: string;
 };
 
 export const SERVICE_SETTINGS_SECTIONS = [
-  {
-    id: "source",
-    description: "Where the code for this service comes from.",
-    label: "Source",
-  },
-  {
-    id: "networking",
-    description: "How this service is reached, publicly and from other services.",
-    label: "Networking",
-  },
-  {
-    id: "scale",
-    description: "Replicas and the resources each one gets.",
-    label: "Scale",
-  },
-  {
-    id: "build",
-    description: "How the image for this service is produced.",
-    label: "Build",
-  },
-  {
-    id: "deploy",
-    description: "How the container starts, stays healthy, and restarts.",
-    label: "Deploy",
-  },
-  {
-    id: "danger",
-    description: "Deletions take effect on your next deploy. Discard changes to undo them first.",
-    label: "Danger",
-  },
+  { id: "source", label: "Source" },
+  { id: "networking", label: "Networking" },
+  { id: "storage", label: "Storage" },
+  { id: "scale", label: "Scale" },
+  { id: "build", label: "Build" },
+  { id: "deploy", label: "Deploy" },
+  { id: "danger", label: "Danger" },
 ] as const satisfies readonly ServiceSettingsSectionMeta[];

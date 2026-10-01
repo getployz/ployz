@@ -5,7 +5,8 @@ import { ChevronRightIcon, GitBranchPlusIcon, PlusIcon } from "lucide-react";
 import { BranchIndent } from "#/components/environment-tree";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
-import { Field, FieldDescription, FieldError, FieldLabel } from "#/components/ui/field";
+import { Field, FieldContent, FieldDescription, FieldError, FieldLabel } from "#/components/ui/field";
+import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { environmentsQuery, servicesQuery, useStoreView } from "#/modules/config-store/store-view.queries";
@@ -69,18 +70,13 @@ function StoreBranchSetup({ organizationSlug, projectSlug, environmentSlug, save
     (whole) => writer.commit({ command: "set_branch_setup", environment,
       setup: whole.map((command) => ({ service: command.lineageId, command: command.command })) }));
   return (
-    <section aria-labelledby="branch-setup-heading" className="flex flex-col gap-4">
-      <div>
-        <h2 id="branch-setup-heading" className="text-lg font-semibold">Branches of {environmentSlug}</h2>
-        <p className="text-sm text-muted-foreground">
-          Setup commands a new branch runs once, in its own copies, before they start: use them to seed fresh data.
-        </p>
-      </div>
+    <SettingsSection id="branch-setup" title={`Branches of ${environmentSlug}`}
+      description="Runs once in each new branch.">
       {services.length ? (
         <SetupCommandsField id="environment-branch-setup" commands={setup.commands} services={services}
           onChange={setup.onChange} onBlur={setup.onBlur} />
-      ) : <p className="text-sm text-muted-foreground">Add a service first; commands run in one.</p>}
-    </section>
+      ) : <FieldDescription>Add a service first.</FieldDescription>}
+    </SettingsSection>
   );
 }
 
@@ -92,14 +88,16 @@ function ProjectNameField({ project, onRename }: { project: string; onRename: (n
   const error = name === project ? null : dnsLabelError(name);
   const rename = () => { if (name !== project && !error) onRename(name); };
   return (
-    <Field data-invalid={error ? true : undefined}>
-      <FieldLabel htmlFor="project-name">Name</FieldLabel>
-      <div className="flex w-full gap-2 sm:max-w-sm">
+    <Field orientation="responsive" data-invalid={error ? true : undefined}>
+      <FieldContent>
+        <FieldLabel htmlFor="project-name">Name</FieldLabel>
+        {error ? <FieldError>{error}</FieldError> : <FieldDescription>Changes the project URL.</FieldDescription>}
+      </FieldContent>
+      <div className="flex gap-2 @md/field-group:shrink-0 @md/field-group:basis-80">
         <Input id="project-name" value={draft} aria-invalid={error ? true : undefined} onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter") rename(); }} />
         <Button variant="outline" disabled={name === project || error !== null} onClick={rename}>Rename</Button>
       </div>
-      {error ? <FieldError>{error}</FieldError> : <FieldDescription>Its URLs change with it.</FieldDescription>}
     </Field>
   );
 }
@@ -115,22 +113,24 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
   const defaultEnvironment = environments.find((row) => row.default);
   return (
     <>
-      <section aria-labelledby="project-heading" className="flex flex-col gap-4">
-        <h2 id="project-heading" className="text-lg font-semibold">{projectSlug}</h2>
+      <SettingsSection id="project" title="Project">
         <ProjectNameField project={projectSlug} onRename={(name) => {
           // Awaited: the page opens the renamed Project once the Store has it; a refusal toasts and stays here.
           void writer.commit({ command: "rename_project", project: projectSlug, name }).isPersisted.promise.then(() =>
             navigate({ to: ".", params: (params) => ({ ...params, projectSlug: name }), search: (prev) => prev }), () => undefined);
         }} />
-        <Field>
-          <FieldLabel htmlFor="default-environment">Default environment</FieldLabel>
+        <Field orientation="responsive">
+          <FieldContent>
+            <FieldLabel htmlFor="default-environment">Default environment</FieldLabel>
+            <FieldDescription>Opens by default.</FieldDescription>
+          </FieldContent>
           <Select value={defaultEnvironment?.name ?? null} onValueChange={(next) => {
             // Refetched views show it; a refusal toasts.
             if (next && next !== defaultEnvironment?.name) {
               writer.commit({ command: "set_default_environment", environment: { project: projectSlug, environment: next } });
             }
           }}>
-            <SelectTrigger id="default-environment" className="w-full sm:max-w-sm">
+            <SelectTrigger id="default-environment" className="w-full @md/field-group:w-80">
               <SelectValue>{defaultEnvironment?.name}</SelectValue>
             </SelectTrigger>
             <SelectContent>
@@ -141,20 +141,15 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
               </SelectGroup>
             </SelectContent>
           </Select>
-          <FieldDescription>Where {projectSlug} opens, for everyone in this organization.</FieldDescription>
         </Field>
-      </section>
-      <section aria-labelledby="project-environments-heading" className="flex flex-col gap-4">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <h2 id="project-environments-heading" className="text-base font-semibold">Environments</h2>
-          <div className="flex gap-2">
-            <Button variant="outline" nativeButton={false} render={<Link to={ENVIRONMENT_NEW_BRANCH_ROUTE_TO}
-              params={{ organizationSlug, projectSlug, environmentSlug }} />}>
-              <GitBranchPlusIcon data-icon="inline-start" />New branch
-            </Button>
-            <Button variant="outline" onClick={() => setCreating(true)}><PlusIcon data-icon="inline-start" />New environment</Button>
-          </div>
-        </div>
+      </SettingsSection>
+      <SettingsSection id="project-environments" title="Environments" action={<>
+        <Button variant="outline" nativeButton={false} render={<Link to={ENVIRONMENT_NEW_BRANCH_ROUTE_TO}
+          params={{ organizationSlug, projectSlug, environmentSlug }} />}>
+          <GitBranchPlusIcon data-icon="inline-start" />New branch
+        </Button>
+        <Button variant="outline" onClick={() => setCreating(true)}><PlusIcon data-icon="inline-start" />New environment</Button>
+      </>}>
         <ItemGroup className="gap-2">
           {storeEnvironmentTree(environments).map(({ environment, depth }) => {
             // The Default chip says "default" already.
@@ -178,7 +173,7 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
             );
           })}
         </ItemGroup>
-      </section>
+      </SettingsSection>
       <StorePrEnvironmentsSection organizationSlug={organizationSlug} projectSlug={projectSlug} environmentSlug={environmentSlug} />
       <StoreTeardownSection
         organizationSlug={organizationSlug}

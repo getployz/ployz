@@ -26,7 +26,7 @@ function RouteComponent() {
   const { scope: section = "environment" } = Route.useSearch();
   return (
     <DashboardPage width="content">
-      <div className="flex flex-col gap-8">
+      <div className="flex flex-col gap-6">
         {section === "environment" ? <StoreEnvironmentSettings {...params} /> : <StoreProjectSettings {...params} />}
       </div>
     </DashboardPage>

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Button } from "#/components/ui/button";
 import {
   Field,
+  FieldContent,
   FieldDescription,
   FieldGroup,
   FieldLabel,
@@ -21,7 +22,7 @@ import {
 } from "#/modules/config-store/registry-credentials";
 import { ServiceRegistryCredentialForm } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceRegistryCredentialForm";
 import { ServiceRegistryCredentialSingleFieldEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceRegistryCredentialSingleFieldEditor";
-import { InfoIcon, KeyRoundIcon, PencilIcon } from "lucide-react";
+import { KeyRoundIcon, PencilIcon } from "lucide-react";
 import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
 
 function RegistryCredentialSummary({
@@ -60,41 +61,6 @@ function RegistryCredentialSummary({
         </Button>
         <Button type="button" variant="outline" onClick={onDelete}>
           Disconnect
-        </Button>
-      </ItemActions>
-    </Item>
-  );
-}
-
-function RegistryCredentialEmptyState({
-  description,
-  changed,
-  actionLabel,
-  onAction,
-  onRestore,
-}: {
-  description: string;
-  changed: boolean;
-  actionLabel: string;
-  onAction: () => void;
-  onRestore?: () => void;
-}) {
-  return (
-    <Item state="info" data-changed={changed || undefined}>
-      <ItemMedia variant="icon">
-        <InfoIcon />
-      </ItemMedia>
-      <ItemContent>
-        <ItemDescription>{description}</ItemDescription>
-      </ItemContent>
-      <ItemActions>
-        {onRestore ? (
-          <Button type="button" variant="ghost" onClick={onRestore}>
-            Restore
-          </Button>
-        ) : null}
-        <Button type="button" variant="outline" onClick={onAction}>
-          {actionLabel}
         </Button>
       </ItemActions>
     </Item>
@@ -149,6 +115,24 @@ export function RegistryCredentialsField({
     setMode(null);
   }
 
+  // Most images are public: none yet is a quiet row, not a prompt.
+  if (mode == null && !configured) {
+    return (
+      <Field orientation="responsive">
+        <FieldContent>
+          <FieldLabel>{label}</FieldLabel>
+          <FieldDescription>For private images.</FieldDescription>
+        </FieldContent>
+        <div className="flex shrink-0 gap-2">
+          {onRestore ? <Button type="button" variant="ghost" onClick={onRestore}>Restore</Button> : null}
+          <Button type="button" variant="outline" data-changed={changed || undefined} onClick={() => setMode("create")}>
+            Add credentials
+          </Button>
+        </div>
+      </Field>
+    );
+  }
+
   return (
     <FieldGroup>
       <Field>
@@ -163,31 +147,19 @@ export function RegistryCredentialsField({
         </div>
 
         {mode == null ? (
-          configured ? (
-            <RegistryCredentialSummary
-              changed={changed}
-              providerLabel={providerLabel}
-              registryHost={registryHost}
-              username={username}
-              title={
-                changed && baselineValue != null
-                  ? `${baselineLabel ?? "Deployed"}: ${baselineValue}`
-                  : undefined
-              }
-              onEdit={() => setMode("edit")}
-              onDelete={handleDelete}
-            />
-          ) : (
-            <RegistryCredentialEmptyState
-              changed={changed}
-              description={`Private image? Add your ${providerLabel} credentials.`}
-              actionLabel="Add credentials"
-              onAction={() => {
-                setMode("create");
-              }}
-              onRestore={onRestore}
-            />
-          )
+          <RegistryCredentialSummary
+            changed={changed}
+            providerLabel={providerLabel}
+            registryHost={registryHost}
+            username={username}
+            title={
+              changed && baselineValue != null
+                ? `${baselineLabel ?? "Deployed"}: ${baselineValue}`
+                : undefined
+            }
+            onEdit={() => setMode("edit")}
+            onDelete={handleDelete}
+          />
         ) : (
           <>
             {usesSingleFieldUpdater ? (

@@ -48,8 +48,9 @@ export function DomainRowShell({
   return (
     <div
       className={cn(
-        "flex items-center gap-3 rounded-lg border bg-card p-3",
-        changed && "border-changed-border bg-changed-soft"
+        // Flat like the rows around it; only a staged change takes a surface, the pink trail.
+        "flex items-center gap-3 rounded-lg border border-transparent py-1",
+        changed && "border-changed-border bg-changed-soft px-3 py-2"
       )}
     >
       <span className="text-muted-foreground">{icon}</span>

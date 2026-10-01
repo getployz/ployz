@@ -11,6 +11,8 @@ import { Button } from "#/components/ui/button";
 import { toErrorMessage } from "#/lib/error-message";
 import { projectsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { removeOrganizationServerFn } from "#/modules/organization/organization-removal.functions";
+import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
+import { FieldDescription } from "#/components/ui/field";
 import { DangerRow } from "../../-components/danger-row";
 import { ForgetServersDialog } from "./forget-servers-dialog";
 
@@ -59,9 +61,7 @@ export function StoreOrganizationDanger({ organizationSlug }: { organizationSlug
 
   return (
     <>
-      <section aria-labelledby="organization-teardown-heading">
-        <h2 id="organization-teardown-heading" className="text-lg font-semibold text-destructive">Danger</h2>
-        <div className="mt-4 flex flex-col gap-4">
+      <SettingsSection id="organization-teardown" title="Danger">
           {unconfirmed && (
             <Alert variant="destructive">
               <AlertTitle>Deleting {organizationSlug} didn't finish</AlertTitle>
@@ -75,9 +75,9 @@ export function StoreOrganizationDanger({ organizationSlug }: { organizationSlug
             title="Forget all servers"
             description="Use this when your servers were deleted. Your projects and settings stay."
             action={
-              <Button variant="destructive" className="shrink-0" onClick={() => setForgetting(true)}>
+              <Button variant="destructive" onClick={() => setForgetting(true)}>
                 <ServerOffIcon data-icon="inline-start" />
-                Forget Servers
+                Forget servers
               </Button>
             }
           />
@@ -85,16 +85,15 @@ export function StoreOrganizationDanger({ organizationSlug }: { organizationSlug
             title="Delete this organization"
             description="Its servers are unpaired from it."
             action={
-              <Button variant="destructive" className="shrink-0" disabled={disabledReason !== undefined} onClick={() => setOpen(true)}>
+              <Button variant="destructive" disabled={disabledReason !== undefined} onClick={() => setOpen(true)}>
                 <Trash2Icon data-icon="inline-start" />
                 Delete organization
               </Button>
             }
           >
-            {disabledReason && <p className="mt-1 text-sm text-muted-foreground">{disabledReason}</p>}
+            {disabledReason && <FieldDescription>{disabledReason}</FieldDescription>}
           </DangerRow>
-        </div>
-      </section>
+      </SettingsSection>
       <DeletionDialog open={open} onOpenChange={setOpen} title={`Delete ${organizationSlug}?`} place={organizationSlug}
         confirmLabel="Delete" sentence={<>You're <span className="text-destructive">deleting</span> <span className="text-foreground">{organizationSlug}</span>, and unpairing its servers from it.</>}
         callbacks={{ load: () => Promise.resolve({ items: servers, evidence: null }), confirm: removeOrganization }} />

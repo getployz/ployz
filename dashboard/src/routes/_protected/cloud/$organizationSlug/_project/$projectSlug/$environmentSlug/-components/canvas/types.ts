@@ -20,9 +20,10 @@ export type StoreCanvasService = {
 
 /**
  * A Volume under a Service that mounts it; `sharedWith`: the other Services here that mount it; `mountChanged`: the next
- * Deploy adds or changes this Service's mount of it.
+ * Deploy adds or changes this Service's mount of it; `writers`: the containers that write it, every replica of every
+ * Service that mounts it.
  */
-export type MountedVolume = { volume: VolumeListing; sharedWith: string[]; mountChanged: boolean };
+export type MountedVolume = { volume: VolumeListing; sharedWith: string[]; mountChanged: boolean; writers: number };
 
 export type CanvasStoreServiceNode = Node<StoreCanvasService & {
   resourceType: "service";

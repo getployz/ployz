@@ -9,6 +9,7 @@ import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../enviro
 import { stagedSurface } from "./node-status";
 import { STAGED_CLASSES } from "./node-status-view";
 import type { MountedVolume } from "./types";
+import { SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 
 /** The Volume whose trays are lit: hovering a shared Volume's tray lights it under every Service that mounts it. */
 const LitVolume = createContext<[string | null, (id: string | null) => void]>([null, () => {}]);
@@ -23,7 +24,7 @@ export function LitVolumeProvider({ children }: { children: ReactNode }) {
  * it too. Opens its panel; while a Branch is picked, a click toggles it instead. Under an open Deployment Page it dims
  * unless the attempt changed it.
  */
-export function VolumeTray({ tray: { volume, sharedWith, mountChanged }, selected }: { tray: MountedVolume; selected: boolean }) {
+export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers }, selected }: { tray: MountedVolume; selected: boolean }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const [litVolumeId, setLitVolumeId] = use(LitVolume);
   const lighting = useNodeLighting(volume.id);
@@ -31,6 +32,8 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged }, selecte
   // Staged by its own lifecycle first, else by the next Deploy adding or changing this mount of it.
   const surface = stagedSurface(lighting, volume.change ?? (mountChanged ? "update" : null));
   const alsoMounted = sharedWith.length > 0 ? `Also mounted by ${listNames(sharedWith)}` : undefined;
+  // Several writers on one directory must be said: it's how data gets corrupted.
+  const shared = writers > 1;
   const className = cn(
     "relative -mt-3 mx-1.5 flex h-13 items-end gap-2 rounded-b-xl border border-t-0 bg-muted px-4 pb-2.5 text-xs text-muted-foreground",
     surface && STAGED_CLASSES[surface].surface,
@@ -46,6 +49,7 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged }, selecte
     <span className={cn("min-w-0 flex-1 truncate", surface && STAGED_CLASSES[surface].name)}>{volume.name}</span>
     {pick ? <span className="truncate">{pick.label}</span>
       : surface === "destructive" ? <span>Removing</span>
+      : shared ? <span className="shrink-0 text-warning">shared · {writers} writers</span>
       : alsoMounted ? <LinkIcon className="size-3.5 shrink-0" aria-label={alsoMounted} /> : null}
   </>;
   const hover = { onMouseEnter: () => setLitVolumeId(volume.id), onMouseLeave: () => setLitVolumeId(null) };
@@ -63,7 +67,7 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged }, selecte
     <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }}
       search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
       data-canvas-node={volume.id} aria-current={selected ? "page" : undefined} draggable={false} className={className} {...hover}
-      title={alsoMounted}>
+      title={shared ? SHARED_VOLUME_WHY : alsoMounted}>
       {content}
     </Link>
   );

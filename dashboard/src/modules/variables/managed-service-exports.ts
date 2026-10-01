@@ -1,6 +1,6 @@
 
-// Keep the reference default aligned with Core's DEFAULT_SERVICE_PORT.
-const PLATFORM_HTTP_PORT = 8080;
+/** The PORT Ployz gives every Service that sets none of its own; Core's DEFAULT_SERVICE_PORT. */
+export const PLATFORM_HTTP_PORT = 8080;
 
 type ServiceExportContext = {
   id: string;
