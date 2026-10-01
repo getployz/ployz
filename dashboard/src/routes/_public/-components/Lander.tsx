@@ -3,6 +3,7 @@ import { buildMarketingMeta } from '#/components/marketing/meta'
 import { DashboardLink } from '#/routes/_public/-components/PublicChrome'
 import { WireDefs } from '#/components/marketing/kit'
 import {
+  BalancerScene,
   DeployTicker,
   ExitPrompt,
   GetStartedScene,
@@ -40,6 +41,7 @@ export function Lander() {
       <Hero />
       <OneCommand />
       <AnyStack />
+      <Balancers />
       <Platform />
       <Runs />
       <Pricing />
@@ -146,6 +148,21 @@ function AnyStack() {
         ))}
       </div>
     </Section>
+  )
+}
+
+// ---- every server is the load balancer -----------------------------------------------------------------------
+
+function Balancers() {
+  return (
+    <BalancerScene
+      heading={
+        <Title>
+          No load balancer to rent. Every server <Mark>is one</Mark>.
+        </Title>
+      }
+      caption={<Caption className="mt-0">Every server runs its own load balancer, and joins one private network when you add it.</Caption>}
+    />
   )
 }
 
