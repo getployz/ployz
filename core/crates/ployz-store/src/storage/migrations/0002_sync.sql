@@ -55,3 +55,19 @@ CREATE TABLE config_followed (
 
 -- Conditional Save is Conditional Sync now.
 ALTER TABLE config_conditional_save RENAME TO config_conditional_sync;
+
+-- A Destination's value for a secret a pull request's Conditional Syncs bring by
+-- name only (`lineage`, `variable`), set ahead of the merge: `value` is the sealed
+-- variable value as JSON. It lands with the Conditional Sync at the merge, survives
+-- a withdraw and sync again, and drops when the pull request closes unmerged.
+CREATE TABLE config_held_secret (
+    environment_id TEXT NOT NULL REFERENCES config_environment (id) ON DELETE CASCADE,
+    repository_id BIGINT NOT NULL,
+    number BIGINT NOT NULL,
+    lineage TEXT NOT NULL,
+    variable TEXT NOT NULL,
+    organization_id TEXT NOT NULL,
+    value TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    PRIMARY KEY (environment_id, repository_id, number, lineage, variable)
+);

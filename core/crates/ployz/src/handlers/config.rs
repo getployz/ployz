@@ -8,7 +8,9 @@
 //! object that `set SERVICE --patch` takes back.
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use ployz_store::{Change, Edit, EnvironmentQuery, Revision, SettingPath};
+use ployz_store::{
+    Change, Edit, EnvironmentQuery, HoldSecret, PullRequestNumber, Revision, SettingPath,
+};
 use serde_json::{Value, json};
 
 use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
@@ -50,6 +52,13 @@ pub(crate) fn set_command() -> Command {
             value("from-env-file", None)
                 .value_name("FILE")
                 .help("Set a Service's variables from a .env file; - reads stdin. Variables that are secret stay secret"),
+        )
+        .arg(
+            value("at-merge", None)
+                .value_name("PR")
+                .requires("secret")
+                .conflicts_with_all(["patch", "from-env-file", "expect"])
+                .help("With --secret: hold the --env Destination's value for a secret pull request PR syncs there by name only; it lands with the merge"),
         )
         .arg(expect())
 }
@@ -178,6 +187,9 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             if secret.ends_with('\r') {
                 secret.pop();
             }
+        }
+        if let Some(number) = matches.get_one::<String>("at-merge") {
+            return hold(root, number, &path, secret);
         }
         return edit(
             root,
@@ -351,6 +363,35 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
         if edited.staged.is_empty() && edited.immediate.is_empty() {
             say!("No change in {where_}: already set.");
         }
+    })
+}
+
+/// Hold `secret` as the Destination's value of `path` for pull request `number`'s merge.
+fn hold(root: &ArgMatches, number: &str, path: &str, secret: String) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let pull_request = number
+        .trim_start_matches('#')
+        .parse()
+        .ok()
+        .and_then(|number| PullRequestNumber::parse(number).ok())
+        .ok_or_else(|| {
+            Error::usage("Expected --at-merge PR to be a pull request number, for example 142")
+                .with_exit(USAGE_EXIT)
+        })?;
+    let request = HoldSecret {
+        environment: environment(matches)?,
+        pull_request,
+        path: SettingPath::parse(path)?,
+        value: secret,
+    };
+    let held = store(root)?.write(&request)?;
+    crate::output::finish(&held, || {
+        say!(
+            "Holding {}'s value of {} for #{}'s merge.",
+            held.environment.name,
+            held.path,
+            held.pull_request
+        );
     })
 }
 

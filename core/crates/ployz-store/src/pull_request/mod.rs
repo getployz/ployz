@@ -217,6 +217,9 @@ pub struct DestinationSync {
     pub standing: bool,
     /// How many changes it holds.
     pub changes: usize,
+    /// The secrets it brings by name only that the Destination has no value of, as
+    /// `SERVICE.env.KEY`: the check waits for one, its own or held for the merge.
+    pub waiting: Vec<String>,
 }
 
 /// A plan as stored, by Environment ID and Service lineage.

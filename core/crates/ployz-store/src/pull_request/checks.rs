@@ -26,14 +26,9 @@ pub(crate) fn view(
                 conditional_sync: crate::conditional_sync::standing_in(
                     tx,
                     &environment,
-                    &into.summary.id,
+                    &into,
                     target.as_ref(),
-                )?
-                .map(|(id, standing, changes)| DestinationSync {
-                    id,
-                    standing,
-                    changes,
-                }),
+                )?,
                 name: into.summary.name,
             });
         }
@@ -56,7 +51,7 @@ pub(crate) fn view(
 }
 
 /// Whether the pull request is ready to merge, and why: every Destination with
-/// changes has a standing Conditional Sync.
+/// changes has a standing Conditional Sync, and a value for each secret it brings.
 pub(super) fn check(environments: &[PrEnvironment], target: &str) -> (bool, String) {
     let destinations: Vec<&Destination> = environments
         .iter()
@@ -103,6 +98,21 @@ pub(super) fn check(environments: &[PrEnvironment], target: &str) -> (bool, Stri
         .sum();
     if unsaved > 0 {
         return (false, format!("{} to sync in Ployz", changes(unsaved)));
+    }
+    for destination in &waiting {
+        let secrets = destination
+            .conditional_sync
+            .as_ref()
+            .map_or(&[][..], |sync| &sync.waiting);
+        let of = match secrets {
+            [] => continue,
+            [one] => one.rsplit('.').next().unwrap_or(one).to_owned(),
+            many => format!("{} secrets", many.len()),
+        };
+        return (
+            false,
+            format!("Waiting for {}'s value of {of}", destination.name),
+        );
     }
     let saved: usize = waiting
         .iter()

@@ -77,6 +77,7 @@ const BEFORE_SYNC: &str = "
     DROP TABLE config_sync_base;
     DROP TABLE config_never_sync;
     DROP TABLE config_followed;
+    DROP TABLE config_held_secret;
     ALTER TABLE config_conditional_sync RENAME TO config_conditional_save;
     DELETE FROM config_migration WHERE name = '0002_sync';
 ";

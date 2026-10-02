@@ -100,7 +100,7 @@ pub struct SetupCommand {
 }
 
 /// Stage the hints left in an Environment: a merged pull request's values its
-/// landed Conditional Sync left, sealed secrets included, even once its PR
+/// landed Conditional Sync left, even once its PR
 /// Environment is gone; or a Parent's deployed values that followed into its
 /// Branch but aren't staged there. Each replaces the receiver's own edit.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]

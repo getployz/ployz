@@ -5,17 +5,19 @@
 //! Conditional Syncs through the Store's interface only, on SQLite and on Postgres
 //! (see `backend`): syncing a PR Environment's changes for its merge, withdrawing,
 //! the check, freezing at the merge, landing with the push that carries the merge
-//! commit (never one without it), taking a sealed hint after PR teardown, syncing
-//! now where the merge doesn't reach, and a Follow that leaves it standing.
+//! commit (never one without it), taking a hint after PR teardown, a secret that
+//! waits for the Destination's value, syncing now where the merge doesn't reach, and
+//! a Follow that leaves it standing.
 
 use ployz_core::RpcErrorCode;
 use ployz_core::config::ServiceGitAccess;
 use ployz_store::{
     Actor, AuthorizedRepository, Automated, BranchHead, BranchQuery, Change, CheckSuite, Command,
     ConditionalSyncState, ConfigStore, CreateBranch, CreateGitService, CreateProject, DiffQuery,
-    Edit, EnvironmentId, EnvironmentName, EnvironmentRef, Landed, OrganizationId, ProjectId,
-    ProjectName, Publish, PullRequest, PullRequestQuery, RunnerId, ServiceLineageId, SetPrPlan,
-    SettingPath, SyncChanges, SyncQuery, SyncView, SystemEvent, Take, Trusted, When, Written,
+    Edit, EnvironmentId, EnvironmentName, EnvironmentRef, HoldSecret, Landed, OrganizationId,
+    ProjectId, ProjectName, Publish, PullRequest, PullRequestQuery, RunnerId, ServiceLineageId,
+    SetPrPlan, SettingPath, SyncChanges, SyncQuery, SyncView, SystemEvent, Take, Trusted, When,
+    Written,
 };
 use serde_json::{Value, json};
 
@@ -290,6 +292,16 @@ fn env(store: &ConfigStore, who: &Actor, environment: &str) -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
+/// Hold production's value of `path` for PR #5's merge.
+fn hold(path: &str, value: &str) -> HoldSecret {
+    HoldSecret {
+        environment: at("production"),
+        pull_request: backend::pr_number(5),
+        path: SettingPath::parse(path).unwrap(),
+        value: value.into(),
+    }
+}
+
 fn check(store: &ConfigStore, who: &Actor) -> (bool, String) {
     let view = store
         .read(
@@ -341,8 +353,22 @@ fn a_conditional_sync_goes_live_with_the_push_that_carries_its_merge() {
         .map(|row| (row.label.as_str(), row.ticked))
         .collect();
     assert_eq!(rows, [("web.env.MODE", true), ("web.env.TOKEN", true)]);
-    // Its secret goes with its value at the merge.
-    assert!(review.rows.iter().all(|row| !row.secret));
+    // Its secret goes by name only: production has no value of it yet.
+    let secrets: Vec<(bool, bool)> = review
+        .rows
+        .iter()
+        .map(|row| (row.secret, row.value_set))
+        .collect();
+    assert_eq!(secrets, [(false, false), (true, false)]);
+    // Nothing to hold a value for before it syncs.
+    let refused = store
+        .write(&who, &hold("web.env.TOKEN", "prod-secret"))
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        refused.details["next"],
+        json!("ployz env sync --to production --project shop --env pr-5")
+    );
     // The pull request's page and the Sync button count what it ticks.
     assert_eq!(destination_changes(&store, &who), 2);
     assert_eq!(to_parent(&store, &who), 2);
@@ -385,10 +411,41 @@ fn a_conditional_sync_goes_live_with_the_push_that_carries_its_merge() {
     assert!(synced.staged.is_empty());
     // Nothing lands before the merge.
     assert!(env(&store, &who, "production").get("MODE").is_none());
+    // The check waits for production's value of the secret, held ahead of the merge.
+    assert_eq!(
+        check(&store, &who),
+        (false, "Waiting for production's value of TOKEN".into())
+    );
+    assert_eq!(
+        store
+            .write(&who, &hold("web.env.NOPE", "prod-secret"))
+            .unwrap_err()
+            .code,
+        RpcErrorCode::NotFound
+    );
+    let committed = store
+        .commit(
+            &who,
+            &Command::HoldSecret(hold("web.env.TOKEN", "prod-secret")),
+            &Trusted::default(),
+        )
+        .unwrap();
+    assert_eq!(committed.checks.len(), 1);
     assert_eq!(
         check(&store, &who),
         (true, "2 changes go live with this PR".into())
     );
+    let token = |review: &SyncView| {
+        let row = review
+            .rows
+            .iter()
+            .find(|row| row.label == "web.env.TOKEN")
+            .unwrap();
+        (row.secret, row.value_set)
+    };
+    assert_eq!(token(&offered(&store, &who, None)), (true, true));
+    // Held values are never shown back.
+    assert_eq!(env(&store, &who, "production").get("TOKEN"), None);
 
     // A settings change in the PR Environment withdraws it; syncing again restores it.
     set(&store, &who, "pr-5", &[("web.env.MODE", json!("slow"))]);
@@ -403,7 +460,13 @@ fn a_conditional_sync_goes_live_with_the_push_that_carries_its_merge() {
         (false, "2 changes to sync in Ployz".into())
     );
     let review = offered(&store, &who, None);
+    // The held value survives a withdraw and sync again.
+    assert_eq!(token(&review), (true, true));
     store.write(&who, &sync(&review, None)).unwrap();
+    assert_eq!(
+        check(&store, &who),
+        (true, "2 changes go live with this PR".into())
+    );
     set(
         &store,
         &who,
@@ -464,9 +527,10 @@ fn a_conditional_sync_goes_live_with_the_push_that_carries_its_merge() {
     );
     assert_eq!(passed.admitted.len(), 1, "{passed:?}");
     assert_eq!(env(&store, &who, "production")["MODE"], json!("slow"));
+    // It lands with production's held value; the pull request's never travels.
     assert_eq!(
         resolved(&store, &passed.admitted[0].deployment.id, "TOKEN"),
-        json!("pr-secret")
+        json!("prod-secret")
     );
     let pending = store
         .pending_syncs(
@@ -481,15 +545,7 @@ fn a_conditional_sync_goes_live_with_the_push_that_carries_its_merge() {
 #[test]
 fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
     let (store, who) = shop();
-    set(
-        &store,
-        &who,
-        "pr-5",
-        &[
-            ("web.env.MODE", json!("pr")),
-            ("web.env.TOKEN", json!({ "secret": "pr-secret" })),
-        ],
-    );
+    set(&store, &who, "pr-5", &[("web.env.MODE", json!("pr"))]);
     let review = offered(&store, &who, None);
     store
         .write(&who, &sync(&review, Some(&["web.env"])))
@@ -516,11 +572,7 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
         SystemEvent::PullRequest(facts(false, Some(MERGE), Some(commit(4)), 2)),
     );
     assert_eq!(closed.removed.len(), 1, "{closed:?}");
-    let production = env(&store, &who, "production");
-    assert_eq!(
-        (&production["MODE"], &production["TOKEN"]),
-        (&json!("staged"), &json!({ "secret": true }))
-    );
+    assert_eq!(env(&store, &who, "production")["MODE"], json!("staged"));
 
     let diff = |store: &ConfigStore| {
         store
@@ -582,15 +634,16 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
     assert!(diff(&store).is_empty());
     let pushed = push(&store, &who, 5, &[]);
     assert_eq!(
-        resolved(&store, &pushed.admitted[0].deployment.id, "TOKEN"),
-        json!("pr-secret")
+        resolved(&store, &pushed.admitted[0].deployment.id, "MODE"),
+        json!("pr")
     );
 }
 
-/// PR #5 syncs TOKEN; production gains its own TOKEN before the merge, so TOKEN
-/// lands as a hint. Taking every hint and deploying resolves TOKEN to PR #5's.
+/// PR #5 syncs TOKEN and production's value is held for the merge, but production
+/// sets its own first: the check stops waiting, and the merge leaves production's
+/// own value, with no hint.
 #[test]
-fn a_secret_the_destination_gains_after_the_sync_lands_as_a_hint() {
+fn a_secret_the_destination_sets_itself_leaves_the_held_value_unused() {
     let (store, who) = shop();
     set(
         &store,
@@ -602,11 +655,20 @@ fn a_secret_the_destination_gains_after_the_sync_lands_as_a_hint() {
     store
         .write(&who, &sync(&review, Some(&["web.env.TOKEN"])))
         .unwrap();
+    assert_eq!(
+        check(&store, &who),
+        (false, "Waiting for production's value of TOKEN".into())
+    );
+    store.write(&who, &hold("web.env.TOKEN", "held")).unwrap();
     set(
         &store,
         &who,
         "production",
         &[("web.env.TOKEN", json!({ "secret": "own" }))],
+    );
+    assert_eq!(
+        check(&store, &who),
+        (true, "1 change goes live with this PR".into())
     );
     publish(&store, &who, "production");
     assert_eq!(push(&store, &who, 4, &[]).admitted.len(), 1);
@@ -624,27 +686,58 @@ fn a_secret_the_destination_gains_after_the_sync_lands_as_a_hint() {
         )
         .unwrap()
         .hints;
-    assert_eq!(hints.len(), 1, "{hints:?}");
-    assert_eq!(
-        (hints[0].row.as_str(), hints[0].landed),
-        ("web.env.TOKEN", Landed::Hint)
-    );
-    store
-        .write(
-            &who,
-            &Take {
-                from: ployz_store::HintSource::ConditionalSync(hints[0].conditional_sync.clone()),
-                into: None,
-                rows: None,
-                version: None,
-            },
-        )
-        .unwrap();
+    assert!(hints.is_empty(), "{hints:?}");
+    set(&store, &who, "production", &[("web.env.MODE", json!("x"))]);
     publish(&store, &who, "production");
     let pushed = push(&store, &who, 5, &[]);
     assert_eq!(
         resolved(&store, &pushed.admitted[0].deployment.id, "TOKEN"),
-        json!("pr-secret")
+        json!("own")
+    );
+}
+
+/// A value held for a merge that never comes drops with the pull request: reopened
+/// and synced again, it waits for both secrets again.
+#[test]
+fn a_held_value_drops_when_the_pull_request_closes_unmerged() {
+    let (store, who) = shop();
+    let secrets = [
+        ("web.env.TOKEN", json!({ "secret": "pr-token" })),
+        ("web.env.KEY", json!({ "secret": "pr-key" })),
+    ];
+    set(&store, &who, "pr-5", &secrets);
+    store
+        .write(&who, &sync(&offered(&store, &who, None), None))
+        .unwrap();
+    assert_eq!(
+        check(&store, &who),
+        (false, "Waiting for production's value of 2 secrets".into())
+    );
+    store.write(&who, &hold("web.env.TOKEN", "held")).unwrap();
+    assert_eq!(
+        check(&store, &who),
+        (false, "Waiting for production's value of KEY".into())
+    );
+    let closed = observe(
+        &store,
+        &who,
+        SystemEvent::PullRequest(facts(false, None, None, 2)),
+    );
+    assert_eq!(closed.removed.len(), 1, "{closed:?}");
+    assert!(env(&store, &who, "production").get("TOKEN").is_none());
+
+    observe(
+        &store,
+        &who,
+        SystemEvent::PullRequest(facts(true, None, None, 3)),
+    );
+    set(&store, &who, "pr-5", &secrets);
+    store
+        .write(&who, &sync(&offered(&store, &who, None), None))
+        .unwrap();
+    assert_eq!(
+        check(&store, &who),
+        (false, "Waiting for production's value of 2 secrets".into())
     );
 }
 

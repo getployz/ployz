@@ -79,7 +79,7 @@ Sync never moves data or deletes anything in production. Replicas, CPU and memor
 and the Git branch stay as each environment has them. A change marked **Changed in production**
 replaces production's value when you sync it. A secret's value never syncs: one staging added
 arrives in production marked **Secret**, without a value, and production's deploy asks you to set
-it first.
+it first. To set it as you sync, type production's value in the secret's row of the dialog.
 
 To keep a setting out of every sync, like a variable each environment sets its own way, click
 **Never sync** beside it in the dialog, or in the variable's ⋮ menu.

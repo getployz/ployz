@@ -53,7 +53,8 @@ pub use build::{
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use command::*;
 pub use conditional_sync::{
-    ConditionalSync, ConditionalSyncState, Landed, PendingSyncs, PullRequestHint,
+    ConditionalSync, ConditionalSyncState, HoldSecret, Landed, PendingSyncs, PullRequestHint,
+    SecretHeld,
 };
 pub use deployment::{
     Claimed, DeploymentStatus, DeploymentSummary, DeploymentView, NodeOutcome, NodeStatus, Outcome,

@@ -35,14 +35,12 @@ pub(crate) struct Moving {
 /// Which way a move goes.
 #[derive(Clone, Copy, Debug)]
 enum Way {
-    /// A Sync: a secret the receiver lacks arrives without its value.
+    /// A Sync, now or at a pull request's merge: a secret the receiver lacks
+    /// arrives without its value.
     Sync,
     /// A Parent's deployed changes into its Branch (Follow, Own Copy): secrets carry
     /// their value, and a secret the Branch never set its own follows the Parent's.
     Follow,
-    /// A PR Environment into one of its Destinations at the merge: secrets carry
-    /// their sealed value.
-    Conditional,
 }
 
 /// `id`'s Branch row: every move has a Branch side.
@@ -175,7 +173,7 @@ impl Moving {
                 from: suffix(tx, from)?,
                 into: suffix(tx, into)?,
             },
-            way: Way::Conditional,
+            way: Way::Sync,
             own: None,
             never_synced: marks(tx, &from.summary.id, &into.summary.id)?,
         })
@@ -197,16 +195,16 @@ impl Moving {
             base: base.clone(),
             provided: used_live(into).into_keys().collect(),
             hostnames: hostnames.clone(),
-            way: Way::Conditional,
+            way: Way::Sync,
             own: None,
             never_synced: Vec::new(),
         }
     }
 
-    /// Whether a secret the receiver lacks arrives with its value: a Sync's arrives
-    /// without one; a Conditional Sync's and a Follow's carry it.
+    /// Whether a secret the receiver lacks arrives with its value: only a Follow's
+    /// does; a Sync's, at the merge too, arrives without one.
     pub(crate) fn carries_secrets(&self) -> bool {
-        !matches!(self.way, Way::Sync)
+        matches!(self.way, Way::Follow)
     }
 
     pub(crate) fn compare(

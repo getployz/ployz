@@ -211,6 +211,9 @@ commands! {
     Sync(crate::SyncChanges) -> Synced(crate::Synced) => crate::branch::sync(tx, who, c);
     /// Stage the hints a Conditional Sync or a Parent left in an Environment.
     Take(crate::Take) -> Taken(crate::Taken) => crate::branch::take(tx, who, c);
+    /// Hold a Destination's value for a secret a pull request brings it by name.
+    HoldSecret(crate::HoldSecret) -> SecretHeld(crate::SecretHeld)
+        => crate::conditional_sync::hold(tx, who, sealing, c);
     /// Turn a Branch's Live Node into an Own Copy.
     CopyNode(crate::CopyNode) -> Branch(crate::Branched) => crate::branch::copy_node(tx, who, c);
     /// Mark settings of an Environment Never sync, or sync them again.
@@ -345,6 +348,7 @@ impl Written {
             Self::Deployment(deployment) => Some(&deployment.environment_id),
             Self::Domain(staged) => Some(&staged.environment.id),
             Self::Taken(taken) => Some(&taken.into.id),
+            Self::SecretHeld(held) => Some(&held.environment.id),
             Self::Synced(synced) => Some(&synced.into.id),
             Self::NeverSynced(marked) => Some(&marked.environment.id),
             Self::Batch(batched) => batched.results.last().and_then(Self::environment),
@@ -414,6 +418,8 @@ pub enum Written {
     Synced(crate::Synced),
     /// Hints were staged.
     Taken(crate::Taken),
+    /// A secret's value was held for a pull request's merge.
+    SecretHeld(crate::SecretHeld),
     /// An Environment's settings marked Never sync changed.
     NeverSynced(crate::NeverSynced),
     /// The Default Environment changed: the Project's Environments after it.

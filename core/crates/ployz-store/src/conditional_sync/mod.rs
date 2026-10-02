@@ -2,8 +2,10 @@
 //! goes live with the pull request's merge.
 //!
 //! Syncing records the picked rows, core's picks and what landing needs (the PR
-//! Environment's side as synced, sealed values included), so landing and a later
-//! take never read the PR Environment, which may be gone by then. A Conditional
+//! Environment's side as synced), so landing and a later take never read the PR
+//! Environment, which may be gone by then. A secret the Destination lacks arrives
+//! by name only, with the value the Destination held for the merge, if any
+//! ([`HoldSecret`]); the pull request's check waits until it has one. A Conditional
 //! Sync stands while the PR Environment's Working State, but for what it follows
 //! from its Parent, and the pull request's target branch are what they were; edits
 //! in the Destination never withdraw it. When the pull request closes it freezes
@@ -20,8 +22,11 @@
 //! `staged`; both → not saved, the pull request's value only a `hint` a take
 //! stages. Landed rows stay marked until the Destination's next Saved revision.
 
+mod held;
 mod landing;
 mod syncing;
+pub(crate) use held::hold;
+pub use held::{HoldSecret, SecretHeld};
 use landing::{Planned, plan};
 pub(crate) use syncing::*;
 
@@ -144,11 +149,6 @@ struct Row {
     shown: Shown,
     #[serde(default)]
     landed: Option<Landed>,
-    /// For a secret the pull request changed that the Destination holds too: the
-    /// pull request's variable, sealed. Core never moves a secret over one the
-    /// receiver has, so it only ever lands as a hint a take stages.
-    #[serde(default)]
-    secret: Option<SavedVariableIntent>,
 }
 
 /// A row as the Sync showed it.
@@ -167,6 +167,7 @@ struct Shown {
 struct Found {
     environment: EnvironmentId,
     state: ConditionalSyncState,
+    repository: RepositoryId,
     number: PullRequestNumber,
     stored: Stored,
 }
@@ -317,7 +318,17 @@ pub(crate) fn sync_view(
 ) -> Result<SyncView, RpcError> {
     let sides = sides(tx, who, &query.from, query.into.as_ref(), false)?;
     let moving = moving(tx, &sides)?;
-    branch::sync_view_of(&moving, sides.pr, sides.into, Some(sides.facts.number))
+    let held = held::held(
+        tx,
+        &sides.into.summary.id,
+        sides.facts.repository_id,
+        sides.facts.number,
+    )?;
+    let mut view = branch::sync_view_of(&moving, sides.pr, sides.into, Some(sides.facts.number))?;
+    for row in &mut view.rows {
+        row.value_set = row.secret && held::is_held(&held, &row.key);
+    }
+    Ok(view)
 }
 
 /// The Environments the standing Conditional Syncs of `event`'s pull request
@@ -435,6 +446,18 @@ pub(crate) fn settle(tx: &mut dyn Tx, who: &Actor, event: &PullRequest) -> Resul
             delete(tx, &id)?;
         }
     }
+    // Values held for a merge that lands nowhere go with it.
+    tx.execute(
+        "DELETE FROM config_held_secret \
+         WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3 \
+         AND environment_id NOT IN (SELECT environment_id FROM config_conditional_sync \
+         WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3 AND state = 'frozen')",
+        &[
+            who.organization.as_str().into(),
+            event.repository_id.into(),
+            event.number.into(),
+        ],
+    )?;
     for (id, into) in frozen {
         let mut destination = scope::lock_id(tx, who, &into)?;
         if !deploys_on_push(tx, &into, event.repository_id, &event.target_branch)? {
@@ -611,16 +634,21 @@ pub(crate) fn land(
         return Ok(());
     }
     let mut stored = found.stored;
-    let Some(latest) = review::latest_saved(tx, &destination.summary.id)? else {
+    let into = &destination.summary.id;
+    let held = held::held(tx, into, found.repository, found.number)?;
+    held::forget(tx, into, found.repository, found.number)?;
+    let Some(latest) = review::latest_saved(tx, into)? else {
         // Nothing saved there to land onto.
         return delete(tx, id);
     };
     let Planned {
-        saved,
-        next,
+        mut saved,
+        mut next,
         picks,
         left,
     } = plan(&stored, &latest.intent, &destination.working)?;
+    held::fill(&mut saved, &held);
+    held::fill(&mut next, &held);
 
     // Publish, stage, then what's left of the Conditional Sync.
     let (revision, _) = review::publish(tx, who, &destination.summary.id, saved, Some(&latest))?;
@@ -683,30 +711,42 @@ pub(crate) fn hints(
     Ok(hints)
 }
 
-/// PR Environment `pr`'s Conditional Sync into Destination `into`: its ID, whether
-/// it still stands, and how many rows it holds.
+/// PR Environment `pr`'s Conditional Sync into Destination `into`, as the pull
+/// request's page shows it.
 pub(crate) fn standing_in(
     tx: &mut dyn Tx,
     pr: &Environment,
-    into: &EnvironmentId,
+    into: &Environment,
     target: Option<&BranchName>,
-) -> Result<Option<(ConditionalSyncId, bool, usize)>, RpcError> {
+) -> Result<Option<pull_request::DestinationSync>, RpcError> {
     let rows = tx.query(
-        "SELECT id, working_revision, target_branch, saved FROM config_conditional_sync \
+        "SELECT id, working_revision, target_branch, saved, repository_id, number \
+         FROM config_conditional_sync \
          WHERE pr_environment_id = ?1 AND environment_id = ?2 AND state = 'standing'",
-        &[pr.summary.id.as_str().into(), into.as_str().into()],
+        &[
+            pr.summary.id.as_str().into(),
+            into.summary.id.as_str().into(),
+        ],
     )?;
     let Some(row) = rows.first() else {
         return Ok(None);
     };
-    let held = row.text(2)?;
-    let stands = u64::try_from(row.int(1)?).ok() == Some(pr.summary.revision.0)
-        && target.is_some_and(|target| held == target.as_str());
-    Ok(Some((
-        row.parse(0, "Conditional Sync ID")?,
-        stands,
-        row.json::<Stored>(3, "Conditional Sync")?.rows.len(),
-    )))
+    let branch = row.text(2)?;
+    let standing = u64::try_from(row.int(1)?).ok() == Some(pr.summary.revision.0)
+        && target.is_some_and(|target| branch == target.as_str());
+    let stored = row.json::<Stored>(3, "Conditional Sync")?;
+    let held = held::held(
+        tx,
+        &into.summary.id,
+        row.number(4, "Conditional Sync")?,
+        row.number(5, "Conditional Sync")?,
+    )?;
+    Ok(Some(pull_request::DestinationSync {
+        id: row.parse(0, "Conditional Sync ID")?,
+        standing,
+        changes: stored.rows.len(),
+        waiting: held::waiting(&stored, &into.working, &held),
+    }))
 }
 
 /// Core's comparison of the synced side into `into`, with what `into` uses live.
@@ -760,7 +800,7 @@ fn with_variable_ids_of(
 
 fn load(tx: &mut dyn Tx, who: &Actor, id: &ConditionalSyncId) -> Result<Option<Found>, RpcError> {
     let rows = tx.query(
-        "SELECT environment_id, state, number, saved FROM config_conditional_sync \
+        "SELECT environment_id, state, repository_id, number, saved FROM config_conditional_sync \
          WHERE id = ?1 AND organization_id = ?2",
         &[id.as_str().into(), who.organization.as_str().into()],
     )?;
@@ -770,8 +810,9 @@ fn load(tx: &mut dyn Tx, who: &Actor, id: &ConditionalSyncId) -> Result<Option<F
     Ok(Some(Found {
         environment: row.parse(0, "Environment ID")?,
         state: row.variant(1, "Conditional Sync")?,
-        number: row.number(2, "Conditional Sync")?,
-        stored: row.json(3, "Conditional Sync")?,
+        repository: row.number(2, "Conditional Sync")?,
+        number: row.number(3, "Conditional Sync")?,
+        stored: row.json(4, "Conditional Sync")?,
     }))
 }
 

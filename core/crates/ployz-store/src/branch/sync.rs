@@ -109,6 +109,8 @@ pub struct SyncRow {
     /// A secret the receiver lacks: it lands without a value, since a secret's value
     /// never syncs, and the receiver's Deploy refuses until it has one.
     pub secret: bool,
+    /// A value is held for the secret to land with at the merge; never shown back.
+    pub value_set: bool,
 }
 
 /// What a Sync staged.
@@ -198,6 +200,7 @@ pub(crate) fn sync_view_of(
             Ok(SyncRow {
                 new: path == "node" || (path.starts_with("variables.") && row.into.is_null()),
                 secret: row.secret() && !moving.carries_secrets(),
+                value_set: false,
                 changed: matches!(row.role, BranchRole::Move { conflict: true, .. }),
                 ticked: moving.ticked(row),
                 key,

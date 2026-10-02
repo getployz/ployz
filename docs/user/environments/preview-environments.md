@@ -79,6 +79,10 @@ changes.
   drops it.
 - **Production changed the same setting meanwhile?** Production keeps its value. Its **Details**
   show the pull request's value, "PR #142: …", with **Use** to take it.
+- **Added a secret?** Its value stays in the preview. Type production's value in the secret's row
+  of the dialog, or run `ployz set web.env.STRIPE_KEY --secret --env production --at-merge 142`.
+  It lands with the merge and is never shown back, only **Value set**. Until then the check reads
+  `Waiting for production's value of STRIPE_KEY`.
 
 The changes go to the environment that deploys the pull request's base branch, which may not be
 the one the preview started from. Where several do, pick one from the Sync button's ▾ menu.

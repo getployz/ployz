@@ -85,7 +85,7 @@ fn stand(
 ) -> Result<ConditionalSync, RpcError> {
     // Core refuses picks it couldn't land, such as a new Service's variable without it.
     moving.compare(&sides.into.working, Some(picks.clone()))?;
-    let mut rows: Vec<Row> = changes
+    let rows: Vec<Row> = changes
         .rows
         .iter()
         .filter(|row| picks.contains(&row.key.to_string()))
@@ -94,12 +94,8 @@ fn stand(
                 return None;
             };
             let (name, from, into) = branch::shown_row(&moving, &sides.pr, &sides.into, row);
-            let key = row.key.to_string();
             Some(Row {
-                // Kept sealed in case the Destination gains the key before the merge:
-                // core never moves a secret over one it holds, so it lands as a hint.
-                secret: sealed(&moving, &key),
-                key,
+                key: row.key.to_string(),
                 into: row.into.clone(),
                 shown: Shown {
                     row: name,
@@ -111,7 +107,6 @@ fn stand(
             })
         })
         .collect();
-    rows.extend(secret_hints(&moving, &sides.into));
     let names = rows.iter().map(|row| row.shown.row.clone()).collect();
     let stored = Stored {
         rows,
@@ -150,79 +145,6 @@ fn stand(
         rows: names,
         state: ConditionalSyncState::Standing,
     })
-}
-
-/// The pull request's secret that row `key` moves, if it moves one.
-fn sealed(moving: &Moving, key: &str) -> Option<SavedVariableIntent> {
-    let (lineage, path) = key.split_once(':')?;
-    let name = path.strip_prefix("variables.")?;
-    moving
-        .from
-        .services
-        .iter()
-        .find(|service| service.lineage_id == lineage)?
-        .variables
-        .iter()
-        .find(|variable| {
-            variable.key == name && matches!(variable.value, SavedVariableValue::Secret { .. })
-        })
-        .cloned()
-}
-
-/// The secrets the PR Environment changed that the Destination holds too: core
-/// moves none of them, so each is kept, sealed, to land as a hint.
-pub(super) fn secret_hints(moving: &Moving, into: &Environment) -> Vec<Row> {
-    let secret = |variable: &&SavedVariableIntent| {
-        matches!(variable.value, SavedVariableValue::Secret { .. })
-    };
-    let mut rows = Vec::new();
-    for service in &moving.from.services {
-        let lineage = &service.lineage_id;
-        let Some(theirs) = into
-            .working
-            .services
-            .iter()
-            .find(|own| own.lineage_id == *lineage)
-        else {
-            continue;
-        };
-        let base = moving
-            .base
-            .services
-            .iter()
-            .find(|own| own.lineage_id == *lineage);
-        for variable in service.variables.iter().filter(secret) {
-            let fingerprint = |service: &ployz_core::config::SavedServiceIntent| {
-                service
-                    .variables
-                    .iter()
-                    .find(|own| own.key == variable.key)
-                    .map(|own| own.value_fingerprint.clone())
-            };
-            let Some(held) = fingerprint(theirs) else {
-                continue;
-            };
-            if held == variable.value_fingerprint
-                || base.and_then(fingerprint).as_ref() == Some(&variable.value_fingerprint)
-            {
-                continue;
-            }
-            let key = format!("{lineage}:variables.{}", variable.key);
-            rows.push(Row {
-                shown: Shown {
-                    row: moving.name(&into.working, &key),
-                    conflict: true,
-                    from: json!({ "secret": true }),
-                    into: json!({ "secret": true }),
-                },
-                key,
-                into: Value::Null,
-                landed: None,
-                secret: Some(variable.clone()),
-            });
-        }
-    }
-    rows
 }
 
 /// Stage the picked hints (omitted: every one) of a landed Conditional Sync in its
@@ -289,30 +211,16 @@ pub(crate) fn take(
     if chosen.is_empty() {
         return Err(gone());
     }
-    // A secret stages from its sealed value alone: core moves none over the Destination's.
-    let sealed: BTreeSet<&str> = stored
-        .rows
-        .iter()
-        .filter(|row| row.secret.is_some())
-        .map(|row| row.key.as_str())
-        .collect();
     let picks: Vec<String> = stored
         .picks
         .iter()
-        .filter(|pick| chosen.contains(&pick.key) && !sealed.contains(pick.key.as_str()))
+        .filter(|pick| chosen.contains(&pick.key))
         .map(|pick| pick.key.clone())
         .collect();
-    let mut next = match picks.is_empty() {
+    let next = match picks.is_empty() {
         true => into.working.clone(),
         false => against(&stored, &into.working, Some(picks.clone()))?.next,
     };
-    for row in stored.rows.iter().filter(|row| chosen.contains(&row.key)) {
-        if let Some(secret) = &row.secret
-            && !put_secret(&mut next, &row.key, secret)
-        {
-            return Err(gone());
-        }
-    }
     let staged = branch::land(
         tx,
         who,
@@ -342,32 +250,4 @@ pub(crate) fn take(
             state: ConditionalSyncState::Landed,
         }),
     })
-}
-
-/// Give the Service of `key`'s lineage in `intent` the pull request's sealed secret,
-/// keeping the variable's identity. False when that Service or variable is gone.
-pub(super) fn put_secret(
-    intent: &mut SavedEnvironmentIntent,
-    key: &str,
-    secret: &SavedVariableIntent,
-) -> bool {
-    let lineage = key.split_once(':').map_or(key, |(lineage, _)| lineage);
-    let variable = intent
-        .services
-        .iter_mut()
-        .find(|service| service.lineage_id == lineage)
-        .and_then(|service| {
-            service
-                .variables
-                .iter_mut()
-                .find(|variable| variable.key == secret.key)
-        });
-    let Some(variable) = variable else {
-        return false;
-    };
-    variable.value = secret.value.clone();
-    variable
-        .value_fingerprint
-        .clone_from(&secret.value_fingerprint);
-    true
 }
