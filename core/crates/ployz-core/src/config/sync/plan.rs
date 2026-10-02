@@ -642,7 +642,7 @@ pub fn unapply(intent: &Intent, suffix: &str, landed: &[Landed]) -> Result<Inten
         }
         if let Some((child, _)) = cells
             .places(&row.lineage)
-            .find(|(child, _)| !child.at.carried() && !landed.iter().any(|l| l.row == **child))
+            .find(|(child, _)| !child.at.needed() && !landed.iter().any(|l| l.row == **child))
         {
             return Err(Unapplied::Changed(child.clone()));
         }

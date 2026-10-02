@@ -1512,6 +1512,25 @@ fn put_undoes_every_landing() {
     assert_eq!(svc(&mut next, API)["config"]["replicas"], 2);
 }
 
+/// Undo takes a new node whole, so it is refused once the node holds anything it
+/// didn't land with, even a custom domain, which no new node arrives with.
+#[test]
+fn a_new_node_is_not_undone_once_it_holds_a_row_it_didnt_land_with() {
+    let mut from = parent();
+    from["services"].as_array_mut().unwrap().push(jobs());
+    let plan = compare(Some(&parent()), &from, &parent(), Way::Sync);
+    let applied = land(&plan, &[format!("{JOBS}:node")]).unwrap();
+    unapply(&applied.next, "", &applied.landed).unwrap();
+    let mut next = json_of(&applied.next);
+    svc(&mut next, JOBS)["config"]["routes"] =
+        json!([{"id": id(0xd000_0000, 1), "hostname": "jobs.example.com", "targetPort": null}]);
+    let refused = unapply(&intent(&next), "", &applied.landed).unwrap_err();
+    assert_eq!(
+        refused.to_string(),
+        format!("{JOBS}:routes changed since it landed")
+    );
+}
+
 #[test]
 fn put_refuses_what_a_row_cannot_hold() {
     let parent = intent(&parent());
