@@ -13,7 +13,7 @@ One command gives this checkout its own Postgres, seed and `vite dev`, signed in
 scripts/verify/up.sh          # free port; BILLING=1 scripts/verify/up.sh turns billing on
 ```
 
-A fresh worktree is fine: `up.sh` installs `node_modules` and builds the native SDK when either is missing or stale. A cold run takes about 3 minutes; a warm one about 20 seconds. Rerunning it restarts from a fresh seed, and the cookie stays valid. It prints the URLs and the two `agent-browser` lines to run, and saves them to `.verify/run/info`.
+A fresh worktree is fine: `up.sh` installs `node_modules` and builds the native SDK when either is missing or stale. The SDK build is shared across worktrees through `~/.cache/ployz/sdk`, keyed by the committed Rust sources, so only the first checkout of a given commit compiles it (about 2 minutes). A warm run takes about 20 seconds. Rerunning it restarts from a fresh seed, and the cookie stays valid. It prints the URLs and the two `agent-browser` lines to run, and saves them to `.verify/run/info`.
 
 The seed (`scripts/verify/seed.ts`) writes through the app's own Config Store commands:
 
