@@ -366,8 +366,8 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
     })
 }
 
-/// Hold `secret` as the Destination's value of `path` for pull request `number`'s merge.
-fn hold(root: &ArgMatches, number: &str, path: &str, secret: String) -> Result<(), Error> {
+/// Hold `secret` as the Destination's value of row `row` for pull request `number`'s merge.
+fn hold(root: &ArgMatches, number: &str, row: &str, secret: String) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let pull_request = number
         .trim_start_matches('#')
@@ -382,7 +382,13 @@ fn hold(root: &ArgMatches, number: &str, path: &str, secret: String) -> Result<(
         environment: environment(matches)?,
         pull_request,
         repository: None,
-        path: SettingPath::parse(path)?,
+        // ponytail: a RowId only; resolve a name against the PR's Sync rows in phase 3.
+        row: row.parse().map_err(|_| {
+            Error::usage(
+                "Expected the secret's row as `env sync --at-merge --plan --json` lists it",
+            )
+            .with_exit(USAGE_EXIT)
+        })?,
         value: secret,
     };
     let held = store(root)?.write(&request)?;
@@ -390,7 +396,7 @@ fn hold(root: &ArgMatches, number: &str, path: &str, secret: String) -> Result<(
         say!(
             "Holding {}'s value of {} for #{}'s merge.",
             held.environment.name,
-            held.path,
+            held.row,
             held.pull_request
         );
     })

@@ -14,7 +14,7 @@ use ployz_core::RpcErrorCode;
 use ployz_store::{
     CreateEnvironment, DeploymentSummary, EnvironmentId, EnvironmentName, EnvironmentRef,
     EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView, NeverSync, RemoveEnvironment,
-    SetDefaultEnvironment, SettingPath,
+    SetDefaultEnvironment,
 };
 use serde_json::json;
 
@@ -133,11 +133,11 @@ pub(crate) fn command() -> Command {
                          picked. A Branch follows its Parent on its own: what the Parent \
                          deploys is staged in it, but where the Branch changed a setting \
                          too, or discarded the Parent's change, the Parent's value is a \
-                         hint `ployz diff` lists; --take PARENT stages it. From a PR \
-                         Environment into one of its Destinations it is a Conditional Sync: \
-                         the changes go live there with the pull request's merge, and \
-                         --withdraw withdraws it; into any other Environment they are staged \
-                         now. A merged pull request's value its Conditional Sync left beside \
+                         hint `ployz diff` lists; --take PARENT stages it. With --at-merge, \
+                         from a PR Environment into one of its Destinations, it is a \
+                         Conditional Sync: the changes go live there with the pull request's \
+                         merge. --undo SYNC undoes a Sync while what it staged is undeployed \
+                         and unchanged, or withdraws its Conditional Sync. A merged pull request's value its Conditional Sync left beside \
                          the Destination's own edit is a hint too; --take ID stages it, even \
                          once its PR Environment is gone. Example: ployz env sync --to --env fix-api --skip api.env.DEBUG \
                          --close",
@@ -147,7 +147,7 @@ pub(crate) fn command() -> Command {
                 value("to", None)
                     .value_name("ENV")
                     .num_args(0..=1)
-                    .required_unless_present_any(["from", "take"])
+                    .required_unless_present_any(["from", "take", "undo"])
                     .conflicts_with("from")
                     .help("Sync into ENV; with no value, the Branch's Parent, or a PR Environment's only Destination"),
             )
@@ -177,15 +177,21 @@ pub(crate) fn command() -> Command {
                     .conflicts_with("plan"),
             )
             .arg(
-                switch("withdraw", None)
-                    .help("From a PR Environment: withdraw its Conditional Sync into --to")
-                    .conflicts_with_all(["from", "only", "skip", "plan", "version", "close"]),
+                switch("at-merge", None)
+                    .help("From a PR Environment: go live in --to with the pull request's merge")
+                    .conflicts_with("close"),
+            )
+            .arg(
+                value("undo", None)
+                    .value_name("SYNC")
+                    .help("Undo the Sync a sync printed, or withdraw its Conditional Sync")
+                    .conflicts_with_all(["from", "only", "skip", "plan", "version", "close", "at-merge"]),
             )
             .arg(
                 value("take", None)
                     .value_name("ID")
                     .help("Stage the hints `ployz diff` lists from ID (the Parent, or a Conditional Sync) in --env; --only picks them")
-                    .conflicts_with_all(["to", "from", "skip", "plan", "close", "withdraw"]),
+                    .conflicts_with_all(["to", "from", "skip", "plan", "close", "undo", "at-merge"]),
             ),
         )
         .subcommand(
@@ -220,8 +226,8 @@ pub(crate) fn command() -> Command {
                 positional("path", true)
                     .num_args(1..)
                     .action(clap::ArgAction::Append)
-                    .value_name("PATH")
-                    .help("SERVICE.SETTING, SERVICE.env.KEY, SERVICE.mounts.VOLUME or volumes.VOLUME.storage"),
+                    .value_name("ROW")
+                    .help("A row as `env sync --plan` from this Environment names it (web.env.KEY), or its RowId"),
             )
             .arg(switch("off", None).help("Sync them again")),
         )
@@ -487,21 +493,42 @@ fn node_names(names: &[String]) -> Result<Vec<ployz_store::NodeName>, Error> {
         .collect::<Result<_, _>>()?)
 }
 
-/// `env never-sync`: mark settings Never sync, or with `--off` sync them again.
+/// `env never-sync`: mark rows Never sync, or with `--off` sync them again. A row
+/// is named as the Sync from this Environment shows it, or by its RowId.
 fn never_sync(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let paths = super::string_values(matches, "path")
-        .iter()
-        .map(|path| SettingPath::parse(path))
-        .collect::<Result<Vec<_>, _>>()?;
+    let asked = super::string_values(matches, "path");
+    let environment = store::environment(matches)?;
+    let store = store(root)?;
+    let mut view = None;
+    let mut rows = Vec::new();
+    for asked in &asked {
+        if let Ok(row) = asked.parse::<ployz_store::RowId>() {
+            rows.push(row);
+            continue;
+        }
+        let view: &ployz_store::SyncView = match &view {
+            Some(view) => view,
+            None => view.insert(store.read(&ployz_store::SyncQuery {
+                from: environment.clone(),
+                into: None,
+                when: ployz_store::When::Now,
+            })?),
+        };
+        let named = view.rows.iter().map(|row| &row.at);
+        rows.push(store::row(
+            asked,
+            named.chain(view.never_synced.iter().map(|row| &row.at)),
+        )?);
+    }
     let request = NeverSync {
-        environment: store::environment(matches)?,
-        paths,
+        environment,
+        rows,
         off: matches.get_flag("off"),
     };
-    let marked = store(root)?.write(&request)?;
+    let marked = store.write(&request)?;
     crate::output::finish(&marked, || {
-        let paths = super::joined(&request.paths);
+        let paths = super::joined(&asked);
         let environment = &marked.environment;
         match request.off {
             true => say!(

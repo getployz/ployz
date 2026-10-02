@@ -411,6 +411,40 @@ pub(crate) fn word(value: &impl serde::Serialize) -> String {
         .unwrap_or_default()
 }
 
+/// The row `asked` names among `rows`: its RowId, or its name as reads show it
+/// (`web.image`). One matching no row, or several, is refused with the choices.
+pub(crate) fn row<'a>(
+    asked: &str,
+    rows: impl IntoIterator<Item = &'a ployz_store::NamedRow>,
+) -> Result<ployz_store::RowId, Error> {
+    let rows: Vec<&ployz_store::NamedRow> = rows.into_iter().collect();
+    let mut found: Vec<&ployz_store::RowId> = rows
+        .iter()
+        .filter(|row| row.row.to_string() == asked || row.label() == asked)
+        .map(|row| &row.row)
+        .collect();
+    found.sort();
+    found.dedup();
+    if let [only] = found.as_slice() {
+        return Ok((*only).clone());
+    }
+    let (message, choices): (String, Vec<String>) = match found.is_empty() {
+        true => (
+            format!("No row named {asked} here"),
+            rows.iter().map(|row| row.label()).collect(),
+        ),
+        false => (
+            format!("{asked} names more than one row: name its row"),
+            found.iter().map(ToString::to_string).collect(),
+        ),
+    };
+    Err(Error::detailed(
+        RpcErrorCode::NotFound,
+        message,
+        json!({ "valid_children": choices }),
+    ))
+}
+
 /// A value as a change line shows it: a long one cut to its start and length, so one big variable doesn't fill the terminal.
 pub(crate) fn shown(value: &serde_json::Value) -> String {
     const SHOWN: usize = 80;

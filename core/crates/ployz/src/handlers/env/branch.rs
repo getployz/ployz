@@ -1,15 +1,13 @@
-//! Branches: create one, sync changes between two Environments of a Project (or withdraw a
-//! Conditional Sync, or take a hint), copy a Live Node into it, keep it.
+//! Branches: create one, sync changes between two Environments of a Project (or undo a
+//! Sync, or take a hint), copy a Live Node into it, keep it.
 
 use clap::ArgMatches;
 use ployz_core::ServiceName;
-use ployz_core::config::covers;
 use ployz_store::{
     Branched, ConditionalSyncId, CopyNode, CreateBranch, DeploymentId, DiffQuery, EnvironmentId,
-    EnvironmentName, EnvironmentRef, HintSource, KeepBranch, SetupCommand, SyncChanges, SyncQuery,
-    SyncView, Synced, Take, Taken, When,
+    EnvironmentName, EnvironmentRef, HintSource, KeepBranch, SetupCommand, SyncChanges, SyncId,
+    SyncQuery, SyncView, Synced, Take, Taken, UndoSync, Undone, When,
 };
-use serde_json::json;
 
 use super::super::config::expected;
 use super::super::store::{self, Next, mint, project, store};
@@ -54,8 +52,8 @@ pub(super) fn branch(root: &ArgMatches) -> Result<(), Error> {
     finish(&made, Some(deploy), "Made Branch")
 }
 
-/// `env sync`: with `--plan` the changes and their version, else the Sync, its rows
-/// picked by `--only` and `--skip` against the changes read first.
+/// `env sync`: with `--plan` the changes and their version, else the Sync of the
+/// rows `--only` and `--skip` name, at the version read first unless `--version`.
 pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let named = |flag: &str| {
@@ -73,56 +71,46 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
     if let Some(source) = matches.get_one::<String>("take") {
         return take(root, source, here);
     }
+    if let Some(sync) = matches.get_one::<String>("undo") {
+        return undo(root, sync);
+    }
+    let when = match matches.get_flag("at-merge") {
+        true => When::AtMerge,
+        false => When::Now,
+    };
     let query = match named("from")? {
         Some(from) => SyncQuery {
             from,
             into: Some(here),
+            when,
         },
         None => SyncQuery {
             from: here,
             into: named("to")?,
+            when,
         },
     };
     let store = store(root)?;
     let words = sync_words(matches);
-    if matches.get_flag("withdraw") {
-        let request = SyncChanges {
-            from: query.from,
-            into: query.into,
-            when: Some(When::Withdraw),
-            ..SyncChanges::default()
-        };
-        let synced = store
-            .try_write(&request)
-            .map_err(|error| store.fail(error))?;
-        return synced_out(matches, &synced);
-    }
     if matches.get_flag("plan") {
         let view = store.read(&query)?;
         return sync_plan(matches, &words, &view);
     }
-    let (only, skip) = (
-        super::super::string_values(matches, "only"),
-        super::super::string_values(matches, "skip"),
-    );
-    let mut version = matches.get_one::<String>("version").cloned();
-    let picks = match only.is_empty() && skip.is_empty() {
-        true => None,
-        false => {
-            let view = store.read(&query)?;
-            // The rows were picked from this view: sync exactly them.
-            let picks = picked(matches, &words, &view, (&only, &skip))?;
-            version.get_or_insert(view.version);
-            Some(picks)
-        }
+    let only = super::super::string_values(matches, "only");
+    // The rows are picked against the changes as read now, unless --version pins them.
+    let version = match matches.get_one::<String>("version") {
+        Some(version) => version.clone(),
+        None => store.read(&query)?.version,
     };
     let request = SyncChanges {
         from: query.from,
         into: query.into,
-        picks,
-        version,
+        when,
         close_after: matches.get_flag("close"),
-        when: None,
+        version,
+        picks: (!only.is_empty()).then_some(only),
+        skip: super::super::string_values(matches, "skip"),
+        values: std::collections::BTreeMap::new(),
     };
     let synced = store.try_write(&request).map_err(|error| {
         // Stale, or nothing to sync: the plan shows what there is now.
@@ -133,6 +121,28 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
         ))
     })?;
     synced_out(matches, &synced)
+}
+
+/// `env sync --undo SYNC`: undo a Sync, or withdraw its Conditional Sync.
+fn undo(root: &ArgMatches, sync: &str) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let request = UndoSync {
+        sync: SyncId::parse(sync).map_err(|_| {
+            Error::usage("Expected --undo SYNC to be the ID a Sync printed").with_exit(USAGE_EXIT)
+        })?,
+    };
+    let undone: Undone = store(root)?.write(&request)?;
+    let into = &undone.into;
+    let next = in_project(matches, &["diff", "--env", into.name.as_str()]);
+    crate::output::finish(&Next::new(&undone, Some(next.clone())), || {
+        say!(
+            "Undid Sync {} in {}/{}.",
+            request.sync,
+            into.project,
+            into.name
+        );
+        say!("next: {next}");
+    })
 }
 
 /// `env sync --take ID`: stage the hints (or those `--only` names) that the Parent
@@ -148,22 +158,32 @@ fn take(root: &ArgMatches, source: &str, into: EnvironmentRef) -> Result<(), Err
         })?;
     let only = super::super::string_values(matches, "only");
     let store = store(root)?;
-    // The hints were read at this version, else at the diff's now.
-    let version = match matches.get_one::<String>("version") {
-        Some(version) => version.clone(),
-        None => {
-            store
-                .read(&DiffQuery {
-                    environment: into.clone(),
-                })?
-                .version
-        }
+    let diff = store.read(&DiffQuery {
+        environment: into.clone(),
+    })?;
+    // `--only` names the hints this source left.
+    let hints: Vec<&ployz_store::NamedRow> = match &from {
+        HintSource::Parent(_) => diff.follow_hints.iter().map(|hint| &hint.at).collect(),
+        HintSource::ConditionalSync(id) => diff
+            .hints
+            .iter()
+            .filter(|hint| hint.conditional_sync == *id)
+            .map(|hint| &hint.at)
+            .collect(),
     };
+    let rows = only
+        .iter()
+        .map(|asked| store::row(asked, hints.iter().copied()))
+        .collect::<Result<Vec<_>, _>>()?;
     let request = Take {
         from,
         into: Some(into),
-        rows: (!only.is_empty()).then_some(only),
-        version,
+        rows: (!rows.is_empty()).then_some(rows),
+        // The hints were read at this version, else at the diff's now.
+        version: matches
+            .get_one::<String>("version")
+            .cloned()
+            .unwrap_or(diff.version),
     };
     let taken = store
         .try_write(&request)
@@ -203,48 +223,6 @@ fn sync_words(matches: &ArgMatches) -> Vec<&str> {
     }
 }
 
-/// The keys of `view`'s rows `--only` names (else those ticked by default) less
-/// those `--skip` names; a name matching no row is refused.
-fn picked(
-    matches: &ArgMatches,
-    words: &[&str],
-    view: &SyncView,
-    (only, skip): (&[String], &[String]),
-) -> Result<Vec<String>, Error> {
-    if let Some(unknown) = only.iter().chain(skip).find(|asked| {
-        !view
-            .rows
-            .iter()
-            .any(|row| covers(&row.path.to_string(), asked))
-    }) {
-        let paths: Vec<String> = view.rows.iter().map(|row| row.path.to_string()).collect();
-        return Err(Error::detailed(
-            ployz_core::RpcErrorCode::NotFound,
-            format!("No change named {unknown} syncs"),
-            json!({
-                "valid_children": paths,
-                "next": store::next(matches, &[words, &["--plan"]].concat()),
-            }),
-        ));
-    }
-    Ok(view
-        .rows
-        .iter()
-        .filter(|row| match only.is_empty() {
-            true => row.ticked,
-            false => only
-                .iter()
-                .any(|asked| covers(&row.path.to_string(), asked)),
-        })
-        .filter(|row| {
-            !skip
-                .iter()
-                .any(|asked| covers(&row.path.to_string(), asked))
-        })
-        .map(|row| row.key.clone())
-        .collect())
-}
-
 fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<(), Error> {
     let next = (!view.rows.is_empty()).then(|| {
         store::next(
@@ -271,11 +249,18 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
             if !row.ticked {
                 notes.push("left out unless picked".to_owned());
             }
-            if row.changed {
-                notes.push(format!("{} changed it too", view.into.name));
+            match row.change {
+                ployz_store::SyncChange::Conflict => {
+                    notes.push(format!("{} changed it too", view.into.name));
+                }
+                ployz_store::SyncChange::New => notes.push("new".to_owned()),
+                ployz_store::SyncChange::Changed => {}
             }
-            if row.new {
-                notes.push("new".to_owned());
+            if row.secret.as_ref().is_some_and(|secret| secret.needs_value) {
+                notes.push(format!(
+                    "{} lacks this secret: it arrives without a value",
+                    view.into.name
+                ));
             }
             let notes = match notes.is_empty() {
                 true => String::new(),
@@ -283,7 +268,7 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
             };
             say!(
                 "  {}: {} → {}{notes}",
-                row.label,
+                row.at.label(),
                 store::shown(&row.into),
                 store::shown(&row.from)
             );
@@ -291,7 +276,7 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
         for row in &view.never_synced {
             say!(
                 "  {}: never synced (marked in {})",
-                row.label,
+                row.at.label(),
                 crate::handlers::joined(&row.marked_in)
             );
         }
@@ -303,18 +288,26 @@ fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
     let into = &synced.into;
     let next = (!synced.staged.is_empty())
         .then(|| in_project(matches, &["deploy", "--env", into.name.as_str()]));
-    let withdrew = matches.get_flag("withdraw");
     crate::output::finish(&Next::new(synced, next.clone()), || {
         let (from, into) = (&synced.from.name, format!("{}/{}", into.project, into.name));
         match &synced.conditional_sync {
-            _ if withdrew => say!("Withdrew {from}'s Conditional Sync into {into}."),
             Some(sync) => say!(
                 "Goes live in {into} with PR #{}'s merge: {}.",
                 sync.pull_request,
-                sync.rows.join(", ")
+                crate::handlers::joined(
+                    &sync
+                        .rows
+                        .iter()
+                        .map(ployz_store::NamedRow::label)
+                        .collect::<Vec<_>>()
+                )
             ),
             None => say!("Synced {from} → {into}."),
         }
+        say!(
+            "Undo it: {}",
+            in_project(matches, &["env", "sync", "--undo", synced.sync.as_str()])
+        );
         if !synced.staged.is_empty() {
             say!("Staged: {}", crate::handlers::joined(&synced.staged));
         }

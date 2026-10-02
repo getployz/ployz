@@ -48,7 +48,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
         let from = |row: &str| {
             view.incoming
                 .iter()
-                .find(|incoming| incoming.row == row)
+                .find(|incoming| incoming.at.label() == row)
                 .map_or_else(String::new, |incoming| format!(" (from {})", incoming.from))
         };
         for change in &view.changes {
@@ -82,7 +82,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 ployz_store::Landed::Hint => say!(
                     "PR #{} merged {} = {} beside your edit; use it: {}",
                     hint.pull_request,
-                    hint.row,
+                    hint.at.label(),
                     hint.value,
                     next(
                         matches,
@@ -92,7 +92,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                             "--take",
                             hint.conditional_sync.as_str(),
                             "--only",
-                            &hint.row
+                            &hint.at.label()
                         ]
                     )
                 ),
@@ -100,7 +100,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                     say!(
                         "PR #{} staged {} = {}",
                         hint.pull_request,
-                        hint.row,
+                        hint.at.label(),
                         hint.value
                     );
                 }
@@ -110,7 +110,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
             say!(
                 "{} deployed {} = {}, not staged here; use it: {}",
                 hint.from,
-                hint.row,
+                hint.at.label(),
                 hint.value,
                 next(
                     matches,
@@ -120,7 +120,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                         "--take",
                         hint.from.as_str(),
                         "--only",
-                        &hint.row
+                        &hint.at.label()
                     ]
                 )
             );
