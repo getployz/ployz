@@ -188,18 +188,17 @@ pub struct Undone {
 }
 
 /// Where a Sync goes, and when it lands.
+pub(crate) struct Target {
+    from: EnvironmentId,
+    into: EnvironmentId,
+    lands: Lands,
+}
+
+/// When a Sync lands.
 #[expect(clippy::large_enum_variant, reason = "one per command, never stored")]
-pub(crate) enum Target {
-    Now {
-        from: Environment,
-        into: Environment,
-        close_after: bool,
-    },
-    AtMerge {
-        from: Environment,
-        into: Environment,
-        pr: PullRequest,
-    },
+enum Lands {
+    Now { close_after: bool },
+    AtMerge(PullRequest),
 }
 
 pub(crate) fn sync(
@@ -209,15 +208,14 @@ pub(crate) fn sync(
     request: &SyncChanges,
 ) -> Result<Synced, RpcError> {
     let side = (&request.from, request.into.as_ref());
-    let (from, mut into, close_after) = match target(tx, who, side, request.when, true)? {
-        Target::AtMerge { from, into, pr } => {
+    let target = target(tx, who, side, request.when)?;
+    scope::lock_project(tx, &target.from)?;
+    let (from, mut into) = scope::load_pair(tx, who, (&target.from, &target.into), true)?;
+    let close_after = match target.lands {
+        Lands::AtMerge(pr) => {
             return crate::conditional_sync::sync(tx, who, sealing, request, (from, into, pr));
         }
-        Target::Now {
-            from,
-            into,
-            close_after,
-        } => (from, into, close_after),
+        Lands::Now { close_after } => close_after,
     };
     if let Some(removal) = crate::teardown::removing(tx, &from.summary.id)? {
         return Err(crate::teardown::being_removed(&from, &removal));
@@ -240,7 +238,7 @@ pub(crate) fn sync(
     let (picks, values) = picks(checked.rows(), &sides, request)?;
     let values = sealed(sealing, checked.rows(), &sides, &picks, &values)?;
     let id = SyncId::parse(uuid::Uuid::new_v4().to_string())?;
-    let staged = sync.apply(tx, who, &mut into, &checked, &picks, &values, Some(&id))?;
+    let staged = checked.apply(tx, who, &mut into, &picks, &values, Some(&id))?;
     if close_after {
         crate::pull_request::close(tx, who, &from.summary.id, &mut Default::default())?;
     }
@@ -261,9 +259,11 @@ pub(crate) fn sync_view(
     query: &SyncQuery,
 ) -> Result<SyncView, RpcError> {
     let side = (&query.from, query.into.as_ref());
-    let (from, into, pr) = match target(tx, who, side, query.when, false)? {
-        Target::Now { from, into, .. } => (from, into, None),
-        Target::AtMerge { from, into, pr } => (from, into, Some(pr)),
+    let target = target(tx, who, side, query.when)?;
+    let (from, into) = scope::load_pair(tx, who, (&target.from, &target.into), false)?;
+    let pr = match target.lands {
+        Lands::Now { .. } => None,
+        Lands::AtMerge(pr) => Some(pr),
     };
     let held = match &pr {
         Some(pr) => crate::conditional_sync::held(tx, &into.summary.id, &pr.reference())?,
@@ -296,15 +296,18 @@ pub(crate) fn sync_view(
                 at,
             }),
             Verdict::Differs(Why::NeverSynced) => never_synced.push(NeverSyncedRow {
-                marks: [(&from, &sync.from_marks), (&into, &sync.into_marks)]
-                    .into_iter()
-                    .flat_map(|(side, marks)| {
-                        marks_on(&row.id, marks).map(|row| Mark {
-                            environment: side.summary.name.clone(),
-                            row: row.clone(),
-                        })
+                marks: [
+                    (&from, &sync.rules.from_marks),
+                    (&into, &sync.rules.into_marks),
+                ]
+                .into_iter()
+                .flat_map(|(side, marks)| {
+                    marks_on(&row.id, marks).map(|row| Mark {
+                        environment: side.summary.name.clone(),
+                        row: row.clone(),
                     })
-                    .collect(),
+                })
+                .collect(),
                 at,
             }),
             Verdict::Differs(_) => {}
@@ -322,14 +325,12 @@ pub(crate) fn sync_view(
 
 /// Where a Sync from `from` goes, and when: `when`, or omitted at the merge from a
 /// PR Environment into one of its Destinations (omitted, its only one), else now
-/// into `into` or the sender's Parent. `lock` takes the Project's lock, then both
-/// sides'.
-pub(crate) fn target(
+/// into `into` or the sender's Parent.
+fn target(
     tx: &mut dyn Tx,
     who: &Actor,
     (from, into): (&EnvironmentRef, Option<&EnvironmentRef>),
     when: Option<When>,
-    lock: bool,
 ) -> Result<Target, RpcError> {
     let summary = scope::environment(tx, who, from)?.summary;
     let next = json!({ "next": format!("ployz env sync --to ENV --project {} --env {}", summary.project, summary.name) });
@@ -390,16 +391,14 @@ pub(crate) fn target(
             next,
         ));
     }
-    if lock {
-        scope::lock_project(tx, &summary.id)?;
-    }
-    let (from, into) = scope::load_pair(tx, who, (&summary.id, &into.id), lock)?;
-    Ok(match pr {
-        Some(pr) => Target::AtMerge { from, into, pr },
-        None => Target::Now {
-            from,
-            into,
-            close_after: matches!(when, Some(When::Now { close_after: true })),
+    Ok(Target {
+        from: summary.id,
+        into: into.id,
+        lands: match pr {
+            Some(pr) => Lands::AtMerge(pr),
+            None => Lands::Now {
+                close_after: matches!(when, Some(When::Now { close_after: true })),
+            },
         },
     })
 }

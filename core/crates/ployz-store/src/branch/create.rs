@@ -136,9 +136,11 @@ pub(crate) fn create_branch(
         from: suffix(tx, &parent)?,
         into: format!("-{}", create.name),
     };
-    let live: BTreeSet<String> = live.into_iter().collect();
+    let rules = Rules {
+        live: live.into_iter().collect(),
+        ..Rules::new(Way::Copy)
+    };
     let creating = |from: &SavedEnvironmentIntent| {
-        let none = BTreeSet::new();
         plan(
             Sides {
                 base: None,
@@ -146,13 +148,7 @@ pub(crate) fn create_branch(
                 into: &into,
                 hostnames: hostnames.clone(),
             },
-            Rules {
-                way: Way::Copy,
-                from_marks: &none,
-                into_marks: &none,
-                live: &live,
-                own: None,
-            },
+            &rules,
         )
     };
     let picks: BTreeSet<RowId> = creating(&from)
@@ -284,7 +280,7 @@ pub(crate) fn copy_node(
         .map(|row| row.id.clone())
         .collect();
     let none = BTreeMap::new();
-    let staged = own.apply(tx, who, &mut branch, &checked, &picks, &none, None)?;
+    let staged = checked.apply(tx, who, &mut branch, &picks, &none, None)?;
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged,

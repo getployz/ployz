@@ -291,18 +291,18 @@ pub enum Way {
 }
 
 /// The caller's context for a comparison.
-pub struct Policy<'context> {
+pub struct Policy {
     /// How the changes travel.
     pub way: Way,
     /// Rows `from` marked Never sync.
-    pub from_marks: &'context BTreeSet<RowId>,
+    pub from_marks: BTreeSet<RowId>,
     /// Rows `into` marked Never sync.
-    pub into_marks: &'context BTreeSet<RowId>,
+    pub into_marks: BTreeSet<RowId>,
     /// Lineages `into` uses live.
-    pub live: &'context BTreeSet<String>,
+    pub live: BTreeSet<String>,
     /// The sender's own changes when it is not syncing into its own Parent; the other
     /// rows it only inherited and they start unticked. None when every row is its own.
-    pub own: Option<&'context BTreeSet<RowId>>,
+    pub own: Option<BTreeSet<RowId>>,
 }
 
 /// Why a row never moves.
@@ -417,7 +417,19 @@ pub enum NodeRef<'intent> {
     Volume(&'intent SavedVolumeIntent),
 }
 
-impl Policy<'_> {
+impl Policy {
+    /// `way` with no marks, nothing live, and every row its own.
+    #[must_use]
+    pub fn new(way: Way) -> Self {
+        Self {
+            way,
+            from_marks: BTreeSet::new(),
+            into_marks: BTreeSet::new(),
+            live: BTreeSet::new(),
+            own: None,
+        }
+    }
+
     fn marked(&self, row: &RowId) -> bool {
         match self.way {
             Way::Sync => self.from_marks.contains(row) || self.into_marks.contains(row),
@@ -466,7 +478,7 @@ impl Policy<'_> {
         } else {
             Verdict::Moves {
                 conflict,
-                ticked: self.own.is_none_or(|own| own.contains(row)),
+                ticked: self.own.as_ref().is_none_or(|own| own.contains(row)),
                 arrives,
             }
         })
@@ -489,7 +501,7 @@ fn owned(at: &At) -> Option<Why> {
 
 /// Compare `sides` under `policy`: every place either side holds, by lineage.
 #[must_use]
-pub fn plan(sides: Sides, policy: Policy) -> Plan {
+pub fn plan(sides: Sides, policy: &Policy) -> Plan {
     let Sides {
         base,
         from,
@@ -589,7 +601,7 @@ pub fn plan(sides: Sides, policy: Policy) -> Plan {
                         Way::Sync | Way::Follow => Policy::verdict,
                     };
                     if let Some(verdict) =
-                        judge(&policy, &child, &Cell::Absent, &cell, &Cell::Absent)
+                        judge(policy, &child, &Cell::Absent, &cell, &Cell::Absent)
                     {
                         push(
                             child,

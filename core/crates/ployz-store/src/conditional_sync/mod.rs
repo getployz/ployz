@@ -183,8 +183,6 @@ fn admit(
     held: &BTreeMap<RowId, Cell>,
     keep: impl Fn(&PlannedRow) -> bool,
 ) -> Result<Admitted, RpcError> {
-    let none = BTreeSet::new();
-    let live = branch::used_live(into).into_keys().collect();
     let plan: Plan = plan(
         Sides {
             base: Some(&stored.base),
@@ -192,12 +190,10 @@ fn admit(
             into,
             hostnames: stored.hostnames.clone(),
         },
-        Rules {
-            way: Way::Sync,
-            from_marks: &none,
-            into_marks: marks,
-            live: &live,
-            own: None,
+        &Rules {
+            into_marks: marks.clone(),
+            live: branch::used_live(into).into_keys().collect(),
+            ..Rules::new(Way::Sync)
         },
     );
     let moves: BTreeSet<RowId> = plan
@@ -246,11 +242,6 @@ fn admitted(
             .any(|pick| pick.at.row == row.id && pick.reviewed == row.into)
             && (!needs_value || cell_at(working, &row.id, &stored.hostnames.into) == row.into)
     })
-}
-
-/// The rows `into` marks Never sync.
-fn marked(tx: &mut dyn Tx, into: &EnvironmentId) -> Result<BTreeSet<RowId>, RpcError> {
-    Ok(branch::marks(tx, into, into)?.1)
 }
 
 /// The Environments the standing Conditional Syncs of `event`'s pull request
@@ -575,7 +566,7 @@ pub(crate) fn land(
         // Nothing saved there to land onto.
         return delete(tx, id);
     };
-    let marks = marked(tx, &into)?;
+    let marks = branch::marked(tx, &into)?;
     let saved = admitted(
         &stored,
         (&latest.intent, &destination.working),
@@ -717,7 +708,7 @@ pub(crate) fn standing_in(
             number: row.number(5, "Conditional Sync")?,
         },
     )?;
-    let marks = marked(tx, &into.summary.id)?;
+    let marks = branch::marked(tx, &into.summary.id)?;
     let waiting = match review::latest_saved(tx, &into.summary.id)? {
         Some(latest) => admitted(&stored, (&latest.intent, &into.working), &marks, &held)?
             .applied

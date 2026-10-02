@@ -202,9 +202,6 @@ struct Opts {
 }
 
 fn compare_with(base: Option<&Value>, from: &Value, into: &Value, way: Way, opts: Opts) -> Plan {
-    let (from_marks, into_marks) = (ids(&opts.from_marks), ids(&opts.into_marks));
-    let own = opts.own.as_deref().map(ids);
-    let live = opts.live.iter().map(|l| (*l).to_owned()).collect();
     let base = base.map(intent);
     let (suffix_from, suffix_into) = opts.hostnames.unwrap_or(("-pr-7", ""));
     plan(
@@ -217,12 +214,12 @@ fn compare_with(base: Option<&Value>, from: &Value, into: &Value, way: Way, opts
                 into: suffix_into.to_owned(),
             },
         },
-        Policy {
+        &Policy {
             way,
-            from_marks: &from_marks,
-            into_marks: &into_marks,
-            live: &live,
-            own: own.as_ref(),
+            from_marks: ids(&opts.from_marks),
+            into_marks: ids(&opts.into_marks),
+            live: opts.live.iter().map(|l| (*l).to_owned()).collect(),
+            own: opts.own.as_deref().map(ids),
         },
     )
 }

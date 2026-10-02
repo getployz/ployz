@@ -17,7 +17,7 @@ pub use follow::{FollowHint, IncomingChange};
 pub(crate) use follow::{follow, hints, incoming};
 pub(crate) use live::*;
 pub use never_sync::{NeverSync, NeverSynced};
-pub(crate) use never_sync::{marks, never_sync, never_synced};
+pub(crate) use never_sync::{marked, marks, never_sync, never_synced};
 pub(crate) use pair::*;
 pub use setup::SetBranchSetup;
 pub(crate) use setup::{branch_setup, set_branch_setup};

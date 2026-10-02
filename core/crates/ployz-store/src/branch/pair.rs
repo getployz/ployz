@@ -35,31 +35,14 @@ pub(crate) struct Move {
     pub(crate) from: SavedEnvironmentIntent,
     pub(crate) base: SavedEnvironmentIntent,
     pub(crate) hostnames: Hostnames,
-    way: Way,
-    pub(super) from_marks: BTreeSet<RowId>,
-    pub(super) into_marks: BTreeSet<RowId>,
-    live: BTreeSet<String>,
-    own: Option<BTreeSet<RowId>>,
+    pub(super) rules: Rules,
 }
 
-/// A plan whose guard held.
-pub(crate) struct Checked {
+/// A plan of a [`Move`] whose guard held, ready to land.
+pub(crate) struct Checked<'way> {
+    of: &'way Move,
     plan: Plan,
     version: String,
-}
-
-impl Checked {
-    pub(crate) fn rows(&self) -> &[PlannedRow] {
-        self.plan.rows()
-    }
-
-    pub(crate) fn plan(&self) -> &Plan {
-        &self.plan
-    }
-
-    pub(crate) fn version(&self) -> &str {
-        &self.version
-    }
 }
 
 impl Move {
@@ -70,25 +53,49 @@ impl Move {
         parent: &Environment,
         branch: &Environment,
     ) -> Result<Self, RpcError> {
+        let nothing = format!("Nothing new in {}", parent.summary.name);
+        Self::deployed(tx, (parent, branch), Way::Follow, nothing, &BTreeSet::new())
+    }
+
+    /// What `owner` deployed into `branch`, over the base `branch` shares with its
+    /// Parent, but for the `copied` lineages, which are neither in the base nor used
+    /// live.
+    fn deployed(
+        tx: &mut dyn Tx,
+        (owner, branch): (&Environment, &Environment),
+        way: Way,
+        nothing: String,
+        copied: &BTreeSet<String>,
+    ) -> Result<Self, RpcError> {
         let other = row(tx, &branch.summary.id)?
             .ok_or_else(|| error::corrupt("Branch"))?
             .parent;
-        let (from_marks, into_marks) = marks(tx, &parent.summary.id, &branch.summary.id)?;
+        let mut base = base_of(tx, (&branch.summary.id, &other))?;
+        base.services
+            .retain(|service| !copied.contains(&service.lineage_id));
+        base.volumes
+            .retain(|volume| !copied.contains(&volume.resource_lineage_id));
+        let (from_marks, into_marks) = marks(tx, &owner.summary.id, &branch.summary.id)?;
         Ok(Self {
-            source: parent.summary.id.clone(),
-            nothing: format!("Nothing new in {}", parent.summary.name),
-            from: deployment::head(tx, parent)?.applied,
-            base: base_of(tx, (&branch.summary.id, &other))?,
+            source: owner.summary.id.clone(),
+            nothing,
+            from: deployment::head(tx, owner)?.applied,
+            base,
             other,
             hostnames: Hostnames {
-                from: suffix(tx, parent)?,
+                from: suffix(tx, owner)?,
                 into: suffix(tx, branch)?,
             },
-            way: Way::Follow,
-            from_marks,
-            into_marks,
-            live: used_live(&branch.working).into_keys().collect(),
-            own: None,
+            rules: Rules {
+                way,
+                from_marks,
+                into_marks,
+                live: used_live(&branch.working)
+                    .into_keys()
+                    .filter(|lineage| !copied.contains(lineage))
+                    .collect(),
+                own: None,
+            },
         })
     }
 
@@ -128,11 +135,13 @@ impl Move {
                 from: suffix(tx, from)?,
                 into: suffix(tx, into)?,
             },
-            way: Way::Sync,
-            from_marks,
-            into_marks,
-            live: used_live(&into.working).into_keys().collect(),
-            own,
+            rules: Rules {
+                way: Way::Sync,
+                from_marks,
+                into_marks,
+                live: used_live(&into.working).into_keys().collect(),
+                own,
+            },
         })
     }
 
@@ -144,17 +153,8 @@ impl Move {
         branch: &Environment,
         copied: &BTreeSet<String>,
     ) -> Result<Self, RpcError> {
-        let mut copy = Self::follow(tx, owner, branch)?;
-        copy.nothing = format!("Nothing to copy from {}", owner.summary.name);
-        copy.base
-            .services
-            .retain(|service| !copied.contains(&service.lineage_id));
-        copy.base
-            .volumes
-            .retain(|volume| !copied.contains(&volume.resource_lineage_id));
-        copy.live.retain(|lineage| !copied.contains(lineage));
-        copy.way = Way::Copy;
-        Ok(copy)
+        let nothing = format!("Nothing to copy from {}", owner.summary.name);
+        Self::deployed(tx, (owner, branch), Way::Copy, nothing, copied)
     }
 
     /// The rows from `from` into `into`.
@@ -166,13 +166,7 @@ impl Move {
                 into,
                 hostnames: self.hostnames.clone(),
             },
-            Rules {
-                way: self.way,
-                from_marks: &self.from_marks,
-                into_marks: &self.into_marks,
-                live: &self.live,
-                own: self.own.as_ref(),
-            },
+            &self.rules,
         )
     }
 
@@ -182,7 +176,7 @@ impl Move {
         tx: &mut dyn Tx,
         into: &Environment,
         guard: Guard,
-    ) -> Result<Checked, RpcError> {
+    ) -> Result<Checked<'_>, RpcError> {
         let plan = self.plan(&into.working);
         let version = version(into, &plan);
         match guard {
@@ -196,42 +190,56 @@ impl Move {
             Guard::Revision(expect) => into.expect(expect)?,
             Guard::Sync(_) | Guard::Deploy => {}
         }
-        Ok(Checked { plan, version })
+        Ok(Checked {
+            of: self,
+            plan,
+            version,
+        })
+    }
+}
+
+impl Checked<'_> {
+    pub(crate) fn rows(&self) -> &[PlannedRow] {
+        self.plan.rows()
+    }
+
+    pub(crate) fn plan(&self) -> &Plan {
+        &self.plan
+    }
+
+    pub(crate) fn version(&self) -> &str {
+        &self.version
     }
 
     /// Land `picks` in `into`, `values` filling the secrets that need one, and advance
     /// the pair's base by exactly what landed, recording each row's arrival. `sync`
     /// names the Sync that lands them, for Undo. Returns the nodes staged.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one landing, every input it needs"
-    )]
     pub(crate) fn apply(
         &self,
         tx: &mut dyn Tx,
         who: &Actor,
         into: &mut Environment,
-        checked: &Checked,
         picks: &BTreeSet<RowId>,
         values: &BTreeMap<RowId, Cell>,
         sync: Option<&SyncId>,
     ) -> Result<Vec<NodeName>, RpcError> {
+        let of = self.of;
         if picks.is_empty() {
             return Err(error::conflict(
-                self.nothing.clone(),
-                json!({ "version": checked.version }),
+                of.nothing.clone(),
+                json!({ "version": self.version }),
             ));
         }
-        let applied = checked.plan.apply(picks, values).map_err(config)?;
-        let carried = Carried::of(tx, &self.source, &self.from)?;
-        let staged = land(tx, who, into, (&self.from, &carried), applied.next, picks)?;
-        let how = match self.way {
+        let applied = self.plan.apply(picks, values).map_err(config)?;
+        let carried = Carried::of(tx, &of.source, &of.from)?;
+        let staged = land(tx, who, into, (&of.from, &carried), applied.next, picks)?;
+        let how = match of.rules.way {
             Way::Follow => How::Follow,
             Way::Sync | Way::Copy => How::Sync,
         };
         for landed in applied.landed {
             let arrived = Arrived {
-                other: self.other.clone(),
+                other: of.other.clone(),
                 row: landed.row,
                 how,
                 value: landed.value,
@@ -243,7 +251,7 @@ impl Move {
             };
             arrive(tx, who, &into.summary.id, &arrived)?;
         }
-        share(tx, (&into.summary.id, &self.other), &applied.base)?;
+        share(tx, (&into.summary.id, &of.other), &applied.base)?;
         Ok(staged)
     }
 }
@@ -255,7 +263,6 @@ pub(super) fn version(into: &Environment, plan: &Plan) -> String {
 
 /// The rows at which `working` holds other than `base`.
 fn changed(base: &SavedEnvironmentIntent, working: &SavedEnvironmentIntent) -> BTreeSet<RowId> {
-    let none = BTreeSet::new();
     let rows = plan(
         Sides {
             base: Some(base),
@@ -266,13 +273,7 @@ fn changed(base: &SavedEnvironmentIntent, working: &SavedEnvironmentIntent) -> B
                 into: String::new(),
             },
         },
-        Rules {
-            way: Way::Copy,
-            from_marks: &none,
-            into_marks: &none,
-            live: &BTreeSet::new(),
-            own: None,
-        },
+        &Rules::new(Way::Copy),
     );
     rows.rows().iter().map(|row| row.id.clone()).collect()
 }

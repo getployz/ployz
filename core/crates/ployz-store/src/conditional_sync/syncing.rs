@@ -188,7 +188,7 @@ pub(crate) fn take(
         .collect();
     let rows = hints.iter().map(|hint| hint.row.clone()).collect();
     let chosen = branch::chosen(take.rows.as_deref(), rows, &hints, "hint")?;
-    let marks = marked(tx, &into.summary.id)?;
+    let marks = branch::marked(tx, &into.summary.id)?;
     let admitted = admit(&stored, &into.working, &marks, &BTreeMap::new(), |row| {
         chosen.contains(&row.id)
     })?;

@@ -102,7 +102,7 @@ fn into(
         let before = branch.summary.revision;
         let none = BTreeMap::new();
         let landed = crate::storage::attempt(tx, |tx| {
-            follow.apply(tx, who, &mut branch, &checked, &landing, &none, None)
+            checked.apply(tx, who, &mut branch, &landing, &none, None)
         });
         match landed {
             // One of the Branch's own rules refuses it: all of it is a hint.
@@ -211,7 +211,7 @@ pub(crate) fn take(
         ));
     }
     let none = BTreeMap::new();
-    let staged = follow.apply(tx, who, &mut branch, &checked, &picks, &none, None)?;
+    let staged = checked.apply(tx, who, &mut branch, &picks, &none, None)?;
     Ok(Taken {
         from: from.summary,
         into: branch.summary,

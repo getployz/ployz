@@ -81,17 +81,26 @@ pub(crate) fn never_synced(
     tx: &mut dyn Tx,
     environment: &Environment,
 ) -> Result<Vec<NamedRow>, RpcError> {
-    let rows = tx.query(
-        "SELECT lineage, at FROM config_never_sync WHERE environment_id = ?1",
-        &[environment.summary.id.as_str().into()],
-    )?;
-    let mut marked = Vec::new();
-    for row in &rows {
-        let row = row_id(row.text(0)?, row.text(1)?)?;
-        marked.extend(named(&[&environment.working], &row));
-    }
+    let mut marked = named_in(
+        &[&environment.working],
+        &marked(tx, &environment.summary.id)?,
+    );
     marked.sort_by_key(NamedRow::label);
     Ok(marked)
+}
+
+/// The rows `environment` marks Never sync.
+pub(crate) fn marked(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<BTreeSet<RowId>, RpcError> {
+    let rows = tx.query(
+        "SELECT lineage, at FROM config_never_sync WHERE environment_id = ?1",
+        &[environment.as_str().into()],
+    )?;
+    rows.iter()
+        .map(|row| row_id(row.text(0)?, row.text(1)?))
+        .collect()
 }
 
 /// What a move from `from` into `into` never carries, as `from`'s marks and
@@ -101,20 +110,9 @@ pub(crate) fn marks(
     from: &EnvironmentId,
     into: &EnvironmentId,
 ) -> Result<(BTreeSet<RowId>, BTreeSet<RowId>), RpcError> {
-    let rows = tx.query(
-        "SELECT environment_id, lineage, at FROM config_never_sync \
-         WHERE environment_id = ?2 OR (environment_id = ?1 AND NOT EXISTS ( \
-             SELECT 1 FROM config_environment_branch WHERE environment_id = ?2 AND parent_id = ?1))",
-        &[from.as_str().into(), into.as_str().into()],
-    )?;
-    let (mut from_marks, mut into_marks) = (BTreeSet::new(), BTreeSet::new());
-    for row in &rows {
-        let mark = row_id(row.text(1)?, row.text(2)?)?;
-        if row.text(0)? == into.as_str() {
-            into_marks.insert(mark);
-        } else {
-            from_marks.insert(mark);
-        }
-    }
-    Ok((from_marks, into_marks))
+    let from_marks = match row(tx, into)? {
+        Some(branch) if branch.parent == *from => BTreeSet::new(),
+        _ => marked(tx, from)?,
+    };
+    Ok((from_marks, marked(tx, into)?))
 }
