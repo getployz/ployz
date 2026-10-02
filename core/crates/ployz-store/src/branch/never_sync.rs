@@ -42,7 +42,7 @@ pub(crate) fn never_sync(
         false => named_in(&[&environment.working], &rows_of(&environment.working)),
     };
     for row in &resolve_all(&request.rows, &candidates)? {
-        let at = row.at();
+        let at = row.at().to_string();
         let key = [
             environment.summary.id.as_str().into(),
             row.lineage().into(),

@@ -8,6 +8,7 @@
 //! value is a Use hint, as is one the Branch discards; it cascades one level per
 //! deploy; and a secret follows only into a Branch that never set its own.
 
+use ployz_core::config::{At, Setting};
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::RowId;
 use ployz_store::{
@@ -273,8 +274,8 @@ fn each_staged_change_names_the_row_it_falls_in() {
     let view = diff(&store, &who, "fix-web");
     let arrived: Vec<_> = view.incoming.iter().map(|change| &change.at.row).collect();
     let web = &view.changes[0];
-    assert_eq!(web.row.at(), "node");
-    let rows: Vec<(&str, Option<String>)> = web
+    assert_eq!(*web.row.at(), At::Node);
+    let rows: Vec<(&str, Option<&At>)> = web
         .settings
         .iter()
         .map(|row| (row.path.as_str(), row.row.as_ref().map(RowId::at)))
@@ -282,8 +283,11 @@ fn each_staged_change_names_the_row_it_falls_in() {
     assert_eq!(
         rows,
         [
-            ("web.image", Some("source.image".to_owned())),
-            ("web.healthcheck.path", Some("healthcheck".to_owned())),
+            ("web.image", Some(&At::Setting(Setting::Image))),
+            (
+                "web.healthcheck.path",
+                Some(&At::Setting(Setting::Healthcheck))
+            ),
         ]
     );
     for row in &web.settings {

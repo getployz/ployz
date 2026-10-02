@@ -530,8 +530,7 @@ pub(crate) fn seal_secret(
     label: &str,
     value: &str,
 ) -> Result<SealedSecret, RpcError> {
-    let at = row.at();
-    let Some(key) = at.strip_prefix("variables.") else {
+    let At::Variable(key) = row.at() else {
         return Err(error::invalid(
             format!("{label} isn't a secret"),
             json!({ "row": row }),

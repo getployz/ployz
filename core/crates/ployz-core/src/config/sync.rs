@@ -3,7 +3,6 @@
 //! comparison, one policy table ([`Policy::verdict`]) and one writer ([`put`]), the
 //! inverse of the projection a row's cells come from.
 
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
@@ -13,35 +12,11 @@ use serde_json::{Value, json};
 
 use super::service_changes::{at, default_value};
 use super::{
-    AuthoredServiceConfig, ConfigError, EncryptedSecretValue, SavedEnvironmentIntent as Intent,
-    SavedServiceIntent, SavedVariableIntent, SavedVariableValue, SavedVolumeIntent,
-    ServiceGitAccess, ServiceGitBranch, ServiceImageCredentials, ServiceSource, VolumeAttachment,
-    parse_environment_intent, redact_environment_intent,
+    ConfigError, EncryptedSecretValue, SavedEnvironmentIntent as Intent, SavedServiceIntent,
+    SavedVariableIntent, SavedVariableValue, SavedVolumeIntent, ServiceGitAccess, ServiceGitBranch,
+    ServiceImageCredentials, ServiceSource, VolumeAttachment, parse_environment_intent,
+    redact_environment_intent,
 };
-
-/// The Service settings a row can address, in landing order: what a source is comes
-/// before what it holds.
-const SETTINGS: &[&str] = &[
-    "source.repository",
-    "source.image",
-    "source.rootDir",
-    "source.branch",
-    "source.credentials",
-    "privateDns",
-    "managedHostnames",
-    "routes",
-    "preDeployCommand",
-    "startCommand",
-    "healthcheck",
-    "restartPolicy",
-    "maxRetries",
-    "replicas",
-    "cpuLimit",
-    "memLimit",
-    "build.buildMethod",
-    "build.dockerfilePath",
-    "build.command",
-];
 
 /// One row's address: a lineage and a place in its node. The only row address anywhere;
 /// it reads and writes as `<lineage>:<at>`.
@@ -51,37 +26,137 @@ pub struct RowId {
     at: At,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum At {
+/// Where in its node a row is. Declaration order is row order, which is also landing
+/// order within a node.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum At {
+    /// The node itself.
     Node,
+    /// A Volume's data, which never moves.
     Data,
+    /// A Volume's name.
     Name,
+    /// A Volume's storage.
     Storage,
-    Setting(&'static str),
+    /// A Service setting.
+    Setting(Setting),
     /// A mount on the Volume of this lineage.
     Mount(String),
+    /// The variable of this key.
     Variable(String),
 }
 
-impl At {
-    /// Row order, which is also landing order within a node.
-    fn rank(&self) -> (u8, usize, &str) {
+/// A Service setting a row can address. Declaration order is landing order: what a
+/// source is comes before what it holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[expect(missing_docs, reason = "each is the setting its path names")]
+pub enum Setting {
+    Repository,
+    Image,
+    RootDir,
+    Branch,
+    Credentials,
+    PrivateDns,
+    ManagedHostnames,
+    Routes,
+    PreDeployCommand,
+    StartCommand,
+    Healthcheck,
+    RestartPolicy,
+    MaxRetries,
+    Replicas,
+    CpuLimit,
+    MemLimit,
+    BuildMethod,
+    DockerfilePath,
+    BuildCommand,
+}
+
+impl Setting {
+    const ALL: [Self; 19] = [
+        Self::Repository,
+        Self::Image,
+        Self::RootDir,
+        Self::Branch,
+        Self::Credentials,
+        Self::PrivateDns,
+        Self::ManagedHostnames,
+        Self::Routes,
+        Self::PreDeployCommand,
+        Self::StartCommand,
+        Self::Healthcheck,
+        Self::RestartPolicy,
+        Self::MaxRetries,
+        Self::Replicas,
+        Self::CpuLimit,
+        Self::MemLimit,
+        Self::BuildMethod,
+        Self::DockerfilePath,
+        Self::BuildCommand,
+    ];
+
+    /// Where it is in a Service's configuration, as the review names it.
+    #[must_use]
+    pub const fn path(self) -> &'static str {
         match self {
-            Self::Node => (0, 0, ""),
-            Self::Data => (1, 0, ""),
-            Self::Name => (2, 0, ""),
-            Self::Storage => (3, 0, ""),
-            Self::Setting(path) => (4, SETTINGS.iter().position(|s| s == path).unwrap_or(0), ""),
-            Self::Mount(volume) => (5, 0, volume),
-            Self::Variable(key) => (6, 0, key),
+            Self::Repository => "source.repository",
+            Self::Image => "source.image",
+            Self::RootDir => "source.rootDir",
+            Self::Branch => "source.branch",
+            Self::Credentials => "source.credentials",
+            Self::PrivateDns => "privateDns",
+            Self::ManagedHostnames => "managedHostnames",
+            Self::Routes => "routes",
+            Self::PreDeployCommand => "preDeployCommand",
+            Self::StartCommand => "startCommand",
+            Self::Healthcheck => "healthcheck",
+            Self::RestartPolicy => "restartPolicy",
+            Self::MaxRetries => "maxRetries",
+            Self::Replicas => "replicas",
+            Self::CpuLimit => "cpuLimit",
+            Self::MemLimit => "memLimit",
+            Self::BuildMethod => "build.buildMethod",
+            Self::DockerfilePath => "build.dockerfilePath",
+            Self::BuildCommand => "build.command",
         }
     }
 
+    fn of_path(path: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|setting| setting.path() == path)
+    }
+
+    /// Whether a new node arrives with it on its node row rather than as a row.
+    fn carried(self) -> bool {
+        match self {
+            Self::Repository
+            | Self::Image
+            | Self::RootDir
+            | Self::Branch
+            | Self::Credentials
+            | Self::PrivateDns
+            | Self::ManagedHostnames
+            | Self::Routes => true,
+            Self::PreDeployCommand
+            | Self::StartCommand
+            | Self::Healthcheck
+            | Self::RestartPolicy
+            | Self::MaxRetries
+            | Self::Replicas
+            | Self::CpuLimit
+            | Self::MemLimit
+            | Self::BuildMethod
+            | Self::DockerfilePath
+            | Self::BuildCommand => false,
+        }
+    }
+}
+
+impl At {
     /// Settings a new node arrives with on its node row rather than as rows of their own.
     fn carried(&self) -> bool {
         match self {
             Self::Name | Self::Storage => true,
-            Self::Setting(path) => path.starts_with("source.") || on_node(path),
+            Self::Setting(setting) => setting.carried(),
             Self::Node | Self::Data | Self::Mount(_) | Self::Variable(_) => false,
         }
     }
@@ -89,23 +164,7 @@ impl At {
     /// Whether a new node can't arrive without the row here: it needs what it is
     /// carried with, but arrives without custom domains anyway.
     fn needed(&self) -> bool {
-        self.carried() && *self != Self::Setting("routes")
-    }
-}
-
-fn on_node(path: &str) -> bool {
-    matches!(path, "privateDns" | "managedHostnames" | "routes")
-}
-
-impl Ord for At {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.rank().cmp(&other.rank())
-    }
-}
-
-impl PartialOrd for At {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
+        self.carried() && *self != Self::Setting(Setting::Routes)
     }
 }
 
@@ -116,7 +175,7 @@ impl fmt::Display for At {
             Self::Data => f.write_str("data"),
             Self::Name => f.write_str("name"),
             Self::Storage => f.write_str("storage"),
-            Self::Setting(path) => f.write_str(path),
+            Self::Setting(setting) => f.write_str(setting.path()),
             Self::Mount(volume) => write!(f, "mounts.{volume}"),
             Self::Variable(key) => write!(f, "variables.{key}"),
         }
@@ -130,10 +189,10 @@ impl RowId {
         &self.lineage
     }
 
-    /// Where in the node: `node`, `variables.KEY`, `source.image`, …
+    /// Where in the node.
     #[must_use]
-    pub fn at(&self) -> String {
-        self.at.to_string()
+    pub fn at(&self) -> &At {
+        &self.at
     }
 
     /// The row of the node itself.
@@ -166,7 +225,7 @@ impl FromStr for RowId {
             at => match (at.strip_prefix("mounts."), at.strip_prefix("variables.")) {
                 (Some(volume), _) if !volume.is_empty() => At::Mount(volume.to_owned()),
                 (_, Some(key)) if !key.is_empty() => At::Variable(key.to_owned()),
-                _ => At::Setting(SETTINGS.iter().find(|s| **s == at).ok_or_else(unknown)?),
+                _ => At::Setting(Setting::of_path(at).ok_or_else(unknown)?),
             },
         };
         if lineage.is_empty() {
@@ -507,16 +566,28 @@ impl Policy {
 
 /// Settings each Environment owns: shown as meant to differ, never moved.
 fn owned(at: &At) -> Option<Why> {
-    let At::Setting(path) = at else {
+    let At::Setting(setting) = at else {
         return None;
     };
-    Some(match *path {
-        "replicas" | "cpuLimit" | "memLimit" => Why::Sizing,
-        "routes" => Why::CustomDomain,
-        "managedHostnames" => Why::GeneratedAddress,
-        "source.branch" => Why::GitBranch,
-        _ => return None,
-    })
+    match setting {
+        Setting::Replicas | Setting::CpuLimit | Setting::MemLimit => Some(Why::Sizing),
+        Setting::Routes => Some(Why::CustomDomain),
+        Setting::ManagedHostnames => Some(Why::GeneratedAddress),
+        Setting::Branch => Some(Why::GitBranch),
+        Setting::Repository
+        | Setting::Image
+        | Setting::RootDir
+        | Setting::Credentials
+        | Setting::PrivateDns
+        | Setting::PreDeployCommand
+        | Setting::StartCommand
+        | Setting::Healthcheck
+        | Setting::RestartPolicy
+        | Setting::MaxRetries
+        | Setting::BuildMethod
+        | Setting::DockerfilePath
+        | Setting::BuildCommand => None,
+    }
 }
 
 /// Compare `sides` under `policy`: every place either side holds, by lineage.
@@ -825,12 +896,19 @@ impl Plan {
         {
             return Err(clash());
         }
-        let mut config = json!(source.config);
-        for path in SETTINGS.iter().filter(|path| !At::Setting(path).carried()) {
-            write(&mut config, path, default_value(path));
+        let mut copy = SavedServiceIntent {
+            id: uuid::Uuid::new_v4().to_string(),
+            lineage_id: source.lineage_id.clone(),
+            slug: source.slug.clone(),
+            config: source.config.clone(),
+            variables: Vec::new(),
+            volume_attachments: Vec::new(),
+        };
+        for setting in Setting::ALL.into_iter().filter(|s| !s.carried()) {
+            put_setting(&mut copy, setting, default_value(setting.path()))
+                .expect("a setting takes its default");
         }
-        let mut config: AuthoredServiceConfig =
-            serde_json::from_value(config).expect("defaults fit a serialized config");
+        let config = &mut copy.config;
         config.routes.clear();
         for hostname in &mut config.managed_hostnames {
             let prefix = hostname
@@ -839,22 +917,13 @@ impl Plan {
                 .unwrap_or(&hostname.prefix);
             hostname.prefix = format!("{prefix}{}", self.hostnames.into);
         }
-        let id = uuid::Uuid::new_v4().to_string();
         if let ServiceSource::Image {
             credentials: ServiceImageCredentials::Configured { credential_id },
             ..
         } = &mut config.source
         {
-            credential_id.clone_from(&id);
+            credential_id.clone_from(&copy.id);
         }
-        let copy = SavedServiceIntent {
-            id,
-            lineage_id: source.lineage_id.clone(),
-            slug: source.slug.clone(),
-            config,
-            variables: Vec::new(),
-            volume_attachments: Vec::new(),
-        };
         if let Some(base) = base {
             base.services.push(copy.clone());
         }
@@ -996,24 +1065,24 @@ pub fn row_of_change(
             .find(|volume| volume.resource_id == id)?;
         At::Mount(volume.resource_lineage_id.clone())
     } else if path.starts_with("routes.") {
-        At::Setting("routes")
+        At::Setting(Setting::Routes)
     } else if path.split('.').next() == Some("healthcheck") {
-        At::Setting("healthcheck")
+        At::Setting(Setting::Healthcheck)
     } else if path == "source" {
         let source = match at(after, "type").as_str() {
             Some("git" | "image") => after,
             _ => before,
         };
         match at(source, "type").as_str()? {
-            "git" => At::Setting("source.repository"),
-            "image" => At::Setting("source.image"),
+            "git" => At::Setting(Setting::Repository),
+            "image" => At::Setting(Setting::Image),
             _ => return None,
         }
     } else {
         match path {
             "name" => At::Name,
             "storage" => At::Storage,
-            path => At::Setting(SETTINGS.iter().find(|setting| **setting == path)?),
+            path => At::Setting(Setting::of_path(path)?),
         }
     };
     Some(RowId {
@@ -1164,19 +1233,19 @@ fn put_into(env: &mut Intent, row: &RowId, cell: &Cell) -> Result<(), ConfigErro
                 }),
             }
         }
-        At::Setting(path) => {
+        At::Setting(setting) => {
             let Some(service) = service_mut(env, lineage) else {
                 return missing();
             };
             let value = match cell {
-                Cell::Absent => default_value(path),
+                Cell::Absent => default_value(setting.path()),
                 Cell::Value(value) => value.clone(),
                 Cell::Secret { .. } | Cell::SecretWithoutValue => {
                     return Err(invalid("A setting is never secret"));
                 }
             };
-            put_setting(service, path, value)
-                .map_err(|()| invalid("Not a value this setting takes"))?;
+            put_setting(service, *setting, value)
+                .map_err(|_| invalid("Not a value this setting takes"))?;
         }
     }
     Ok(())
@@ -1191,18 +1260,25 @@ struct Repository {
     repository_id: u64,
 }
 
-fn put_setting(service: &mut SavedServiceIntent, path: &str, value: Value) -> Result<(), ()> {
-    fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, ()> {
-        serde_json::from_value(value).map_err(|_| ())
-    }
+/// Write `setting` of `service` as `value` says it. Settings each Environment owns
+/// never move, so nothing writes their rows.
+fn put_setting(
+    service: &mut SavedServiceIntent,
+    setting: Setting,
+    value: Value,
+) -> Result<(), serde_json::Error> {
+    use serde_json::from_value as parse;
     let id = service.id.clone();
-    let source = &mut service.config.source;
+    let config = &mut service.config;
+    let source = &mut config.source;
     // A source row of another kind of source switches it, as setting it would.
     // ponytail: a root directory or branch alone never switches one; the repository or
     // image that comes with it does.
-    match (path, value) {
-        ("routes" | "managedHostnames", _) => return Err(()),
-        ("source.image", Value::Null) => {
+    match (setting, value) {
+        (Setting::Routes | Setting::ManagedHostnames, _) => {
+            return Err(serde::de::Error::custom("never moves"));
+        }
+        (Setting::Image, Value::Null) => {
             if let ServiceSource::Image { .. } = source {
                 *source = ServiceSource::Empty {
                     version: 1,
@@ -1210,7 +1286,7 @@ fn put_setting(service: &mut SavedServiceIntent, path: &str, value: Value) -> Re
                 };
             }
         }
-        ("source.image", value) => {
+        (Setting::Image, value) => {
             let value: String = parse(value)?;
             match source {
                 ServiceSource::Image { image, .. } => *image = value,
@@ -1223,7 +1299,7 @@ fn put_setting(service: &mut SavedServiceIntent, path: &str, value: Value) -> Re
                 }
             }
         }
-        ("source.credentials", value) => {
+        (Setting::Credentials, value) => {
             if let ServiceSource::Image { credentials, .. } = source {
                 // Each Service's credential is its own: it is bound to the Service's id.
                 match (value == json!(true), &credentials) {
@@ -1235,7 +1311,7 @@ fn put_setting(service: &mut SavedServiceIntent, path: &str, value: Value) -> Re
                 }
             }
         }
-        ("source.repository", Value::Null) => {
+        (Setting::Repository, Value::Null) => {
             if let ServiceSource::Git { root_dir, .. } = source {
                 *source = ServiceSource::Empty {
                     version: 1,
@@ -1243,7 +1319,7 @@ fn put_setting(service: &mut SavedServiceIntent, path: &str, value: Value) -> Re
                 };
             }
         }
-        ("source.repository", value) => {
+        (Setting::Repository, value) => {
             let named: Repository = parse(value)?;
             match source {
                 ServiceSource::Git {
@@ -1274,7 +1350,7 @@ fn put_setting(service: &mut SavedServiceIntent, path: &str, value: Value) -> Re
                 }
             }
         }
-        ("source.rootDir", value) => {
+        (Setting::RootDir, value) => {
             if let ServiceSource::Git { root_dir, .. } | ServiceSource::Empty { root_dir, .. } =
                 source
                 && !value.is_null()
@@ -1282,31 +1358,27 @@ fn put_setting(service: &mut SavedServiceIntent, path: &str, value: Value) -> Re
                 *root_dir = parse(value)?;
             }
         }
-        ("source.branch", value) => {
+        (Setting::Branch, value) => {
             if let ServiceSource::Git { branch, .. } = source
                 && !value.is_null()
             {
                 *branch = parse(value)?;
             }
         }
-        (path, value) => {
-            let mut config = json!(service.config);
-            write(&mut config, path, value);
-            service.config = parse(config)?;
-        }
+        (Setting::PrivateDns, value) => config.private_dns = parse(value)?,
+        (Setting::PreDeployCommand, value) => config.pre_deploy_command = parse(value)?,
+        (Setting::StartCommand, value) => config.start_command = parse(value)?,
+        (Setting::Healthcheck, value) => config.healthcheck = parse(value)?,
+        (Setting::RestartPolicy, value) => config.restart_policy = parse(value)?,
+        (Setting::MaxRetries, value) => config.max_retries = parse(value)?,
+        (Setting::Replicas, value) => config.replicas = parse(value)?,
+        (Setting::CpuLimit, value) => config.cpu_limit = parse(value)?,
+        (Setting::MemLimit, value) => config.mem_limit = parse(value)?,
+        (Setting::BuildMethod, value) => config.build.build_method = parse(value)?,
+        (Setting::DockerfilePath, value) => config.build.dockerfile_path = parse(value)?,
+        (Setting::BuildCommand, value) => config.build.command = parse(value)?,
     }
     Ok(())
-}
-
-/// Set `config`'s field at `path`, one level deep at most.
-fn write(config: &mut Value, path: &str, value: Value) {
-    let (object, key) = match path.split_once('.') {
-        Some((parent, key)) => (config.get_mut(parent), key),
-        None => (Some(config), path),
-    };
-    if let Some(object) = object.and_then(Value::as_object_mut) {
-        object.insert(key.to_owned(), value);
-    }
 }
 
 /// A plain variable's cell back as its value and fingerprint.
@@ -1362,7 +1434,7 @@ fn node_cell(env: &Intent, lineage: &str, suffix: &str) -> Cell {
         cell.insert("name".to_owned(), json!(service.slug));
     }
     for (at, value) in cells(env, node, suffix) {
-        if let (true, Cell::Value(value)) = (at.carried() && at != At::Setting("routes"), value) {
+        if let (true, Cell::Value(value)) = (at.needed(), value) {
             cell.insert(at.to_string(), value);
         }
     }
@@ -1418,26 +1490,33 @@ fn cells(env: &Intent, node: NodeRef, suffix: &str) -> BTreeMap<At, Cell> {
     };
     let config = json!(service.config);
     let mut cells = BTreeMap::new();
-    for path in SETTINGS {
-        let value = match *path {
+    for setting in Setting::ALL {
+        let value = match setting {
             // Repository authority (id and access) moves with the repository it names.
-            "source.repository" => {
-                let source = at(&config, "source");
-                match source.get("repository") {
-                    Some(_) => json!({"access": source["access"], "repository": source["repository"], "repositoryId": source["repositoryId"]}),
-                    None => Value::Null,
-                }
-            }
-            "source.credentials" => match at(&config, "source.credentials.type").as_str() {
-                Some("configured") => json!(true),
-                _ => Value::Null,
+            Setting::Repository => match &service.config.source {
+                ServiceSource::Git {
+                    repository,
+                    repository_id,
+                    access,
+                    ..
+                } => json!({"access": access, "repository": repository, "repositoryId": repository_id}),
+                ServiceSource::Empty { .. } | ServiceSource::Image { .. } => Value::Null,
             },
-            "routes" => {
+            Setting::Credentials => match &service.config.source {
+                ServiceSource::Image {
+                    credentials: ServiceImageCredentials::Configured { .. },
+                    ..
+                } => json!(true),
+                ServiceSource::Image { .. } | ServiceSource::Empty { .. } | ServiceSource::Git { .. } => {
+                    Value::Null
+                }
+            },
+            Setting::Routes => {
                 let mut domains: Vec<_> = service.config.routes.iter().map(|r| &r.hostname).collect();
                 domains.sort();
                 json!(domains)
             }
-            "managedHostnames" => json!(
+            Setting::ManagedHostnames => json!(
                 service
                     .config
                     .managed_hostnames
@@ -1445,10 +1524,24 @@ fn cells(env: &Intent, node: NodeRef, suffix: &str) -> BTreeMap<At, Cell> {
                     .map(|h| json!({"prefix": h.prefix.strip_suffix(suffix).unwrap_or(&h.prefix), "targetPort": h.target_port}))
                     .collect::<Vec<_>>()
             ),
-            path => at(&config, path).clone(),
+            Setting::Image
+            | Setting::RootDir
+            | Setting::Branch
+            | Setting::PrivateDns
+            | Setting::PreDeployCommand
+            | Setting::StartCommand
+            | Setting::Healthcheck
+            | Setting::RestartPolicy
+            | Setting::MaxRetries
+            | Setting::Replicas
+            | Setting::CpuLimit
+            | Setting::MemLimit
+            | Setting::BuildMethod
+            | Setting::DockerfilePath
+            | Setting::BuildCommand => at(&config, setting.path()).clone(),
         };
-        if !(value.is_null() || value == default_value(path) || value == json!([])) {
-            cells.insert(At::Setting(path), Cell::Value(value));
+        if !(value.is_null() || value == default_value(setting.path()) || value == json!([])) {
+            cells.insert(At::Setting(setting), Cell::Value(value));
         }
     }
     for attachment in &service.volume_attachments {

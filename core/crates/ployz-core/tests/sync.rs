@@ -301,7 +301,7 @@ fn row_ids_read_back_as_they_print() {
         let id: RowId = text.parse().unwrap();
         assert_eq!(id.to_string(), text);
         assert_eq!(id.lineage(), text.split_once(':').unwrap().0);
-        assert_eq!(id.at(), text.split_once(':').unwrap().1);
+        assert_eq!(id.at().to_string(), text.split_once(':').unwrap().1);
         assert_eq!(json!(id), json!(text));
         assert_eq!(serde_json::from_value::<RowId>(json!(text)).unwrap(), id);
     }

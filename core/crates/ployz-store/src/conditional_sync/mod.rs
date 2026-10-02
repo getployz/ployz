@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    Applied, Arrives, Cell, Hostnames, Plan, PlannedRow, Policy as Rules, RowId,
+    Applied, Arrives, At, Cell, Hostnames, Plan, PlannedRow, Policy as Rules, RowId,
     SavedEnvironmentIntent, SealedSecret, Sides, Verdict, Way, cell_at, plan,
 };
 use serde::{Deserialize, Serialize};
@@ -580,13 +580,13 @@ pub(crate) fn land(
     let introduced: BTreeSet<&str> = stored
         .picks
         .iter()
-        .filter(|pick| pick.at.row.at() == "node")
+        .filter(|pick| *pick.at.row.at() == At::Node)
         .map(|pick| pick.at.row.lineage())
         .collect();
     let arriving: BTreeSet<&str> = saved
         .picks
         .iter()
-        .filter(|pick| pick.at() == "node")
+        .filter(|pick| *pick.at() == At::Node)
         .map(RowId::lineage)
         .collect();
     let mut working = destination.working.clone();

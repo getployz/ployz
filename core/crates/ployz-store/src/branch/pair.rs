@@ -317,15 +317,14 @@ pub(crate) fn named(intents: &[&SavedEnvironmentIntent], row: &RowId) -> Option<
                 NodeName::Volume(VolumeName::parse(volume.name.as_str()).ok()?)
             }
         };
-        let name = match (&node, at.as_str()) {
-            (_, "node") => None,
-            (NodeName::Service(_), field) => Some(match field.strip_prefix("variables.") {
-                Some(key) => format!("env.{key}"),
-                None => {
-                    ServiceSetting::of_field(field).map_or(at, |setting| setting.name().to_owned())
-                }
-            }),
-            (NodeName::Volume(_), _) => Some(at),
+        let name = match row.at() {
+            At::Node => None,
+            At::Variable(key) => Some(format!("env.{key}")),
+            At::Setting(setting) => Some(
+                ServiceSetting::of_field(setting.path())
+                    .map_or(at, |setting| setting.name().to_owned()),
+            ),
+            At::Data | At::Name | At::Storage | At::Mount(_) => Some(at),
         };
         Some(NamedRow {
             row: row.clone(),
@@ -358,26 +357,27 @@ pub(crate) fn shown(
     row: &RowId,
     cell: &Cell,
 ) -> Value {
-    let at = row.at();
     match cell {
         Cell::Absent => Value::Null,
         Cell::Secret { .. } => json!({ "secret": true }),
         Cell::SecretWithoutValue => json!({ "secret": false }),
-        Cell::Value(value) => at
-            .strip_prefix("variables.")
-            .and_then(|key| {
-                intent
-                    .services
-                    .iter()
-                    .find(|service| service.lineage_id == row.lineage())?
-                    .variables
-                    .iter()
-                    .find(|variable| variable.key == key)
-            })
-            .map_or_else(
-                || crate::settings::shown(&at, value.clone()),
-                |variable| crate::variables::shown(variable, names),
-            ),
+        Cell::Value(value) => match row.at() {
+            At::Variable(key) => Some(key),
+            At::Node | At::Data | At::Name | At::Storage | At::Setting(_) | At::Mount(_) => None,
+        }
+        .and_then(|key| {
+            intent
+                .services
+                .iter()
+                .find(|service| service.lineage_id == row.lineage())?
+                .variables
+                .iter()
+                .find(|variable| variable.key == *key)
+        })
+        .map_or_else(
+            || crate::settings::shown(&row.at().to_string(), value.clone()),
+            |variable| crate::variables::shown(variable, names),
+        ),
     }
 }
 
@@ -486,7 +486,7 @@ pub(crate) fn rewind(
         if cell_at(before, &row, "") == cell_at(after, &row, "") {
             continue;
         }
-        let at = row.at();
+        let at = row.at().to_string();
         let key = [
             receiver.as_str().into(),
             arrived.other.as_str().into(),
@@ -537,7 +537,7 @@ pub(crate) fn deployed(
                 receiver.as_str().into(),
                 arrived.other.as_str().into(),
                 row.lineage().into(),
-                row.at().as_str().into(),
+                row.at().to_string().as_str().into(),
             ],
         )?;
     }
@@ -631,7 +631,7 @@ fn arrive(
             receiver.as_str().into(),
             arrived.other.as_str().into(),
             arrived.row.lineage().into(),
-            arrived.row.at().as_str().into(),
+            arrived.row.at().to_string().as_str().into(),
             who.organization.as_str().into(),
             how.into(),
             state.into(),
@@ -860,7 +860,7 @@ pub(crate) fn land(
     }
     for pick in picks
         .iter()
-        .filter(|pick| pick.at() == "source.credentials")
+        .filter(|pick| *pick.at() == At::Setting(Setting::Credentials))
     {
         let lineage = pick.lineage();
         let receiver = before.services.iter().find(|old| old.lineage_id == lineage);

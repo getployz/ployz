@@ -30,11 +30,11 @@ pub(crate) use sync::{picks, seal_secret, sealed, sync, sync_view, take, undo};
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
-    Arrives, BranchNodeReason, BranchNodeRole, BranchPicks, BranchPlan, BranchPreset, Cell,
+    Arrives, At, BranchNodeReason, BranchNodeRole, BranchPicks, BranchPlan, BranchPreset, Cell,
     ConfigError, EnvironmentNodeType, Hostnames, Landed, LiveLineageUse, LiveValuesInput,
     LiveValuesOwner, NodeRef, Plan, PlannedRow, Policy as Rules, RowId, SavedEnvironmentIntent,
     SavedServiceIntent, SavedVariableProducer, SealedCell, SealedSecret, ServiceImageCredentials,
-    ServiceSource, Sides, Unapplied, ValuePart, ValuePartOwner, Verdict, Way, Why,
+    ServiceSource, Setting, Sides, Unapplied, ValuePart, ValuePartOwner, Verdict, Way, Why,
     canonicalize_environment_intent, cell_at, compile_environment_intent, live_values, marks_on,
     parse_service_setting, plan, plan_branch, put, rows_of, unapply,
 };

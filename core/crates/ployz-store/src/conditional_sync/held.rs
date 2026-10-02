@@ -164,7 +164,7 @@ pub(super) fn keep(
             pr.repository_id.into(),
             pr.number.into(),
             row.lineage().into(),
-            row.at().as_str().into(),
+            row.at().to_string().as_str().into(),
             who.organization.as_str().into(),
             branch::json_of(secret).as_str().into(),
         ],
