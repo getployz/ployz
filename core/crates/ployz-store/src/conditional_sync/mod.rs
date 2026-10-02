@@ -128,8 +128,29 @@ struct Pick {
     at: NamedRow,
     /// The pull request's value, as the Sync showed it.
     from: Value,
+    /// The cell landing or a take staged in the Destination's Working State. The
+    /// pick reads as staged only while Working State still holds it, so a discard
+    /// offers it again.
     #[serde(default)]
-    landed: Option<Landed>,
+    staged: Option<Cell>,
+}
+
+impl Pick {
+    fn landed(&self, working: &SavedEnvironmentIntent) -> Landed {
+        match self.staged.as_ref() == Some(&cell_at(working, &self.row)) {
+            true => Landed::Staged,
+            false => Landed::Hint,
+        }
+    }
+}
+
+/// The cells `applied` staged, by row.
+fn staged_cells(applied: &Applied) -> BTreeMap<RowId, Cell> {
+    applied
+        .landed
+        .iter()
+        .map(|landed| (landed.row.clone(), landed.value.clone()))
+        .collect()
 }
 
 struct Found {
@@ -514,8 +535,12 @@ pub(crate) fn pending(
 /// live but Working State has no edit of it → staged, `staged`; both → neither, the
 /// pull request's value a `hint` a take stages. Landed rows stay marked until the
 /// Destination's next Saved revision.
-// ponytail: no Project lock and no arrivals: a landed Conditional Sync is the
-// Destination's own Saved change, rewound by nothing and undone by no Sync.
+///
+/// It writes the Destination alone, from the snapshot the Sync froze, under the
+/// lock its caller took in ID order; so no Project lock, which taken here would
+/// come after that lock and deadlock against a Sync. Nor arrivals: it never
+/// advances a pair's base, so there is none to rewind; its picks say what it staged.
+// ponytail: UndoSync of a landed one refuses; discard its staged rows instead.
 pub(crate) fn land(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -571,6 +596,7 @@ pub(crate) fn land(
     let staged = admit(&stored, &working, &marks, &held, |row| {
         !introduced.contains(row.id.lineage()) && row.into == cell_at(&latest.intent, &row.id)
     })?;
+    let cells = staged_cells(&staged.applied);
     let next = with_variable_ids_of(next, &working, staged.applied.next);
 
     let (revision, _) = review::publish(tx, who, &into, saved.applied.next, Some(&latest))?;
@@ -592,10 +618,7 @@ pub(crate) fn land(
     stored.picks.retain_mut(|pick| {
         let moves = saved.moves.contains(&pick.row) || staged.moves.contains(&pick.row);
         let left = moves && !saved.picks.contains(&pick.row);
-        pick.landed = Some(match staged.picks.contains(&pick.row) {
-            true => Landed::Staged,
-            false => Landed::Hint,
-        });
+        pick.staged = cells.get(&pick.row).cloned();
         left
     });
     if stored.picks.is_empty() {
@@ -631,11 +654,11 @@ pub(crate) fn hints(
         let number = row.number(1, "Conditional Sync")?;
         for pick in stored.picks {
             hints.push(PullRequestHint {
+                landed: pick.landed(&environment.working),
                 conditional_sync: row.parse(0, "Conditional Sync ID")?,
                 pull_request: number,
                 at: pick.at,
                 value: pick.from,
-                landed: pick.landed.unwrap_or(Landed::Hint),
             });
         }
     }

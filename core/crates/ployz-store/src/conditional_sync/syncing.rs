@@ -48,7 +48,7 @@ pub(crate) fn sync(
             row: row.id.clone(),
             reviewed: row.into.clone(),
             from: branch::shown(&from.working, &from_names, &row.id, &row.from),
-            landed: None,
+            staged: None,
         });
     }
     let rows = kept.iter().map(|pick| pick.at.clone()).collect();
@@ -197,7 +197,7 @@ pub(crate) fn take(
     let hints: BTreeSet<RowId> = stored
         .picks
         .iter()
-        .filter(|pick| pick.landed == Some(Landed::Hint))
+        .filter(|pick| pick.landed(&into.working) == Landed::Hint)
         .map(|pick| pick.row.clone())
         .collect();
     if let Some(unknown) = take.rows.iter().flatten().find(|row| !hints.contains(row)) {
@@ -219,6 +219,7 @@ pub(crate) fn take(
     if admitted.picks.is_empty() {
         return Err(gone());
     }
+    let cells = staged_cells(&admitted.applied);
     let staged = branch::land(
         tx,
         who,
@@ -228,8 +229,8 @@ pub(crate) fn take(
         &admitted.picks,
     )?;
     for pick in &mut stored.picks {
-        if admitted.picks.contains(&pick.row) {
-            pick.landed = Some(Landed::Staged);
+        if let Some(cell) = cells.get(&pick.row) {
+            pick.staged = Some(cell.clone());
         }
     }
     write(tx, id, &stored)?;

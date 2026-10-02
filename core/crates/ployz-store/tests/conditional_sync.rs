@@ -15,7 +15,7 @@ use ployz_store::RowId;
 use ployz_store::{
     Actor, AuthorizedRepository, Automated, BranchHead, BranchQuery, Change, CheckSuite, Command,
     ConditionalSyncState, ConfigStore, CreateBranch, CreateGitService, CreateProject, DiffQuery,
-    Edit, EnvironmentId, EnvironmentName, EnvironmentRef, HintSource, HoldSecret, Landed,
+    Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, HintSource, HoldSecret, Landed,
     NeverSync, OrganizationId, ProjectId, ProjectName, Publish, PullRequest, PullRequestQuery,
     RunnerId, SecretRow, ServiceLineageId, SetPrPlan, SettingPath, SyncChanges, SyncQuery,
     SyncView, SystemEvent, Take, Trusted, UndoSync, When, Written,
@@ -680,6 +680,72 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
         resolved(&store, &pushed.admitted[0].deployment.id, "MODE"),
         json!("pr")
     );
+}
+
+/// Production changed MODE live, so landing stages PR #5's value beside Saved State:
+/// discarding it offers it again as a hint, which a take stages again.
+#[test]
+fn discarding_a_staged_landed_row_offers_it_again() {
+    let (store, who) = shop();
+    set(&store, &who, "pr-5", &[("web.env.MODE", json!("pr"))]);
+    store
+        .write(
+            &who,
+            &sync(&offered(&store, &who, None), Some(&["web.env"])),
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.MODE", json!("live"))],
+    );
+    publish(&store, &who, "production");
+    assert_eq!(push(&store, &who, 4, &[]).admitted.len(), 1);
+    observe(
+        &store,
+        &who,
+        SystemEvent::PullRequest(facts(false, Some(MERGE), Some(commit(4)), 2)),
+    );
+    let diff = || {
+        store
+            .read(
+                &who,
+                &DiffQuery {
+                    environment: at("production"),
+                },
+            )
+            .unwrap()
+    };
+    assert_eq!(env(&store, &who, "production")["MODE"], json!("pr"));
+    assert_eq!(diff().hints[0].landed, Landed::Staged);
+
+    store
+        .write(
+            &who,
+            &Discard {
+                environment: at("production"),
+                path: Some(SettingPath::parse("web.env.MODE").unwrap()),
+                version: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(env(&store, &who, "production")["MODE"], json!("live"));
+    let hint = diff().hints[0].clone();
+    assert_eq!(hint.landed, Landed::Hint);
+    store
+        .write(
+            &who,
+            &Take {
+                from: HintSource::ConditionalSync(hint.conditional_sync),
+                into: None,
+                rows: None,
+                version: diff().version,
+            },
+        )
+        .unwrap();
+    assert_eq!(env(&store, &who, "production")["MODE"], json!("pr"));
+    assert_eq!(diff().hints[0].landed, Landed::Staged);
 }
 
 /// production marks MODE Never sync after PR #5's Conditional Sync stood: it stays

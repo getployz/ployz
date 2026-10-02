@@ -439,7 +439,9 @@ pub(super) fn share(
 /// Put `cells` into the bases `receiver` shares with each other side, as one write
 /// per pair.
 // ponytail: a prior that no longer fits the base (its node went since) leaves that
-// row of the base as it is; it then reads as the receiver's own change.
+// row of the base as it is; it then reads as the receiver's own change. So a
+// discarded Follow removal is not offered again: the node it brings back reads as
+// the Branch's own. Put the node back into the base whole if that matters.
 fn rewind_bases(
     tx: &mut dyn Tx,
     receiver: &EnvironmentId,
