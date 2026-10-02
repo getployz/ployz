@@ -1,9 +1,9 @@
 import { QueryClient } from "@tanstack/react-query";
-import type { DeploymentView, DiffView, DomainsView, EnvironmentView, RowId, ServiceId, ServicesView } from "@ployz/sdk";
+import type { DeploymentView, DiffView, DomainsView, EnvironmentView, RowId, ServiceId, ServicesView, SyncView } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import { expect, it } from "vitest";
 import { applyOptimistic } from "./store-optimistic";
-import { diffQuery, environmentSettingsQuery, servicesQuery, storeViewOptions } from "./store-view.queries";
+import { diffQuery, environmentSettingsQuery, servicesQuery, storeViewOptions, syncQuery } from "./store-view.queries";
 
 const ref = { project: "shop", environment: "production" };
 // SAFETY: test ids stand in for the Store's UUIDs.
@@ -118,16 +118,35 @@ it("shows each command of a Batch at once, as it would alone", async () => {
     .toEqual([["web", "update"], ["cache", "create"], ["postgres", "create"]]);
 });
 
-it("shows a variable synced again at once; a new mark waits for the Store, which names it", async () => {
+it("shows a mark and an unmark at once, a new mark named by the Setting at its row", async () => {
   const { queryClient, read } = cached();
   const row = (name: string) => ({ row: `w:variables.${name}` as RowId, node: "web", kind: "service" as const, name: `env.${name}` });
   queryClient.setQueryData<{ ok: true; value: EnvironmentView }>(
     storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, environmentSettingsQuery(ref)).queryKey,
-    (cached) => cached && { ok: true, value: { ...cached.value, never_synced: [row("A"), row("B")] } },
+    (cached) => cached && { ok: true, value: { ...cached.value, never_synced: [row("A"), row("B")], settings: [
+      ...cached.value.settings, { path: "web.env.C", value: "c", default: null, apply: "staged", row: row("C").row },
+    ] } },
   );
   const marks = () => read<EnvironmentView>(environmentSettingsQuery(ref))?.never_synced?.map((one) => one.name);
   await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: ref, rows: [row("C").row] });
-  expect(marks()).toEqual(["env.A", "env.B"]);
+  expect(read<EnvironmentView>(environmentSettingsQuery(ref))?.never_synced?.at(-1)).toEqual(row("C"));
   await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: ref, rows: [row("A").row], off: true });
-  expect(marks()).toEqual(["env.B"]);
+  expect(marks()).toEqual(["env.B", "env.C"]);
+});
+
+it("takes a newly marked row out of a Sync from the marking Environment at once, marked by it", async () => {
+  const { queryClient, read } = cached();
+  const fix = { project: "shop", environment: "fix-api" };
+  const query = syncQuery(fix, "production");
+  const offer = (name: string) => ({
+    row: `a:variables.${name}` as RowId, node: "api", kind: "service" as const, name: `env.${name}`,
+    change: "changed" as const, from: "x", into: "y", ticked: true, requires: null, secret: null,
+  });
+  queryClient.setQueryData<unknown>(storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, query).queryKey, { ok: true, value: {
+    from: { ...environment, name: "fix-api" }, into: environment, at_merge: null, version: "1", rows: [offer("A"), offer("B")], never_synced: [],
+  } satisfies SyncView });
+  await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: fix, rows: [offer("A").row] });
+  const view = read<SyncView>(query);
+  expect(view?.rows.map((row) => row.name)).toEqual(["env.B"]);
+  expect(view?.never_synced).toEqual([{ row: "a:variables.A", node: "api", kind: "service", name: "env.A", marks: [{ environment: "fix-api", row: "a:variables.A" }] }]);
 });

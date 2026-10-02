@@ -1,8 +1,8 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type {
   BranchView, BuildOrderView, ConfigCommand, ConfigQuery, DeploymentView, DiffView, DomainsView, EnvironmentRef, EnvironmentsView,
-  EnvironmentView, NodeChange, PrPlansView, ProjectsView, RowId, ServiceListing, ServicesView, VolumeListing,
-  VolumesView,
+  EnvironmentView, NamedRow, NodeChange, PrPlansView, ProjectsView, RowId, ServiceListing, ServicesView, SyncView,
+  VolumeListing, VolumesView,
 } from "@ployz/sdk";
 import type { StoreResult } from "./store.contract";
 import { environmentKey, queryOf, storeViewPrefix } from "./store-view.queries";
@@ -126,12 +126,44 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       return;
     }
     case "never_sync": {
-      // At once: a mark changes what Sync offers, not Working State. Only an unmark: a new mark's name is the Store's.
-      if (!command.off) return;
-      const unmarked = new Set(command.rows);
-      await views<EnvironmentView>("environment", command.environment, (view) => ({
-        ...view, never_synced: view.never_synced?.filter((row) => !unmarked.has(row.row)),
-      }));
+      // At once: a mark changes what Sync offers, not Working State.
+      const rows = new Set(command.rows);
+      const offered = cached("sync", null).flatMap((query) => {
+        // SAFETY: `cached` found only sync views.
+        const data = query.state.data as StoreResult<SyncView> | undefined;
+        return data?.ok ? data.value.rows : [];
+      });
+      await views<EnvironmentView>("environment", command.environment, (view) => {
+        const kept = view.never_synced?.filter((row) => !rows.has(row.row)) ?? [];
+        if (command.off) return { ...view, never_synced: kept };
+        // A new mark named as a Sync offering it names it, else by the Setting at it; the Store's answer names it for good.
+        const marked = [...rows].flatMap((row): NamedRow[] => {
+          const already = view.never_synced?.find((mark) => mark.row === row);
+          if (already) return [already];
+          const sync = offered.find((offer) => offer.row === row);
+          if (sync) return [{ row: sync.row, node: sync.node, kind: sync.kind, name: sync.name }];
+          const setting = view.settings.find((at) => at.row === row);
+          return setting?.row ? [settingRow(setting.row, setting.path)] : [];
+        });
+        return { ...view, never_synced: [...kept, ...marked] };
+      });
+      // A Sync from or into it offers a newly marked row no more.
+      // ponytail: a Parent's mark doesn't keep a row from its own direct Branch; that Sync shows it marked until the Store answers.
+      const { project, environment: name } = command.environment;
+      if (command.off || !name) return;
+      const here = (side: SyncView["from"]) => side.project === project && side.name === name;
+      await views<SyncView>("sync", null, (view) => {
+        if (!here(view.from) && !here(view.into)) return view;
+        const marking = view.rows.filter((row) => rows.has(row.row));
+        return {
+          ...view,
+          rows: view.rows.filter((row) => !rows.has(row.row)),
+          never_synced: [
+            ...view.never_synced,
+            ...marking.map(({ row, node, kind, name: at }) => ({ row, node, kind, name: at, marks: [{ environment: name, row }] })),
+          ],
+        };
+      });
       return;
     }
     case "keep_branch":
@@ -209,4 +241,12 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
     default:
       return;
   }
+}
+
+/** The row at Setting `path` (`SERVICE.SETTING`, `volumes.VOLUME.SETTING`), named as the Store names a variable's. */
+function settingRow(row: RowId, path: string): NamedRow {
+  const [head = "", ...rest] = path.split(".");
+  const volume = head === "volumes";
+  const name = (volume ? rest.slice(1) : rest).join(".");
+  return { row, node: volume ? `volumes.${rest[0] ?? ""}` : head, kind: volume ? "volume" : "service", name: name || null };
 }
