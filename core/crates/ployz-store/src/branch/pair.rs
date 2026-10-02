@@ -13,11 +13,11 @@ use crate::settings::ServiceSetting;
 
 /// What a write checks the receiver against before anything lands. Only the Store
 /// builds one: a client always sends the version it reviewed.
-pub(crate) enum Guard<'a> {
+pub(crate) enum Guard<'version> {
     /// The Sync view's version.
-    Sync(&'a str),
+    Sync(&'version str),
     /// The receiver's diff version.
-    Diff(&'a str),
+    Diff(&'version str),
     /// The receiver's Working State revision.
     Revision(Option<Revision>),
     /// A Parent's deploy following into its Branch: nobody reviewed it.
@@ -398,7 +398,7 @@ fn base_of(
 }
 
 /// The pair `a`, `b` as `config_sync_base` keys it: its IDs in order.
-fn ordered<'a>(a: &'a EnvironmentId, b: &'a EnvironmentId) -> [&'a str; 2] {
+fn ordered<'id>(a: &'id EnvironmentId, b: &'id EnvironmentId) -> [&'id str; 2] {
     let (a, b) = (a.as_str(), b.as_str());
     if a <= b { [a, b] } else { [b, a] }
 }

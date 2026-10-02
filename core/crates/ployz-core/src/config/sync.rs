@@ -267,13 +267,13 @@ pub struct Hostnames {
 
 /// The three configurations of one move: changes flow from `from` into `into`, judged
 /// against what the two last shared. No `base` means nothing is shared yet.
-pub struct Sides<'a> {
+pub struct Sides<'intent> {
     /// What the two last shared.
-    pub base: Option<&'a Intent>,
+    pub base: Option<&'intent Intent>,
     /// The sender.
-    pub from: &'a Intent,
+    pub from: &'intent Intent,
     /// The receiver.
-    pub into: &'a Intent,
+    pub into: &'intent Intent,
     /// Each side's generated-address suffix.
     pub hostnames: Hostnames,
 }
@@ -291,18 +291,18 @@ pub enum Way {
 }
 
 /// The caller's context for a comparison.
-pub struct Policy<'a> {
+pub struct Policy<'context> {
     /// How the changes travel.
     pub way: Way,
     /// Rows `from` marked Never sync.
-    pub from_marks: &'a BTreeSet<RowId>,
+    pub from_marks: &'context BTreeSet<RowId>,
     /// Rows `into` marked Never sync.
-    pub into_marks: &'a BTreeSet<RowId>,
+    pub into_marks: &'context BTreeSet<RowId>,
     /// Lineages `into` uses live.
-    pub live: &'a BTreeSet<String>,
+    pub live: &'context BTreeSet<String>,
     /// The sender's own changes when it is not syncing into its own Parent; the other
     /// rows it only inherited and they start unticked. None when every row is its own.
-    pub own: Option<&'a BTreeSet<RowId>>,
+    pub own: Option<&'context BTreeSet<RowId>>,
 }
 
 /// Why a row never moves.
@@ -410,11 +410,11 @@ pub struct Landed {
 
 /// A node, as [`name_of`] finds it.
 #[derive(Clone, Copy, Debug)]
-pub enum NodeRef<'a> {
+pub enum NodeRef<'intent> {
     /// A Service.
-    Service(&'a SavedServiceIntent),
+    Service(&'intent SavedServiceIntent),
     /// A Volume.
-    Volume(&'a SavedVolumeIntent),
+    Volume(&'intent SavedVolumeIntent),
 }
 
 impl Policy<'_> {
@@ -937,7 +937,10 @@ fn landing_order(env: &Intent, row: &RowId) -> u8 {
 
 /// The node at `row` and where in it, with a mount named by its Volume; display only.
 #[must_use]
-pub fn name_of<'a>(intent: &'a Intent, row: &RowId) -> Option<(NodeRef<'a>, String)> {
+pub fn name_of<'intent>(
+    intent: &'intent Intent,
+    row: &RowId,
+) -> Option<(NodeRef<'intent>, String)> {
     let node = *nodes(intent).get(row.lineage.as_str())?;
     let at = match &row.at {
         At::Mount(lineage) => format!("mounts.{}", volume(intent, lineage)?.name),
@@ -1296,15 +1299,18 @@ fn nodes(env: &Intent) -> BTreeMap<&str, NodeRef<'_>> {
         .collect()
 }
 
-fn service<'a>(env: &'a Intent, lineage: &str) -> Option<&'a SavedServiceIntent> {
+fn service<'intent>(env: &'intent Intent, lineage: &str) -> Option<&'intent SavedServiceIntent> {
     env.services.iter().find(|s| s.lineage_id == lineage)
 }
 
-fn service_mut<'a>(env: &'a mut Intent, lineage: &str) -> Option<&'a mut SavedServiceIntent> {
+fn service_mut<'intent>(
+    env: &'intent mut Intent,
+    lineage: &str,
+) -> Option<&'intent mut SavedServiceIntent> {
     env.services.iter_mut().find(|s| s.lineage_id == lineage)
 }
 
-fn volume<'a>(env: &'a Intent, lineage: &str) -> Option<&'a SavedVolumeIntent> {
+fn volume<'intent>(env: &'intent Intent, lineage: &str) -> Option<&'intent SavedVolumeIntent> {
     env.volumes
         .iter()
         .find(|v| v.resource_lineage_id == lineage)

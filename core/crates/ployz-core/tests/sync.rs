@@ -153,7 +153,7 @@ fn jobs() -> Value {
     image(0xc000_0000, 50, JOBS, "jobs")
 }
 
-fn svc<'a>(env: &'a mut Value, lineage: &str) -> &'a mut Value {
+fn svc<'env>(env: &'env mut Value, lineage: &str) -> &'env mut Value {
     env["services"]
         .as_array_mut()
         .unwrap()
@@ -162,7 +162,7 @@ fn svc<'a>(env: &'a mut Value, lineage: &str) -> &'a mut Value {
         .unwrap()
 }
 
-fn var<'a>(env: &'a mut Value, lineage: &str, key: &str) -> &'a mut Value {
+fn var<'env>(env: &'env mut Value, lineage: &str, key: &str) -> &'env mut Value {
     svc(env, lineage)["variables"]
         .as_array_mut()
         .unwrap()
@@ -171,7 +171,7 @@ fn var<'a>(env: &'a mut Value, lineage: &str, key: &str) -> &'a mut Value {
         .unwrap()
 }
 
-fn find<'a>(list: &'a Value, field: &str, lineage: &str) -> &'a Value {
+fn find<'env>(list: &'env Value, field: &str, lineage: &str) -> &'env Value {
     list.as_array()
         .unwrap()
         .iter()
@@ -250,7 +250,7 @@ fn summary(plan: &Plan) -> Vec<String> {
         .collect()
 }
 
-fn row<'a>(plan: &'a Plan, id: &str) -> &'a PlannedRow {
+fn row<'plan>(plan: &'plan Plan, id: &str) -> &'plan PlannedRow {
     plan.rows()
         .iter()
         .find(|row| row.id.to_string() == id)
