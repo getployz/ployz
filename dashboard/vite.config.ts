@@ -7,6 +7,8 @@ import { tanstackStart } from '@tanstack/react-start/plugin/vite'
 import viteReact from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
+const marketingOrigin = process.env['MARKETING_ORIGIN']
+
 const config = defineConfig({
   resolve: {
     tsconfigPaths: true,
@@ -27,6 +29,9 @@ const config = defineConfig({
       'codex-vm.tailcb9c5.ts.net',
     ],
     strictPort: true,
+    // Dev only: Vite answers asset-looking paths (`.js`, `.css`, images) itself before any app route runs, so the
+    // marketing proxy (src/routes/$.tsx) never sees the marketing site's built assets. Production has no such layer.
+    proxy: marketingOrigin ? { '/_astro': marketingOrigin, '/pagefind': marketingOrigin } : undefined,
   },
   plugins: [
     devtools(),

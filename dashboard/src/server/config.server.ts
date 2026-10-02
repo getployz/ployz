@@ -74,6 +74,7 @@ const rawFields = {
   hostedDnsMintKey: optional(
     Config.schema(NonEmptySecret, "PLOYZ_HOSTED_DNS_MINT_KEY"),
   ),
+  marketingOrigin: optional(Config.url("MARKETING_ORIGIN")),
   inngestEventKey: Config.schema(NonEmptySecret, "INNGEST_EVENT_KEY"),
   inngestSigningKey: Config.schema(NonEmptySecret, "INNGEST_SIGNING_KEY"),
   encryptionSecret: Config.schema(EncryptionSecret, "APP_ENCRYPTION_SECRET"),
@@ -170,6 +171,8 @@ const makeAppConfig = Effect.gen(function* () {
       eventKey: raw.inngestEventKey,
       signingKey: raw.inngestSigningKey,
     },
+    // Unset (Self-hosted Cloud): no marketing proxy; / sends signed-out visitors to /auth.
+    marketingOrigin: raw.marketingOrigin,
     encryptionSecret: raw.encryptionSecret,
   } as const;
 });

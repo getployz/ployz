@@ -1,6 +1,6 @@
 ---
 title: Service settings
-description: Every field in a service's Settings: what it does, its default, and when to change it.
+description: "Every field in a service's Settings: what it does, its default, and when to change it."
 ---
 
 Open a service on the canvas, then click **Settings**. Your changes are staged until you

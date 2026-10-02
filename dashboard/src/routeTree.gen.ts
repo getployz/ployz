@@ -9,14 +9,15 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as IndexRouteImport } from './routes/index'
+import { Route as SplatRouteImport } from './routes/$'
 import { Route as ProtectedRouteRouteImport } from './routes/_protected/route'
 import { Route as PublicRouteRouteImport } from './routes/_public/route'
 import { Route as DeviceRouteImport } from './routes/device'
+import { Route as HomeRouteImport } from './routes/home'
 import { Route as ProtectedCloudRouteRouteImport } from './routes/_protected/cloud/route'
 import { Route as ProtectedDashboardRouteImport } from './routes/_protected/dashboard'
-import { Route as PublicIndexRouteImport } from './routes/_public/index'
 import { Route as PublicAuthRouteImport } from './routes/_public/auth'
-import { Route as PublicHomeRouteImport } from './routes/_public/home'
 import { Route as ProtectedCloudIndexRouteImport } from './routes/_protected/cloud/index'
 import { Route as ProtectedCloudOrganizationSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/route'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
@@ -58,6 +59,16 @@ import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlu
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasResourcesResourceIdRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasServicesServiceIdRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId'
 
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SplatRoute = SplatRouteImport.update({
+  id: '/$',
+  path: '/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProtectedRouteRoute = ProtectedRouteRouteImport.update({
   id: '/_protected',
   getParentRoute: () => rootRouteImport,
@@ -71,6 +82,11 @@ const DeviceRoute = DeviceRouteImport.update({
   path: '/device',
   getParentRoute: () => rootRouteImport,
 } as any)
+const HomeRoute = HomeRouteImport.update({
+  id: '/home',
+  path: '/home',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProtectedCloudRouteRoute = ProtectedCloudRouteRouteImport.update({
   id: '/cloud',
   path: '/cloud',
@@ -81,19 +97,9 @@ const ProtectedDashboardRoute = ProtectedDashboardRouteImport.update({
   path: '/dashboard',
   getParentRoute: () => ProtectedRouteRoute,
 } as any)
-const PublicIndexRoute = PublicIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => PublicRouteRoute,
-} as any)
 const PublicAuthRoute = PublicAuthRouteImport.update({
   id: '/auth',
   path: '/auth',
-  getParentRoute: () => PublicRouteRoute,
-} as any)
-const PublicHomeRoute = PublicHomeRouteImport.update({
-  id: '/home',
-  path: '/home',
   getParentRoute: () => PublicRouteRoute,
 } as any)
 const ProtectedCloudIndexRoute = ProtectedCloudIndexRouteImport.update({
@@ -359,12 +365,13 @@ const ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasServi
   )
 
 export interface FileRoutesByFullPath {
-  '/': typeof PublicIndexRoute
+  '/': typeof IndexRoute
+  '/$': typeof SplatRoute
   '/device': typeof DeviceRoute
+  '/home': typeof HomeRoute
   '/cloud': typeof ProtectedCloudRouteRouteWithChildren
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
-  '/home': typeof PublicHomeRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
@@ -404,11 +411,12 @@ export interface FileRoutesByFullPath {
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasDeploymentsIndexRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof PublicIndexRoute
+  '/': typeof IndexRoute
+  '/$': typeof SplatRoute
   '/device': typeof DeviceRoute
+  '/home': typeof HomeRoute
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
-  '/home': typeof PublicHomeRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
@@ -447,14 +455,15 @@ export interface FileRoutesByTo {
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
+  '/': typeof IndexRoute
   '/_protected': typeof ProtectedRouteRouteWithChildren
   '/_public': typeof PublicRouteRouteWithChildren
+  '/$': typeof SplatRoute
   '/device': typeof DeviceRoute
+  '/home': typeof HomeRoute
   '/_protected/cloud': typeof ProtectedCloudRouteRouteWithChildren
   '/_protected/dashboard': typeof ProtectedDashboardRoute
   '/_public/auth': typeof PublicAuthRoute
-  '/_public/home': typeof PublicHomeRoute
-  '/_public/': typeof PublicIndexRoute
   '/_protected/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
@@ -500,11 +509,12 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/$'
     | '/device'
+    | '/home'
     | '/cloud'
     | '/dashboard'
     | '/auth'
-    | '/home'
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/auth/github'
@@ -545,10 +555,11 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/$'
     | '/device'
+    | '/home'
     | '/dashboard'
     | '/auth'
-    | '/home'
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/auth/github'
@@ -586,14 +597,15 @@ export interface FileRouteTypes {
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments'
   id:
     | '__root__'
+    | '/'
     | '/_protected'
     | '/_public'
+    | '/$'
     | '/device'
+    | '/home'
     | '/_protected/cloud'
     | '/_protected/dashboard'
     | '/_public/auth'
-    | '/_public/home'
-    | '/_public/'
     | '/_protected/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/auth/github'
@@ -637,9 +649,12 @@ export interface FileRouteTypes {
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
+  IndexRoute: typeof IndexRoute
   ProtectedRouteRoute: typeof ProtectedRouteRouteWithChildren
   PublicRouteRoute: typeof PublicRouteRouteWithChildren
+  SplatRoute: typeof SplatRoute
   DeviceRoute: typeof DeviceRoute
+  HomeRoute: typeof HomeRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiAuthGithubRoute: typeof ApiAuthGithubRoute
   ApiCliSplatRoute: typeof ApiCliSplatRoute
@@ -658,6 +673,20 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/$': {
+      id: '/$'
+      path: '/$'
+      fullPath: '/$'
+      preLoaderRoute: typeof SplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_protected': {
       id: '/_protected'
       path: ''
@@ -679,6 +708,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DeviceRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/home': {
+      id: '/home'
+      path: '/home'
+      fullPath: '/home'
+      preLoaderRoute: typeof HomeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_protected/cloud': {
       id: '/_protected/cloud'
       path: '/cloud'
@@ -693,25 +729,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProtectedDashboardRouteImport
       parentRoute: typeof ProtectedRouteRoute
     }
-    '/_public/': {
-      id: '/_public/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof PublicIndexRouteImport
-      parentRoute: typeof PublicRouteRoute
-    }
     '/_public/auth': {
       id: '/_public/auth'
       path: '/auth'
       fullPath: '/auth'
       preLoaderRoute: typeof PublicAuthRouteImport
-      parentRoute: typeof PublicRouteRoute
-    }
-    '/_public/home': {
-      id: '/_public/home'
-      path: '/home'
-      fullPath: '/home'
-      preLoaderRoute: typeof PublicHomeRouteImport
       parentRoute: typeof PublicRouteRoute
     }
     '/_protected/cloud/': {
@@ -1168,14 +1190,10 @@ const ProtectedRouteRouteWithChildren = ProtectedRouteRoute._addFileChildren(
 
 interface PublicRouteRouteChildren {
   PublicAuthRoute: typeof PublicAuthRoute
-  PublicHomeRoute: typeof PublicHomeRoute
-  PublicIndexRoute: typeof PublicIndexRoute
 }
 
 const PublicRouteRouteChildren: PublicRouteRouteChildren = {
   PublicAuthRoute: PublicAuthRoute,
-  PublicHomeRoute: PublicHomeRoute,
-  PublicIndexRoute: PublicIndexRoute,
 }
 
 const PublicRouteRouteWithChildren = PublicRouteRoute._addFileChildren(
@@ -1195,9 +1213,12 @@ const ApiEnrollTokenRouteWithChildren = ApiEnrollTokenRoute._addFileChildren(
 )
 
 const rootRouteChildren: RootRouteChildren = {
+  IndexRoute: IndexRoute,
   ProtectedRouteRoute: ProtectedRouteRouteWithChildren,
   PublicRouteRoute: PublicRouteRouteWithChildren,
+  SplatRoute: SplatRoute,
   DeviceRoute: DeviceRoute,
+  HomeRoute: HomeRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiAuthGithubRoute: ApiAuthGithubRoute,
   ApiCliSplatRoute: ApiCliSplatRoute,

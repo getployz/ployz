@@ -160,7 +160,7 @@ export default function DashboardAccountMenu({
 
         <DropdownMenuSeparator />
 
-        <DropdownMenuItem render={<Link to="/home" />}>
+        <DropdownMenuItem render={<Link to="/home" reloadDocument />}>
           <HouseIcon />
           Home
         </DropdownMenuItem>
