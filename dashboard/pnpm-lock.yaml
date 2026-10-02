@@ -171,9 +171,6 @@ importers:
       '@oxlint/plugins':
         specifier: 1.78.0
         version: 1.78.0
-      '@tailwindcss/typography':
-        specifier: 0.5.19
-        version: 0.5.19(tailwindcss@4.2.4)
       '@tanstack/devtools-vite':
         specifier: ^0.8.1
         version: 0.8.1(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(vite@8.2.2(@types/node@26.0.1)(esbuild@0.28.0)(jiti@2.7.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
@@ -2868,11 +2865,6 @@ packages:
   '@tailwindcss/oxide@4.2.4':
     resolution: {integrity: sha512-9El/iI069DKDSXwTvB9J4BwdO5JhRrOweGaK25taBAvBXyXqJAX+Jqdvs8r8gKpsI/1m0LeJLyQYTf/WLrBT1Q==}
     engines: {node: '>= 20'}
-
-  '@tailwindcss/typography@0.5.19':
-    resolution: {integrity: sha512-w31dd8HOx3k9vPtcQh5QHP9GwKcgbMp87j58qi6xgiBnFFtKEAgCWnDw4qUT8aHwkCp8bKvb/KGKWWHedP0AAg==}
-    peerDependencies:
-      tailwindcss: '>=3.0.0 || insiders || >=4.0.0-alpha.20 || >=4.0.0-beta.1'
 
   '@tailwindcss/vite@4.2.4':
     resolution: {integrity: sha512-pCvohwOCspk3ZFn6eJzrrX3g4n2JY73H6MmYC87XfGPyTty4YsCjYTMArRZm/zOI8dIt3+EcrLHAFPe5A4bgtw==}
@@ -5928,10 +5920,6 @@ packages:
     engines: {node: '>=24'}
     os: [darwin, linux, win32]
     hasBin: true
-
-  postcss-selector-parser@6.0.10:
-    resolution: {integrity: sha512-IQ7TZdoaqbT+LCpShg46jnZVlhWD2w6iQYAcYXfHARZ7X1t/UGhhceQDs5X0cGqKvYlHNOuv7Oa1xmb0oQuA3w==}
-    engines: {node: '>=4'}
 
   postcss-selector-parser@7.1.6:
     resolution: {integrity: sha512-7qASPzhKF2l2KLboRZux8CCTRMdGiV08vWmyKzPz22qZ7ZjQBOeY7rNzNoCLSUiftJ7HUq0GERHmxw/t0dCdMw==}
@@ -9596,11 +9584,6 @@ snapshots:
       '@tailwindcss/oxide-win32-arm64-msvc': 4.2.4
       '@tailwindcss/oxide-win32-x64-msvc': 4.2.4
 
-  '@tailwindcss/typography@0.5.19(tailwindcss@4.2.4)':
-    dependencies:
-      postcss-selector-parser: 6.0.10
-      tailwindcss: 4.2.4
-
   '@tailwindcss/vite@4.2.4(vite@8.2.2(@types/node@26.0.1)(esbuild@0.28.0)(jiti@2.7.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))':
     dependencies:
       '@tailwindcss/node': 4.2.4
@@ -13015,11 +12998,6 @@ snapshots:
   pkce-challenge@5.0.1: {}
 
   portless@0.15.6: {}
-
-  postcss-selector-parser@6.0.10:
-    dependencies:
-      cssesc: 3.0.0
-      util-deprecate: 1.0.2
 
   postcss-selector-parser@7.1.6:
     dependencies:
