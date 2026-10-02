@@ -89,7 +89,7 @@ it("closes the review as Discard all is clicked: the discard shows at once and s
   onDiscardAll.mockClear();
   open(canvasUrl, [replicas], 1);
   fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
-  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Discard all changes" })); });
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Discard all" })); });
   expect(onDiscardAll).toHaveBeenCalledOnce();
   expect(screen.queryByRole("dialog", { name: "Environment changes" })).toBeNull();
 });

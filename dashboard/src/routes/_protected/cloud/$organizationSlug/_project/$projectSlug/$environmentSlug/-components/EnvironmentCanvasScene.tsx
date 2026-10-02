@@ -111,6 +111,7 @@ function CanvasWithData() {
     volumes: volumes.volumes,
     unmountedVolumes: unmounted,
     live: branch.ok ? liveNodes(branch.value.live, services.services) : [],
+    parent: branch.ok ? branch.value.parent : null,
     diff,
   };
   const initialNodes = buildStoreNodes(store, canvasPositions, environmentId);

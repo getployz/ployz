@@ -10,6 +10,9 @@ import { volumeStorageText } from "./store-volumes";
 export type ChangeRow = {
   changeKey: string;
   label: string;
+  /** Its name beside its node's: a variable's key, else `label`. */
+  name: string;
+  variable: boolean;
   kind: ChangeKind;
   /** Its Store path, which Discard takes. */
   path: string;
@@ -61,11 +64,15 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
       // `SERVICE.SETTING`, or `volumes.VOLUME.SETTING`.
       const setting = node.type === "volume" ? row.path.split(".").slice(2).join(".") : row.path.slice(row.path.indexOf(".") + 1);
       const title = settingTitle(setting);
+      const label = setting === "name" ? "Name" : title ?? untitledLabel(node.type, setting);
+      const variable = node.type === "service" && setting.startsWith("env.");
       return {
         changeKey: `${node.id}:${row.path}`,
         path: row.path,
         kind: row.kind,
-        label: setting === "name" ? "Name" : title ?? untitledLabel(node.type, setting),
+        label,
+        name: variable ? setting.slice("env.".length) : label,
+        variable,
         currentValue: shownValue(row.before),
         newValue: shownValue(row.after),
         // Whether Discard takes this path alone is the Store's to say.

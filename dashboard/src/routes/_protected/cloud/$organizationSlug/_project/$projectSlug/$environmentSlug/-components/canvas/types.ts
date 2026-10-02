@@ -60,6 +60,8 @@ export type StoreCanvas = {
   unmountedVolumes: VolumeListing[];
   /** A Branch's Live Nodes; none elsewhere. */
   live: StoreLiveNode[];
+  /** A Branch's Parent; null on a root. */
+  parent: string | null;
   /** What the next Deploy changes: the bottom bar's count and its Details. */
   diff: DiffView;
 };

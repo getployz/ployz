@@ -34,7 +34,7 @@ function open(view: DiffView) {
   const write = vi.spyOn(functions, "writeStoreServerFn").mockResolvedValue({ ok: true, value: { written: "moved" } } as never);
   const neverSync = vi.fn();
   const groups = changeGroups(view, []);
-  const notes = storeHintNotes(view, groups, neverSync);
+  const notes = storeHintNotes(view, groups, neverSync, "production");
 
   const root = createRootRoute({ component: Outlet });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", component: Outlet });
@@ -44,7 +44,7 @@ function open(view: DiffView) {
     getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug",
     loader: ({ params }) => ({ store: { project: params.projectSlug, environment: params.environmentSlug } }),
     component: () => (
-      <EnvironmentChangesReview groups={groups} totalChanges={view.total_count} canDeploy canPublish={false} onPublish={() => {}}
+      <EnvironmentChangesReview environment="fix-api" groups={groups} totalChanges={view.total_count} canDeploy canPublish={false} onPublish={() => {}}
         onDiscardAll={() => {}} onClose={() => {}} onDeploy={() => {}} message="" onMessageChange={() => {}}
         onDiscardNode={() => {}} onDiscardRow={() => {}} {...notes} />
     ),
@@ -58,22 +58,29 @@ function open(view: DiffView) {
   return { neverSync, commands };
 }
 
-const rowOf = async (label: string) => (await screen.findByText(label)).closest("tr") as HTMLElement;
+const rowOf = async (label: string) => (await screen.findByText(label)).closest("li") as HTMLElement;
+/** The items of a change's ⋯ menu. */
+async function menuOf(label: string) {
+  fireEvent.click(await screen.findByRole("button", { name: `Actions for ${label}` }));
+  return within(await screen.findByRole("menu"));
+}
 
-it("tags what arrived with where it came from, and Never sync on it marks that setting", async () => {
+it("groups what the Parent's deploy brought apart from the Branch's own, and Never sync on it marks that setting", async () => {
   const test = open(diff({
     changes: [api([setting("api.env.CACHE_TTL", "60", "300"), setting("api.replicas", "1", "2")])], total_count: 2,
     incoming: [{ row: "api.env.CACHE_TTL", from: "production" }],
   }));
 
-  const arrived = within(await rowOf("Environment variable CACHE_TTL"));
-  expect(arrived.getByText("From production")).toBeTruthy();
-  fireEvent.click(arrived.getByRole("button", { name: /^Never sync/u }));
-  expect(test.neverSync).toHaveBeenCalledWith("api.env.CACHE_TTL");
+  const incoming = within(await screen.findByRole("region", { name: "From production's deploy" }));
+  expect(incoming.getByText("fix-api is a Branch of production, so what production deploys arrives here too.")).toBeTruthy();
+  expect(incoming.getByText("CACHE_TTL")).toBeTruthy();
+  expect(within(screen.getByRole("region", { name: "Your changes" })).getByText("Replicas")).toBeTruthy();
   // fix-api's own change came from nowhere else.
-  const own = within(await rowOf("Replicas"));
-  expect(own.queryByText(/^From /u)).toBeNull();
-  expect(own.queryByRole("button", { name: /^Never sync/u })).toBeNull();
+  const own = await menuOf("api Replicas");
+  expect(own.queryByRole("menuitem", { name: "Never sync" })).toBeNull();
+  fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+  fireEvent.click((await menuOf("api Environment variable CACHE_TTL")).getByRole("menuitem", { name: "Never sync" }));
+  expect(test.neverSync).toHaveBeenCalledWith("api.env.CACHE_TTL");
 });
 
 it("matches a Volume's setting as the Store names it, without `volumes.`", async () => {
@@ -82,18 +89,20 @@ it("matches a Volume's setting as the Store names it, without `volumes.`", async
     total_count: 1, incoming: [{ row: "data.name", from: "production" }],
   }));
 
-  fireEvent.click(within(await rowOf("Name")).getByRole("button", { name: /^Never sync/u }));
+  fireEvent.click((await menuOf("data Name")).getByRole("menuitem", { name: "Never sync" }));
   expect(test.neverSync).toHaveBeenCalledWith("volumes.data.name");
 });
 
-it("tags a whole node that arrived on the node, which can't be marked", async () => {
+it("groups a whole node that arrived, with its settings, under where it came from; it can't be marked", async () => {
   const test = open(diff({
     changes: [{ ...api([setting("api.replicas", "1", "2")]), lifecycle: "create" }], total_count: 2,
     incoming: [{ row: "api", from: "staging" }],
   }));
 
-  expect(await screen.findByText("From staging")).toBeTruthy();
-  expect(screen.queryByRole("button", { name: /^Never sync/u })).toBeNull();
+  const incoming = within(await screen.findByRole("region", { name: "From staging" }));
+  expect(incoming.getByText("api · will be added")).toBeTruthy();
+  expect(incoming.getByText("Replicas")).toBeTruthy();
+  expect((await menuOf("api")).queryByRole("menuitem", { name: "Never sync" })).toBeNull();
   expect(test.neverSync).not.toHaveBeenCalled();
 });
 
@@ -103,9 +112,9 @@ it("offers the Parent's value beside the Branch's own change, and Use stages it"
     follow_hints: [{ from: "production", row: "api.env.LOG_LEVEL", value: "warn" }],
   }));
 
-  const own = within(await rowOf("Environment variable LOG_LEVEL"));
-  expect(own.getByText(/production:/u).textContent).toContain("warn");
-  fireEvent.click(own.getByRole("button", { name: "Use production's api.env.LOG_LEVEL" }));
+  const own = within(await rowOf("LOG_LEVEL"));
+  expect(own.getByText(/production has since set/u).textContent).toContain("warn");
+  fireEvent.click(own.getByRole("button", { name: "Use theirs: production's api.env.LOG_LEVEL" }));
   await waitFor(() => expect(test.commands()).toEqual([
     { command: "move", move: "take", from: "production", into: fixApi, rows: ["api.env.LOG_LEVEL"], version: "4:abc" },
   ]));
@@ -119,7 +128,7 @@ it("keeps a discarded change from the Parent after the changes, with Use", async
 
   const after = within(await screen.findByRole("group", { name: "Not staged from production" }));
   expect(after.getByText("api · CACHE_TTL")).toBeTruthy();
-  fireEvent.click(after.getByRole("button", { name: "Use production's api.env.CACHE_TTL" }));
+  fireEvent.click(after.getByRole("button", { name: "Use theirs: production's api.env.CACHE_TTL" }));
   await waitFor(() => expect(test.commands()).toEqual([
     { command: "move", move: "take", from: "production", into: fixApi, rows: ["api.env.CACHE_TTL"], version: "4:abc" },
   ]));

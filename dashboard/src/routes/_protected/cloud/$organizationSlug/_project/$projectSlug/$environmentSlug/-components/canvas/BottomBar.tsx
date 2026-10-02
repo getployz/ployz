@@ -42,7 +42,7 @@ type BottomBarProps = {
   /** The Environment's in-flight Deployments, newest first, whoever admitted them. */
   active: DeploymentSummary[];
   /** Details' notes: where changes came from, and merged pull requests' and the Parent's values. */
-  notes: Pick<ReviewProps, "noteFor" | "neverSyncFor" | "after">;
+  notes: Pick<ReviewProps, "noteFor" | "neverSyncFor" | "originFor" | "after">;
   /** Changes open pull requests saved here, going live when each merges. */
   waiting?: ReadonlyArray<{ number: number; changes: number; environment: string }>;
   /** The Organization has no Server to deploy to: Deploy becomes Add a server; Publish still works. */
@@ -172,7 +172,7 @@ export function BottomBar({
   const bar = row ? <div role="group" aria-label="Bottom bar" className="bottom-bar">{row}</div> : null;
 
   const reviewProps = {
-    groups, totalChanges, canDeploy: deployable, canPublish,
+    environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, canPublish,
     onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, admitting,
     onPublish: () => { setOpen(false); onPublish(); },
     onDiscardAll: discardAll,
