@@ -477,25 +477,17 @@ pub(crate) fn picks(
         .iter()
         .map(|(asked, value)| Ok((resolve_one(asked, &named)?, value.clone())))
         .collect::<Result<_, RpcError>>()?;
-    let Some(asked) = &request.picks else {
+    if request.picks.is_none() {
         let ticked = rows
             .iter()
             .filter(|row| matches!(row.verdict, Verdict::Moves { ticked: true, .. }))
             .map(|row| row.id.clone())
             .collect();
         return Ok((whole(rows, ticked), values));
-    };
-    // Picked by hand, a row without its new node is refused, not dropped.
-    let picks = resolve_all(asked, &named)?;
-    let known: BTreeSet<&RowId> = rows.iter().map(|row| &row.id).collect();
-    if let Some(unknown) = picks.iter().find(|row| !known.contains(row)) {
-        let rows: Vec<String> = known.iter().map(ToString::to_string).collect();
-        return Err(error::choices(
-            format!("No change {unknown} to sync"),
-            &unknown.to_string(),
-            rows.iter().map(String::as_str),
-        ));
     }
+    // Picked by hand, a row without its new node is refused, not dropped.
+    let known = rows.iter().map(|row| row.id.clone()).collect();
+    let picks = chosen(request.picks.as_deref(), known, &named, "change")?;
     Ok((picks, values))
 }
 

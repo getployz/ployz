@@ -247,20 +247,22 @@ pub(crate) fn resolve_one(asked: &RowRef, rows: &[NamedRow]) -> Result<RowId, Rp
     ))
 }
 
-/// The hints `asked` names among `named`, each one of `hints`; omitted, every one.
+/// The rows `asked` names among `named`, each one of `offered` (each a `what`, such
+/// as a hint); omitted, every one.
 pub(crate) fn chosen(
     asked: Option<&[RowRef]>,
-    hints: BTreeSet<RowId>,
+    offered: BTreeSet<RowId>,
     named: &[NamedRow],
+    what: &str,
 ) -> Result<BTreeSet<RowId>, RpcError> {
     let Some(asked) = asked else {
-        return Ok(hints);
+        return Ok(offered);
     };
     let chosen = resolve_all(asked, named)?;
-    if let Some(unknown) = chosen.iter().find(|row| !hints.contains(row)) {
-        let rows: Vec<String> = hints.iter().map(ToString::to_string).collect();
+    if let Some(unknown) = chosen.iter().find(|row| !offered.contains(row)) {
+        let rows: Vec<String> = offered.iter().map(ToString::to_string).collect();
         return Err(error::choices(
-            format!("No hint {unknown} to take"),
+            format!("No {what} at {unknown}"),
             &unknown.to_string(),
             rows.iter().map(String::as_str),
         ));
@@ -269,8 +271,8 @@ pub(crate) fn chosen(
 }
 
 /// `asked` resolved among `rows`, every one together.
-pub(crate) fn resolve_all<'a>(
-    asked: impl IntoIterator<Item = &'a RowRef>,
+pub(crate) fn resolve_all<'asked>(
+    asked: impl IntoIterator<Item = &'asked RowRef>,
     rows: &[NamedRow],
 ) -> Result<BTreeSet<RowId>, RpcError> {
     let mut found = BTreeSet::new();

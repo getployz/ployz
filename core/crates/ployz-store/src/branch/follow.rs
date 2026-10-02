@@ -203,7 +203,7 @@ pub(crate) fn take(
         .map(|row| row.id.clone())
         .collect();
     let named = named_in(&[&follow.from, &branch.working], &hints);
-    let picks = chosen(take.rows.as_deref(), hints, &named)?;
+    let picks = chosen(take.rows.as_deref(), hints, &named, "hint")?;
     if picks.is_empty() {
         return Err(error::conflict(
             format!("No value from {parent} to use: read the diff again"),
