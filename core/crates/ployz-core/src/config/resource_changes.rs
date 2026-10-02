@@ -34,7 +34,7 @@ pub fn compare_resource_settings(
     node_type: EnvironmentNodeType,
     current: Value,
     baseline: Option<Value>,
-) -> Result<Vec<ServiceSettingChange>, ConfigError> {
+) -> Result<Vec<(ServiceSettingChange, Option<At>)>, ConfigError> {
     if node_type == EnvironmentNodeType::Service {
         let current = parse_service_config(current)?;
         let baseline = baseline.map(parse_service_config).transpose()?;

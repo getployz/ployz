@@ -2495,21 +2495,9 @@ export type Retry = { id: DeploymentId,
  */
 deployment: DeploymentId, };
 
-export type ReviewChangeSet = { groups: Array<ReviewNodeChange>, totalCount: number,
-/**
- * Token of the Head this set was computed against; discard must present it back.
- */
-headToken: string, };
-
 export type ReviewComparisonRole = "head" | "introduction";
 
 export type ReviewLifecycleKind = "create" | "update" | "delete";
-
-export type ReviewNodeChange = { node: ReviewNodeIdentity, lifecycle: ReviewLifecycleKind,
-/**
- * What `settings` and discard compare against; `None` only when nothing exists to compare.
- */
-comparison: ReviewComparisonRole | null, settings: Array<ServiceSettingChange>, };
 
 export type ReviewNodeIdentity = { type: EnvironmentNodeType, id: string, };
 
@@ -2773,7 +2761,7 @@ export type ServiceRoute = { id: string, hostname: string, targetPort: number | 
 export type ServiceSettingChange = { path: string, kind: ChangeKind, before: JsonValue, after: JsonValue, canRestore: boolean,
 /**
  * The Sync row it falls in, which joins it to what moved it; the Store's to fill
- * from `at` and the node's lineage.
+ * from the `At` its comparison hands alongside and the node's lineage.
  */
 row: RowId | null, };
 

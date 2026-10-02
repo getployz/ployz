@@ -103,7 +103,6 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_core::config::ServiceConfig>();
     declarations.add::<ployz_core::config::SavedEnvironmentIntent>();
     declarations.add::<ployz_core::config::ChangeSetInput>();
-    declarations.add::<ployz_core::config::ReviewChangeSet>();
     declarations.add::<ployz_core::config::RuntimeOutcomeProjection>();
     declarations.add::<ployz_core::config::CompiledEnvironmentIntent>();
     declarations.add::<ployz_core::config::ResolveVariablesInput>();

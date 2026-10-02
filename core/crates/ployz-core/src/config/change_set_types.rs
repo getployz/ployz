@@ -1,5 +1,5 @@
 //! One authored change set, shared by Cloud's canvas and review actions.
-use super::{EnvironmentNodeType, ServiceSettingChange};
+use super::{At, EnvironmentNodeType, ServiceSettingChange};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
@@ -60,18 +60,18 @@ pub enum ReviewLifecycleKind {
     Delete,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ReviewNodeChange {
     pub node: ReviewNodeIdentity,
     pub lifecycle: ReviewLifecycleKind,
     /// What `settings` and discard compare against; `None` only when nothing exists to compare.
     pub comparison: Option<ReviewComparisonRole>,
-    pub settings: Vec<ServiceSettingChange>,
+    /// Each change and where in its node its row is.
+    pub settings: Vec<(ServiceSettingChange, Option<At>)>,
 }
 
 /// Consumers render this list and discard by scope; they never merge state layers.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ReviewChangeSet {
     pub groups: Vec<ReviewNodeChange>,
     pub total_count: usize,

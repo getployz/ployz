@@ -238,7 +238,7 @@ fn restore(
                 .is_some_and(|(saved, head)| {
                     compare_service_settings(&saved, Some(&head))
                         .iter()
-                        .any(|row| row.path == setting.field() && row.can_restore)
+                        .any(|(row, _)| row.path == setting.field() && row.can_restore)
                 })
         }
         (Some(part), Some(saved)) => part_of(saved, &id, part) != part_of(&baseline, &id, part),

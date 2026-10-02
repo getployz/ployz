@@ -27,10 +27,16 @@ fn input(
 }
 
 fn project(value: Value) -> Value {
-    serde_json::to_value(
-        project_environment_changes(serde_json::from_value(value).unwrap()).unwrap(),
-    )
-    .unwrap()
+    let changes = project_environment_changes(serde_json::from_value(value).unwrap()).unwrap();
+    let groups: Vec<_> = changes
+        .groups
+        .iter()
+        .map(|group| {
+            let settings: Vec<_> = group.settings.iter().map(|(row, _)| row).collect();
+            json!({"lifecycle": group.lifecycle, "settings": settings})
+        })
+        .collect();
+    json!({"groups": groups, "totalCount": changes.total_count})
 }
 
 #[test]

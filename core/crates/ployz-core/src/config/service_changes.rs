@@ -26,14 +26,9 @@ pub struct ServiceSettingChange {
     pub after: Value,
     pub can_restore: bool,
     /// The Sync row it falls in, which joins it to what moved it; the Store's to fill
-    /// from `at` and the node's lineage.
+    /// from the `At` its comparison hands alongside and the node's lineage.
     #[serde(default)]
     pub row: Option<super::RowId>,
-    /// Where in its node `row` is, as the comparison found it; none for a mount, whose
-    /// Volume lineage only the Store knows.
-    #[serde(skip)]
-    #[ts(skip)]
-    pub at: Option<At>,
 }
 
 /// Each compared field and the Setting whose row it falls in.
@@ -60,11 +55,13 @@ const FIELDS: &[(&str, Setting)] = &[
 ];
 
 /// Compare settings against an available authored baseline, keeping derived effects separate.
+/// Each change comes with where in its node its row is; none for a mount, whose Volume
+/// lineage only the Store knows.
 #[must_use]
 pub fn compare_service_settings(
     current: &ServiceConfig,
     baseline: Option<&ServiceConfig>,
-) -> Vec<ServiceSettingChange> {
+) -> Vec<(ServiceSettingChange, Option<At>)> {
     let current = json!(current);
     let baseline = baseline.map_or(Value::Null, |value| json!(value));
     let mut changes = Vec::new();
@@ -241,7 +238,7 @@ pub(super) fn change(
     before: Value,
     after: Value,
     can_restore: bool,
-) -> ServiceSettingChange {
+) -> (ServiceSettingChange, Option<At>) {
     let kind = if before.is_null() {
         ChangeKind::Add
     } else if after.is_null() {
@@ -249,18 +246,21 @@ pub(super) fn change(
     } else {
         ChangeKind::Update
     };
-    ServiceSettingChange {
+    let change = ServiceSettingChange {
         path: path.into(),
         kind,
         before,
         after,
         can_restore,
         row: None,
-        at,
-    }
+    };
+    (change, at)
 }
 
-fn compare_related_settings(current: &Value, baseline: &Value) -> Vec<ServiceSettingChange> {
+fn compare_related_settings(
+    current: &Value,
+    baseline: &Value,
+) -> Vec<(ServiceSettingChange, Option<At>)> {
     let mut changes = Vec::new();
     for (family, identity) in [("routes", "id"), ("mounts", "volumeResourceId")] {
         let indexed = |value: &Value| -> BTreeMap<String, Value> {

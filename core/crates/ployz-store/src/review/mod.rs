@@ -180,14 +180,14 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                 let settings: Vec<ServiceSettingChange> = group
                     .settings
                     .into_iter()
-                    .map(|mut row| {
+                    .map(|(mut row, at)| {
                         let at = match row.path.strip_prefix("mounts.") {
                             Some(id) => every
                                 .iter()
                                 .flat_map(|intent| &intent.volumes)
                                 .find(|volume| volume.resource_id == id)
                                 .map(|volume| At::Mount(volume.resource_lineage_id.clone())),
-                            None => row.at.take(),
+                            None => at,
                         };
                         row.row = at.map(|at| RowId::of(&lineage, at));
                         if row.path.starts_with("mounts.") {
@@ -292,7 +292,6 @@ fn renames(view: &mut DiffView, working: &SavedEnvironmentIntent, head: &SavedEn
             // Renaming it back undoes it: `discard` takes no name path.
             can_restore: false,
             row: None,
-            at: None,
         };
         view.total_count += 1;
         match view

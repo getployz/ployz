@@ -30,11 +30,13 @@ fn service_comparison_and_restore_preserve_authored_source_identity() {
     let current = parse_service_config(edited).unwrap();
     let rows = compare_service_settings(&current, Some(&baseline));
     assert_eq!(
-        rows.iter().map(|row| row.path.as_str()).collect::<Vec<_>>(),
+        rows.iter()
+            .map(|(row, _)| row.path.as_str())
+            .collect::<Vec<_>>(),
         ["source.repository", "source.branch", "startCommand"]
     );
     assert_eq!(
-        rows.iter().map(|row| row.at.clone()).collect::<Vec<_>>(),
+        rows.iter().map(|(_, at)| at.clone()).collect::<Vec<_>>(),
         [Setting::Repository, Setting::Branch, Setting::StartCommand].map(|s| Some(At::Setting(s)))
     );
     let restored =
@@ -56,10 +58,10 @@ fn service_comparison_and_restore_preserve_authored_source_identity() {
     image["source"] = json!({"version": 1, "type": "image", "image": "api:latest",
         "credentials": {"type": "configured", "credentialId": "00000000-0000-4000-8000-000000000002"}});
     let image = parse_service_config(image).unwrap();
-    let switched = &compare_service_settings(&image, Some(&baseline))[0];
+    let (switched, at) = &compare_service_settings(&image, Some(&baseline))[0];
     assert_eq!(switched.path, "source");
     assert_eq!(
-        switched.at,
+        *at,
         Some(At::Setting(Setting::Image)),
         "the source it switches to"
     );
@@ -82,11 +84,13 @@ fn compound_settings_compare_and_restore_the_edited_field() {
     let current = parse_service_config(input).unwrap();
     let rows = compare_service_settings(&current, Some(&baseline));
     assert_eq!(
-        rows.iter().map(|row| row.path.as_str()).collect::<Vec<_>>(),
+        rows.iter()
+            .map(|(row, _)| row.path.as_str())
+            .collect::<Vec<_>>(),
         ["healthcheck.timeoutSeconds", "build.dockerfilePath"]
     );
     assert_eq!(
-        rows.iter().map(|row| row.at.clone()).collect::<Vec<_>>(),
+        rows.iter().map(|(_, at)| at.clone()).collect::<Vec<_>>(),
         [Setting::Healthcheck, Setting::DockerfilePath].map(|s| Some(At::Setting(s)))
     );
     let restored =
@@ -176,14 +180,18 @@ fn related_settings_preserve_ownership_redact_secrets_and_restore_stable_routes(
     let current = parse_service_config(after).unwrap();
     let rows = compare_service_settings(&current, Some(&baseline));
     assert_eq!(rows.len(), 2, "volume rename is not a mount edit");
-    let secret = rows.iter().find(|row| row.path == "env.TOKEN").unwrap();
-    assert!(!secret.can_restore);
-    assert_eq!(secret.at, Some(At::Variable("TOKEN".into())));
-    let route = rows
+    let (secret, at) = rows
         .iter()
-        .find(|row| row.path.starts_with("routes."))
+        .find(|(row, _)| row.path == "env.TOKEN")
         .unwrap();
-    assert_eq!(route.at, Some(At::Setting(Setting::Routes)));
+    assert!(!secret.can_restore);
+    assert_eq!(*at, Some(At::Variable("TOKEN".into())));
+    let (_, at) = rows
+        .iter()
+        .find(|(row, _)| row.path.starts_with("routes."))
+        .unwrap();
+    assert_eq!(*at, Some(At::Setting(Setting::Routes)));
+    let rows: Vec<_> = rows.into_iter().map(|(row, _)| row).collect();
     let output = serde_json::to_string(&rows).unwrap();
     assert!(!output.contains("private-"));
     let restored = restore_service_setting(
@@ -212,7 +220,9 @@ fn canonical_references_survive_renames_and_mount_changes_keep_one_owner() {
     );
     after["env"]["URL"]["parts"][0]["owner"]["lineageId"] = json!("other-owner");
     assert_eq!(
-        compare_service_settings(&parse_service_config(after).unwrap(), Some(&baseline))[0].path,
+        compare_service_settings(&parse_service_config(after).unwrap(), Some(&baseline))[0]
+            .0
+            .path,
         "env.URL"
     );
     for value in [
@@ -223,7 +233,9 @@ fn canonical_references_survive_renames_and_mount_changes_keep_one_owner() {
         edited["managedHostnames"] = value;
         let current = parse_service_config(edited).unwrap();
         assert_eq!(
-            compare_service_settings(&current, Some(&baseline))[0].path,
+            compare_service_settings(&current, Some(&baseline))[0]
+                .0
+                .path,
             "managedHostnames"
         );
     }
@@ -232,18 +244,18 @@ fn canonical_references_survive_renames_and_mount_changes_keep_one_owner() {
     let mounted = parse_service_config(before.clone()).unwrap();
     let added = compare_service_settings(&mounted, Some(&baseline));
     assert_eq!(added.len(), 1);
-    assert_eq!(added[0].kind, ployz_core::config::ChangeKind::Add);
+    assert_eq!(added[0].0.kind, ployz_core::config::ChangeKind::Add);
     assert_eq!(
-        added[0].at, None,
+        added[0].1, None,
         "a mount's Volume lineage is the Store's to find"
     );
     before["mounts"][0]["mountPath"] = json!("/other");
     let moved = compare_service_settings(&parse_service_config(before).unwrap(), Some(&mounted));
     assert_eq!(moved.len(), 1);
-    assert_eq!(moved[0].kind, ployz_core::config::ChangeKind::Update);
+    assert_eq!(moved[0].0.kind, ployz_core::config::ChangeKind::Update);
     let removed = compare_service_settings(&baseline, Some(&mounted));
     assert_eq!(removed.len(), 1);
-    assert_eq!(removed[0].kind, ployz_core::config::ChangeKind::Remove);
+    assert_eq!(removed[0].0.kind, ployz_core::config::ChangeKind::Remove);
 }
 
 #[test]
@@ -269,7 +281,7 @@ fn build_command_is_validated_compared_and_restored() {
     );
     let rows = compare_service_settings(&current, Some(&baseline));
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].path, "build.command");
+    assert_eq!(rows[0].0.path, "build.command");
     assert_eq!(
         restore_service_setting(current, &baseline, "build.command").unwrap(),
         baseline

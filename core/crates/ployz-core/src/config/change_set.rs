@@ -38,7 +38,7 @@ fn compare(
             (Some(current), Some(baseline)) => {
                 compare_resource_settings(node.node_type, current.clone(), Some(baseline.clone()))?
                     .into_iter()
-                    .filter(|row| row.path != "node")
+                    .filter(|(row, _)| row.path != "node")
                     .collect()
             }
             _ => Vec::new(),
@@ -136,7 +136,7 @@ mod tests {
                 .groups
                 .iter()
                 .flat_map(|group| &group.settings)
-                .map(|row| (row.before.clone(), row.after.clone()))
+                .map(|(row, _)| (row.before.clone(), row.after.clone()))
                 .collect();
             assert_eq!(rows, expected);
             assert_eq!(review.total_count, expected.len());
@@ -164,7 +164,7 @@ mod tests {
             group
                 .settings
                 .iter()
-                .map(|row| (row.before.clone(), row.after.clone()))
+                .map(|(row, _)| (row.before.clone(), row.after.clone()))
                 .collect::<Vec<_>>(),
             vec![(json!(1), json!(7))]
         );
