@@ -34,6 +34,7 @@ export function ApplyChangeGroupCard({
   onDiscardNode,
   onDiscardRow,
   noteFor,
+  neverSyncFor,
 }: {
   group: ChangeGroup;
   totalChanges: number;
@@ -41,7 +42,10 @@ export function ApplyChangeGroupCard({
   onCloseDialog: () => void;
   onDiscardNode: (group: ChangeGroup) => void;
   onDiscardRow: (group: ChangeGroup, path: string) => void;
+  /** A row's note, or with the group's `discardPath`, the node's. */
   noteFor?: (path: string) => ReactNode;
+  /** Never sync for a row that arrived from another Environment. */
+  neverSyncFor?: (path: string) => (() => void) | undefined;
 }) {
   const [isExpanded, setIsExpanded] = useState(true);
   const nodeKind = group.lifecycle === "create" ? "add" : group.lifecycle === "delete" ? "remove" : "update";
@@ -76,6 +80,7 @@ export function ApplyChangeGroupCard({
         >
           {nodeAction}
         </span>
+        {noteFor?.(group.discardPath)}
       </div>
     </>
   );
@@ -160,7 +165,17 @@ export function ApplyChangeGroupCard({
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {group.rows.map((row) => (
+                    {group.rows.map((row) => {
+                      const neverSync = neverSyncFor?.(row.path);
+                      // The last change gone, nothing is left to review.
+                      const leaving = (leave: () => void) => () => {
+                        if (totalChanges === 1) {
+                          onCloseDialog();
+                        }
+
+                        leave();
+                      };
+                      return (
                       <ApplyChangeRow
                         key={row.changeKey}
                         row={row}
@@ -168,15 +183,11 @@ export function ApplyChangeGroupCard({
                         showCurrentValue={showCurrentValue}
                         showNewValue={showNewValue}
                         note={noteFor?.(row.path)}
-                        onDiscard={row.canDiscard ? () => {
-                          if (totalChanges === 1) {
-                            onCloseDialog();
-                          }
-
-                          onDiscardRow(group, row.path);
-                        } : undefined}
+                        onDiscard={row.canDiscard ? leaving(() => onDiscardRow(group, row.path)) : undefined}
+                        onNeverSync={neverSync && leaving(neverSync)}
                       />
-                    ))}
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </CardContent>

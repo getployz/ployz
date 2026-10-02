@@ -69,4 +69,31 @@ describe("ApplyChangeGroupCard", () => {
     expect(screen.getByText("Branch")).toBeTruthy();
     expect(screen.queryByText("Pending")).toBeNull();
   });
+
+  it("offers Never sync beside Discard on a row that arrived, and closes as the last change goes", () => {
+    const [onCloseDialog, neverSync] = [vi.fn(), vi.fn()];
+    const row = (path: string, label: string) => ({
+      changeKey: `service:api:${path}`, label, kind: "update" as const, path, currentValue: "60", newValue: "300", canDiscard: true,
+    });
+    render(
+      <ApplyChangeGroupCard
+        group={{ ...lifecycleOnlyGroup, nodeName: "api", discardPath: "api", lifecycle: "update",
+          rows: [row("api.env.CACHE_TTL", "Environment variable CACHE_TTL"), row("api.replicas", "Replicas")] }}
+        totalChanges={1}
+        visibleGroupCount={1}
+        onCloseDialog={onCloseDialog}
+        onDiscardNode={vi.fn()}
+        onDiscardRow={vi.fn()}
+        noteFor={(path) => path === "api.env.CACHE_TTL" ? "From production" : null}
+        neverSyncFor={(path) => path === "api.env.CACHE_TTL" ? neverSync : undefined}
+      />,
+    );
+
+    expect(screen.getByText("From production")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: /^Never sync/u })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Discard Environment variable CACHE_TTL" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Never sync Environment variable CACHE_TTL" }));
+    expect(neverSync).toHaveBeenCalledOnce();
+    expect(onCloseDialog).toHaveBeenCalledOnce();
+  });
 });

@@ -41,8 +41,8 @@ type BottomBarProps = {
   onDiscardRow: (group: ChangeGroup, path: string) => void;
   /** The Environment's in-flight Deployments, newest first, whoever admitted them. */
   active: DeploymentSummary[];
-  /** Details' notes from merged pull requests. */
-  notes: Pick<ReviewProps, "noteFor" | "after">;
+  /** Details' notes: where changes came from, and merged pull requests' and the Parent's values. */
+  notes: Pick<ReviewProps, "noteFor" | "neverSyncFor" | "after">;
   /** Changes open pull requests saved here, going live when each merges. */
   waiting?: ReadonlyArray<{ number: number; changes: number; environment: string }>;
   /** The Organization has no Server to deploy to: Deploy becomes Add a server; Publish still works. */

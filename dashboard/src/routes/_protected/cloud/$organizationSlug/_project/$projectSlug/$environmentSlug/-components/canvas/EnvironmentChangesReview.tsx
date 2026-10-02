@@ -22,9 +22,14 @@ export type EnvironmentChangesReviewProps = {
   admitting?: boolean;
   onDiscardNode: (group: ChangeGroup) => void;
   onDiscardRow: (group: ChangeGroup, path: string) => void;
-  /** A merged pull request's note beside a change: its tag, or its value with Use. */
+  /**
+   * A note beside a change (or with the group's `discardPath`, beside its node): where it came from, or a merged pull
+   * request's or the Parent's value with Use.
+   */
   noteFor?: (group: ChangeGroup, path: string) => ReactNode;
-  /** Read-only lists after the changes: merged pull requests' settings no change shows, and changes waiting for pull requests. */
+  /** Never sync for a change that arrived from another Environment: marks it and discards it. */
+  neverSyncFor?: (group: ChangeGroup, path: string) => (() => void) | undefined;
+  /** Lists after the changes: merged pull requests' and the Parent's values no change shows. */
   after?: ReactNode;
 };
 
@@ -64,6 +69,7 @@ function StagedChanges({
   onDiscardNode,
   onDiscardRow,
   noteFor,
+  neverSyncFor,
   after,
 }: EnvironmentChangesReviewProps) {
   return (
@@ -88,6 +94,7 @@ function StagedChanges({
                 onDiscardNode={() => onDiscardNode(group)}
                 onDiscardRow={(_, path) => onDiscardRow(group, path)}
                 noteFor={noteFor && ((path) => noteFor(group, path))}
+                neverSyncFor={neverSyncFor && ((path) => neverSyncFor(group, path))}
               />
             ))}
             {after}

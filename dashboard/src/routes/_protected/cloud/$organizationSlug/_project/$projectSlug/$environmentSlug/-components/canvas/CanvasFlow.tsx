@@ -214,7 +214,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         onDiscardNode={(group) => actions.discard(group.discardPath)}
         onDiscardRow={(_, path) => actions.discard(path)}
         active={inFlight}
-        notes={storeHintNotes(diff, groups)}
+        notes={storeHintNotes(diff, groups, actions.neverSync)}
         waiting={waiting}
         noServers={noServers}
       />

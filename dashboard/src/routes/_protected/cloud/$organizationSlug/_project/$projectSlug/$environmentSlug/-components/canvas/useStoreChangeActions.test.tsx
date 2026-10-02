@@ -26,10 +26,11 @@ const admitted = { ok: true, value: { written: "deployment", id: "d" } } as neve
 const admittedIds: string[] = [];
 
 function Deploy() {
-  const { deploy, discard, dialog } = useStoreChangeActions("acme", ref, "2:1:0", (id) => admittedIds.push(id));
+  const { deploy, discard, neverSync, dialog } = useStoreChangeActions("acme", ref, "2:1:0", (id) => admittedIds.push(id));
   return <>
     <button type="button" onClick={() => deploy("  Ship the api  ")}>Deploy now</button>
     <button type="button" onClick={() => discard("web.replicas")}>Discard replicas</button>
+    <button type="button" onClick={() => neverSync("api.env.CACHE_TTL")}>Never sync CACHE_TTL</button>
     {dialog}
   </>;
 }
@@ -79,6 +80,19 @@ it("discards a Setting by its Store path, through the Environment's queue", asyn
   act(() => { fireEvent.click(screen.getByText("Discard replicas")); });
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
   expect(test.admits()).toEqual([{ command: "discard", environment: ref, path: "web.replicas", version: "2:1:0" }]);
+});
+
+it("marks an arrived change Never sync here, then discards it, so it goes and nothing follows into it again", async () => {
+  const test = setup();
+  test.write.mockResolvedValueOnce({ ok: true, value: { written: "never_synced" } } as never)
+    .mockResolvedValueOnce({ ok: true, value: { written: "discarded" } } as never);
+
+  act(() => { fireEvent.click(screen.getByText("Never sync CACHE_TTL")); });
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(2));
+  expect(test.admits()).toEqual([
+    { command: "never_sync", environment: ref, paths: ["api.env.CACHE_TTL"] },
+    { command: "discard", environment: ref, path: "api.env.CACHE_TTL", version: "2:1:0" },
+  ]);
 });
 
 it("fails closed when the Servers can't be checked: nothing to accept, and the Store's reason shows", async () => {

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Trash2Icon } from "lucide-react";
+import { PinIcon, Trash2Icon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { TableCell, TableRow } from "#/components/ui/table";
@@ -19,14 +19,17 @@ export function ApplyChangeRow({
   showNewValue,
   note,
   onDiscard,
+  onNeverSync,
 }: {
   row: Pick<ChangeRow, "kind" | "label" | "currentValue" | "newValue">;
   tone: ApplyChangeTone;
   showCurrentValue: boolean;
   showNewValue: boolean;
-  /** Under the new value, such as the pull request it came from. */
+  /** Under the new value, such as the Environment or pull request it came from. */
   note?: ReactNode;
   onDiscard?: () => void;
+  /** It arrived from another Environment: mark it Never sync, and it goes. */
+  onNeverSync?: () => void;
 }) {
   return (
     // On phones a row stacks old above new, so long values such as image refs get the full width.
@@ -52,12 +55,19 @@ export function ApplyChangeRow({
       ) : null}
       {tone === "staged" ? (
         <TableCell>
-          {onDiscard ? (
-            <Button variant="ghost" size="icon-sm" onClick={onDiscard}>
-              <Trash2Icon />
-              <span className="sr-only">Discard {row.label}</span>
-            </Button>
-          ) : null}
+          <div className="flex items-center justify-end gap-1">
+            {onNeverSync ? (
+              <Button variant="ghost" size="sm" aria-label={`Never sync ${row.label}`} onClick={onNeverSync}>
+                <PinIcon data-icon="inline-start" />Never sync
+              </Button>
+            ) : null}
+            {onDiscard ? (
+              <Button variant="ghost" size="icon-sm" onClick={onDiscard}>
+                <Trash2Icon />
+                <span className="sr-only">Discard {row.label}</span>
+              </Button>
+            ) : null}
+          </div>
         </TableCell>
       ) : null}
     </TableRow>

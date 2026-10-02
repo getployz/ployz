@@ -52,10 +52,10 @@ export function destinationNews(view: PullRequestView, environment: string): Des
 export const goLiveWhen = (changes: number, number: number) => `${plural(changes, "change")} · go live when #${number} merges`;
 
 /**
- * A merged pull request's values landed here, split by where Details shows them: beside the change to deploy at the
- * same path, else after the changes (a hint whose row nothing stages, like a variable edited here since).
+ * Hints, a merged pull request's or a Parent's values, split by where Details shows them: beside the change to deploy
+ * at the same path, else after the changes (a hint whose row nothing stages, like a variable edited here since).
  */
-export function hintNotes(hints: readonly PullRequestHint[], paths: ReadonlySet<string>) {
+export function hintNotes<Hint extends Pick<PullRequestHint, "row">>(hints: readonly Hint[], paths: ReadonlySet<string>) {
   return {
     at: (path: string) => hints.filter((hint) => hint.row === path),
     rest: hints.filter((hint) => !paths.has(hint.row)),
