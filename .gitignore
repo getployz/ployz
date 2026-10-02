@@ -3,6 +3,8 @@ node_modules/
 /docs/*
 !/docs/agents/
 !/docs/agents/**
+!/docs/user/
+!/docs/user/**
 /.claude/*
 !/.claude/skills/
 /.scratch/
