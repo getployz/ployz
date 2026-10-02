@@ -138,7 +138,7 @@ fn a_held_value_drops_when_the_pull_request_closes_unmerged() {
 
 /// Every `saved` document of a Conditional Sync in the Store at `url`.
 fn saved_documents(url: &str) -> Vec<String> {
-    let sql = "SELECT saved FROM config_conditional_sync";
+    let sql = "SELECT stored FROM config_conditional_sync";
     match url.strip_prefix("sqlite:") {
         Some(path) => {
             let connection = rusqlite::Connection::open(path).unwrap();

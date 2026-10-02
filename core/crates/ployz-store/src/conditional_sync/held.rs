@@ -48,8 +48,8 @@ pub(crate) fn hold(
         |repository: RepositoryId| request.repository.is_none_or(|asked| asked == repository);
     let mut rows = Vec::new();
     for stand in tx.query(
-        "SELECT repository_id, saved FROM config_conditional_sync \
-         WHERE environment_id = ?1 AND number = ?2 AND state = 'standing' ORDER BY saved_at, id",
+        "SELECT repository_id, stored FROM config_conditional_sync \
+         WHERE environment_id = ?1 AND number = ?2 AND state = 'standing' ORDER BY synced_at, id",
         &[into.summary.id.as_str().into(), number.into()],
     )? {
         let repository: RepositoryId = stand.number(0, "Conditional Sync")?;

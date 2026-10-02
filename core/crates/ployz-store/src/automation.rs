@@ -342,7 +342,7 @@ fn check_suite(
         ],
     )?;
     let waiting = tx.query(
-        "SELECT environment_id, branch, services, saves FROM config_waiting_deploy \
+        "SELECT environment_id, branch, services, syncs FROM config_waiting_deploy \
          WHERE organization_id = ?1 AND repository_id = ?2 AND head = ?3 \
          ORDER BY environment_id, branch",
         &[
@@ -509,11 +509,11 @@ fn admit(
         let services: Vec<&str> = selected.iter().map(|service| service.id.as_str()).collect();
         tx.execute(
             "INSERT INTO config_waiting_deploy \
-             (environment_id, repository_id, branch, organization_id, head, services, saves) \
+             (environment_id, repository_id, branch, organization_id, head, services, syncs) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
              ON CONFLICT (environment_id, repository_id, branch) \
              DO UPDATE SET head = excluded.head, services = excluded.services, \
-             saves = excluded.saves",
+             syncs = excluded.syncs",
             &[
                 environment_param,
                 repository_param,

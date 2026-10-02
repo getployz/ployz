@@ -321,7 +321,7 @@ pub(crate) fn settle(tx: &mut dyn Tx, who: &Actor, event: &PullRequest) -> Resul
         "SELECT id, pr_environment_id, environment_id, working_revision, target_branch \
          FROM config_conditional_sync \
          WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3 AND state = 'standing' \
-         ORDER BY saved_at, id",
+         ORDER BY synced_at, id",
         &[
             who.organization.as_str().into(),
             event.repository_id.into(),
@@ -419,7 +419,7 @@ fn wait_with(
         head.as_str().into(),
     ];
     let rows = tx.query(
-        "SELECT saves FROM config_waiting_deploy \
+        "SELECT syncs FROM config_waiting_deploy \
          WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 AND head = ?4",
         &key,
     )?;
@@ -430,7 +430,7 @@ fn wait_with(
     syncs.push(id.clone());
     let [environment, repository, branch, head] = key;
     tx.execute(
-        "UPDATE config_waiting_deploy SET saves = ?5 \
+        "UPDATE config_waiting_deploy SET syncs = ?5 \
          WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 AND head = ?4",
         &[
             environment,
@@ -482,7 +482,7 @@ pub(crate) fn carried(
     let rows = tx.query(
         "SELECT id, environment_id, merge_commit FROM config_conditional_sync \
          WHERE organization_id = ?1 AND repository_id = ?2 AND target_branch = ?3 AND state = 'frozen' \
-         ORDER BY saved_at, id",
+         ORDER BY synced_at, id",
         &[
             who.organization.as_str().into(),
             repository_id.into(),
@@ -642,7 +642,7 @@ pub(crate) fn land(
     }
     stored.landed = Some(revision);
     tx.execute(
-        "UPDATE config_conditional_sync SET state = 'landed', saved = ?2 WHERE id = ?1",
+        "UPDATE config_conditional_sync SET state = 'landed', stored = ?2 WHERE id = ?1",
         &[id.as_str().into(), document(&stored).as_str().into()],
     )?;
     Ok(())
@@ -657,8 +657,8 @@ pub(crate) fn hints(
     let id = &environment.summary.id;
     let latest = review::latest_saved(tx, id)?.map(|saved| saved.revision);
     let rows = tx.query(
-        "SELECT id, number, saved FROM config_conditional_sync \
-         WHERE environment_id = ?1 AND state = 'landed' ORDER BY saved_at, id",
+        "SELECT id, number, stored FROM config_conditional_sync \
+         WHERE environment_id = ?1 AND state = 'landed' ORDER BY synced_at, id",
         &[id.as_str().into()],
     )?;
     let mut hints = Vec::new();
@@ -690,7 +690,7 @@ pub(crate) fn standing_in(
     target: Option<&BranchName>,
 ) -> Result<Option<pull_request::DestinationSync>, RpcError> {
     let rows = tx.query(
-        "SELECT id, working_revision, target_branch, saved, repository_id, number \
+        "SELECT id, working_revision, target_branch, stored, repository_id, number \
          FROM config_conditional_sync \
          WHERE pr_environment_id = ?1 AND environment_id = ?2 AND state = 'standing'",
         &[
@@ -768,7 +768,7 @@ fn with_variable_ids_of(
 
 fn load(tx: &mut dyn Tx, who: &Actor, id: &ConditionalSyncId) -> Result<Option<Found>, RpcError> {
     let rows = tx.query(
-        "SELECT environment_id, state, repository_id, number, saved FROM config_conditional_sync \
+        "SELECT environment_id, state, repository_id, number, stored FROM config_conditional_sync \
          WHERE id = ?1 AND organization_id = ?2",
         &[id.as_str().into(), who.organization.as_str().into()],
     )?;
@@ -788,7 +788,7 @@ fn load(tx: &mut dyn Tx, who: &Actor, id: &ConditionalSyncId) -> Result<Option<F
 
 fn write(tx: &mut dyn Tx, id: &ConditionalSyncId, stored: &Stored) -> Result<(), RpcError> {
     tx.execute(
-        "UPDATE config_conditional_sync SET saved = ?2 WHERE id = ?1",
+        "UPDATE config_conditional_sync SET stored = ?2 WHERE id = ?1",
         &[id.as_str().into(), document(stored).as_str().into()],
     )?;
     Ok(())

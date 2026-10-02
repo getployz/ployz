@@ -55,8 +55,13 @@ CREATE TABLE config_never_sync (
     PRIMARY KEY (environment_id, lineage, at)
 );
 
--- Conditional Save is Conditional Sync now.
+-- Conditional Save is Conditional Sync now: `stored` holds what `saved` did, and
+-- `synced_at` is when it was synced.
 ALTER TABLE config_conditional_save RENAME TO config_conditional_sync;
+ALTER TABLE config_conditional_sync RENAME COLUMN saved TO stored;
+ALTER TABLE config_conditional_sync RENAME COLUMN saved_at TO synced_at;
+-- The frozen Conditional Syncs a waiting push carries.
+ALTER TABLE config_waiting_deploy RENAME COLUMN saves TO syncs;
 
 -- A Destination's value for a secret a pull request's Conditional Syncs bring by
 -- name only (the row `lineage`, `at`), set ahead of the merge: `value` is the sealed

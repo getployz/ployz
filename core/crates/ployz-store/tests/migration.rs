@@ -80,7 +80,10 @@ const BEFORE_SYNC: &str = "
     DROP TABLE config_sync_base;
     DROP TABLE config_never_sync;
     DROP TABLE config_held_secret;
+    ALTER TABLE config_conditional_sync RENAME COLUMN stored TO saved;
+    ALTER TABLE config_conditional_sync RENAME COLUMN synced_at TO saved_at;
     ALTER TABLE config_conditional_sync RENAME TO config_conditional_save;
+    ALTER TABLE config_waiting_deploy RENAME COLUMN syncs TO saves;
     DELETE FROM config_migration WHERE name = '0002_sync';
 ";
 
