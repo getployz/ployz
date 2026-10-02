@@ -160,3 +160,19 @@ it("takes a newly marked row out of a Sync from the marking Environment at once,
   expect(view?.rows.map((row) => row.name)).toEqual(["env.B"]);
   expect(view?.never_synced).toEqual([{ row: "a:variables.A", node: "api", kind: "service", name: "env.A", marks: [{ environment: "fix-api", row: "a:variables.A" }] }]);
 });
+
+it("takes an unmarked row's mark out of a Sync at once, dropping a row left with none", async () => {
+  const { queryClient, read } = cached();
+  const fix = { project: "shop", environment: "fix-api" };
+  const query = syncQuery(fix, "production");
+  const marked = (name: string, environments: string[]) => ({
+    row: `a:variables.${name}` as RowId, node: "api", kind: "service" as const, name: `env.${name}`,
+    marks: environments.map((environment) => ({ environment, row: `a:variables.${name}` as RowId })),
+  });
+  queryClient.setQueryData<unknown>(storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, query).queryKey, { ok: true, value: {
+    from: { ...environment, name: "fix-api" }, into: environment, at_merge: null, version: "1", rows: [],
+    never_synced: [marked("A", ["fix-api"]), marked("B", ["fix-api", "production"]), marked("C", ["fix-api"])],
+  } satisfies SyncView });
+  await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: fix, rows: [marked("A", []).row, marked("B", []).row], off: true });
+  expect(read<SyncView>(query)?.never_synced).toEqual([marked("B", ["production"]), marked("C", ["fix-api"])]);
+});

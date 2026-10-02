@@ -133,13 +133,20 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
         // SAFETY: the dashboard names a row only by the RowId a read gave.
         return { ...view, never_synced: command.off ? kept : [...kept, ...command.rows as RowId[]] };
       });
-      // A Sync from or into it offers a newly marked row no more.
+      // A Sync from or into it offers a newly marked row no more; an unmarked row loses this Environment's mark, and
+      // with no mark left, waits for the Store to offer it again.
       // ponytail: a Parent's mark doesn't keep a row from its own direct Branch; that Sync shows it marked until the Store answers.
       const { project, environment: name } = command.environment;
-      if (command.off || !name) return;
+      if (!name) return;
       const here = (side: SyncView["from"]) => side.project === project && side.name === name;
       await views<SyncView>("sync", null, (view) => {
         if (!here(view.from) && !here(view.into)) return view;
+        if (command.off) {
+          return { ...view, never_synced: view.never_synced.flatMap((entry) => {
+            const marks = entry.marks.filter((mark) => mark.environment !== name || !rows.has(mark.row));
+            return marks.length ? [{ ...entry, marks }] : [];
+          }) };
+        }
         const marking = view.rows.filter((row) => rows.has(row.row));
         return {
           ...view,
