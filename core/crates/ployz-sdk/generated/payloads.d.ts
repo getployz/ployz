@@ -2772,7 +2772,8 @@ export type ServiceRoute = { id: string, hostname: string, targetPort: number | 
 
 export type ServiceSettingChange = { path: string, kind: ChangeKind, before: JsonValue, after: JsonValue, canRestore: boolean,
 /**
- * The Sync row it falls in, which joins it to what moved it; the Store's to fill.
+ * The Sync row it falls in, which joins it to what moved it; the Store's to fill
+ * from `at` and the node's lineage.
  */
 row: RowId | null, };
 
