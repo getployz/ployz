@@ -4,7 +4,7 @@
 //! Setting lists itself. Variables list as `SERVICE.env.KEY`, secrets as
 //! `{"secret": true}`: no read shows a secret.
 
-use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent};
+use ployz_core::config::{RowId, SavedEnvironmentIntent, SavedServiceIntent};
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -46,8 +46,8 @@ pub struct EnvironmentView {
     pub values: Option<Map<String, Value>>,
     /// Every row the Environment marks Never sync, whichever Settings were asked for.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[ts(as = "Option<Vec<crate::branch::NamedRow>>", optional)]
-    pub never_synced: Vec<crate::branch::NamedRow>,
+    #[ts(as = "Option<Vec<RowId>>", optional)]
+    pub never_synced: Vec<RowId>,
 }
 
 /// One Setting's current Working State value.
@@ -164,7 +164,9 @@ pub(crate) fn environment(
         }
     }
     Ok(EnvironmentView {
-        never_synced: crate::branch::never_synced(tx, &environment)?,
+        never_synced: crate::branch::marked(tx, &environment.summary.id)?
+            .into_iter()
+            .collect(),
         environment: environment.summary,
         settings,
         values,

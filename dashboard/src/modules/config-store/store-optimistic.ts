@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type {
   BranchView, BuildOrderView, ConfigCommand, ConfigQuery, DeploymentView, DiffView, DomainsView, EnvironmentRef, EnvironmentsView,
-  EnvironmentView, NamedRow, NodeChange, PrPlansView, ProjectsView, RowId, ServiceListing, ServicesView, SyncView,
+  EnvironmentView, NodeChange, PrPlansView, ProjectsView, RowId, ServiceListing, ServicesView, SyncView,
   VolumeListing, VolumesView,
 } from "@ployz/sdk";
 import type { StoreResult } from "./store.contract";
@@ -30,12 +30,11 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
   const stage = (environment: EnvironmentRef, service: string, row: NodeChange["settings"][number]) =>
     views<DiffView>("diff", environment, (view) => {
       const node = view.changes.find((change) => change.type === "service" && change.name === service);
-      const id = node?.id ?? listed(environment).find((listing) => listing.name === service)?.id;
-      if (id === undefined) return view;
-      // SAFETY: `id` is the listing's, the Service's lineage, and a node's RowId is `{lineage}:node`.
-      const changes: NodeChange[] = node
+      const listing = node ? null : listed(environment).find((one) => one.name === service);
+      const changes: NodeChange[] | null = node
         ? view.changes.map((change) => change === node ? { ...change, settings: [...change.settings.filter((other) => other.path !== row.path), row] } : change)
-        : [...view.changes, { name: service, id, row: `${id}:node` as RowId, type: "service", lifecycle: "update", comparison: null, data: null, settings: [row] }];
+        : listing ? [...view.changes, { name: service, id: listing.id, row: listing.row, type: "service", lifecycle: "update", comparison: null, data: null, settings: [row] }] : null;
+      if (!changes) return view;
       // The count and whether it's published are the Store's to say: they come with the write's answer.
       return { ...view, changes };
     });
@@ -53,7 +52,8 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
     case "create_service":
     case "create_git_service": {
       const service: ServiceListing = {
-        id: command.id, name: command.name, private_dns: command.name, change: "create",
+        // SAFETY: a new Service's id is its lineage, and a node's RowId is `{lineage}:node`.
+        id: command.id, row: `${command.id}:node` as RowId, name: command.name, private_dns: command.name, change: "create",
         source: command.command === "create_git_service" ? "git" : command.image === null ? "empty" : "image",
         template: command.command === "create_service" ? command.template ?? null : null,
       };
@@ -128,24 +128,10 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
     case "never_sync": {
       // At once: a mark changes what Sync offers, not Working State.
       const rows = new Set(command.rows);
-      const offered = cached("sync", null).flatMap((query) => {
-        // SAFETY: `cached` found only sync views.
-        const data = query.state.data as StoreResult<SyncView> | undefined;
-        return data?.ok ? data.value.rows : [];
-      });
       await views<EnvironmentView>("environment", command.environment, (view) => {
-        const kept = view.never_synced?.filter((row) => !rows.has(row.row)) ?? [];
-        if (command.off) return { ...view, never_synced: kept };
-        // A new mark named as a Sync offering it names it, else by the Setting at it; the Store's answer names it for good.
-        const marked = [...rows].flatMap((row): NamedRow[] => {
-          const already = view.never_synced?.find((mark) => mark.row === row);
-          if (already) return [already];
-          const sync = offered.find((offer) => offer.row === row);
-          if (sync) return [{ row: sync.row, node: sync.node, kind: sync.kind, name: sync.name }];
-          const setting = view.settings.find((at) => at.row === row);
-          return setting?.row ? [settingRow(setting.row, setting.path)] : [];
-        });
-        return { ...view, never_synced: [...kept, ...marked] };
+        const kept = view.never_synced?.filter((row) => !rows.has(row)) ?? [];
+        // SAFETY: the dashboard names a row only by the RowId a read gave.
+        return { ...view, never_synced: command.off ? kept : [...kept, ...command.rows as RowId[]] };
       });
       // A Sync from or into it offers a newly marked row no more.
       // ponytail: a Parent's mark doesn't keep a row from its own direct Branch; that Sync shows it marked until the Store answers.
@@ -241,12 +227,4 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
     default:
       return;
   }
-}
-
-/** The row at Setting `path` (`SERVICE.SETTING`, `volumes.VOLUME.SETTING`), named as the Store names a variable's. */
-function settingRow(row: RowId, path: string): NamedRow {
-  const [head = "", ...rest] = path.split(".");
-  const volume = head === "volumes";
-  const name = (volume ? rest.slice(1) : rest).join(".");
-  return { row, node: volume ? `volumes.${rest[0] ?? ""}` : head, kind: volume ? "volume" : "service", name: name || null };
 }

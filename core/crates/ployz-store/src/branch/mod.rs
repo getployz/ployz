@@ -17,7 +17,7 @@ pub use follow::{FollowHint, IncomingChange};
 pub(crate) use follow::{follow, hints, incoming};
 pub(crate) use live::*;
 pub use never_sync::{NeverSync, NeverSynced};
-pub(crate) use never_sync::{marked, marks, never_sync, never_synced};
+pub(crate) use never_sync::{marked, marks, never_sync};
 pub(crate) use pair::*;
 pub use setup::SetBranchSetup;
 pub(crate) use setup::{branch_setup, set_branch_setup};
@@ -152,17 +152,103 @@ pub enum When {
 }
 
 /// A row, and its name where it is shown.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "WireRow", into = "WireRow")]
 pub struct NamedRow {
     /// What commands name it by; stable across renames.
     pub row: RowId,
     /// Its Service or Volume.
     pub node: NodeName,
-    /// Whether `node` is a Service or a Volume.
-    pub kind: EnvironmentNodeType,
     /// Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
     /// node itself.
     pub name: Option<String>,
+}
+
+/// A [`NamedRow`] as it is sent: `kind` is `node`'s, and checked against it.
+#[derive(Serialize, Deserialize, TS)]
+#[ts(rename = "NamedRow")]
+struct WireRow {
+    /// What commands name it by; stable across renames.
+    row: RowId,
+    /// Its Service or Volume.
+    node: NodeName,
+    /// Whether `node` is a Service or a Volume.
+    kind: EnvironmentNodeType,
+    /// Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+    /// node itself.
+    name: Option<String>,
+}
+
+/// As [`WireRow`]; by hand, as `#[ts(as)]` can't be flattened.
+impl TS for NamedRow {
+    type WithoutGenerics = Self;
+    type OptionInnerType = Self;
+
+    fn docs() -> Option<String> {
+        WireRow::docs()
+    }
+
+    fn decl(cfg: &ts_rs::Config) -> String {
+        WireRow::decl(cfg)
+    }
+
+    fn decl_concrete(cfg: &ts_rs::Config) -> String {
+        WireRow::decl_concrete(cfg)
+    }
+
+    fn name(cfg: &ts_rs::Config) -> String {
+        WireRow::name(cfg)
+    }
+
+    fn inline(cfg: &ts_rs::Config) -> String {
+        WireRow::inline(cfg)
+    }
+
+    fn inline_flattened(cfg: &ts_rs::Config) -> String {
+        WireRow::inline_flattened(cfg)
+    }
+
+    fn visit_dependencies(visitor: &mut impl ts_rs::TypeVisitor) {
+        WireRow::visit_dependencies(visitor);
+    }
+
+    fn output_path() -> Option<std::path::PathBuf> {
+        WireRow::output_path()
+    }
+}
+
+impl From<NamedRow> for WireRow {
+    fn from(NamedRow { row, node, name }: NamedRow) -> Self {
+        let kind = match node {
+            NodeName::Service(_) => EnvironmentNodeType::Service,
+            NodeName::Volume(_) => EnvironmentNodeType::Volume,
+        };
+        Self {
+            row,
+            node,
+            kind,
+            name,
+        }
+    }
+}
+
+impl TryFrom<WireRow> for NamedRow {
+    type Error = String;
+
+    fn try_from(
+        WireRow {
+            row,
+            node,
+            kind,
+            name,
+        }: WireRow,
+    ) -> Result<Self, String> {
+        let named = Self { row, node, name };
+        match WireRow::from(named.clone()).kind == kind {
+            true => Ok(named),
+            false => Err(format!("{} is not a {kind:?}", named.node)),
+        }
+    }
 }
 
 /// `NODE`, or `NODE.name`: as reads show it.

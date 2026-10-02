@@ -1307,7 +1307,7 @@ values?: { [key in string]: JsonValue } | null,
 /**
  * Every row the Environment marks Never sync, whichever Settings were asked for.
  */
-never_synced?: Array<NamedRow>, };
+never_synced?: Array<RowId>, };
 
 export type EnvironmentsQuery = {
 /**
@@ -2703,6 +2703,10 @@ export type ServiceLineageId = string;
 
 export type ServiceListing = {
 /**
+ * Its node's row: what a Sync or Never sync names the whole Service by.
+ */
+row: RowId,
+/**
  * Where its image comes from.
  */
 source: SourceKind,
@@ -2838,6 +2842,10 @@ values: { [key in string]: JsonValue },
  * Its Settings the next Deploy changes.
  */
 changes: Array<ServiceSettingChange>,
+/**
+ * Its node's row: what a Sync or Never sync names the whole Service by.
+ */
+row: RowId,
 /**
  * Where its image comes from.
  */

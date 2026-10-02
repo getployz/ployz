@@ -2,7 +2,7 @@
 import { QueryClient, queryOptions } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
-import type { ServiceListing } from "@ployz/sdk";
+import type { RowId, ServiceListing } from "@ployz/sdk";
 import { expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as writes from "#/modules/config-store/store-write";
@@ -11,7 +11,7 @@ import { StoreRefused } from "#/modules/config-store/store.contract";
 import { useRemoveStoreService } from "./useDeleteService";
 
 const environment = { project: "shop", environment: "production" };
-const service: ServiceListing = { source: "image", change: null, template: { id: "postgres", version: 1 }, id: "db", name: "db", private_dns: "db" };
+const service: ServiceListing = { source: "image", change: null, template: { id: "postgres", version: 1 }, id: "db", row: "db:node" as RowId, name: "db", private_dns: "db" };
 
 function Remove() {
   return <button type="button" onClick={useRemoveStoreService(environment, service)}>Remove</button>;

@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import type { Persistable } from "#/collections/query-collection";
 import type { EnvironmentRef, EnvironmentView, ServiceListing } from "@ployz/sdk";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
-import { serviceNeverSynced, serviceVariables, storeManagedExports, storeReferenceTargets, storeVariableWriter } from "#/modules/config-store/store-variables";
+import { serviceVariables, storeManagedExports, storeReferenceTargets, storeVariableWriter } from "#/modules/config-store/store-variables";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { BracesIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
@@ -37,7 +37,7 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
 }) {
   const store = useStoreWriter(organizationSlug);
   const rows = serviceSettingRows(settings, service.name);
-  const variables = serviceVariables(rows, service.id, changes, serviceNeverSynced(settings, service.name));
+  const variables = serviceVariables(rows, service.id, changes, new Set(settings.never_synced));
   const writer = storeVariableWriter(store, environment, service.name, variables, rows);
 
   return (

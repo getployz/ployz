@@ -3,7 +3,8 @@
 //! next Deploy does to it.
 
 use ployz_core::config::{
-    ReviewLifecycleKind, SavedServiceIntent, ServiceSettingChange, ServiceSource, ServiceTemplate,
+    ReviewLifecycleKind, RowId, SavedServiceIntent, ServiceSettingChange, ServiceSource,
+    ServiceTemplate,
 };
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -42,6 +43,8 @@ pub struct ServiceListing {
     /// The Service.
     #[serde(flatten)]
     pub service: ServiceSummary,
+    /// Its node's row: what a Sync or Never sync names the whole Service by.
+    pub row: RowId,
     /// Where its image comes from.
     pub source: SourceKind,
     /// What the next Deploy does to it; none when it is deployed as it is.
@@ -167,6 +170,7 @@ fn listed(tx: &mut dyn Tx, environment: &scope::Environment) -> Result<Vec<Liste
             Ok(Listed {
                 listing: ServiceListing {
                     service: summary(&node)?,
+                    row: RowId::node(&node.lineage_id),
                     source: match node.config.source {
                         ServiceSource::Empty { .. }
                             if built.contains_key(&node.config.private_dns) =>

@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import type { Change, EnvironmentRef, EnvironmentView, ServiceListing, SettingRow } from "@ployz/sdk";
+import type { Change, EnvironmentRef, EnvironmentView, RowId, ServiceListing, SettingRow } from "@ployz/sdk";
 import { getManagedServiceExports } from "#/modules/variables/managed-service-exports";
 import { buildReferenceTargets } from "#/modules/variables/variable-autocomplete";
 import type { VariableWriter } from "#/modules/variables/variables";
@@ -19,8 +19,8 @@ const isValueless = Schema.is(Schema.Struct({ secret: Schema.Literal(false) }));
 export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceId: string,
   /** What the next Deploy changes, by Setting (`env.KEY`): those rows are pink. */
   changes: ReadonlyMap<string, unknown> = new Map(),
-  /** What its Environment marks Never sync, by Setting (`env.KEY`). */
-  neverSynced: ReadonlySet<string> = new Set()): VariableRecord[] {
+  /** What its Environment marks Never sync (`EnvironmentView.never_synced`). */
+  neverSynced: ReadonlySet<RowId> = new Set()): VariableRecord[] {
   return [...rows].flatMap(([name, row]) => {
     const key = VARIABLE.exec(name)?.[1];
     if (key === undefined || row.value === null) return [];
@@ -30,14 +30,9 @@ export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceI
       exported: rows.get(`${name}.exported`)?.value === true,
       value: isText(value) ? { type: "plain" as const, value } : { type: "sealed" as const, needsValue: isValueless(value) },
       changed: changes.has(name) || changes.has(`${name}.exported`),
-      neverSynced: neverSynced.has(name),
+      neverSynced: row.row !== undefined && neverSynced.has(row.row),
     }];
   }).sort((a, b) => a.key.localeCompare(b.key));
-}
-
-/** What the Environment marks Never sync in one Service, by Setting (`env.KEY`), as `serviceVariables` takes it. */
-export function serviceNeverSynced(view: EnvironmentView, service: string): Set<string> {
-  return new Set((view.never_synced ?? []).flatMap((row) => row.node === service && row.name !== null ? [row.name] : []));
 }
 
 /**

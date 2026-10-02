@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { DiffView, DomainRow, ServiceListing } from "@ployz/sdk";
+import type { DiffView, DomainRow, RowId, ServiceListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import { serviceSetting, settingChange, settingError } from "./catalog";
 import { domainChanged, newServiceName, serviceChanges } from "./store-services";
 
 const listed = (name: string, privateDns = name): ServiceListing =>
-  ({ id: `${name}-id`, name, private_dns: privateDns, source: "image", change: null, template: null });
+  ({ id: `${name}-id`, row: `${name}:node` as RowId, name, private_dns: privateDns, source: "image", change: null, template: null });
 
 describe("newServiceName", () => {
   it("names a Service from its image or repository, with a random suffix past names and Private DNS already taken", () => {

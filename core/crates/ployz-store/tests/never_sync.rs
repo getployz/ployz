@@ -118,20 +118,18 @@ fn labels_of(rows: &[NamedRow]) -> Vec<String> {
 }
 
 /// What `environment` marks Never sync, as the Environment view lists it.
-fn marked(store: &ConfigStore, who: &Actor, environment: &str) -> Vec<String> {
-    labels_of(
-        &store
-            .read(
-                who,
-                &EnvironmentQuery {
-                    environment: at(environment),
-                    path: None,
-                    all: false,
-                },
-            )
-            .unwrap()
-            .never_synced,
-    )
+fn marked(store: &ConfigStore, who: &Actor, environment: &str) -> Vec<RowId> {
+    store
+        .read(
+            who,
+            &EnvironmentQuery {
+                environment: at(environment),
+                path: None,
+                all: false,
+            },
+        )
+        .unwrap()
+        .never_synced
 }
 
 fn values(store: &ConfigStore, who: &Actor, environment: &str) -> Value {
@@ -245,7 +243,7 @@ fn a_setting_either_side_marks_never_sync_is_never_a_row_and_is_listed_apart() {
     store
         .write(&who, &never_sync("production", &["variables.PLAIN"], false))
         .unwrap();
-    assert_eq!(marked(&store, &who, "production"), ["web.env.PLAIN"]);
+    assert_eq!(marked(&store, &who, "production"), [row("variables.PLAIN")]);
 
     let offered = view(&store, &who);
     assert_eq!(labels(&offered), ["web.image"]);
@@ -512,4 +510,36 @@ fn a_row_is_marked_from_either_side_whatever_each_names_it() {
             .unwrap();
     }
     assert!(view(&store, &who).never_synced.is_empty());
+}
+
+#[test]
+fn a_branchs_copy_of_a_service_is_named_by_its_lineages_row() {
+    let (store, who) = shop();
+    // fix-web's web is a copy: a new id, the same lineage, so the same row.
+    let services = store
+        .read(
+            &who,
+            &ployz_store::ServicesQuery {
+                environment: at("fix-web"),
+            },
+        )
+        .unwrap()
+        .services;
+    let web = &services[0];
+    assert_ne!(web.service.id.as_str(), uuid(3));
+    assert_eq!(web.row, RowId::node(&uuid(3)));
+    store
+        .write(
+            &who,
+            &NeverSync {
+                environment: at("fix-web"),
+                rows: vec![web.row.clone().into()],
+                off: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        marked(&store, &who, "fix-web"),
+        std::slice::from_ref(&web.row)
+    );
 }

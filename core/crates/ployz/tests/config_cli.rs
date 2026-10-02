@@ -859,9 +859,17 @@ fn an_agent_marks_settings_never_sync_without_servers() {
             labels(&marked["never_synced"]),
             ["web.env.APP_ENV", "web.image"]
         );
+        // `get` lists them by RowId, in RowId order.
+        let mut rows: Vec<&str> = marked["never_synced"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["row"].as_str().unwrap())
+            .collect();
+        rows.sort_unstable();
         assert_eq!(
-            labels(&ok(store, &["get", "--env", "fix-web"])["never_synced"]),
-            ["web.env.APP_ENV", "web.image"]
+            ok(store, &["get", "--env", "fix-web"])["never_synced"],
+            json!(rows)
         );
 
         // The plan lists them apart, so there is nothing to sync.

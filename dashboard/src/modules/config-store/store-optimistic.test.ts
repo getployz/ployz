@@ -1,5 +1,5 @@
 import { QueryClient } from "@tanstack/react-query";
-import type { DeploymentView, DiffView, DomainsView, EnvironmentView, RowId, ServiceId, ServicesView, SyncView } from "@ployz/sdk";
+import type { DeploymentView, DiffView, DomainsView, EnvironmentView, RowId, ServiceId, ServiceListing, ServicesView, SyncView } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import { expect, it } from "vitest";
 import { applyOptimistic } from "./store-optimistic";
@@ -30,8 +30,8 @@ function cached() {
     { path: "web.startCommand", value: "serve", default: null, apply: "staged" },
   ] } satisfies EnvironmentView);
   put(servicesQuery(ref), { environment, services: [
-    { id: id("w"), name: "web", private_dns: "web", source: "image", change: "update", template: null },
-    { id: id("c"), name: "cache", private_dns: "cache", source: "image", change: "create", template: null },
+    { id: id("w"), row: "w:node" as RowId, name: "web", private_dns: "web", source: "image", change: "update", template: null },
+    { id: id("c"), row: "c:node" as RowId, name: "cache", private_dns: "cache", source: "image", change: "create", template: null },
   ] } satisfies ServicesView);
   const read = <V,>(query: Parameters<typeof storeViewOptions>[2]) => (queryClient.getQueryData<{ value: V }>(key(query)))?.value;
   return { queryClient, read };
@@ -118,20 +118,30 @@ it("shows each command of a Batch at once, as it would alone", async () => {
     .toEqual([["web", "update"], ["cache", "create"], ["postgres", "create"]]);
 });
 
-it("shows a mark and an unmark at once, a new mark named by the Setting at its row", async () => {
+it("shows a mark and an unmark at once, by the rows they name", async () => {
   const { queryClient, read } = cached();
-  const row = (name: string) => ({ row: `w:variables.${name}` as RowId, node: "web", kind: "service" as const, name: `env.${name}` });
+  const row = (name: string) => `w:variables.${name}` as RowId;
   queryClient.setQueryData<{ ok: true; value: EnvironmentView }>(
     storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, environmentSettingsQuery(ref)).queryKey,
-    (cached) => cached && { ok: true, value: { ...cached.value, never_synced: [row("A"), row("B")], settings: [
-      ...cached.value.settings, { path: "web.env.C", value: "c", default: null, apply: "staged", row: row("C").row },
-    ] } },
+    (cached) => cached && { ok: true, value: { ...cached.value, never_synced: [row("A"), row("B")] } },
   );
-  const marks = () => read<EnvironmentView>(environmentSettingsQuery(ref))?.never_synced?.map((one) => one.name);
-  await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: ref, rows: [row("C").row] });
-  expect(read<EnvironmentView>(environmentSettingsQuery(ref))?.never_synced?.at(-1)).toEqual(row("C"));
-  await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: ref, rows: [row("A").row], off: true });
-  expect(marks()).toEqual(["env.B", "env.C"]);
+  const marks = () => read<EnvironmentView>(environmentSettingsQuery(ref))?.never_synced;
+  await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: ref, rows: [row("C")] });
+  expect(marks()).toEqual([row("A"), row("B"), row("C")]);
+  await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: ref, rows: [row("A")], off: true });
+  expect(marks()).toEqual([row("B"), row("C")]);
+});
+
+it("stages an edit of a Service the review lacks under its listing's row", async () => {
+  const { queryClient, read } = cached();
+  // A Branch's copy: its own id, its lineage's row.
+  const db: ServiceListing = { id: id("d2"), row: "d:node" as RowId, name: "db", private_dns: "db", source: "image", change: null, template: null };
+  queryClient.setQueryData<{ ok: true; value: ServicesView }>(
+    storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, servicesQuery(ref)).queryKey,
+    (cached) => cached && { ok: true, value: { ...cached.value, services: [...cached.value.services, db] } },
+  );
+  await applyOptimistic(queryClient, "acme", { command: "add_domain", environment: ref, service: "db", port: 5432, hostname: "db.example.com" });
+  expect(read<DiffView>(diffQuery(ref))?.changes.at(-1)).toMatchObject({ name: "db", id: "d2", row: "d:node" });
 });
 
 it("takes a newly marked row out of a Sync from the marking Environment at once, marked by it", async () => {
