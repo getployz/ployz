@@ -714,6 +714,7 @@ pub(crate) mod tests {
                     when: None,
                     version: view.version.clone(),
                     picks: Some(labels.iter().map(|label| (*label).into()).collect()),
+                    skip: Vec::new(),
                     values: std::collections::BTreeMap::new(),
                 },
             )

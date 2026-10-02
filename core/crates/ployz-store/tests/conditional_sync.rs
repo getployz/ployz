@@ -278,6 +278,7 @@ fn sync(review: &SyncView, labels: Option<&[&str]>) -> SyncChanges {
                 .map(|row| row.at.row.clone().into())
                 .collect(),
         ),
+        skip: Vec::new(),
         values: BTreeMap::new(),
     }
 }

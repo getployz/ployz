@@ -34,6 +34,11 @@ pub struct SyncChanges {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub picks: Option<Vec<RowRef>>,
+    /// Rows left out of the picks, by RowId or by name in either side; a new node
+    /// skipped takes its rows with it.
+    #[serde(default)]
+    #[ts(as = "Option<Vec<RowRef>>", optional)]
+    pub skip: Vec<RowRef>,
     /// A value for each picked secret the receiver lacks: sealed at once, never
     /// shown back. At the merge it is held until then.
     #[serde(default)]
@@ -460,8 +465,9 @@ fn destination(
     }
 }
 
-/// The rows a Sync lands, and the values given for them: those `request` picks
-/// (by RowId, or by name in either side), else every ticked one.
+/// The rows a Sync lands, and the values given for them: those `request` picks,
+/// else every ticked one, less those it skips (each by RowId, or by name in either
+/// side).
 pub(crate) fn picks(
     rows: &[PlannedRow],
     sides: &[&SavedEnvironmentIntent; 2],
@@ -476,18 +482,33 @@ pub(crate) fn picks(
         .iter()
         .map(|(asked, value)| Ok((resolve_one(asked, &named)?, value.clone())))
         .collect::<Result<_, RpcError>>()?;
-    if request.picks.is_none() {
-        let ticked = rows
-            .iter()
-            .filter(|row| matches!(row.verdict, Verdict::Moves { ticked: true, .. }))
-            .map(|row| row.id.clone())
-            .collect();
-        return Ok((whole(rows, ticked), values));
-    }
-    // Picked by hand, a row without its new node is refused, not dropped.
-    let known = rows.iter().map(|row| row.id.clone()).collect();
-    let picks = chosen(request.picks.as_deref(), known, &named, "change")?;
-    Ok((picks, values))
+    let skipped = resolve_all(&request.skip, &named)?;
+    let picks = match request.picks.as_deref() {
+        None => whole(
+            rows,
+            rows.iter()
+                .filter(|row| matches!(row.verdict, Verdict::Moves { ticked: true, .. }))
+                .map(|row| row.id.clone())
+                .collect(),
+        ),
+        asked => {
+            let known = rows.iter().map(|row| row.id.clone()).collect();
+            chosen(asked, known, &named, "change")?
+        }
+    };
+    // A new node skipped takes its rows; picked by hand, a row without its new node
+    // is refused, not dropped.
+    let landing = rows
+        .iter()
+        .filter(|row| picks.contains(&row.id) && !skipped.contains(&row.id))
+        .filter(|row| {
+            !row.requires
+                .as_ref()
+                .is_some_and(|node| skipped.contains(node))
+        })
+        .map(|row| row.id.clone())
+        .collect();
+    Ok((landing, values))
 }
 
 /// `values` sealed, each for a picked secret the receiver lacks.

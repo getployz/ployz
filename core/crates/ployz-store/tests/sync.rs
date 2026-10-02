@@ -216,6 +216,7 @@ fn sync(view: &SyncView, picks: Option<&[&str]>) -> SyncChanges {
         when: None,
         version: view.version.clone(),
         picks: picks.map(|picks| picks.iter().map(|label| (*label).into()).collect()),
+        skip: Vec::new(),
         values: BTreeMap::new(),
     }
 }
@@ -433,6 +434,89 @@ fn a_row_lands_in_what_the_receiver_calls_its_node() {
         json!("web")
     );
     assert_eq!(services(&store, &who, "production"), ["db", "site"]);
+    // Named as it is, `site.env.X` names two rows: refused, not both.
+    set(&store, &who, "fix-web", &[("web.env.X", json!("web:2"))]);
+    let review = view(&store, &who);
+    let refused = store
+        .write(&who, &sync(&review, Some(&["site.env.X"])))
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Ambiguous, "{refused:?}");
+}
+
+/// Sync what `view` offers now, the rows named `only` (or else those ticked) less
+/// those named `skip`.
+fn skipping(view: &SyncView, only: Option<&[&str]>, skip: &[&str]) -> SyncChanges {
+    SyncChanges {
+        skip: skip.iter().map(|label| (*label).into()).collect(),
+        ..sync(view, only)
+    }
+}
+
+#[test]
+fn a_skipped_new_node_stays_behind_with_its_rows() {
+    let (store, who) = shop(false);
+    service(&store, &who, "fix-web", 5, "api", "api:1");
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("api.env.A", json!("a")), ("web.env.PLAIN", json!("2"))],
+    );
+    let review = view(&store, &who);
+    let api = row(&review, "api").at.row.to_string();
+    store
+        .write(&who, &skipping(&review, None, &[api.as_str()]))
+        .unwrap();
+    assert_eq!(services(&store, &who, "production"), ["db", "web"]);
+    assert_eq!(
+        values(&store, &who, "production", "web")["env"]["PLAIN"],
+        json!("2")
+    );
+    assert_eq!(labels(&view(&store, &who)), ["api", "api.env.A"]);
+}
+
+#[test]
+fn a_skip_names_a_row_as_the_receiver_calls_it() {
+    let (store, who) = shop(false);
+    store
+        .write(
+            &who,
+            &RenameService {
+                environment: at("production"),
+                service: ServiceName::parse("web").unwrap(),
+                name: ServiceName::parse("frontend").unwrap(),
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[
+            ("web.image", json!("web:2")),
+            ("web.env.A", json!("a")),
+            ("web.env.B", json!("b")),
+        ],
+    );
+    let review = view(&store, &who);
+    store
+        .write(
+            &who,
+            &skipping(&review, Some(&["frontend.image"]), &["frontend.env.A"]),
+        )
+        .unwrap();
+    let landed = values(&store, &who, "production", "frontend");
+    assert_eq!(landed["image"], json!("web:2"));
+    assert_eq!(landed["env"].get("A"), None);
+    let review = view(&store, &who);
+    store
+        .write(&who, &skipping(&review, None, &["frontend.env.A"]))
+        .unwrap();
+    let landed = values(&store, &who, "production", "frontend");
+    assert_eq!(
+        (landed["env"].get("A"), &landed["env"]["B"]),
+        (None, &json!("b"))
+    );
 }
 
 #[test]

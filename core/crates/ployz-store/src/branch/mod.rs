@@ -179,71 +179,116 @@ impl std::fmt::Display for NamedRow {
 /// (`web.image`, `web.env.KEY`), or a prefix of names (`web`, `web.env`) for every
 /// row under it. The Store resolves it against the rows the command acts on.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
-#[serde(transparent)]
+#[serde(from = "String", into = "String")]
 #[ts(as = "String")]
-pub struct RowRef(pub String);
+pub enum RowRef {
+    /// A row by its RowId.
+    Row(RowId),
+    /// A row's name, or a prefix of names.
+    Name(String),
+}
 
-impl From<RowId> for RowRef {
-    fn from(row: RowId) -> Self {
-        Self(row.to_string())
+impl From<String> for RowRef {
+    fn from(text: String) -> Self {
+        match text.parse() {
+            Ok(row) => Self::Row(row),
+            Err(_) => Self::Name(text),
+        }
     }
 }
 
 impl From<&str> for RowRef {
-    fn from(name: &str) -> Self {
-        Self(name.to_owned())
+    fn from(text: &str) -> Self {
+        text.to_owned().into()
+    }
+}
+
+impl From<RowId> for RowRef {
+    fn from(row: RowId) -> Self {
+        Self::Row(row)
+    }
+}
+
+impl From<RowRef> for String {
+    fn from(asked: RowRef) -> Self {
+        asked.to_string()
+    }
+}
+
+impl std::fmt::Display for RowRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Row(row) => write!(f, "{row}"),
+            Self::Name(name) => f.write_str(name),
+        }
     }
 }
 
 /// The rows `asked` names among `rows`, each named as one Environment shows it. A
 /// RowId names itself, there or not: the command decides whether it acts on it.
-/// A name that names none is refused with the names there are.
-pub fn resolve(asked: &RowRef, rows: &[NamedRow]) -> Result<BTreeSet<RowId>, RpcError> {
-    if let Ok(row) = asked.0.parse::<RowId>() {
-        return Ok(BTreeSet::from([row]));
+///
+/// # Errors
+/// Returns a `not_found` error with the names there are for a name that names
+/// none, and an `ambiguous` one with the rows it names for a name (not a prefix)
+/// that names more than one row: a different row in each Environment, say.
+pub(crate) fn resolve(asked: &RowRef, rows: &[NamedRow]) -> Result<BTreeSet<RowId>, RpcError> {
+    let name = match asked {
+        RowRef::Row(row) => return Ok(BTreeSet::from([row.clone()])),
+        RowRef::Name(name) => name,
+    };
+    let exact: BTreeSet<RowId> = rows
+        .iter()
+        .filter(|row| row.to_string() == *name)
+        .map(|row| row.row.clone())
+        .collect();
+    if exact.len() > 1 {
+        return Err(several(asked, &exact, rows));
     }
-    let under = format!("{}.", asked.0);
+    let under = format!("{name}.");
     let found: BTreeSet<RowId> = rows
         .iter()
-        .filter(|row| {
-            let label = row.to_string();
-            label == asked.0 || label.starts_with(&under)
-        })
+        .filter(|row| row.to_string().starts_with(&under))
         .map(|row| row.row.clone())
+        .chain(exact)
         .collect();
     if found.is_empty() {
         let labels: BTreeSet<String> = rows.iter().map(NamedRow::to_string).collect();
         return Err(error::choices(
-            format!("No row named {} here", asked.0),
-            &asked.0,
+            format!("No row named {name} here"),
+            name,
             labels.iter().map(String::as_str),
         ));
     }
     Ok(found)
 }
 
-/// The one row `asked` names among `rows`, as [`resolve`] finds it; one naming
+/// The one row `asked` names among `rows`, as [`resolve`] finds it; a prefix naming
 /// several is refused with their names.
 pub(crate) fn resolve_one(asked: &RowRef, rows: &[NamedRow]) -> Result<RowId, RpcError> {
     let found = resolve(asked, rows)?;
     let mut only = found.iter();
-    if let (Some(row), None) = (only.next(), only.next()) {
-        return Ok(row.clone());
+    match (only.next(), only.next()) {
+        (Some(row), None) => Ok(row.clone()),
+        _ => Err(several(asked, &found, rows)),
     }
+}
+
+/// `asked` names each of `found`, more than one row: refused with their names, or
+/// their RowIds where names repeat.
+fn several(asked: &RowRef, found: &BTreeSet<RowId>, rows: &[NamedRow]) -> RpcError {
     let labels: BTreeSet<String> = rows
         .iter()
         .filter(|row| found.contains(&row.row))
         .map(NamedRow::to_string)
         .collect();
-    // Rows that share a name are told apart by RowId.
     let choices: Vec<String> = match labels.len() == found.len() {
         true => labels.into_iter().collect(),
         false => found.iter().map(ToString::to_string).collect(),
     };
-    Err(error::ambiguous(
-        format!("{} names more than one row: name one", asked.0),
+    error::ambiguous(
+        format!("{asked} names more than one row: name one"),
         json!({ "valid_children": choices }),
-    ))
+    )
 }
 
 /// The rows `asked` names among `named`, each one of `offered` (each a `what`, such

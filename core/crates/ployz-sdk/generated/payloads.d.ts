@@ -3101,6 +3101,11 @@ version: string,
  */
 picks?: Array<RowRef> | null,
 /**
+ * Rows left out of the picks, by RowId or by name in either side; a new node
+ * skipped takes its rows with it.
+ */
+skip?: Array<RowRef>,
+/**
  * A value for each picked secret the receiver lacks: sealed at once, never
  * shown back. At the merge it is held until then.
  */

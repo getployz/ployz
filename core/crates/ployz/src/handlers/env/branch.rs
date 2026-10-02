@@ -1,15 +1,12 @@
 //! Branches: create one, sync changes between two Environments of a Project (or undo a
 //! Sync, or take a hint), copy a Live Node into it, keep it.
 
-use std::collections::BTreeSet;
-
 use clap::ArgMatches;
 use ployz_core::ServiceName;
 use ployz_store::{
     Branched, ConditionalSyncId, CopyNode, CreateBranch, DeploymentId, DiffQuery, EnvironmentId,
-    EnvironmentName, EnvironmentRef, HintSource, KeepBranch, NamedRow, RowId, RowRef, SetupCommand,
-    SyncChanges, SyncId, SyncQuery, SyncView, Synced, SyncedWhen, Take, Taken, UndoSync, Undone,
-    When,
+    EnvironmentName, EnvironmentRef, HintSource, KeepBranch, RowRef, SetupCommand, SyncChanges,
+    SyncId, SyncQuery, SyncView, Synced, SyncedWhen, Take, Taken, UndoSync, Undone, When,
 };
 
 use super::super::config::expected;
@@ -103,45 +100,11 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
     }
     // Names resolve against the rows read now; a stale --version is refused anyway.
     let plan_next = || store::next(matches, &[words.as_slice(), &["--plan"]].concat());
-    let refused = |error| {
-        store.fail(store::with_next(
-            StoreCallError::Refused(error),
-            |_| true,
-            plan_next,
-        ))
-    };
     let refs = |flag: &str| -> Vec<RowRef> {
         super::super::string_values(matches, flag)
             .iter()
             .map(|asked| asked.as_str().into())
             .collect()
-    };
-    let (only, skip) = (refs("only"), refs("skip"));
-    // The Store resolves names; skipping, the picks are what's left once the CLI
-    // resolved the skipped ones among the rows read, as it does.
-    let picks = match skip.is_empty() {
-        true => (!only.is_empty()).then_some(only),
-        false => {
-            let named: Vec<NamedRow> = view.rows.iter().map(|row| row.at.clone()).collect();
-            let resolve = |asked: &[RowRef]| -> Result<BTreeSet<RowId>, Error> {
-                let mut rows = BTreeSet::new();
-                for asked in asked {
-                    rows.extend(ployz_store::resolve(asked, &named).map_err(refused)?);
-                }
-                Ok(rows)
-            };
-            let left = resolve(&skip)?;
-            let base = match only.is_empty() {
-                true => view
-                    .rows
-                    .iter()
-                    .filter(|row| row.ticked)
-                    .map(|row| row.at.row.clone())
-                    .collect(),
-                false => resolve(&only)?,
-            };
-            Some(base.difference(&left).cloned().map(RowRef::from).collect())
-        }
     };
     let values = secret_values(matches)?
         .into_iter()
@@ -155,7 +118,8 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
             .get_one::<String>("version")
             .cloned()
             .unwrap_or(view.version),
-        picks,
+        picks: Some(refs("only")).filter(|only| !only.is_empty()),
+        skip: refs("skip"),
         values,
     };
     let synced = store.try_write(&request).map_err(|error| {
