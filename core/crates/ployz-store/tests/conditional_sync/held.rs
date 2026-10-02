@@ -25,7 +25,7 @@ fn a_value_is_held_by_row_whatever_the_destination_names_the_service() {
         &[("web.env.TOKEN", json!({ "secret": "pr-secret" }))],
     );
     let review = offered(&store, &who, None);
-    assert_eq!(review.rows[0].at.row, row("TOKEN"));
+    assert_eq!(*review.rows[0].at.row(), row("TOKEN"));
     store.write(&who, &sync(&review, None)).unwrap();
     store.write(&who, &hold("TOKEN", "prod-secret")).unwrap();
     assert_eq!(

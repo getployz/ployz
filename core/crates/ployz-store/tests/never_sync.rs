@@ -280,7 +280,7 @@ fn a_setting_either_side_marks_never_sync_is_never_a_row_and_is_listed_apart() {
     assert_eq!(to_parent, 1);
 
     // Picked, a marked setting is refused; synced by default, it stays put.
-    let pick = offered.never_synced[0].at.row.clone();
+    let pick = offered.never_synced[0].at.row().clone();
     let refused = store
         .write(&who, &sync(&offered, Some(vec![pick])))
         .unwrap_err();
@@ -466,7 +466,7 @@ fn a_new_services_row_kept_out_by_a_mark_names_the_mark_to_undo() {
         panic!("one mark: {:?}", apart[0].marks);
     };
     assert_eq!(mark.environment.as_str(), "fix-web");
-    assert_ne!(mark.row, apart[0].at.row);
+    assert_ne!(mark.row, *apart[0].at.row());
 
     store
         .write(
@@ -499,7 +499,7 @@ fn a_row_is_marked_from_either_side_whatever_each_names_it() {
         )
         .unwrap();
     set(&store, &who, "fix-web", &[("web.env.PLAIN", json!("2"))]);
-    assert_eq!(view(&store, &who).rows[0].at.row, row("variables.PLAIN"));
+    assert_eq!(*view(&store, &who).rows[0].at.row(), row("variables.PLAIN"));
     for (environment, label) in [
         ("fix-web", "web.env.PLAIN"),
         ("production", "frontend.env.PLAIN"),

@@ -309,13 +309,15 @@ pub(crate) fn row_id(lineage: &str, at: &str) -> Result<RowId, RpcError> {
 pub(crate) fn named(intents: &[&SavedEnvironmentIntent], row: &RowId) -> Option<NamedRow> {
     intents.iter().find_map(|intent| {
         let (node, at) = ployz_core::config::name_of(intent, row)?;
-        let node = match node {
-            NodeRef::Service(service) => {
-                NodeName::Service(ServiceName::parse(service.slug.as_str()).ok()?)
-            }
-            NodeRef::Volume(volume) => {
-                NodeName::Volume(VolumeName::parse(volume.name.as_str()).ok()?)
-            }
+        let (node, kind) = match node {
+            NodeRef::Service(service) => (
+                NodeName::Service(ServiceName::parse(service.slug.as_str()).ok()?),
+                EnvironmentNodeType::Service,
+            ),
+            NodeRef::Volume(volume) => (
+                NodeName::Volume(VolumeName::parse(volume.name.as_str()).ok()?),
+                EnvironmentNodeType::Volume,
+            ),
         };
         let name = match row.at() {
             At::Node => None,
@@ -328,6 +330,7 @@ pub(crate) fn named(intents: &[&SavedEnvironmentIntent], row: &RowId) -> Option<
         Some(NamedRow {
             row: row.clone(),
             node,
+            kind,
             name,
         })
     })

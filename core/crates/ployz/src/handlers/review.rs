@@ -48,7 +48,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
         let from = |row: Option<&ployz_store::RowId>| {
             view.incoming
                 .iter()
-                .find(|incoming| Some(&incoming.at.row) == row)
+                .find(|incoming| Some(incoming.at.row()) == row)
                 .map_or_else(String::new, |incoming| format!(" (from {})", incoming.from))
         };
         for change in &view.changes {

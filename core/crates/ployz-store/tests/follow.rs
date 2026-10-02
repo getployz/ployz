@@ -272,7 +272,7 @@ fn each_staged_change_names_the_row_it_falls_in() {
     deploy(&store, &who, "production", 4);
 
     let view = diff(&store, &who, "fix-web");
-    let arrived: Vec<_> = view.incoming.iter().map(|change| &change.at.row).collect();
+    let arrived: Vec<_> = view.incoming.iter().map(|change| change.at.row()).collect();
     let web = &view.changes[0];
     assert_eq!(*web.row.at(), At::Node);
     let rows: Vec<(&str, Option<&At>)> = web

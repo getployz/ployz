@@ -302,7 +302,7 @@ fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_nex
     assert_eq!(review.into.name.as_str(), "production");
     assert_eq!(labels(&review), ["web.env.NEW", "web.image"]);
     let [new, image] = [row(&review, "web.env.NEW"), row(&review, "web.image")];
-    assert_eq!(new.at.node.to_string(), "web");
+    assert_eq!(new.at.node().to_string(), "web");
     assert_eq!((new.ticked, new.change), (true, SyncChange::New));
     assert_eq!((&new.from, &new.into), (&json!("1"), &Value::Null));
     assert_eq!((image.ticked, image.change), (true, SyncChange::Conflict));
@@ -322,7 +322,7 @@ fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_nex
     assert_eq!(stale.code, RpcErrorCode::Conflict);
     assert_eq!(stale.details["version"], json!(review.version));
     // A row not offered is refused with the rows there are; no picks, nothing to do.
-    let nope = new.at.row.to_string().replace("NEW", "NOPE");
+    let nope = new.at.row().to_string().replace("NEW", "NOPE");
     let unknown = SyncChanges {
         picks: Some(vec![serde_json::from_value(json!(nope)).unwrap()]),
         ..sync(&review, None)
@@ -463,7 +463,7 @@ fn a_skipped_new_node_stays_behind_with_its_rows() {
         &[("api.env.A", json!("a")), ("web.env.PLAIN", json!("2"))],
     );
     let review = view(&store, &who);
-    let api = row(&review, "api").at.row.to_string();
+    let api = row(&review, "api").at.row().to_string();
     store
         .write(&who, &skipping(&review, None, &[api.as_str()]))
         .unwrap();
@@ -989,7 +989,7 @@ fn a_secret_the_receiver_lacks_syncs_with_the_value_given_or_without_one() {
 
     // A value only fills a picked secret the receiver lacks; a pick needs its new node.
     let with = |picks: Option<&[&str]>, row: &SyncRow| SyncChanges {
-        values: BTreeMap::from([(row.at.row.clone().into(), "given-key".into())]),
+        values: BTreeMap::from([(row.at.row().clone().into(), "given-key".into())]),
         ..sync(&review, picks)
     };
     for refused in [

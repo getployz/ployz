@@ -169,7 +169,7 @@ fn a_branch_compares_with_its_parent_as_before_the_sync_migration() {
                     into: None,
                     when: None,
                     version: view.version.clone(),
-                    picks: Some(vec![image.at.row.clone().into()]),
+                    picks: Some(vec![image.at.row().clone().into()]),
                     skip: Vec::new(),
                     values: std::collections::BTreeMap::new(),
                 },

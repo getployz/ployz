@@ -275,7 +275,7 @@ fn sync(review: &SyncView, labels: Option<&[&str]>) -> SyncChanges {
                 .rows
                 .iter()
                 .filter(|row| named(&row.at.to_string()))
-                .map(|row| row.at.row.clone().into())
+                .map(|row| row.at.row().clone().into())
                 .collect(),
         ),
         skip: Vec::new(),
@@ -667,7 +667,7 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
     );
     // The PR Environment is gone; its value still moves.
     let taken = store
-        .write(&who, &take(Some(vec![hint.at.row.clone()])))
+        .write(&who, &take(Some(vec![hint.at.row().clone()])))
         .unwrap();
     assert_eq!(texts(&taken.staged), ["web"]);
     assert_eq!(taken.from.name.as_str(), "pr-5");
