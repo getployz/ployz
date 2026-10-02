@@ -59,7 +59,7 @@ function setup(initial: EnvironmentView) {
 }
 
 const edited = (revision: number): StoreResult<ConfigWritten> =>
-  ({ ok: true, value: { written: "edited", environment: { id: "env", project: "shop", name: "production", revision }, staged: ["web.replicas"], immediate: [] } });
+  ({ ok: true, value: { written: "edited", environment: { id: "env", project: "shop", name: "production", revision }, staged: ["web.replicas"], immediate: [], typed_addresses: [] } });
 const replicas = (value: number) => [{ op: "set" as const, path: "web.replicas", value }];
 
 it("shows an edit at once, saves edits in order against the newest revision, and keeps them once committed", async () => {

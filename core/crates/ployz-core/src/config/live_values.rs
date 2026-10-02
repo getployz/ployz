@@ -4,7 +4,9 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{SavedVariableProducer, SavedVariableValue, ValuePart, ValuePartOwner};
+use super::{
+    PRIVATE_DOMAIN_KEY, SavedVariableProducer, SavedVariableValue, ValuePart, ValuePartOwner,
+};
 use crate::Namespace;
 
 /// The Namespace that runs a Live Node, with its frozen variable producers.
@@ -47,8 +49,6 @@ pub struct LiveValues {
     pub producers: Vec<SavedVariableProducer>,
     pub missing: Vec<MissingLiveValue>,
 }
-
-const PRIVATE_DOMAIN_KEY: &str = "PLOYZ_PRIVATE_DOMAIN";
 
 /// Rescope the owner's producers: used lineages keep their id so the Branch finds them; every
 /// other owner lineage moves under the owner's namespace so the Branch's Own Copies of the

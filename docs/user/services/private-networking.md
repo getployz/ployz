@@ -16,36 +16,28 @@ flowchart LR
 
 ## Connect to another service
 
-Use the other service's private name and the port it listens on inside its container:
+Reference the other service's address in a variable. Every service has a
+`PLOYZ_PRIVATE_DOMAIN` variable that holds its `NAME.internal` address, and a `PORT`:
 
 ```sh
-DATABASE_URL=postgresql://postgres:PASSWORD@postgres.internal:5432/ployz
-WEB_URL=http://web.internal:8080
+DATABASE_URL=${{ postgres.DATABASE_URL }}
+WEB_URL=http://${{ web.PLOYZ_PRIVATE_DOMAIN }}:${{ web.PORT }}
 ```
+
+A reference tells Ployz the two services are linked: `worker` starts after `web` on every
+deploy, and a [branch](../environments/environments.md) that uses its parent's `web` still
+reaches it. A typed `web.internal` reaches the same place, but Ployz can't see the link. The
+databases Ployz creates connect this way. See [Variables](variables.md).
 
 - Use `http://`, not `https://`. Traffic between your servers is already encrypted.
 - Any port works. You don't declare ports for private traffic.
-- The bare name works too: `web` is the same as `web.internal`.
 - `localhost` is the service's own container, never another service.
 
 A service's private name is in its **Settings → Networking**, under **Private Networking**,
-with a copy button. If a connection fails, see
+with a copy button, for trying it from a shell. If a connection fails, see
 [One service can't reach another](../troubleshooting/app-not-reachable.md#one-service-cant-reach-another).
 
 ![Settings → Networking: the service's private name under Private Networking](../images/service-settings-networking.png)
-
-## Reference the address in a variable
-
-Every service has a `PLOYZ_PRIVATE_DOMAIN` variable that holds its `NAME.internal` address.
-Reference it instead of typing the name:
-
-```sh
-WEB_URL=http://${{ web.PLOYZ_PRIVATE_DOMAIN }}:8080
-```
-
-A reference also works in a [branch](../environments/environments.md) that uses its parent's
-`web`, where a typed `web.internal` finds nothing. The databases Ployz
-creates connect this way. See [Variables](variables.md).
 
 ## Change a service's private name
 
@@ -56,7 +48,8 @@ The private name starts as the service's name, and renaming the service keeps it
    name.
 3. Click **Deploy**.
 
-Services that typed the old name stop reaching it, so update them in the same deploy.
+References follow the new name. Services that typed the old one stop reaching it, so update
+them in the same deploy.
 
 ## Connect from your laptop
 
