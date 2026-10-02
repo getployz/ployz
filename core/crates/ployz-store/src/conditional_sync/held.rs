@@ -83,9 +83,8 @@ pub(crate) fn hold(
     }
     let named: Vec<NamedRow> = brought.iter().map(|(_, at)| at.clone()).collect();
     let row = &branch::resolve_one(&request.row, &named)?;
-    let found: Vec<&(RepositoryId, NamedRow)> =
-        brought.iter().filter(|(_, at)| at.row == *row).collect();
-    let Some((_, label)) = found.first() else {
+    let mut found = brought.iter().filter(|(_, at)| at.row == *row).peekable();
+    let Some((_, label)) = found.peek() else {
         let rows: Vec<String> = named.iter().map(|at| at.row.to_string()).collect();
         return Err(error::choices(
             format!(
@@ -96,7 +95,8 @@ pub(crate) fn hold(
             rows.iter().map(String::as_str),
         ));
     };
-    let secret = branch::seal_secret(sealing, row, &label.to_string(), &request.value)?;
+    let label = label.to_string();
+    let secret = branch::seal_secret(sealing, row, &label, &request.value)?;
     for (repository, _) in found {
         let pr = PullRequestRef {
             repository_id: *repository,
