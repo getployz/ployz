@@ -640,13 +640,13 @@ fn arrive(
 }
 
 /// Which of an Environment's arrivals [`arrived`] reads.
-enum Which<'a> {
+enum Which<'id> {
     /// Those not yet deployed.
     Pending,
     /// Those from this Environment.
-    From(&'a EnvironmentId),
+    From(&'id EnvironmentId),
     /// Those this Sync landed.
-    Of(&'a SyncId),
+    Of(&'id SyncId),
 }
 
 /// What arrived in `receiver` that `which` selects.
