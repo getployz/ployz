@@ -157,7 +157,7 @@ head: CommitSha | null,
 changed: Array<string> | null,
 /**
  * The merge commits of frozen Conditional Syncs ([`crate::PendingSyncs::merged`])
- * Cloud found `head` is or descends from: this push carries those saves.
+ * Cloud found `head` is or descends from: this push carries those.
  */
 merged: Array<CommitSha>, };
 

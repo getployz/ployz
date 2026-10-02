@@ -100,8 +100,10 @@ pub(super) enum RowPath {
 
 impl BranchRow {
     /// Whether it moves a secret.
+    #[must_use]
     pub fn secret(&self) -> bool {
-        matches!(self.key.path, RowPath::Variable(_)) && self.from["kind"] == "secret"
+        matches!(self.key.path, RowPath::Variable(_))
+            && self.from.get("kind").and_then(Value::as_str) == Some("secret")
     }
 }
 

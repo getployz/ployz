@@ -469,13 +469,13 @@ impl Comparison<'_> {
     /// `from`'s variable as it lands: a secret without its value unless secrets carry.
     fn landed_variable(&self, lineage: &str, key: &str) -> SavedVariableIntent {
         let variable = variable(self.from, lineage, key);
-        match variable.value {
-            SavedVariableValue::Secret { .. } if !self.carry_secrets => SavedVariableIntent {
-                value: SavedVariableValue::SecretWithoutValue,
-                value_fingerprint: String::new(),
-                ..variable
-            },
-            _ => variable,
+        if self.carry_secrets || !matches!(variable.value, SavedVariableValue::Secret { .. }) {
+            return variable;
+        }
+        SavedVariableIntent {
+            value: SavedVariableValue::SecretWithoutValue,
+            value_fingerprint: String::new(),
+            ..variable
         }
     }
 }
