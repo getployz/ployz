@@ -9,12 +9,11 @@
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_store::{
-    Change, Edit, EnvironmentQuery, EnvironmentRef, HoldSecret, PrPlansQuery, PullRequestNumber,
-    RepositoryId, Revision, RowId, SettingPath, SyncQuery, When,
+    Change, Edit, EnvironmentQuery, HoldSecret, PullRequestNumber, Revision, SettingPath,
 };
 use serde_json::{Value, json};
 
-use super::store::{Next, Store, environment, next, scoped, store, with_refresh_hint};
+use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
 use crate::failure::USAGE_EXIT;
@@ -382,15 +381,11 @@ fn hold(root: &ArgMatches, number: &str, asked: &str, secret: String) -> Result<
         })?;
     let environment = environment(matches)?;
     let store = store(root)?;
-    let (row, repository) = match asked.parse::<RowId>() {
-        Ok(row) => (row, None),
-        Err(_) => brought(&store, matches, &environment, pull_request, asked)?,
-    };
     let request = HoldSecret {
         environment,
         pull_request,
-        repository,
-        row,
+        repository: None,
+        row: asked.into(),
         value: secret,
     };
     let held = store.write(&request)?;
@@ -401,46 +396,6 @@ fn hold(root: &ArgMatches, number: &str, asked: &str, secret: String) -> Result<
             held.pull_request
         );
     })
-}
-
-/// The secret row `asked` names among those pull request `number`'s PR Environments
-/// sync into `destination` at the merge, and the repository of the one that brings it.
-fn brought(
-    store: &Store<'_>,
-    matches: &ArgMatches,
-    destination: &EnvironmentRef,
-    number: PullRequestNumber,
-    asked: &str,
-) -> Result<(RowId, Option<RepositoryId>), Error> {
-    let project = super::store::project(matches)?;
-    let plans = store.read(&PrPlansQuery {
-        project: project.clone(),
-    })?;
-    let mut rows = Vec::new();
-    for plan in &plans.plans {
-        for open in plan.open.iter().filter(|open| open.number == number) {
-            let view = store.read(&SyncQuery {
-                from: EnvironmentRef {
-                    project: project.clone(),
-                    environment: Some(open.environment.clone()),
-                },
-                into: Some(destination.clone()),
-                when: Some(When::AtMerge),
-            })?;
-            rows.extend(
-                view.rows
-                    .into_iter()
-                    .filter(|row| row.secret.is_some())
-                    .map(|row| (plan.repository_id, row.at)),
-            );
-        }
-    }
-    let row = super::store::row(asked, rows.iter().map(|(_, row)| row))?;
-    let repository = rows
-        .iter()
-        .find(|(_, named)| named.row == row)
-        .map(|(repository, _)| *repository);
-    Ok((row, repository))
 }
 
 /// A Setting value as a person reads it: escaped text, anything else as JSON.

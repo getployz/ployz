@@ -11,10 +11,11 @@ pub struct NeverSync {
     /// The Environment.
     #[serde(default)]
     pub environment: EnvironmentRef,
-    /// Its rows, as the Sync view or a diff gives them. Each names a node the
-    /// Environment has, but not necessarily a variable it has yet: marking a
-    /// sender's new variable keeps it out of the receiver.
-    pub rows: Vec<RowId>,
+    /// Its rows, by name in its own configuration (with `off`, among its marks), or
+    /// by RowId. Each names a node the Environment has, but not necessarily a
+    /// variable it has yet: marking a sender's new variable keeps it out of the
+    /// receiver.
+    pub rows: Vec<RowRef>,
     /// Sync them again.
     #[serde(default)]
     #[ts(as = "Option<bool>", optional)]
@@ -36,7 +37,11 @@ pub(crate) fn never_sync(
     request: &NeverSync,
 ) -> Result<NeverSynced, RpcError> {
     let environment = scope::lock(tx, who, &request.environment)?;
-    for row in &request.rows {
+    let candidates = match request.off {
+        true => never_synced(tx, &environment)?,
+        false => named_in(&[&environment.working], &rows_of(&environment.working)),
+    };
+    for row in &resolve_all(&request.rows, &candidates)? {
         let at = row.at();
         let key = [
             environment.summary.id.as_str().into(),

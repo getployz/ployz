@@ -108,7 +108,7 @@ fn row(at: &str) -> RowId {
 fn never_sync(environment: &str, rows: &[&str], off: bool) -> NeverSync {
     NeverSync {
         environment: at(environment),
-        rows: rows.iter().map(|at| row(at)).collect(),
+        rows: rows.iter().map(|at| row(at).into()).collect(),
         off,
     }
 }
@@ -197,13 +197,13 @@ fn labels(view: &SyncView) -> Vec<String> {
 
 /// A Sync from fix-web into its Parent of `picks`, or of every ticked row.
 fn sync(view: &SyncView, picks: Option<Vec<ployz_store::RowId>>) -> SyncChanges {
+    let picks = picks.map(|picks| picks.into_iter().map(Into::into).collect());
     SyncChanges {
         from: at("fix-web"),
         into: None,
         when: None,
         version: view.version.clone(),
         picks,
-        skip: Vec::new(),
         values: Default::default(),
     }
 }
@@ -327,7 +327,7 @@ fn a_branch_follows_its_parents_value_for_a_setting_the_parent_marks() {
 fn never_sync_names_a_row_of_a_node_the_environment_has() {
     let (store, who) = shop();
     let elsewhere = NeverSync {
-        rows: vec![format!("{}:startCommand", uuid(5)).parse().unwrap()],
+        rows: vec![format!("{}:startCommand", uuid(5)).as_str().into()],
         ..never_sync("fix-web", &[], false)
     };
     let missing = store.write(&who, &elsewhere).unwrap_err();
@@ -342,6 +342,38 @@ fn never_sync_names_a_row_of_a_node_the_environment_has() {
     let offered = view(&store, &who);
     assert!(offered.rows.is_empty());
     assert_eq!(offered.never_synced[0].at.label(), "web.env.NEW");
+}
+
+/// Names resolve in the marking Environment's own configuration: a root marks by
+/// name, a Branch marks a setting it never changed, and a prefix marks every row
+/// under it.
+#[test]
+fn rows_are_marked_by_name_in_the_marking_environments_own_configuration() {
+    let (store, who) = shop();
+    let by_name = |environment: &str, rows: &[&str], off| NeverSync {
+        rows: rows.iter().map(|row| (*row).into()).collect(),
+        ..never_sync(environment, &[], off)
+    };
+    set(&store, &who, "production", &[("web.env.OTHER", json!("2"))]);
+    let marked = store
+        .write(&who, &by_name("production", &["web.env"], false))
+        .unwrap();
+    assert_eq!(
+        labels_of(&marked.never_synced),
+        ["web.env.OTHER", "web.env.PLAIN"]
+    );
+    let marked = store
+        .write(&who, &by_name("fix-web", &["web.env.PLAIN"], false))
+        .unwrap();
+    assert_eq!(labels_of(&marked.never_synced), ["web.env.PLAIN"]);
+    let unmarked = store
+        .write(&who, &by_name("production", &["web.env.OTHER"], true))
+        .unwrap();
+    assert_eq!(labels_of(&unmarked.never_synced), ["web.env.PLAIN"]);
+    let unknown = store
+        .write(&who, &by_name("fix-web", &["web.env.NOPE"], false))
+        .unwrap_err();
+    assert_eq!(unknown.code, RpcErrorCode::NotFound);
 }
 
 #[test]

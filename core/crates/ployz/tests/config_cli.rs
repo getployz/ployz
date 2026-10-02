@@ -897,11 +897,11 @@ fn an_agent_marks_settings_never_sync_without_servers() {
         assert_eq!(label(&plan["rows"][0]), "web.image");
 
         failed(store, &["env", "never-sync", "--env", "fix-web"], 2);
-        // A node's name marks each of its rows.
+        // A node's name marks it and each of its rows, changed or not.
         let whole = ok(store, &["env", "never-sync", "web", "--env", "fix-web"]);
         assert_eq!(
             labels(&whole["never_synced"]),
-            ["web.env.APP_ENV", "web.image"]
+            ["web", "web.env.APP_ENV", "web.image", "web.privateDns"]
         );
         let missing = error(
             store,

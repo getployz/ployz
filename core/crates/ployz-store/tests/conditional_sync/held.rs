@@ -174,7 +174,7 @@ fn a_conditional_sync_keeps_no_secret_value() {
         &[("web.env.TOKEN", json!({ "secret": "pr-secret" }))],
     );
     let synced = SyncChanges {
-        values: BTreeMap::from([(row("TOKEN"), "prod-secret".into())]),
+        values: BTreeMap::from([(row("TOKEN").into(), "prod-secret".into())]),
         ..sync(&offered(&store, &who, None), None)
     };
     store.write(&who, &synced).unwrap();
@@ -309,13 +309,13 @@ fn a_value_for_a_secret_lands_with_its_sync_or_neither_does() {
         &[("web.env.TOKEN", json!({ "secret": "pr-secret" }))],
     );
     let with = |review: &SyncView, key: &str, value: &str| SyncChanges {
-        values: BTreeMap::from([(row(key), value.into())]),
+        values: BTreeMap::from([(row(key).into(), value.into())]),
         ..sync(review, Some(&[&format!("web.env.{key}")]))
     };
     let review = offered(&store, &who, None);
     // Nothing to hold the value for: the Sync doesn't stand either.
     let mut nope = with(&review, "TOKEN", "prod-secret");
-    nope.values = BTreeMap::from([(row("NOPE"), "prod-secret".into())]);
+    nope.values = BTreeMap::from([(row("NOPE").into(), "prod-secret".into())]);
     assert_eq!(
         store.write(&who, &nope).unwrap_err().code,
         RpcErrorCode::InvalidArgument

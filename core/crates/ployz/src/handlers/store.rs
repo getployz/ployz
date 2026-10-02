@@ -2,14 +2,13 @@
 //! Organization, the `--project`/`--env` scope, and IDs for creates.
 
 use clap::{Arg, ArgMatches};
-use ployz_core::{RpcError, RpcErrorCode};
-use std::collections::BTreeSet;
+use ployz_core::RpcErrorCode;
 use std::path::Path;
 
 use ployz_store::{
     Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence,
-    EnvironmentRef, OrganizationId, ProjectName, RemovalsQuery, RowId, SealingKey, Tell, Trusted,
-    View, VolumeObservation, Written,
+    EnvironmentRef, OrganizationId, ProjectName, RemovalsQuery, SealingKey, Tell, Trusted, View,
+    VolumeObservation, Written,
 };
 use serde_json::json;
 
@@ -410,58 +409,6 @@ pub(crate) fn word(value: &impl serde::Serialize) -> String {
         .ok()
         .and_then(|value| value.as_str().map(|word| word.replace('_', " ")))
         .unwrap_or_default()
-}
-
-/// The rows `asked` names among `rows`: its RowId, its name as reads show it
-/// (`web.image`), or a node's name (`web`) for every row of that node. One that
-/// names none is refused with the names there are.
-pub(crate) fn rows<'a>(
-    asked: &str,
-    rows: impl IntoIterator<Item = &'a ployz_store::NamedRow>,
-) -> Result<BTreeSet<RowId>, RpcError> {
-    let rows: Vec<&ployz_store::NamedRow> = rows.into_iter().collect();
-    let found: BTreeSet<RowId> = rows
-        .iter()
-        .filter(|row| {
-            row.row.to_string() == asked || row.label() == asked || row.node.to_string() == asked
-        })
-        .map(|row| row.row.clone())
-        .collect();
-    if found.is_empty() {
-        let names: BTreeSet<String> = rows.iter().map(|row| row.label()).collect();
-        return Err(RpcError {
-            code: RpcErrorCode::NotFound,
-            message: format!("No row named {asked} here"),
-            details: json!({ "valid_children": names }),
-        });
-    }
-    Ok(found)
-}
-
-/// The one row `asked` names among `rows`, as [`rows`] finds them; one naming
-/// several is refused with their names, or their RowIds when they share one.
-pub(crate) fn row<'a>(
-    asked: &str,
-    named: impl IntoIterator<Item = &'a ployz_store::NamedRow> + Clone,
-) -> Result<RowId, RpcError> {
-    let found = rows(asked, named.clone())?;
-    if let [only] = Vec::from_iter(&found).as_slice() {
-        return Ok((*only).clone());
-    }
-    let labels: BTreeSet<String> = named
-        .into_iter()
-        .filter(|row| found.contains(&row.row))
-        .map(ployz_store::NamedRow::label)
-        .collect();
-    let choices: Vec<String> = match labels.len() == found.len() {
-        true => labels.into_iter().collect(),
-        false => found.iter().map(ToString::to_string).collect(),
-    };
-    Err(RpcError {
-        code: RpcErrorCode::Ambiguous,
-        message: format!("{asked} names more than one row: name one"),
-        details: json!({ "valid_children": choices }),
-    })
 }
 
 /// A value as a change line shows it: a long one cut to its start and length, so one big variable doesn't fill the terminal.

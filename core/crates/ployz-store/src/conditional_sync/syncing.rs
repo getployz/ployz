@@ -2,7 +2,7 @@
 //! a landed Conditional Sync's hints.
 
 use super::*;
-use crate::branch::{Guard, Move, SyncChanges, Synced, SyncedWhen, Take, Taken};
+use crate::branch::{Guard, Move, NamedRow, SyncChanges, Synced, SyncedWhen, Take, Taken};
 use crate::id::SyncId;
 use crate::{SealingKey, deployment, teardown};
 use ployz_core::config::redact_environment_intent;
@@ -21,14 +21,14 @@ pub(crate) fn sync(
     let sync = Move::sync(tx, &from, &into)?;
     let checked = sync.check(tx, &into, Guard::Sync(&request.version))?;
     let sides = [&from.working, &into.working];
-    let picks = branch::picks(checked.rows(), request)?;
+    let (picks, values) = branch::picks(checked.rows(), &sides, request)?;
     if picks.is_empty() {
         return Err(error::conflict(
             format!("Nothing to sync into {}", into.summary.name),
             json!({ "version": checked.version() }),
         ));
     }
-    let values = branch::sealed(sealing, checked.rows(), &sides, &picks, &request.values)?;
+    let values = branch::sealed(sealing, checked.rows(), &sides, &picks, &values)?;
     // Refuse what couldn't land, such as a new Service's variable without it.
     checked
         .plan()
@@ -188,24 +188,14 @@ pub(crate) fn take(
     if found.state != ConditionalSyncState::Landed || stored.landed != latest {
         return Err(gone());
     }
-    let hints: BTreeSet<RowId> = stored
+    let hints: Vec<NamedRow> = stored
         .picks
         .iter()
         .filter(|pick| pick.landed(&into.working, &stored.hostnames.into) == Landed::Hint)
-        .map(|pick| pick.row.clone())
+        .map(|pick| pick.at.clone())
         .collect();
-    if let Some(unknown) = take.rows.iter().flatten().find(|row| !hints.contains(row)) {
-        let rows: Vec<String> = hints.iter().map(ToString::to_string).collect();
-        return Err(error::choices(
-            format!("No hint {unknown} to take"),
-            &unknown.to_string(),
-            rows.iter().map(String::as_str),
-        ));
-    }
-    let chosen: BTreeSet<RowId> = match &take.rows {
-        Some(rows) => rows.iter().cloned().collect(),
-        None => hints,
-    };
+    let rows = hints.iter().map(|hint| hint.row.clone()).collect();
+    let chosen = branch::chosen(take.rows.as_deref(), rows, &hints)?;
     let marks = marked(tx, &into.summary.id)?;
     let admitted = admit(&stored, &into.working, &marks, &BTreeMap::new(), |row| {
         chosen.contains(&row.id)

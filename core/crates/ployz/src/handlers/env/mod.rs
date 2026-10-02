@@ -13,7 +13,7 @@ use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 use ployz_store::{
     CreateEnvironment, DeploymentSummary, EnvironmentId, EnvironmentName, EnvironmentRef,
-    EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView, NeverSync, RemoveEnvironment, RowId,
+    EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView, NeverSync, RemoveEnvironment,
     SetDefaultEnvironment,
 };
 use serde_json::json;
@@ -160,13 +160,13 @@ pub(crate) fn command() -> Command {
             )
             .arg(
                 repeated("only").value_name("ROW").help(
-                    "Sync only this row (web.image), or every row of a node (web); repeatable",
+                    "Sync only this row (web.image), or every row under a prefix (web, web.env); repeatable",
                 ),
             )
             .arg(
                 repeated("skip")
                     .value_name("ROW")
-                    .help("Leave out this row, or every row of a node; repeatable"),
+                    .help("Leave out this row, or every row under a prefix; repeatable"),
             )
             .arg(
                 repeated("value").value_name("ROW").help(
@@ -234,7 +234,7 @@ pub(crate) fn command() -> Command {
                     .num_args(1..)
                     .action(clap::ArgAction::Append)
                     .value_name("ROW")
-                    .help("A row as `env sync --plan` from this Environment names it (web.env.KEY), or its RowId"),
+                    .help("A row as this Environment names it (web.env.KEY), a prefix for every row under it (web.env), or its RowId"),
             )
             .arg(switch("off", None).help("Sync them again")),
         )
@@ -500,53 +500,17 @@ fn node_names(names: &[String]) -> Result<Vec<ployz_store::NodeName>, Error> {
         .collect::<Result<_, _>>()?)
 }
 
-/// `env never-sync`: mark rows Never sync, or with `--off` sync them again. A row is
-/// named as the Sync from this Environment into its Parent shows it, a node's name
-/// covers its rows, and `--off` names the rows marked.
+/// `env never-sync`: mark rows Never sync, or with `--off` sync them again. The Store
+/// resolves the names in this Environment.
 fn never_sync(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let asked = super::string_values(matches, "path");
     let environment = store::environment(matches)?;
     let off = matches.get_flag("off");
     let store = store(root)?;
-    // ponytail: a root has no Parent to read the names from, so it marks by RowId;
-    // read them from its own Settings if roots need names.
-    let named: Vec<ployz_store::NamedRow> =
-        match asked.iter().all(|asked| asked.parse::<RowId>().is_ok()) {
-            true => Vec::new(),
-            false if off => {
-                store
-                    .read(&ployz_store::EnvironmentQuery {
-                        environment: environment.clone(),
-                        path: None,
-                        all: false,
-                    })?
-                    .never_synced
-            }
-            false => {
-                let view = store.read(&ployz_store::SyncQuery {
-                    from: environment.clone(),
-                    into: None,
-                    when: Some(ployz_store::When::Now { close_after: false }),
-                })?;
-                let rows = view.rows.into_iter().map(|row| row.at);
-                rows.chain(view.never_synced.into_iter().map(|row| row.at))
-                    .collect()
-            }
-        };
-    let mut rows = std::collections::BTreeSet::new();
-    for asked in &asked {
-        match asked.parse::<RowId>() {
-            Ok(row) => {
-                rows.insert(row);
-            }
-            Err(_) => rows.extend(store::rows(asked, &named)?),
-        }
-    }
-    let rows = rows.into_iter().collect();
     let request = NeverSync {
         environment,
-        rows,
+        rows: asked.iter().map(|asked| asked.as_str().into()).collect(),
         off,
     };
     let marked = store.write(&request)?;

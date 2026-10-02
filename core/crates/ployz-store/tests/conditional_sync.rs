@@ -275,10 +275,9 @@ fn sync(review: &SyncView, labels: Option<&[&str]>) -> SyncChanges {
                 .rows
                 .iter()
                 .filter(|row| named(&row.at.label()))
-                .map(|row| row.at.row.clone())
+                .map(|row| row.at.row.clone().into())
                 .collect(),
         ),
-        skip: Vec::new(),
         values: BTreeMap::new(),
     }
 }
@@ -351,7 +350,7 @@ fn hold(key: &str, value: &str) -> HoldSecret {
         environment: at("production"),
         pull_request: backend::pr_number(5),
         repository: None,
-        row: row(key),
+        row: row(key).into(),
         value: value.into(),
     }
 }
@@ -656,7 +655,7 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
     let take = |rows: Option<Vec<RowId>>| Take {
         from: HintSource::ConditionalSync(hint.conditional_sync.clone()),
         into: None,
-        rows,
+        rows: rows.map(|rows| rows.into_iter().map(Into::into).collect()),
         version: diff().version,
     };
     assert_eq!(
@@ -779,7 +778,7 @@ fn a_setting_the_destination_marks_never_sync_after_it_stood_stays_out_at_the_me
             &who,
             &NeverSync {
                 environment: at("production"),
-                rows: vec![row("MODE")],
+                rows: vec![row("MODE").into()],
                 off: false,
             },
         )

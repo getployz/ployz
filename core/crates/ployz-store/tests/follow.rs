@@ -160,7 +160,7 @@ fn take(parent: &str, into: &str, rows: &[&str], version: String) -> Take {
     Take {
         from: HintSource::Parent(EnvironmentName::parse(parent).unwrap()),
         into: Some(at(into)),
-        rows: Some(rows.iter().map(|at| row(at)).collect()),
+        rows: Some(rows.iter().map(|at| row(at).into()).collect()),
         version,
     }
 }

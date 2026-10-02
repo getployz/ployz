@@ -201,18 +201,8 @@ pub(crate) fn take(
         .into_iter()
         .map(|row| row.id.clone())
         .collect();
-    if let Some(unknown) = take.rows.iter().flatten().find(|row| !hints.contains(row)) {
-        let rows: Vec<String> = hints.iter().map(ToString::to_string).collect();
-        return Err(error::choices(
-            format!("No hint {unknown} to take"),
-            &unknown.to_string(),
-            rows.iter().map(String::as_str),
-        ));
-    }
-    let picks = match &take.rows {
-        Some(rows) => rows.iter().cloned().collect(),
-        None => hints,
-    };
+    let named = named_in(&[&follow.from, &branch.working], &hints);
+    let picks = chosen(take.rows.as_deref(), hints, &named)?;
     if picks.is_empty() {
         return Err(error::conflict(
             format!("No value from {parent} to use: read the diff again"),

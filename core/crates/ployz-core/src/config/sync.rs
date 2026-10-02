@@ -902,6 +902,20 @@ pub fn name_of<'a>(intent: &'a Intent, row: &RowId) -> Option<(NodeRef<'a>, Stri
     Some((node, at))
 }
 
+/// Every row `intent` holds something at: each node, and each place in it.
+#[must_use]
+pub fn rows_of(intent: &Intent) -> Vec<RowId> {
+    let mut rows = Vec::new();
+    for (lineage, node) in nodes(intent) {
+        rows.push(RowId::node(lineage));
+        rows.extend(cells(intent, node, "", false).into_keys().map(|at| RowId {
+            lineage: lineage.to_owned(),
+            at,
+        }));
+    }
+    rows
+}
+
 fn put_into(env: &mut Intent, row: &RowId, cell: &Cell) -> Result<(), ConfigError> {
     let invalid = |message: &str| ConfigError::at(&row.to_string(), message);
     let lineage = row.lineage.as_str();

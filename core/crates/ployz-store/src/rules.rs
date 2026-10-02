@@ -713,16 +713,7 @@ pub(crate) mod tests {
                     into: None,
                     when: None,
                     version: view.version.clone(),
-                    picks: Some(
-                        labels
-                            .iter()
-                            .map(|label| {
-                                let row = view.rows.iter().find(|row| row.at.label() == *label);
-                                row.unwrap().at.row.clone()
-                            })
-                            .collect(),
-                    ),
-                    skip: Vec::new(),
+                    picks: Some(labels.iter().map(|label| (*label).into()).collect()),
                     values: std::collections::BTreeMap::new(),
                 },
             )

@@ -36,7 +36,7 @@ use ployz_core::config::{
     SavedServiceIntent, SavedVariableProducer, ServiceImageCredentials, ServiceSource, Sides,
     Unapplied, ValuePart, ValuePartOwner, Verdict, Way, Why, canonicalize_environment_intent,
     cell_at, compile_environment_intent, live_values, parse_service_setting, plan, plan_branch,
-    put, unapply,
+    put, rows_of, unapply,
 };
 use ployz_core::{Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -114,10 +114,10 @@ pub struct Take {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub into: Option<EnvironmentRef>,
-    /// The hints to take, by the rows the diff gave; omitted, every one.
+    /// The hints to take; omitted, every one.
     #[serde(default)]
     #[ts(optional = nullable)]
-    pub rows: Option<Vec<RowId>>,
+    pub rows: Option<Vec<RowRef>>,
     /// Refused with `conflict` unless the receiver's `diff` is still at this
     /// version: the one the hints were read at.
     pub version: String,
@@ -172,6 +172,110 @@ impl NamedRow {
             None => self.node.to_string(),
         }
     }
+}
+
+/// A row as a command names it: its [`RowId`], its name as reads show it
+/// (`web.image`, `web.env.KEY`), or a prefix of names (`web`, `web.env`) for every
+/// row under it. The Store resolves it against the rows the command acts on.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
+#[serde(transparent)]
+#[ts(as = "String")]
+pub struct RowRef(pub String);
+
+impl From<RowId> for RowRef {
+    fn from(row: RowId) -> Self {
+        Self(row.to_string())
+    }
+}
+
+impl From<&str> for RowRef {
+    fn from(name: &str) -> Self {
+        Self(name.to_owned())
+    }
+}
+
+/// The rows `asked` names among `rows`, each named as one Environment shows it. A
+/// RowId names itself, there or not: the command decides whether it acts on it.
+/// A name that names none is refused with the names there are.
+pub fn resolve(asked: &RowRef, rows: &[NamedRow]) -> Result<BTreeSet<RowId>, RpcError> {
+    if let Ok(row) = asked.0.parse::<RowId>() {
+        return Ok(BTreeSet::from([row]));
+    }
+    let under = format!("{}.", asked.0);
+    let found: BTreeSet<RowId> = rows
+        .iter()
+        .filter(|row| {
+            let label = row.label();
+            label == asked.0 || label.starts_with(&under)
+        })
+        .map(|row| row.row.clone())
+        .collect();
+    if found.is_empty() {
+        let labels: BTreeSet<String> = rows.iter().map(NamedRow::label).collect();
+        return Err(error::choices(
+            format!("No row named {} here", asked.0),
+            &asked.0,
+            labels.iter().map(String::as_str),
+        ));
+    }
+    Ok(found)
+}
+
+/// The one row `asked` names among `rows`, as [`resolve`] finds it; one naming
+/// several is refused with their names.
+pub(crate) fn resolve_one(asked: &RowRef, rows: &[NamedRow]) -> Result<RowId, RpcError> {
+    let found = resolve(asked, rows)?;
+    let mut only = found.iter();
+    if let (Some(row), None) = (only.next(), only.next()) {
+        return Ok(row.clone());
+    }
+    let labels: BTreeSet<String> = rows
+        .iter()
+        .filter(|row| found.contains(&row.row))
+        .map(NamedRow::label)
+        .collect();
+    // Rows that share a name are told apart by RowId.
+    let choices: Vec<String> = match labels.len() == found.len() {
+        true => labels.into_iter().collect(),
+        false => found.iter().map(ToString::to_string).collect(),
+    };
+    Err(error::ambiguous(
+        format!("{} names more than one row: name one", asked.0),
+        json!({ "valid_children": choices }),
+    ))
+}
+
+/// The hints `asked` names among `named`, each one of `hints`; omitted, every one.
+pub(crate) fn chosen(
+    asked: Option<&[RowRef]>,
+    hints: BTreeSet<RowId>,
+    named: &[NamedRow],
+) -> Result<BTreeSet<RowId>, RpcError> {
+    let Some(asked) = asked else {
+        return Ok(hints);
+    };
+    let chosen = resolve_all(asked, named)?;
+    if let Some(unknown) = chosen.iter().find(|row| !hints.contains(row)) {
+        let rows: Vec<String> = hints.iter().map(ToString::to_string).collect();
+        return Err(error::choices(
+            format!("No hint {unknown} to take"),
+            &unknown.to_string(),
+            rows.iter().map(String::as_str),
+        ));
+    }
+    Ok(chosen)
+}
+
+/// `asked` resolved among `rows`, every one together.
+pub(crate) fn resolve_all<'a>(
+    asked: impl IntoIterator<Item = &'a RowRef>,
+    rows: &[NamedRow],
+) -> Result<BTreeSet<RowId>, RpcError> {
+    let mut found = BTreeSet::new();
+    for asked in asked {
+        found.extend(resolve(asked, rows)?);
+    }
+    Ok(found)
 }
 
 /// What a take staged.

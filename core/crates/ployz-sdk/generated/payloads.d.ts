@@ -1454,9 +1454,9 @@ environment: EnvironmentRef, pull_request: PullRequestNumber,
  */
 repository?: RepositoryId | null,
 /**
- * The secret's row, as the Sync view gives it.
+ * The secret's row.
  */
-row: RowId,
+row: RowRef,
 /**
  * The value, sealed at once and never shown back.
  */
@@ -1815,11 +1815,12 @@ export type NeverSync = {
  */
 environment: EnvironmentRef,
 /**
- * Its rows, as the Sync view or a diff gives them. Each names a node the
- * Environment has, but not necessarily a variable it has yet: marking a
- * sender's new variable keeps it out of the receiver.
+ * Its rows, by name in its own configuration (with `off`, among its marks), or
+ * by RowId. Each names a node the Environment has, but not necessarily a
+ * variable it has yet: marking a sender's new variable keeps it out of the
+ * receiver.
  */
-rows: Array<RowId>,
+rows: Array<RowRef>,
 /**
  * Sync them again.
  */
@@ -2466,6 +2467,8 @@ export type Revision = number;
 
 export type RowId = string & { readonly __brand: "RowId" };
 
+export type RowRef = string;
+
 export type RpcError = { code: RpcErrorCode, message: string, details: JsonValue, };
 
 export type RpcErrorCode = "invalid_argument" | "not_found" | "ambiguous" | "unsupported" | "unavailable" | "conflict" | "internal" | "unauthenticated" | "confirmation_required" | string;
@@ -3022,19 +3025,15 @@ into?: EnvironmentRef | null, when?: When | null,
  */
 version: string,
 /**
- * The rows to sync, by [`SyncRow::row`]; omitted, every row ticked. One left
- * out is offered again next time.
+ * The rows to sync; omitted, every row ticked. One left out is offered again
+ * next time.
  */
-picks?: Array<RowId> | null,
-/**
- * Rows not to sync.
- */
-skip?: Array<RowId>,
+picks?: Array<RowRef> | null,
 /**
  * A value for each picked secret the receiver lacks: sealed at once, never
  * shown back. At the merge it is held until then.
  */
-values?: { [key in RowId]: string }, };
+values?: { [key in RowRef]: string }, };
 
 export type SyncId = string;
 
@@ -3156,9 +3155,9 @@ from: HintSource,
  */
 into?: EnvironmentRef | null,
 /**
- * The hints to take, by the rows the diff gave; omitted, every one.
+ * The hints to take; omitted, every one.
  */
-rows?: Array<RowId> | null,
+rows?: Array<RowRef> | null,
 /**
  * Refused with `conflict` unless the receiver's `diff` is still at this
  * version: the one the hints were read at.

@@ -21,8 +21,8 @@ pub struct HoldSecret {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub repository: Option<RepositoryId>,
-    /// The secret's row, as the Sync view gives it.
-    pub row: RowId,
+    /// The secret's row.
+    pub row: branch::RowRef,
     /// The value, sealed at once and never shown back.
     pub value: String,
 }
@@ -94,29 +94,32 @@ pub(crate) fn hold(
             ) }),
         ));
     }
-    let row = &request.row;
-    let mut found = Vec::new();
     let mut brought = Vec::new();
-    for (repository, stored) in rows {
+    for (repository, stored) in &rows {
         for pick in &stored.picks {
             if pick.reviewed.is_secret()
                 || cell_at(&stored.from, &pick.row, &stored.hostnames.from).is_secret()
             {
-                brought.push(pick.row.to_string());
-                if pick.row == *row {
-                    found.push((repository, pick.at.label()));
-                }
+                brought.push((*repository, pick.at.clone()));
             }
         }
     }
+    let named: Vec<NamedRow> = brought.iter().map(|(_, at)| at.clone()).collect();
+    let row = &branch::resolve_one(&request.row, &named)?;
+    let found: Vec<(RepositoryId, String)> = brought
+        .iter()
+        .filter(|(_, at)| at.row == *row)
+        .map(|(repository, at)| (*repository, at.label()))
+        .collect();
     let Some((repository, label)) = found.first().cloned() else {
+        let rows: Vec<String> = named.iter().map(|at| at.row.to_string()).collect();
         return Err(error::choices(
             format!(
                 "#{number} brings no secret {row} into {}",
                 into.summary.name
             ),
             &row.to_string(),
-            brought.iter().map(String::as_str),
+            rows.iter().map(String::as_str),
         ));
     };
     if found.len() > 1 {

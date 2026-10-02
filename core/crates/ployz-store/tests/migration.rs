@@ -6,7 +6,7 @@ use ployz_core::ServiceName;
 use ployz_store::{
     Actor, BranchQuery, BranchView, Change, ConfigStore, CreateBranch, CreateProject,
     CreateService, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, OrganizationId, ProjectId,
-    ProjectName, ServiceLineageId, SettingPath, SyncChanges, SyncQuery, SyncView, When,
+    ProjectName, ServiceLineageId, SettingPath, SyncChanges, SyncQuery, SyncView,
 };
 use serde_json::{Value, json};
 
@@ -166,8 +166,7 @@ fn a_branch_compares_with_its_parent_as_before_the_sync_migration() {
                     into: None,
                     when: None,
                     version: view.version.clone(),
-                    picks: Some(vec![image.at.row.clone()]),
-                    skip: Vec::new(),
+                    picks: Some(vec![image.at.row.clone().into()]),
                     values: std::collections::BTreeMap::new(),
                 },
             )

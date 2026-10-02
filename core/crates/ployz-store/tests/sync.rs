@@ -215,13 +215,7 @@ fn sync(view: &SyncView, picks: Option<&[&str]>) -> SyncChanges {
         into: Some(at(view.into.name.as_str())),
         when: None,
         version: view.version.clone(),
-        picks: picks.map(|picks| {
-            picks
-                .iter()
-                .map(|label| row(view, label).at.row.clone())
-                .collect()
-        }),
-        skip: Vec::new(),
+        picks: picks.map(|picks| picks.iter().map(|label| (*label).into()).collect()),
         values: BTreeMap::new(),
     }
 }
@@ -379,11 +373,9 @@ fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_nex
     set(&store, &who, "fix-web", &[("web.env.OTHER", json!("2"))]);
     let review = view(&store, &who);
     assert_eq!(labels(&review), ["web.env.NEW", "web.env.OTHER"]);
-    let skipping = SyncChanges {
-        skip: vec![row(&review, "web.env.OTHER").at.row.clone()],
-        ..sync(&review, None)
-    };
-    store.write(&who, &skipping).unwrap();
+    store
+        .write(&who, &sync(&review, Some(&["web.env.NEW"])))
+        .unwrap();
     assert_eq!(labels(&view(&store, &who)), ["web.env.OTHER"]);
     store.write(&who, &sync(&view(&store, &who), None)).unwrap();
     let web = values(&store, &who, "production", "web");
@@ -916,7 +908,7 @@ fn a_secret_the_receiver_lacks_syncs_with_the_value_given_or_without_one() {
 
     // A value only fills a picked secret the receiver lacks; a pick needs its new node.
     let with = |picks: Option<&[&str]>, row: &SyncRow| SyncChanges {
-        values: BTreeMap::from([(row.at.row.clone(), "given-key".into())]),
+        values: BTreeMap::from([(row.at.row.clone().into(), "given-key".into())]),
         ..sync(&review, picks)
     };
     for refused in [
@@ -1078,5 +1070,48 @@ fn a_sync_that_closed_its_branch_can_still_be_undone() {
     assert_eq!(
         values(&store, &who, "production", "web")["image"],
         json!("web:1")
+    );
+}
+
+/// A pick names its row by either side's name, or by a prefix for every row under it.
+#[test]
+fn picks_name_rows_by_either_sides_name_or_by_a_prefix() {
+    let (store, who) = shop(true);
+    store
+        .write(
+            &who,
+            &RenameService {
+                environment: at("production"),
+                service: ServiceName::parse("web").unwrap(),
+                name: ServiceName::parse("frontend").unwrap(),
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[
+            ("web.env.A", json!("1")),
+            ("web.env.B", json!("2")),
+            ("web.image", json!("web:2")),
+        ],
+    );
+    // As the receiver names it.
+    store
+        .write(&who, &sync(&view(&store, &who), Some(&["frontend.env.A"])))
+        .unwrap();
+    assert_eq!(labels(&view(&store, &who)), ["web.env.B", "web.image"]);
+    store
+        .write(&who, &sync(&view(&store, &who), Some(&["web.env"])))
+        .unwrap();
+    assert_eq!(labels(&view(&store, &who)), ["web.image"]);
+    let unknown = store
+        .write(&who, &sync(&view(&store, &who), Some(&["web.nope"])))
+        .unwrap_err();
+    assert_eq!(unknown.code, RpcErrorCode::NotFound);
+    assert_eq!(
+        unknown.details["valid_children"],
+        json!(["frontend.image", "web.image"])
     );
 }

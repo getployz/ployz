@@ -27,20 +27,16 @@ pub struct SyncChanges {
     pub when: Option<When>,
     /// Refused with `conflict` unless the Sync view is still at this version.
     pub version: String,
-    /// The rows to sync, by [`SyncRow::row`]; omitted, every row ticked. One left
-    /// out is offered again next time.
+    /// The rows to sync; omitted, every row ticked. One left out is offered again
+    /// next time.
     #[serde(default)]
     #[ts(optional = nullable)]
-    pub picks: Option<Vec<RowId>>,
-    /// Rows not to sync.
-    #[serde(default)]
-    #[ts(as = "Option<Vec<RowId>>", optional)]
-    pub skip: Vec<RowId>,
+    pub picks: Option<Vec<RowRef>>,
     /// A value for each picked secret the receiver lacks: sealed at once, never
     /// shown back. At the merge it is held until then.
     #[serde(default)]
-    #[ts(as = "Option<BTreeMap<RowId, String>>", optional)]
-    pub values: BTreeMap<RowId, String>,
+    #[ts(as = "Option<BTreeMap<RowRef, String>>", optional)]
+    pub values: BTreeMap<RowRef, String>,
 }
 
 /// Read what a Sync would stage.
@@ -225,8 +221,8 @@ pub(crate) fn sync(
     let sync = Move::sync(tx, &from, &into)?;
     let checked = sync.check(tx, &into, Guard::Sync(&request.version))?;
     let sides = [&from.working, &into.working];
-    let picks = picks(checked.rows(), request)?;
-    let values = sealed(sealing, checked.rows(), &sides, &picks, &request.values)?;
+    let (picks, values) = picks(checked.rows(), &sides, request)?;
+    let values = sealed(sealing, checked.rows(), &sides, &picks, &values)?;
     let id = SyncId::parse(uuid::Uuid::new_v4().to_string())?;
     let staged = sync.apply(tx, who, &mut into, &checked, &picks, &values, Some(&id))?;
     if close_after {
@@ -450,15 +446,34 @@ fn destination(
     }
 }
 
-/// The rows a Sync lands: those `request` picks, else every ticked one, less those
-/// it skips.
+/// The rows a Sync lands, and the values given for them: those `request` picks
+/// (by RowId, or by name in either side), else every ticked one.
 pub(crate) fn picks(
     rows: &[PlannedRow],
+    sides: &[&SavedEnvironmentIntent; 2],
     request: &SyncChanges,
-) -> Result<BTreeSet<RowId>, RpcError> {
+) -> Result<(BTreeSet<RowId>, BTreeMap<RowId, String>), RpcError> {
+    let moves = rows
+        .iter()
+        .filter(|row| matches!(row.verdict, Verdict::Moves { .. }));
+    let named = named_in(sides, moves.map(|row| &row.id));
+    let values = request
+        .values
+        .iter()
+        .map(|(asked, value)| Ok((resolve_one(asked, &named)?, value.clone())))
+        .collect::<Result<_, RpcError>>()?;
+    let Some(asked) = &request.picks else {
+        let ticked = rows
+            .iter()
+            .filter(|row| matches!(row.verdict, Verdict::Moves { ticked: true, .. }))
+            .map(|row| row.id.clone())
+            .collect();
+        return Ok((whole(rows, ticked), values));
+    };
+    // Picked by hand, a row without its new node is refused, not dropped.
+    let picks = resolve_all(asked, &named)?;
     let known: BTreeSet<&RowId> = rows.iter().map(|row| &row.id).collect();
-    let asked = request.picks.iter().flatten().chain(&request.skip);
-    if let Some(unknown) = asked.into_iter().find(|row| !known.contains(row)) {
+    if let Some(unknown) = picks.iter().find(|row| !known.contains(row)) {
         let rows: Vec<String> = known.iter().map(ToString::to_string).collect();
         return Err(error::choices(
             format!("No change {unknown} to sync"),
@@ -466,23 +481,7 @@ pub(crate) fn picks(
             rows.iter().map(String::as_str),
         ));
     }
-    let skip: BTreeSet<&RowId> = request.skip.iter().collect();
-    Ok(match &request.picks {
-        // Picked by hand, a row without its new node is refused, not dropped.
-        Some(picks) => picks
-            .iter()
-            .filter(|row| !skip.contains(row))
-            .cloned()
-            .collect(),
-        None => whole(
-            rows,
-            rows.iter()
-                .filter(|row| matches!(row.verdict, Verdict::Moves { ticked: true, .. }))
-                .map(|row| row.id.clone())
-                .filter(|row| !skip.contains(row))
-                .collect(),
-        ),
-    })
+    Ok((picks, values))
 }
 
 /// `values` sealed, each for a picked secret the receiver lacks.

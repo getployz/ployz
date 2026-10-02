@@ -346,6 +346,17 @@ pub(crate) fn named(intents: &[&SavedEnvironmentIntent], row: &RowId) -> Option<
     })
 }
 
+/// Each of `rows` by every name it has in `intents`: a row renamed on one side
+/// answers to either name. What [`resolve`] resolves against.
+pub(crate) fn named_in<'row>(
+    intents: &[&SavedEnvironmentIntent],
+    rows: impl IntoIterator<Item = &'row RowId>,
+) -> Vec<NamedRow> {
+    rows.into_iter()
+        .flat_map(|row| intents.iter().filter_map(|intent| named(&[intent], row)))
+        .collect()
+}
+
 /// `cell`, `intent`'s at `row`, as reads show it: text for a variable with references
 /// by `names`, `{"secret": true}`, or `{"secret": false}` for one without a value.
 pub(crate) fn shown(

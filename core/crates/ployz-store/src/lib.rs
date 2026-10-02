@@ -47,7 +47,7 @@ pub use branch::{
 };
 pub use branch::{
     FollowHint, HintSource, IncomingChange, NamedRow, NeverSync, NeverSynced, NeverSyncedRow,
-    SecretRow, SyncChange,
+    RowRef, SecretRow, SyncChange, resolve,
 };
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
