@@ -323,18 +323,26 @@ fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_nex
     let stale = store.write(&who, &stale).unwrap_err();
     assert_eq!(stale.code, RpcErrorCode::Conflict);
     assert_eq!(stale.details["version"], json!(review.version));
-    // A row not offered is refused with the rows there are; no picks, nothing to do.
-    let nope = new.at.row().to_string().replace("NEW", "NOPE");
-    let unknown = SyncChanges {
-        picks: Some(vec![serde_json::from_value(json!(nope)).unwrap()]),
-        ..sync(&review, None)
-    };
-    let unknown = store.write(&who, &unknown).unwrap_err();
-    assert_eq!(unknown.code, RpcErrorCode::NotFound);
-    assert_eq!(
-        unknown.details["valid_children"].as_array().unwrap().len(),
-        2
-    );
+    // A row not offered, picked or skipped, is refused with the rows there are; no
+    // picks, nothing to do.
+    let nope = || serde_json::from_value(json!(new.at.row().to_string().replace("NEW", "NOPE")));
+    for unknown in [
+        SyncChanges {
+            picks: Some(vec![nope().unwrap()]),
+            ..sync(&review, None)
+        },
+        SyncChanges {
+            skip: vec![nope().unwrap()],
+            ..sync(&review, None)
+        },
+    ] {
+        let unknown = store.write(&who, &unknown).unwrap_err();
+        assert_eq!(unknown.code, RpcErrorCode::NotFound);
+        assert_eq!(
+            unknown.details["valid_children"].as_array().unwrap().len(),
+            2
+        );
+    }
     assert_eq!(
         store
             .write(&who, &sync(&review, Some(&[])))

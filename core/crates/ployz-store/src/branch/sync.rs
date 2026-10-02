@@ -475,7 +475,8 @@ pub(crate) fn picks(
         .iter()
         .map(|(asked, value)| Ok((resolve_one(asked, &named)?, value.clone())))
         .collect::<Result<_, RpcError>>()?;
-    let skipped = resolve_all(&request.skip, &named)?;
+    let known: BTreeSet<RowId> = rows.iter().map(|row| row.id.clone()).collect();
+    let skipped = chosen(Some(&request.skip), known.clone(), &named, "change")?;
     let picks = match request.picks.as_deref() {
         None => whole(
             rows,
@@ -484,10 +485,7 @@ pub(crate) fn picks(
                 .map(|row| row.id.clone())
                 .collect(),
         ),
-        asked => {
-            let known = rows.iter().map(|row| row.id.clone()).collect();
-            chosen(asked, known, &named, "change")?
-        }
+        asked => chosen(asked, known, &named, "change")?,
     };
     // A new node skipped takes its rows; picked by hand, a row without its new node
     // is refused, not dropped.
