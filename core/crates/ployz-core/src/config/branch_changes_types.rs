@@ -33,6 +33,11 @@ pub struct BranchChangesInput {
     #[serde(default)]
     #[ts(as = "Option<Vec<String>>", optional)]
     pub never_synced: Vec<String>,
+    /// A Parent's deployed changes following into its Branch: a secret the Branch has
+    /// but never set its own (it holds what `base` holds) follows too.
+    #[serde(default)]
+    #[ts(as = "Option<bool>", optional)]
+    pub follow: bool,
     /// Absent compares only; present moves the picked rows.
     #[serde(default)]
     #[ts(optional)]

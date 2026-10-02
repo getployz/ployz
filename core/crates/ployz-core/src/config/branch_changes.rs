@@ -36,6 +36,7 @@ pub fn branch_changes(input: BranchChangesInput) -> Result<BranchChanges, Config
         hostnames: &input.hostnames,
         from_kept: input.from_kept,
         never_synced: &input.never_synced,
+        follow: input.follow,
     };
     let rows = comparison.rows();
     let picks = input.picks.as_deref();
@@ -104,6 +105,7 @@ struct Comparison<'a> {
     hostnames: &'a BranchHostnames,
     from_kept: bool,
     never_synced: &'a [String],
+    follow: bool,
 }
 
 impl Comparison<'_> {
@@ -191,8 +193,12 @@ impl Comparison<'_> {
                 let choice = match path {
                     RowPath::Variable(key) => {
                         let secret = *at(&from_value, "kind") == "secret";
-                        // A secret moves only into a receiver that lacks it.
-                        if secret && !into_value.is_null() {
+                        // A secret moves only into a receiver that lacks it, or, following,
+                        // one that never set its own.
+                        if secret
+                            && !into_value.is_null()
+                            && !(self.follow && into_value == base_value)
+                        {
                             continue;
                         }
                         Some(self.choice(lineage, key, secret))

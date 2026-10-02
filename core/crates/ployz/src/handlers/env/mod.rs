@@ -131,15 +131,18 @@ pub(crate) fn command() -> Command {
                          receiver discards before it deploys. A change the receiver made too \
                          since the two last shared is overwritten. Unless a Branch syncs into \
                          its own Parent, what it only got from its Parent is left out unless \
-                         picked. Example: ployz env sync --to --env fix-api --skip \
-                         api.env.DEBUG --close",
+                         picked. A Branch follows its Parent on its own: what the Parent \
+                         deploys is staged in it, but where the Branch changed a setting \
+                         too, or discarded the Parent's change, the Parent's value is a \
+                         hint `ployz diff` lists; --take PARENT stages it. Example: ployz \
+                         env sync --to --env fix-api --skip api.env.DEBUG --close",
                     ),
             )
             .arg(
                 value("to", None)
                     .value_name("ENV")
                     .num_args(0..=1)
-                    .required_unless_present("from")
+                    .required_unless_present_any(["from", "take"])
                     .conflicts_with("from")
                     .help("Sync into ENV; with no value, the Branch's Parent"),
             )
@@ -167,6 +170,12 @@ pub(crate) fn command() -> Command {
                 switch("close", None)
                     .help("Close the Branch once its changes landed; refused for a kept Branch")
                     .conflicts_with("plan"),
+            )
+            .arg(
+                value("take", None)
+                    .value_name("ID")
+                    .help("Stage the hints `ployz diff` lists from ID (the Parent, or a Conditional Save) in --env; --only picks them")
+                    .conflicts_with_all(["to", "from", "skip", "plan", "close"]),
             ),
         )
         .subcommand(

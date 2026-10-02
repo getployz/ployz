@@ -42,7 +42,7 @@ describe("store volumes", () => {
   it("lists mounts the next Deploy detaches, keeping their data", () => {
     const diff: DiffView = {
       environment: { id: "e", project: "shop", name: "production", revision: 9 },
-      version: "9:1:0.1", saved: 1, published: false, total_count: 2, hints: [],
+      version: "9:1:0.1", saved: 1, published: false, total_count: 2, hints: [], incoming: [], follow_hints: [],
       changes: [
         { type: "service", id: "s", name: "postgres", lifecycle: "update", comparison: "head", data: "kept", settings: [
           { path: "postgres.mounts.pg-data", before: "/var/lib/postgresql/data", after: null, kind: "remove", canRestore: false },

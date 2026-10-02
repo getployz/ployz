@@ -373,6 +373,36 @@ fn a_secret_never_changes_where_it_is_and_arrives_without_a_value() {
 }
 
 #[test]
+fn following_a_rotated_secret_reaches_only_a_receiver_that_never_set_its_own() {
+    let base = parent();
+    let mut from = parent();
+    var(&mut from, API, "TOKEN")["value"] = secret("rotated-cipher");
+    var(&mut from, API, "TOKEN")["valueFingerprint"] = json!("fp-rotated");
+    let token = format!("{API}:variables.TOKEN");
+    let follow = json!({"follow": true});
+    // A Sync never changes a secret the receiver has.
+    let synced = changes(Some(&base), &from, &branch(), &json!({}));
+    assert!(!summary(&synced).iter().any(|r| r.contains("TOKEN")));
+
+    // Following, the rotation reaches a Branch that still holds the shared value.
+    let followed = changes(Some(&base), &from, &branch(), &follow);
+    assert_eq!(row(&followed, &token)["role"], "move");
+    assert_eq!(row(&followed, &token)["conflict"], false);
+    let pick = json!({"follow": true, "picks": [{"key": token, "choice": {"option": "from"}}]});
+    let mut next = changes(Some(&base), &from, &branch(), &pick)["next"].clone();
+    assert_eq!(
+        var(&mut next, API, "TOKEN")["value"]["encryptedValue"]["ciphertext"],
+        "rotated-cipher"
+    );
+
+    // One that set its own keeps it: nothing is offered.
+    let mut own = branch();
+    var(&mut own, API, "TOKEN")["valueFingerprint"] = json!("fp-own");
+    let kept = summary(&changes(Some(&base), &from, &own, &follow));
+    assert!(!kept.iter().any(|r| r.contains("TOKEN")), "{kept:#?}");
+}
+
+#[test]
 fn variable_choices_default_by_kind() {
     let base = parent();
     let mut from = branch();

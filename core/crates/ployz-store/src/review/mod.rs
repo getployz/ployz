@@ -45,6 +45,14 @@ pub struct DiffView {
     /// until its next Saved revision.
     #[serde(default)]
     pub hints: Vec<crate::PullRequestHint>,
+    /// Staged changes that arrived from another Environment, by Sync or Follow, and
+    /// where from, until they deploy.
+    #[serde(default)]
+    pub incoming: Vec<crate::IncomingChange>,
+    /// The Parent's deployed values that followed into this Branch beside its own
+    /// changes, or that it discarded: take one to stage it.
+    #[serde(default)]
+    pub follow_hints: Vec<crate::FollowHint>,
 }
 
 /// What happens to one node, and its changed Settings.
@@ -136,6 +144,8 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
         }),
         total_count: changes.total_count,
         hints: Vec::new(),
+        incoming: Vec::new(),
+        follow_hints: Vec::new(),
         changes: changes
             .groups
             .into_iter()

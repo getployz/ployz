@@ -2617,3 +2617,124 @@ fn an_agent_reads_and_sets_the_build_order_at_once() {
         assert_eq!(code, Some(2));
     }
 }
+
+/// Run Deployment `id` to success, as a runner that reached the Servers would.
+fn succeed(store: &ConfigStore, id: &ployz_store::DeploymentId) {
+    let runner = RunnerId::parse("successful-worker").unwrap();
+    let claimed = store.claim(id, &runner).unwrap();
+    let preview = serde_json::from_value(json!({
+        "namespace": claimed.intent.namespace, "operations": [],
+        "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store
+        .record(id, &runner, ployz_store::RunEvidence::Prepared(preview))
+        .unwrap();
+    let outcome = serde_json::from_value(json!({"type": "success", "completed": []})).unwrap();
+    store
+        .record(
+            id,
+            &runner,
+            ployz_store::RunEvidence::Executed {
+                outcome: Box::new(outcome),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+}
+
+/// Deploy `environment` of Project shop and have it applied: Cloud's worker runs it;
+/// locally the test runs it as the runner would.
+fn applied(store: &Target, environment: &str) {
+    match store {
+        Target::Cloud { .. } => {
+            ok(store, &["deploy", "--env", environment]);
+        }
+        Target::Local(dir) => {
+            let path = dir.path().join("store.db");
+            let key = SealingKey::from_file(&dir.path().join("store.db.key")).unwrap();
+            let local = ConfigStore::open(&format!("sqlite:{}", path.display()), key).unwrap();
+            let who = Actor::system(OrganizationId::parse("local").unwrap());
+            let id = ployz_store::DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
+            let deploy = ployz_store::Admit::Deploy(ployz_store::Deploy {
+                id: id.clone(),
+                environment: ployz_store::EnvironmentRef {
+                    project: Some(ployz_store::ProjectName::parse("shop").unwrap()),
+                    environment: Some(ployz_store::EnvironmentName::parse(environment).unwrap()),
+                },
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            });
+            local
+                .write_trusted(&who, &deploy, &Trusted::default())
+                .unwrap();
+            succeed(&local, &id);
+        }
+    }
+}
+
+#[test]
+fn a_branch_follows_its_parent_and_diff_shows_where_changes_came_from_and_the_hints() {
+    fn succeeding(store: &std::sync::Arc<ConfigStore>, written: &Written) {
+        if let Written::Deployment(admitted) = written {
+            succeed(store, &admitted.id);
+        }
+    }
+    let targets = [
+        Target::Local(tempfile::tempdir().unwrap()),
+        Target::Cloud {
+            url: fake_cloud_with_dispatch(succeeding),
+            token: "ployz_alice",
+        },
+    ];
+    for store in &targets {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        applied(store, "production");
+        ok(store, &["env", "branch", "fix-web", "--copy", "web"]);
+        // fix-web's own, undeployed change; production changes it too, and adds one.
+        ok(store, &["set", "web.image=web:mine", "--env", "fix-web"]);
+        ok(store, &["set", "web.image=web:2"]);
+        ok(store, &["set", "web.env.NEW=1"]);
+        applied(store, "production");
+
+        let diff = ok(store, &["diff", "--env", "fix-web"]);
+        assert_eq!(
+            diff["incoming"],
+            json!([{"row": "web.env.NEW", "from": "production"}]),
+            "{diff}"
+        );
+        assert_eq!(
+            diff["follow_hints"],
+            json!([{"from": "production", "row": "web.image", "value": "web:2"}])
+        );
+        let took = ok(
+            store,
+            &[
+                "env",
+                "sync",
+                "--take",
+                "production",
+                "--only",
+                "web.image",
+                "--env",
+                "fix-web",
+            ],
+        );
+        assert_eq!(took["into"]["name"], json!("fix-web"));
+        assert_eq!(took["next"], json!("ployz deploy --env fix-web"));
+        assert_eq!(
+            ok(store, &["diff", "--env", "fix-web"])["follow_hints"],
+            json!([])
+        );
+        let gone = error(
+            store,
+            &["env", "sync", "--take", "production", "--env", "fix-web"],
+        );
+        assert_eq!(gone["code"], json!("conflict"));
+        assert_eq!(gone["details"]["next"], json!("ployz diff --env fix-web"));
+    }
+}

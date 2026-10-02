@@ -39,3 +39,16 @@ CREATE TABLE config_never_sync (
     organization_id TEXT NOT NULL,
     PRIMARY KEY (environment_id, lineage, path)
 );
+
+-- Follow: the Parent's value each setting of a Branch (`environment_id`) was last
+-- delivered at, as the comparison renders it (`value`, a secret by fingerprint). A
+-- Parent's deploy stages a change only once: one the Branch changed too, or
+-- discarded, stays a Use hint until the Parent changes that setting again.
+CREATE TABLE config_followed (
+    environment_id TEXT NOT NULL REFERENCES config_environment (id) ON DELETE CASCADE,
+    lineage TEXT NOT NULL,
+    path TEXT NOT NULL,
+    organization_id TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (environment_id, lineage, path)
+);

@@ -1,5 +1,5 @@
 //! How two Environments compare: which base, what each side sends, how a variable
-//! lands by default, and landing. Sync, Save, Update, Own Copy, a new Branch, the
+//! lands by default, and landing. Sync, Follow, Save, Update, Own Copy, a new Branch, the
 //! pull request page's counts and Conditional Save all compare through here; nothing
 //! else builds a comparison.
 //!
@@ -35,9 +35,11 @@ pub(crate) struct Moving {
 /// Which way a move goes, with what only that way needs.
 #[derive(Clone, Debug)]
 enum Way {
-    /// A Sync, or an Update into a Branch: every variable lands with `from`'s value
-    /// by default.
+    /// A Sync: every variable lands with `from`'s value by default.
     Sync,
+    /// A Parent's deployed changes into its Branch (Follow, Update, Own Copy): as a
+    /// Sync, and a secret the Branch never set its own follows the Parent's value.
+    Follow,
     /// Into a Parent, or a PR Environment's Destination: nothing there is deleted.
     Save {
         /// The Parent's deployed values, offered for a variable; none when it
@@ -76,7 +78,7 @@ impl Moving {
                 from: suffix(tx, parent)?,
                 into: suffix(tx, branch)?,
             },
-            way: Way::Sync,
+            way: Way::Follow,
             own: None,
             never_synced: marks(tx, &parent.summary.id, &branch.summary.id)?,
         })
@@ -218,7 +220,7 @@ impl Moving {
     pub(crate) fn parent(&self) -> Option<&SavedEnvironmentIntent> {
         match &self.way {
             Way::Save { parent, .. } => parent.as_ref(),
-            Way::Sync => None,
+            Way::Sync | Way::Follow => None,
         }
     }
 
@@ -228,7 +230,7 @@ impl Moving {
         picks: Option<Vec<BranchPick>>,
     ) -> Result<BranchChanges, RpcError> {
         let (parent, from_kept) = match &self.way {
-            Way::Sync => (None, false),
+            Way::Sync | Way::Follow => (None, false),
             Way::Save { parent, from_kept } => (parent.as_ref(), *from_kept),
         };
         let never_synced: Vec<String> = self
@@ -245,6 +247,7 @@ impl Moving {
             hostnames: &self.hostnames,
             from_kept,
             never_synced: &never_synced,
+            follow: matches!(self.way, Way::Follow),
             picks,
         })
     }
@@ -252,7 +255,7 @@ impl Moving {
     /// How a variable lands unless picked otherwise.
     pub(super) fn default(&self, offered: &BranchChoice) -> BranchOption {
         match self.way {
-            Way::Sync => BranchOption::From,
+            Way::Sync | Way::Follow => BranchOption::From,
             Way::Save { .. } => offered.default,
         }
     }
@@ -577,6 +580,7 @@ fn within(
         },
         from_kept: false,
         never_synced: &[],
+        follow: false,
         picks,
     })
 }
@@ -714,6 +718,7 @@ pub(super) fn creating(
         hostnames,
         from_kept: false,
         never_synced: &[],
+        follow: false,
         picks: Some(picks),
     })
 }
@@ -742,6 +747,7 @@ struct Comparing<'a> {
     hostnames: &'a BranchHostnames,
     from_kept: bool,
     never_synced: &'a [String],
+    follow: bool,
     picks: Option<Vec<BranchPick>>,
 }
 
@@ -758,6 +764,7 @@ fn compare(sides: Comparing<'_>) -> Result<BranchChanges, RpcError> {
         hostnames: sides.hostnames.clone(),
         from_kept: sides.from_kept,
         never_synced: sides.never_synced.to_vec(),
+        follow: sides.follow,
         picks: sides.picks,
     })
     .map_err(config)

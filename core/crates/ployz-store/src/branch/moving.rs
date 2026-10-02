@@ -10,7 +10,12 @@ pub(crate) fn move_changes(
     request: &Move,
 ) -> Result<Moved, RpcError> {
     let (named, direction, picks, version) = match request {
-        Move::Take(take) => return crate::conditional_save::take(tx, who, take),
+        Move::Take(take) => {
+            return match &take.from {
+                HintSource::Save(save) => crate::conditional_save::take(tx, who, save, take),
+                HintSource::Parent(parent) => follow::take(tx, who, parent, take),
+            };
+        }
         Move::Save(save) if crate::conditional_save::at_merge(tx, who, &save.from, save.when)? => {
             return crate::conditional_save::save(tx, who, sealing, save);
         }

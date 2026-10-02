@@ -373,14 +373,17 @@ fn a_branch_follows_its_parents_value_for_a_setting_the_parent_marks() {
         .unwrap();
     set(&store, &who, "production", &[("web.env.PLAIN", json!("2"))]);
     deploy(&store, &who, "production", 2);
-    // The mark doesn't carry into the Branch: it is offered production's value.
-    assert_eq!(following(&store, &who), ["web.env.PLAIN"]);
+    // The mark doesn't carry into the Branch: production's value follows into it.
+    assert_eq!(values(&store, &who, "fix-web")["env"]["PLAIN"], json!("2"));
     assert!(marked(&store, &who, "fix-web").is_empty());
 
     // Marked in the Branch, production's change never arrives there.
     store
         .write(&who, &never_sync("fix-web", &["web.env.PLAIN"], false))
         .unwrap();
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("3"))]);
+    deploy(&store, &who, "production", 3);
+    assert_eq!(values(&store, &who, "fix-web")["env"]["PLAIN"], json!("2"));
     assert!(following(&store, &who).is_empty());
 }
 

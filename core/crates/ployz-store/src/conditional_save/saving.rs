@@ -222,8 +222,12 @@ pub(super) fn secret_hints(moving: &Moving, into: &Environment) -> Vec<Row> {
 
 /// Stage the picked hints (omitted: every one) of a landed Conditional Save in its
 /// Destination: the pull request's value replaces the Destination's own edit.
-pub(crate) fn take(tx: &mut dyn Tx, who: &Actor, take: &Take) -> Result<Moved, RpcError> {
-    let id = &take.from;
+pub(crate) fn take(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    id: &ConditionalSaveId,
+    take: &Take,
+) -> Result<Moved, RpcError> {
     let missing = || error::not_found(format!("No Conditional Save {id}"), json!({}));
     let found = load(tx, who, id)?.ok_or_else(missing)?;
     let mut into = scope::lock_id(tx, who, &found.environment)?;

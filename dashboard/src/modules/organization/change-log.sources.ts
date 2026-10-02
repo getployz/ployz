@@ -17,6 +17,8 @@ export const storeChangeSources = {
   config_environment_branch: { key: ["environment_id"] },
   config_sync_base: { key: ["environment_id"] },
   config_never_sync: { key: ["environment_id"] },
+  config_sync_pending: { key: ["environment_id"] },
+  config_followed: { key: ["environment_id"] },
   config_build_order: { key: ["organization_id"] },
   config_pr_plan: { key: ["project_id"] },
   config_pr_environment: { key: ["environment_id"] },

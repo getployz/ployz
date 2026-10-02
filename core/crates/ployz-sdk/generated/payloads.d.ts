@@ -128,6 +128,11 @@ provided: Array<string>, hostnames: BranchHostnames, fromKept: boolean,
  */
 neverSynced?: Array<string>,
 /**
+ * A Parent's deployed changes following into its Branch: a secret the Branch has
+ * but never set its own (it holds what `base` holds) follows too.
+ */
+follow?: boolean,
+/**
  * Absent compares only; present moves the picked rows.
  */
 picks?: Array<BranchPick>, };
@@ -1068,7 +1073,17 @@ total_count: number,
  * Merged pull requests' values landed beside this Environment's own changes,
  * until its next Saved revision.
  */
-hints: Array<PullRequestHint>, };
+hints: Array<PullRequestHint>,
+/**
+ * Staged changes that arrived from another Environment, by Sync or Follow, and
+ * where from, until they deploy.
+ */
+incoming: Array<IncomingChange>,
+/**
+ * The Parent's deployed values that followed into this Branch beside its own
+ * changes, or that it discarded: take one to stage it.
+ */
+follow_hints: Array<FollowHint>, };
 
 export type DifferRow = {
 /**
@@ -1362,6 +1377,20 @@ export type ExtraHost = string;
 
 export type FailedOperation<E> = { "type": "operation", operation: DeployOperation, error: E, } | { "type": "replacement", operation: ReplacementOperation, error: E, compensation: ReplacementCompensation<E>, };
 
+export type FollowHint = {
+/**
+ * The Parent it comes from: pass to [`Take::from`] to use it.
+ */
+from: EnvironmentName,
+/**
+ * `NODE.path`, as a Sync names it.
+ */
+row: string,
+/**
+ * The Parent's value; secrets read `{"secret": true}`.
+ */
+value: JsonValue, };
+
 export type GitSource = {
 /**
  * Its runtime Service name.
@@ -1469,6 +1498,8 @@ export type HealthcheckCommand = [string, ...string[]];
 
 export type HealthcheckSpec = { "state": "disabled" } | { "state": "configured" } & ConfiguredHealthcheck | { "state": "http" } & HttpHealthcheck;
 
+export type HintSource = ConditionalSaveId | EnvironmentName;
+
 export type HookContainer = ContainerObservation;
 
 export type HookFailure = { "type": "cancelled", stop_error: RpcError | null, } | { "type": "timed_out", stop_error: RpcError | null, } | { "type": "exit", code: number, };
@@ -1488,6 +1519,16 @@ export type ImageDigest = string;
 export type ImageRemoval = { reference: string, outcome: ImageRemovalOutcome, };
 
 export type ImageRemovalOutcome = { "status": "removed" } | { "status": "in_use" } | { "status": "not_found" } | { "status": "failed", message: string, } | { "status": "unrecognized" };
+
+export type IncomingChange = {
+/**
+ * `NODE`, or `NODE.path` for one of its settings or variables.
+ */
+row: string,
+/**
+ * Where it came from.
+ */
+from: EnvironmentName, };
 
 export type IngressHost = string;
 
@@ -3185,11 +3226,12 @@ export type SystemEvent = { "event": "branch_head" } & BranchHead | { "event": "
 
 export type Take = {
 /**
- * The retained Conditional Save whose hints to take.
+ * The retained Conditional Save whose hints to take, or the Parent whose Follow
+ * hints to take.
  */
-from: ConditionalSaveId,
+from: HintSource,
 /**
- * Its Destination; refused unless it is.
+ * Its Destination, or the Branch following the Parent; refused unless it is.
  */
 into?: EnvironmentRef | null,
 /**

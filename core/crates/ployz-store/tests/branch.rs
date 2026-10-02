@@ -463,7 +463,7 @@ fn a_branch_uses_what_its_parent_runs_live_down_the_tree() {
 }
 
 #[test]
-fn update_stages_the_parents_deployed_changes_once_the_branch_runs_its_working_state() {
+fn update_waits_for_the_branch_to_run_its_working_state_and_follow_leaves_it_nothing() {
     let (store, who) = shop();
     deploy(&store, &who, "production", 1, true);
     store
@@ -505,34 +505,16 @@ fn update_stages_the_parents_deployed_changes_once_the_branch_runs_its_working_s
             .unwrap()
     };
     assert!(view(&store).update.is_empty());
+    // Deployed, it follows into the Branch: Update has nothing left to stage.
     deploy(&store, &who, "production", 3, true);
-    let mut pending = view(&store).update;
-    pending.sort();
-    assert_eq!(pending, ["web.env.NEW", "web.image"]);
-
-    let review = store
-        .read(
-            &who,
-            &MoveQuery::Update {
-                into: at("fix-web"),
-            },
-        )
-        .unwrap();
-    assert_eq!(review.from.name.as_str(), "production");
-    let stale = update(Some("0:0".into()));
-    assert_eq!(code(store.write(&who, &stale)), RpcErrorCode::Conflict);
-    let reviewed = update(Some(review.version));
-    assert_eq!(
-        store.write(&who, &reviewed).unwrap().into.name.as_str(),
-        "fix-web"
-    );
     let web = values(&store, &who, "fix-web", "web");
     assert_eq!(
         (web["image"].clone(), web["env"]["NEW"].clone()),
         (json!("web:2"), json!("1"))
     );
-    // The base advanced: nothing left, and the change waits for a Deploy.
     assert!(view(&store).update.is_empty());
+    let stale = update(Some("0:0".into()));
+    assert_eq!(code(store.write(&who, &stale)), RpcErrorCode::Conflict);
     assert_eq!(
         code(store.write(&who, &update(None))),
         RpcErrorCode::Conflict

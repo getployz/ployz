@@ -5,9 +5,9 @@ use clap::{ArgMatches, Command};
 use ployz_core::ServiceName;
 use ployz_store::{
     Branched, ConditionalSaveId, CopyNode, CreateBranch, DeploymentId, EnvironmentId,
-    EnvironmentName, EnvironmentRef, EnvironmentSummary, KeepBranch, Move, MovePick, MoveQuery,
-    MoveView, Moved, PickChoice, Save, SaveState, SetupCommand, SyncChanges, SyncQuery, SyncView,
-    Synced, Take, Update, When,
+    EnvironmentName, EnvironmentRef, EnvironmentSummary, HintSource, KeepBranch, Move, MovePick,
+    MoveQuery, MoveView, Moved, PickChoice, Save, SaveState, SetupCommand, SyncChanges, SyncQuery,
+    SyncView, Synced, Take, Update, When,
 };
 use serde_json::json;
 
@@ -71,6 +71,9 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
             .transpose()
     };
     let here = store::environment(matches)?;
+    if let Some(source) = matches.get_one::<String>("take") {
+        return take(root, source, here);
+    }
     let query = match named("from")? {
         Some(from) => SyncQuery {
             from,
@@ -118,6 +121,31 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
         ))
     })?;
     synced_out(matches, &synced)
+}
+
+/// `env sync --take ID`: stage the hints (or those `--only` names) that the Parent
+/// named `ID`, or Conditional Save `ID`, left in `into`.
+fn take(root: &ArgMatches, source: &str, into: EnvironmentRef) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let from = ConditionalSaveId::parse(source)
+        .map(HintSource::Save)
+        .or_else(|_| EnvironmentName::parse(source).map(HintSource::Parent))
+        .map_err(|_| {
+            Error::usage("Expected --take ID to be the Parent's name or a Conditional Save ID")
+                .with_exit(USAGE_EXIT)
+        })?;
+    let only = super::super::string_values(matches, "only");
+    let request = Move::Take(Take {
+        from,
+        into: Some(into),
+        rows: (!only.is_empty()).then_some(only),
+        version: matches.get_one::<String>("version").cloned(),
+    });
+    let store = store(root)?;
+    let moved = store
+        .try_write(&request)
+        .map_err(|error| store.fail(store::with_refresh_hint(error, matches, "diff")))?;
+    moved_out(matches, Shift::Take, &moved)
 }
 
 /// `env sync --to [ENV]` or `env sync --from ENV`, as given.
@@ -358,7 +386,7 @@ fn shift(
                 .transpose()?
                 .ok_or_else(|| Error::usage("Name the Conditional Save to take from"))?;
             Move::Take(Take {
-                from: save,
+                from: HintSource::Save(save),
                 into,
                 rows: picks.map(|picks| picks.into_iter().map(|pick| pick.row).collect()),
                 version,
@@ -499,6 +527,7 @@ fn moved_out(matches: &ArgMatches, shift: Shift, moved: &Moved) -> Result<(), Er
             (Shift::Take, _, Some(save)) => {
                 say!("Took PR #{}'s value into {into}.", save.pull_request);
             }
+            (Shift::Take, _, None) => say!("Took {from}'s value into {into}."),
             _ => say!("Moved {from} → {into}."),
         }
         if !moved.staged.is_empty() {
@@ -573,9 +602,6 @@ fn finish(result: &Branched, deploy: Option<String>, what: &str) -> Result<(), E
                 Some(owner) => say!("Uses {} live from {owner}.", live.name),
                 None => say!("Uses {} live, but nothing runs it.", live.name),
             }
-        }
-        if !branch.update.is_empty() {
-            say!("Its Parent deployed changes: ployz env update.");
         }
     })
 }

@@ -475,7 +475,7 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
     );
     let take = |row: Option<&str>| {
         Move::Take(Take {
-            from: hint.save.clone(),
+            from: ployz_store::HintSource::Save(hint.save.clone()),
             into: None,
             rows: row.map(|row| vec![row.to_owned()]),
             version: None,
@@ -563,7 +563,7 @@ fn a_secret_hint_taken(choice: PickChoice) -> Value {
         .write(
             &who,
             &Move::Take(Take {
-                from: hints[0].save.clone(),
+                from: ployz_store::HintSource::Save(hints[0].save.clone()),
                 into: None,
                 rows: None,
                 version: None,

@@ -326,7 +326,7 @@ A Branch that was never deployed, kept as the recipe other Branches copy from. I
 _Avoid_: Template, draft branch
 
 **Destination**:
-Where a Branch saves its changes: its Parent, or for a PR Environment, each Environment that deploys the pull request's target Git branch with nothing in its Parent chain deploying that Git branch too. Environments below a Destination that deploy the same Git branch get the merged code but not the settings; they catch up by Update. A pull request whose target Git branch nothing deploys has no Destination.
+Where a Branch saves its changes: its Parent, or for a PR Environment, each Environment that deploys the pull request's target Git branch with nothing in its Parent chain deploying that Git branch too. Environments below a Destination that deploy the same Git branch get the merged code but not the settings; they catch up by Follow. A pull request whose target Git branch nothing deploys has no Destination.
 _Avoid_: Target, save target
 
 **Save**:
@@ -338,8 +338,12 @@ Staging the Parent's changes since the Branch was made or last updated in the Br
 _Avoid_: Pull, rebase
 
 **Sync**:
-Putting one Environment's changes, chosen change by change, into another Environment of the same Project as the receiver's changes to deploy. It takes the sender's Working State, deployed or not, and never deletes or deploys anything. It compares over what the two last shared, so a change left out, or discarded by the receiver before it deploys, is offered again; a change the receiver also made since then is flagged and, if synced, overwritten. Sizing, custom domains, generated addresses, the Git branch and Volume data never sync. A secret's value never syncs either: a secret the receiver has stays as it is, and one it lacks arrives without a value, which the receiver's Deploy refuses until it is set. Any two Environments of a Project sync: a Branch into its Parent, sideways or skipping a level, a root into a Branch or into another root. A pair that never synced compares over where the sending Branch was made, else where the receiving Branch was made, else the receiver itself. Unless a Branch syncs into its own Parent, what it only got from its Parent is left out unless picked. Sync replaces Save and Update.
+Putting one Environment's changes, chosen change by change, into another Environment of the same Project as the receiver's changes to deploy. It takes the sender's Working State, deployed or not, and never deletes or deploys anything. It compares over what the two last shared, so a change left out, or discarded by the receiver before it deploys, is offered again; a change the receiver also made since then is flagged and, if synced, overwritten. Sizing, custom domains, generated addresses, the Git branch and Volume data never sync. A secret's value never syncs either: a secret the receiver has stays as it is, and one it lacks arrives without a value, which the receiver's Deploy refuses until it is set. Any two Environments of a Project sync: a Branch into its Parent, sideways or skipping a level, a root into a Branch or into another root. A pair that never synced compares over where the sending Branch was made, else where the receiving Branch was made, else the receiver itself. Unless a Branch syncs into its own Parent, what it only got from its Parent is left out unless picked. Sync replaces Save and, with Follow, Update.
 _Avoid_: Push, promote, merge (a GitHub merge only), Publish
+
+**Follow**:
+A Branch receiving what its Parent deploys, as staged changes in its Working State. When a Deployment applies changes in an Environment, each of its Branches gets them, without waiting for its own undeployed changes, so they flow down one level per deploy. Where the Branch changed a setting too, its own value stays and the Parent's is a Use hint. Each of the Parent's changes is delivered once: one the Branch discards stays a Use hint until the Parent changes that setting again. Never-synced settings don't follow. A Parent's secret value follows into a Branch that never set its own. Follow replaces Update.
+_Avoid_: Pull, rebase, inherit
 
 **Never sync**:
 A mark an Environment puts on one of its settings: Sync never carries it from that Environment and never changes it there. It joins sizing, custom domains, generated addresses, the Git branch and Volume data, none of which ever sync. A Branch of the Environment still gets the Environment's value; the mark doesn't carry into Branches.

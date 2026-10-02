@@ -1,11 +1,12 @@
 //! Branches: an Environment made from a Parent in the same Project. It holds Own
 //! Copies of the Parent nodes it picked (fresh ids, the same lineage) and uses the
 //! rest live from the nearest Environment it comes from that runs them. Its base is
-//! what it and its Parent last shared, so Update stages exactly the Parent's
-//! deployed changes since. Core plans the picks and moves the rows
+//! what it and its Parent last shared, so Follow (and Update) stages exactly the
+//! Parent's deployed changes since. Core plans the picks and moves the rows
 //! (`plan_branch`, `branch_changes`, `live_values`); this module stores and lands them.
 
 mod create;
+mod follow;
 mod live;
 mod moving;
 mod never_sync;
@@ -13,6 +14,8 @@ mod pair;
 mod setup;
 mod sync;
 pub(crate) use create::*;
+pub use follow::{FollowHint, IncomingChange};
+pub(crate) use follow::{follow, hints, incoming};
 pub(crate) use live::*;
 pub(crate) use moving::*;
 pub(crate) use never_sync::{Mark, marks, never_sync, never_synced};
@@ -166,9 +169,10 @@ pub struct Update {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Take {
-    /// The retained Conditional Save whose hints to take.
-    pub from: ConditionalSaveId,
-    /// Its Destination; refused unless it is.
+    /// The retained Conditional Save whose hints to take, or the Parent whose Follow
+    /// hints to take.
+    pub from: HintSource,
+    /// Its Destination, or the Branch following the Parent; refused unless it is.
     #[serde(default)]
     #[ts(optional = nullable)]
     pub into: Option<EnvironmentRef>,
@@ -181,6 +185,16 @@ pub struct Take {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub version: Option<String>,
+}
+
+/// Where the hints a [`Take`] takes come from.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(untagged)]
+pub enum HintSource {
+    /// A merged pull request's Conditional Save: [`crate::PullRequestHint::save`].
+    Save(ConditionalSaveId),
+    /// The Branch's Parent: [`FollowHint::from`].
+    Parent(EnvironmentName),
 }
 
 /// When a Move's changes land.
