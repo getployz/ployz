@@ -127,11 +127,13 @@ pub(in crate::handlers) async fn check_listed(client: &mut Client) -> Result<(),
             format!("Server phase is {}", details.phase.as_str().escape_debug()).into(),
         ));
     }
+    // The published row is the participating identity, not the local key's id.
+    let id = details.machine.map_or(details.id, |machine| machine.id);
     if !client
         .machines()
         .await?
         .iter()
-        .any(|machine| machine.machine.id == details.id)
+        .any(|machine| machine.machine.id == id)
     {
         return Err(ConnectError::Attempt(
             "Server is not yet published in the Cluster store".into(),
