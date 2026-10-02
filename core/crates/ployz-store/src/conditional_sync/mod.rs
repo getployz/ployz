@@ -717,7 +717,7 @@ pub(crate) fn standing_in(
             .waiting
             .iter()
             .filter_map(|row| stored.picks.iter().find(|pick| pick.at.row == *row))
-            .map(|pick| pick.at.label())
+            .map(|pick| pick.at.to_string())
             .collect(),
         // Nothing saved there to land onto.
         None => Vec::new(),

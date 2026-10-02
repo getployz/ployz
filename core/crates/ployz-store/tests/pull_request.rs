@@ -780,7 +780,7 @@ fn a_destinations_count_is_the_rows_its_sync_offers_where_nodes_are_used_live() 
         )
         .unwrap();
     assert_eq!(review.into.name.as_str(), "qa");
-    let rows: Vec<String> = review.rows.iter().map(|row| row.at.label()).collect();
+    let rows: Vec<String> = review.rows.iter().map(|row| row.at.to_string()).collect();
     assert_eq!(rows, ["site.env.MODE"]);
     let view = store
         .read(

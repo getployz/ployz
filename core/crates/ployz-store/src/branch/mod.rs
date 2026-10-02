@@ -53,7 +53,7 @@ use crate::policy::{self, Policy};
 use crate::project::insert_environment;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::settings::NodeName;
-use crate::storage::Tx;
+use crate::storage::{self, Tx};
 use crate::{Actor, registry, review};
 
 /// Make a Branch of an Environment: Own Copies of the nodes picked, and of what
@@ -165,13 +165,12 @@ pub struct NamedRow {
     pub name: Option<String>,
 }
 
-impl NamedRow {
-    /// `NODE`, or `NODE.name`: as reads show it.
-    #[must_use]
-    pub fn label(&self) -> String {
+/// `NODE`, or `NODE.name`: as reads show it.
+impl std::fmt::Display for NamedRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.name {
-            Some(name) => format!("{}.{name}", self.node),
-            None => self.node.to_string(),
+            Some(name) => write!(f, "{}.{name}", self.node),
+            None => write!(f, "{}", self.node),
         }
     }
 }
@@ -207,13 +206,13 @@ pub fn resolve(asked: &RowRef, rows: &[NamedRow]) -> Result<BTreeSet<RowId>, Rpc
     let found: BTreeSet<RowId> = rows
         .iter()
         .filter(|row| {
-            let label = row.label();
+            let label = row.to_string();
             label == asked.0 || label.starts_with(&under)
         })
         .map(|row| row.row.clone())
         .collect();
     if found.is_empty() {
-        let labels: BTreeSet<String> = rows.iter().map(NamedRow::label).collect();
+        let labels: BTreeSet<String> = rows.iter().map(NamedRow::to_string).collect();
         return Err(error::choices(
             format!("No row named {} here", asked.0),
             &asked.0,
@@ -234,7 +233,7 @@ pub(crate) fn resolve_one(asked: &RowRef, rows: &[NamedRow]) -> Result<RowId, Rp
     let labels: BTreeSet<String> = rows
         .iter()
         .filter(|row| found.contains(&row.row))
-        .map(NamedRow::label)
+        .map(NamedRow::to_string)
         .collect();
     // Rows that share a name are told apart by RowId.
     let choices: Vec<String> = match labels.len() == found.len() {

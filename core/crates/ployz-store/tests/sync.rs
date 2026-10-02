@@ -181,7 +181,7 @@ fn view(store: &ConfigStore, who: &Actor) -> SyncView {
 
 /// The rows offered, by label, sorted.
 fn labels(view: &SyncView) -> Vec<String> {
-    let mut labels: Vec<String> = view.rows.iter().map(|row| row.at.label()).collect();
+    let mut labels: Vec<String> = view.rows.iter().map(|row| row.at.to_string()).collect();
     labels.sort_unstable();
     labels
 }
@@ -191,7 +191,7 @@ fn ticks(view: &SyncView) -> Vec<String> {
     let mut ticks: Vec<(String, bool)> = view
         .rows
         .iter()
-        .map(|row| (row.at.label(), row.ticked))
+        .map(|row| (row.at.to_string(), row.ticked))
         .collect();
     ticks.sort_unstable();
     ticks
@@ -203,7 +203,7 @@ fn ticks(view: &SyncView) -> Vec<String> {
 fn row<'view>(view: &'view SyncView, label: &str) -> &'view SyncRow {
     view.rows
         .iter()
-        .find(|row| row.at.label() == label)
+        .find(|row| row.at.to_string() == label)
         .unwrap()
 }
 

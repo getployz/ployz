@@ -338,7 +338,7 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
             };
             say!(
                 "  {}: {} → {}{notes}",
-                row.at.label(),
+                row.at.to_string(),
                 store::shown(&row.into),
                 store::shown(&row.from)
             );
@@ -351,7 +351,7 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
                 .collect();
             say!(
                 "  {}: never synced (marked in {})",
-                row.at.label(),
+                row.at.to_string(),
                 Vec::from_iter(sides).join(", ")
             );
         }
@@ -375,7 +375,7 @@ fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
                         &conditional_sync
                             .rows
                             .iter()
-                            .map(ployz_store::NamedRow::label)
+                            .map(ployz_store::NamedRow::to_string)
                             .collect::<Vec<_>>()
                     )
                 );

@@ -82,7 +82,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 ployz_store::Landed::Hint => say!(
                     "PR #{} merged {} = {} beside your edit; use it: {}",
                     hint.pull_request,
-                    hint.at.label(),
+                    hint.at.to_string(),
                     hint.value,
                     next(
                         matches,
@@ -92,7 +92,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                             "--take",
                             hint.conditional_sync.as_str(),
                             "--only",
-                            &hint.at.label()
+                            &hint.at.to_string()
                         ]
                     )
                 ),
@@ -100,7 +100,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                     say!(
                         "PR #{} staged {} = {}",
                         hint.pull_request,
-                        hint.at.label(),
+                        hint.at.to_string(),
                         hint.value
                     );
                 }
@@ -110,7 +110,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
             say!(
                 "{} deployed {} = {}, not staged here; use it: {}",
                 hint.from,
-                hint.at.label(),
+                hint.at.to_string(),
                 hint.value,
                 next(
                     matches,
@@ -120,7 +120,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                         "--take",
                         hint.from.as_str(),
                         "--only",
-                        &hint.at.label()
+                        &hint.at.to_string()
                     ]
                 )
             );

@@ -138,7 +138,7 @@ fn incoming(store: &ConfigStore, who: &Actor, environment: &str) -> Vec<String> 
     let mut incoming: Vec<String> = diff(store, who, environment)
         .incoming
         .iter()
-        .map(|change| format!("{} {}", change.at.label(), change.from))
+        .map(|change| format!("{} {}", change.at, change.from))
         .collect();
     incoming.sort();
     incoming
@@ -149,7 +149,7 @@ fn hints(store: &ConfigStore, who: &Actor, environment: &str) -> Vec<String> {
     diff(store, who, environment)
         .follow_hints
         .iter()
-        .map(|hint| format!("{} = {} from {}", hint.at.label(), hint.value, hint.from))
+        .map(|hint| format!("{} = {} from {}", hint.at, hint.value, hint.from))
         .collect()
 }
 

@@ -392,7 +392,12 @@ fn a_secret_the_destination_stages_itself_keeps_the_held_value_out_of_saved_stat
         .unwrap()
         .hints;
     assert_eq!(
-        texts(&hints.iter().map(|hint| hint.at.label()).collect::<Vec<_>>()),
+        texts(
+            &hints
+                .iter()
+                .map(|hint| hint.at.to_string())
+                .collect::<Vec<_>>()
+        ),
         ["web.env.TOKEN"]
     );
     assert_eq!(

@@ -130,12 +130,12 @@ fn into(
 
 /// The rows of `follow` into `branch` delivered at the value they carry now, yet not
 /// staged: its hints.
-fn hinted<'r>(
+fn hinted<'rows>(
     tx: &mut dyn Tx,
     branch: &EnvironmentId,
     parent: &EnvironmentId,
-    rows: &'r [PlannedRow],
-) -> Result<Vec<&'r PlannedRow>, RpcError> {
+    rows: &'rows [PlannedRow],
+) -> Result<Vec<&'rows PlannedRow>, RpcError> {
     let delivered = arrivals(tx, branch, parent)?;
     Ok(rows
         .iter()

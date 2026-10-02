@@ -29,7 +29,7 @@ pub(super) fn put_sealed(
     row: &RowId,
     cell: &SealedCell,
 ) -> Result<(), ConfigError> {
-    put_into(env, row, &cell.redacted())?;
+    put_into(env, row, &cell.to_redacted())?;
     if let (SealedCell::Secret(secret), At::Variable(key)) = (cell, &row.at)
         && let Some(variable) = service_mut(env, &row.lineage)
             .and_then(|service| service.variables.iter_mut().find(|v| v.key == *key))

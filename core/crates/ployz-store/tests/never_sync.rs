@@ -114,7 +114,7 @@ fn never_sync(environment: &str, rows: &[&str], off: bool) -> NeverSync {
 }
 
 fn labels_of(rows: &[NamedRow]) -> Vec<String> {
-    rows.iter().map(NamedRow::label).collect()
+    rows.iter().map(NamedRow::to_string).collect()
 }
 
 /// What `environment` marks Never sync, as the Environment view lists it.
@@ -187,14 +187,14 @@ fn between(
                 .iter()
                 .map(|mark| mark.environment.to_string())
                 .collect();
-            (row.at.label(), sides)
+            (row.at.to_string(), sides)
         })
         .collect();
     (labels(&view), apart)
 }
 
 fn labels(view: &SyncView) -> Vec<String> {
-    let mut labels: Vec<String> = view.rows.iter().map(|row| row.at.label()).collect();
+    let mut labels: Vec<String> = view.rows.iter().map(|row| row.at.to_string()).collect();
     labels.sort_unstable();
     labels
 }
@@ -253,7 +253,7 @@ fn a_setting_either_side_marks_never_sync_is_never_a_row_and_is_listed_apart() {
         .iter()
         .map(|row| {
             (
-                row.at.label(),
+                row.at.to_string(),
                 row.marks
                     .iter()
                     .map(|mark| mark.environment.as_str())
@@ -348,7 +348,7 @@ fn never_sync_names_a_row_of_a_node_the_environment_has() {
     set(&store, &who, "fix-web", &[("web.env.NEW", json!("1"))]);
     let offered = view(&store, &who);
     assert!(offered.rows.is_empty());
-    assert_eq!(offered.never_synced[0].at.label(), "web.env.NEW");
+    assert_eq!(offered.never_synced[0].at.to_string(), "web.env.NEW");
 }
 
 /// Names resolve in the marking Environment's own configuration: a root marks by
@@ -454,7 +454,7 @@ fn a_new_services_row_kept_out_by_a_mark_names_the_mark_to_undo() {
         .unwrap();
     let apart = view(&store, &who).never_synced;
     assert_eq!(apart.len(), 1);
-    assert_eq!(apart[0].at.label(), "api");
+    assert_eq!(apart[0].at.to_string(), "api");
     let [mark] = apart[0].marks.as_slice() else {
         panic!("one mark: {:?}", apart[0].marks);
     };

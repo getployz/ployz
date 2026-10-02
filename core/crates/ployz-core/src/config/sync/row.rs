@@ -321,7 +321,7 @@ pub enum SealedCell {
 impl SealedCell {
     /// What a plan compares it as.
     #[must_use]
-    pub fn redacted(&self) -> Cell {
+    pub fn to_redacted(&self) -> Cell {
         match self {
             Self::Cell(cell) => cell.clone(),
             Self::Secret(secret) => Cell::Secret {

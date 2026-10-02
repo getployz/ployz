@@ -564,7 +564,7 @@ pub(super) fn hint(
 }
 
 /// How a row arrived.
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum How {
     Follow,
@@ -615,10 +615,6 @@ fn arrive(
         Arrival::Hint => ("hint", None, None, None),
         Arrival::Settled => ("settled", None, None, None),
     };
-    let how = match arrived.how {
-        How::Follow => "follow",
-        How::Sync => "sync",
-    };
     tx.execute(
         "INSERT INTO config_sync_arrival (environment_id, other_id, lineage, at, \
          organization_id, how, state, value, prior, was, sync_id) \
@@ -634,7 +630,7 @@ fn arrive(
             arrived.row.lineage().into(),
             arrived.row.at().to_string().as_str().into(),
             who.organization.as_str().into(),
-            how.into(),
+            storage::variant_text(&arrived.how).as_str().into(),
             state.into(),
             json_of(&arrived.value).as_str().into(),
             prior.as_deref().into(),
@@ -713,7 +709,7 @@ pub(super) fn undo(
         return Ok(false);
     }
     let label = |row: &RowId| {
-        named(&[&receiver.working], row).map_or_else(|| row.to_string(), |row| row.label())
+        named(&[&receiver.working], row).map_or_else(|| row.to_string(), |row| row.to_string())
     };
     let mut others = Vec::new();
     let mut landed = Vec::new();

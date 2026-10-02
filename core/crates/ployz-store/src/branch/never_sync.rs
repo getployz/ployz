@@ -88,7 +88,7 @@ pub(crate) fn never_synced(
         &[&environment.working],
         &marked(tx, &environment.summary.id)?,
     );
-    marked.sort_by_key(NamedRow::label);
+    marked.sort_by_key(NamedRow::to_string);
     Ok(marked)
 }
 

@@ -159,7 +159,7 @@ fn a_branch_compares_with_its_parent_as_before_the_sync_migration() {
         let image = view
             .rows
             .iter()
-            .find(|row| row.at.label() == "web.image")
+            .find(|row| row.at.to_string() == "web.image")
             .unwrap();
         store
             .write(

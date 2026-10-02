@@ -110,7 +110,7 @@ pub(crate) fn hold(
     let found: Vec<(RepositoryId, String)> = brought
         .iter()
         .filter(|(_, at)| at.row == *row)
-        .map(|(repository, at)| (*repository, at.label()))
+        .map(|(repository, at)| (*repository, at.to_string()))
         .collect();
     let Some((repository, label)) = found.first().cloned() else {
         let rows: Vec<String> = named.iter().map(|at| at.row.to_string()).collect();

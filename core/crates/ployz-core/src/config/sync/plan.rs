@@ -512,7 +512,7 @@ impl Plan {
                 row: id.clone(),
                 prior: row.base.clone(),
                 was,
-                value: value.redacted(),
+                value: value.to_redacted(),
             });
         }
         let next = parse_environment_intent(json!(next))?;
@@ -613,13 +613,15 @@ impl Plan {
 }
 
 /// Why [`unapply`] refused.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Unapplied {
     /// The row holds other than what landed, or it is a new node that holds a row
     /// that didn't land with it.
+    #[error("{0} changed since it landed")]
     Changed(RowId),
     /// What it puts back doesn't hold together.
-    Invalid(ConfigError),
+    #[error(transparent)]
+    Invalid(#[from] ConfigError),
 }
 
 /// Put back what each of `landed` held before it landed in `intent`, whose generated
@@ -649,7 +651,7 @@ pub fn unapply(intent: &Intent, suffix: &str, landed: &[Landed]) -> Result<Inten
     order.sort_by_key(|one| std::cmp::Reverse(landing_order(intent, &one.row)));
     let mut intent = intent.clone();
     for one in order {
-        put_sealed(&mut intent, &one.row, &one.was).map_err(Unapplied::Invalid)?;
+        put_sealed(&mut intent, &one.row, &one.was)?;
     }
     Ok(intent)
 }
@@ -668,7 +670,10 @@ fn landing_order(env: &Intent, row: &RowId) -> u8 {
 /// those on what it can't arrive without.
 // ponytail: a removed node's row also counts its children's marks; split by the
 // row's sides if unmarking those ever surprises.
-pub fn marks_on<'m>(row: &RowId, marks: &'m BTreeSet<RowId>) -> impl Iterator<Item = &'m RowId> {
+pub fn marks_on<'marks>(
+    row: &RowId,
+    marks: &'marks BTreeSet<RowId>,
+) -> impl Iterator<Item = &'marks RowId> {
     marks.iter().filter(move |mark| {
         *mark == row || (row.at == At::Node && mark.lineage == row.lineage && mark.at.needed())
     })

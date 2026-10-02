@@ -274,7 +274,7 @@ fn sync(review: &SyncView, labels: Option<&[&str]>) -> SyncChanges {
             review
                 .rows
                 .iter()
-                .filter(|row| named(&row.at.label()))
+                .filter(|row| named(&row.at.to_string()))
                 .map(|row| row.at.row.clone().into())
                 .collect(),
         ),
@@ -297,7 +297,7 @@ fn row(key: &str) -> RowId {
 
 /// `label`'s secret row in `review`.
 fn secret(review: &SyncView, label: &str) -> Option<SecretRow> {
-    let row = review.rows.iter().find(|row| row.at.label() == label);
+    let row = review.rows.iter().find(|row| row.at.to_string() == label);
     row.unwrap().secret.clone()
 }
 
@@ -403,7 +403,7 @@ fn a_conditional_sync_goes_live_with_the_push_that_carries_its_merge() {
     let rows: Vec<(String, bool)> = review
         .rows
         .iter()
-        .map(|row| (row.at.label(), row.ticked))
+        .map(|row| (row.at.to_string(), row.ticked))
         .collect();
     assert_eq!(
         rows,
@@ -452,7 +452,7 @@ fn a_conditional_sync_goes_live_with_the_push_that_carries_its_merge() {
         panic!("a Sync into the Destination stands for the merge")
     };
     assert_eq!(conditional.state, ConditionalSyncState::Standing);
-    let labels: Vec<String> = conditional.rows.iter().map(|row| row.label()).collect();
+    let labels: Vec<String> = conditional.rows.iter().map(|row| row.to_string()).collect();
     assert_eq!(labels, ["web.env.MODE", "web.env.TOKEN"]);
     assert_eq!(synced.sync.as_str(), conditional.id.as_str());
     // Nothing lands before the merge.
@@ -639,7 +639,12 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
     assert_eq!(hints.len(), 1);
     let hint = &hints[0];
     assert_eq!(
-        (hint.at.label(), hint.landed, &hint.value, hint.pull_request),
+        (
+            hint.at.to_string(),
+            hint.landed,
+            &hint.value,
+            hint.pull_request
+        ),
         (
             "web.env.MODE".into(),
             Landed::Hint,

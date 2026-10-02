@@ -501,7 +501,8 @@ pub(crate) fn sealed(
     values
         .iter()
         .map(|(row, value)| {
-            let label = named(sides, row).map_or_else(|| row.to_string(), |named| named.label());
+            let label =
+                named(sides, row).map_or_else(|| row.to_string(), |named| named.to_string());
             let needs = rows.iter().any(|planned| {
                 planned.id == *row
                     && matches!(
