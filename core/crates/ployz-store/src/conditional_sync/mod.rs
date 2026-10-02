@@ -122,9 +122,9 @@ struct Stored {
 /// A picked row.
 #[derive(Clone, Serialize, Deserialize)]
 struct Pick {
-    row: RowId,
     /// The Destination's cell the Sync was reviewed against.
     reviewed: Cell,
+    /// The row, as the Sync named it.
     at: NamedRow,
     /// The pull request's value, as the Sync showed it.
     from: Value,
@@ -138,7 +138,7 @@ struct Pick {
 impl Pick {
     /// `suffix` is the Destination's generated-address suffix.
     fn landed(&self, working: &SavedEnvironmentIntent, suffix: &str) -> Landed {
-        match self.staged.as_ref() == Some(&cell_at(working, &self.row, suffix)) {
+        match self.staged.as_ref() == Some(&cell_at(working, &self.at.row, suffix)) {
             true => Landed::Staged,
             false => Landed::Hint,
         }
@@ -200,7 +200,7 @@ fn admit(
         .rows()
         .iter()
         .filter(|row| matches!(row.verdict, Verdict::Moves { .. }))
-        .filter(|row| stored.picks.iter().any(|pick| pick.row == row.id))
+        .filter(|row| stored.picks.iter().any(|pick| pick.at.row == row.id))
         .map(|row| row.id.clone())
         .collect();
     let kept = plan
@@ -239,7 +239,7 @@ fn admitted(
         stored
             .picks
             .iter()
-            .any(|pick| pick.row == row.id && pick.reviewed == row.into)
+            .any(|pick| pick.at.row == row.id && pick.reviewed == row.into)
             && (!needs_value || cell_at(working, &row.id, &stored.hostnames.into) == row.into)
     })
 }
@@ -585,8 +585,8 @@ pub(crate) fn land(
     let introduced: BTreeSet<&str> = stored
         .picks
         .iter()
-        .filter(|pick| pick.row.at() == "node")
-        .map(|pick| pick.row.lineage())
+        .filter(|pick| pick.at.row.at() == "node")
+        .map(|pick| pick.at.row.lineage())
         .collect();
     let arriving: BTreeSet<&str> = saved
         .picks
@@ -632,9 +632,9 @@ pub(crate) fn land(
         &[into.as_str().into(), id.as_str().into()],
     )?;
     stored.picks.retain_mut(|pick| {
-        let moves = saved.moves.contains(&pick.row) || staged.moves.contains(&pick.row);
-        let left = moves && !saved.picks.contains(&pick.row);
-        pick.staged = cells.get(&pick.row).cloned();
+        let moves = saved.moves.contains(&pick.at.row) || staged.moves.contains(&pick.at.row);
+        let left = moves && !saved.picks.contains(&pick.at.row);
+        pick.staged = cells.get(&pick.at.row).cloned();
         left
     });
     if stored.picks.is_empty() {
@@ -719,7 +719,7 @@ pub(crate) fn standing_in(
             .applied
             .waiting
             .iter()
-            .filter_map(|row| stored.picks.iter().find(|pick| pick.row == *row))
+            .filter_map(|row| stored.picks.iter().find(|pick| pick.at.row == *row))
             .map(|pick| pick.at.label())
             .collect(),
         // Nothing saved there to land onto.

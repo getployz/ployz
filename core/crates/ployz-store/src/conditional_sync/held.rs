@@ -98,7 +98,7 @@ pub(crate) fn hold(
     for (repository, stored) in &rows {
         for pick in &stored.picks {
             if pick.reviewed.is_secret()
-                || cell_at(&stored.from, &pick.row, &stored.hostnames.from).is_secret()
+                || cell_at(&stored.from, &pick.at.row, &stored.hostnames.from).is_secret()
             {
                 brought.push((*repository, pick.at.clone()));
             }

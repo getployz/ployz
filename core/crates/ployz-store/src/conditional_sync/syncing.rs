@@ -39,7 +39,6 @@ pub(crate) fn sync(
     for row in checked.rows().iter().filter(|row| picks.contains(&row.id)) {
         kept.push(Pick {
             at: branch::named(&sides, &row.id).ok_or_else(|| error::corrupt("Sync row"))?,
-            row: row.id.clone(),
             reviewed: row.into.clone(),
             from: branch::shown(&from.working, &from_names, &row.id, &row.from),
             staged: None,
@@ -206,7 +205,7 @@ pub(crate) fn take(
         &admitted.picks,
     )?;
     for pick in &mut stored.picks {
-        if let Some(cell) = cells.get(&pick.row) {
+        if let Some(cell) = cells.get(&pick.at.row) {
             pick.staged = Some(cell.clone());
         }
     }
