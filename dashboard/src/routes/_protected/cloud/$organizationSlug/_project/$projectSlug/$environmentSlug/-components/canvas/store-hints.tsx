@@ -2,11 +2,11 @@ import { useLoaderData, useParams } from "@tanstack/react-router";
 import type { DiffView, FollowHint, JsonValue, PullRequestHint } from "@ployz/sdk";
 import { Button } from "#/components/ui/button";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
-import { nodeName, presentMoveRow } from "#/modules/config-store/store-branches";
+import { nodeName, presentRow } from "#/modules/config-store/store-branches";
 import { hintNotes } from "#/modules/config-store/store-pull-requests";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
-import type { ChangeOrigin } from "../canvas/EnvironmentChangesReview";
+import type { ChangeOrigin } from "./EnvironmentChangesReview";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 
 /**
@@ -42,7 +42,7 @@ export function storeHintNotes(diff: DiffView, groups: readonly ChangeGroup[], n
       if (!prs.length && !parents.length) return null;
       return (
         <span className="flex flex-col items-start">
-          {prs.map((hint) => <HintNote key={`${hint.save}:${hint.row}`} hint={hint} />)}
+          {prs.map((hint) => <HintNote key={`${hint.conditional_sync}:${hint.row}`} hint={hint} />)}
           {parents.map((hint) => <FollowNote key={hint.row} hint={hint} version={diff.version} />)}
         </span>
       );
@@ -55,7 +55,7 @@ export function storeHintNotes(diff: DiffView, groups: readonly ChangeGroup[], n
         {notes.rest.length ? (
           <ItemGroup role="group" aria-label="From merged pull requests">
             {notes.rest.map((hint) => (
-              <Item key={`${hint.save}:${hint.row}`} variant="outline" size="sm">
+              <Item key={`${hint.conditional_sync}:${hint.row}`} variant="outline" size="sm">
                 <ItemContent className="min-w-0">
                   <ItemTitle>{presented(hint).node} · {presented(hint).label}</ItemTitle>
                   {hint.landed === "staged" ? <ItemDescription className="font-mono">{presented(hint).after || "—"}</ItemDescription> : null}
@@ -90,7 +90,7 @@ function HintNote({ hint }: { hint: PullRequestHint }) {
     <span className="flex min-w-0 items-center gap-1 text-muted-foreground">
       PR #{hint.pull_request}: <span className="truncate font-mono text-foreground">{presented(hint).after || "—"}</span>
       <Button variant="link" size="xs" aria-label={`Use PR #${hint.pull_request}'s ${hint.row}`}
-        onClick={() => take(hint.save, hint.row)}>
+        onClick={() => take(hint.conditional_sync, hint.row)}>
         Use
       </Button>
     </span>
@@ -111,7 +111,7 @@ function FollowNote({ hint, version }: { hint: FollowHint; version: string }) {
 }
 
 /**
- * Stages a hint's value over this Environment's own, from a Conditional Save or the Parent; the refetched review
+ * Stages a hint's value over this Environment's own, from a Conditional Sync or the Parent; the refetched review
  * shows it, a refusal toasts.
  */
 function useTake() {
@@ -119,8 +119,8 @@ function useTake() {
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const writer = useStoreWriter(params.organizationSlug);
   return (from: string, row: string, version?: string) =>
-    void writer.commit({ command: "move", move: "take", from, into: store, rows: [row], version });
+    void writer.commit({ command: "take", from, into: store, rows: [row], version });
 }
 
 /** A hint in a Sync's words: its node and setting, and the value it offers (a secret stays hidden). */
-const presented = (hint: { row: string; value: JsonValue }) => presentMoveRow({ row: hint.row, conflict: false, from: hint.value, into: null });
+const presented = (hint: { row: string; value: JsonValue }) => presentRow({ row: hint.row, from: hint.value, into: null });

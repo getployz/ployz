@@ -13,6 +13,7 @@ import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
 import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field";
+import { Switch } from "#/components/ui/switch";
 import { Item, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
 import { cn } from "#/lib/utils";
 import { shownValue } from "#/modules/config-store/store-deployments";
@@ -32,7 +33,6 @@ import { RegistryCredentialsField } from "./ServiceRegistryCredentialsSection";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 import { ServiceCommandField } from "./ServiceCommandField";
 import { StoreBranchField, StoreDockerfileField, StorePreferredBuilderField, useRepositoryRef } from "./StoreGitFields";
-import { SwitchField } from "../../../-components/branch-review/SaveSheet";
 import { RowWarning, SettingsSection, SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
 import { SERVICE_SETTINGS_SECTIONS, type ServiceSettingsSectionId } from "./service-settings-sections";
@@ -660,5 +660,18 @@ function StoreReplicasCapped({ params, volume }: {
         <Input id="replicas-capped" value="1" disabled />
       </div>
     </Field>
+  );
+}
+
+function SwitchField({ id, label, description, checked, onChange }: {
+  id: string; label: string; description?: string; checked: boolean; onChange: (checked: boolean) => void;
+}) {
+  return (
+    <FieldLabel htmlFor={id}>
+      <Field orientation="horizontal">
+        <FieldContent>{label}{description ? <FieldDescription>{description}</FieldDescription> : null}</FieldContent>
+        <Switch id={id} checked={checked} onCheckedChange={onChange} />
+      </Field>
+    </FieldLabel>
   );
 }

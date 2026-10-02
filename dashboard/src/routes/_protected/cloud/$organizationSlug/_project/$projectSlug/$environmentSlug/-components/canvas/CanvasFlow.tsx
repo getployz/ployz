@@ -11,7 +11,7 @@ import { useLoaderData, useLocation, useNavigate, useParams } from "@tanstack/re
 import { PlusIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { BottomBar } from "./BottomBar";
-import { storeHintNotes } from "../branch-review/store-hints";
+import { storeHintNotes } from "./store-hints";
 import { CANVAS_FIT_VIEW, CANVAS_MAX_ZOOM, CANVAS_MIN_ZOOM, SNAP_GRID } from "./constants";
 import { canvasNodeTypes } from "./canvas-node-types";
 import { CanvasNodeList } from "./CanvasServiceList";
@@ -25,7 +25,7 @@ import { LitVolumeProvider } from "./VolumeTray";
 import { usePickingView } from "../new-branch/branch-picking";
 import { useVolumeCreator } from "./useVolumeCreator";
 import { useStoreChangeActions } from "./useStoreChangeActions";
-import { useInFlightDeployments, useSavesInto } from "#/modules/config-store/store-view.queries";
+import { useConditionalSyncsInto, useInFlightDeployments } from "#/modules/config-store/store-view.queries";
 import { changeGroups } from "#/modules/config-store/store-deployments";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { CanvasContextMenu } from "./CanvasContextMenu";
@@ -198,7 +198,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const actions = useStoreChangeActions(params.organizationSlug, ref, diff.version,
     (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }));
   const inFlight = useInFlightDeployments(params.organizationSlug, ref);
-  const waiting = useSavesInto(params.organizationSlug, params.projectSlug, diff.environment.name);
+  const waiting = useConditionalSyncsInto(params.organizationSlug, params.projectSlug, diff.environment.name);
   const { noServers } = use(RuntimeLensContext);
   const groups = changeGroups(diff, store.services.map(({ service }) => service));
   return (

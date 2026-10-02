@@ -1,7 +1,7 @@
 import type { BranchView, DeploymentSummary, NeverSyncedRow, PullRequestView, SyncRow } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
 import { settingTitle } from "./catalog";
-import { moveText, nodeName } from "./store-branches";
+import { nodeName, rowText } from "./store-branches";
 
 /**
  * The path the Store's other commands (Never sync, Discard) name a Sync row by: `api.env.KEY`, `api.image`,
@@ -39,8 +39,8 @@ export function syncLine(row: SyncRow, into: string): SyncLine {
   return {
     row, ...syncName(row),
     badge: row.changed ? `Changed in ${into}` : row.secret ? "Secret" : row.new ? "New" : null,
-    before: isWholeNode(row) || row.secret ? "" : moveText(row.into),
-    after: isWholeNode(row) || row.secret ? "" : moveText(row.from),
+    before: isWholeNode(row) || row.secret ? "" : rowText(row.into),
+    after: isWholeNode(row) || row.secret ? "" : rowText(row.from),
   };
 }
 

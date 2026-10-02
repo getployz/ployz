@@ -31,7 +31,7 @@ function open(view: DiffView) {
   vi.spyOn(toast, "error").mockImplementation(() => "toast");
   // SAFETY: after a write the writer refetches views these tests never read.
   vi.spyOn(functions, "readStoreViewServerFn").mockResolvedValue({ ok: true, value: {} } as never);
-  const write = vi.spyOn(functions, "writeStoreServerFn").mockResolvedValue({ ok: true, value: { written: "moved" } } as never);
+  const write = vi.spyOn(functions, "writeStoreServerFn").mockResolvedValue({ ok: true, value: { written: "taken" } } as never);
   const neverSync = vi.fn();
   const groups = changeGroups(view, []);
   const notes = storeHintNotes(view, groups, neverSync, "production");
@@ -116,7 +116,7 @@ it("offers the Parent's value beside the Branch's own change, and Use stages it"
   expect(own.getByText(/production has since set/u).textContent).toContain("warn");
   fireEvent.click(own.getByRole("button", { name: "Use theirs: production's api.env.LOG_LEVEL" }));
   await waitFor(() => expect(test.commands()).toEqual([
-    { command: "move", move: "take", from: "production", into: fixApi, rows: ["api.env.LOG_LEVEL"], version: "4:abc" },
+    { command: "take", from: "production", into: fixApi, rows: ["api.env.LOG_LEVEL"], version: "4:abc" },
   ]));
 });
 
@@ -130,6 +130,6 @@ it("keeps a discarded change from the Parent after the changes, with Use", async
   expect(after.getByText("api · CACHE_TTL")).toBeTruthy();
   fireEvent.click(after.getByRole("button", { name: "Use theirs: production's api.env.CACHE_TTL" }));
   await waitFor(() => expect(test.commands()).toEqual([
-    { command: "move", move: "take", from: "production", into: fixApi, rows: ["api.env.CACHE_TTL"], version: "4:abc" },
+    { command: "take", from: "production", into: fixApi, rows: ["api.env.CACHE_TTL"], version: "4:abc" },
   ]));
 });

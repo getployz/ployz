@@ -1,6 +1,6 @@
 # Ployz Cloud
 
-Ployz Cloud is the product and workflow context around creating, connecting, and operating Ployz runtime machines. It hosts each Organization's Config Store; authored-configuration terms (Working State, Saved State, Discard, Branches, Save, Update) live in the [core glossary](../core/CONTEXT.md). Shared runtime bootstrap terms follow that glossary too and are mirrored here for Cloud product language.
+Ployz Cloud is the product and workflow context around creating, connecting, and operating Ployz runtime machines. It hosts each Organization's Config Store; authored-configuration terms (Working State, Saved State, Discard, Branches, Sync, Follow, Never sync) live in the [core glossary](../core/CONTEXT.md). Shared runtime bootstrap terms follow that glossary too and are mirrored here for Cloud product language.
 
 ## Language
 

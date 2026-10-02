@@ -148,11 +148,11 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
         <ServicesSection picking={picking} nameOf={nameOf} target={branchName || "this branch"} who="This branch" />
         <SetupSection plan={plan} nameOf={nameOf} setupCommands={setupCommands} onSetupCommands={setSetupCommands} />
         <FieldSet>
-          <FieldLegend>After saving</FieldLegend>
-          <FieldDescription>Otherwise it can be deleted once its changes are saved.</FieldDescription>
+          <FieldLegend>After syncing</FieldLegend>
+          <FieldDescription>Otherwise it can close once its changes sync into {parent.name}, and closes after a week idle.</FieldDescription>
           <Item variant="muted" render={<label htmlFor="branch-keep" />}>
             <ItemMedia><Switch id="branch-keep" checked={keep} onCheckedChange={setKeep} /></ItemMedia>
-            <ItemContent><ItemTitle>Keep it after saving</ItemTitle></ItemContent>
+            <ItemContent><ItemTitle>Keep it after syncing into {parent.name}</ItemTitle></ItemContent>
           </Item>
         </FieldSet>
       </FieldGroup></div>

@@ -28,7 +28,7 @@ const summary = (name: string) => ({ id: `id-${name}`, project: "shop", name, re
 const listing = (name: string, extra: Partial<EnvironmentListing> = {}): EnvironmentListing =>
   ({ id: `id-${name}`, name, default: false, parent: null, removal: null, branch_setup: [], ...extra });
 const branchView = (extra: Partial<BranchView> = {}): BranchView => ({
-  environment: summary("fix-api"), parent: "production", kept: false, setup: [], live: [], update: [], to_parent: 3,
+  environment: summary("fix-api"), parent: "production", kept: false, setup: [], live: [], to_parent: 3,
   closes_at: Date.now() / 1000 + 5 * 24 * 60 * 60 - 60, pull_request: null, ...extra,
 });
 const row = (key: string, label: string, extra: Partial<SyncRow> = {}): SyncRow =>
