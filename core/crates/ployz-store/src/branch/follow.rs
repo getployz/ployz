@@ -220,11 +220,12 @@ pub(crate) fn incoming(
          ORDER BY a.lineage, a.at",
         &[receiver.summary.id.as_str().into()],
     )?;
+    let suffix = suffix(tx, receiver)?;
     let mut incoming = Vec::new();
     for arrival in &pending {
         let row = row_id(arrival.text(1)?, arrival.text(2)?)?;
         let value: Cell = arrival.json(3, "Sync")?;
-        if cell_at(&receiver.working, &row) != value {
+        if cell_at(&receiver.working, &row, &suffix) != value {
             continue;
         }
         if let Some(at) = named(&[&receiver.working], &row) {

@@ -1020,3 +1020,36 @@ fn a_new_service_arrives_without_its_sizing() {
         json!(1)
     );
 }
+
+#[test]
+fn a_new_service_is_reviewed_and_undone_whole() {
+    let (store, who) = shop(false);
+    service(&store, &who, "fix-web", 5, "api", "api:1");
+    // What the new node carries is part of what was reviewed.
+    let review = view(&store, &who);
+    set(&store, &who, "fix-web", &[("api.image", json!("api:2"))]);
+    assert_eq!(
+        store.write(&who, &sync(&review, None)).unwrap_err().code,
+        RpcErrorCode::Conflict
+    );
+
+    // Edited after it synced, in what it carries or in a row that didn't land with
+    // it, it isn't undone.
+    for (path, value) in [
+        ("api.image", json!("api:3")),
+        ("api.startCommand", json!("go")),
+    ] {
+        let synced = sync_into(&store, &who, ("fix-web", "production"), None);
+        set(&store, &who, "production", &[(path, value)]);
+        assert_eq!(
+            undo(&store, &who, &synced).unwrap_err().0,
+            RpcErrorCode::Conflict,
+            "{path}"
+        );
+        assert_eq!(services(&store, &who, "production"), ["api", "db", "web"]);
+        discard(&store, &who, "api");
+    }
+    let synced = sync_into(&store, &who, ("fix-web", "production"), None);
+    assert_eq!(undo(&store, &who, &synced), Ok("production".into()));
+    assert_eq!(services(&store, &who, "production"), ["db", "web"]);
+}

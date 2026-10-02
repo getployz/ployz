@@ -1231,7 +1231,16 @@ fn a_sync_introduces_a_new_branch_service_into_the_parent() {
     let node_row = row(&plan, &node);
     assert_eq!(
         (&node_row.from, &node_row.into, node_row.requires.as_ref()),
-        (&val(json!("jobs")), &Cell::Absent, None)
+        (
+            &val(json!({
+                "name": "jobs",
+                "managedHostnames": [{ "prefix": "jobs", "targetPort": null }],
+                "privateDns": "jobs",
+                "source.image": "jobs:1",
+            })),
+            &Cell::Absent,
+            None
+        )
     );
     for child in [&mode, &key] {
         assert_eq!(
@@ -1567,9 +1576,13 @@ fn a_cell_reads_as_the_plan_reads_it() {
     let plan = compare(Some(&parent()), &branch(), &parent(), Way::Sync);
     let into = intent(&parent());
     for row in plan.rows() {
-        assert_eq!(cell_at(&into, &row.id), row.into, "{}", row.id);
+        assert_eq!(cell_at(&into, &row.id, ""), row.into, "{}", row.id);
     }
-    let secret = cell_at(&into, &format!("{API}:variables.TOKEN").parse().unwrap());
+    let secret = cell_at(
+        &into,
+        &format!("{API}:variables.TOKEN").parse().unwrap(),
+        "",
+    );
     assert!(secret.is_secret(), "{secret:?}");
     assert!(!Cell::Absent.is_secret());
 }

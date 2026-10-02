@@ -136,8 +136,9 @@ struct Pick {
 }
 
 impl Pick {
-    fn landed(&self, working: &SavedEnvironmentIntent) -> Landed {
-        match self.staged.as_ref() == Some(&cell_at(working, &self.row)) {
+    /// `suffix` is the Destination's generated-address suffix.
+    fn landed(&self, working: &SavedEnvironmentIntent, suffix: &str) -> Landed {
+        match self.staged.as_ref() == Some(&cell_at(working, &self.row, suffix)) {
             true => Landed::Staged,
             false => Landed::Hint,
         }
@@ -594,7 +595,8 @@ pub(crate) fn land(
             .cloned(),
     );
     let staged = admit(&stored, &working, &marks, &held, |row| {
-        !introduced.contains(row.id.lineage()) && row.into == cell_at(&latest.intent, &row.id)
+        !introduced.contains(row.id.lineage())
+            && row.into == cell_at(&latest.intent, &row.id, &stored.hostnames.into)
     })?;
     let cells = staged_cells(&staged.applied);
     let next = with_variable_ids_of(next, &working, staged.applied.next);
@@ -654,7 +656,7 @@ pub(crate) fn hints(
         let number = row.number(1, "Conditional Sync")?;
         for pick in stored.picks {
             hints.push(PullRequestHint {
-                landed: pick.landed(&environment.working),
+                landed: pick.landed(&environment.working, &stored.hostnames.into),
                 conditional_sync: row.parse(0, "Conditional Sync ID")?,
                 pull_request: number,
                 at: pick.at,

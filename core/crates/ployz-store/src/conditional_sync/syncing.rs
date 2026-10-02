@@ -197,7 +197,7 @@ pub(crate) fn take(
     let hints: BTreeSet<RowId> = stored
         .picks
         .iter()
-        .filter(|pick| pick.landed(&into.working) == Landed::Hint)
+        .filter(|pick| pick.landed(&into.working, &stored.hostnames.into) == Landed::Hint)
         .map(|pick| pick.row.clone())
         .collect();
     if let Some(unknown) = take.rows.iter().flatten().find(|row| !hints.contains(row)) {

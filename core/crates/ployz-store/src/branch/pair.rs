@@ -479,7 +479,7 @@ pub(crate) fn rewind(
     for arrival in &pending {
         let (lineage, at) = (arrival.text(1)?, arrival.text(2)?);
         let row = row_id(lineage, at)?;
-        if cell_at(before, &row) == cell_at(after, &row) {
+        if cell_at(before, &row, "") == cell_at(after, &row, "") {
             continue;
         }
         let other = arrival.parse::<EnvironmentId>(0, "Sync")?;
@@ -572,8 +572,8 @@ pub(super) fn arrivals(
 
 /// Undo Sync `sync` in `receiver`, whose lock the caller holds: put back what each
 /// row it landed held before, and the pair bases' too. Refused when a row changed
-/// since it landed, or deployed. False when the Sync landed nothing there.
-// ponytail: undoing a new node removes it whole, with any edit of its rows since.
+/// since it landed (for a new node, any of its rows), or deployed. False when the
+/// Sync landed nothing there.
 pub(super) fn undo(
     tx: &mut dyn Tx,
     receiver: &mut Environment,
@@ -588,24 +588,16 @@ pub(super) fn undo(
     if rows.is_empty() {
         return Ok(false);
     }
+    let label = |row: &RowId| {
+        named(&[&receiver.working], row).map_or_else(|| row.to_string(), |row| row.label())
+    };
+    let mut others = Vec::new();
     let mut landed = Vec::new();
     for arrival in &rows {
         let row = row_id(arrival.text(1)?, arrival.text(2)?)?;
-        let label =
-            || named(&[&receiver.working], &row).map_or_else(|| row.to_string(), |row| row.label());
         if arrival.text(3)? != "pending" {
             return Err(error::conflict(
-                format!("{} is deployed: change it back instead", label()),
-                json!({ "row": row }),
-            ));
-        }
-        let value: Cell = arrival.json(4, "Sync")?;
-        if cell_at(&receiver.working, &row) != value {
-            return Err(error::conflict(
-                format!(
-                    "{} changed since it synced: change it back instead",
-                    label()
-                ),
+                format!("{} is deployed: change it back instead", label(&row)),
                 json!({ "row": row }),
             ));
         }
@@ -615,41 +607,36 @@ pub(super) fn undo(
                 .ok_or_else(|| error::corrupt("Sync"))?;
             serde_json::from_str(text).map_err(|_| error::corrupt("Sync"))
         };
-        landed.push((
-            arrival.parse::<EnvironmentId>(0, "Sync")?,
+        others.push(arrival.parse::<EnvironmentId>(0, "Sync")?);
+        landed.push(Landed {
             row,
-            cell(5)?,
-            cell(6)?,
-        ));
+            value: arrival.json(4, "Sync")?,
+            prior: cell(5)?,
+            was: cell(6)?,
+        });
     }
-    // A node's rows go before the node, and a Service before the Volumes it mounts.
-    let rank = |row: &RowId| match row.at().as_str() {
-        "node"
-            if receiver
-                .working
-                .volumes
-                .iter()
-                .any(|v| v.resource_lineage_id == row.lineage()) =>
-        {
-            2
+    receiver.working = match unapply(&receiver.working, &suffix(tx, receiver)?, &landed) {
+        Ok(working) => working,
+        Err(Unapplied::Changed(row)) => {
+            return Err(error::conflict(
+                format!(
+                    "{} changed since it synced: change it back instead",
+                    label(&row)
+                ),
+                json!({ "row": row }),
+            ));
         }
-        "node" => 1,
-        _ => 0,
+        Err(Unapplied::Invalid(error)) => return Err(config(error)),
     };
-    landed.sort_by_key(|(_, row, ..)| rank(row));
-    let mut working = receiver.working.clone();
-    for (_, row, _, was) in &landed {
-        working = put(&working, row, was).map_err(config)?;
-    }
-    receiver.working = working;
     scope::save_working(tx, receiver)?;
     tx.execute(
         "DELETE FROM config_sync_arrival WHERE environment_id = ?1 AND sync_id = ?2",
         &[id.as_str().into(), sync.as_str().into()],
     )?;
-    let priors = landed
+    let priors = others
         .into_iter()
-        .map(|(other, row, prior, _)| (other, row, prior))
+        .zip(landed)
+        .map(|(other, landed)| (other, landed.row, landed.prior))
         .collect();
     rewind_bases(tx, &receiver.summary.id, priors)?;
     Ok(true)

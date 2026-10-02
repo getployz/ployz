@@ -99,7 +99,9 @@ pub(crate) fn hold(
     let mut brought = Vec::new();
     for (repository, stored) in rows {
         for pick in &stored.picks {
-            if pick.reviewed.is_secret() || cell_at(&stored.from, &pick.row).is_secret() {
+            if pick.reviewed.is_secret()
+                || cell_at(&stored.from, &pick.row, &stored.hostnames.from).is_secret()
+            {
                 brought.push(pick.row.to_string());
                 if pick.row == *row {
                     found.push((repository, pick.at.label()));

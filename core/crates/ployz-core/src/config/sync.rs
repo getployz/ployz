@@ -467,8 +467,12 @@ pub fn plan(sides: Sides, policy: Policy) -> Plan {
         });
     };
     let node_cells = |lineage: &str| {
-        [base, Some(from), Some(into)]
-            .map(|env| env.map_or(Cell::Absent, |env| node_cell(env, lineage)))
+        [
+            (base, &hostnames.into),
+            (Some(from), &hostnames.from),
+            (Some(into), &hostnames.into),
+        ]
+        .map(|(env, suffix)| env.map_or(Cell::Absent, |env| node_cell(env, lineage, suffix)))
     };
     for lineage in from_nodes
         .keys()
@@ -640,14 +644,7 @@ impl Plan {
             }
             landing.push((row, arrives));
         }
-        // New Volumes land before the Services that mount them, nodes before their rows.
-        landing.sort_by_key(|(row, _)| match row.id.at {
-            At::Node if volume(&self.from, &row.id.lineage).is_some() => 0,
-            At::Node => 1,
-            At::Data | At::Name | At::Storage | At::Setting(_) | At::Mount(_) | At::Variable(_) => {
-                2
-            }
-        });
+        landing.sort_by_key(|(row, _)| landing_order(&self.from, &row.id));
         let mut next = self.into.clone();
         let mut base = self.base.clone();
         let mut landed = Vec::new();
@@ -802,10 +799,73 @@ pub fn put(intent: &Intent, row: &RowId, cell: &Cell) -> Result<Intent, ConfigEr
     Ok(intent)
 }
 
-/// What `intent` holds at `row`, redacted, as a plan's cells read it.
+/// What `intent` holds at `row`, redacted, as a plan's cells read it: generated
+/// addresses without `suffix`, the one `intent`'s Environment gives them.
 #[must_use]
-pub fn cell_at(intent: &Intent, row: &RowId) -> Cell {
-    cell(intent, row, "", false)
+pub fn cell_at(intent: &Intent, row: &RowId, suffix: &str) -> Cell {
+    cell(intent, row, suffix, false)
+}
+
+/// Why [`unapply`] refused.
+#[derive(Debug)]
+pub enum Unapplied {
+    /// The row holds other than what landed, or it is a new node that holds a row
+    /// that didn't land with it.
+    Changed(RowId),
+    Invalid(ConfigError),
+}
+
+/// Put back what each of `landed` held before it landed in `intent`, whose generated
+/// addresses end in `suffix`: [`Plan::apply`] in reverse. A new node goes whole.
+///
+/// # Errors
+/// Returns [`Unapplied::Changed`] for a row changed since it landed, and
+/// [`Unapplied::Invalid`] when what it held no longer fits.
+pub fn unapply(intent: &Intent, suffix: &str, landed: &[Landed]) -> Result<Intent, Unapplied> {
+    for one in landed {
+        let row = &one.row;
+        let changed = || Err(Unapplied::Changed(row.clone()));
+        if cell(intent, row, suffix, false) != one.value {
+            return changed();
+        }
+        let Some(&node) = nodes(intent)
+            .get(row.lineage.as_str())
+            .filter(|_| row.at == At::Node)
+        else {
+            continue;
+        };
+        let with = |at: &At| {
+            landed
+                .iter()
+                .any(|l| l.row.lineage == row.lineage && l.row.at == *at)
+        };
+        if let Some(at) = cells(intent, node, suffix, false)
+            .into_keys()
+            .find(|at| !at.carried() && !with(at))
+        {
+            return Err(Unapplied::Changed(RowId {
+                lineage: row.lineage.clone(),
+                at,
+            }));
+        }
+    }
+    let mut order: Vec<&Landed> = landed.iter().collect();
+    order.sort_by_key(|one| std::cmp::Reverse(landing_order(intent, &one.row)));
+    let mut intent = intent.clone();
+    for one in order {
+        put_into(&mut intent, &one.row, &one.was).map_err(Unapplied::Invalid)?;
+    }
+    Ok(intent)
+}
+
+/// Where `row` lands in a landing: new Volumes before the Services that mount them,
+/// nodes before their rows. `env` holds the node.
+fn landing_order(env: &Intent, row: &RowId) -> u8 {
+    match row.at {
+        At::Node if volume(env, &row.lineage).is_some() => 0,
+        At::Node => 1,
+        At::Data | At::Name | At::Storage | At::Setting(_) | At::Mount(_) | At::Variable(_) => 2,
+    }
 }
 
 /// The node at `row` and where in it, with a mount named by its Volume; display only.
@@ -837,7 +897,7 @@ fn put_into(env: &mut Intent, row: &RowId, cell: &Cell) -> Result<(), ConfigErro
                 env.services.retain(|s| s.lineage_id != lineage);
                 env.volumes.retain(|v| v.resource_lineage_id != lineage);
             }
-            // ponytail: a node's cell is its name, and a rename doesn't move.
+            // ponytail: a node row only adds or removes its node; a rename doesn't move.
             Cell::Value(_) | Cell::Secret { .. } | Cell::SecretWithoutValue
                 if nodes(env).contains_key(lineage) => {}
             Cell::Value(_) | Cell::Secret { .. } | Cell::SecretWithoutValue => {
@@ -1112,19 +1172,28 @@ fn volume<'a>(env: &'a Intent, lineage: &str) -> Option<&'a SavedVolumeIntent> {
         .find(|v| v.resource_lineage_id == lineage)
 }
 
-/// A node's cell is its name.
-fn node_cell(env: &Intent, lineage: &str) -> Cell {
-    match nodes(env).get(lineage) {
-        Some(NodeRef::Service(service)) => Cell::Value(json!(service.slug)),
-        Some(NodeRef::Volume(volume)) => Cell::Value(json!(volume.name)),
-        None => Cell::Absent,
+/// A node's cell is what it arrives with as a new node: its name and the settings it
+/// carries (no custom domains), each by where it is.
+fn node_cell(env: &Intent, lineage: &str, suffix: &str) -> Cell {
+    let Some(&node) = nodes(env).get(lineage) else {
+        return Cell::Absent;
+    };
+    let mut cell = serde_json::Map::new();
+    if let NodeRef::Service(service) = node {
+        cell.insert("name".to_owned(), json!(service.slug));
     }
+    for (at, value) in cells(env, node, suffix, false) {
+        if let (true, Cell::Value(value)) = (at.carried() && at != At::Setting("routes"), value) {
+            cell.insert(at.to_string(), value);
+        }
+    }
+    Cell::Value(Value::Object(cell))
 }
 
 /// `env`'s cell at `row`, sealed or redacted.
 fn cell(env: &Intent, row: &RowId, suffix: &str, sealed: bool) -> Cell {
     match (&row.at, nodes(env).get(row.lineage.as_str())) {
-        (At::Node | At::Data, _) => node_cell(env, &row.lineage),
+        (At::Node | At::Data, _) => node_cell(env, &row.lineage, suffix),
         (_, Some(node)) => cells(env, *node, suffix, sealed)
             .remove(&row.at)
             .unwrap_or(Cell::Absent),
