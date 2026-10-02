@@ -69,11 +69,13 @@ pub fn compare_service_settings(
         | (ServiceSource::Empty { .. }, Some(ServiceSource::Git { .. })) => Setting::Repository,
         (ServiceSource::Image { .. } | ServiceSource::Empty { .. }, _) => Setting::Image,
     };
+    let source_changed = baseline.is_some_and(|b| {
+        std::mem::discriminant(&b.settings.source)
+            != std::mem::discriminant(&current.settings.source)
+    });
     let current = json!(current);
     let baseline = baseline.map_or(Value::Null, |value| json!(value));
     let mut changes = Vec::new();
-    let source_changed =
-        !baseline.is_null() && at(&current, "source.type") != at(&baseline, "source.type");
     if source_changed {
         changes.push(change(
             ("source", Some(At::Setting(switched))),
