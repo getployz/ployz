@@ -207,7 +207,7 @@ pub(super) fn at<'a>(value: &'a Value, path: &str) -> &'a Value {
         .fold(value, |value, key| value.get(key).unwrap_or(&Value::Null))
 }
 
-fn default_value(path: &str) -> Value {
+pub(super) fn default_value(path: &str) -> Value {
     match path {
         "source.credentials" => json!({"type": "none"}),
         "healthcheck" => json!({"type": "none"}),

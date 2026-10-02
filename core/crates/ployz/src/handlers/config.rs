@@ -381,6 +381,7 @@ fn hold(root: &ArgMatches, number: &str, path: &str, secret: String) -> Result<(
     let request = HoldSecret {
         environment: environment(matches)?,
         pull_request,
+        repository: None,
         path: SettingPath::parse(path)?,
         value: secret,
     };

@@ -372,7 +372,7 @@ fn following_a_rotated_secret_reaches_only_a_receiver_that_never_set_its_own() {
     var(&mut from, API, "TOKEN")["value"] = secret("rotated-cipher");
     var(&mut from, API, "TOKEN")["valueFingerprint"] = json!("fp-rotated");
     let token = format!("{API}:variables.TOKEN");
-    let follow = json!({"follow": true});
+    let follow = json!({"way": "follow"});
     // A Sync never changes a secret the receiver has.
     let synced = changes(Some(&base), &from, &branch(), &json!({}));
     assert!(!summary(&synced).iter().any(|r| r.contains("TOKEN")));
@@ -381,7 +381,7 @@ fn following_a_rotated_secret_reaches_only_a_receiver_that_never_set_its_own() {
     let followed = changes(Some(&base), &from, &branch(), &follow);
     assert_eq!(row(&followed, &token)["role"], "move");
     assert_eq!(row(&followed, &token)["conflict"], false);
-    let pick = json!({"follow": true, "picks": [token]});
+    let pick = json!({"way": "follow", "picks": [token]});
     let mut next = changes(Some(&base), &from, &branch(), &pick)["next"].clone();
     assert_eq!(
         var(&mut next, API, "TOKEN")["value"]["encryptedValue"]["ciphertext"],
@@ -648,7 +648,7 @@ fn a_sync_lands_its_picks_and_advances_the_base_by_exactly_them() {
         Some(&parent()),
         &from,
         &into,
-        &json!({"carrySecrets": true, "picks": table_picks()}),
+        &json!({"way": "exact", "picks": table_picks()}),
     ))
     .unwrap();
     assert_eq!(
@@ -710,10 +710,20 @@ fn create(
     picks: &[&str],
     into_suffix: &str,
 ) -> Result<Value, ployz_core::config::ConfigError> {
-    let picks: Vec<_> = picks.iter().map(|l| format!("{l}:node")).collect();
-    run(json!({
+    let mut input = json!({
         "base": null, "from": parent, "into": empty("pr-7"), "provided": [WORKER],
-        "hostnames": {"from": "", "into": into_suffix}, "carrySecrets": true, "picks": picks}))
+        "hostnames": {"from": "", "into": into_suffix}, "way": "exact"});
+    // Each picked node with every row under it, as the Store creates a Branch.
+    let rows: Vec<_> = run(input.clone())?["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["role"] == "move")
+        .map(|row| row["key"].as_str().unwrap().to_owned())
+        .filter(|key| picks.iter().any(|l| key.starts_with(&format!("{l}:"))))
+        .collect();
+    input["picks"] = json!(rows);
+    run(input)
 }
 
 fn find<'a>(list: &'a Value, field: &str, lineage: &str) -> &'a Value {
@@ -811,7 +821,13 @@ fn a_sync_introduces_a_new_branch_service_into_the_parent() {
     from["services"].as_array_mut().unwrap().push(jobs);
     let compared = changes(Some(&parent()), &from, &parent(), &json!({}));
     assert_eq!(row(&compared, &format!("{JOBS}:node"))["role"], "move");
-    let result = with_picks(&from, &parent(), json!([format!("{JOBS}:node")])).unwrap();
+    // MODE is left unticked: it stays behind.
+    let result = with_picks(
+        &from,
+        &parent(),
+        json!([format!("{JOBS}:node"), format!("{JOBS}:variables.KEY")]),
+    )
+    .unwrap();
     let jobs = find(&result["next"]["services"], "lineageId", JOBS);
     assert_ne!(jobs["id"], id(0xc000_0000, 50));
     assert_eq!(jobs["config"]["managedHostnames"][0]["prefix"], "jobs");
@@ -821,29 +837,20 @@ fn a_sync_introduces_a_new_branch_service_into_the_parent() {
         .iter()
         .map(|v| v["key"].as_str().unwrap())
         .collect();
-    assert_eq!(keys, ["MODE", "KEY"]);
+    assert_eq!(keys, ["KEY"]);
     assert_eq!(
         var(&mut result["next"].clone(), JOBS, "KEY")["value"],
         json!({"kind": "secret_without_value"}),
         "the new secret lands without its value"
     );
-    // Base records the node and both variables: nothing of jobs is offered again.
+    // Base records the node and KEY, not MODE: only MODE is offered again.
     let again = changes(Some(&result["base"]), &from, &result["next"], &json!({}));
-    assert!(
-        !summary(&again).iter().any(|r| r.contains(JOBS)),
-        "{:#?}",
+    assert_eq!(
         summary(&again)
-    );
-    // MODE landed by default, so base records it: the receiver's own later edit is not a
-    // stale move or conflict.
-    let mut edited = result["next"].clone();
-    var(&mut edited, JOBS, "MODE")["value"] = literal("prod");
-    var(&mut edited, JOBS, "MODE")["valueFingerprint"] = json!("fp-prod");
-    let again = changes(Some(&result["base"]), &from, &edited, &json!({}));
-    assert!(
-        !summary(&again).iter().any(|r| r.contains("MODE")),
-        "{:#?}",
-        summary(&again)
+            .into_iter()
+            .filter(|r| r.contains(JOBS))
+            .collect::<Vec<_>>(),
+        [format!("{JOBS}:variables.MODE move conflict=false")]
     );
 
     // A name `into` already uses is refused.
@@ -911,10 +918,128 @@ fn never_synced_rows_differ_and_never_land() {
     };
     let error = picked(json!([format!("{API}:variables.PLAIN")])).unwrap_err();
     assert_eq!(error.path, "picks.key");
-    let result = picked(json!([format!("{JOBS}:node")])).unwrap();
+    let error = picked(json!([format!("{JOBS}:variables.MODE")])).unwrap_err();
+    assert_eq!(error.path, "picks.key");
+    let result = picked(json!([
+        format!("{JOBS}:node"),
+        format!("{JOBS}:variables.LEVEL")
+    ]))
+    .unwrap();
     let jobs = find(&result["next"]["services"], "lineageId", JOBS);
     assert_eq!(jobs["variables"].as_array().unwrap().len(), 1);
     assert_eq!(jobs["variables"][0]["key"], "LEVEL");
+}
+
+#[test]
+fn a_new_service_arrives_without_its_never_synced_settings() {
+    let mut from = branch();
+    let mut jobs = service(
+        0xc000_0000,
+        50,
+        JOBS,
+        "jobs",
+        json!({"version": 1, "type": "image", "image": "jobs:1", "credentials": {"type": "none"}}),
+    );
+    jobs["config"]["startCommand"] = json!("jobs --test");
+    jobs["config"]["healthcheck"] = json!({"type": "http", "path": "/up", "timeoutSeconds": 30});
+    from["services"].as_array_mut().unwrap().push(jobs);
+    let marked = json!([
+        format!("{JOBS}:startCommand"),
+        format!("{JOBS}:healthcheck")
+    ]);
+    let input = |picks: Value| json!({"neverSynced": marked, "picks": picks});
+    let compared = changes(Some(&parent()), &from, &parent(), &input(Value::Null));
+    let rows = summary(&compared);
+    for expected in [
+        format!("{JOBS}:node move conflict=false"),
+        format!("{JOBS}:startCommand differ never_synced"),
+        format!("{JOBS}:healthcheck.path differ never_synced"),
+    ] {
+        assert!(
+            rows.contains(&expected),
+            "{expected} missing from {rows:#?}"
+        );
+    }
+    let result = changes(
+        Some(&parent()),
+        &from,
+        &parent(),
+        &input(json!([format!("{JOBS}:node")])),
+    );
+    let jobs = find(&result["next"]["services"], "lineageId", JOBS);
+    assert_eq!(jobs["config"]["startCommand"], Value::Null);
+    assert_eq!(jobs["config"]["healthcheck"], json!({"type": "none"}));
+    assert_eq!(jobs["config"]["source"]["image"], "jobs:1");
+}
+
+#[test]
+fn a_sync_never_changes_a_secret_the_receiver_holds() {
+    let base = parent();
+    let mut from = branch();
+    // `from` turns TOKEN into a plain value; `into` holds it as a secret.
+    var(&mut from, API, "TOKEN")["value"] = literal("plain");
+    var(&mut from, API, "TOKEN")["valueFingerprint"] = json!("fp-plain");
+    let token = format!("{API}:variables.TOKEN");
+    let synced = summary(&changes(Some(&base), &from, &parent(), &json!({})));
+    assert!(!synced.iter().any(|r| r.contains("TOKEN")), "{synced:#?}");
+    // Nor one it holds without a value.
+    let mut into = parent();
+    var(&mut into, API, "TOKEN")["value"] = json!({"kind": "secret_without_value"});
+    var(&mut into, API, "TOKEN")["valueFingerprint"] = json!("");
+    let synced = summary(&changes(Some(&base), &from, &into, &json!({})));
+    assert!(!synced.iter().any(|r| r.contains("TOKEN")), "{synced:#?}");
+    // Picking it anyway is refused.
+    let error = run(request(
+        Some(&base),
+        &from,
+        &parent(),
+        &json!({"picks": [token]}),
+    ))
+    .unwrap_err();
+    assert_eq!(error.path, "picks.key");
+}
+
+#[test]
+fn following_fills_a_secret_the_branch_holds_without_a_value() {
+    let mut base = parent();
+    svc(&mut base, API)["variables"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|v| v["key"] != "TOKEN");
+    let mut into = branch();
+    var(&mut into, API, "TOKEN")["value"] = json!({"kind": "secret_without_value"});
+    var(&mut into, API, "TOKEN")["valueFingerprint"] = json!("");
+    let token = format!("{API}:variables.TOKEN");
+    let followed = changes(Some(&base), &parent(), &into, &json!({"way": "follow"}));
+    assert_eq!(row(&followed, &token)["role"], "move");
+    assert_eq!(row(&followed, &token)["conflict"], false);
+    let mut next = changes(
+        Some(&base),
+        &parent(),
+        &into,
+        &json!({"way": "follow", "picks": [token]}),
+    )["next"]
+        .clone();
+    assert_eq!(
+        var(&mut next, API, "TOKEN")["value"]["encryptedValue"]["ciphertext"],
+        "parent-cipher"
+    );
+}
+
+/// The Store reads what an Environment changed itself this way: a secret that lost
+/// its value, or got one, is a change.
+#[test]
+fn an_exact_comparison_sees_a_secret_lose_or_get_its_value() {
+    let valued = parent();
+    let mut valueless = parent();
+    var(&mut valueless, API, "TOKEN")["value"] = json!({"kind": "secret_without_value"});
+    var(&mut valueless, API, "TOKEN")["valueFingerprint"] = json!("");
+    let token = format!("{API}:variables.TOKEN");
+    let exact = json!({"way": "exact"});
+    for (base, working) in [(&valued, &valueless), (&valueless, &valued)] {
+        let compared = changes(Some(base), working, base, &exact);
+        assert_eq!(row(&compared, &token)["role"], "move");
+    }
 }
 
 #[test]

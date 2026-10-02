@@ -22,20 +22,18 @@ pub(crate) use pair::*;
 pub use setup::SetBranchSetup;
 pub(crate) use setup::{branch_setup, set_branch_setup};
 pub use sync::{NeverSyncedRow, SyncChanges, SyncQuery, SyncRow, SyncView, Synced};
-pub(crate) use sync::{
-    reviewed, shown_row, sync, sync_picks, sync_view, sync_view_of, take, under, version,
-};
+pub(crate) use sync::{SyncTarget, reviewed, shown_row, sync, sync_picks, sync_view, take};
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
     BranchChanges, BranchChangesInput, BranchHostnames, BranchNodeReason, BranchNodeRole,
-    BranchPicks, BranchPlan, BranchPreset, BranchReason, BranchRole, BranchRow, ConfigError,
-    EnvironmentNodeType, LiveLineageUse, LiveValuesInput, LiveValuesOwner, SavedEnvironmentIntent,
-    SavedServiceIntent, SavedVariableProducer, SavedVariableValue, SavedVolumeIntent,
+    BranchPicks, BranchPlan, BranchPreset, BranchReason, BranchRole, BranchRow, BranchWay,
+    ConfigError, EnvironmentNodeType, LiveLineageUse, LiveValuesInput, LiveValuesOwner,
+    SavedEnvironmentIntent, SavedServiceIntent, SavedVariableProducer, SavedVolumeIntent,
     ServiceImageCredentials, ServiceSource, ValuePart, ValuePartOwner, branch_changes,
-    canonicalize_environment_intent, compile_environment_intent, live_values,
-    parse_service_setting, plan_branch,
+    canonicalize_environment_intent, compile_environment_intent, covers, live_values,
+    parse_service_setting, plan_branch, split_row_key,
 };
 use ployz_core::{Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -113,15 +111,14 @@ pub struct Take {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub into: Option<EnvironmentRef>,
-    /// The hints to take, by row or a prefix of rows; omitted, every one.
+    /// The hints to take, by path or a prefix of paths (`web` takes `web.image`);
+    /// omitted, every one.
     #[serde(default)]
     #[ts(optional = nullable)]
     pub rows: Option<Vec<String>>,
-    /// Refuse with `conflict` unless the Destination's `diff` is still at this
-    /// version: its Working State and the Saved revision the hints landed on.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub version: Option<String>,
+    /// Refused with `conflict` unless the receiver's `diff` is still at this
+    /// version: the one the hints were read at.
+    pub version: String,
 }
 
 /// Where the hints a [`Take`] takes come from.
@@ -142,6 +139,8 @@ pub enum When {
     Now,
     /// With the pull request's merge.
     AtMerge,
+    /// Withdraw the standing Conditional Sync: nothing goes live with the merge.
+    Withdraw,
 }
 
 /// What a take staged.

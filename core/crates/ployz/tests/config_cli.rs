@@ -2643,12 +2643,12 @@ fn a_branch_follows_its_parent_and_diff_shows_where_changes_came_from_and_the_hi
         let diff = ok(store, &["diff", "--env", "fix-web"]);
         assert_eq!(
             diff["incoming"],
-            json!([{"row": "web.env.NEW", "from": "production"}]),
+            json!([{"row": "web.env.NEW", "path": "web.env.NEW", "whole": false, "from": "production"}]),
             "{diff}"
         );
         assert_eq!(
             diff["follow_hints"],
-            json!([{"from": "production", "row": "web.image", "value": "web:2"}])
+            json!([{"from": "production", "row": "web.image", "path": "web.image", "whole": false, "value": "web:2"}])
         );
         let took = ok(
             store,

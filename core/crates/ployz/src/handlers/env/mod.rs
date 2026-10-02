@@ -173,7 +173,7 @@ pub(crate) fn command() -> Command {
             .arg(switch("plan", None).help("List the changes and the version; sync nothing"))
             .arg(
                 switch("close", None)
-                    .help("Close the Branch once its changes landed; refused for a kept Branch")
+                    .help("Close the Branch once its changes landed in its Parent; refused for a kept Branch and for any other --to")
                     .conflicts_with("plan"),
             )
             .arg(

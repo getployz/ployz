@@ -7,16 +7,17 @@
 //! when left out or discarded, never deleting, never carrying a secret's value, and
 //! closing the Branch after; and between any two Environments of a Project.
 
-use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
+use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Admit, BranchQuery, Change, ConfigStore, CreateBranch, CreateProject, CreateService,
     Deploy, DeploymentId, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentRef,
-    KeepBranch, OrganizationId, ProjectId, ProjectName, RemoveService, RunEvidence, RunnerId,
-    ServiceLineageId, ServiceQuery, SettingPath, SyncChanges, SyncQuery, SyncView, Trusted,
+    KeepBranch, OrganizationId, ProjectId, ProjectName, RemoveService, ServiceLineageId,
+    ServiceQuery, SettingPath, SyncChanges, SyncQuery, SyncView, Trusted,
 };
 use serde_json::{Value, json};
 
 mod backend;
+use backend::deploy;
 
 fn uuid(n: u8) -> String {
     format!("00000000-0000-4000-8000-0000000000{n:02}")
@@ -183,67 +184,6 @@ fn discard(store: &ConfigStore, who: &Actor, path: &str) {
         .unwrap();
 }
 
-/// Deploy `environment` in full and record every Service applied; what the runner
-/// was handed.
-fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8) -> Value {
-    let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
-    store
-        .write_trusted(
-            who,
-            &Admit::Deploy(Deploy {
-                id: id.clone(),
-                environment: at(environment),
-                services: Vec::new(),
-                version: None,
-                upload: None,
-                accept_volume_loss: Vec::new(),
-                message: None,
-            }),
-            &Trusted::default(),
-        )
-        .unwrap();
-    let runner = RunnerId::parse("runner").unwrap();
-    let claimed = store.claim(&id, &runner).unwrap();
-    let names: Vec<String> = claimed
-        .intent
-        .target
-        .iter()
-        .map(|service| service.name.to_string())
-        .collect();
-    let operation = |index: usize| {
-        json!({"type": "remove_container", "machine_id": "a".repeat(32),
-               "container_id": format!("{index:x}").repeat(64)})
-    };
-    let preview: DeployPreview = serde_json::from_value(json!({
-        "namespace": claimed.intent.namespace,
-        "operations": names.iter().enumerate().map(|(index, name)| json!({
-            "index": index, "machine_id": "a".repeat(32), "service_name": name,
-            "operation": operation(index), "status": {"type": "pending"}
-        })).collect::<Vec<_>>(),
-        "warnings": [], "would_remove": [], "preserved_volumes": []
-    }))
-    .unwrap();
-    store
-        .record(&id, &runner, RunEvidence::Prepared(preview))
-        .unwrap();
-    let outcome: DeployOutcome<ployz_core::ExecutionError> = serde_json::from_value(json!({
-        "type": "success",
-        "completed": (0..names.len()).map(operation).collect::<Vec<_>>()
-    }))
-    .unwrap();
-    store
-        .record(
-            &id,
-            &runner,
-            RunEvidence::Executed {
-                outcome: Box::new(outcome),
-                removed: Vec::new(),
-            },
-        )
-        .unwrap();
-    claimed.input
-}
-
 #[test]
 fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_next_time() {
     let (store, who) = shop(false);
@@ -317,6 +257,16 @@ fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_nex
         ["web"]
     );
     assert!(!synced.closing);
+    // What a Sync brings is the receiver's own change, not one from a deploy.
+    let diff = store
+        .read(
+            &who,
+            &ployz_store::DiffQuery {
+                environment: at("production"),
+            },
+        )
+        .unwrap();
+    assert!(diff.incoming.is_empty(), "{:?}", diff.incoming);
     let web = values(&store, &who, "production", "web");
     assert_eq!(web["image"], json!("web:2"));
     assert_eq!(web["env"].get("NEW"), None);
@@ -432,6 +382,26 @@ fn a_sync_closes_a_branch_that_isnt_kept_when_asked() {
     );
 
     store.write(&who, &keep(false)).unwrap();
+    // Only a Sync into its Parent closes it.
+    store
+        .write(
+            &who,
+            &ployz_store::CreateEnvironment {
+                id: EnvironmentId::parse(uuid(20)).unwrap(),
+                project: None,
+                name: EnvironmentName::parse("staging").unwrap(),
+            },
+        )
+        .unwrap();
+    let sideways = SyncChanges {
+        into: Some(at("staging")),
+        close_after: true,
+        ..sync(None, None)
+    };
+    assert_eq!(
+        store.write(&who, &sideways).unwrap_err().code,
+        RpcErrorCode::InvalidArgument
+    );
     let synced = store.write(&who, &closing).unwrap();
     assert!(synced.closing);
     assert_eq!(
@@ -592,6 +562,25 @@ fn a_branch_syncs_skipping_a_level_and_sideways_ticking_only_its_own_changes() {
     assert_eq!(
         ticks(&offered(&store, &who, "fix-a", "fix-web")),
         [("web.image", true)]
+    );
+
+    // Once synced into its Parent, a change is no longer fix-a's own: unticked
+    // sideways, a Sync reviewed while it was ticked is stale.
+    set(&store, &who, "fix-a", &[("web.env.SIDE", json!("1"))]);
+    let before = offered(&store, &who, "fix-a", "fix-b");
+    assert!(row(&before, "web.env.SIDE").ticked);
+    sync_into(&store, &who, ("fix-a", "fix-web"), Some(&["web.env.SIDE"]));
+    let after = offered(&store, &who, "fix-a", "fix-b");
+    assert!(!row(&after, "web.env.SIDE").ticked);
+    let stale = SyncChanges {
+        from: at("fix-a"),
+        into: Some(at("fix-b")),
+        version: Some(before.version),
+        ..SyncChanges::default()
+    };
+    assert_eq!(
+        store.write(&who, &stale).unwrap_err().code,
+        RpcErrorCode::Conflict
     );
 }
 

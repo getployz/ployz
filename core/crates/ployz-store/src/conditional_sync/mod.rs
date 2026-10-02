@@ -25,8 +25,8 @@
 mod held;
 mod landing;
 mod syncing;
-pub(crate) use held::hold;
 pub use held::{HoldSecret, SecretHeld};
+pub(crate) use held::{held_rows, hold};
 use landing::{Planned, plan};
 pub(crate) use syncing::*;
 
@@ -36,18 +36,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::RpcError;
 use ployz_core::config::{
     BranchChanges, BranchHostnames, BranchRole, SavedEnvironmentIntent, SavedVariableIntent,
-    SavedVariableValue,
+    SavedVariableValue, covers, split_row_key,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::branch::{
-    self, Carried, Moving, SyncChanges, SyncQuery, SyncView, Synced, Take, Taken, When,
+    self, Carried, Comparison, SyncChanges, SyncTarget, Synced, Take, Taken, When,
 };
 use crate::id::{ConditionalSyncId, EnvironmentId, Revision};
-use crate::pull_request::{self, PullRequest, PullRequestRef};
+use crate::pull_request::{self, PullRequest};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
+use crate::settings::SettingPath;
 use crate::storage::Tx;
 use crate::{Actor, deployment, error, policy, review, teardown};
 
@@ -92,6 +93,10 @@ pub struct PullRequestHint {
     pub pull_request: PullRequestNumber,
     /// `NODE.path`, as a Sync names it.
     pub row: String,
+    /// The setting as the Environment addresses it: what [`Take::rows`] names.
+    pub path: SettingPath,
+    /// It is a whole Service or Volume, not one of its settings.
+    pub whole: bool,
     /// The pull request's value; secrets read `{"secret": true}`.
     pub value: Value,
     pub landed: Landed,
@@ -156,12 +161,8 @@ struct Row {
 struct Shown {
     /// `NODE`, or `NODE.path`.
     row: String,
-    /// The Destination changed it too.
-    conflict: bool,
     /// The pull request's value; secrets read `{"secret": true}`.
     from: Value,
-    /// The Destination's value.
-    into: Value,
 }
 
 struct Found {
@@ -170,165 +171,6 @@ struct Found {
     repository: RepositoryId,
     number: PullRequestNumber,
     stored: Stored,
-}
-
-/// Whether a Sync from `from` into `into` is a Conditional Sync: asked
-/// `at_merge`, or from a PR Environment into one of its Destinations with `when`
-/// omitted; `into` omitted, its only Destination unless asked `now`. A PR
-/// Environment never syncs into a Destination now.
-pub(crate) fn at_merge(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    (from, into): (&EnvironmentRef, Option<&EnvironmentRef>),
-    when: Option<When>,
-) -> Result<bool, RpcError> {
-    if when == Some(When::AtMerge) {
-        return Ok(true);
-    }
-    let from = scope::environment(tx, who, from)?;
-    let into = match into {
-        Some(into) => scope::environment(tx, who, into)?.summary,
-        None if when.is_none() && pull_request::of(tx, &from.summary.id)?.is_some() => {
-            return Ok(true);
-        }
-        None => match branch::row(tx, &from.summary.id)? {
-            Some(row) => scope::load_by_id(tx, &row.parent)?.summary,
-            None => return Ok(false),
-        },
-    };
-    let Some(number) = merging_into(tx, &from.summary.id, &into.id)? else {
-        return Ok(false);
-    };
-    if when == Some(When::Now) {
-        return Err(error::invalid(
-            format!(
-                "{} is a PR Environment: its changes go live in {} with #{number}'s merge (when at_merge)",
-                from.summary.name, into.name
-            ),
-            json!({}),
-        ));
-    }
-    Ok(true)
-}
-
-/// The pull request whose merge a Sync from `from` into `into` waits for: `from`
-/// is its PR Environment, and `into` one of its Destinations.
-pub(crate) fn merging_into(
-    tx: &mut dyn Tx,
-    from: &EnvironmentId,
-    into: &EnvironmentId,
-) -> Result<Option<PullRequestNumber>, RpcError> {
-    let rows = tx.query(
-        "SELECT p.facts FROM config_pr_environment e JOIN config_pull_request p \
-         ON p.organization_id = e.organization_id AND p.repository_id = e.repository_id \
-         AND p.number = e.number WHERE e.environment_id = ?1",
-        &[from.as_str().into()],
-    )?;
-    let Some(row) = rows.first() else {
-        return Ok(None);
-    };
-    let facts: PullRequest = row.json(0, "pull request")?;
-    let project = scope::project_of(tx, from)?.id;
-    let destinations =
-        pull_request::destinations_of(tx, &project, facts.repository_id, &facts.target_branch)?;
-    Ok(destinations.contains(into).then_some(facts.number))
-}
-
-/// A Conditional Sync's sides: the PR Environment and the Destination.
-struct Sides {
-    pr: Environment,
-    into: Environment,
-    facts: PullRequest,
-}
-
-fn sides(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    from: &EnvironmentRef,
-    into: Option<&EnvironmentRef>,
-    lock: bool,
-) -> Result<Sides, RpcError> {
-    let pr = scope::environment(tx, who, from)?;
-    let Some(PullRequestRef {
-        repository_id,
-        number,
-    }) = pull_request::of(tx, &pr.summary.id)?
-    else {
-        return Err(error::invalid(
-            format!(
-                "{} is not a PR Environment: its changes sync now",
-                pr.summary.name
-            ),
-            json!({}),
-        ));
-    };
-    let facts = pull_request::facts(tx, who, repository_id, number)?
-        .ok_or_else(|| error::corrupt("pull request"))?;
-    let project = scope::project_of(tx, &pr.summary.id)?.id;
-    let destinations =
-        pull_request::destinations_of(tx, &project, repository_id, &facts.target_branch)?;
-    let mut names = Vec::new();
-    for id in &destinations {
-        names.push(scope::load_by_id(tx, id)?.summary.name.to_string());
-    }
-    let into = match into {
-        Some(at) => scope::environment(tx, who, at)?.summary.id,
-        None => match destinations.as_slice() {
-            [one] => one.clone(),
-            [] => {
-                return Err(error::conflict(
-                    format!(
-                        "Nothing deploys {} now: there is nowhere to sync into",
-                        facts.target_branch
-                    ),
-                    json!({}),
-                ));
-            }
-            _ => {
-                return Err(error::invalid(
-                    format!("Name the Destination: {}", names.join(", ")),
-                    json!({ "valid_children": names }),
-                ));
-            }
-        },
-    };
-    if !destinations.contains(&into) {
-        return Err(error::conflict(
-            format!(
-                "That Environment doesn't deploy {}: sync into one that does",
-                facts.target_branch
-            ),
-            json!({ "valid_children": names }),
-        ));
-    }
-    let (pr, into) = scope::load_pair(tx, who, (&pr.summary.id, &into), lock)?;
-    Ok(Sides { pr, into, facts })
-}
-
-/// The PR Environment's Working State into the Destination's, as the review shows it.
-fn moving(tx: &mut dyn Tx, sides: &Sides) -> Result<Moving, RpcError> {
-    Moving::conditional(tx, &sides.pr, &sides.into)
-}
-
-/// What a Conditional Sync would hold, as the Sync view shows it.
-pub(crate) fn sync_view(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    query: &SyncQuery,
-) -> Result<SyncView, RpcError> {
-    let sides = sides(tx, who, &query.from, query.into.as_ref(), false)?;
-    let moving = moving(tx, &sides)?;
-    let held = held::held(
-        tx,
-        &sides.into.summary.id,
-        sides.facts.repository_id,
-        sides.facts.number,
-    )?;
-    let mut view = branch::sync_view_of(&moving, sides.pr, sides.into, Some(sides.facts.number))?;
-    for row in &mut view.rows {
-        row.value_set = row.secret && held::is_held(&held, &row.key);
-    }
-    Ok(view)
 }
 
 /// The Environments the standing Conditional Syncs of `event`'s pull request
@@ -683,13 +525,14 @@ pub(crate) fn land(
 /// its next Saved revision.
 pub(crate) fn hints(
     tx: &mut dyn Tx,
-    environment: &EnvironmentId,
+    environment: &Environment,
 ) -> Result<Vec<PullRequestHint>, RpcError> {
-    let latest = review::latest_saved(tx, environment)?.map(|saved| saved.revision);
+    let id = &environment.summary.id;
+    let latest = review::latest_saved(tx, id)?.map(|saved| saved.revision);
     let rows = tx.query(
         "SELECT id, number, saved FROM config_conditional_sync \
          WHERE environment_id = ?1 AND state = 'landed' ORDER BY saved_at, id",
-        &[environment.as_str().into()],
+        &[id.as_str().into()],
     )?;
     let mut hints = Vec::new();
     for row in rows {
@@ -702,6 +545,8 @@ pub(crate) fn hints(
             hints.push(PullRequestHint {
                 conditional_sync: row.parse(0, "Conditional Sync ID")?,
                 pull_request: number,
+                path: branch::path_of(&stored.landing.from, &environment.working, &held.key)?,
+                whole: split_row_key(&held.key).1 == "node",
                 row: held.shown.row,
                 value: held.shown.from,
                 landed: held.landed.unwrap_or(Landed::Hint),
@@ -756,13 +601,12 @@ fn against(
     picks: Option<Vec<String>>,
 ) -> Result<BranchChanges, RpcError> {
     let landing = &stored.landing;
-    Moving::landed(
-        &stored.from.id,
+    branch::landing(
         (&landing.from, &landing.base),
         &landing.hostnames,
         into,
+        picks,
     )
-    .compare(into, picks)
 }
 
 /// `next` with each variable `before` lacked under the ID `saved` gave it (by

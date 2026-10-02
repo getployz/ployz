@@ -12,12 +12,12 @@
 use ployz_core::RpcErrorCode;
 use ployz_core::config::ServiceGitAccess;
 use ployz_store::{
-    Actor, AuthorizedRepository, Automated, BranchHead, BranchQuery, Change, CheckSuite, Command,
-    ConditionalSyncState, ConfigStore, CreateBranch, CreateGitService, CreateProject, DiffQuery,
-    Edit, EnvironmentId, EnvironmentName, EnvironmentRef, HoldSecret, Landed, OrganizationId,
-    ProjectId, ProjectName, Publish, PullRequest, PullRequestQuery, RunnerId, ServiceLineageId,
-    SetPrPlan, SettingPath, SyncChanges, SyncQuery, SyncView, SystemEvent, Take, Trusted, When,
-    Written,
+    Actor, AuthorizedRepository, Automated, Batch, BatchCommand, BranchHead, BranchQuery, Change,
+    CheckSuite, Command, ConditionalSyncState, ConfigStore, CreateBranch, CreateGitService,
+    CreateProject, DiffQuery, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, HoldSecret,
+    Landed, OrganizationId, ProjectId, ProjectName, Publish, PullRequest, PullRequestQuery,
+    RunnerId, ServiceLineageId, SetPrPlan, SettingPath, SyncChanges, SyncQuery, SyncView,
+    SystemEvent, Take, Trusted, When, Written,
 };
 use serde_json::{Value, json};
 
@@ -48,7 +48,12 @@ fn at(environment: &str) -> EnvironmentRef {
 /// Project `shop`: `production` runs Git Services `web` and `api` from `acme/web`'s
 /// `main`, published; pull requests get PR Environments of it, and PR #5 is open.
 fn shop() -> (ConfigStore, Actor) {
-    let store = backend::open();
+    shop_in(backend::open(), "production")
+}
+
+/// [`shop`] in `store`, its PR Environments Branches of `start_from`: a kept Branch
+/// of production with its own `web`, unless it is production.
+fn shop_in(store: ConfigStore, start_from: &str) -> (ConfigStore, Actor) {
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .write(
@@ -86,6 +91,23 @@ fn shop() -> (ConfigStore, Actor) {
             .unwrap();
     }
     publish(&store, &who, "production");
+    if start_from != "production" {
+        store
+            .write(
+                &who,
+                &CreateBranch {
+                    id: EnvironmentId::parse(uuid(20)).unwrap(),
+                    from: at("production"),
+                    name: EnvironmentName::parse(start_from).unwrap(),
+                    copy: vec![ployz_store::NodeName::parse("web").unwrap()],
+                    live: Vec::new(),
+                    setup: Vec::new(),
+                    keep: true,
+                    fix: None,
+                },
+            )
+            .unwrap();
+    }
     store
         .write(
             &who,
@@ -93,7 +115,7 @@ fn shop() -> (ConfigStore, Actor) {
                 project: None,
                 repository: backend::repo_name("acme/web"),
                 enabled: Some(true),
-                start_from: Some(EnvironmentName::parse("production").unwrap()),
+                start_from: Some(EnvironmentName::parse(start_from).unwrap()),
                 copy: None,
                 setup: None,
                 remove_on_close: None,
@@ -243,8 +265,7 @@ fn sync(review: &SyncView, labels: Option<&[&str]>) -> SyncChanges {
 fn withdraw() -> SyncChanges {
     SyncChanges {
         from: at("pr-5"),
-        picks: Some(Vec::new()),
-        when: Some(When::AtMerge),
+        when: Some(When::Withdraw),
         ..SyncChanges::default()
     }
 }
@@ -299,6 +320,7 @@ fn hold(path: &str, value: &str) -> HoldSecret {
         pull_request: backend::pr_number(5),
         path: SettingPath::parse(path).unwrap(),
         value: value.into(),
+        repository: None,
     }
 }
 
@@ -372,14 +394,6 @@ fn a_conditional_sync_goes_live_with_the_push_that_carries_its_merge() {
     // The pull request's page and the Sync button count what it ticks.
     assert_eq!(destination_changes(&store, &who), 2);
     assert_eq!(to_parent(&store, &who), 2);
-    let now = SyncChanges {
-        when: Some(When::Now),
-        ..sync(&review, None)
-    };
-    assert_eq!(
-        store.write(&who, &now).unwrap_err().code,
-        RpcErrorCode::InvalidArgument
-    );
     let closing = SyncChanges {
         close_after: true,
         ..sync(&review, None)
@@ -606,7 +620,15 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
         from: ployz_store::HintSource::ConditionalSync(hint.conditional_sync.clone()),
         into: None,
         rows: row.map(|row| vec![row.to_owned()]),
-        version: None,
+        version: store
+            .read(
+                &who,
+                &DiffQuery {
+                    environment: at("production"),
+                },
+            )
+            .unwrap()
+            .version,
     };
     assert_eq!(
         store
@@ -801,6 +823,233 @@ fn a_follow_into_the_pr_environment_leaves_its_conditional_sync_standing() {
     assert_eq!(
         check(&store, &who),
         (false, "Changed since synced · sync again".into())
+    );
+}
+
+#[test]
+fn a_pr_environment_syncs_into_its_parent_now_and_into_its_destination_at_the_merge() {
+    // pr-5 is a Branch of staging, which the merge doesn't reach.
+    let (store, who) = shop_in(backend::open(), "staging");
+    set(&store, &who, "pr-5", &[("web.env.MODE", json!("fast"))]);
+    assert_eq!(to_parent(&store, &who), 1);
+    let into_parent = offered(&store, &who, Some("staging"));
+    assert_eq!(into_parent.at_merge, None);
+    let synced = store.write(&who, &sync(&into_parent, None)).unwrap();
+    assert!(synced.conditional_sync.is_none());
+    assert_eq!(env(&store, &who, "staging")["MODE"], json!("fast"));
+    // Unnamed, the Sync is into production, at the merge.
+    let review = offered(&store, &who, None);
+    assert_eq!(
+        (review.into.name.as_str(), review.at_merge),
+        ("production", Some(backend::pr_number(5)))
+    );
+}
+
+#[test]
+fn now_syncs_a_pr_environment_into_its_destination_at_once() {
+    let (store, who) = shop();
+    set(&store, &who, "pr-5", &[("web.env.MODE", json!("fast"))]);
+    let now = SyncChanges {
+        when: Some(When::Now),
+        ..sync(&offered(&store, &who, None), None)
+    };
+    let synced = store.write(&who, &now).unwrap();
+    assert!(synced.conditional_sync.is_none());
+    assert_eq!(texts(&synced.staged), ["web"]);
+    assert_eq!(env(&store, &who, "production")["MODE"], json!("fast"));
+}
+
+/// Every `saved` document of a Conditional Sync in the Store at `url`.
+fn saved_documents(url: &str) -> Vec<String> {
+    let sql = "SELECT saved FROM config_conditional_sync";
+    match url.strip_prefix("sqlite:") {
+        Some(path) => {
+            let connection = rusqlite::Connection::open(path).unwrap();
+            let mut statement = connection.prepare(sql).unwrap();
+            statement
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        }
+        None => postgres::Client::connect(url, postgres::NoTls)
+            .unwrap()
+            .query(sql, &[])
+            .unwrap()
+            .iter()
+            .map(|row| row.get(0))
+            .collect(),
+    }
+}
+
+#[test]
+fn a_conditional_sync_keeps_no_secret_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let opened = ConfigStore::open(&url, backend::key()).unwrap();
+    let (store, who) = shop_in(opened, "production");
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[("web.env.TOKEN", json!({ "secret": "pr-secret" }))],
+    );
+    store
+        .write(&who, &sync(&offered(&store, &who, None), None))
+        .unwrap();
+    let saved = saved_documents(&url);
+    assert_eq!(saved.len(), 1);
+    assert!(!saved[0].contains("ciphertext"), "{}", saved[0]);
+}
+
+#[test]
+fn a_value_held_for_a_pull_request_number_two_repositories_share_names_the_repository() {
+    let (store, who) = shop();
+    // acme/docs deploys into production too, and its PR #5 copies web.
+    let evidence = Trusted {
+        repositories: vec![AuthorizedRepository {
+            repository: backend::repo_name("acme/docs"),
+            repository_id: backend::repo_id(12),
+            access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
+            default_branch: backend::git_branch("main"),
+            branches: Vec::new(),
+        }],
+        ..Trusted::default()
+    };
+    store
+        .write_trusted(
+            &who,
+            &CreateGitService {
+                id: ServiceLineageId::parse(uuid(5)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_core::ServiceName::parse("docs").unwrap(),
+                repository: backend::repo_name("acme/docs"),
+                branch: None,
+            },
+            &evidence,
+        )
+        .unwrap();
+    publish(&store, &who, "production");
+    store
+        .write(
+            &who,
+            &SetPrPlan {
+                project: None,
+                repository: backend::repo_name("acme/docs"),
+                enabled: Some(true),
+                start_from: Some(EnvironmentName::parse("production").unwrap()),
+                copy: Some(vec![ployz_store::NodeName::parse("web").unwrap()]),
+                setup: None,
+                remove_on_close: None,
+                include_bots: None,
+            },
+        )
+        .unwrap();
+    let docs = PullRequest {
+        repository_id: backend::repo_id(12),
+        ..facts(true, None, None, 1)
+    };
+    let opened = observe(&store, &who, SystemEvent::PullRequest(docs));
+    assert_eq!(opened.admitted.len(), 1);
+    let token = [("web.env.TOKEN", json!({ "secret": "pr-secret" }))];
+    for pr in ["pr-5", "pr-5-2"] {
+        set(&store, &who, pr, &token);
+        let review = store
+            .read(
+                &who,
+                &SyncQuery {
+                    from: at(pr),
+                    into: None,
+                },
+            )
+            .unwrap();
+        let synced = SyncChanges {
+            from: at(pr),
+            ..sync(&review, None)
+        };
+        store.write(&who, &synced).unwrap();
+    }
+
+    let refused = store
+        .write(&who, &hold("web.env.TOKEN", "prod-secret"))
+        .unwrap_err();
+    assert_eq!(
+        (refused.code, refused.message.as_str()),
+        (
+            RpcErrorCode::InvalidArgument,
+            "#5 of more than one repository brings web.env.TOKEN: name the repository"
+        )
+    );
+    let named = HoldSecret {
+        repository: Some(backend::repo_id(11)),
+        ..hold("web.env.TOKEN", "prod-secret")
+    };
+    store.write(&who, &named).unwrap();
+    assert_eq!(
+        check(&store, &who),
+        (true, "1 change goes live with this PR".into())
+    );
+}
+
+#[test]
+fn a_value_for_a_secret_lands_with_its_sync_or_neither_does() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[("web.env.TOKEN", json!({ "secret": "pr-secret" }))],
+    );
+    let batch = |held: &str| Batch {
+        environment: at("production"),
+        commands: vec![
+            BatchCommand::Sync(sync(&offered(&store, &who, None), None)),
+            BatchCommand::HoldSecret(hold(held, "prod-secret")),
+        ],
+    };
+    // Nothing to hold the value for: the Sync doesn't stand either.
+    store.write(&who, &batch("web.env.NOPE")).unwrap_err();
+    assert_eq!(
+        check(&store, &who),
+        (false, "1 change to sync in Ployz".into())
+    );
+    store.write(&who, &batch("web.env.TOKEN")).unwrap();
+    assert_eq!(
+        check(&store, &who),
+        (true, "1 change goes live with this PR".into())
+    );
+
+    // A Sync now lands with the value set beside it.
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[("web.env.KEY", json!({ "secret": "pr-key" }))],
+    );
+    let review = offered(&store, &who, None);
+    let now = Batch {
+        environment: at("production"),
+        commands: vec![
+            BatchCommand::Sync(SyncChanges {
+                when: Some(When::Now),
+                ..sync(&review, Some(&["web.env.KEY"]))
+            }),
+            BatchCommand::Edit(Edit {
+                environment: at("production"),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("web.env.KEY").unwrap(),
+                    value: json!({ "secret": "prod-key" }),
+                }],
+            }),
+        ],
+    };
+    store.write(&who, &now).unwrap();
+    publish(&store, &who, "production");
+    let pushed = push(&store, &who, 4, &[]);
+    assert_eq!(
+        resolved(&store, &pushed.admitted[0].deployment.id, "KEY"),
+        json!("prod-key")
     );
 }
 

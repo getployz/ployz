@@ -44,15 +44,11 @@ pub(super) fn plan(
         let reviewed = reviewed.get(key).copied();
         same(in_saved.get(key), reviewed) || same(in_working.get(key), reviewed)
     };
-    let lineage = |key: &str| {
-        key.split_once(':')
-            .map_or(key, |(lineage, _)| lineage)
-            .to_owned()
-    };
+    let lineage = |key: &str| split_row_key(key).0.to_owned();
     let nodes = |picks: &[&String]| -> BTreeSet<String> {
         picks
             .iter()
-            .filter(|pick| pick.ends_with(":node"))
+            .filter(|pick| split_row_key(pick).1 == "node")
             .map(|pick| lineage(pick))
             .collect()
     };

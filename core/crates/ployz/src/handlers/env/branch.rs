@@ -3,8 +3,9 @@
 
 use clap::ArgMatches;
 use ployz_core::ServiceName;
+use ployz_core::config::covers;
 use ployz_store::{
-    Branched, ConditionalSyncId, CopyNode, CreateBranch, DeploymentId, EnvironmentId,
+    Branched, ConditionalSyncId, CopyNode, CreateBranch, DeploymentId, DiffQuery, EnvironmentId,
     EnvironmentName, EnvironmentRef, HintSource, KeepBranch, SetupCommand, SyncChanges, SyncQuery,
     SyncView, Synced, Take, Taken, When,
 };
@@ -88,8 +89,7 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
         let request = SyncChanges {
             from: query.from,
             into: query.into,
-            picks: Some(Vec::new()),
-            when: Some(When::AtMerge),
+            when: Some(When::Withdraw),
             ..SyncChanges::default()
         };
         let synced = store
@@ -147,13 +147,24 @@ fn take(root: &ArgMatches, source: &str, into: EnvironmentRef) -> Result<(), Err
                 .with_exit(USAGE_EXIT)
         })?;
     let only = super::super::string_values(matches, "only");
+    let store = store(root)?;
+    // The hints were read at this version, else at the diff's now.
+    let version = match matches.get_one::<String>("version") {
+        Some(version) => version.clone(),
+        None => {
+            store
+                .read(&DiffQuery {
+                    environment: into.clone(),
+                })?
+                .version
+        }
+    };
     let request = Take {
         from,
         into: Some(into),
         rows: (!only.is_empty()).then_some(only),
-        version: matches.get_one::<String>("version").cloned(),
+        version,
     };
-    let store = store(root)?;
     let taken = store
         .try_write(&request)
         .map_err(|error| store.fail(store::with_refresh_hint(error, matches, "diff")))?;
@@ -192,13 +203,6 @@ fn sync_words(matches: &ArgMatches) -> Vec<&str> {
     }
 }
 
-/// Whether row `label` is `asked`, or under it: `web` covers `web.image`.
-fn under(label: &str, asked: &str) -> bool {
-    label
-        .strip_prefix(asked)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
-}
-
 /// The keys of `view`'s rows `--only` names (else those ticked by default) less
 /// those `--skip` names; a name matching no row is refused.
 fn picked(
@@ -207,17 +211,18 @@ fn picked(
     view: &SyncView,
     (only, skip): (&[String], &[String]),
 ) -> Result<Vec<String>, Error> {
-    if let Some(unknown) = only
-        .iter()
-        .chain(skip)
-        .find(|asked| !view.rows.iter().any(|row| under(&row.label, asked)))
-    {
-        let labels: Vec<&str> = view.rows.iter().map(|row| row.label.as_str()).collect();
+    if let Some(unknown) = only.iter().chain(skip).find(|asked| {
+        !view
+            .rows
+            .iter()
+            .any(|row| covers(&row.path.to_string(), asked))
+    }) {
+        let paths: Vec<String> = view.rows.iter().map(|row| row.path.to_string()).collect();
         return Err(Error::detailed(
             ployz_core::RpcErrorCode::NotFound,
             format!("No change named {unknown} syncs"),
             json!({
-                "valid_children": labels,
+                "valid_children": paths,
                 "next": store::next(matches, &[words, &["--plan"]].concat()),
             }),
         ));
@@ -227,9 +232,15 @@ fn picked(
         .iter()
         .filter(|row| match only.is_empty() {
             true => row.ticked,
-            false => only.iter().any(|asked| under(&row.label, asked)),
+            false => only
+                .iter()
+                .any(|asked| covers(&row.path.to_string(), asked)),
         })
-        .filter(|row| !skip.iter().any(|asked| under(&row.label, asked)))
+        .filter(|row| {
+            !skip
+                .iter()
+                .any(|asked| covers(&row.path.to_string(), asked))
+        })
         .map(|row| row.key.clone())
         .collect())
 }

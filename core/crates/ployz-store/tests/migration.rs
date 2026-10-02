@@ -69,8 +69,10 @@ fn comparisons(store: &ConfigStore, who: &Actor) -> (SyncView, BranchView) {
 const BEFORE_SYNC: &str = "
     UPDATE config_environment_branch SET made_with = (
         SELECT s.base FROM config_sync_base s
-        WHERE s.environment_id = config_environment_branch.environment_id
-          AND s.other_id = config_environment_branch.parent_id
+        WHERE (s.environment_id = config_environment_branch.environment_id
+          AND s.other_id = config_environment_branch.parent_id)
+          OR (s.environment_id = config_environment_branch.parent_id
+          AND s.other_id = config_environment_branch.environment_id)
     );
     ALTER TABLE config_environment_branch RENAME COLUMN made_with TO base;
     DROP TABLE config_sync_pending;

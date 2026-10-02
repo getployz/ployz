@@ -3,7 +3,6 @@
 
 use super::*;
 use crate::SealingKey;
-use crate::settings::SettingPath;
 
 /// Hold a Destination's value for a secret a pull request's Conditional Sync brings
 /// it by name only: it lands with the merge. Refused unless the pull request has a
@@ -15,6 +14,11 @@ pub struct HoldSecret {
     #[serde(default)]
     pub environment: EnvironmentRef,
     pub pull_request: PullRequestNumber,
+    /// The pull request's repository: needed only when pull requests of two
+    /// repositories with this number bring the secret.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub repository: Option<RepositoryId>,
     /// `SERVICE.env.KEY`, as the Sync names it.
     pub path: SettingPath,
     /// The value, sealed at once and never shown back.
@@ -81,26 +85,40 @@ pub(crate) fn hold(
         ));
     }
     let path = request.path.to_string();
-    let mut found = None;
+    let mut found = Vec::new();
     let mut labels = Vec::new();
     for row in rows {
         let repository: RepositoryId = row.number(0, "Conditional Sync")?;
+        if request.repository.is_some_and(|asked| asked != repository) {
+            continue;
+        }
         for secret in brought(&row.json::<Stored>(1, "Conditional Sync")?) {
             labels.push(secret.label.clone());
-            if found.is_none() && secret.label == path {
-                found = Some((repository, secret));
+            if secret.label == path {
+                found.push((repository, secret));
             }
         }
     }
-    let Some((repository, secret)) = found else {
-        return Err(error::choices(
-            format!(
-                "#{number} brings no secret {path} into {}",
-                into.summary.name
-            ),
-            &path,
-            labels.iter().map(String::as_str),
-        ));
+    let (repository, secret) = match found.len() {
+        0 => {
+            return Err(error::choices(
+                format!(
+                    "#{number} brings no secret {path} into {}",
+                    into.summary.name
+                ),
+                &path,
+                labels.iter().map(String::as_str),
+            ));
+        }
+        1 => found.remove(0),
+        _ => {
+            let repositories: Vec<RepositoryId> =
+                found.iter().map(|(repository, _)| *repository).collect();
+            return Err(error::invalid(
+                format!("#{number} of more than one repository brings {path}: name the repository"),
+                json!({ "valid_children": repositories }),
+            ));
+        }
     };
     if request.value.is_empty() {
         return Err(error::invalid(
@@ -141,8 +159,8 @@ pub(crate) fn hold(
     })
 }
 
-/// The secrets `stored` brings: those of its picked variables, or of the Services it
-/// introduces.
+/// The secrets `stored` brings: those of its picked variables. A Service it introduces
+/// brings only the variables picked with it.
 fn brought(stored: &Stored) -> Vec<Brought> {
     let mut brought = Vec::new();
     for service in &stored.landing.from.services {
@@ -152,10 +170,10 @@ fn brought(stored: &Stored) -> Vec<Brought> {
                 variable.value,
                 SavedVariableValue::Secret { .. } | SavedVariableValue::SecretWithoutValue
             );
-            let picked = stored.picks.iter().any(|pick| {
-                pick.key == format!("{lineage}:node")
-                    || pick.key == format!("{lineage}:variables.{}", variable.key)
-            });
+            let picked = stored
+                .picks
+                .iter()
+                .any(|pick| pick.key == format!("{lineage}:variables.{}", variable.key));
             if secret && picked {
                 brought.push(Brought {
                     lineage: lineage.clone(),
@@ -226,10 +244,16 @@ pub(super) fn held(
     Ok(held)
 }
 
-/// Whether a value is held for row `key` (`LINEAGE:variables.KEY`).
-pub(super) fn is_held(held: &[Held], key: &str) -> bool {
-    held.iter()
-        .any(|held| key == format!("{}:variables.{}", held.lineage, held.key))
+/// The rows (`LINEAGE:variables.KEY`) `into` holds a value of for `facts`' merge.
+pub(crate) fn held_rows(
+    tx: &mut dyn Tx,
+    into: &EnvironmentId,
+    facts: &PullRequest,
+) -> Result<Vec<String>, RpcError> {
+    Ok(held(tx, into, facts.repository_id, facts.number)?
+        .into_iter()
+        .map(|held| format!("{}:variables.{}", held.lineage, held.key))
+        .collect())
 }
 
 /// Give each secret `intent` holds without a value the value held for it.

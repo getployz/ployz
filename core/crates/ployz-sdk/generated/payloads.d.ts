@@ -90,7 +90,7 @@ environment: EnvironmentRef,
  */
 commands: Array<BatchCommand>, };
 
-export type BatchCommand = { "command": "create_service" } & CreateService | { "command": "create_volume" } & CreateVolume | { "command": "edit" } & Edit;
+export type BatchCommand = { "command": "create_service" } & CreateService | { "command": "create_volume" } & CreateVolume | { "command": "edit" } & Edit | { "command": "sync" } & SyncChanges | { "command": "hold_secret" } & HoldSecret | { "command": "never_sync" } & NeverSync | { "command": "discard" } & Discard;
 
 export type Batched = {
 /**
@@ -122,18 +122,7 @@ provided: Array<string>, hostnames: BranchHostnames,
  * (`<lineage>:healthcheck` covers `<lineage>:healthcheck.path`): what would move
  * is shown as meant to differ instead.
  */
-neverSynced?: Array<string>,
-/**
- * A Parent's deployed changes following into its Branch: a secret the Branch has
- * but never set its own (it holds what `base` holds) follows too.
- */
-follow?: boolean,
-/**
- * A secret the receiver lacks arrives with its sealed value; without this (a
- * Sync) it arrives without one, and the receiver's Deploy waits for it. Following
- * always carries it.
- */
-carrySecrets?: boolean,
+neverSynced?: Array<string>, way?: BranchWay,
 /**
  * Row keys to move. Absent compares only; present moves the picked rows.
  */
@@ -266,6 +255,8 @@ closes_at: number | null,
  * waits for the merge.
  */
 pull_request: PullRequestRef | null, };
+
+export type BranchWay = "sync" | "follow" | "exact";
 
 export type Branched = {
 /**
@@ -1073,8 +1064,8 @@ total_count: number,
  */
 hints: Array<PullRequestHint>,
 /**
- * Staged changes that arrived from another Environment, by Sync or Follow, and
- * where from, until they deploy.
+ * Staged changes that arrived from the Parent's deploy by Follow, still at the
+ * value they arrived with, until they deploy.
  */
 incoming: Array<IncomingChange>,
 /**
@@ -1367,6 +1358,14 @@ from: EnvironmentName,
  */
 row: string,
 /**
+ * The setting as the Branch addresses it: what [`Take::rows`] names.
+ */
+path: SettingPath,
+/**
+ * It is a whole Service or Volume, not one of its settings.
+ */
+whole: boolean,
+/**
  * The Parent's value; secrets read `{"secret": true}`.
  */
 value: JsonValue, };
@@ -1486,6 +1485,11 @@ export type HoldSecret = {
  */
 environment: EnvironmentRef, pull_request: PullRequestNumber,
 /**
+ * The pull request's repository: needed only when pull requests of two
+ * repositories with this number bring the secret.
+ */
+repository?: RepositoryId | null,
+/**
  * `SERVICE.env.KEY`, as the Sync names it.
  */
 path: SettingPath,
@@ -1519,6 +1523,14 @@ export type IncomingChange = {
  * `NODE`, or `NODE.path` for one of its settings or variables.
  */
 row: string,
+/**
+ * The setting as the receiver addresses it.
+ */
+path: SettingPath,
+/**
+ * It is a whole Service or Volume, not one of its settings.
+ */
+whole: boolean,
 /**
  * Where it came from.
  */
@@ -1855,6 +1867,10 @@ node: NodeName,
  * As [`SyncRow::label`].
  */
 label: string,
+/**
+ * As [`SyncRow::path`].
+ */
+path: SettingPath,
 /**
  * Where it is marked Never sync: unmark it there to sync it.
  */
@@ -2216,6 +2232,14 @@ conditional_sync: ConditionalSyncId, pull_request: PullRequestNumber,
  */
 row: string,
 /**
+ * The setting as the Environment addresses it: what [`Take::rows`] names.
+ */
+path: SettingPath,
+/**
+ * It is a whole Service or Volume, not one of its settings.
+ */
+whole: boolean,
+/**
  * The pull request's value; secrets read `{"secret": true}`.
  */
 value: JsonValue, landed: Landed, };
@@ -2525,7 +2549,13 @@ export type SavedEnvironmentIntent = { version: 1, environmentSlug: string, serv
 
 export type SavedServiceIntent = { id: string, lineageId: string, slug: string, config: AuthoredServiceConfig, variables: Array<SavedVariableIntent>, volumeAttachments: Array<VolumeAttachment>, };
 
-export type SavedVariableIntent = { id: string, key: string, description: string | null, exported: boolean, valueFingerprint: string, value: SavedVariableValue, };
+export type SavedVariableIntent = { id: string, key: string, description: string | null, exported: boolean,
+/**
+ * Empty exactly for a [`SavedVariableValue::SecretWithoutValue`], checked by
+ * `validate_variables`. It stays beside `value`, not in each valued variant:
+ * moving it would reshape every stored Working State and Applied State.
+ */
+valueFingerprint: string, value: SavedVariableValue, };
 
 export type SavedVariableProducer = { ownerScope: 'service', ownerId: string, ownerLineageId: string, key: string, value: SavedVariableValue, };
 
@@ -2985,7 +3015,8 @@ export type SyncChanges = {
  */
 from: EnvironmentRef,
 /**
- * Where they land, in the same Project; omitted, the sender's Parent.
+ * Where they land, in the same Project; omitted, a PR Environment's only
+ * Destination (unless `when` is `now`), else the sender's Parent.
  */
 into?: EnvironmentRef | null,
 /**
@@ -2999,14 +3030,15 @@ picks?: Array<string> | null,
  */
 version?: string | null,
 /**
- * Close the Branch once its changes landed: refused for a kept Branch.
+ * Close the Branch once its changes landed in its Parent: refused for a kept
+ * Branch, and for a Sync into anything but its Parent.
  */
 close_after?: boolean,
 /**
  * `now` stages the changes; `at_merge` makes them a Conditional Sync that goes
- * live with the pull request's merge, and `picks: []` withdraws it. Omitted:
- * `at_merge` from a PR Environment into one of its Destinations (`into`
- * omitted, its only one), else `now`.
+ * live with the pull request's merge; `withdraw` withdraws that Conditional
+ * Sync. Omitted: `at_merge` from a PR Environment into one of its Destinations,
+ * else `now`.
  */
 when?: When | null, };
 
@@ -3016,8 +3048,7 @@ export type SyncQuery = {
  */
 from: EnvironmentRef,
 /**
- * As [`SyncChanges::into`]; from a PR Environment, omitted means its only
- * Destination.
+ * As [`SyncChanges::into`].
  */
 into?: EnvironmentRef | null, };
 
@@ -3031,9 +3062,18 @@ key: string,
  */
 node: NodeName,
 /**
- * `NODE`, or `NODE.path` for one of its settings or variables.
+ * `NODE`, or `NODE.path` for one of its settings or variables: its name to show.
  */
 label: string,
+/**
+ * The setting it changes as the receiver addresses it: what discard, Never
+ * sync and an edit of the receiver take.
+ */
+path: SettingPath,
+/**
+ * It is a whole Service or Volume, not one of its settings.
+ */
+whole: boolean,
 /**
  * The value that syncs; secrets read `{"secret": true}`.
  */
@@ -3130,14 +3170,15 @@ from: HintSource,
  */
 into?: EnvironmentRef | null,
 /**
- * The hints to take, by row or a prefix of rows; omitted, every one.
+ * The hints to take, by path or a prefix of paths (`web` takes `web.image`);
+ * omitted, every one.
  */
 rows?: Array<string> | null,
 /**
- * Refuse with `conflict` unless the Destination's `diff` is still at this
- * version: its Working State and the Saved revision the hints landed on.
+ * Refused with `conflict` unless the receiver's `diff` is still at this
+ * version: the one the hints were read at.
  */
-version?: string | null, };
+version: string, };
 
 export type Taken = {
 /**
@@ -3416,7 +3457,7 @@ environment: EnvironmentSummary,
  */
 volumes: Array<VolumeListing>, };
 
-export type When = "now" | "at_merge";
+export type When = "now" | "at_merge" | "withdraw";
 
 export type WireGuardPublicKey = Array<number>;
 

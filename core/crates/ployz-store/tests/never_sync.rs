@@ -6,16 +6,17 @@
 //! `backend`): a marked setting is never a Sync row in either direction, the Sync
 //! view lists it apart, and a Branch of the marking Environment still gets its value.
 
-use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
+use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, Admit, BranchQuery, Change, ConfigStore, CreateBranch, CreateProject, CreateService,
-    Deploy, DeploymentId, Edit, EnvironmentId, EnvironmentName, EnvironmentQuery, EnvironmentRef,
-    NeverSync, OrganizationId, ProjectId, ProjectName, RunEvidence, RunnerId, ServiceLineageId,
-    ServiceQuery, SettingPath, SyncChanges, SyncQuery, SyncView, Trusted,
+    Actor, BranchQuery, Change, ConfigStore, CreateBranch, CreateProject, CreateService, Edit,
+    EnvironmentId, EnvironmentName, EnvironmentQuery, EnvironmentRef, NeverSync, OrganizationId,
+    ProjectId, ProjectName, ServiceLineageId, ServiceQuery, SettingPath, SyncChanges, SyncQuery,
+    SyncView,
 };
 use serde_json::{Value, json};
 
 mod backend;
+use backend::deploy;
 
 fn uuid(n: u8) -> String {
     format!("00000000-0000-4000-8000-0000000000{n:02}")
@@ -187,65 +188,6 @@ fn labels(view: &SyncView) -> Vec<&str> {
     let mut labels: Vec<&str> = view.rows.iter().map(|row| row.label.as_str()).collect();
     labels.sort_unstable();
     labels
-}
-
-/// Deploy `environment` in full and record every Service applied.
-fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8) {
-    let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
-    store
-        .write_trusted(
-            who,
-            &Admit::Deploy(Deploy {
-                id: id.clone(),
-                environment: at(environment),
-                services: Vec::new(),
-                version: None,
-                upload: None,
-                accept_volume_loss: Vec::new(),
-                message: None,
-            }),
-            &Trusted::default(),
-        )
-        .unwrap();
-    let runner = RunnerId::parse("runner").unwrap();
-    let claimed = store.claim(&id, &runner).unwrap();
-    let names: Vec<String> = claimed
-        .intent
-        .target
-        .iter()
-        .map(|service| service.name.to_string())
-        .collect();
-    let operation = |index: usize| {
-        json!({"type": "remove_container", "machine_id": "a".repeat(32),
-               "container_id": format!("{index:x}").repeat(64)})
-    };
-    let preview: DeployPreview = serde_json::from_value(json!({
-        "namespace": claimed.intent.namespace,
-        "operations": names.iter().enumerate().map(|(index, name)| json!({
-            "index": index, "machine_id": "a".repeat(32), "service_name": name,
-            "operation": operation(index), "status": {"type": "pending"}
-        })).collect::<Vec<_>>(),
-        "warnings": [], "would_remove": [], "preserved_volumes": []
-    }))
-    .unwrap();
-    store
-        .record(&id, &runner, RunEvidence::Prepared(preview))
-        .unwrap();
-    let outcome: DeployOutcome<ployz_core::ExecutionError> = serde_json::from_value(json!({
-        "type": "success",
-        "completed": (0..names.len()).map(operation).collect::<Vec<_>>()
-    }))
-    .unwrap();
-    store
-        .record(
-            &id,
-            &runner,
-            RunEvidence::Executed {
-                outcome: Box::new(outcome),
-                removed: Vec::new(),
-            },
-        )
-        .unwrap();
 }
 
 #[test]

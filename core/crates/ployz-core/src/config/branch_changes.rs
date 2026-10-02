@@ -6,12 +6,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Value, json};
 
 use super::branch_changes_types::RowPath;
-use super::service_changes::{FIELDS, at};
+use super::service_changes::{FIELDS, at, default_value};
 use super::{
     BranchChanges, BranchChangesInput, BranchHostnames, BranchReason, BranchRole, BranchRow,
-    BranchRowKey, ConfigError, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent,
-    SavedVariableValue, SavedVolumeIntent, ServiceConfig, ServiceImageCredentials, ServiceSource,
-    VolumeAttachment, parse_environment_intent, redact_environment_intent, restore_service_setting,
+    BranchRowKey, BranchWay, ConfigError, SavedEnvironmentIntent, SavedServiceIntent,
+    SavedVariableIntent, SavedVariableValue, SavedVolumeIntent, ServiceConfig,
+    ServiceImageCredentials, ServiceSource, VolumeAttachment, covers, parse_environment_intent,
+    parse_service_config, redact_environment_intent, restore_service_setting,
 };
 
 /// Compare `from` and `into` against `base`. Without picks (`None`) this only compares: `next` is
@@ -32,8 +33,7 @@ pub fn branch_changes(input: BranchChangesInput) -> Result<BranchChanges, Config
         provided: input.provided.iter().map(String::as_str).collect(),
         hostnames: &input.hostnames,
         never_synced: &input.never_synced,
-        follow: input.follow,
-        carry_secrets: input.carry_secrets || input.follow,
+        way: input.way,
     };
     let rows = comparison.rows();
     let picks = input.picks.as_deref();
@@ -94,8 +94,7 @@ struct Comparison<'a> {
     provided: BTreeSet<&'a str>,
     hostnames: &'a BranchHostnames,
     never_synced: &'a [String],
-    follow: bool,
-    carry_secrets: bool,
+    way: BranchWay,
 }
 
 impl Comparison<'_> {
@@ -180,22 +179,24 @@ impl Comparison<'_> {
                 if from_value.is_null() || from_value == base_value || from_value == into_value {
                     continue;
                 }
-                // A secret moves only into a receiver that lacks it, or, following,
-                // one that never set its own.
+                let mut conflict = into_value != base_value;
+                // Where either side is a secret, a Sync moves it only into a receiver
+                // that lacks it; following, also into one that never set its own.
                 if matches!(path, RowPath::Variable(_))
-                    && *at(&from_value, "kind") == "secret"
+                    && (*at(&from_value, "kind") == "secret"
+                        || *at(&into_value, "kind") == "secret")
                     && !into_value.is_null()
-                    && !(self.follow && into_value == base_value)
                 {
-                    continue;
+                    match self.way {
+                        BranchWay::Sync => continue,
+                        BranchWay::Follow if into_value == json!({"kind": "secret"}) => {
+                            conflict = false;
+                        }
+                        BranchWay::Follow if conflict => continue,
+                        BranchWay::Follow | BranchWay::Exact => {}
+                    }
                 }
-                self.unless_never_synced(
-                    lineage,
-                    path,
-                    BranchRole::Move {
-                        conflict: into_value != base_value,
-                    },
-                )
+                self.unless_never_synced(lineage, path, BranchRole::Move { conflict })
             };
             rows.push(BranchRow {
                 key: key(lineage, path.clone()),
@@ -215,7 +216,8 @@ impl Comparison<'_> {
         }
     }
 
-    /// A node `into` lacks and doesn't use live moves in whole, with a row per variable.
+    /// A node `into` lacks and doesn't use live moves in whole, with a row per variable;
+    /// a setting of it marked Never sync stays behind, shown as meant to differ.
     fn introduction_rows(&self, lineage: &str, node: Node, rows: &mut Vec<BranchRow>) {
         rows.push(BranchRow {
             key: key(lineage, RowPath::Node),
@@ -227,6 +229,22 @@ impl Comparison<'_> {
         let Node::Service(service) = node else {
             return;
         };
+        for (path, from) in settings(self.from, node, &self.hostnames.from) {
+            if let RowPath::Setting(field) = path
+                && from != default_value(field)
+                && self.pinned(lineage, &path)
+            {
+                rows.push(BranchRow {
+                    key: key(lineage, path),
+                    role: BranchRole::Differ {
+                        why: BranchReason::NeverSynced,
+                    },
+                    base: Value::Null,
+                    from,
+                    into: Value::Null,
+                });
+            }
+        }
         for variable in &service.variables {
             let path = RowPath::Variable(variable.key.clone());
             rows.push(BranchRow {
@@ -243,14 +261,15 @@ impl Comparison<'_> {
         }
     }
 
+    /// Whether the row at `lineage`'s `path` is marked Never sync.
+    fn pinned(&self, lineage: &str, path: &RowPath) -> bool {
+        let row = key(lineage, path.clone()).to_string();
+        self.never_synced.iter().any(|mark| covers(&row, mark))
+    }
+
     /// `role`, unless the row at `lineage`'s `path` is marked Never sync: then it differs.
     fn unless_never_synced(&self, lineage: &str, path: &RowPath, role: BranchRole) -> BranchRole {
-        let row = key(lineage, path.clone()).to_string();
-        let marked = self.never_synced.iter().any(|marked| {
-            row.strip_prefix(marked.as_str())
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
-        });
-        match marked {
+        match self.pinned(lineage, path) {
             true => BranchRole::Differ {
                 why: BranchReason::NeverSynced,
             },
@@ -271,7 +290,6 @@ impl Comparison<'_> {
         for (lineage, landing) in &admitted.landings {
             self.land(lineage, landing, &mut next, base.as_mut())?;
         }
-        self.land_defaults(rows, &admitted, &mut next, base.as_mut());
         let next = parse_environment_intent(json!(next))?;
         let base = base.unwrap_or_else(|| {
             let mut base = self.from.clone();
@@ -373,31 +391,6 @@ impl Comparison<'_> {
         Ok(())
     }
 
-    /// An introduced node's unpicked variables land in `next` with it, and `base` records
-    /// each; one marked Never sync stays out.
-    fn land_defaults(
-        &self,
-        rows: &[BranchRow],
-        admitted: &Admitted,
-        next: &mut SavedEnvironmentIntent,
-        mut base: Option<&mut SavedEnvironmentIntent>,
-    ) {
-        for row in rows {
-            let (RowPath::Variable(key), BranchRole::Move { .. }) = (&row.key.path, &row.role)
-            else {
-                continue;
-            };
-            let lineage = row.key.lineage.as_str();
-            if !admitted.introduced.contains(lineage) || admitted.picked.contains(&row.key) {
-                continue;
-            }
-            put_variable(next, lineage, self.landed_variable(lineage, key));
-            if let Some(base) = base.as_deref_mut() {
-                put_variable(base, lineage, variable(self.from, lineage, key));
-            }
-        }
-    }
-
     /// Add `from`'s node to `next` with fresh ids, no custom domains, `into`'s generated-address
     /// naming, a rebound credential, and mounts on `into`'s Volumes; its variables land separately.
     fn introduce(
@@ -436,6 +429,19 @@ impl Comparison<'_> {
             ..source.clone()
         };
         copy.config.routes.clear();
+        let pinned: Vec<&str> = settings(self.from, Node::Service(source), "")
+            .into_keys()
+            .filter_map(|path| {
+                let pinned = self.pinned(lineage, &path);
+                let RowPath::Setting(field) = path else {
+                    return None;
+                };
+                pinned.then_some(field)
+            })
+            .collect();
+        if !pinned.is_empty() {
+            copy.config = unpinned(json!(copy.config), &pinned)?;
+        }
         for hostname in &mut copy.config.managed_hostnames {
             let prefix = hostname
                 .prefix
@@ -466,10 +472,12 @@ impl Comparison<'_> {
         Ok(())
     }
 
-    /// `from`'s variable as it lands: a secret without its value unless secrets carry.
+    /// `from`'s variable as it lands: on a Sync, a secret without its value.
     fn landed_variable(&self, lineage: &str, key: &str) -> SavedVariableIntent {
         let variable = variable(self.from, lineage, key);
-        if self.carry_secrets || !matches!(variable.value, SavedVariableValue::Secret { .. }) {
+        if self.way != BranchWay::Sync
+            || !matches!(variable.value, SavedVariableValue::Secret { .. })
+        {
             return variable;
         }
         SavedVariableIntent {
@@ -741,6 +749,36 @@ fn move_setting(
         }
     }
     Ok(())
+}
+
+/// A new Service's settings `config` with each marked Never sync (`fields`) at its
+/// default: what it is in the sender stays there.
+fn unpinned(
+    mut config: Value,
+    fields: &[&str],
+) -> Result<super::AuthoredServiceConfig, ConfigError> {
+    for field in fields {
+        let field = match field.split_once('.') {
+            Some(("healthcheck", _)) => "healthcheck",
+            _ => field,
+        };
+        let (object, key) = match field.split_once('.') {
+            Some((parent, child)) => (config.get_mut(parent), child),
+            None => (Some(&mut config), field),
+        };
+        // A parent the sender lacks holds nothing to leave behind.
+        if let Some(object) = object.and_then(Value::as_object_mut) {
+            object.insert(key.to_owned(), default_value(field));
+        }
+    }
+    parse_service_config(config)
+        .map(|config| config.settings)
+        .map_err(|_| {
+            ConfigError::at(
+                "picks.key",
+                "A new Service can't arrive without a setting marked Never sync",
+            )
+        })
 }
 
 /// Credentials compare by presence, and each node's credential is its own: bind it to `service`.

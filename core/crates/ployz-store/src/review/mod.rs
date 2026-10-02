@@ -45,8 +45,8 @@ pub struct DiffView {
     /// until its next Saved revision.
     #[serde(default)]
     pub hints: Vec<crate::PullRequestHint>,
-    /// Staged changes that arrived from another Environment, by Sync or Follow, and
-    /// where from, until they deploy.
+    /// Staged changes that arrived from the Parent's deploy by Follow, still at the
+    /// value they arrived with, until they deploy.
     #[serde(default)]
     pub incoming: Vec<crate::IncomingChange>,
     /// The Parent's deployed values that followed into this Branch beside its own

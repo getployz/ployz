@@ -8,16 +8,16 @@
 //! value is a Use hint, as is one the Branch discards; it cascades one level per
 //! deploy; and a secret follows only into a Branch that never set its own.
 
-use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
+use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, Admit, Change, ConfigStore, CreateBranch, CreateProject, CreateService, Deploy,
-    DeploymentId, DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentName,
-    EnvironmentRef, HintSource, OrganizationId, ProjectId, ProjectName, RunEvidence, RunnerId,
-    ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, Take, Trusted,
+    Actor, Change, ConfigStore, CreateBranch, CreateProject, CreateService, DiffQuery, DiffView,
+    Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, HintSource, OrganizationId,
+    ProjectId, ProjectName, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, Take,
 };
 use serde_json::{Value, json};
 
 mod backend;
+use backend::deploy;
 
 fn uuid(n: u8) -> String {
     format!("00000000-0000-4000-8000-0000000000{n:02}")
@@ -150,7 +150,7 @@ fn hints(store: &ConfigStore, who: &Actor, environment: &str) -> Vec<String> {
         .collect()
 }
 
-fn take(parent: &str, into: &str, rows: &[&str], version: Option<String>) -> Take {
+fn take(parent: &str, into: &str, rows: &[&str], version: String) -> Take {
     Take {
         from: HintSource::Parent(EnvironmentName::parse(parent).unwrap()),
         into: Some(at(into)),
@@ -170,67 +170,6 @@ fn discard(store: &ConfigStore, who: &Actor, environment: &str, path: &str) {
             },
         )
         .unwrap();
-}
-
-/// Deploy `environment` in full and record every Service applied; what the runner
-/// was handed.
-fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8) -> Value {
-    let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
-    store
-        .write_trusted(
-            who,
-            &Admit::Deploy(Deploy {
-                id: id.clone(),
-                environment: at(environment),
-                services: Vec::new(),
-                version: None,
-                upload: None,
-                accept_volume_loss: Vec::new(),
-                message: None,
-            }),
-            &Trusted::default(),
-        )
-        .unwrap();
-    let runner = RunnerId::parse("runner").unwrap();
-    let claimed = store.claim(&id, &runner).unwrap();
-    let names: Vec<String> = claimed
-        .intent
-        .target
-        .iter()
-        .map(|service| service.name.to_string())
-        .collect();
-    let operation = |index: usize| {
-        json!({"type": "remove_container", "machine_id": "a".repeat(32),
-               "container_id": format!("{index:x}").repeat(64)})
-    };
-    let preview: DeployPreview = serde_json::from_value(json!({
-        "namespace": claimed.intent.namespace,
-        "operations": names.iter().enumerate().map(|(index, name)| json!({
-            "index": index, "machine_id": "a".repeat(32), "service_name": name,
-            "operation": operation(index), "status": {"type": "pending"}
-        })).collect::<Vec<_>>(),
-        "warnings": [], "would_remove": [], "preserved_volumes": []
-    }))
-    .unwrap();
-    store
-        .record(&id, &runner, RunEvidence::Prepared(preview))
-        .unwrap();
-    let outcome: DeployOutcome<ployz_core::ExecutionError> = serde_json::from_value(json!({
-        "type": "success",
-        "completed": (0..names.len()).map(operation).collect::<Vec<_>>()
-    }))
-    .unwrap();
-    store
-        .record(
-            &id,
-            &runner,
-            RunEvidence::Executed {
-                outcome: Box::new(outcome),
-                removed: Vec::new(),
-            },
-        )
-        .unwrap();
-    claimed.input
 }
 
 /// The environment `web` deploys with in `environment`, deploying it as `n`.
@@ -286,6 +225,10 @@ fn a_parents_deploy_stages_its_changes_in_each_branch_once_tagged_with_where_fro
         assert!(hints(&store, &who, branch).is_empty());
     }
 
+    // Edited after it arrived, it is the Branch's own.
+    set(&store, &who, "qa", &[("web.env.NEW", json!("2"))]);
+    assert_eq!(incoming(&store, &who, "qa"), ["web.image production"]);
+
     // Delivered once: deploying again stages nothing more.
     let before = diff(&store, &who, "fix-web").version;
     deploy(&store, &who, "production", 3);
@@ -324,22 +267,33 @@ fn a_branchs_own_change_wins_and_the_parents_value_is_a_hint_to_take() {
 
     // Only the Parent's hints, from the Branch's own Parent, are there to take.
     let wrong = store
-        .write(&who, &take("fix-web", "fix-web", &["web.image"], None))
+        .write(
+            &who,
+            &take(
+                "fix-web",
+                "fix-web",
+                &["web.image"],
+                diff(&store, &who, "fix-web").version,
+            ),
+        )
         .unwrap_err();
     assert_eq!(wrong.code, RpcErrorCode::InvalidArgument);
     let unknown = store
-        .write(&who, &take("production", "fix-web", &["web.env"], None))
-        .unwrap_err();
-    assert_eq!(unknown.code, RpcErrorCode::NotFound);
-    let stale = store
         .write(
             &who,
             &take(
                 "production",
                 "fix-web",
-                &["web.image"],
-                Some("0:0:0".into()),
+                &["web.env"],
+                diff(&store, &who, "fix-web").version,
             ),
+        )
+        .unwrap_err();
+    assert_eq!(unknown.code, RpcErrorCode::NotFound);
+    let stale = store
+        .write(
+            &who,
+            &take("production", "fix-web", &["web.image"], "0:0:0".into()),
         )
         .unwrap_err();
     assert_eq!(stale.code, RpcErrorCode::Conflict);
@@ -348,7 +302,7 @@ fn a_branchs_own_change_wins_and_the_parents_value_is_a_hint_to_take() {
     let took = store
         .write(
             &who,
-            &take("production", "fix-web", &["web.image"], Some(version)),
+            &take("production", "fix-web", &["web.image"], version),
         )
         .unwrap();
     assert_eq!(
@@ -382,6 +336,37 @@ fn a_discarded_change_stays_a_hint_until_the_parent_changes_that_setting_again()
     deploy(&store, &who, "production", 4);
     assert_eq!(web(&store, &who, "fix-web")["image"], json!("web:3"));
     assert!(hints(&store, &who, "fix-web").is_empty());
+}
+
+#[test]
+fn a_discarded_secret_rotation_is_a_hint_and_the_next_one_still_follows() {
+    let (store, who) = shop();
+    let rotate = |secret: &str, n: u8| {
+        set(
+            &store,
+            &who,
+            "production",
+            &[("web.env.TOKEN", json!({ "secret": secret }))],
+        );
+        deploy(&store, &who, "production", n);
+    };
+    rotate("prod-1", 2);
+    deploy(&store, &who, "fix-web", 3);
+    rotate("prod-2", 4);
+    discard(&store, &who, "fix-web", "web.env.TOKEN");
+    assert_eq!(
+        hints(&store, &who, "fix-web"),
+        [r#"web.env.TOKEN = {"secret":true} from production"#]
+    );
+    assert_eq!(
+        deployed_env(&store, &who, "fix-web", 5)["TOKEN"],
+        json!("prod-1")
+    );
+    rotate("prod-3", 6);
+    assert_eq!(
+        deployed_env(&store, &who, "fix-web", 7)["TOKEN"],
+        json!("prod-3")
+    );
 }
 
 #[test]

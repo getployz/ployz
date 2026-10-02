@@ -92,6 +92,9 @@ pub struct SavedVariableIntent {
     pub key: String,
     pub description: Option<String>,
     pub exported: bool,
+    /// Empty exactly for a [`SavedVariableValue::SecretWithoutValue`], checked by
+    /// `validate_variables`. It stays beside `value`, not in each valued variant:
+    /// moving it would reshape every stored Working State and Applied State.
     pub value_fingerprint: String,
     pub value: SavedVariableValue,
 }

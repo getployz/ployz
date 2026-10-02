@@ -243,7 +243,7 @@ commands! {
     /// Change a Project's PR plan for one repository.
     SetPrPlan(crate::SetPrPlan) -> PrPlans(crate::PrPlansView)
         => crate::pull_request::set_plan(tx, who, c);
-    /// Creates and edits applied together, all or none.
+    /// Writes of one Environment applied together, all or none.
     Batch(Batch) -> Batch(Batched) => {
         let mut at = Call { tx, who, sealing, trusted };
         c.commands
@@ -254,10 +254,11 @@ commands! {
     };
 }
 
-/// Creates and edits of one Environment in one transaction, in order: all apply or
-/// none do. Each create keeps its own caller-minted ID, so a retry replays it; an
-/// edit applies again. Cloud gathers no trusted evidence inside a Batch, so an edit
-/// that needs some (a repository or branch) is refused.
+/// Writes of one Environment in one transaction, in order: all apply or none do. A
+/// Sync in a Batch syncs into it, so a value for a secret it brings (an edit, or a
+/// value held for the merge) lands with it. Each create keeps its own caller-minted
+/// ID, so a retry replays it; the rest apply again. Cloud gathers no trusted evidence
+/// inside a Batch, so an edit that needs some (a repository or branch) is refused.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Batch {
@@ -278,17 +279,30 @@ pub enum BatchCommand {
     CreateVolume(CreateVolume),
     /// See [`Command::Edit`].
     Edit(Edit),
+    /// See [`Command::Sync`]: a Sync into the Batch's Environment.
+    Sync(crate::SyncChanges),
+    /// See [`Command::HoldSecret`].
+    HoldSecret(crate::HoldSecret),
+    /// See [`Command::NeverSync`].
+    NeverSync(crate::NeverSync),
+    /// See [`Command::Discard`].
+    Discard(Discard),
 }
 
 impl BatchCommand {
     /// Apply this command to the Batch's `environment`.
     fn apply(&self, environment: &EnvironmentRef, at: &mut Call<'_>) -> Result<Written, RpcError> {
+        let unnamed = EnvironmentRef::default();
         let named = match self {
             Self::CreateService(create) => &create.environment,
             Self::CreateVolume(create) => &create.environment,
             Self::Edit(edit) => &edit.environment,
+            Self::Sync(sync) => sync.into.as_ref().unwrap_or(&unnamed),
+            Self::HoldSecret(hold) => &hold.environment,
+            Self::NeverSync(mark) => &mark.environment,
+            Self::Discard(discard) => &discard.environment,
         };
-        if named != environment && *named != EnvironmentRef::default() {
+        if named != environment && *named != unnamed {
             return Err(error::invalid(
                 "Every command in a Batch writes the Batch's Environment",
                 json!({ "environment": named }),
@@ -313,6 +327,30 @@ impl BatchCommand {
             }
             .apply(at)
             .map(Written::Edited),
+            Self::Sync(sync) => crate::SyncChanges {
+                into: Some(environment.clone()),
+                ..sync.clone()
+            }
+            .apply(at)
+            .map(Written::Synced),
+            Self::HoldSecret(hold) => crate::HoldSecret {
+                environment: environment.clone(),
+                ..hold.clone()
+            }
+            .apply(at)
+            .map(Written::SecretHeld),
+            Self::NeverSync(mark) => crate::NeverSync {
+                environment: environment.clone(),
+                ..mark.clone()
+            }
+            .apply(at)
+            .map(Written::NeverSynced),
+            Self::Discard(discard) => Discard {
+                environment: environment.clone(),
+                ..discard.clone()
+            }
+            .apply(at)
+            .map(Written::Discarded),
         }
     }
 }

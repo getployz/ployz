@@ -28,21 +28,44 @@ pub struct BranchChangesInput {
     #[serde(default)]
     #[ts(as = "Option<Vec<String>>", optional)]
     pub never_synced: Vec<String>,
-    /// A Parent's deployed changes following into its Branch: a secret the Branch has
-    /// but never set its own (it holds what `base` holds) follows too.
     #[serde(default)]
-    #[ts(as = "Option<bool>", optional)]
-    pub follow: bool,
-    /// A secret the receiver lacks arrives with its sealed value; without this (a
-    /// Sync) it arrives without one, and the receiver's Deploy waits for it. Following
-    /// always carries it.
-    #[serde(default)]
-    #[ts(as = "Option<bool>", optional)]
-    pub carry_secrets: bool,
+    #[ts(as = "Option<BranchWay>", optional)]
+    pub way: BranchWay,
     /// Row keys to move. Absent compares only; present moves the picked rows.
     #[serde(default)]
     #[ts(optional)]
     pub picks: Option<Vec<String>>,
+}
+
+/// How a comparison treats secrets.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchWay {
+    /// A Sync: a secret moves only into a receiver that lacks it, and arrives without
+    /// its value; the receiver's Deploy waits for one. A receiver's secret never changes.
+    #[default]
+    Sync,
+    /// A Parent's deployed changes following into its Branch: a secret moves with its
+    /// value, into a Branch that lacks it or never set its own (it holds what `base`
+    /// holds, or a secret without a value).
+    Follow,
+    /// Every row as it is, secrets with their value: creating a Branch, and comparing
+    /// one Environment's own states.
+    Exact,
+}
+
+/// Whether row `row` is `mark` or under it: `web` covers `web.image`, and
+/// `<lineage>:healthcheck` covers `<lineage>:healthcheck.path`.
+#[must_use]
+pub fn covers(row: &str, mark: &str) -> bool {
+    row.strip_prefix(mark)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+}
+
+/// Row key `<lineageId>:<path>` as its lineage and path.
+#[must_use]
+pub fn split_row_key(key: &str) -> (&str, &str) {
+    key.split_once(':').unwrap_or((key, ""))
 }
 
 /// Each side's generated-address suffix, appended to managed hostname prefixes.

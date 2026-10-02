@@ -136,14 +136,10 @@ pub(crate) fn create_branch(
         from: suffix(tx, &parent)?,
         into: format!("-{}", create.name),
     };
-    let node_picks = own
-        .iter()
-        .map(|lineage| format!("{lineage}:node"))
-        .collect();
-    let changes = creating(&from, &into, &live, &hostnames, node_picks)?;
+    let changes = creating(&from, &into, &live, &hostnames, &own)?;
     // A fix's base is what the Parent runs, so the failed change shows as staged.
     let base = match create.fix {
-        Some(_) => creating(&applied, &into, &live, &hostnames, Vec::new())?.base,
+        Some(_) => creating(&applied, &into, &live, &hostnames, &BTreeSet::new())?.base,
         None => changes.base,
     }
     .ok_or_else(|| error::internal("Core returned no base for a new Branch"))?;
@@ -156,7 +152,7 @@ pub(crate) fn create_branch(
     };
     // A Branch first, so what it lands uses its Parent's nodes live. What it is made
     // with is what it and its Parent share.
-    let base = document(&base);
+    let made_with = document(&base);
     tx.execute(
         "INSERT INTO config_environment_branch (environment_id, organization_id, parent_id, kept, made_with, setup) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -165,23 +161,14 @@ pub(crate) fn create_branch(
             who.organization.as_str().into(),
             parent.summary.id.as_str().into(),
             i64::from(create.keep).into(),
-            base.as_str().into(),
+            made_with.as_str().into(),
             serde_json::to_string(&setup)
                 .expect("Setup Commands are JSON")
                 .as_str()
                 .into(),
         ],
     )?;
-    tx.execute(
-        "INSERT INTO config_sync_base (environment_id, other_id, organization_id, base) \
-         VALUES (?1, ?2, ?3, ?4)",
-        &[
-            create.id.as_str().into(),
-            parent.summary.id.as_str().into(),
-            who.organization.as_str().into(),
-            base.as_str().into(),
-        ],
-    )?;
+    share(tx, (&create.id, &parent.summary.id), &base)?;
     let carried = Carried::of(tx, &parent.summary.id, &from)?;
     let staged = land(tx, who, &mut branch, (&from, &carried), changes.next, &[])?;
     Ok(Branched {
@@ -249,20 +236,20 @@ pub(crate) fn copy_node(
             }
         }
     }
-    let moving = Moving::copy(tx, &owner.environment, &branch, &copied)?;
+    let comparison = Comparison::copy(tx, &owner.environment, &branch, &copied)?;
     // Every change of the copy, variables with the owner's values.
-    let picks: Vec<String> = moving
+    let picks: Vec<String> = comparison
         .compare(&branch.working, None)?
         .rows
         .iter()
         .filter(|row| matches!(row.role, BranchRole::Move { .. }))
         .map(|row| row.key.to_string())
-        .filter(|key| copied.contains(split(key).0))
+        .filter(|key| copied.contains(ployz_core::config::split_row_key(key).0))
         .collect();
     if picks.is_empty() {
-        return Err(error::conflict(moving.nothing, json!({})));
+        return Err(error::conflict(comparison.nothing, json!({})));
     }
-    let staged = moving.apply(tx, who, &mut branch, picks)?;
+    let staged = comparison.apply(tx, who, &mut branch, picks)?;
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged,

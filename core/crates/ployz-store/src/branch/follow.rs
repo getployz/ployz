@@ -14,16 +14,24 @@ pub struct FollowHint {
     pub from: EnvironmentName,
     /// `NODE.path`, as a Sync names it.
     pub row: String,
+    /// The setting as the Branch addresses it: what [`Take::rows`] names.
+    pub path: SettingPath,
+    /// It is a whole Service or Volume, not one of its settings.
+    pub whole: bool,
     /// The Parent's value; secrets read `{"secret": true}`.
     pub value: Value,
 }
 
-/// A staged change that arrived from another Environment, by Sync or Follow, until it
-/// deploys.
+/// A staged change that arrived from the Parent's deploy by Follow and still holds
+/// the value it arrived with, until it deploys.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct IncomingChange {
     /// `NODE`, or `NODE.path` for one of its settings or variables.
     pub row: String,
+    /// The setting as the receiver addresses it.
+    pub path: SettingPath,
+    /// It is a whole Service or Volume, not one of its settings.
+    pub whole: bool,
     /// Where it came from.
     pub from: EnvironmentName,
 }
@@ -44,14 +52,19 @@ pub(crate) fn follow(
     if branches.is_empty() || lineages.is_empty() {
         return Ok(());
     }
+    let ids = branches
+        .iter()
+        .map(|row| row.parse::<EnvironmentId>(0, "Branch"))
+        .collect::<Result<Vec<_>, _>>()?;
+    // The Parent and every Branch at once, in ID order, as a Sync locks its sides.
+    scope::lock_all(tx, ids.iter().cloned().chain([parent.clone()]))?;
     let parent = scope::load_by_id(tx, parent)?;
-    for row in &branches {
-        let branch = row.parse::<EnvironmentId>(0, "Branch")?;
-        if crate::teardown::removing(tx, &branch)?.is_some() {
+    for (row, branch) in branches.iter().zip(&ids) {
+        if crate::teardown::removing(tx, branch)?.is_some() {
             continue;
         }
         let who = Actor::system(row.parse(1, "Branch")?);
-        match into(tx, &who, &parent, &branch, lineages) {
+        match into(tx, &who, &parent, branch, lineages) {
             Err(error) if crate::automation::skippable(&error) => {}
             done => done?,
         }
@@ -68,8 +81,8 @@ fn into(
     lineages: &BTreeSet<String>,
 ) -> Result<(), RpcError> {
     let mut branch = scope::lock_id(tx, who, branch)?;
-    let moving = Moving::follow(tx, parent, &branch)?;
-    let changes = moving.compare(&branch.working, None)?;
+    let follow = Comparison::follow(tx, parent, &branch)?;
+    let changes = follow.compare(&branch.working, None)?;
     let delivered = delivered(tx, &branch.summary.id)?;
     let mut picks = Vec::new();
     for row in &changes.rows {
@@ -77,7 +90,7 @@ fn into(
             continue;
         };
         let key = row.key.to_string();
-        let (lineage, path) = split(&key);
+        let (lineage, path) = split_row_key(&key);
         let value = row.from.to_string();
         if !lineages.contains(lineage) || delivered.get(&key) == Some(&value) {
             continue;
@@ -101,7 +114,7 @@ fn into(
     }
     if !picks.is_empty() {
         let before = branch.summary.revision;
-        moving.apply(tx, who, &mut branch, picks)?;
+        follow.apply(tx, who, &mut branch, picks)?;
         crate::conditional_sync::followed(tx, &branch.summary, before)?;
     }
     Ok(())
@@ -114,19 +127,22 @@ pub(crate) fn hints(tx: &mut dyn Tx, branch: &Environment) -> Result<Vec<FollowH
         return Ok(Vec::new());
     };
     let parent = scope::load_by_id(tx, &row.parent)?;
-    let moving = Moving::follow(tx, &parent, branch)?;
-    let changes = moving.compare(&branch.working, None)?;
-    Ok(hinted(&delivered, &changes.rows)
+    let follow = Comparison::follow(tx, &parent, branch)?;
+    let changes = follow.compare(&branch.working, None)?;
+    hinted(&delivered, &changes.rows)
         .into_iter()
         .map(|row| {
-            let (label, value, _) = shown_row(&moving, &parent, branch, row);
-            FollowHint {
+            let (label, value, _) = shown_row(&follow, &parent, branch, row);
+            let key = row.key.to_string();
+            Ok(FollowHint {
                 from: parent.summary.name.clone(),
                 row: label,
+                path: path_of(&follow.from, &branch.working, &key)?,
+                whole: split_row_key(&key).1 == "node",
                 value,
-            }
+            })
         })
-        .collect())
+        .collect()
 }
 
 /// Stage the Follow hints `take` names (all of them when it names none) in the
@@ -155,45 +171,46 @@ pub(crate) fn take(
             json!({}),
         ));
     }
-    if take.version.is_some() {
-        review::check(&review::review(tx, &branch)?, take.version.as_deref())?;
-    }
-    let moving = Moving::follow(tx, &from, &branch)?;
-    let changes = moving.compare(&branch.working, None)?;
+    review::check(&review::review(tx, &branch)?, Some(&take.version))?;
+    let follow = Comparison::follow(tx, &from, &branch)?;
+    let changes = follow.compare(&branch.working, None)?;
     let delivered = delivered(tx, &branch.summary.id)?;
-    let hints: Vec<(String, &BranchRow)> = hinted(&delivered, &changes.rows)
-        .into_iter()
-        .map(|row| (moving.name(&branch.working, &row.key.to_string()), row))
-        .collect();
-    let mut picks = Vec::new();
-    for (label, row) in &hints {
-        let asked = take
-            .rows
-            .as_ref()
-            .is_none_or(|asked| asked.iter().any(|asked| under(label, asked)));
-        if asked {
-            picks.push(row.key.to_string());
-        }
+    let mut hints = Vec::new();
+    for row in hinted(&delivered, &changes.rows) {
+        let key = row.key.to_string();
+        hints.push((
+            path_of(&follow.from, &branch.working, &key)?.to_string(),
+            key,
+        ));
     }
     if let Some(unknown) = take
         .rows
         .iter()
         .flatten()
-        .find(|asked| !hints.iter().any(|(label, _)| under(label, asked)))
+        .find(|asked| !hints.iter().any(|(path, _)| covers(path, asked)))
     {
         return Err(error::choices(
-            format!("No hint named {unknown} to take"),
+            format!("No hint {unknown} to take"),
             unknown,
-            hints.iter().map(|(label, _)| label.as_str()),
+            hints.iter().map(|(path, _)| path.as_str()),
         ));
     }
+    let picks: Vec<String> = hints
+        .into_iter()
+        .filter(|(path, _)| {
+            take.rows
+                .as_ref()
+                .is_none_or(|asked| asked.iter().any(|asked| covers(path, asked)))
+        })
+        .map(|(_, key)| key)
+        .collect();
     if picks.is_empty() {
         return Err(error::conflict(
             format!("No value from {parent} to use: read the diff again"),
             json!({}),
         ));
     }
-    let staged = moving.apply(tx, who, &mut branch, picks)?;
+    let staged = follow.apply(tx, who, &mut branch, picks)?;
     Ok(Taken {
         from: from.summary,
         into: branch.summary,
@@ -202,31 +219,43 @@ pub(crate) fn take(
     })
 }
 
-/// What landed in `receiver` from another Environment and isn't deployed yet.
+/// What a Follow staged in `receiver` that still holds the Parent's deployed value
+/// and isn't deployed yet. A later edit of it, or a Sync, makes it the receiver's own.
 pub(crate) fn incoming(
     tx: &mut dyn Tx,
     receiver: &Environment,
 ) -> Result<Vec<IncomingChange>, RpcError> {
     let pending = tx.query(
-        "SELECT e.name, p.lineage, p.path FROM config_sync_pending p \
+        "SELECT e.name, p.lineage, p.path, p.other_id FROM config_sync_pending p \
          JOIN config_environment e ON e.id = p.other_id \
-         WHERE p.environment_id = ?1 ORDER BY e.name, p.lineage, p.path",
+         WHERE p.environment_id = ?1 AND p.arrived = 'follow' ORDER BY p.lineage, p.path",
         &[receiver.summary.id.as_str().into()],
     )?;
+    let Some(first) = pending.first() else {
+        return Ok(Vec::new());
+    };
+    let parent = scope::load_by_id(tx, &first.parse(3, "Sync")?)?;
+    let applied = deployment::head(tx, &parent)?.applied;
+    let edited = changed_from(&applied, &receiver.working)?;
     let working = &receiver.working;
     let mut incoming = Vec::new();
+    let name_in = |lineage: &str| name_of(working, lineage).unwrap_or_else(|| lineage.to_owned());
     for row in &pending {
         let (lineage, path) = (row.text(1)?, row.text(2)?);
+        let key = format!("{lineage}:{path}");
         let Some(node) = name_of(working, lineage) else {
             continue;
         };
-        let name_in =
-            |lineage: &str| name_of(working, lineage).unwrap_or_else(|| lineage.to_owned());
+        if edited.contains(&key) {
+            continue;
+        }
         incoming.push(IncomingChange {
             row: match path {
                 "node" => node,
                 path => SettingPath::from_core(&node, path, name_in),
             },
+            path: path_of(&applied, working, &key)?,
+            whole: path == "node",
             from: row.parse(0, "Sync")?,
         });
     }
