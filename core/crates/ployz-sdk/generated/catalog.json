@@ -102,7 +102,7 @@
           ],
           "patternProperties": {
             "^[A-Z_][A-Z0-9_]{0,127}$": {
-              "description": "An environment variable. Text may reference variables: ${{ KEY }} for this Service's, ${{ service.KEY }} for another's; $${{ is a literal ${{. A secret reads as {\"secret\": true}, and sending that back keeps it; set a new one with --secret or --from-env-file. {\"value\": …, \"exported\": true} marks one other Services are meant to reference.",
+              "description": "An environment variable. Text may reference variables: ${{ KEY }} for this Service's, ${{ service.KEY }} for another's; $${{ is a literal ${{. A secret reads as {\"secret\": true}, or {\"secret\": false} until it has a value, and sending that back keeps it; set a new one with --secret or --from-env-file. {\"value\": …, \"exported\": true} marks one other Services are meant to reference.",
               "examples": [
                 "postgres://${{ db.USER }}@db:5432/app",
                 {
@@ -121,7 +121,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "secret": {
-                      "const": true
+                      "type": "boolean"
                     }
                   },
                   "required": [
@@ -145,7 +145,7 @@
                           "additionalProperties": false,
                           "properties": {
                             "secret": {
-                              "const": true
+                              "type": "boolean"
                             }
                           },
                           "required": [

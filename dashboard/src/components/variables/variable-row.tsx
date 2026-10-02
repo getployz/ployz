@@ -42,6 +42,7 @@ export function VariableRow({
   );
 
   const isSealed = variable.value.type === "sealed";
+  const needsValue = variable.value.type === "sealed" && variable.value.needsValue === true;
   const plainValue = variable.value.type === "plain" ? variable.value.value : "";
   const showMetadata = onUpdateMetadata != null;
   const brokenRefWarning = referencesDeletedOwner(plainValue)
@@ -50,6 +51,13 @@ export function VariableRow({
 
   // Writes are optimistic: the writer rolls back and toasts if saving fails.
   function handleSave() {
+    // A secret's edit seals the typed value: it never becomes plain text.
+    if (isSealed) {
+      if (!state.editValue) return;
+      onSealVariable({ ...variable, value: { type: "plain", value: state.editValue } });
+      dispatch({ type: "saveSucceeded" });
+      return;
+    }
     collection.update(variable.id, (draft) => {
       draft.value = { type: "plain", value: state.editValue };
     });
@@ -78,6 +86,7 @@ export function VariableRow({
         editing={state.editing}
         editValue={state.editValue}
         isSealed={isSealed}
+        needsValue={needsValue}
         plainValue={plainValue}
         unresolvedReferences={variable.unresolvedReferences}
         revealed={state.revealed}
@@ -94,6 +103,7 @@ export function VariableRow({
         editing={state.editing}
         exported={variable.exported}
         isSealed={isSealed}
+        needsValue={needsValue}
         plainValue={plainValue}
         showMetadata={showMetadata}
         onCancelEdit={() => dispatch({ type: "editCancelled" })}

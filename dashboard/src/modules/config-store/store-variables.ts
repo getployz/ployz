@@ -9,10 +9,12 @@ import type { useStoreWriter } from "./store-write";
 
 const VARIABLE = /^env\.([^.]+)$/u;
 const isText = Schema.is(Schema.String);
+const isValueless = Schema.is(Schema.Struct({ secret: Schema.Literal(false) }));
 
 /**
  * One Service's variables from its Setting rows (`serviceSettingRows`), sorted by key. A secret reads as
- * `{"secret": true}` and shows sealed; an unset one (null, pending removal) is gone.
+ * `{"secret": true}`, or `{"secret": false}` until it has a value, and shows sealed; an unset one (null, pending
+ * removal) is gone.
  */
 export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceId: string,
   /** What the next Deploy changes, by Setting (`env.KEY`): those rows are pink. */
@@ -26,7 +28,7 @@ export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceI
     return [{
       id: key, serviceId, key, description: null,
       exported: rows.get(`${name}.exported`)?.value === true,
-      value: isText(value) ? { type: "plain" as const, value } : { type: "sealed" as const },
+      value: isText(value) ? { type: "plain" as const, value } : { type: "sealed" as const, needsValue: isValueless(value) },
       changed: changes.has(name) || changes.has(`${name}.exported`),
       neverSynced: neverSynced.has(name),
     }];

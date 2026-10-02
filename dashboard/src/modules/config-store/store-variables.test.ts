@@ -44,6 +44,17 @@ it("shows pending variable writes at once, and a new secret only as sealed", () 
   expect(shown.settings.find((row) => row.path === "web.registryCredential")?.value).toEqual({ secret: true });
 });
 
+it("says which secret needs a value, and keeping it keeps it so", () => {
+  const valueless = { ...view, settings: [{ path: "web.env.TOKEN", value: { secret: false }, default: null, apply: "staged" as const }] };
+  const needs = (shown: EnvironmentView) => serviceVariables(serviceSettingRows(shown, "web"), "web-id")
+    .map(({ key, value }) => ({ key, needsValue: value.type === "sealed" && value.needsValue }));
+  expect(needs(valueless)).toEqual([{ key: "TOKEN", needsValue: true }]);
+  expect(needs(withPendingChanges(valueless, [{ op: "set", path: "web.env.TOKEN", value: { secret: true } }])))
+    .toEqual([{ key: "TOKEN", needsValue: true }]);
+  expect(needs(withPendingChanges(valueless, [{ op: "set", path: "web.env.TOKEN", value: { secret: "s3cret" } }])))
+    .toEqual([{ key: "TOKEN", needsValue: false }]);
+});
+
 it("marks the variables their Environment never syncs, and only this Service's", () => {
   const marked = { ...view, never_synced: ["web.env.LOG_LEVEL", "api.env.API_KEY", "web.startCommand"] };
   expect(serviceVariables(serviceSettingRows(marked, "web"), "web-id", new Map(), serviceNeverSynced(marked, "web"))

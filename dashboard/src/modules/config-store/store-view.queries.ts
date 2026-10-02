@@ -171,7 +171,7 @@ const isSecret = Schema.is(Schema.Struct({ secret: Schema.Unknown }));
  * Shows edits not yet committed over an Environment view, in order: what the user sees while saves run. It knows no
  * edit rules: the dashboard only sends `set PATH VALUE` and `unset PATH` for rows the view lists (a new variable adds
  * its row), so a pending edit shows as its value, or the row's default once unset. A secret shows as reads show it,
- * `{"secret": true}`. What the Store makes of an edit arrives with the committed view.
+ * `{"secret": true}`, or `{"secret": false}` while kept without a value. What the Store makes of an edit arrives with the committed view.
  */
 export function withPendingChanges(view: EnvironmentView, changes: readonly Change[]): EnvironmentView {
   if (changes.length === 0) return view;
@@ -182,7 +182,8 @@ export function withPendingChanges(view: EnvironmentView, changes: readonly Chan
     if (!row && change.op === "set") settings.push(row = { path: change.path, value: null, default: null, apply: "staged" });
     if (!row) continue;
     const value = change.op === "set" ? change.value : row.default;
-    row.value = isSecret(value) ? { secret: true } : value;
+    // Keeping a secret (`{"secret": true}`) keeps what it shows, a value or none.
+    row.value = !isSecret(value) ? value : value.secret === true && isSecret(row.value) ? row.value : { secret: true };
   }
   return { ...view, settings };
 }

@@ -1,7 +1,7 @@
 /** A variable's value as the panel shows it: plain text, or sealed (never read back). */
 export type VariableValue =
   | { type: "plain"; value: string }
-  | { type: "sealed" };
+  | { type: "sealed"; /** A secret still without a value (it arrived by Sync): Deploy waits for one. */ needsValue?: boolean };
 
 /** One of a Service's variables, as the variables panel shows and edits it. */
 export type VariableRecord = {

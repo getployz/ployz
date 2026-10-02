@@ -739,9 +739,16 @@ fn a_secret_syncs_without_its_value_and_the_receiver_deploys_only_with_its_own()
     assert!(!row(&review, "api").secret);
     store.write(&who, &sync(None, None)).unwrap();
     assert!(view(&store, &who).rows.is_empty());
+    // A secret without a value reads so, and sending that back keeps it.
     assert_eq!(
         values(&store, &who, "production", "web")["env"]["API_KEY"],
-        json!({ "secret": true })
+        json!({ "secret": false })
+    );
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.API_KEY", json!({ "secret": false }))],
     );
 
     // They landed without a value: Deploy refuses, naming each, until production has its own.

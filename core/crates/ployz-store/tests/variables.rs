@@ -301,12 +301,7 @@ fn a_secret_is_kept_by_its_marker_and_never_becomes_plain() {
     )
     .unwrap();
     assert_eq!(staged(&edited), ["web.env.PLAIN", "web.env.TOKEN"]);
-    for bad in [
-        json!(null),
-        json!(3),
-        json!({ "secret": "" }),
-        json!({ "secret": false }),
-    ] {
+    for bad in [json!(null), json!(3), json!({ "secret": "" })] {
         let error = set(&store, &[("web.env.TOKEN", bad)]).unwrap_err();
         assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     }
