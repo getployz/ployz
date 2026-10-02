@@ -27,8 +27,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    Applied, Cell, Hostnames, Plan, PlannedRow, Policy as Rules, RowId, SavedEnvironmentIntent,
-    Sides, Verdict, Way, cell_at, plan,
+    Applied, Arrives, Cell, Hostnames, Plan, PlannedRow, Policy as Rules, RowId,
+    SavedEnvironmentIntent, Sides, Verdict, Way, cell_at, plan,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -219,19 +219,29 @@ fn admit(
     })
 }
 
-/// What `stored` lands in `into` where it still holds what the Sync was reviewed
-/// against.
+/// What `stored` lands in the Destination's Saved State `saved`: each pick it still
+/// holds as the Sync was reviewed against, but a secret that needs a value only
+/// where Working State `working` holds that too, so a held value never replaces one
+/// the Destination staged itself. Landing and the check's `waiting` both read it.
 fn admitted(
     stored: &Stored,
-    into: &SavedEnvironmentIntent,
+    (saved, working): (&SavedEnvironmentIntent, &SavedEnvironmentIntent),
     marks: &BTreeSet<RowId>,
     held: &BTreeMap<RowId, Cell>,
 ) -> Result<Admitted, RpcError> {
-    admit(stored, into, marks, held, |row| {
+    admit(stored, saved, marks, held, |row| {
+        let needs_value = matches!(
+            row.verdict,
+            Verdict::Moves {
+                arrives: Arrives::NeedsValue,
+                ..
+            }
+        );
         stored
             .picks
             .iter()
             .any(|pick| pick.row == row.id && pick.reviewed == row.into)
+            && (!needs_value || cell_at(working, &row.id, &stored.hostnames.into) == row.into)
     })
 }
 
@@ -563,7 +573,12 @@ pub(crate) fn land(
         return delete(tx, id);
     };
     let marks = marked(tx, &into)?;
-    let saved = admitted(&stored, &latest.intent, &marks, &held)?;
+    let saved = admitted(
+        &stored,
+        (&latest.intent, &destination.working),
+        &marks,
+        &held,
+    )?;
 
     // Working: the nodes arriving as Saved has them, so their ids match; then each
     // row Working State holds as Saved did, with the variables Saved gained under
@@ -698,13 +713,17 @@ pub(crate) fn standing_in(
         row.number(5, "Conditional Sync")?,
     )?;
     let marks = marked(tx, &into.summary.id)?;
-    let waiting = admitted(&stored, &into.working, &marks, &held)?
-        .applied
-        .waiting
-        .iter()
-        .filter_map(|row| stored.picks.iter().find(|pick| pick.row == *row))
-        .map(|pick| pick.at.label())
-        .collect();
+    let waiting = match review::latest_saved(tx, &into.summary.id)? {
+        Some(latest) => admitted(&stored, (&latest.intent, &into.working), &marks, &held)?
+            .applied
+            .waiting
+            .iter()
+            .filter_map(|row| stored.picks.iter().find(|pick| pick.row == *row))
+            .map(|pick| pick.at.label())
+            .collect(),
+        // Nothing saved there to land onto.
+        None => Vec::new(),
+    };
     Ok(Some(pull_request::DestinationSync {
         id: row.parse(0, "Conditional Sync ID")?,
         standing,

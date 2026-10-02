@@ -348,3 +348,55 @@ fn a_value_for_a_secret_lands_with_its_sync_or_neither_does() {
         json!("prod-key")
     );
 }
+
+/// PR #5 syncs TOKEN with a value held, but production stages its own and doesn't
+/// publish it: the check stops waiting, and the merge lands no held value over it,
+/// leaving the pull request's value a hint.
+#[test]
+fn a_secret_the_destination_stages_itself_keeps_the_held_value_out_of_saved_state() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[("web.env.TOKEN", json!({ "secret": "pr-secret" }))],
+    );
+    let review = offered(&store, &who, None);
+    store
+        .write(&who, &sync(&review, Some(&["web.env.TOKEN"])))
+        .unwrap();
+    store.write(&who, &hold("TOKEN", "held")).unwrap();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!({ "secret": "own" }))],
+    );
+    assert_eq!(
+        check(&store, &who),
+        (true, "1 change goes live with this PR".into())
+    );
+    observe(
+        &store,
+        &who,
+        SystemEvent::PullRequest(facts(false, Some(MERGE), None, 2)),
+    );
+    let pushed = push(&store, &who, 4, &[MERGE]);
+    let hints = store
+        .read(
+            &who,
+            &DiffQuery {
+                environment: at("production"),
+            },
+        )
+        .unwrap()
+        .hints;
+    assert_eq!(
+        texts(&hints.iter().map(|hint| hint.at.label()).collect::<Vec<_>>()),
+        ["web.env.TOKEN"]
+    );
+    assert_eq!(
+        resolved(&store, &pushed.admitted[0].deployment.id, "TOKEN"),
+        Value::Null
+    );
+}
