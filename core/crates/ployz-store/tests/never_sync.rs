@@ -351,8 +351,8 @@ fn never_sync_names_a_row_of_a_node_the_environment_has() {
 }
 
 /// Names resolve in the marking Environment's own configuration: a root marks by
-/// name, a Branch marks a setting it never changed, and a prefix marks every row
-/// under it.
+/// name, a Branch marks a setting it never changed or one at its default, and a
+/// prefix marks every row under it.
 #[test]
 fn rows_are_marked_by_name_in_the_marking_environments_own_configuration() {
     let (store, who) = shop();
@@ -376,6 +376,14 @@ fn rows_are_marked_by_name_in_the_marking_environments_own_configuration() {
         .write(&who, &by_name("production", &["web.env.OTHER"], true))
         .unwrap();
     assert_eq!(labels_of(&unmarked.never_synced), ["web.env.PLAIN"]);
+    // A setting at its default is marked by name as by RowId.
+    let marked = store
+        .write(&who, &by_name("fix-web", &["web.startCommand"], false))
+        .unwrap();
+    assert_eq!(
+        labels_of(&marked.never_synced),
+        ["web.env.PLAIN", "web.startCommand"]
+    );
     let unknown = store
         .write(&who, &by_name("fix-web", &["web.env.NOPE"], false))
         .unwrap_err();

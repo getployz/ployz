@@ -69,7 +69,8 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub(super) const ALL: [Self; 19] = [
+    /// Every Setting, in landing order.
+    pub const ALL: [Self; 19] = [
         Self::Repository,
         Self::Image,
         Self::RootDir,

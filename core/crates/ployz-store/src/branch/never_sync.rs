@@ -39,10 +39,15 @@ pub(crate) fn never_sync(
     let environment = scope::lock(tx, who, &request.environment)?;
     let candidates = match request.off {
         true => never_synced(tx, &environment)?,
-        false => named_in(
-            &[&environment.working],
-            Cells::of(&environment.working, "").rows(),
-        ),
+        false => {
+            let working = &environment.working;
+            // A setting at its default has no cell, yet is a row a mark can name.
+            let mut rows: BTreeSet<RowId> = Cells::of(working, "").rows().cloned().collect();
+            rows.extend(working.services.iter().flat_map(|service| {
+                Setting::ALL.map(|setting| RowId::of(&service.lineage_id, At::Setting(setting)))
+            }));
+            named_in(&[working], &rows)
+        }
     };
     for row in &resolve_all(&request.rows, &candidates)? {
         let at = row.at().to_string();
