@@ -28,3 +28,14 @@ CREATE TABLE config_sync_pending (
     prior TEXT NOT NULL,
     PRIMARY KEY (environment_id, other_id, lineage, path)
 );
+
+-- Settings an Environment marked Never sync, by the row key a comparison names
+-- them by (`lineage`, `path`): a Sync never carries them from it nor into it, but
+-- its Branches still get its value.
+CREATE TABLE config_never_sync (
+    environment_id TEXT NOT NULL REFERENCES config_environment (id) ON DELETE CASCADE,
+    lineage TEXT NOT NULL,
+    path TEXT NOT NULL,
+    organization_id TEXT NOT NULL,
+    PRIMARY KEY (environment_id, lineage, path)
+);

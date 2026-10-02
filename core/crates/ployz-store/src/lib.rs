@@ -46,6 +46,7 @@ pub use branch::{
     Moved, PickChoice, PlannedNode, PlannedRole, Save, SetBranchSetup, SetupCommand, SyncChanges,
     SyncQuery, SyncRow, SyncView, Synced, Take, Update, When,
 };
+pub use branch::{NeverSync, NeverSynced, NeverSyncedRow};
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
     GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubReport, GithubRun, RunEnd,

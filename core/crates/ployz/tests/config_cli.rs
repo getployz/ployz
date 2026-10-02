@@ -889,6 +889,89 @@ fn an_agent_branches_an_environment_without_servers() {
 }
 
 #[test]
+fn an_agent_marks_settings_never_sync_without_servers() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["env", "branch", "fix-web", "--copy", "web"]);
+        ok(
+            store,
+            &[
+                "set",
+                "--env",
+                "fix-web",
+                "web.image=web:2",
+                "web.env.APP_ENV=fix",
+            ],
+        );
+        let marked = ok(
+            store,
+            &[
+                "env",
+                "never-sync",
+                "web.env.APP_ENV",
+                "web.image",
+                "--env",
+                "fix-web",
+            ],
+        );
+        assert_eq!(marked["environment"]["name"], json!("fix-web"));
+        assert_eq!(
+            marked["never_synced"],
+            json!(["web.env.APP_ENV", "web.image"])
+        );
+        assert_eq!(
+            ok(store, &["get", "--env", "fix-web"])["never_synced"],
+            json!(["web.env.APP_ENV", "web.image"])
+        );
+
+        // The plan lists them apart, so there is nothing to sync.
+        let plan = ok(
+            store,
+            &["env", "sync", "--to", "--plan", "--env", "fix-web"],
+        );
+        assert_eq!(plan["rows"], json!([]));
+        let apart: Vec<&Value> = plan["never_synced"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| &row["label"])
+            .collect();
+        assert_eq!(apart, [&json!("web.env.APP_ENV"), &json!("web.image")]);
+        assert_eq!(plan["never_synced"][0]["marked_in"], json!(["fix-web"]));
+        let nothing = error(store, &["env", "sync", "--to", "--env", "fix-web"]);
+        assert_eq!(nothing["code"], json!("conflict"));
+
+        let again = ok(
+            store,
+            &[
+                "env",
+                "never-sync",
+                "web.image",
+                "--off",
+                "--env",
+                "fix-web",
+            ],
+        );
+        assert_eq!(again["never_synced"], json!(["web.env.APP_ENV"]));
+        let plan = ok(
+            store,
+            &["env", "sync", "--to", "--plan", "--env", "fix-web"],
+        );
+        assert_eq!(plan["rows"][0]["label"], json!("web.image"));
+
+        failed(store, &["env", "never-sync", "--env", "fix-web"], 2);
+        let whole = error(store, &["env", "never-sync", "web", "--env", "fix-web"]);
+        assert_eq!(whole["code"], json!("invalid_argument"));
+        let missing = error(
+            store,
+            &["env", "never-sync", "api.env.KEY", "--env", "fix-web"],
+        );
+        assert_eq!(missing["code"], json!("not_found"));
+    }
+}
+
+#[test]
 fn an_agent_syncs_a_branch_into_its_parent_without_servers() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);

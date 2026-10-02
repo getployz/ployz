@@ -4,6 +4,7 @@
 //! doesn't run) and uses the rest live; `sync` (or `save`) stages its changes in
 //! its Parent, `update` stages what its Parent deployed since, `copy` turns a Live
 //! Node into its own copy, and `keep` keeps it after syncing into its Parent.
+//! `never-sync` marks settings an Environment keeps as its own.
 
 mod branch;
 mod pr;
@@ -12,8 +13,8 @@ use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 use ployz_store::{
     CreateEnvironment, DeploymentSummary, EnvironmentId, EnvironmentName, EnvironmentRef,
-    EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView, RemoveEnvironment,
-    SetDefaultEnvironment,
+    EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView, NeverSync, RemoveEnvironment,
+    SetDefaultEnvironment, SettingPath,
 };
 use serde_json::json;
 
@@ -218,6 +219,27 @@ pub(crate) fn command() -> Command {
             )
             .arg(switch("off", None).help("Stop keeping it")),
         )
+        .subcommand(
+            store::scoped(
+                Command::new("never-sync")
+                    .about("Mark settings Never sync: Sync never carries them into or out of the Environment")
+                    .long_about(
+                        "Mark settings of the Environment Never sync: a Sync never carries \
+                         them from it and never changes them in it. A Branch of the \
+                         Environment still gets its value; the mark doesn't carry into \
+                         Branches. --off syncs them again. Example: ployz env never-sync \
+                         web.env.APP_ENV web.env.STRIPE_PUBLISHABLE_KEY --env staging",
+                    ),
+            )
+            .arg(
+                positional("path", true)
+                    .num_args(1..)
+                    .action(clap::ArgAction::Append)
+                    .value_name("PATH")
+                    .help("SERVICE.SETTING, SERVICE.env.KEY, SERVICE.mounts.VOLUME or volumes.VOLUME.storage"),
+            )
+            .arg(switch("off", None).help("Sync them again")),
+        )
         .subcommand(deploy::following(
             base(
                 "shutdown",
@@ -297,6 +319,7 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
         "update" => branch::update,
         "copy" => branch::copy,
         "keep" => branch::keep,
+        "never-sync" => never_sync,
         "shutdown" => pr::shutdown,
         "pr" => pr::pr,
         _ => return None,
@@ -479,4 +502,35 @@ fn node_names(names: &[String]) -> Result<Vec<ployz_store::NodeName>, Error> {
         .iter()
         .map(|name| ployz_store::NodeName::parse(name.as_str()))
         .collect::<Result<_, _>>()?)
+}
+
+/// `env never-sync`: mark settings Never sync, or with `--off` sync them again.
+fn never_sync(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let paths = super::string_values(matches, "path")
+        .iter()
+        .map(|path| SettingPath::parse(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let request = NeverSync {
+        environment: store::environment(matches)?,
+        paths,
+        off: matches.get_flag("off"),
+    };
+    let marked = store(root)?.write(&request)?;
+    crate::output::finish(&marked, || {
+        let paths = super::joined(&request.paths);
+        let environment = &marked.environment;
+        match request.off {
+            true => say!(
+                "Syncing {paths} again in {}/{}.",
+                environment.project,
+                environment.name
+            ),
+            false => say!(
+                "Never syncing {paths} in {}/{}.",
+                environment.project,
+                environment.name
+            ),
+        }
+    })
 }

@@ -123,6 +123,17 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       });
       return;
     }
+    case "never_sync":
+      // At once: a mark changes what Sync offers, not Working State.
+      await views<EnvironmentView>("environment", command.environment, (view) => {
+        const marked = new Set(view.never_synced ?? []);
+        for (const path of command.paths) {
+          if (command.off) marked.delete(path);
+          else marked.add(path);
+        }
+        return { ...view, never_synced: [...marked].sort() };
+      });
+      return;
     case "keep_branch":
       await views<BranchView>("branch", command.environment, (view) => ({ ...view, kept: command.kept }));
       return;

@@ -39,6 +39,7 @@ export function VariablesPanel({
   onCreateVariable,
   onSealVariable,
   onUpdateMetadata,
+  onNeverSync,
   allowSealOnCreate = false,
   defaultExported = false,
   headerActions,
@@ -58,6 +59,8 @@ export function VariablesPanel({
   /** Saves in the background; a refusal reopens the form with what was typed. */
   onCreateVariable: (input: VariableAddInput) => Persistable;
   onSealVariable: (variable: PlainVariableRecord) => void;
+  /** When provided, each row's menu marks it Never sync, or syncs it again. */
+  onNeverSync?: (variable: VariableRecord, marked: boolean) => void;
   onUpdateMetadata?: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
   /** Show the "Sealed" toggle in the add form (owners that support sealed-on-create). */
   allowSealOnCreate?: boolean;
@@ -131,6 +134,7 @@ export function VariablesPanel({
                 valueTargets={valueTargets}
                 onSealVariable={onSealVariable}
                 onUpdateMetadata={onUpdateMetadata}
+                onNeverSync={onNeverSync}
               />
             ))}
           </div>

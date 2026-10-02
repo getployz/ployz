@@ -21,6 +21,7 @@ export function VariableRow({
   valueTargets,
   onSealVariable,
   onUpdateMetadata,
+  onNeverSync,
 }: {
   variable: VariableRecord;
   collection: VariableWriter;
@@ -32,6 +33,8 @@ export function VariableRow({
    * model exports (e.g. plain service variables) omit this.
    */
   onUpdateMetadata?: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
+  /** When provided, the menu marks the variable Never sync, or syncs it again. */
+  onNeverSync?: (variable: VariableRecord, marked: boolean) => void;
 }) {
   const [state, dispatch] = useReducer(
     variableRowReducer,
@@ -65,6 +68,7 @@ export function VariableRow({
       <VariableRowHeading
         variableKey={variable.key}
         exported={variable.exported}
+        neverSynced={variable.neverSynced ?? false}
         showMetadata={showMetadata}
         warnings={[brokenRefWarning]}
       />
@@ -102,6 +106,8 @@ export function VariableRow({
         }
         onSave={handleSave}
         onUpdateMetadata={(patch) => onUpdateMetadata?.(variable, patch)}
+        neverSynced={onNeverSync ? variable.neverSynced ?? false : null}
+        onToggleNeverSync={() => onNeverSync?.(variable, !variable.neverSynced)}
       />
 
       </div>

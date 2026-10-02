@@ -341,6 +341,10 @@ _Avoid_: Pull, rebase
 Putting one Environment's changes, chosen change by change, into another Environment of the same Project as the receiver's changes to deploy. It takes the sender's Working State, deployed or not, and never deletes or deploys anything. It compares over what the two last shared, so a change left out, or discarded by the receiver before it deploys, is offered again; a change the receiver also made since then is flagged and, if synced, overwritten. Sizing, custom domains, generated addresses, the Git branch and Volume data never sync. A secret's value never syncs either: a secret the receiver has stays as it is, and one it lacks arrives without a value, which the receiver's Deploy refuses until it is set. Any two Environments of a Project sync: a Branch into its Parent, sideways or skipping a level, a root into a Branch or into another root. A pair that never synced compares over where the sending Branch was made, else where the receiving Branch was made, else the receiver itself. Unless a Branch syncs into its own Parent, what it only got from its Parent is left out unless picked. Sync replaces Save and Update.
 _Avoid_: Push, promote, merge (a GitHub merge only), Publish
 
+**Never sync**:
+A mark an Environment puts on one of its settings: Sync never carries it from that Environment and never changes it there. It joins sizing, custom domains, generated addresses, the Git branch and Volume data, none of which ever sync. A Branch of the Environment still gets the Environment's value; the mark doesn't carry into Branches.
+_Avoid_: Pin, lock, local override
+
 **Deploy Snapshot**:
 The observer-relative Machine, Service Container, and Docker Volume observations gathered for one Deploy, including target-specific Container and Docker Volume failures and omissions. Completeness is relative to the entry Machine's current visible required fan-out, not Cluster truth.
 _Avoid_: current cluster state, desired state, cluster snapshot, authoritative Cluster completeness

@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import type { Persistable } from "#/collections/query-collection";
 import type { EnvironmentRef, EnvironmentView, ServiceListing } from "@ployz/sdk";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
-import { serviceVariables, storeManagedExports, storeReferenceTargets, storeVariableWriter } from "#/modules/config-store/store-variables";
+import { serviceNeverSynced, serviceVariables, storeManagedExports, storeReferenceTargets, storeVariableWriter } from "#/modules/config-store/store-variables";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { BracesIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
@@ -36,7 +36,7 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
   changes: ReadonlyMap<string, unknown>;
 }) {
   const store = useStoreWriter(organizationSlug);
-  const variables = serviceVariables(serviceSettingRows(settings, service.name), service.id, changes);
+  const variables = serviceVariables(serviceSettingRows(settings, service.name), service.id, changes, serviceNeverSynced(settings, service.name));
   const writer = storeVariableWriter(store, environment, service.name, variables);
 
   return (
@@ -51,13 +51,14 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
       onSealVariable={(variable) => writer.seal(variable.key, variable.value.value)}
       onUpdateMetadata={(variable, patch) => writer.export(variable.key, patch.exported ?? variable.exported)}
       onApplyRaw={({ creates, updates, deletes }) => writer.replace([...creates, ...updates], deletes)}
+      onNeverSync={(variable, marked) => writer.neverSync(variable.key, marked)}
     />
   );
 }
 
 /** A Service's variables tab: its variables, the raw editor and the variables Ployz adds. */
 function ServiceVariablesView({
-  variables, writer, managed, valueTargets, serviceNames, onCreateVariable, onSealVariable, onUpdateMetadata, onApplyRaw, allowSealOnCreate = false,
+  variables, writer, managed, valueTargets, serviceNames, onCreateVariable, onSealVariable, onUpdateMetadata, onApplyRaw, onNeverSync, allowSealOnCreate = false,
 }: {
   variables: VariableRecord[];
   writer: VariableWriter;
@@ -69,6 +70,7 @@ function ServiceVariablesView({
   onSealVariable: (variable: PlainVariableRecord) => void;
   onUpdateMetadata: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
   onApplyRaw: (diff: RawEditorDiff) => Persistable;
+  onNeverSync: (variable: VariableRecord, marked: boolean) => void;
   allowSealOnCreate?: boolean;
 }) {
   const [rawEditorOpen, setRawEditorOpen] = useState(false);
@@ -82,6 +84,7 @@ function ServiceVariablesView({
         onCreateVariable={onCreateVariable}
         onSealVariable={onSealVariable}
         onUpdateMetadata={onUpdateMetadata}
+        onNeverSync={onNeverSync}
         valueTargets={valueTargets}
         serviceNames={serviceNames}
         headerActions={

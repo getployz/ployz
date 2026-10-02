@@ -27,6 +27,12 @@ pub struct BranchChangesInput {
     pub provided: Vec<String>,
     pub hostnames: BranchHostnames,
     pub from_kept: bool,
+    /// Row keys marked Never sync, each covering the rows under it too
+    /// (`<lineage>:healthcheck` covers `<lineage>:healthcheck.path`): what would move
+    /// is shown as meant to differ instead.
+    #[serde(default)]
+    #[ts(as = "Option<Vec<String>>", optional)]
+    pub never_synced: Vec<String>,
     /// Absent compares only; present moves the picked rows.
     #[serde(default)]
     #[ts(optional)]
@@ -183,6 +189,8 @@ pub enum BranchReason {
     GeneratedAddress,
     GitBranch,
     Data,
+    /// Marked Never sync in one of the two Environments.
+    NeverSynced,
 }
 
 /// The ways a moving variable can land.

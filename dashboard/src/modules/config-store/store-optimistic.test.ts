@@ -117,3 +117,12 @@ it("shows each command of a Batch at once, as it would alone", async () => {
   expect(read<ServicesView>(servicesQuery(ref))?.services.map((service) => [service.name, service.change]))
     .toEqual([["web", "update"], ["cache", "create"], ["postgres", "create"]]);
 });
+
+it("shows a variable marked Never sync at once, and synced again", async () => {
+  const { queryClient, read } = cached();
+  const marks = () => read<EnvironmentView>(environmentSettingsQuery(ref))?.never_synced;
+  await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: ref, paths: ["web.env.B", "web.env.A"] });
+  expect(marks()).toEqual(["web.env.A", "web.env.B"]);
+  await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: ref, paths: ["web.env.A"], off: true });
+  expect(marks()).toEqual(["web.env.B"]);
+});

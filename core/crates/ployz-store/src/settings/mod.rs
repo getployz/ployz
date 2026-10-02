@@ -701,7 +701,7 @@ pub(crate) enum VolumeField {
 }
 
 impl VolumeField {
-    const fn name(self) -> &'static str {
+    pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::Name => "name",
             Self::Storage => "storage",

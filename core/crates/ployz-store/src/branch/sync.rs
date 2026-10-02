@@ -58,6 +58,21 @@ pub struct SyncView {
     /// Each change a Sync can carry. Settings each Environment keeps as its own
     /// (sizing, domains, generated addresses, the Git branch, Volume data) never are.
     pub rows: Vec<SyncRow>,
+    /// The changes it would carry but that either side marked Never sync.
+    pub never_synced: Vec<NeverSyncedRow>,
+}
+
+/// A change a Sync would carry but for Never sync.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct NeverSyncedRow {
+    /// As [`SyncRow::key`].
+    pub key: String,
+    /// As [`SyncRow::node`].
+    pub node: NodeName,
+    /// As [`SyncRow::label`].
+    pub label: String,
+    /// Where it is marked Never sync: unmark it there to sync it.
+    pub marked_in: Vec<EnvironmentName>,
 }
 
 /// One change a Sync can carry.
@@ -159,11 +174,47 @@ pub(crate) fn sync_view(
             })
         })
         .collect::<Result<_, RpcError>>()?;
+    let never_synced = changes
+        .rows
+        .iter()
+        .filter(|row| {
+            matches!(
+                row.role,
+                BranchRole::Differ {
+                    why: BranchReason::NeverSynced
+                }
+            )
+        })
+        .map(|row| {
+            let key = row.key.to_string();
+            let (label, ..) = shown_row(&moving, &from, &into, row);
+            let node = node_of(&moving.from, split(&key).0)
+                .or_else(|| node_of(&into.working, split(&key).0))
+                .ok_or_else(|| error::corrupt("Sync row"))?;
+            let marked_in = [&from, &into]
+                .into_iter()
+                .filter(|side| {
+                    moving
+                        .never_synced
+                        .iter()
+                        .any(|mark| mark.environment == side.summary.id && under(&key, &mark.key))
+                })
+                .map(|side| side.summary.name.clone())
+                .collect();
+            Ok(NeverSyncedRow {
+                key,
+                node,
+                label,
+                marked_in,
+            })
+        })
+        .collect::<Result<_, RpcError>>()?;
     Ok(SyncView {
         version: version(&into, &changes.review),
         from: from.summary,
         into: into.summary,
         rows,
+        never_synced,
     })
 }
 

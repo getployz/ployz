@@ -35,6 +35,7 @@ pub fn branch_changes(input: BranchChangesInput) -> Result<BranchChanges, Config
         provided: input.provided.iter().map(String::as_str).collect(),
         hostnames: &input.hostnames,
         from_kept: input.from_kept,
+        never_synced: &input.never_synced,
     };
     let rows = comparison.rows();
     let picks = input.picks.as_deref();
@@ -102,6 +103,7 @@ struct Comparison<'a> {
     provided: BTreeSet<&'a str>,
     hostnames: &'a BranchHostnames,
     from_kept: bool,
+    never_synced: &'a [String],
 }
 
 impl Comparison<'_> {
@@ -202,10 +204,14 @@ impl Comparison<'_> {
                     | RowPath::Mount(_)
                     | RowPath::Setting(_) => None,
                 };
-                BranchRole::Move {
-                    conflict: into_value != base_value,
-                    choice,
-                }
+                self.unless_never_synced(
+                    lineage,
+                    path,
+                    BranchRole::Move {
+                        conflict: into_value != base_value,
+                        choice,
+                    },
+                )
             };
             rows.push(BranchRow {
                 key: key(lineage, path.clone()),
@@ -250,16 +256,36 @@ impl Comparison<'_> {
             if self.base.is_none() {
                 choice.default = BranchOption::From;
             }
+            let path = RowPath::Variable(variable.key.clone());
             rows.push(BranchRow {
-                key: key(lineage, RowPath::Variable(variable.key.clone())),
-                role: BranchRole::Move {
-                    conflict: false,
-                    choice: Some(choice),
-                },
+                role: self.unless_never_synced(
+                    lineage,
+                    &path,
+                    BranchRole::Move {
+                        conflict: false,
+                        choice: Some(choice),
+                    },
+                ),
+                key: key(lineage, path),
                 base: Value::Null,
                 from: variable_value(variable),
                 into: Value::Null,
             });
+        }
+    }
+
+    /// `role`, unless the row at `lineage`'s `path` is marked Never sync: then it differs.
+    fn unless_never_synced(&self, lineage: &str, path: &RowPath, role: BranchRole) -> BranchRole {
+        let row = key(lineage, path.clone()).to_string();
+        let marked = self.never_synced.iter().any(|marked| {
+            row.strip_prefix(marked.as_str())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+        });
+        match marked {
+            true => BranchRole::Differ {
+                why: BranchReason::NeverSynced,
+            },
+            false => role,
         }
     }
 

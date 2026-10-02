@@ -159,4 +159,26 @@ describe("VariableRow", () => {
     expect(screen.queryByText("Seal")).toBeNull();
     expect(screen.queryByText("Edit")).toBeNull();
   });
+
+  it("pins a variable marked Never sync, and its menu syncs it again", async () => {
+    const onNeverSync = vi.fn();
+    const variable = plainVariable({ neverSynced: true });
+    render(<VariableRow variable={variable} collection={collection} onSealVariable={vi.fn()} onNeverSync={onNeverSync} />);
+    expect(screen.getByText("Never synced")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(await screen.findByText("Sync again"));
+    expect(onNeverSync).toHaveBeenCalledWith(variable, false);
+  });
+
+  it("offers Never sync for a variable that syncs, without a pin", async () => {
+    const onNeverSync = vi.fn();
+    const variable = plainVariable();
+    render(<VariableRow variable={variable} collection={collection} onSealVariable={vi.fn()} onNeverSync={onNeverSync} />);
+    expect(screen.queryByText("Never synced")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(await screen.findByText("Never sync"));
+    expect(onNeverSync).toHaveBeenCalledWith(variable, true);
+  });
 });
