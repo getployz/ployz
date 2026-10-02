@@ -234,11 +234,12 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
             .map(|row| moving.name(&branch.working, &row.key.to_string()))
             .collect()
     };
-    let to_parent = Moving::sync(tx, branch, &parent.environment)?
+    let to_parent = Moving::sync(tx, branch, &parent.environment)?;
+    let to_parent = to_parent
         .compare(&parent.environment.working, None)?
         .rows
         .iter()
-        .filter(|row| ticked(row))
+        .filter(|row| to_parent.ticked(row))
         .count();
     let setup = row
         .setup

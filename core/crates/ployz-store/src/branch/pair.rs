@@ -24,6 +24,10 @@ pub(crate) struct Moving {
     provided: Vec<String>,
     pub(crate) hostnames: BranchHostnames,
     way: Way,
+    /// The sender's own changes, by row key, when it isn't syncing into its own
+    /// Parent: the other rows it only inherited from that Parent. None when every
+    /// row is its own.
+    own: Option<BTreeSet<String>>,
 }
 
 /// Which way a move goes, with what only that way needs.
@@ -71,22 +75,38 @@ impl Moving {
                 into: suffix(tx, branch)?,
             },
             way: Way::Sync,
+            own: None,
         })
     }
 
     /// A Sync: `from`'s Working State, deployed or not, into `into`, over what the
-    /// two last shared.
+    /// two last shared. A pair that never synced compares over where `from` was
+    /// made, else where `into` was made, else `into` itself.
     pub(crate) fn sync(
         tx: &mut dyn Tx,
         from: &Environment,
         into: &Environment,
     ) -> Result<Self, RpcError> {
         let pair = [from.summary.id.clone(), into.summary.id.clone()];
+        let base = match stored(tx, &pair)? {
+            Some(base) => base,
+            None => match made_with(tx, &from.summary.id)? {
+                Some(base) => base,
+                None => made_with(tx, &into.summary.id)?.unwrap_or_else(|| into.working.clone()),
+            },
+        };
+        let own = match row(tx, &from.summary.id)? {
+            Some(row) if row.parent != into.summary.id => {
+                let parent = base_of(tx, &[from.summary.id.clone(), row.parent])?;
+                Some(changed_from(&parent, &from.working)?)
+            }
+            _ => None,
+        };
         Ok(Self {
             source: from.summary.id.clone(),
             nothing: format!("Nothing to sync into {}", into.summary.name),
             from: from.working.clone(),
-            base: base_of(tx, &pair)?,
+            base,
             pair: Some(pair),
             provided: used_live(&into.working).into_keys().collect(),
             hostnames: BranchHostnames {
@@ -94,7 +114,18 @@ impl Moving {
                 into: suffix(tx, into)?,
             },
             way: Way::Sync,
+            own,
         })
+    }
+
+    /// Whether a Sync without picks carries `row`: every change that moves, but
+    /// for one the sender only inherited from a Parent it isn't syncing into.
+    pub(crate) fn ticked(&self, row: &BranchRow) -> bool {
+        matches!(row.role, BranchRole::Move { .. })
+            && self
+                .own
+                .as_ref()
+                .is_none_or(|own| own.contains(&row.key.to_string()))
     }
 
     /// An Own Copy of the `copied` lineages from `owner` into `branch`: an Update in
@@ -146,6 +177,7 @@ impl Moving {
                 parent: deployed.then_some(parent),
                 from_kept: row.kept,
             },
+            own: None,
         })
     }
 
@@ -170,6 +202,7 @@ impl Moving {
                 parent: parent.cloned(),
                 from_kept: false,
             },
+            own: None,
         }
     }
 
@@ -282,36 +315,80 @@ impl Moving {
     }
 }
 
-/// What the pair last shared.
-fn base_of(
+/// What the pair last shared: a Branch and its Parent always have one.
+fn base_of(tx: &mut dyn Tx, pair: &[EnvironmentId; 2]) -> Result<SavedEnvironmentIntent, RpcError> {
+    stored(tx, pair)?.ok_or_else(|| error::corrupt("Sync base"))
+}
+
+/// What the pair last shared; none when it never synced.
+fn stored(
     tx: &mut dyn Tx,
     [a, b]: &[EnvironmentId; 2],
-) -> Result<SavedEnvironmentIntent, RpcError> {
+) -> Result<Option<SavedEnvironmentIntent>, RpcError> {
     tx.query(
         "SELECT base FROM config_sync_base \
          WHERE (environment_id = ?1 AND other_id = ?2) OR (environment_id = ?2 AND other_id = ?1)",
         &[a.as_str().into(), b.as_str().into()],
     )?
     .first()
-    .ok_or_else(|| error::corrupt("Sync base"))?
-    .intent(0, "Sync base")
+    .map(|row| row.intent(0, "Sync base"))
+    .transpose()
 }
 
-/// What `a` and `b` last shared is `base` now.
+/// What Branch `id` was made with; none for a root.
+fn made_with(
+    tx: &mut dyn Tx,
+    id: &EnvironmentId,
+) -> Result<Option<SavedEnvironmentIntent>, RpcError> {
+    tx.query(
+        "SELECT made_with FROM config_environment_branch WHERE environment_id = ?1",
+        &[id.as_str().into()],
+    )?
+    .first()
+    .map(|row| row.intent(0, "Branch"))
+    .transpose()
+}
+
+/// The row keys at which `working` holds other than `base`.
+fn changed_from(
+    base: &SavedEnvironmentIntent,
+    working: &SavedEnvironmentIntent,
+) -> Result<BTreeSet<String>, RpcError> {
+    // Core moves a secret only into a side that lacks it: drop them from that side.
+    let mut lacking = base.clone();
+    for service in &mut lacking.services {
+        service
+            .variables
+            .retain(|variable| !matches!(variable.value, SavedVariableValue::Secret { .. }));
+    }
+    Ok(within(base, working, &lacking, None)?
+        .rows
+        .iter()
+        .filter(|row| matches!(row.role, BranchRole::Move { .. }))
+        .map(|row| row.key.to_string())
+        .collect())
+}
+
+/// What `a` and `b` last shared is `base` now: their first Sync records it.
 fn share(
     tx: &mut dyn Tx,
     (a, b): (&EnvironmentId, &EnvironmentId),
     base: &SavedEnvironmentIntent,
 ) -> Result<(), RpcError> {
-    tx.execute(
+    let base = document(base);
+    let params = [a.as_str().into(), b.as_str().into(), base.as_str().into()];
+    let updated = tx.execute(
         "UPDATE config_sync_base SET base = ?3 \
          WHERE (environment_id = ?1 AND other_id = ?2) OR (environment_id = ?2 AND other_id = ?1)",
-        &[
-            a.as_str().into(),
-            b.as_str().into(),
-            document(base).as_str().into(),
-        ],
+        &params,
     )?;
+    if updated == 0 {
+        tx.execute(
+            "INSERT INTO config_sync_base (environment_id, other_id, organization_id, base) \
+             SELECT id, ?2, organization_id, ?3 FROM config_environment WHERE id = ?1",
+            &params,
+        )?;
+    }
     Ok(())
 }
 

@@ -118,25 +118,34 @@ pub(crate) fn command() -> Command {
         .subcommand(
             store::scoped(
                 Command::new("sync")
-                    .about("Stage the Branch's changes in its Parent")
+                    .about("Stage one Environment's changes in another of the Project")
                     .long_about(
-                        "Stage the Branch's changes in its Parent's Working State as the \
-                         Parent's changes to deploy: the Branch's Working State, deployed or \
-                         not. Nothing is deleted, published or deployed, and sizing, domains, \
+                        "Stage the Environment's changes in another Environment of the \
+                         Project (--to), or another's in it (--from), as the receiver's \
+                         changes to deploy: the sender's Working State, deployed or not. \
+                         Nothing is deleted, published or deployed, and sizing, domains, \
                          generated addresses, the Git branch and Volume data stay each \
                          Environment's own. --plan lists the changes and the version to pass \
                          back. A change left out is offered again next time, as is one the \
-                         Parent discards before it deploys. A change the Parent made too \
-                         since the two last shared is overwritten. Example: ployz env sync \
-                         --to --env fix-api --skip api.env.DEBUG --close",
+                         receiver discards before it deploys. A change the receiver made too \
+                         since the two last shared is overwritten. Unless a Branch syncs into \
+                         its own Parent, what it only got from its Parent is left out unless \
+                         picked. Example: ployz env sync --to --env fix-api --skip \
+                         api.env.DEBUG --close",
                     ),
             )
             .arg(
                 value("to", None)
                     .value_name("ENV")
                     .num_args(0..=1)
-                    .required(true)
+                    .required_unless_present("from")
+                    .conflicts_with("from")
                     .help("Sync into ENV; with no value, the Branch's Parent"),
+            )
+            .arg(
+                value("from", None)
+                    .value_name("ENV")
+                    .help("Sync ENV's changes into this Environment"),
             )
             .arg(
                 repeated("only").value_name("ROW").help(

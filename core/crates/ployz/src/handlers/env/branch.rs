@@ -1,4 +1,4 @@
-//! Branches: create one, sync its changes into its Parent, move changes between
+//! Branches: create one, sync changes between two Environments of a Project, move changes between
 //! it and its Parent (Save, Update, withdraw, take), copy a Live Node into it, keep it.
 
 use clap::{ArgMatches, Command};
@@ -59,18 +59,27 @@ pub(super) fn branch(root: &ArgMatches) -> Result<(), Error> {
 /// picked by `--only` and `--skip` against the changes read first.
 pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let into = matches
-        .get_one::<String>("to")
-        .map(|name| {
-            Ok::<_, Error>(EnvironmentRef {
-                project: project(matches)?,
-                environment: Some(EnvironmentName::parse(name.as_str())?),
+    let named = |flag: &str| {
+        matches
+            .get_one::<String>(flag)
+            .map(|name| {
+                Ok::<_, Error>(EnvironmentRef {
+                    project: project(matches)?,
+                    environment: Some(EnvironmentName::parse(name.as_str())?),
+                })
             })
-        })
-        .transpose()?;
-    let query = SyncQuery {
-        from: store::environment(matches)?,
-        into,
+            .transpose()
+    };
+    let here = store::environment(matches)?;
+    let query = match named("from")? {
+        Some(from) => SyncQuery {
+            from,
+            into: Some(here),
+        },
+        None => SyncQuery {
+            from: here,
+            into: named("to")?,
+        },
     };
     let store = store(root)?;
     let words = sync_words(matches);
@@ -111,11 +120,16 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
     synced_out(matches, &synced)
 }
 
-/// `env sync --to [ENV]`, as given.
+/// `env sync --to [ENV]` or `env sync --from ENV`, as given.
 fn sync_words(matches: &ArgMatches) -> Vec<&str> {
-    let mut words = vec!["env", "sync", "--to"];
-    words.extend(matches.get_one::<String>("to").map(String::as_str));
-    words
+    match matches.get_one::<String>("from") {
+        Some(from) => vec!["env", "sync", "--from", from.as_str()],
+        None => {
+            let mut words = vec!["env", "sync", "--to"];
+            words.extend(matches.get_one::<String>("to").map(String::as_str));
+            words
+        }
+    }
 }
 
 /// Whether row `label` is `asked`, or under it: `web` covers `web.image`.

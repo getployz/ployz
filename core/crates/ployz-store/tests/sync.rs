@@ -4,7 +4,8 @@
 )]
 //! Sync through the Store's interface only, on SQLite and on Postgres (see
 //! `backend`): a Branch's changes into its Parent, picked by row, offered again
-//! when left out or discarded, never deleting, and closing the Branch after.
+//! when left out or discarded, never deleting, and closing the Branch after; and
+//! between any two Environments of a Project.
 
 use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
 use ployz_store::{
@@ -445,4 +446,264 @@ fn a_sync_closes_a_branch_that_isnt_kept_when_asked() {
         )
         .unwrap_err();
     assert_eq!(gone.code, RpcErrorCode::NotFound);
+}
+
+/// What a Sync from `from` into `into` would stage.
+fn offered(store: &ConfigStore, who: &Actor, from: &str, into: &str) -> SyncView {
+    store
+        .read(
+            who,
+            &SyncQuery {
+                from: at(from),
+                into: Some(at(into)),
+            },
+        )
+        .unwrap()
+}
+
+/// Sync `from` into `into`, the rows labelled `picks` or else those ticked.
+fn sync_into(store: &ConfigStore, who: &Actor, (from, into): (&str, &str), picks: Option<&[&str]>) {
+    let view = offered(store, who, from, into);
+    let picks = picks.map(|labels| {
+        labels
+            .iter()
+            .map(|label| row(&view, label).key.clone())
+            .collect()
+    });
+    store
+        .write(
+            who,
+            &SyncChanges {
+                from: at(from),
+                into: Some(at(into)),
+                picks,
+                ..SyncChanges::default()
+            },
+        )
+        .unwrap();
+}
+
+/// Each row offered by label, with whether it is ticked by default.
+fn ticks(view: &SyncView) -> Vec<(&str, bool)> {
+    let mut ticks: Vec<(&str, bool)> = view
+        .rows
+        .iter()
+        .map(|row| (row.label.as_str(), row.ticked))
+        .collect();
+    ticks.sort_unstable();
+    ticks
+}
+
+/// A Branch `name` of `from` with its own `web`.
+fn branch(store: &ConfigStore, who: &Actor, n: u8, from: &str, name: &str) {
+    store
+        .write(
+            who,
+            &CreateBranch {
+                id: EnvironmentId::parse(uuid(n)).unwrap(),
+                from: at(from),
+                name: EnvironmentName::parse(name).unwrap(),
+                copy: vec![ployz_store::NodeName::parse("web").unwrap()],
+                live: Vec::new(),
+                setup: Vec::new(),
+                keep: false,
+                fix: None,
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_branch_syncs_skipping_a_level_and_sideways_ticking_only_its_own_changes() {
+    // production → fix-web → fix-a and fix-b.
+    let (store, who) = shop(false);
+    branch(&store, &who, 10, "fix-web", "fix-a");
+    branch(&store, &who, 11, "fix-web", "fix-b");
+    set(&store, &who, "production", &[("web.env.ROOT", json!("1"))]);
+    // A root has no Parent: its every row is its own.
+    let root = offered(&store, &who, "production", "fix-web");
+    assert_eq!(ticks(&root), [("web.env.ROOT", true)]);
+    sync_into(&store, &who, ("production", "fix-web"), None);
+
+    // Into its own Branch, fix-web ticks its own change and not what it got from
+    // production.
+    set(&store, &who, "fix-web", &[("web.env.MID", json!("1"))]);
+    let down = offered(&store, &who, "fix-web", "fix-a");
+    assert_eq!(
+        ticks(&down),
+        [("web.env.MID", true), ("web.env.ROOT", false)]
+    );
+    sync_into(&store, &who, ("fix-web", "fix-a"), None);
+    let web = values(&store, &who, "fix-a", "web");
+    assert_eq!(
+        (&web["env"]["MID"], web["env"].get("ROOT")),
+        (&json!("1"), None)
+    );
+    sync_into(&store, &who, ("fix-web", "fix-a"), Some(&["web.env.ROOT"]));
+    assert_eq!(
+        values(&store, &who, "fix-a", "web")["env"]["ROOT"],
+        json!("1")
+    );
+
+    // Skipping a level: fix-a's first Sync into production compares over where
+    // fix-a was made, so production's own later change isn't offered back.
+    set(&store, &who, "fix-a", &[("web.image", json!("web:2"))]);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.PLAIN", json!("hot"))],
+    );
+    let skip = offered(&store, &who, "fix-a", "production");
+    assert_eq!(ticks(&skip), [("web.env.MID", false), ("web.image", true)]);
+    assert!(row(&skip, "web.env.MID").new);
+    sync_into(&store, &who, ("fix-a", "production"), None);
+    let web = values(&store, &who, "production", "web");
+    assert_eq!(
+        (&web["image"], &web["env"]["PLAIN"], web["env"].get("MID")),
+        (&json!("web:2"), &json!("hot"), None)
+    );
+    // The pair shares a base now: the change left out is offered again, alone.
+    assert_eq!(
+        ticks(&offered(&store, &who, "fix-a", "production")),
+        [("web.env.MID", false)]
+    );
+
+    // Sideways: fix-a into its sibling, over where fix-a was made.
+    let sideways = offered(&store, &who, "fix-a", "fix-b");
+    assert_eq!(
+        ticks(&sideways),
+        [
+            ("web.env.MID", false),
+            ("web.env.ROOT", false),
+            ("web.image", true)
+        ]
+    );
+    sync_into(&store, &who, ("fix-a", "fix-b"), None);
+    let web = values(&store, &who, "fix-b", "web");
+    assert_eq!(
+        (&web["image"], web["env"].get("MID")),
+        (&json!("web:2"), None)
+    );
+
+    // Into its own Parent, every row is ticked.
+    assert_eq!(
+        ticks(&offered(&store, &who, "fix-a", "fix-web")),
+        [("web.image", true)]
+    );
+}
+
+#[test]
+fn roots_sync_into_a_branch_they_didnt_make_and_into_each_other() {
+    let (store, who) = shop(false);
+    branch(&store, &who, 10, "fix-web", "fix-a");
+    set(&store, &who, "fix-a", &[("web.image", json!("web:2"))]);
+    set(&store, &who, "production", &[("web.env.ROOT", json!("1"))]);
+    // Into a Branch of its Branch: over where that Branch was made, so the
+    // Branch's own image isn't offered back.
+    let skip = offered(&store, &who, "production", "fix-a");
+    assert_eq!(ticks(&skip), [("web.env.ROOT", true)]);
+    sync_into(&store, &who, ("production", "fix-a"), None);
+    let web = values(&store, &who, "fix-a", "web");
+    assert_eq!(
+        (&web["image"], &web["env"]["ROOT"]),
+        (&json!("web:2"), &json!("1"))
+    );
+
+    // Two roots that never synced: over the receiver itself, so staging gets all
+    // of production.
+    store
+        .write(
+            &who,
+            &ployz_store::CreateEnvironment {
+                id: EnvironmentId::parse(uuid(20)).unwrap(),
+                project: None,
+                name: EnvironmentName::parse("staging").unwrap(),
+            },
+        )
+        .unwrap();
+    let first = offered(&store, &who, "production", "staging");
+    assert_eq!(
+        ticks(&first),
+        [
+            ("db", true),
+            ("web", true),
+            ("web.env.DB_URL", true),
+            ("web.env.PLAIN", true),
+            ("web.env.ROOT", true)
+        ]
+    );
+    sync_into(&store, &who, ("production", "staging"), None);
+    assert_eq!(
+        values(&store, &who, "staging", "web")["image"],
+        json!("web:1")
+    );
+    // Then only what changed since: not staging's own image.
+    set(&store, &who, "staging", &[("web.image", json!("web:s"))]);
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("2"))]);
+    assert_eq!(
+        ticks(&offered(&store, &who, "production", "staging")),
+        [("web.env.PLAIN", true)]
+    );
+    sync_into(&store, &who, ("production", "staging"), None);
+    let web = values(&store, &who, "staging", "web");
+    assert_eq!(
+        (&web["image"], &web["env"]["PLAIN"]),
+        (&json!("web:s"), &json!("2"))
+    );
+}
+
+#[test]
+fn a_sync_stays_within_its_project() {
+    let (store, who) = shop(false);
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse(uuid(30)).unwrap(),
+                name: ProjectName::parse("blog").unwrap(),
+                default_environment: EnvironmentId::parse(uuid(31)).unwrap(),
+            },
+        )
+        .unwrap();
+    let in_project = |project: &str, environment: &str| EnvironmentRef {
+        project: Some(ProjectName::parse(project).unwrap()),
+        environment: Some(EnvironmentName::parse(environment).unwrap()),
+    };
+    let across = SyncQuery {
+        from: in_project("shop", "fix-web"),
+        into: Some(in_project("blog", "production")),
+    };
+    let refused = store.read(&who, &across).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        refused.details["next"],
+        json!("ployz env sync --to ENV --project shop --env fix-web")
+    );
+    let refused = store
+        .write(
+            &who,
+            &SyncChanges {
+                from: across.from,
+                into: across.into,
+                ..SyncChanges::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+
+    // A root names where it syncs.
+    let rootless = store
+        .read(
+            &who,
+            &SyncQuery {
+                from: in_project("shop", "production"),
+                into: None,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(
+        rootless.details["next"],
+        json!("ployz env sync --to ENV --project shop --env production")
+    );
 }

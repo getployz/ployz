@@ -3014,16 +3014,17 @@ now: number, };
 
 export type SyncChanges = {
 /**
- * The Branch whose changes sync.
+ * The Environment whose changes sync.
  */
 from: EnvironmentRef,
 /**
- * Where they land; omitted, the Branch's Parent.
+ * Where they land, in the same Project; omitted, the sender's Parent.
  */
 into?: EnvironmentRef | null,
 /**
  * The changes to sync, by [`SyncRow::key`]; omitted, every change ticked by
- * default. One left out is offered again next time.
+ * default: all but what the sender only inherited from a Parent it isn't
+ * syncing into. One left out is offered again next time.
  */
 picks?: Array<string> | null,
 /**
@@ -3067,7 +3068,8 @@ from: JsonValue,
  */
 into: JsonValue,
 /**
- * A Sync without picks carries it.
+ * A Sync without picks carries it: every row, but for one the sender only
+ * inherited from a Parent it isn't syncing into.
  */
 ticked: boolean,
 /**

@@ -1011,6 +1011,98 @@ fn an_agent_syncs_a_branch_into_its_parent_without_servers() {
 }
 
 #[test]
+fn an_agent_syncs_between_any_two_environments_of_a_project() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["env", "new", "staging"]);
+        ok(store, &["env", "branch", "fix-a", "--copy", "web"]);
+        ok(store, &["env", "branch", "fix-b", "--copy", "web"]);
+        failed(
+            store,
+            &["env", "sync", "--to", "fix-b", "--from", "fix-a"],
+            2,
+        );
+
+        // Sideways, into a sibling.
+        ok(store, &["set", "--env", "fix-a", "web.image=web:2"]);
+        let synced = ok(store, &["env", "sync", "--to", "fix-b", "--env", "fix-a"]);
+        assert_eq!(synced["into"]["name"], json!("fix-b"));
+        assert_eq!(synced["next"], json!("ployz deploy --env fix-b"));
+        assert_eq!(
+            ok(store, &["get", "web.image", "--env", "fix-b"])["settings"][0]["value"],
+            json!("web:2")
+        );
+
+        // Between two roots, from where the command runs.
+        let plan_next = json!("ployz env sync --from production --plan --env staging");
+        let plan = ok(
+            store,
+            &[
+                "env",
+                "sync",
+                "--from",
+                "production",
+                "--plan",
+                "--env",
+                "staging",
+            ],
+        );
+        assert_eq!(
+            (&plan["from"]["name"], &plan["into"]["name"]),
+            (&json!("production"), &json!("staging"))
+        );
+        assert_eq!(plan["rows"][0]["label"], json!("web"));
+        let version = plan["version"].as_str().unwrap();
+        assert_eq!(
+            plan["next"],
+            json!(format!(
+                "ployz env sync --from production --version {version} --env staging"
+            ))
+        );
+        let stale = error(
+            store,
+            &[
+                "env",
+                "sync",
+                "--from",
+                "production",
+                "--env",
+                "staging",
+                "--version",
+                "0:0",
+            ],
+        );
+        assert_eq!(stale["details"]["next"], plan_next);
+        let synced = ok(
+            store,
+            &[
+                "env",
+                "sync",
+                "--from",
+                "production",
+                "--env",
+                "staging",
+                "--version",
+                version,
+            ],
+        );
+        assert_eq!(synced["staged"], json!(["web"]));
+        assert_eq!(
+            ok(store, &["get", "web.image", "--env", "staging"])["settings"][0]["value"],
+            json!("web:1")
+        );
+
+        // A root names where it syncs.
+        let rootless = error(store, &["env", "sync", "--to"]);
+        assert_eq!(
+            rootless["details"]["next"],
+            json!("ployz env sync --to ENV --project shop --env production")
+        );
+    }
+}
+
+#[test]
 fn an_agent_adds_mounts_detaches_and_removes_volumes() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);

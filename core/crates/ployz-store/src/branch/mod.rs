@@ -17,7 +17,6 @@ pub(crate) use moving::*;
 pub(crate) use pair::*;
 pub use setup::SetBranchSetup;
 pub(crate) use setup::{branch_setup, set_branch_setup};
-use sync::ticked;
 pub use sync::{SyncChanges, SyncQuery, SyncRow, SyncView, Synced};
 pub(crate) use sync::{sync, sync_view};
 
