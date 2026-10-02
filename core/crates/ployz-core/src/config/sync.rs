@@ -386,7 +386,18 @@ impl Policy<'_> {
     /// | Sync   | no row        | no row                                      | `NeedsValue`            | both sides'      |
     /// | Follow | moves         | if `into` = base or `SecretWithoutValue`    | carries                 | receiver's only  |
     /// | Copy   | moves         | carries                                     | carries                 | ignored          |
+    ///
+    /// Settings each Environment owns ([`owned`]) differ and never move, even in a new
+    /// node, but for a copy's new node, which starts with them as they are.
     fn verdict(&self, row: &RowId, base: &Cell, from: &Cell, into: &Cell) -> Option<Verdict> {
+        match owned(&row.at) {
+            Some(why) => (from != into).then_some(Verdict::Differs(why)),
+            None => self.moved(row, base, from, into),
+        }
+    }
+
+    /// [`Self::verdict`] for a setting no Environment owns.
+    fn moved(&self, row: &RowId, base: &Cell, from: &Cell, into: &Cell) -> Option<Verdict> {
         if from == into || from == base {
             return None;
         }
@@ -486,11 +497,7 @@ pub fn plan(sides: Sides, policy: Policy) -> Plan {
                         |cells: &BTreeMap<At, Cell>| cells.get(at).cloned().unwrap_or(Cell::Absent);
                     let sides = [cell(&base_cells), cell(&from_cells), cell(&into_cells)];
                     let [b, f, i] = &sides;
-                    let verdict = match owned(at) {
-                        Some(why) => (f != i).then_some(Verdict::Differs(why)),
-                        None => policy.verdict(&id, b, f, i),
-                    };
-                    if let Some(verdict) = verdict {
+                    if let Some(verdict) = policy.verdict(&id, b, f, i) {
                         push(id, sides, None, verdict);
                     }
                 }
@@ -529,8 +536,12 @@ pub fn plan(sides: Sides, policy: Policy) -> Plan {
                         lineage: (*lineage).to_owned(),
                         at,
                     };
+                    let judge = match policy.way {
+                        Way::Copy => Policy::moved,
+                        Way::Sync | Way::Follow => Policy::verdict,
+                    };
                     if let Some(verdict) =
-                        policy.verdict(&child, &Cell::Absent, &cell, &Cell::Absent)
+                        judge(&policy, &child, &Cell::Absent, &cell, &Cell::Absent)
                     {
                         push(
                             child,

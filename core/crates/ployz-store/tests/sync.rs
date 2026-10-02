@@ -1006,3 +1006,17 @@ fn a_secret_the_receiver_lacks_syncs_with_the_value_given_or_without_one() {
     );
     assert_eq!(env(5)["KEY"], json!("prod-api-key"));
 }
+
+#[test]
+fn a_new_service_arrives_without_its_sizing() {
+    let (store, who) = shop(false);
+    service(&store, &who, "fix-web", 5, "api", "api:1");
+    set(&store, &who, "fix-web", &[("api.replicas", json!(3))]);
+    let review = view(&store, &who);
+    assert_eq!(labels(&review), ["api"]);
+    store.write(&who, &sync(&review, None)).unwrap();
+    assert_eq!(
+        values(&store, &who, "production", "api")["replicas"],
+        json!(1)
+    );
+}
