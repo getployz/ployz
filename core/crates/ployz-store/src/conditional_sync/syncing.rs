@@ -75,14 +75,7 @@ pub(crate) fn sync(
         ],
     )?;
     for (row, cell) in &values {
-        held::keep(
-            tx,
-            who,
-            &into.summary.id,
-            (pr.repository_id, pr.number),
-            row,
-            cell,
-        )?;
+        held::keep(tx, who, &into.summary.id, &pr.reference(), row, cell)?;
     }
     Ok(Synced {
         sync: SyncId::parse(id.as_str())?,
@@ -224,7 +217,7 @@ pub(crate) fn take(
         staged,
         conditional_sync: Some(ConditionalSync {
             id: id.clone(),
-            pull_request: found.number,
+            pull_request: found.pr.number,
             rows: stored.picks.iter().map(|pick| pick.at.clone()).collect(),
             state: ConditionalSyncState::Landed,
         }),

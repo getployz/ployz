@@ -258,9 +258,7 @@ pub(crate) fn sync_view(
         Target::AtMerge { from, into, pr } => (from, into, Some(pr)),
     };
     let held = match &pr {
-        Some(pr) => {
-            crate::conditional_sync::held(tx, &into.summary.id, pr.repository_id, pr.number)?
-        }
+        Some(pr) => crate::conditional_sync::held(tx, &into.summary.id, &pr.reference())?,
         None => BTreeMap::new(),
     };
     let sync = Move::sync(tx, &from, &into)?;

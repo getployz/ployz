@@ -145,7 +145,11 @@ pub(crate) fn hold(
         fingerprint: sealing.fingerprint(&request.value),
         sealed: Some(sealing.seal(&request.value)),
     };
-    keep(tx, who, &into.summary.id, (repository, number), row, &cell)?;
+    let pr = PullRequestRef {
+        repository_id: repository,
+        number,
+    };
+    keep(tx, who, &into.summary.id, &pr, row, &cell)?;
     Ok(SecretHeld {
         environment: into.summary,
         pull_request: number,
@@ -153,12 +157,12 @@ pub(crate) fn hold(
     })
 }
 
-/// Hold sealed `cell` in `into` for `row` until pull request `number`'s merge.
+/// Hold sealed `cell` in `into` for `row` until `pr`'s merge.
 pub(super) fn keep(
     tx: &mut dyn Tx,
     who: &Actor,
     into: &EnvironmentId,
-    (repository, number): (RepositoryId, PullRequestNumber),
+    pr: &PullRequestRef,
     row: &RowId,
     cell: &Cell,
 ) -> Result<(), RpcError> {
@@ -169,8 +173,8 @@ pub(super) fn keep(
          DO UPDATE SET value = excluded.value",
         &[
             into.as_str().into(),
-            repository.into(),
-            number.into(),
+            pr.repository_id.into(),
+            pr.number.into(),
             row.lineage().into(),
             row.at().as_str().into(),
             who.organization.as_str().into(),
@@ -180,17 +184,20 @@ pub(super) fn keep(
     Ok(())
 }
 
-/// The values held in `into` for pull request `number`'s merge, by row.
+/// The values held in `into` for `pr`'s merge, by row.
 pub(crate) fn held(
     tx: &mut dyn Tx,
     into: &EnvironmentId,
-    repository_id: RepositoryId,
-    number: PullRequestNumber,
+    pr: &PullRequestRef,
 ) -> Result<BTreeMap<RowId, Cell>, RpcError> {
     tx.query(
         "SELECT lineage, at, value FROM config_held_secret \
          WHERE environment_id = ?1 AND repository_id = ?2 AND number = ?3",
-        &[into.as_str().into(), repository_id.into(), number.into()],
+        &[
+            into.as_str().into(),
+            pr.repository_id.into(),
+            pr.number.into(),
+        ],
     )?
     .iter()
     .map(|row| {
@@ -202,17 +209,20 @@ pub(crate) fn held(
     .collect()
 }
 
-/// Forget the values held in `into` for pull request `number`'s merge.
+/// Forget the values held in `into` for `pr`'s merge.
 pub(super) fn forget(
     tx: &mut dyn Tx,
     into: &EnvironmentId,
-    repository_id: RepositoryId,
-    number: PullRequestNumber,
+    pr: &PullRequestRef,
 ) -> Result<(), RpcError> {
     tx.execute(
         "DELETE FROM config_held_secret \
          WHERE environment_id = ?1 AND repository_id = ?2 AND number = ?3",
-        &[into.as_str().into(), repository_id.into(), number.into()],
+        &[
+            into.as_str().into(),
+            pr.repository_id.into(),
+            pr.number.into(),
+        ],
     )?;
     Ok(())
 }

@@ -36,7 +36,7 @@ use ts_rs::TS;
 
 use crate::branch::{self, Carried, NamedRow};
 use crate::id::{ConditionalSyncId, EnvironmentId, Revision};
-use crate::pull_request::{self, PullRequest};
+use crate::pull_request::{self, PullRequest, PullRequestRef};
 use crate::scope::{self, Environment, EnvironmentSummary};
 use crate::storage::Tx;
 use crate::{Actor, error, policy, review};
@@ -157,8 +157,7 @@ fn staged_cells(applied: &Applied) -> BTreeMap<RowId, Cell> {
 struct Found {
     environment: EnvironmentId,
     state: ConditionalSyncState,
-    repository: RepositoryId,
-    number: PullRequestNumber,
+    pr: PullRequestRef,
     stored: Stored,
 }
 
@@ -566,8 +565,8 @@ pub(crate) fn land(
     }
     let mut stored = found.stored;
     let into = destination.summary.id.clone();
-    let held = held::held(tx, &into, found.repository, found.number)?;
-    held::forget(tx, &into, found.repository, found.number)?;
+    let held = held::held(tx, &into, &found.pr)?;
+    held::forget(tx, &into, &found.pr)?;
     let Some(latest) = review::latest_saved(tx, &into)? else {
         // Nothing saved there to land onto.
         return delete(tx, id);
@@ -709,8 +708,10 @@ pub(crate) fn standing_in(
     let held = held::held(
         tx,
         &into.summary.id,
-        row.number(4, "Conditional Sync")?,
-        row.number(5, "Conditional Sync")?,
+        &PullRequestRef {
+            repository_id: row.number(4, "Conditional Sync")?,
+            number: row.number(5, "Conditional Sync")?,
+        },
     )?;
     let marks = marked(tx, &into.summary.id)?;
     let waiting = match review::latest_saved(tx, &into.summary.id)? {
@@ -777,8 +778,10 @@ fn load(tx: &mut dyn Tx, who: &Actor, id: &ConditionalSyncId) -> Result<Option<F
     Ok(Some(Found {
         environment: row.parse(0, "Environment ID")?,
         state: row.variant(1, "Conditional Sync")?,
-        repository: row.number(2, "Conditional Sync")?,
-        number: row.number(3, "Conditional Sync")?,
+        pr: PullRequestRef {
+            repository_id: row.number(2, "Conditional Sync")?,
+            number: row.number(3, "Conditional Sync")?,
+        },
         stored: row.json(4, "Conditional Sync")?,
     }))
 }

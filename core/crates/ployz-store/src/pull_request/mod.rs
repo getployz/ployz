@@ -75,6 +75,16 @@ pub struct PullRequest {
     pub updated: crate::GithubTimestamp,
 }
 
+impl PullRequest {
+    /// Which pull request it is.
+    pub(crate) fn reference(&self) -> PullRequestRef {
+        PullRequestRef {
+            repository_id: self.repository_id,
+            number: self.number,
+        }
+    }
+}
+
 /// Close what is due: Branches idle for a week, and closing Branches whose removal
 /// from the Servers applied, or never needed one.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
