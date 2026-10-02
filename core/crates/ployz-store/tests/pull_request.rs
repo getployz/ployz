@@ -580,6 +580,21 @@ fn idle_branches_close_after_a_week_unless_kept() {
             .unwrap();
         run(&store, &id, &["web"]);
     }
+    // The Branch view says when: a week after its Deploy, and never for the others.
+    let closes_at = |name: &str| {
+        store
+            .read(
+                &who,
+                &ployz_store::BranchQuery {
+                    environment: at(name),
+                },
+            )
+            .unwrap()
+            .closes_at
+    };
+    let idle = closes_at("idle").unwrap();
+    assert!((now() + 7 * DAY - idle).abs() < 60);
+    assert_eq!((closes_at("kept"), closes_at("fresh")), (None, None));
     // Six days on, nothing; eight days on, the idle one closes. `fresh` never deployed.
     let early = sweep(&store, &who, now() + 6 * DAY);
     assert!(early.closing.is_empty() && early.removed.is_empty());

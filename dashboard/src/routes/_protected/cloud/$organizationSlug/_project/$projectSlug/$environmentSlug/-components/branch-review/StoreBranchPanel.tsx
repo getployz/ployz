@@ -1,11 +1,10 @@
-import { useEffect, useRef, useState } from "react";
-import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
+import { useState } from "react";
+import { Link, useLoaderData, useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
 import type { BranchView, DeploymentStatus, DifferRow, EnvironmentRef, EnvironmentsView, MoveRow, MoveView } from "@ployz/sdk";
 import type { StoreResult } from "#/modules/config-store/store.contract";
 import { ArrowDownIcon, ArrowUpIcon, CircleCheckIcon, EqualNotIcon, MoreVerticalIcon, PowerOffIcon } from "lucide-react";
-import { DeletionDialog, type DeletionCheck, type DeletionItem } from "#/components/deletion-dialog";
-import { getDashboardDestination } from "#/components/dashboard-navigation-model";
+import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
 import { Button } from "#/components/ui/button";
 import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -19,15 +18,14 @@ import {
   branchQuery, environmentsQuery, fetchStoreView, saveQuery, servicesQuery, updateQuery, useStoreViews, volumesQuery,
 } from "#/modules/config-store/store-view.queries";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useVolumeLossCheck, type VolumeAcceptance as Acceptance } from "#/modules/config-store/use-volume-loss-check";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { StoreRefused } from "#/modules/config-store/store.contract";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { actionVariant, NewsRow } from "./BranchNews";
 import { ChangeRowItem } from "./ChangeRowItem";
 import { SaveButton, saveInfo, Sheet, SwitchField, useRowPicks } from "./SaveSheet";
 import { StorePullRequestNews, useStorePullRequest } from "./StorePullRequestNews";
+import { useLeaveWhenClosed, useStoreBranchClose } from "../sync/branch-close";
 
 type Params = { organizationSlug: string; projectSlug: string; environmentSlug: string };
 
@@ -261,86 +259,4 @@ function StoreSaveSheet({ store, branch, view, deletable, onSaved, onClose }: {
       {deletable ? <SwitchField id="save-then-delete" label={`Delete ${branch.environment.name} after saving`} checked={deleteAfter} onChange={setDeleteAfter} /> : null}
     </Sheet>
   );
-}
-
-
-/** Once the Branch is gone (the Store deletes a closed one), the page opens the Parent it had. */
-function useLeaveWhenClosed(params: Params, branch: StoreResult<BranchView>) {
-  const navigate = useNavigate();
-  const parent = useRef<string | null>(null);
-  const gone = !branch.ok && branch.refusal.code === "not_found";
-  useEffect(() => {
-    if (branch.ok) parent.current = branch.value.parent;
-  }, [branch]);
-  useEffect(() => {
-    if (!gone || parent.current === null) return;
-    toast.success(`${params.environmentSlug} closed`);
-    void navigate(getDashboardDestination({ ...params, kind: "environment", environmentSlug: parent.current }, "architecture"));
-  }, [gone]);
-}
-
-/**
- * Closing a Branch over the Config Store: it comes off the Servers as a Deployment that asks before deleting Volume
- * data and that closes it; never deployed, or already off, that applies at once. The Store deletes it then, and the
- * page opens its Parent once it's gone.
- */
-function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: BranchView) {
-  const writer = useStoreWriter(params.organizationSlug);
-  const navigate = useNavigate();
-  const lossOf = useVolumeLossCheck(params.organizationSlug);
-  const place = `${store.project ?? ""}/${store.environment ?? ""}`;
-  const [loss, setLoss] = useState<DeletionCheck<Acceptance> | null>(null);
-  // Shutting down takes it off the Servers and keeps it; closing then removes it.
-  const [shutting, setShutting] = useState(false);
-  const name = branch.environment.name;
-
-  const leave = () => navigate(getDashboardDestination({
-    kind: "environment", organizationSlug: params.organizationSlug, projectSlug: params.projectSlug, environmentSlug: branch.parent,
-  }, "architecture"));
-
-  async function takeOff({ accept, version }: { accept: readonly string[]; version: string | null }, shut = shutting): Promise<DeletionCheck<Acceptance> | null> {
-    try {
-      await writer.commit({
-        command: "admit", admit: "remove", id: crypto.randomUUID(), environment: store, version, accept_volume_loss: [...accept],
-        close: !shut,
-      }, ["confirmation_required"]).isPersisted.promise;
-      toast(`${name} is coming off the servers`,
-        { description: shut ? "The pull request's next push brings it back." : "It closes once it's off." });
-      return null;
-    } catch (error) {
-      return error instanceof StoreRefused ? lossOf(error) : null;
-    }
-  }
-
-  async function shutDown() {
-    setShutting(true);
-    setLoss(await takeOff({ accept: [], version: null }, true));
-  }
-
-  async function close() {
-    setShutting(false);
-    setLoss(await takeOff({ accept: [], version: null }, false));
-  }
-
-  return {
-    close,
-    shutDown,
-    leave: async () => { await leave(); },
-    dialog: (
-      <DeletionDialog
-        open={loss !== null}
-        onOpenChange={(open) => { if (!open) setLoss(null); }}
-        title={shutting ? "Shutting down deletes data" : "Closing deletes data"}
-        place={place}
-        confirmLabel={shutting ? "Shut down" : "Close branch"}
-        items={loss?.items}
-        callbacks={{
-          load: () => Promise.resolve(loss ?? { items: [], evidence: { accept: [], version: "" } }),
-          confirm: async (evidence) => {
-            return (await takeOff(evidence)) ?? undefined;
-          },
-        }}
-      />
-    ),
-  };
 }

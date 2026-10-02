@@ -32,6 +32,7 @@ const SPINNER_FILES = {
   "components/confirm-dialog.tsx": "confirm in flight",
   "components/deletion-dialog.tsx": "deletion in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/SaveSheet.tsx": "save in flight",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/sync/SyncDialog.tsx": "sync in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "create in flight",
   "components/service-create-command.tsx": "create in flight",
   "components/service-source-selector.tsx": "sync and submit in flight",
@@ -100,7 +101,9 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "the page opens a new Branch's canvas once the Store has it and Cloud knows its route",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator.ts": "hands a new Project's Service save to service-create-command, whose next page can't show it before the Store has it",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useDeleteService.ts": "a Database Preset's removal shows at once; its Volume's data goes only once the Store accepts the Service's removal",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/StoreBranchPanel.tsx": "closing a Branch is destructive: it waits for its removal, and a Save that closes the Branch after waits until the Parent has it",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/StoreBranchPanel.tsx": "a Save that closes the Branch after waits until the Parent has it",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/sync/branch-close.tsx": "closing a Branch is destructive: it waits for its removal, which may ask before deleting Volume data",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/sync/SyncDialog.tsx": "the page opens the receiver once it holds the synced changes, and a stale review keeps the dialog open with the fresh rows",
 };
 
 function walk(dir: string): string[] {

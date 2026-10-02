@@ -30,7 +30,7 @@ import { changeGroups } from "#/modules/config-store/store-deployments";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { CanvasFinder } from "./CanvasFinder";
-import { BranchButton } from "./BranchButton";
+import { SyncButton } from "../sync/SyncButton";
 import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useKeyboardFocusModality } from "../keyboard-focus-modality";
@@ -140,7 +140,7 @@ export function CanvasFlow({
       </div>
       <CanvasNodeList store={store} selectedNodeId={selectedNodeId} />
       <div className="pointer-events-none absolute top-4 right-4 flex items-center gap-2">
-        <BranchButton />
+        <SyncButton />
         <CanvasFinder nodes={findableNodes} />
         <Button
           className="pointer-events-auto"

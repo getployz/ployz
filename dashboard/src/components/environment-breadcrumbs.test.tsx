@@ -146,9 +146,9 @@ it("notes the Default Environment and opens the Project settings from Manage env
   await waitFor(() => expect(app.router.state.location.href).toBe("/cloud/acme/store/staging/settings?scope=project"));
 });
 
-it("offers Manage of the current Branch", async () => {
-  await using app = await renderAt("/cloud/acme/store/fix-web/logs");
+it("offers no Branch controls on a Branch: they're the Sync button's", async () => {
+  await using _app = await renderAt("/cloud/acme/store/fix-web/logs");
   fireEvent.click(screen.getByRole("button", { name: "Environment: fix-web" }));
-  fireEvent.click(await screen.findByRole("option", { name: "Manage fix-web" }));
-  await waitFor(() => expect(app.router.state.location.pathname).toBe("/cloud/acme/store/fix-web/review"));
+  await screen.findByRole("option", { name: "New branch of fix-web" });
+  expect(screen.queryByRole("option", { name: /^Manage fix-web/u })).toBeNull();
 });

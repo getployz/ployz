@@ -267,6 +267,12 @@ update: Array<string>,
  */
 to_parent: number,
 /**
+ * When it closes for sitting idle, in seconds since the Unix epoch: a week
+ * after its latest Deployment. None while kept, never deployed, a Parent or
+ * closing already.
+ */
+closes_at: number | null,
+/**
  * The pull request it is the PR Environment of; its Save waits for the merge.
  */
 pull_request: PullRequestRef | null, };

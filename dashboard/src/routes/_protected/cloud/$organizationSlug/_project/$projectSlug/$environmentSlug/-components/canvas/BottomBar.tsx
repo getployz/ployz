@@ -54,8 +54,8 @@ type ReviewProps = Parameters<typeof EnvironmentChangesReview>[0];
 /**
  * The bottom bar holds this Environment's own changes and nothing else, in one row like Railway's: changes to deploy
  * ("Apply 3 changes · Details · Deploy · ⋮"), else a running or queued Deployment whose page isn't open. What moves
- * between Environments, Save and Update, is the Branch button's, at the canvas's top right; it lands in a bottom bar as
- * changes to deploy.
+ * between Environments, a Sync, is the Sync button's, at the canvas's top right; it lands in a bottom bar as changes to
+ * deploy.
  */
 export function BottomBar({
   groups,
