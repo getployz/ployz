@@ -2573,7 +2573,7 @@ export type SavedVariableValue = { "kind": "literal", value: string, } | { "kind
  * Absent in the browser-readable authored document. Cloud keeps the
  * ciphertext privately and captures it into each immutable publication.
  */
-encryptedValue: EncryptedSecretValue | null, };
+encryptedValue: EncryptedSecretValue | null, } | { "kind": "secret_without_value" };
 
 export type SavedVolumeIntent = { resourceId: string, resourceLineageId: string, name: string, storage: VolumeKind,
 /**
@@ -3079,7 +3079,12 @@ changed: boolean,
 /**
  * It brings a node, or a variable, the receiver lacks.
  */
-new: boolean, };
+new: boolean,
+/**
+ * A secret the receiver lacks: it lands without a value, since a secret's value
+ * never syncs, and the receiver's Deploy refuses until it has one.
+ */
+secret: boolean, };
 
 export type SyncView = {
 /**

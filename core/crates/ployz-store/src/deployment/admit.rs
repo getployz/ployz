@@ -3,8 +3,8 @@
 //! an ended Deployment froze. Starting hands a queued one to a runner again, and
 //! cancelling stops one.
 
-use ployz_core::config::SavedEnvironmentIntent;
 use ployz_core::config::canonicalize_environment_intent;
+use ployz_core::config::{SavedEnvironmentIntent, SavedVariableValue};
 use ployz_core::{Namespace, RpcError, RpcErrorCode, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -155,8 +155,8 @@ pub(crate) fn admit(
 }
 
 /// The gate every Deploy passes, the user's or the Store's own: a Server to run
-/// it, the Cluster Domain its generated domains expand under, and no hostname
-/// another Namespace publishes.
+/// it, a value for every secret, the Cluster Domain its generated domains expand
+/// under, and no hostname another Namespace publishes.
 pub(crate) fn gate(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -165,8 +165,44 @@ pub(crate) fn gate(
     trusted: &Trusted,
 ) -> Result<(), RpcError> {
     trusted.runnable()?;
+    needs_secret_values(environment, intent)?;
     needs_cluster_domain(environment, intent, cluster_domain)?;
     domain::check_published(tx, who, intent, (cluster_domain, namespace), trusted)
+}
+
+/// Refuse to deploy a secret without a value, naming each: one that arrived by Sync
+/// waits for `environment`'s own.
+fn needs_secret_values(
+    environment: &scope::Environment,
+    intent: &SavedEnvironmentIntent,
+) -> Result<(), RpcError> {
+    let mut missing: Vec<String> = intent
+        .services
+        .iter()
+        .flat_map(|service| {
+            service
+                .variables
+                .iter()
+                .filter(|variable| variable.value == SavedVariableValue::SecretWithoutValue)
+                .map(|variable| format!("{}.env.{}", service.slug, variable.key))
+        })
+        .collect();
+    missing.sort();
+    let Some(first) = missing.first() else {
+        return Ok(());
+    };
+    let summary = &environment.summary;
+    Err(error::conflict(
+        format!(
+            "{} has secrets without a value: set {} before deploying",
+            summary.name,
+            missing.join(", ")
+        ),
+        json!({
+            "secrets": missing,
+            "next": format!("ployz set {first} --secret --project {} --env {}", summary.project, summary.name),
+        }),
+    ))
 }
 
 /// Refuse to deploy `environment`'s generated domains without the Cluster Domain

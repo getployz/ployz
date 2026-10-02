@@ -241,7 +241,10 @@ impl Comparison<'_> {
             return;
         };
         for variable in &service.variables {
-            let secret = matches!(variable.value, SavedVariableValue::Secret { .. });
+            let secret = matches!(
+                variable.value,
+                SavedVariableValue::Secret { .. } | SavedVariableValue::SecretWithoutValue
+            );
             let mut choice = self.choice(lineage, &variable.key, secret);
             // A Branch starts with its Parent's values, secrets included.
             if self.base.is_none() {
@@ -398,9 +401,7 @@ impl Comparison<'_> {
                 {
                     put_variable(next, lineage, variable);
                 }
-                // A secret still waiting for its value stays proposed.
-                let waiting = matches!(choice, BranchPickChoice::New { value: None });
-                if let (Some(base), false) = (base, waiting) {
+                if let Some(base) = base {
                     adopt_node(base, self.into, lineage, None);
                     put_variable(base, lineage, variable(self.from, lineage, key));
                 }
@@ -421,8 +422,7 @@ impl Comparison<'_> {
     }
 
     /// An introduced node's unpicked variables land in `next` by their default choice, and
-    /// `base` records each one that lands; one that doesn't (a secret awaiting its value) stays
-    /// proposed.
+    /// `base` records each one that lands; one left out stays proposed.
     fn land_defaults(
         &self,
         rows: &[BranchRow],
@@ -533,11 +533,18 @@ impl Comparison<'_> {
         match option {
             BranchOption::From => Some(variable(self.from, lineage, key)),
             BranchOption::Parent => self.parent.map(|parent| variable(parent, lineage, key)),
-            BranchOption::New => new_value.map(|new| SavedVariableIntent {
-                value: new.value.clone(),
-                value_fingerprint: new.value_fingerprint.clone(),
-                ..variable(self.from, lineage, key)
-            }),
+            // Only a secret takes `new` without a value: it lands without one.
+            BranchOption::New => {
+                let (value, value_fingerprint) = new_value.map_or_else(
+                    || (SavedVariableValue::SecretWithoutValue, String::new()),
+                    |new| (new.value.clone(), new.value_fingerprint.clone()),
+                );
+                Some(SavedVariableIntent {
+                    value,
+                    value_fingerprint,
+                    ..variable(self.from, lineage, key)
+                })
+            }
             BranchOption::LeaveOut => None,
         }
     }
@@ -708,6 +715,7 @@ fn variable_value(variable: &SavedVariableIntent) -> Value {
         SavedVariableValue::Secret { .. } => {
             json!({"fingerprint": variable.value_fingerprint, "kind": "secret"})
         }
+        SavedVariableValue::SecretWithoutValue => json!({"kind": "secret"}),
     }
 }
 

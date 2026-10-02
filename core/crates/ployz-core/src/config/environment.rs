@@ -116,6 +116,9 @@ pub enum SavedVariableValue {
         /// ciphertext privately and captures it into each immutable publication.
         encrypted_value: Option<EncryptedSecretValue>,
     },
+    /// A secret that arrived without its value: Sync never carries one up or across.
+    /// It has no fingerprint, and Deploy refuses until a value is set.
+    SecretWithoutValue,
 }
 
 impl SavedVariableValue {
@@ -123,7 +126,7 @@ impl SavedVariableValue {
     pub fn referenced_lineages(&self) -> impl Iterator<Item = &str> {
         let parts = match self {
             Self::Template { parts } => parts.as_slice(),
-            Self::Literal { .. } | Self::Secret { .. } => &[],
+            Self::Literal { .. } | Self::Secret { .. } | Self::SecretWithoutValue => &[],
         };
         parts.iter().filter_map(|part| match part {
             ValuePart::Ref {
@@ -274,7 +277,15 @@ fn validate_variables(variables: &[SavedVariableIntent]) -> Result<(), ConfigErr
         false,
     )?;
     for variable in variables {
-        nonempty(&variable.value_fingerprint, "variables.valueFingerprint")?;
+        // Only a secret without a value has no fingerprint, and it has none.
+        if (variable.value == SavedVariableValue::SecretWithoutValue)
+            != variable.value_fingerprint.is_empty()
+        {
+            return Err(ConfigError::at(
+                "variables.valueFingerprint",
+                "Only a secret without a value has no fingerprint",
+            ));
+        }
         if let SavedVariableValue::Secret { encrypted_value } = &variable.value
             && encrypted_value
                 .as_ref()
