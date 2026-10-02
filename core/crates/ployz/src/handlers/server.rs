@@ -40,7 +40,8 @@ mod upgrade;
 use add::add;
 pub(super) use enroll::requested_storage;
 pub(super) use helpers::{
-    confirm, connect_direct, initialize, join, machine_name, readiness_timeout_message, reset,
+    check_listed, confirm, connect_direct, initialize, join, machine_name,
+    readiness_timeout_message, reset,
 };
 use init::init;
 use inspect::{inspect, list};
