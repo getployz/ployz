@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::RpcError;
 use ployz_core::config::{
     Applied, Arrives, Cell, Hostnames, Plan, PlannedRow, Policy as Rules, RowId,
-    SavedEnvironmentIntent, Sides, Verdict, Way, cell_at, plan,
+    SavedEnvironmentIntent, SealedSecret, Sides, Verdict, Way, cell_at, plan,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -180,7 +180,7 @@ fn admit(
     stored: &Stored,
     into: &SavedEnvironmentIntent,
     marks: &BTreeSet<RowId>,
-    held: &BTreeMap<RowId, Cell>,
+    held: &BTreeMap<RowId, SealedSecret>,
     keep: impl Fn(&PlannedRow) -> bool,
 ) -> Result<Admitted, RpcError> {
     let plan: Plan = plan(
@@ -226,7 +226,7 @@ fn admitted(
     stored: &Stored,
     (saved, working): (&SavedEnvironmentIntent, &SavedEnvironmentIntent),
     marks: &BTreeSet<RowId>,
-    held: &BTreeMap<RowId, Cell>,
+    held: &BTreeMap<RowId, SealedSecret>,
 ) -> Result<Admitted, RpcError> {
     admit(stored, saved, marks, held, |row| {
         let needs_value = matches!(

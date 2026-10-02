@@ -9,8 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
     Applied, Arrives, Cell, ConfigError, EncryptedSecretValue, Hostnames, NodeRef, Plan,
-    PlannedRow, Policy, RowId, SavedEnvironmentIntent, Sides, Verdict, Way, Why, cell_at, name_of,
-    parse_environment_intent, plan, put, redact_environment_intent, row_of_change,
+    PlannedRow, Policy, RowId, SavedEnvironmentIntent, SealedSecret, Sides, Verdict, Way, Why,
+    cell_at, name_of, parse_environment_intent, plan, put, redact_environment_intent,
+    row_of_change, unapply,
 };
 use serde_json::{Value, json};
 
@@ -272,15 +273,15 @@ fn val(value: Value) -> Cell {
     Cell::Value(value)
 }
 
-fn sealed(ciphertext: &str, fingerprint: &str) -> Cell {
-    Cell::Secret {
+fn sealed(ciphertext: &str, fingerprint: &str) -> SealedSecret {
+    SealedSecret {
         fingerprint: fingerprint.to_owned(),
-        sealed: Some(EncryptedSecretValue {
+        value: EncryptedSecretValue {
             version: 1,
             iv: "iv".to_owned(),
             tag: "tag".to_owned(),
             ciphertext: ciphertext.to_owned(),
-        }),
+        },
     }
 }
 
@@ -565,7 +566,6 @@ fn a_secret_never_changes_where_it_is_and_arrives_without_a_value() {
         arriving.from,
         Cell::Secret {
             fingerprint: "fp-new".to_owned(),
-            sealed: None
         }
     );
     assert!(matches!(
@@ -635,7 +635,7 @@ fn a_needs_value_pick_lands_the_sealed_value_it_is_given() {
     // A value for a row that arrives as it is is ignored.
     let values = BTreeMap::from([
         (new_secret.clone(), sealed("given-cipher", "fp-given")),
-        (start.clone(), val(json!("ignored"))),
+        (start.clone(), sealed("ignored", "fp-ignored")),
     ]);
     let applied = plan.apply(&picks, &values).unwrap();
     assert!(applied.waiting.is_empty());
@@ -652,24 +652,9 @@ fn a_needs_value_pick_lands_the_sealed_value_it_is_given() {
         landed.value,
         Cell::Secret {
             fingerprint: "fp-given".to_owned(),
-            sealed: None
         },
         "what landed is redacted"
     );
-
-    // A value that isn't sealed is refused.
-    for unsealed in [
-        Cell::Secret {
-            fingerprint: "fp".to_owned(),
-            sealed: None,
-        },
-        val(json!("plain")),
-    ] {
-        let error = plan
-            .apply(&picks, &BTreeMap::from([(new_secret.clone(), unsealed)]))
-            .unwrap_err();
-        assert_eq!(error.path, "values");
-    }
 }
 
 #[test]
@@ -1504,9 +1489,9 @@ fn put_undoes_every_landing() {
     assert_eq!(picks.len(), 8, "{picks:#?}");
     let applied = land(&plan, &picks).unwrap();
     assert_eq!(applied.landed.len(), picks.len());
-    let (mut next, mut base) = (applied.next, applied.base);
+    let next = unapply(&applied.next, "", &applied.landed).unwrap();
+    let mut base = applied.base;
     for landed in applied.landed.iter().rev() {
-        next = put(&next, &landed.row, &landed.was).unwrap();
         base = put(&base, &landed.row, &landed.prior).unwrap();
     }
     let unchanged = |a: &SavedEnvironmentIntent, b: &Value| {

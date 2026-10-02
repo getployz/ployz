@@ -4,7 +4,6 @@
 use super::*;
 use crate::SealingKey;
 use crate::scope::EnvironmentRef;
-use crate::variables::{VariableKey, validate_text};
 
 /// Hold a Destination's value for a secret a pull request's Conditional Sync brings
 /// it: it lands with the merge. Refused unless the pull request has a standing
@@ -133,26 +132,12 @@ pub(crate) fn hold(
             json!({ "valid_children": repositories }),
         ));
     }
-    if request.value.is_empty() {
-        return Err(error::invalid(
-            format!("{label}: a secret needs a value"),
-            json!({ "row": row }),
-        ));
-    }
-    let key = row.at();
-    let key = key
-        .strip_prefix("variables.")
-        .ok_or_else(|| error::corrupt("Conditional Sync"))?;
-    validate_text(&VariableKey::parse(key)?, &request.value)?;
-    let cell = Cell::Secret {
-        fingerprint: sealing.fingerprint(&request.value),
-        sealed: Some(sealing.seal(&request.value)),
-    };
+    let secret = branch::seal_secret(sealing, row, &label, &request.value)?;
     let pr = PullRequestRef {
         repository_id: repository,
         number,
     };
-    keep(tx, who, &into.summary.id, &pr, row, &cell)?;
+    keep(tx, who, &into.summary.id, &pr, row, &secret)?;
     Ok(SecretHeld {
         environment: into.summary,
         pull_request: number,
@@ -160,14 +145,14 @@ pub(crate) fn hold(
     })
 }
 
-/// Hold sealed `cell` in `into` for `row` until `pr`'s merge.
+/// Hold `secret` in `into` for `row` until `pr`'s merge.
 pub(super) fn keep(
     tx: &mut dyn Tx,
     who: &Actor,
     into: &EnvironmentId,
     pr: &PullRequestRef,
     row: &RowId,
-    cell: &Cell,
+    secret: &SealedSecret,
 ) -> Result<(), RpcError> {
     tx.execute(
         "INSERT INTO config_held_secret (environment_id, repository_id, number, lineage, at, \
@@ -181,7 +166,7 @@ pub(super) fn keep(
             row.lineage().into(),
             row.at().as_str().into(),
             who.organization.as_str().into(),
-            branch::json_of(cell).as_str().into(),
+            branch::json_of(secret).as_str().into(),
         ],
     )?;
     Ok(())
@@ -192,7 +177,7 @@ pub(crate) fn held(
     tx: &mut dyn Tx,
     into: &EnvironmentId,
     pr: &PullRequestRef,
-) -> Result<BTreeMap<RowId, Cell>, RpcError> {
+) -> Result<BTreeMap<RowId, SealedSecret>, RpcError> {
     tx.query(
         "SELECT lineage, at, value FROM config_held_secret \
          WHERE environment_id = ?1 AND repository_id = ?2 AND number = ?3",

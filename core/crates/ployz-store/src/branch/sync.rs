@@ -497,7 +497,7 @@ pub(crate) fn sealed(
     sides: &[&SavedEnvironmentIntent; 2],
     picks: &BTreeSet<RowId>,
     values: &BTreeMap<RowId, String>,
-) -> Result<BTreeMap<RowId, Cell>, RpcError> {
+) -> Result<BTreeMap<RowId, SealedSecret>, RpcError> {
     values
         .iter()
         .map(|(row, value)| {
@@ -512,32 +512,42 @@ pub(crate) fn sealed(
                         }
                     )
             });
-            let key = row.at();
-            let key = key
-                .strip_prefix("variables.")
-                .filter(|_| needs && picks.contains(row));
-            let Some(key) = key else {
+            if !(needs && picks.contains(row)) {
                 return Err(error::invalid(
                     format!("{label}: only a picked secret the receiver lacks takes a value"),
                     json!({ "row": row }),
                 ));
-            };
-            if value.is_empty() {
-                return Err(error::invalid(
-                    format!("{label}: a secret needs a value"),
-                    json!({ "row": row }),
-                ));
             }
-            validate_text(&VariableKey::parse(key)?, value)?;
-            Ok((
-                row.clone(),
-                Cell::Secret {
-                    fingerprint: sealing.fingerprint(value),
-                    sealed: Some(sealing.seal(value)),
-                },
-            ))
+            Ok((row.clone(), seal_secret(sealing, row, &label, value)?))
         })
         .collect()
+}
+
+/// `value`, sealed for secret `row` (labelled `label`), once it is one the row takes.
+pub(crate) fn seal_secret(
+    sealing: &SealingKey,
+    row: &RowId,
+    label: &str,
+    value: &str,
+) -> Result<SealedSecret, RpcError> {
+    let at = row.at();
+    let Some(key) = at.strip_prefix("variables.") else {
+        return Err(error::invalid(
+            format!("{label} isn't a secret"),
+            json!({ "row": row }),
+        ));
+    };
+    if value.is_empty() {
+        return Err(error::invalid(
+            format!("{label}: a secret needs a value"),
+            json!({ "row": row }),
+        ));
+    }
+    validate_text(&VariableKey::parse(key)?, value)?;
+    Ok(SealedSecret {
+        fingerprint: sealing.fingerprint(value),
+        value: sealing.seal(value),
+    })
 }
 
 /// Refuse to close a kept Branch, or one the Store can't remove.

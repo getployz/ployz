@@ -216,8 +216,8 @@ impl<'de> Deserialize<'de> for RowId {
 }
 
 /// What one side holds at a row. A setting at its default is `Absent`, so unsetting is
-/// a removal. Rows carry secrets by fingerprint; only [`Landed::was`] and the values
-/// [`Plan::apply`] fills `NeedsValue` rows with carry `sealed` material.
+/// a removal. A secret is there by fingerprint only: its value travels as a
+/// [`SealedCell`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Cell {
@@ -229,9 +229,6 @@ pub enum Cell {
     Secret {
         /// Tells two values apart without showing either.
         fingerprint: String,
-        /// The value, encrypted; only where the caller asked for it.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        sealed: Option<EncryptedSecretValue>,
     },
     /// A secret still waiting for its value.
     SecretWithoutValue,
@@ -243,14 +240,37 @@ impl Cell {
     pub fn is_secret(&self) -> bool {
         matches!(self, Self::Secret { .. } | Self::SecretWithoutValue)
     }
+}
 
-    fn redacted(self) -> Self {
+/// A secret's value, sealed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SealedSecret {
+    /// Tells it apart from another value without showing either.
+    pub fingerprint: String,
+    /// The value, encrypted.
+    pub value: EncryptedSecretValue,
+}
+
+/// What a row holds with a secret's value: what lands, and what [`unapply`] puts back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SealedCell {
+    /// Anything but a secret with its value; a secret there by fingerprint only
+    /// where the configuration holds no value for it.
+    Cell(Cell),
+    /// A secret with its value.
+    Secret(SealedSecret),
+}
+
+impl SealedCell {
+    /// What a plan compares it as.
+    #[must_use]
+    pub fn redacted(&self) -> Cell {
         match self {
-            Self::Secret { fingerprint, .. } => Self::Secret {
-                fingerprint,
-                sealed: None,
+            Self::Cell(cell) => cell.clone(),
+            Self::Secret(secret) => Cell::Secret {
+                fingerprint: secret.fingerprint.clone(),
             },
-            Self::Absent | Self::Value(_) | Self::SecretWithoutValue => self,
         }
     }
 }
@@ -402,8 +422,8 @@ pub struct Landed {
     pub row: RowId,
     /// The base's cell before; redacted.
     pub prior: Cell,
-    /// `into`'s cell before, sealed.
-    pub was: Cell,
+    /// `into`'s cell before.
+    pub was: SealedCell,
     /// What arrived; redacted.
     pub value: Cell,
 }
@@ -543,10 +563,10 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
             (Some(&from_node), Some(&into_node)) => {
                 let base_cells = base
                     .zip(base_nodes.get(lineage))
-                    .map(|(env, node)| cells(env, *node, &hostnames.into, false))
+                    .map(|(env, node)| cells(env, *node, &hostnames.into))
                     .unwrap_or_default();
-                let from_cells = cells(from, from_node, &hostnames.from, false);
-                let into_cells = cells(into, into_node, &hostnames.into, false);
+                let from_cells = cells(from, from_node, &hostnames.from);
+                let into_cells = cells(into, into_node, &hostnames.into);
                 for at in from_cells
                     .keys()
                     .chain(into_cells.keys())
@@ -574,7 +594,7 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
             }
             (Some(&node), None) if !policy.live.contains(*lineage) && !in_base => {
                 let id = RowId::node(lineage);
-                let from_cells = cells(from, node, &hostnames.from, false);
+                let from_cells = cells(from, node, &hostnames.from);
                 let node_cells = node_cells(lineage);
                 let Some(mut verdict) =
                     policy.verdict(&id, &Cell::Absent, &node_cells[1], &Cell::Absent)
@@ -690,17 +710,16 @@ impl Plan {
     }
 
     /// Land `picks` in `into`: [`put`] once per pick, a new node first. A `NeedsValue`
-    /// pick takes its sealed secret from `values`, or lands without one and is `waiting`;
+    /// pick takes its secret from `values`, or lands without one and is `waiting`;
     /// `values` for any other row are ignored.
     ///
     /// # Errors
     /// Returns ConfigError for an unknown pick, a pick of a row that differs or whose new
-    /// node isn't picked, a value that isn't a sealed secret, a name clash, or a `next`
-    /// that isn't valid.
+    /// node isn't picked, a name clash, or a `next` that isn't valid.
     pub fn apply(
         &self,
         picks: &BTreeSet<RowId>,
-        values: &BTreeMap<RowId, Cell>,
+        values: &BTreeMap<RowId, SealedSecret>,
     ) -> Result<Applied, ConfigError> {
         let refuse = |message| ConfigError::at("picks", message);
         let mut landing = Vec::new();
@@ -729,29 +748,22 @@ impl Plan {
         let mut waiting = Vec::new();
         for (row, arrives) in landing {
             let id = &row.id;
-            let was = cell(&self.into, id, &self.hostnames.into, true);
+            let was = sealed_cell(&self.into, id, &self.hostnames.into);
             let value = match arrives {
-                Arrives::AsIs => cell(&self.from, id, &self.hostnames.from, true),
+                Arrives::AsIs => sealed_cell(&self.from, id, &self.hostnames.from),
                 Arrives::NeedsValue => match values.get(id) {
-                    Some(
-                        value @ Cell::Secret {
-                            sealed: Some(_), ..
-                        },
-                    ) => value.clone(),
-                    Some(_) => {
-                        return Err(ConfigError::at("values", "A secret's value arrives sealed"));
-                    }
+                    Some(secret) => SealedCell::Secret(secret.clone()),
                     None => {
                         waiting.push(id.clone());
-                        Cell::SecretWithoutValue
+                        SealedCell::Cell(Cell::SecretWithoutValue)
                     }
                 },
             };
             if id.at == At::Node {
                 self.introduce(&mut next, base.as_mut(), &id.lineage)?;
             } else {
-                put_into(&mut next, id, &value)?;
-                if let (At::Variable(key), Cell::Absent) = (&id.at, &was) {
+                put_sealed(&mut next, id, &value)?;
+                if let (At::Variable(key), SealedCell::Cell(Cell::Absent)) = (&id.at, &was) {
                     self.describe(&mut next, &id.lineage, key);
                 }
                 if let Some(base) = base.as_mut() {
@@ -881,7 +893,7 @@ pub fn put(intent: &Intent, row: &RowId, cell: &Cell) -> Result<Intent, ConfigEr
 /// addresses without `suffix`, the one `intent`'s Environment gives them.
 #[must_use]
 pub fn cell_at(intent: &Intent, row: &RowId, suffix: &str) -> Cell {
-    cell(intent, row, suffix, false)
+    cell(intent, row, suffix)
 }
 
 /// Why [`unapply`] refused.
@@ -904,7 +916,7 @@ pub fn unapply(intent: &Intent, suffix: &str, landed: &[Landed]) -> Result<Inten
     for one in landed {
         let row = &one.row;
         let changed = || Err(Unapplied::Changed(row.clone()));
-        if cell(intent, row, suffix, false) != one.value {
+        if cell(intent, row, suffix) != one.value {
             return changed();
         }
         let Some(&node) = nodes(intent)
@@ -918,7 +930,7 @@ pub fn unapply(intent: &Intent, suffix: &str, landed: &[Landed]) -> Result<Inten
                 .iter()
                 .any(|l| l.row.lineage == row.lineage && l.row.at == *at)
         };
-        if let Some(at) = cells(intent, node, suffix, false)
+        if let Some(at) = cells(intent, node, suffix)
             .into_keys()
             .find(|at| !at.carried() && !with(at))
         {
@@ -932,7 +944,7 @@ pub fn unapply(intent: &Intent, suffix: &str, landed: &[Landed]) -> Result<Inten
     order.sort_by_key(|one| std::cmp::Reverse(landing_order(intent, &one.row)));
     let mut intent = intent.clone();
     for one in order {
-        put_into(&mut intent, &one.row, &one.was).map_err(Unapplied::Invalid)?;
+        put_sealed(&mut intent, &one.row, &one.was).map_err(Unapplied::Invalid)?;
     }
     Ok(intent)
 }
@@ -1026,12 +1038,26 @@ pub fn rows_of(intent: &Intent) -> Vec<RowId> {
     let mut rows = Vec::new();
     for (lineage, node) in nodes(intent) {
         rows.push(RowId::node(lineage));
-        rows.extend(cells(intent, node, "", false).into_keys().map(|at| RowId {
+        rows.extend(cells(intent, node, "").into_keys().map(|at| RowId {
             lineage: lineage.to_owned(),
             at,
         }));
     }
     rows
+}
+
+/// [`put_into`], a secret with its value.
+fn put_sealed(env: &mut Intent, row: &RowId, cell: &SealedCell) -> Result<(), ConfigError> {
+    put_into(env, row, &cell.redacted())?;
+    if let (SealedCell::Secret(secret), At::Variable(key)) = (cell, &row.at)
+        && let Some(variable) = service_mut(env, &row.lineage)
+            .and_then(|service| service.variables.iter_mut().find(|v| v.key == *key))
+    {
+        variable.value = SavedVariableValue::Secret {
+            encrypted_value: Some(secret.value.clone()),
+        };
+    }
+    Ok(())
 }
 
 fn put_into(env: &mut Intent, row: &RowId, cell: &Cell) -> Result<(), ConfigError> {
@@ -1115,12 +1141,9 @@ fn put_into(env: &mut Intent, row: &RowId, cell: &Cell) -> Result<(), ConfigErro
                 Cell::Value(value) => {
                     plain(value).ok_or_else(|| invalid("Not a variable's value"))?
                 }
-                Cell::Secret {
-                    fingerprint,
-                    sealed,
-                } => (
+                Cell::Secret { fingerprint } => (
                     SavedVariableValue::Secret {
-                        encrypted_value: sealed.clone(),
+                        encrypted_value: None,
                     },
                     fingerprint.clone(),
                 ),
@@ -1338,7 +1361,7 @@ fn node_cell(env: &Intent, lineage: &str, suffix: &str) -> Cell {
     if let NodeRef::Service(service) = node {
         cell.insert("name".to_owned(), json!(service.slug));
     }
-    for (at, value) in cells(env, node, suffix, false) {
+    for (at, value) in cells(env, node, suffix) {
         if let (true, Cell::Value(value)) = (at.carried() && at != At::Setting("routes"), value) {
             cell.insert(at.to_string(), value);
         }
@@ -1347,20 +1370,43 @@ fn node_cell(env: &Intent, lineage: &str, suffix: &str) -> Cell {
 }
 
 /// `env`'s cell at `row`, sealed or redacted.
-fn cell(env: &Intent, row: &RowId, suffix: &str, sealed: bool) -> Cell {
+fn cell(env: &Intent, row: &RowId, suffix: &str) -> Cell {
     match (&row.at, nodes(env).get(row.lineage.as_str())) {
         (At::Node | At::Data, _) => node_cell(env, &row.lineage, suffix),
-        (_, Some(node)) => cells(env, *node, suffix, sealed)
+        (_, Some(node)) => cells(env, *node, suffix)
             .remove(&row.at)
             .unwrap_or(Cell::Absent),
         (_, None) => Cell::Absent,
     }
 }
 
+/// [`cell`], a secret with its value where `env` holds one.
+fn sealed_cell(env: &Intent, row: &RowId, suffix: &str) -> SealedCell {
+    let cell = cell(env, row, suffix);
+    let (Cell::Secret { fingerprint }, At::Variable(key)) = (&cell, &row.at) else {
+        return SealedCell::Cell(cell);
+    };
+    let value = service(env, &row.lineage)
+        .and_then(|service| service.variables.iter().find(|v| v.key == *key))
+        .and_then(|variable| match &variable.value {
+            SavedVariableValue::Secret { encrypted_value } => encrypted_value.clone(),
+            SavedVariableValue::Literal { .. }
+            | SavedVariableValue::Template { .. }
+            | SavedVariableValue::SecretWithoutValue => None,
+        });
+    match value {
+        Some(value) => SealedCell::Secret(SealedSecret {
+            fingerprint: fingerprint.clone(),
+            value,
+        }),
+        None => SealedCell::Cell(cell),
+    }
+}
+
 /// Every place in `node` that holds something, normalized so copies compare with their
 /// originals: generated addresses without `suffix`, credentials and custom domains by
 /// presence and hostname, mounts by Volume lineage, secrets by fingerprint.
-fn cells(env: &Intent, node: NodeRef, suffix: &str, sealed: bool) -> BTreeMap<At, Cell> {
+fn cells(env: &Intent, node: NodeRef, suffix: &str) -> BTreeMap<At, Cell> {
     let service = match node {
         NodeRef::Volume(volume) => {
             return BTreeMap::from([
@@ -1418,15 +1464,12 @@ fn cells(env: &Intent, node: NodeRef, suffix: &str, sealed: bool) -> BTreeMap<At
         }
     }
     for variable in &service.variables {
-        cells.insert(
-            At::Variable(variable.key.clone()),
-            variable_cell(variable, sealed),
-        );
+        cells.insert(At::Variable(variable.key.clone()), variable_cell(variable));
     }
     cells
 }
 
-fn variable_cell(variable: &SavedVariableIntent, sealed: bool) -> Cell {
+fn variable_cell(variable: &SavedVariableIntent) -> Cell {
     match &variable.value {
         SavedVariableValue::Literal { .. } | SavedVariableValue::Template { .. } => {
             let mut value = json!(variable.value);
@@ -1435,9 +1478,8 @@ fn variable_cell(variable: &SavedVariableIntent, sealed: bool) -> Cell {
             }
             Cell::Value(value)
         }
-        SavedVariableValue::Secret { encrypted_value } => Cell::Secret {
+        SavedVariableValue::Secret { .. } => Cell::Secret {
             fingerprint: variable.value_fingerprint.clone(),
-            sealed: encrypted_value.clone().filter(|_| sealed),
         },
         SavedVariableValue::SecretWithoutValue => Cell::SecretWithoutValue,
     }

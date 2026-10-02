@@ -220,7 +220,7 @@ impl Checked<'_> {
         who: &Actor,
         into: &mut Environment,
         picks: &BTreeSet<RowId>,
-        values: &BTreeMap<RowId, Cell>,
+        values: &BTreeMap<RowId, SealedSecret>,
         sync: Option<&SyncId>,
     ) -> Result<Vec<NodeName>, RpcError> {
         let of = self.of;
@@ -293,7 +293,7 @@ pub(crate) fn whole(rows: &[PlannedRow], mut picks: BTreeSet<RowId>) -> BTreeSet
     picks
 }
 
-pub(crate) fn json_of(cell: &Cell) -> String {
+pub(crate) fn json_of(cell: &impl Serialize) -> String {
     serde_json::to_string(cell).expect("a cell is JSON")
 }
 
@@ -571,14 +571,13 @@ enum How {
 }
 
 /// Where an arrived row stands in its receiver.
-#[expect(clippy::large_enum_variant, reason = "decoded one row at a time")]
 enum Arrival {
-    /// Staged, not deployed: `prior` is the pair base's cell before it landed
-    /// (redacted) and `was` the receiver's own (sealed), to rewind a discard and to
-    /// undo `sync`, the Sync that landed it.
+    /// Staged, not deployed: `prior` is the pair base's cell before it landed and
+    /// `was` the receiver's own, to rewind a discard and to undo `sync`, the Sync
+    /// that landed it.
     Pending {
         prior: Cell,
-        was: Cell,
+        was: SealedCell,
         sync: Option<SyncId>,
     },
     /// A Follow the receiver changed too, or discarded.
@@ -663,16 +662,10 @@ fn arrived(
     };
     rows.iter()
         .map(|row| {
-            let stored = |index| -> Result<Cell, RpcError> {
-                let text = row
-                    .optional_text(index)?
-                    .ok_or_else(|| error::corrupt("Sync"))?;
-                serde_json::from_str(text).map_err(|_| error::corrupt("Sync"))
-            };
             let arrival = match row.text(4)? {
                 "pending" => Arrival::Pending {
-                    prior: stored(6)?,
-                    was: stored(7)?,
+                    prior: row.json(6, "Sync")?,
+                    was: row.json(7, "Sync")?,
                     sync: row.parse_optional(8, "Sync")?,
                 },
                 "hint" => Arrival::Hint,
