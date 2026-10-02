@@ -51,8 +51,8 @@ export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
   const staged = canPublish || totalChanges > 0;
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent padding="none" className="flex max-h-[85dvh] flex-col overflow-hidden sm:max-w-xl">
-        <DialogHeader className="shrink-0 px-6 pt-5">
+      <DialogContent className="flex max-h-[85dvh] flex-col sm:max-w-xl">
+        <DialogHeader>
           <DialogTitle className="pr-8">Environment changes</DialogTitle>
           <DialogDescription>
             {!staged ? "Nothing staged here"
@@ -65,9 +65,9 @@ export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
             </InputGroup>
           ) : null}
         </DialogHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-4">
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
           {staged ? <Groups {...props} /> : null}
-          {after ? <div className="mt-4 flex flex-col gap-3">{after}</div> : null}
+          {after ? <div className="flex flex-col gap-3">{after}</div> : null}
         </div>
         {staged ? <Footer {...props} /> : null}
       </DialogContent>
@@ -107,7 +107,7 @@ function Groups({ groups, totalChanges, onClose, onDiscardNode, onDiscardRow, no
     // Alone, this Environment's own edits need no heading.
     const title = origin?.title ?? (sections.length > 1 ? "Your changes" : undefined);
     return (
-      <section key={origin?.title ?? ""} aria-label={title ?? "Changes"} className="mt-4">
+      <section key={origin?.title ?? ""} aria-label={title ?? "Changes"}>
         {title ? <h3 className="font-medium">{title}</h3> : null}
         {origin ? <p className="text-muted-foreground">{origin.description}</p> : null}
         <ul>
@@ -198,13 +198,12 @@ function Value({ kind, before, after }: { kind: ChangeKind; before: string; afte
 /** Discard all, quiet on the left; Publish and Deploy on the right. */
 function Footer({ groups, canDeploy, canPublish, onPublish, onDiscardAll, onDeploy, admitting = false }: EnvironmentChangesReviewProps) {
   return (
-    // The stock footer bleeds into a padded dialog; this one has none.
-    <div className="shrink-0 px-4 pb-4"><DialogFooter>
+    <DialogFooter>
       {groups.some((group) => group.canDiscard) ? (
         <Button variant="ghost" className="text-muted-foreground sm:mr-auto" onClick={onDiscardAll}>Discard all</Button>
       ) : null}
       <Button variant={canDeploy ? "outline" : "default"} disabled={!canPublish} onClick={onPublish}>Publish</Button>
       {canDeploy ? <Button disabled={admitting} onClick={onDeploy}>Deploy changes</Button> : null}
-    </DialogFooter></div>
+    </DialogFooter>
   );
 }

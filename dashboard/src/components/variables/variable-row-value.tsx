@@ -56,7 +56,7 @@ export function VariableRowValue({
     // A secret's value is typed blind and stored as-is.
     return isSealed ? (
       <Input autoFocus type="password" autoComplete="off" aria-label="Secret value" value={editValue}
-        onChange={(event) => onChangeEditValue(event.target.value)} onKeyDown={onKeyDown} className="font-mono text-xs" />
+        onChange={(event) => onChangeEditValue(event.target.value)} onKeyDown={onKeyDown} />
     ) : (
       <VariableValueInput
         autoFocus

@@ -86,8 +86,8 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
   const neverSynced = view.ok ? view.value.never_synced : [];
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent padding="none" className="flex max-h-[85dvh] flex-col overflow-hidden sm:max-w-xl">
-        <DialogHeader className="shrink-0 px-6 pt-5">
+      <DialogContent className="flex max-h-[85dvh] flex-col sm:max-w-xl">
+        <DialogHeader>
           <DialogTitle className="pr-8">Sync to {into}</DialogTitle>
           <DialogDescription>
             {!view.ok ? view.refusal.message : rows.length === 0 ? `Nothing to sync: ${into} has every change from ${name}.`
@@ -95,9 +95,9 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
               : `These changes from ${name} become ${into}'s changes to deploy.`}
           </DialogDescription>
         </DialogHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-4">
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
           {syncSections(rows).map((section) => (
-            <section key={section.node} aria-label={nodeName(section.node)} className="mt-4">
+            <section key={section.node} aria-label={nodeName(section.node)}>
               <h3 className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                 {section.kind === "volume" ? <HardDriveIcon className="size-3.5" /> : <PackageIcon className="size-3.5" />}
                 {nodeName(section.node)}
@@ -112,22 +112,22 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
               </ul>
             </section>
           ))}
-          {stale ? <p role="status" className="mt-4 text-muted-foreground">These changed since you opened them. Here they are now.</p> : null}
+          {stale ? <p role="status" className="text-muted-foreground">These changed since you opened them. Here they are now.</p> : null}
         </div>
         {listing && neverSynced.length ? (
-          <ul id="never-synced" aria-label="Never synced" className="max-h-40 shrink-0 overflow-y-auto border-t px-6 py-1">
+          <ul id="never-synced" aria-label="Never synced" className="max-h-40 shrink-0 overflow-y-auto border-t">
             {neverSynced.map((row) => <NeverSyncedItem key={row.row} row={row} onSyncAgain={() => {
               for (const mark of row.marks) neverSync(mark.environment, mark.row, true);
             }} />)}
           </ul>
         ) : null}
         {closing && rows.length ? (
-          <label className="flex shrink-0 items-center gap-3 border-t px-6 py-3">
+          <label className="flex shrink-0 items-center gap-3 border-t pt-4">
             <Checkbox checked={closeAfter} onCheckedChange={setCloseAfter} />
             Close {name} after syncing
           </label>
         ) : null}
-        <div className="shrink-0 px-4 pb-4"><DialogFooter>
+        <DialogFooter>
           {neverSynced.length ? (
             <Button variant="ghost" className="text-muted-foreground sm:mr-auto" aria-expanded={listing} aria-controls="never-synced"
               onClick={() => setListing(!listing)}>
@@ -140,7 +140,7 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
               {pending ? <Spinner data-icon="inline-start" /> : null}Sync {plural(picked.length, "change")}
             </Button>
           </> : <Button variant="outline" onClick={onClose}>Done</Button>}
-        </DialogFooter></div>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
@@ -170,7 +170,7 @@ function SyncRowItem({ row, into, ticked, left, onFlip, onNeverSync, value, onVa
       ) : row.secret?.needs_value ? (
         <Input type="password" autoComplete="off" aria-label={`Set ${into}'s value of ${line.name}`}
           placeholder={row.secret.held ? "Value held" : `Set ${into}'s value`} value={value}
-          onChange={(event) => onValue(event.target.value)} className="h-7 w-48 font-mono text-xs" />
+          onChange={(event) => onValue(event.target.value)} className="w-48" />
       ) : (
         <span className="flex max-w-60 min-w-0 items-center justify-end gap-1.5 font-mono text-xs">
           {line.before ? <><span className="truncate text-muted-foreground">{line.before}</span><ArrowRightIcon className="size-3 shrink-0 text-muted-foreground" /></> : null}
