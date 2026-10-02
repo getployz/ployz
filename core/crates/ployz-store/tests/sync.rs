@@ -4,7 +4,8 @@
 )]
 //! Sync through the Store's interface only, on SQLite and on Postgres (see
 //! `backend`): a Branch's changes into its Parent, picked by row, offered again
-//! when left out or discarded, never deleting, and closing the Branch after.
+//! when left out or discarded, never deleting, never carrying a secret's value, and
+//! closing the Branch after.
 
 use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
 use ployz_store::{
@@ -182,8 +183,9 @@ fn discard(store: &ConfigStore, who: &Actor, path: &str) {
         .unwrap();
 }
 
-/// Deploy `environment` in full and record every Service applied.
-fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8) {
+/// Deploy `environment` in full and record every Service applied; what the runner
+/// was handed.
+fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8) -> Value {
     let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
     store
         .write_trusted(
@@ -239,6 +241,7 @@ fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8) {
             },
         )
         .unwrap();
+    claimed.input
 }
 
 #[test]
@@ -445,4 +448,125 @@ fn a_sync_closes_a_branch_that_isnt_kept_when_asked() {
         )
         .unwrap_err();
     assert_eq!(gone.code, RpcErrorCode::NotFound);
+}
+
+#[test]
+fn a_secret_syncs_without_its_value_and_the_receiver_deploys_only_with_its_own() {
+    let (store, who) = shop(false);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!({ "secret": "prod-token" }))],
+    );
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[
+            ("web.env.TOKEN", json!({ "secret": "test-token" })),
+            ("web.env.API_KEY", json!({ "secret": "test-key" })),
+        ],
+    );
+    service(&store, &who, "fix-web", 5, "api", "api:1");
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("api.env.KEY", json!({ "secret": "test-api-key" }))],
+    );
+
+    // production has TOKEN: it is never offered. The secrets it lacks are, flagged.
+    let review = view(&store, &who);
+    assert_eq!(labels(&review), ["api", "api.env.KEY", "web.env.API_KEY"]);
+    for label in ["api.env.KEY", "web.env.API_KEY"] {
+        let secret = row(&review, label);
+        assert_eq!(
+            (secret.secret, secret.new, secret.ticked),
+            (true, true, true)
+        );
+        assert_eq!(secret.from, json!({ "secret": true }));
+    }
+    assert!(!row(&review, "api").secret);
+    store.write(&who, &sync(None, None)).unwrap();
+    assert!(view(&store, &who).rows.is_empty());
+    assert_eq!(
+        values(&store, &who, "production", "web")["env"]["API_KEY"],
+        json!({ "secret": true })
+    );
+
+    // They landed without a value: Deploy refuses, naming each, until production has its own.
+    let admit = |n: u8| {
+        store.write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: DeploymentId::parse(format!("00000000-0000-4000-8000-0000000002{n:02}"))
+                    .unwrap(),
+                environment: at("production"),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+    };
+    let refused = admit(1).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        refused.message,
+        "production has secrets without a value: set api.env.KEY, web.env.API_KEY before deploying"
+    );
+    assert_eq!(
+        refused.details["next"],
+        json!("ployz set api.env.KEY --secret --project shop --env production")
+    );
+    set(
+        &store,
+        &who,
+        "production",
+        &[("api.env.KEY", json!({ "secret": "prod-api-key" }))],
+    );
+    assert_eq!(
+        admit(2).unwrap_err().details["secrets"],
+        json!(["web.env.API_KEY"])
+    );
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.API_KEY", json!({ "secret": "prod-key" }))],
+    );
+    let input = deploy(&store, &who, "production", 3);
+    let env = |id: &str| {
+        input["snapshots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|snapshot| snapshot["serviceId"] == id)
+            .unwrap()["resolvedEnv"]
+            .clone()
+    };
+    let web = env(&uuid(3));
+    assert_eq!(
+        (&web["TOKEN"], &web["API_KEY"]),
+        (&json!("prod-token"), &json!("prod-key"))
+    );
+    let api_id = store
+        .read(
+            &who,
+            &ployz_store::ServicesQuery {
+                environment: at("production"),
+            },
+        )
+        .unwrap()
+        .services
+        .into_iter()
+        .find(|listing| listing.service.name.as_str() == "api")
+        .unwrap()
+        .service
+        .id
+        .to_string();
+    assert_eq!(env(&api_id)["KEY"], json!("prod-api-key"));
 }

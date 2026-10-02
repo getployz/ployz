@@ -310,6 +310,69 @@ fn removals_and_equal_secrets_produce_no_rows() {
 }
 
 #[test]
+fn a_secret_never_changes_where_it_is_and_arrives_without_a_value() {
+    let base = parent();
+    let mut from = branch();
+    // `from` rotates TOKEN, which `into` has, and adds NEW_SECRET, which it lacks.
+    var(&mut from, API, "TOKEN")["value"] = secret("rotated-cipher");
+    var(&mut from, API, "TOKEN")["valueFingerprint"] = json!("fp-rotated");
+    svc(&mut from, API)["variables"]
+        .as_array_mut()
+        .unwrap()
+        .push(variable(
+            0xc000_0000,
+            1,
+            "NEW_SECRET",
+            secret("branch-cipher"),
+            "fp-new",
+        ));
+    let result = changes(Some(&base), &from, &parent(), &json!({}));
+    let rows = summary(&result);
+    assert!(!rows.iter().any(|r| r.contains("TOKEN")), "{rows:#?}");
+    let new_secret = format!("{API}:variables.NEW_SECRET");
+    assert_eq!(
+        row(&result, &new_secret)["from"],
+        json!({"fingerprint": "fp-new", "kind": "secret"})
+    );
+
+    // Picked without a value, it lands without one; TOKEN keeps `into`'s value.
+    let pick = json!({"picks": [{"key": new_secret, "choice": {"option": "new"}}]});
+    let landed = changes(Some(&base), &from, &parent(), &pick);
+    let mut next = landed["next"].clone();
+    assert!(!next.to_string().contains("branch-cipher"), "{next:#}");
+    assert_eq!(
+        var(&mut next, API, "TOKEN")["value"]["encryptedValue"]["ciphertext"],
+        "parent-cipher"
+    );
+    let arrived = var(&mut next, API, "NEW_SECRET").clone();
+    assert_eq!(arrived["value"], json!({"kind": "secret_without_value"}));
+    assert_eq!(arrived["valueFingerprint"], "");
+
+    // Now the receiver has it: rotating it in `from` again offers nothing.
+    var(&mut from, API, "NEW_SECRET")["valueFingerprint"] = json!("fp-new-2");
+    let again = summary(&changes(Some(&landed["base"]), &from, &next, &json!({})));
+    assert!(!again.iter().any(|r| r.contains("SECRET")), "{again:#?}");
+
+    // A secret without a value, sent on, arrives as a secret without a value.
+    let mut sender = next.clone();
+    sender["environmentSlug"] = json!("pr-7");
+    let mut receiver = parent();
+    let onward = changes(Some(&parent()), &sender, &receiver, &pick);
+    assert_eq!(row(&onward, &new_secret)["from"], json!({"kind": "secret"}));
+    let mut onward_next = onward["next"].clone();
+    assert_eq!(
+        var(&mut onward_next, API, "NEW_SECRET")["value"],
+        json!({"kind": "secret_without_value"})
+    );
+
+    // Only a secret without a value has no fingerprint.
+    var(&mut receiver, API, "TOKEN")["valueFingerprint"] = json!("");
+    assert!(parse_environment_intent(receiver).is_err());
+    var(&mut sender, API, "NEW_SECRET")["valueFingerprint"] = json!("fp");
+    assert!(parse_environment_intent(sender).is_err());
+}
+
+#[test]
 fn variable_choices_default_by_kind() {
     let base = parent();
     let mut from = branch();
@@ -574,7 +637,10 @@ fn a_sync_lands_its_picks_and_advances_the_base_by_exactly_them() {
         "server-cipher"
     );
     assert_eq!(sealed["valueFingerprint"], "fp-server");
-    assert!(value("UNSUPPLIED").is_none());
+    // A secret picked `new` without a value lands without one.
+    let unsupplied = value("UNSUPPLIED").unwrap();
+    assert_eq!(unsupplied["value"], json!({"kind": "secret_without_value"}));
+    assert_eq!(unsupplied["valueFingerprint"], "");
     // Nothing `into` had is lost.
     assert_eq!(
         value("TOKEN").unwrap()["value"]["encryptedValue"]["ciphertext"],
@@ -594,6 +660,7 @@ fn a_sync_lands_its_picks_and_advances_the_base_by_exactly_them() {
         "variables.PLAIN",
         "variables.NEW_PLAIN",
         "variables.NEW_SECRET",
+        "variables.UNSUPPLIED",
     ] {
         assert!(
             !again
@@ -602,13 +669,6 @@ fn a_sync_lands_its_picks_and_advances_the_base_by_exactly_them() {
             "{settled} in {again:#?}"
         );
     }
-    // A secret still waiting for its value is proposed again.
-    assert!(
-        again.contains(&format!(
-            "{API}:variables.UNSUPPLIED move conflict=false default=new"
-        )),
-        "{again:#?}"
-    );
     assert!(
         again.contains(&format!(
             "{API}:preDeployCommand move conflict=false default=-"
@@ -825,18 +885,18 @@ fn a_sync_introduces_a_new_branch_service_into_the_parent() {
         .iter()
         .map(|v| v["key"].as_str().unwrap())
         .collect();
-    assert_eq!(keys, ["MODE"], "the new secret waits for a value");
-    // Base records the node; MODE landed as `from` has it; the waiting secret is offered again.
-    let again = changes(Some(&result["base"]), &from, &result["next"], &json!({}));
-    let jobs_rows: Vec<_> = summary(&again)
-        .into_iter()
-        .filter(|r| r.contains(JOBS))
-        .collect();
+    assert_eq!(keys, ["MODE", "KEY"]);
     assert_eq!(
-        jobs_rows,
-        [format!(
-            "{JOBS}:variables.KEY move conflict=false default=new"
-        )]
+        var(&mut result["next"].clone(), JOBS, "KEY")["value"],
+        json!({"kind": "secret_without_value"}),
+        "the new secret lands without its value"
+    );
+    // Base records the node and both variables: nothing of jobs is offered again.
+    let again = changes(Some(&result["base"]), &from, &result["next"], &json!({}));
+    assert!(
+        !summary(&again).iter().any(|r| r.contains(JOBS)),
+        "{:#?}",
+        summary(&again)
     );
     // MODE landed by default, so base records it: the receiver's own later edit is not a
     // stale move or conflict.

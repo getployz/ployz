@@ -1,6 +1,6 @@
 //! Sync: one Environment's changes, chosen change by change, into another as the
-//! receiver's changes to deploy. It never deletes and never deploys. For now the
-//! pair is a Branch and its Parent, the Branch sending.
+//! receiver's changes to deploy. It never deletes, never deploys and never carries a
+//! secret's value. For now the pair is a Branch and its Parent, the Branch sending.
 
 use super::*;
 
@@ -78,6 +78,9 @@ pub struct SyncRow {
     pub changed: bool,
     /// It brings a node, or a variable, the receiver lacks.
     pub new: bool,
+    /// A secret the receiver lacks: it lands without a value, since a secret's value
+    /// never syncs, and the receiver's Deploy refuses until it has one.
+    pub secret: bool,
 }
 
 /// What a Sync staged.
@@ -155,6 +158,7 @@ pub(crate) fn sync_view(
                 .ok_or_else(|| error::corrupt("Sync row"))?;
             Ok(SyncRow {
                 new: path == "node" || (path.starts_with("variables.") && row.into.is_null()),
+                secret: secret(row),
                 changed: matches!(row.role, BranchRole::Move { conflict: true, .. }),
                 ticked: ticked(row),
                 key,
@@ -178,9 +182,14 @@ pub(super) fn ticked(row: &BranchRow) -> bool {
     matches!(row.role, BranchRole::Move { .. })
 }
 
+/// Whether `row` moves a secret: core offers one only to a receiver that lacks it.
+fn secret(row: &BranchRow) -> bool {
+    matches!(&row.role, BranchRole::Move { choice: Some(choice), .. } if choice.secret)
+}
+
 /// Core's picks: the rows `asked` names by key, else every row ticked by default;
-/// each variable lands with the sender's value. Nothing picked is refused with the
-/// `current` version to pick from.
+/// each variable lands with the sender's value, but a secret lands without one.
+/// Nothing picked is refused with the `current` version to pick from.
 fn picked(
     moving: &Moving,
     (rows, current): (&[BranchRow], &str),
@@ -209,17 +218,18 @@ fn picked(
             None => ticked(row),
         })
         .map(|(key, row)| {
-            let variable = matches!(
-                row.role,
+            let choice = match &row.role {
                 BranchRole::Move {
-                    choice: Some(_),
+                    choice: Some(offered),
                     ..
-                }
-            );
-            BranchPick {
-                key,
-                choice: variable.then_some(BranchPickChoice::From),
-            }
+                } => Some(if offered.secret {
+                    BranchPickChoice::New { value: None }
+                } else {
+                    BranchPickChoice::From
+                }),
+                BranchRole::Move { choice: None, .. } | BranchRole::Differ { .. } => None,
+            };
+            BranchPick { key, choice }
         })
         .collect();
     if picks.is_empty() {

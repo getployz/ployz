@@ -92,6 +92,16 @@ it("fails closed when the Servers can't be checked: nothing to accept, and the S
   expect(admittedIds).toEqual([]);
 });
 
+it("shows the Store's reason a Deploy waits, naming each secret without a value", async () => {
+  const test = setup();
+  const message = "production has secrets without a value: set api.env.KEY, web.env.API_KEY before deploying";
+  test.write.mockResolvedValueOnce({ ok: false, refusal: { code: "conflict", message, details: { secrets: ["api.env.KEY", "web.env.API_KEY"] } } });
+
+  act(() => { fireEvent.click(screen.getByText("Deploy now")); });
+  await waitFor(() => expect(toast.error).toHaveBeenCalledWith(message));
+  expect(admittedIds).toEqual([]);
+});
+
 it("admits one Deployment for a double click", async () => {
   const test = setup();
   let admit: (value: typeof admitted) => void = () => {};

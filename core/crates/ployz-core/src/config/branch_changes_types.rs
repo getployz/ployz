@@ -49,7 +49,7 @@ pub struct BranchPick {
 pub enum BranchPickChoice {
     From,
     Parent,
-    /// Without a value the variable stays out of `next`, so the browser can still review.
+    /// Without a value, a secret lands without one, and the receiver's Deploy waits for it.
     New {
         #[serde(default)]
         #[ts(optional)]

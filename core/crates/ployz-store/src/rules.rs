@@ -223,7 +223,9 @@ fn references(service: &SavedServiceIntent) -> impl Iterator<Item = (&str, &Valu
     service.variables.iter().flat_map(|variable| {
         let parts = match &variable.value {
             SavedVariableValue::Template { parts } => parts.as_slice(),
-            SavedVariableValue::Literal { .. } | SavedVariableValue::Secret { .. } => &[],
+            SavedVariableValue::Literal { .. }
+            | SavedVariableValue::Secret { .. }
+            | SavedVariableValue::SecretWithoutValue => &[],
         };
         parts.iter().filter_map(move |part| match part {
             ValuePart::Ref { owner, key } => Some((variable.key.as_str(), owner, key.as_str())),

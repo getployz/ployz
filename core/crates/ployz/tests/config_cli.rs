@@ -2309,6 +2309,49 @@ fn secrets_arrive_on_stdin_or_an_env_file_and_never_print() {
 }
 
 #[test]
+fn a_synced_secret_arrives_without_its_value_and_deploy_says_which_to_set() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["env", "branch", "fix-web", "--copy", "web"]);
+        let secret = ["set", "web.env.API_KEY", "--secret"];
+        let (code, set) = piped(
+            store,
+            &[&secret[..], &["--env", "fix-web"]].concat(),
+            "test-key\n",
+        );
+        assert_eq!(code, Some(0), "{set}");
+        let plan = ok(
+            store,
+            &["env", "sync", "--to", "--plan", "--env", "fix-web"],
+        );
+        let row = &plan["rows"][0];
+        assert_eq!(
+            (&row["label"], &row["from"], &row["secret"]),
+            (
+                &json!("web.env.API_KEY"),
+                &json!({ "secret": true }),
+                &json!(true)
+            )
+        );
+        ok(store, &["env", "sync", "--to", "--env", "fix-web"]);
+
+        let refused = error(store, &["deploy"]);
+        assert_eq!(refused["code"], json!("conflict"), "{refused}");
+        assert_eq!(refused["details"]["secrets"], json!(["web.env.API_KEY"]));
+        assert_eq!(
+            refused["details"]["next"],
+            json!("ployz set web.env.API_KEY --secret --project shop --env production")
+        );
+        let (code, set) = piped(store, &secret, "prod-key\n");
+        assert_eq!(code, Some(0), "{set}");
+        // With its own value, production's Deploy is admitted.
+        let (_, deployed) = ployz(Some(store), &["deploy"]);
+        assert_eq!(deployed["number"], json!(1), "{deployed}");
+    }
+}
+
+#[test]
 fn a_private_image_credential_arrives_on_stdin_and_rotates_at_once() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);

@@ -118,8 +118,9 @@ pub fn live_values(input: LiveValuesInput) -> LiveValues {
                         })
                         .collect(),
                 },
-                other
-                @ (SavedVariableValue::Literal { .. } | SavedVariableValue::Secret { .. }) => other,
+                other @ (SavedVariableValue::Literal { .. }
+                | SavedVariableValue::Secret { .. }
+                | SavedVariableValue::SecretWithoutValue) => other,
             };
             SavedVariableProducer {
                 owner_lineage_id: scope(producer.owner_lineage_id),

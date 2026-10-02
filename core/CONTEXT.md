@@ -338,7 +338,7 @@ Staging the Parent's changes since the Branch was made or last updated in the Br
 _Avoid_: Pull, rebase
 
 **Sync**:
-Putting one Environment's changes, chosen change by change, into another Environment of the same Project as the receiver's changes to deploy. It takes the sender's Working State, deployed or not, and never deletes or deploys anything. It compares over what the two last shared, so a change left out, or discarded by the receiver before it deploys, is offered again; a change the receiver also made since then is flagged and, if synced, overwritten. Sizing, custom domains, generated addresses, the Git branch and Volume data never sync. Today a Branch syncs into its Parent; Sync replaces Save and Update.
+Putting one Environment's changes, chosen change by change, into another Environment of the same Project as the receiver's changes to deploy. It takes the sender's Working State, deployed or not, and never deletes or deploys anything. It compares over what the two last shared, so a change left out, or discarded by the receiver before it deploys, is offered again; a change the receiver also made since then is flagged and, if synced, overwritten. Sizing, custom domains, generated addresses, the Git branch and Volume data never sync. A secret's value never syncs either: a secret the receiver has stays as it is, and one it lacks arrives without a value, which the receiver's Deploy refuses until it is set. Today a Branch syncs into its Parent; Sync replaces Save and Update.
 _Avoid_: Push, promote, merge (a GitHub merge only), Publish
 
 **Deploy Snapshot**:

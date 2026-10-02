@@ -62,7 +62,9 @@ enum Input {
 /// `{"secret": true}`.
 pub(crate) fn shown(variable: &SavedVariableIntent, names: &BTreeMap<String, String>) -> Value {
     match &variable.value {
-        SavedVariableValue::Secret { .. } => json!({ "secret": true }),
+        SavedVariableValue::Secret { .. } | SavedVariableValue::SecretWithoutValue => {
+            json!({ "secret": true })
+        }
         SavedVariableValue::Literal { value } => json!(render_variable_parts(
             &[ValuePart::Text {
                 value: value.clone()
@@ -278,7 +280,10 @@ pub(crate) fn validate_text(key: &VariableKey, text: &str) -> Result<(), RpcErro
 }
 
 fn secret(variable: &SavedVariableIntent) -> bool {
-    matches!(variable.value, SavedVariableValue::Secret { .. })
+    matches!(
+        variable.value,
+        SavedVariableValue::Secret { .. } | SavedVariableValue::SecretWithoutValue
+    )
 }
 
 /// Mark variable `key` exported or not. Returns whether Working State changed.
@@ -421,6 +426,10 @@ pub(crate) fn resolve(
             // Without the key a secret still marks what references it.
             SavedVariableValue::Secret { encrypted_value } => ResolverValue::Secret {
                 value: open(encrypted_value.as_ref())?.unwrap_or_default(),
+            },
+            // Deploy refuses it, so a claim never meets one.
+            SavedVariableValue::SecretWithoutValue => ResolverValue::Secret {
+                value: open(None)?.unwrap_or_default(),
             },
         };
         producers.push(VariableProducer {
