@@ -198,12 +198,13 @@ function Value({ kind, before, after }: { kind: ChangeKind; before: string; afte
 /** Discard all, quiet on the left; Publish and Deploy on the right. */
 function Footer({ groups, canDeploy, canPublish, onPublish, onDiscardAll, onDeploy, admitting = false }: EnvironmentChangesReviewProps) {
   return (
-    <DialogFooter className="m-0 shrink-0 px-6 py-3 sm:items-center">
+    // The stock footer bleeds into a padded dialog; this one has none.
+    <div className="shrink-0 px-4 pb-4"><DialogFooter>
       {groups.some((group) => group.canDiscard) ? (
         <Button variant="ghost" className="text-muted-foreground sm:mr-auto" onClick={onDiscardAll}>Discard all</Button>
       ) : null}
       <Button variant={canDeploy ? "outline" : "default"} disabled={!canPublish} onClick={onPublish}>Publish</Button>
       {canDeploy ? <Button disabled={admitting} onClick={onDeploy}>Deploy changes</Button> : null}
-    </DialogFooter>
+    </DialogFooter></div>
   );
 }

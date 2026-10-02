@@ -25,16 +25,20 @@ export function rowText(value: JsonValue): string {
   return String(value);
 }
 
+/** A setting (`NODE.path`) by name within its node: a variable's key (`variable`, in monospace) or a Setting's title. */
+export function settingName(path: string) {
+  const field = path.slice(rowNode(path).length + 1);
+  const name = field.startsWith("env.") ? field.slice("env.".length)
+    : field.startsWith("mounts.") ? `Mount of ${field.slice("mounts.".length)}`
+    : field === "name" ? "Name" : settingTitle(field) ?? field;
+  return { name, variable: field.startsWith("env.") };
+}
+
 /** A row (`NODE[.path]`) in words: which setting of which node, the receiver's value (`before`) and the one that lands. */
 export function presentRow(row: { row: string; from: JsonValue; into: JsonValue }): PresentedRow {
   const node = rowNode(row.row);
-  const path = row.row.slice(node.length + 1);
-  const label = isNodeRow(row.row) ? "New"
-    : path.startsWith("env.") ? path.slice("env.".length)
-    : path.startsWith("mounts.") ? `Mount of ${path.slice("mounts.".length)}`
-    : path === "name" ? "Name" : settingTitle(path) ?? path;
   return {
-    key: row.row, lineageId: node, node: nodeName(node), label,
+    key: row.row, lineageId: node, node: nodeName(node), label: isNodeRow(row.row) ? "New" : settingName(row.row).name,
     before: isNodeRow(row.row) ? "" : rowText(row.into),
     after: isNodeRow(row.row) ? "" : rowText(row.from),
   };

@@ -1,9 +1,9 @@
 import { QueryClient } from "@tanstack/react-query";
-import type { DeploymentView, DiffView, DomainsView, EnvironmentView, ServiceId, ServicesView, SyncView } from "@ployz/sdk";
+import type { DeploymentView, DiffView, DomainsView, EnvironmentView, ServiceId, ServicesView } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import { expect, it } from "vitest";
 import { applyOptimistic } from "./store-optimistic";
-import { diffQuery, environmentSettingsQuery, servicesQuery, storeViewOptions, syncQuery } from "./store-view.queries";
+import { diffQuery, environmentSettingsQuery, servicesQuery, storeViewOptions } from "./store-view.queries";
 
 const ref = { project: "shop", environment: "production" };
 // SAFETY: test ids stand in for the Store's UUIDs.
@@ -125,31 +125,4 @@ it("shows a variable marked Never sync at once, and synced again", async () => {
   expect(marks()).toEqual(["web.env.A", "web.env.B"]);
   await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: ref, paths: ["web.env.A"], off: true });
   expect(marks()).toEqual(["web.env.B"]);
-});
-
-it("moves a change marked Never sync into the Sync dialog's never-synced list at once", async () => {
-  const { queryClient } = cached();
-  const query = syncQuery({ project: "shop", environment: "fix-web" });
-  const key = storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, query).queryKey;
-  const side = (name: string) => ({ id: name, project: "shop", name, revision: 1 });
-  const change = (variable: string) => ({ key: `w:variables.${variable}`, node: "web", label: `web.env.${variable}`, from: "a", into: "b",
-    ticked: true, changed: false, new: false, secret: false, value_set: false });
-  queryClient.setQueryData<unknown>(key, { ok: true, value: {
-    from: side("fix-web"), into: side("production"), at_merge: null, version: "1:1", rows: [change("A"), change("B")],
-    never_synced: [{ key: "w:variables.C", node: "web", label: "web.env.C", marked_in: ["fix-web", "production"] }],
-  } satisfies SyncView });
-  const read = () => queryClient.getQueryData<{ value: SyncView }>(key)?.value;
-  const fixWeb = { project: "shop", environment: "fix-web" };
-
-  await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: fixWeb, paths: ["web.env.A"] });
-  expect(read()?.rows.map(({ label }) => label)).toEqual(["web.env.B"]);
-  expect(read()?.never_synced.map(({ label, marked_in }) => [label, marked_in])).toEqual([
-    ["web.env.C", ["fix-web", "production"]], ["web.env.A", ["fix-web"]],
-  ]);
-  // Synced again where it's marked: gone from the list once no side marks it; the row comes back with the refetch.
-  await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: fixWeb, paths: ["web.env.A", "web.env.C"], off: true });
-  expect(read()?.never_synced.map(({ label, marked_in }) => [label, marked_in])).toEqual([["web.env.C", ["production"]]]);
-  // An Environment on neither side changes nothing.
-  await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: { project: "shop", environment: "staging" }, paths: ["web.env.B"] });
-  expect(read()?.rows.map(({ label }) => label)).toEqual(["web.env.B"]);
 });

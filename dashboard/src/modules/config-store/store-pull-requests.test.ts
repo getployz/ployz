@@ -16,10 +16,11 @@ describe("planSummary", () => {
 });
 
 describe("hintNotes", () => {
-  const hint = (row: string): PullRequestHint => ({ conditional_sync: "s", pull_request: 5, row, value: "x", landed: "hint" });
+  const hint = (path: string): PullRequestHint =>
+    ({ conditional_sync: "s", pull_request: 5, row: path, path, whole: false, value: "x", landed: "hint" });
   it("puts a hint beside its change, the rest after", () => {
     const notes = hintNotes([hint("web.startCommand"), hint("web.env.KEY")], new Set(["web.startCommand"]));
-    expect(notes.at("web.startCommand").map((note) => note.row)).toEqual(["web.startCommand"]);
-    expect(notes.rest.map((note) => note.row)).toEqual(["web.env.KEY"]);
+    expect(notes.at("web.startCommand").map((note) => note.path)).toEqual(["web.startCommand"]);
+    expect(notes.rest.map((note) => note.path)).toEqual(["web.env.KEY"]);
   });
 });

@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { prefetchStoreEnvironment, requireStoreEnvironment } from "#/collections/route-data";
-import { branchQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, servicesQuery, syncQuery, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { branchQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, servicesQuery, volumesQuery } from "#/modules/config-store/store-view.queries";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug",
@@ -11,8 +11,8 @@ export const Route = createFileRoute(
     const environment = await requireStoreEnvironment(context, params);
     await prefetchStoreEnvironment(context, params.organizationSlug, store,
       environmentSettingsQuery(store), servicesQuery(store), diffQuery(store), volumesQuery(store), namespaceQuery(store), domainsQuery(store),
-      // A Branch's Live Nodes and Sync button, and its Sync dialog into its Parent; refused elsewhere.
-      branchQuery(store), syncQuery(store));
+      // A Branch's Live Nodes and Sync button; refused elsewhere.
+      branchQuery(store));
     return { environmentId: environment.id, store };
   },
 });

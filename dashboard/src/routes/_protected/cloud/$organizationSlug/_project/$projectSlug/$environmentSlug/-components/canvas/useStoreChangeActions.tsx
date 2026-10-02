@@ -60,10 +60,12 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     writer.commit({ command: "discard", environment, path, version });
   }
 
-  /** Marks `path` Never sync here and discards it: what arrived goes, and nothing follows into it again. */
+  /** Discards `path` and marks it Never sync here, in one Batch: what arrived goes, and nothing follows into it again. */
   function neverSync(path: string) {
-    writer.commit({ command: "never_sync", environment, paths: [path] });
-    discard(path);
+    writer.commit({ command: "batch", environment, commands: [
+      { command: "discard", environment, path, version },
+      { command: "never_sync", environment, paths: [path] },
+    ] });
   }
 
   return {

@@ -138,9 +138,10 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
       };
       // Only the edits made before it: an edit queued behind it in its own Environment must not be waited for.
       // ponytail: waits for edits in every Environment, not just the ones it touches; edits settle in a round trip.
-      const preceding = SPANS.has(command.command) ? [...unsettled] : [];
+      const spans = SPANS.has(command.command) || (command.command === "batch" && command.commands.some((inner) => SPANS.has(inner.command)));
+      const preceding = spans ? [...unsettled] : [];
       const work = async () => { await Promise.all(preceding); return save(); };
-      const refreshed = environment === null || SPANS.has(command.command) ? null : key;
+      const refreshed = environment === null || spans ? null : key;
       const promise = queued(key, ["store-command", organizationSlug, key], [], work,
         () => refetchAfterWrite(queryClient, organizationSlug, refreshed, carried.views), expects, handles);
       if (edits) trackEdit(promise);

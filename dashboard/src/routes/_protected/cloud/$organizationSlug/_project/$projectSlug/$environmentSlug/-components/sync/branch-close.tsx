@@ -8,11 +8,10 @@ import type { StoreResult } from "#/modules/config-store/store.contract";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { useVolumeLossCheck, type VolumeAcceptance as Acceptance } from "#/modules/config-store/use-volume-loss-check";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-
-type Params = { organizationSlug: string; projectSlug: string; environmentSlug: string };
+import type { EnvironmentRouteParams } from "../environment-route-paths";
 
 /** Once the Branch is gone (the Store deletes a closed one), the page opens the Parent it had. */
-export function useLeaveWhenClosed(params: Params, branch: StoreResult<BranchView>) {
+export function useLeaveWhenClosed(params: EnvironmentRouteParams, branch: StoreResult<BranchView>) {
   const navigate = useNavigate();
   const parent = useRef<string | null>(null);
   const gone = !branch.ok && branch.refusal.code === "not_found";
@@ -31,19 +30,14 @@ export function useLeaveWhenClosed(params: Params, branch: StoreResult<BranchVie
  * data and that closes it; never deployed, or already off, that applies at once. The Store deletes it then, and the
  * page opens its Parent once it's gone.
  */
-export function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: BranchView) {
+export function useStoreBranchClose(params: EnvironmentRouteParams, store: EnvironmentRef, branch: BranchView) {
   const writer = useStoreWriter(params.organizationSlug);
-  const navigate = useNavigate();
   const lossOf = useVolumeLossCheck(params.organizationSlug);
   const place = `${store.project ?? ""}/${store.environment ?? ""}`;
   const [loss, setLoss] = useState<DeletionCheck<Acceptance> | null>(null);
   // Shutting down takes it off the Servers and keeps it; closing then removes it.
   const [shutting, setShutting] = useState(false);
   const name = branch.environment.name;
-
-  const leave = () => navigate(getDashboardDestination({
-    kind: "environment", organizationSlug: params.organizationSlug, projectSlug: params.projectSlug, environmentSlug: branch.parent,
-  }, "architecture"));
 
   async function takeOff({ accept, version }: { accept: readonly string[]; version: string | null }, shut = shutting): Promise<DeletionCheck<Acceptance> | null> {
     try {
@@ -59,20 +53,14 @@ export function useStoreBranchClose(params: Params, store: EnvironmentRef, branc
     }
   }
 
-  async function shutDown() {
-    setShutting(true);
-    setLoss(await takeOff({ accept: [], version: null }, true));
-  }
-
-  async function close() {
-    setShutting(false);
-    setLoss(await takeOff({ accept: [], version: null }, false));
+  /** Shuts it down (`shut`), or closes it. */
+  async function start(shut: boolean) {
+    setShutting(shut);
+    setLoss(await takeOff({ accept: [], version: null }, shut));
   }
 
   return {
-    close,
-    shutDown,
-    leave: async () => { await leave(); },
+    start,
     dialog: (
       <DeletionDialog
         open={loss !== null}

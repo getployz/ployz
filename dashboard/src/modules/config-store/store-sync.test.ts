@@ -1,23 +1,27 @@
 import type { DeploymentSummary, SyncRow } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { closesIn, goesLive, syncButtonState, syncLine, syncPicks, syncRowPath, syncSections, undoPaths } from "./store-sync";
+import { closesIn, goesLive, syncButtonState, syncLine, syncPicks, syncSections, undoPaths } from "./store-sync";
 
-const row = (key: string, node: string, label: string, extra: Partial<SyncRow> = {}): SyncRow =>
-  ({ key, node, label, from: null, into: null, ticked: true, changed: false, new: false, secret: false, value_set: false, ...extra });
+// A row named by its receiver path; one naming only its node brings the node whole.
+const row = (key: string, node: string, path: string, extra: Partial<SyncRow> = {}): SyncRow => ({
+  key, node, label: path, path, whole: path === node, from: null, into: null, ticked: true, changed: false, new: false,
+  secret: false, value_set: false, ...extra,
+});
 
 const image = row("a:source.image", "api", "api.image", { from: "shop/api:1.9", into: "shop/api:1.8" });
 const logLevel = row("a:variables.LOG_LEVEL", "api", "api.env.LOG_LEVEL", { from: "debug", into: "warn", changed: true });
 const appEnv = row("a:variables.APP_ENV", "api", "api.env.APP_ENV", { from: "staging", into: "production", ticked: false });
-const webhook = row("a:variables.STRIPE_WEBHOOK_SECRET", "api", "api.env.STRIPE_WEBHOOK_SECRET", { from: { secret: true }, new: true, secret: true });
+const webhook = row("a:variables.STRIPE_WEBHOOK_SECRET", "api", "api.env.STRIPE_WEBHOOK_SECRET",
+  { from: { secret: true }, new: true, secret: true, changed: true });
 const cache = row("c:node", "cache", "cache", { new: true });
 const cacheMode = row("c:variables.MODE", "cache", "cache.env.MODE", { from: "lru", new: true });
-const dataName = row("d:name", "volumes.data", "data.name", { from: "pg", into: "data" });
+const dataName = row("d:name", "volumes.data", "volumes.data.name", { from: "pg", into: "data" });
 
 describe("the Sync dialog over the Store", () => {
-  it("words each change by name, with at most one badge, and hides a secret's value", () => {
+  it("words each change by name, with at most one badge, Secret first, and hides a secret's value", () => {
     const lines = [image, logLevel, webhook, cache, cacheMode, dataName].map((one) => syncLine(one, "production"));
-    expect(lines.map(({ name, variable, badge, before, after }) => ({ name, variable, badge, before, after }))).toEqual([
+    expect(lines).toEqual([
       { name: "Container image", variable: false, badge: null, before: "shop/api:1.8", after: "shop/api:1.9" },
       { name: "LOG_LEVEL", variable: true, badge: "Changed in production", before: "warn", after: "debug" },
       { name: "STRIPE_WEBHOOK_SECRET", variable: true, badge: "Secret", before: "", after: "" },
@@ -27,11 +31,6 @@ describe("the Sync dialog over the Store", () => {
     ]);
   });
 
-  it("names each change as Never sync and Discard address it", () => {
-    expect([logLevel, cache, dataName, row("v:node", "volumes.data", "data")].map(syncRowPath))
-      .toEqual(["api.env.LOG_LEVEL", "cache", "volumes.data.name", "volumes.data"]);
-  });
-
   it("groups the rows by node in the Store's order", () => {
     expect(syncSections([image, cache, logLevel, cacheMode]).map(({ node, rows }) => [node, rows.map(({ key }) => key)])).toEqual([
       ["api", ["a:source.image", "a:variables.LOG_LEVEL"]],
@@ -39,17 +38,18 @@ describe("the Sync dialog over the Store", () => {
     ]);
   });
 
-  it("picks the defaults, then what the user flipped; a new node's settings go with it", () => {
+  it("picks the defaults, then what the user flipped; a new node left out leaves its settings out", () => {
     const rows = [image, appEnv, cache, cacheMode];
     expect(syncPicks(rows, new Set()).map(({ key }) => key)).toEqual(["a:source.image", "c:node", "c:variables.MODE"]);
     expect(syncPicks(rows, new Set(["a:source.image", "a:variables.APP_ENV", "c:node"])).map(({ key }) => key))
       .toEqual(["a:variables.APP_ENV"]);
-    // A new node's setting can't be left out on its own.
-    expect(syncPicks(rows, new Set(["c:variables.MODE"])).map(({ key }) => key)).toEqual(["a:source.image", "c:node", "c:variables.MODE"]);
+    // A new node's setting can be left out on its own.
+    expect(syncPicks(rows, new Set(["c:variables.MODE"])).map(({ key }) => key)).toEqual(["a:source.image", "c:node"]);
   });
 
-  it("undoes a Sync by discarding each synced setting, and a new node whole", () => {
-    expect(undoPaths([image, logLevel, cache, cacheMode])).toEqual(["api.image", "api.env.LOG_LEVEL", "cache"]);
+  it("undoes a Sync by discarding each synced setting by its receiver path, and a new node whole", () => {
+    expect(undoPaths([image, logLevel, cache, cacheMode, dataName]))
+      .toEqual(["api.image", "api.env.LOG_LEVEL", "cache", "volumes.data.name"]);
   });
 });
 
@@ -66,7 +66,7 @@ describe("the Sync button", () => {
       syncButtonState(branch, removal("running", true)),
       syncButtonState(branch, null),
       syncButtonState({ ...branch, to_parent: 0 }, null),
-    ]).toEqual([
+    ].map(({ label, count }) => ({ label, count }))).toEqual([
       { label: "Shutting down", count: null },
       { label: "Shutdown failed", count: null },
       { label: "Off", count: null },
@@ -74,6 +74,8 @@ describe("the Sync button", () => {
       { label: "Sync to production", count: 4 },
       { label: "In sync with production", count: null },
     ]);
+    // Where its Sync goes, and what that carries, whatever it says.
+    expect(syncButtonState(pr, removal("applied", false))).toMatchObject({ into: "production", changes: 4 });
   });
 
   it("reads a PR Environment's Destination: Goes live once its Conditional Sync stands, after Off", () => {
@@ -86,9 +88,9 @@ describe("the Sync button", () => {
       syncButtonState(pr, off, { ...merge, standing: true }),
       goesLive(1, "production", 142),
     ]).toEqual([
-      { label: "Sync to production", count: 3 },
-      { label: "Goes live with #142", count: null },
-      { label: "Off", count: null },
+      { label: "Sync to production", into: "production", changes: 3, count: 3 },
+      { label: "Goes live with #142", into: "production", changes: 3, count: null },
+      { label: "Off", into: "production", changes: 3, count: null },
       "1 change goes live in production when #142 merges",
     ]);
   });

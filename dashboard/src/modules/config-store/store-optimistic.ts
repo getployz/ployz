@@ -1,11 +1,10 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type {
   BranchView, BuildOrderView, ConfigCommand, ConfigQuery, DeploymentView, DiffView, DomainsView, EnvironmentRef, EnvironmentsView,
-  EnvironmentSummary, EnvironmentView, NodeChange, PrPlansView, ProjectsView, ServiceListing, ServicesView, SyncView, VolumeListing,
+  EnvironmentView, NodeChange, PrPlansView, ProjectsView, ServiceListing, ServicesView, VolumeListing,
   VolumesView,
 } from "@ployz/sdk";
 import type { StoreResult } from "./store.contract";
-import { syncRowPath } from "./store-sync";
 import { environmentKey, queryOf, storeViewPrefix } from "./store-view.queries";
 
 /**
@@ -134,25 +133,6 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
           else marked.add(path);
         }
         return { ...view, never_synced: [...marked].sort() };
-      });
-      // The Sync dialog lists a marked change as never synced at once; one marked to sync again comes back with the refetch.
-      await views<SyncView>("sync", null, (view) => {
-        const name = command.environment.environment ?? "";
-        const named = (side: EnvironmentSummary) => environmentKey({ project: side.project, environment: side.name }) === environmentKey(command.environment);
-        if (!named(view.from) && !named(view.into)) return view;
-        const paths = new Set<string>(command.paths);
-        if (command.off) {
-          return { ...view, never_synced: view.never_synced.flatMap((row) => {
-            if (!paths.has(syncRowPath(row))) return [row];
-            const marked_in = row.marked_in.filter((other) => other !== name);
-            return marked_in.length ? [{ ...row, marked_in }] : [];
-          }) };
-        }
-        const marking = view.rows.filter((row) => paths.has(syncRowPath(row)));
-        return {
-          ...view, rows: view.rows.filter((row) => !marking.includes(row)),
-          never_synced: [...view.never_synced, ...marking.map(({ key, node, label }) => ({ key, node, label, marked_in: [name] }))],
-        };
       });
       return;
     case "keep_branch":

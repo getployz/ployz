@@ -82,17 +82,16 @@ it("discards a Setting by its Store path, through the Environment's queue", asyn
   expect(test.admits()).toEqual([{ command: "discard", environment: ref, path: "web.replicas", version: "2:1:0" }]);
 });
 
-it("marks an arrived change Never sync here, then discards it, so it goes and nothing follows into it again", async () => {
+it("discards an arrived change and marks it Never sync here in one Batch, so it goes and nothing follows into it again", async () => {
   const test = setup();
-  test.write.mockResolvedValueOnce({ ok: true, value: { written: "never_synced" } } as never)
-    .mockResolvedValueOnce({ ok: true, value: { written: "discarded" } } as never);
+  test.write.mockResolvedValueOnce({ ok: true, value: { written: "batch", results: [] } } as never);
 
   act(() => { fireEvent.click(screen.getByText("Never sync CACHE_TTL")); });
-  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(2));
-  expect(test.admits()).toEqual([
-    { command: "never_sync", environment: ref, paths: ["api.env.CACHE_TTL"] },
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
+  expect(test.admits()).toEqual([{ command: "batch", environment: ref, commands: [
     { command: "discard", environment: ref, path: "api.env.CACHE_TTL", version: "2:1:0" },
-  ]);
+    { command: "never_sync", environment: ref, paths: ["api.env.CACHE_TTL"] },
+  ] }]);
 });
 
 it("fails closed when the Servers can't be checked: nothing to accept, and the Store's reason shows", async () => {

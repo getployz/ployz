@@ -13,13 +13,14 @@ import { ownLineages } from "#/modules/config-store/branch-picks";
 import { branchPlanQuery, environmentSettingsQuery, environmentsQuery, useBranchPlan, useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
-import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_PR_PLAN_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import {
+  ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_PR_PLAN_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams as Params,
+} from "../environment-route-paths";
 import { PickingViewProvider, usePickingView, type PickingView } from "../new-branch/branch-picking";
 import { ServicesSection } from "../new-branch/ServicesSection";
 import { useSavedSetupCommands } from "../new-branch/SetupCommandsField";
 import { SetupSection } from "../new-branch/SetupSection";
 
-type Params = { organizationSlug: string; projectSlug: string; environmentSlug: string };
 type PlanChange = Partial<Pick<PrPlan, "enabled" | "start_from" | "copy" | "setup" | "remove_on_close" | "include_bots">>;
 
 /**

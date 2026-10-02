@@ -9,8 +9,8 @@ import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
 import { plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
-import { nodeName } from "#/modules/config-store/store-branches";
-import { isWholeNode, syncLine, syncName, syncPicks, syncRowPath, syncSections } from "#/modules/config-store/store-sync";
+import { nodeName, settingName } from "#/modules/config-store/store-branches";
+import { syncLine, syncPicks, syncSections } from "#/modules/config-store/store-sync";
 import { syncQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
@@ -22,8 +22,8 @@ import { StoreRefused } from "#/modules/config-store/store.contract";
  * live there when the pull request merges. A secret `into` lacks arrives by name only: its row takes `into`'s own
  * value, set now or held for the merge. Monochrome: pink stays for staged intent and Deploy.
  */
-export function SyncDialog({ organizationSlug, from, into, parent, closable, onClose, onSynced }: {
-  organizationSlug: string; from: EnvironmentRef; into: string; parent: string;
+export function SyncDialog({ organizationSlug, from, into, closable, onClose, onSynced }: {
+  organizationSlug: string; from: EnvironmentRef; into: string;
   /** Offer to close `from` once synced: a Branch that isn't kept, into its Parent. */
   closable: boolean;
   onClose: () => void;
@@ -31,11 +31,11 @@ export function SyncDialog({ organizationSlug, from, into, parent, closable, onC
   onSynced: (rows: readonly SyncRow[], atMerge: number | null) => void;
 }) {
   const writer = useStoreWriter(organizationSlug);
-  // Into its Parent, the view the page prefetched.
-  const view = useStoreView(organizationSlug, syncQuery(from, into === parent ? null : into));
+  // Always the explicit `into`: what the Store would infer isn't always the receiver shown.
+  const view = useStoreView(organizationSlug, syncQuery(from, into));
   // Rows the user flipped from their default, by key: they survive a refetch.
   const [flipped, setFlipped] = useState<ReadonlySet<string>>(new Set());
-  // `into`'s values typed for secret rows, by key: sent after the Sync, never shown back.
+  // `into`'s values typed for secret rows, by key: sent with the Sync, never shown back.
   const [values, setValues] = useState<Readonly<Record<string, string>>>({});
   const [closeAfter, setCloseAfter] = useState(true);
   const [pending, setPending] = useState(false);
@@ -48,7 +48,8 @@ export function SyncDialog({ organizationSlug, from, into, parent, closable, onC
   // A PR Environment closes with its pull request.
   const closing = closable && atMerge === null;
   const picked = syncPicks(rows, flipped);
-  const wholes = new Map(rows.filter(isWholeNode).map((row) => [row.node, picked.includes(row)]));
+  // A new node left out leaves its settings out.
+  const left = new Set(rows.filter((row) => row.whole && !picked.includes(row)).map((row) => row.node));
   const flip = (key: string) => setFlipped((current) => {
     const next = new Set(current);
     if (!next.delete(key)) next.add(key);
@@ -61,31 +62,31 @@ export function SyncDialog({ organizationSlug, from, into, parent, closable, onC
     if (!view.ok) return;
     setPending(true);
     setStale(false);
+    const receiver = { project: from.project, environment: into };
+    const sync = {
+      command: "sync" as const, from, into: receiver, picks: picked.map((row) => row.key),
+      version: view.value.version, close_after: closing && closeAfter,
+    };
+    // A value lands with the Sync, in one transaction: set now, or held for the merge.
+    const typed = picked.flatMap((row) => {
+      const value = row.secret ? values[row.key] : undefined;
+      return value ? [{ path: row.path, value }] : [];
+    });
+    const setting = atMerge !== null
+      ? typed.map(({ path, value }) => ({ command: "hold_secret" as const, environment: receiver, pull_request: atMerge, path, value }))
+      : typed.length ? [{
+        command: "edit" as const, environment: receiver, expect: null,
+        changes: typed.map(({ path, value }) => ({ op: "set" as const, path, value: { secret: value } })),
+      }] : [];
     try {
       // Awaited: the page opens the receiver once it holds the changes, and a stale review stays open, refetched.
-      await writer.commit({
-        command: "sync", from, into: { project: from.project, environment: into }, picks: picked.map((row) => row.key),
-        version: view.value.version, close_after: closing && closeAfter,
-      }, ["conflict"]).isPersisted.promise;
+      await writer.commit(setting.length ? { command: "batch", environment: receiver, commands: [sync, ...setting] } : sync,
+        ["conflict"]).isPersisted.promise;
     } catch (error) {
       // Any other refusal is the writer's toast.
       setStale(error instanceof StoreRefused && error.code === "conflict");
       setPending(false);
       return;
-    }
-    // Once synced: a value now sets the secret, one at the merge is held for it.
-    const receiver = { project: from.project, environment: into };
-    const typed = picked.flatMap((row) => {
-      const value = row.secret ? values[row.key] : undefined;
-      return value ? [{ path: syncRowPath(row), value }] : [];
-    });
-    if (atMerge !== null) {
-      for (const { path, value } of typed) writer.commit({ command: "hold_secret", environment: receiver, pull_request: atMerge, path, value });
-    } else if (typed.length) {
-      writer.commit({
-        command: "edit", environment: receiver, expect: null,
-        changes: typed.map(({ path, value }) => ({ op: "set", path, value: { secret: value } })),
-      });
     }
     onSynced(picked, atMerge);
   }
@@ -110,14 +111,11 @@ export function SyncDialog({ organizationSlug, from, into, parent, closable, onC
                 {nodeName(section.node)}
               </h3>
               <ul>
-                {section.rows.map((row) => {
-                  const follows = isWholeNode(row) ? undefined : wholes.get(row.node);
-                  return (
-                    <SyncRowItem key={row.key} row={row} into={into} ticked={follows ?? picked.includes(row)} follows={follows !== undefined}
-                      onFlip={() => flip(row.key)} onNeverSync={() => neverSync(name, syncRowPath(row), false)}
-                      value={values[row.key] ?? ""} onValue={(value) => setValues((current) => ({ ...current, [row.key]: value }))} />
-                  );
-                })}
+                {section.rows.map((row) => (
+                  <SyncRowItem key={row.key} row={row} into={into} ticked={picked.includes(row)} left={!row.whole && left.has(row.node)}
+                    onFlip={() => flip(row.key)} onNeverSync={() => neverSync(name, row.path, false)}
+                    value={values[row.key] ?? ""} onValue={(value) => setValues((current) => ({ ...current, [row.key]: value }))} />
+                ))}
               </ul>
             </section>
           ))}
@@ -126,7 +124,7 @@ export function SyncDialog({ organizationSlug, from, into, parent, closable, onC
         {listing && neverSynced.length ? (
           <ul id="never-synced" aria-label="Never synced" className="max-h-40 shrink-0 overflow-y-auto border-t px-6 py-1">
             {neverSynced.map((row) => <NeverSyncedItem key={row.key} row={row} onSyncAgain={() => {
-              for (const environment of row.marked_in) neverSync(environment, syncRowPath(row), true);
+              for (const environment of row.marked_in) neverSync(environment, row.path, true);
             }} />)}
           </ul>
         ) : null}
@@ -136,7 +134,7 @@ export function SyncDialog({ organizationSlug, from, into, parent, closable, onC
             Close {name} after syncing
           </label>
         ) : null}
-        <DialogFooter className="m-0 shrink-0 px-6 py-3 sm:items-center">
+        <div className="shrink-0 px-4 pb-4"><DialogFooter>
           {neverSynced.length ? (
             <Button variant="ghost" className="text-muted-foreground sm:mr-auto" aria-expanded={listing} aria-controls="never-synced"
               onClick={() => setListing(!listing)}>
@@ -149,7 +147,7 @@ export function SyncDialog({ organizationSlug, from, into, parent, closable, onC
               {pending ? <Spinner data-icon="inline-start" /> : null}Sync {plural(picked.length, "change")}
             </Button>
           </> : <Button variant="outline" onClick={onClose}>Done</Button>}
-        </DialogFooter>
+        </DialogFooter></div>
       </DialogContent>
     </Dialog>
   );
@@ -157,23 +155,23 @@ export function SyncDialog({ organizationSlug, from, into, parent, closable, onC
 
 /**
  * One change: tick, name (a variable's key in monospace), at most one badge, and old → new on the right; a secret takes
- * `into`'s value there instead. Unticked, it dims and offers Never sync instead. A setting of a new node follows the
- * node's tick.
+ * `into`'s value there instead. Unticked, it dims and offers Never sync instead. A setting of a new node left out
+ * (`left`) is left out with it.
  */
-function SyncRowItem({ row, into, ticked, follows, onFlip, onNeverSync, value, onValue }: {
-  row: SyncRow; into: string; ticked: boolean; follows: boolean; onFlip: () => void; onNeverSync: () => void;
+function SyncRowItem({ row, into, ticked, left, onFlip, onNeverSync, value, onValue }: {
+  row: SyncRow; into: string; ticked: boolean; left: boolean; onFlip: () => void; onNeverSync: () => void;
   value: string; onValue: (value: string) => void;
 }) {
   const line = syncLine(row, into);
   const id = `sync-${row.key}`;
   return (
     <li className="grid min-h-10 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 border-b last:border-b-0">
-      <Checkbox id={id} checked={ticked} disabled={follows} onCheckedChange={onFlip} className={cn(!ticked && "opacity-40")} />
+      <Checkbox id={id} checked={ticked} disabled={left} onCheckedChange={onFlip} className={cn(!ticked && "opacity-40")} />
       <label htmlFor={id} className={cn("flex min-w-0 items-center gap-2", !ticked && "opacity-40")}>
         <span className={cn("truncate", line.variable && "font-mono")}>{line.name}</span>
-        {line.badge ? <Badge variant={row.changed ? "warning" : "secondary"}>{line.badge}</Badge> : null}
+        {line.badge ? <Badge variant={row.changed && !row.secret ? "warning" : "secondary"}>{line.badge}</Badge> : null}
       </label>
-      {!ticked && !isWholeNode(row) && !follows ? (
+      {!ticked && !row.whole && !left ? (
         <Button variant="outline" size="sm" onClick={onNeverSync}><PinIcon data-icon="inline-start" />Never sync</Button>
       ) : row.secret ? (
         <Input type="password" autoComplete="off" aria-label={`Set ${into}'s value of ${line.name}`}
@@ -191,7 +189,7 @@ function SyncRowItem({ row, into, ticked, follows, onFlip, onNeverSync, value, o
 
 /** A change never synced: where it's marked, and Sync again to unmark it there. */
 function NeverSyncedItem({ row, onSyncAgain }: { row: NeverSyncedRow; onSyncAgain: () => void }) {
-  const { name, variable } = syncName(row);
+  const { name, variable } = settingName(row.path);
   return (
     <li className="flex min-h-10 items-center gap-3">
       <span className="min-w-0 flex-1 truncate">
