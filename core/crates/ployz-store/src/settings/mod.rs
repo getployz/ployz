@@ -861,8 +861,7 @@ impl SettingPath {
         let field = match (key, field.strip_prefix("mounts.")) {
             (Some(key), _) => format!("env.{key}"),
             (_, Some(id)) => format!("mounts.{}", volume(id)),
-            _ => ServiceSetting::of_field(field)
-                .map_or_else(|| field.to_owned(), |setting| setting.name().to_owned()),
+            _ => field.to_owned(),
         };
         format!("{service}.{field}")
     }

@@ -23,7 +23,7 @@ use crate::Actor;
 use crate::error;
 use crate::id::{EnvironmentId, Revision};
 use crate::scope::{Environment, EnvironmentSummary, revision_param};
-use crate::settings::{SettingPath, shown};
+use crate::settings::{ServiceSetting, SettingPath, shown};
 use crate::storage::Tx;
 
 /// An Environment's staged changes, grouped by node, and the version to act on them.
@@ -189,6 +189,11 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                                 .map(|volume| At::Mount(volume.resource_lineage_id.clone())),
                             None => at,
                         };
+                        // A row's Setting is what Discard takes, whichever part of it changed.
+                        let setting = match &at {
+                            Some(At::Setting(setting)) => ServiceSetting::of(*setting),
+                            _ => None,
+                        };
                         row.row = at.map(|at| RowId::of(&lineage, at));
                         if row.path.starts_with("mounts.") {
                             row.before = row.before.get("mountPath").cloned().unwrap_or_default();
@@ -199,9 +204,12 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                         } else {
                             row.before = shown(&row.path, row.before);
                             row.after = shown(&row.path, row.after);
-                            row.path = SettingPath::from_core(&name, &row.path, |id| {
-                                volume_name(&intents, id).unwrap_or_default()
-                            });
+                            row.path = match setting {
+                                Some(setting) => format!("{name}.{}", setting.name()),
+                                None => SettingPath::from_core(&name, &row.path, |id| {
+                                    volume_name(&intents, id).unwrap_or_default()
+                                }),
+                            };
                         }
                         // `discard` takes exactly the paths that parse.
                         row.can_restore = SettingPath::parse(&row.path).is_ok();

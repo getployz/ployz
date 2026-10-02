@@ -14,8 +14,8 @@ use ployz_store::RowId;
 use ployz_store::{
     Actor, Batch, BatchCommand, Change, ConfigStore, CreateBranch, CreateProject, CreateService,
     DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentQuery,
-    EnvironmentRef, HintSource, NeverSync, OrganizationId, ProjectId, ProjectName,
-    ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, Take,
+    EnvironmentRef, HintSource, NeverSync, OrganizationId, ProjectId, ProjectName, Publish,
+    ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, Take, Trusted,
 };
 use serde_json::{Value, json};
 
@@ -283,11 +283,8 @@ fn each_staged_change_names_the_row_it_falls_in() {
     assert_eq!(
         rows,
         [
+            ("web.healthcheck", Some(&At::Setting(Setting::Healthcheck))),
             ("web.image", Some(&At::Setting(Setting::Image))),
-            (
-                "web.healthcheck.path",
-                Some(&At::Setting(Setting::Healthcheck))
-            ),
         ]
     );
     for row in &web.settings {
@@ -549,6 +546,49 @@ fn never_sync_arrived(at_row: &str, path: &str, version: String) -> Batch {
         ],
         expect: None,
     }
+}
+
+/// Never sync on a published healthcheck path that arrived discards it from Saved
+/// State too: the path is a part of the `healthcheck` Setting Discard takes.
+#[test]
+fn never_sync_on_a_published_arrival_discards_it_from_saved_state() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.healthcheck", json!("/old"))],
+    );
+    deploy(&store, &who, "production", 2);
+    deploy(&store, &who, "fix-web", 3);
+    let old = web(&store, &who, "fix-web")["healthcheck"].clone();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.healthcheck", json!("/new"))],
+    );
+    deploy(&store, &who, "production", 4);
+    let publish = Publish {
+        environment: at("fix-web"),
+        version: Some(diff(&store, &who, "fix-web").version),
+        accept_volume_loss: Vec::new(),
+    };
+    store
+        .write_trusted(&who, &publish, &Trusted::default())
+        .unwrap();
+    let version = diff(&store, &who, "fix-web").version;
+    store
+        .write(
+            &who,
+            &never_sync_arrived("healthcheck", "web.healthcheck", version),
+        )
+        .unwrap();
+    assert_eq!(web(&store, &who, "fix-web")["healthcheck"], old);
+    assert!(
+        diff(&store, &who, "fix-web").published,
+        "Saved State follows the discard"
+    );
 }
 
 #[test]

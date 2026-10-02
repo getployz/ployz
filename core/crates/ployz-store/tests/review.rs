@@ -396,3 +396,38 @@ fn discard_keeps_mounts_it_does_not_name() {
     discard(&store, &who, Some("web.mounts.data"), None).unwrap();
     assert_eq!(value(&store, &who, "web.mounts.data"), None);
 }
+
+/// A row of a compound Setting discards that Setting: a healthcheck's path edit
+/// discards `web.healthcheck`, and a source emptied the Setting it removed.
+#[test]
+fn a_compound_settings_row_discards_that_setting() {
+    let (store, who) = shop();
+    set(&store, &who, "web.healthcheck", json!("/old"));
+    backend::deploy(&store, &who, "production", 1);
+    set(&store, &who, "web.healthcheck", json!("/new"));
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("api.image").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    let view = diff(&store, &who);
+    let rows: Vec<_> = view
+        .changes
+        .iter()
+        .flat_map(|node| &node.settings)
+        .map(|row| (row.path.as_str(), row.can_restore))
+        .collect();
+    assert_eq!(rows, [("web.healthcheck", true), ("api.image", true)]);
+    for (path, _) in rows {
+        discard(&store, &who, Some(path), None).unwrap();
+    }
+    assert!(diff(&store, &who).changes.is_empty());
+    assert_eq!(value(&store, &who, "api.image"), Some(json!("caddy:2")));
+}

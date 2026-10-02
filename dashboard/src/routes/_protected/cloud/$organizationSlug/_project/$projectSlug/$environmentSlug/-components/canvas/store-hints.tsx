@@ -51,8 +51,7 @@ export function storeHintNotes(diff: DiffView, groups: readonly ChangeGroup[], n
         </span>
       );
     },
-    // A setting that arrived; a whole node can't be marked. Discard takes the setting the row is, not the part shown
-    // (`api.healthcheck`, not `api.healthcheck.path`).
+    // A setting that arrived; a whole node can't be marked.
     neverSyncFor: (row: ChangeRow) => {
       const change = incoming(row.row);
       return change && change.name !== null ? () => neverSync(`${change.node}.${change.name}`, change.row) : undefined;

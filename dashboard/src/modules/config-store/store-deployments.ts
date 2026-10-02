@@ -46,7 +46,6 @@ function untitledLabel(nodeType: NodeChange["type"], setting: string) {
   if (setting.startsWith("mounts.")) return `Volume mount ${setting.slice(7)}`;
   if (setting.startsWith("routes.") || setting.startsWith("domains.")) return "Custom domain";
   if (setting === "managedHostnames") return "Generated domain";
-  if (setting === "source") return "Source";
   return setting;
 }
 

@@ -4,7 +4,7 @@
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent,
+    At, EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent,
     ServiceConfig, VolumeAttachment, canonicalize_environment_intent, compare_service_settings,
     parse_environment_intent, restore_environment_node,
 };
@@ -16,7 +16,7 @@ use crate::error;
 use crate::id::{Revision, VolumeName};
 use crate::review::{self, Review};
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
-use crate::settings::{NodeName, SettingPath, Target, VolumeField};
+use crate::settings::{NodeName, ServiceSetting, SettingPath, Target, VolumeField};
 use crate::storage::Tx;
 use crate::{Actor, Trusted, deployment};
 
@@ -238,7 +238,11 @@ fn restore(
                 .is_some_and(|(saved, head)| {
                     compare_service_settings(&saved, Some(&head))
                         .iter()
-                        .any(|(row, _)| row.path == setting.field() && row.can_restore)
+                        .any(|(row, at)| {
+                            row.can_restore
+                                && matches!(at, Some(At::Setting(changed))
+                                    if ServiceSetting::of(*changed) == Some(*setting))
+                        })
                 })
         }
         (Some(part), Some(saved)) => part_of(saved, &id, part) != part_of(&baseline, &id, part),

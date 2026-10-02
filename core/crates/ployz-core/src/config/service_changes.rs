@@ -40,8 +40,6 @@ const FIELDS: &[(&str, Setting)] = &[
     ("source.credentials", Setting::Credentials),
     ("preDeployCommand", Setting::PreDeployCommand),
     ("startCommand", Setting::StartCommand),
-    ("healthcheck.path", Setting::Healthcheck),
-    ("healthcheck.timeoutSeconds", Setting::Healthcheck),
     ("restartPolicy", Setting::RestartPolicy),
     ("maxRetries", Setting::MaxRetries),
     ("replicas", Setting::Replicas),
@@ -84,8 +82,10 @@ pub fn compare_service_settings(
             true,
         ));
     }
-    let healthcheck_changed = at(&current, "healthcheck.type") != at(&baseline, "healthcheck.type");
-    if healthcheck_changed && (!baseline.is_null() || at(&current, "healthcheck.type") != "none") {
+    // One row, as Sync moves it and Discard takes it, whichever of its parts changed.
+    if at(&current, "healthcheck") != at(&baseline, "healthcheck")
+        && (!baseline.is_null() || at(&current, "healthcheck.type") != "none")
+    {
         changes.push(change(
             ("healthcheck", Some(At::Setting(Setting::Healthcheck))),
             at(&baseline, "healthcheck").clone(),
@@ -94,9 +94,6 @@ pub fn compare_service_settings(
         ));
     }
     for &(path, setting) in FIELDS {
-        if healthcheck_changed && path.starts_with("healthcheck.") {
-            continue;
-        }
         if source_changed && path.starts_with("source.") {
             continue;
         }
@@ -171,10 +168,7 @@ pub fn restore_service_setting(
     }
     let mut current = json!(current);
     let baseline = json!(baseline);
-    if path == "healthcheck"
-        || (path.starts_with("healthcheck.")
-            && at(&current, "healthcheck.type") != at(&baseline, "healthcheck.type"))
-    {
+    if path == "healthcheck" {
         current
             .as_object_mut()
             .expect("serialized service")

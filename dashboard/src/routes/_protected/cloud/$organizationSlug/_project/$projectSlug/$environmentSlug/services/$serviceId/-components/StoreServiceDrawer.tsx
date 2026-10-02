@@ -387,14 +387,14 @@ function StoreHealthcheckField({ state }: { state: StoreService }) {
   const setting = serviceSetting("healthcheck");
   const { path: pathSchema, timeoutSeconds } = setting.properties;
   const on = Schema.is(Healthcheck)(row.value) ? row.value : null;
-  const pathChange = changeOf(state.changes, "healthcheck.path", "healthcheck");
-  const timeoutChange = changeOf(state.changes, "healthcheck.timeoutSeconds", "healthcheck");
+  // One change, whichever part of it changed: it is one Setting.
+  const change = state.changes.get("healthcheck");
   const shown = (value: JsonValue | undefined) => Schema.is(Healthcheck)(value) ? `${value.path}, ${value.timeoutSeconds}s`
     : value === null || value === undefined ? "off" : settingText(value);
   return (
     <>
       <ServiceCommandField label={setting.title} addLabel="Healthcheck path" description={undefined} placeholder="Off"
-        value={on?.path ?? null} {...changedProps(pathChange, shown)}
+        value={on?.path ?? null} {...changedProps(change, shown)}
         validate={(raw) => settingError({ ...pathSchema, title: "path", description: "", type: "string" }, raw)
           ?? (raw.startsWith("/") ? null : "Start the path with /.")}
         onCommit={(next) => state.set("healthcheck", next)} />
@@ -403,7 +403,7 @@ function StoreHealthcheckField({ state }: { state: StoreService }) {
           <FieldLabel>Healthcheck timeout</FieldLabel>
           <FieldDescription>How long a new replica may take to pass it.</FieldDescription>
           <ServiceSettingInput ariaLabel="Healthcheck timeout" inputMode="numeric" suffix="seconds" placeholder={String(timeoutSeconds.default)}
-            value={String(on.timeoutSeconds)} {...changedProps(timeoutChange, shown)}
+            value={String(on.timeoutSeconds)} {...changedProps(change, shown)}
             validate={(raw) => settingError({ ...timeoutSeconds, title: "timeout", description: "", type: "integer" }, raw)}
             onCommit={(raw) => state.set("healthcheck", { path: on.path, timeoutSeconds: raw === "" ? timeoutSeconds.default : Number(raw) })} />
         </Field>
@@ -490,7 +490,7 @@ function StoreSourceSection({ state }: { state: StoreService }) {
   </>;
 
   if (state.source === "empty") {
-    const change = changeOf(state.changes, "source", "image", "repository");
+    const change = changeOf(state.changes, "image", "repository");
     return (
       <FieldGroup>
         {change ? (

@@ -104,7 +104,7 @@ fn compound_settings_compare_and_restore_the_edited_field() {
         rows.iter()
             .map(|(row, _)| row.path.as_str())
             .collect::<Vec<_>>(),
-        ["healthcheck.timeoutSeconds", "build.dockerfilePath"]
+        ["healthcheck", "build.dockerfilePath"]
     );
     assert_eq!(
         rows.iter().map(|(_, at)| at.clone()).collect::<Vec<_>>(),

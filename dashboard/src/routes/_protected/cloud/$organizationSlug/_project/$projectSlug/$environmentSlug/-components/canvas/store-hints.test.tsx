@@ -95,18 +95,6 @@ it("matches a Volume's setting by the row it falls in", async () => {
   expect(test.neverSync).toHaveBeenCalledWith("volumes.data.name", "d:name");
 });
 
-it("joins each part of a composite setting to the row it falls in", async () => {
-  const test = open(diff({
-    changes: [api([setting("api.healthcheck.path", "/", "/up", "a:healthcheck"), setting("api.healthcheck.timeoutSeconds", "5", "9", "a:healthcheck")])],
-    total_count: 2, incoming: [{ row: id("a:healthcheck"), node: "api", kind: "service", name: "healthcheck", from: "production" }],
-  }));
-
-  const incoming = within(await screen.findByRole("region", { name: "From production's deploy" }));
-  expect(incoming.getAllByRole("listitem")).toHaveLength(2);
-  fireEvent.click((await menuOf("api healthcheck.timeoutSeconds")).getByRole("menuitem", { name: "Never sync" }));
-  expect(test.neverSync).toHaveBeenCalledWith("api.healthcheck", "a:healthcheck");
-});
-
 it("groups a whole node that arrived, with its settings, under where it came from; it can't be marked", async () => {
   const test = open(diff({
     changes: [{ ...api([setting("api.replicas", "1", "2")]), lifecycle: "create" }], total_count: 2,
