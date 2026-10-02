@@ -88,7 +88,7 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="flex max-h-[85dvh] flex-col sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle className="pr-8">Sync to {into}</DialogTitle>
+          <DialogTitle>Sync to {into}</DialogTitle>
           <DialogDescription>
             {!view.ok ? view.refusal.message : rows.length === 0 ? `Nothing to sync: ${into} has every change from ${name}.`
               : atMerge !== null ? `These changes from ${name} go live in ${into} when #${atMerge} merges.`

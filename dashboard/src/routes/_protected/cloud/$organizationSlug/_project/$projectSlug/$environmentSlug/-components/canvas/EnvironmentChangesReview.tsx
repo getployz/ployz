@@ -53,7 +53,7 @@ export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="flex max-h-[85dvh] flex-col sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle className="pr-8">Environment changes</DialogTitle>
+          <DialogTitle>Environment changes</DialogTitle>
           <DialogDescription>
             {!staged ? "Nothing staged here"
               : `${plural(totalChanges, "change")} in ${environment}, ${canPublish ? "not yet published" : "published, not yet deployed"}.`}
