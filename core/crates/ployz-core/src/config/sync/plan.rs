@@ -162,9 +162,26 @@ pub struct Landed {
     /// The base's cell before; redacted.
     pub prior: Cell,
     /// `into`'s cell before.
-    pub was: SealedCell,
+    pub was: Was,
     /// What arrived; redacted.
     pub value: Cell,
+}
+
+/// What a landed row held in `into` before, for [`unapply`] to check and put back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Was {
+    /// A Service's whole source, when landing the row switched what kind of source it
+    /// is: one change, whichever source row made it.
+    Source {
+        /// Before the landing.
+        was: Box<ServiceSource>,
+        /// As the landing left it.
+        landed: Box<ServiceSource>,
+    },
+    /// The row's own cell.
+    #[serde(untagged)]
+    Cell(SealedCell),
 }
 
 impl Policy {
@@ -485,7 +502,7 @@ impl Plan {
         let from_cells = Cells::of(&self.from, &self.hostnames.from);
         for (row, arrives) in landing {
             let id = &row.id;
-            let was = sealed_cell(&self.into, &into_cells, id);
+            let mut was = Was::Cell(sealed_cell(&self.into, &into_cells, id));
             let value = match arrives {
                 Arrives::AsIs => sealed_cell(&self.from, &from_cells, id),
                 Arrives::NeedsValue => match values.get(id) {
@@ -499,8 +516,24 @@ impl Plan {
             if id.at == At::Node {
                 self.introduce(&mut next, base.as_mut(), &id.lineage)?;
             } else {
+                let kind = |env: &Intent| {
+                    service(env, &id.lineage).map(|s| std::mem::discriminant(&s.config.source))
+                };
+                let before = kind(&next);
                 put_sealed(&mut next, id, &value)?;
-                if let (At::Variable(key), SealedCell::Cell(Cell::Absent)) = (&id.at, &was) {
+                if kind(&next) != before
+                    && let Some(service) = service(&self.into, &id.lineage)
+                {
+                    let source = Box::new(service.config.source.clone());
+                    // `landed` is the source as the whole landing leaves it; see below.
+                    was = Was::Source {
+                        landed: source.clone(),
+                        was: source,
+                    };
+                }
+                if let (At::Variable(key), Was::Cell(SealedCell::Cell(Cell::Absent))) =
+                    (&id.at, &was)
+                {
                     self.describe(&mut next, &id.lineage, key);
                 }
                 if let Some(base) = base.as_mut() {
@@ -514,6 +547,13 @@ impl Plan {
                 was,
                 value: value.to_redacted(),
             });
+        }
+        for one in &mut landed {
+            if let (Was::Source { landed, .. }, Some(service)) =
+                (&mut one.was, service(&next, &one.row.lineage))
+            {
+                **landed = service.config.source.clone();
+            }
         }
         let next = parse_environment_intent(json!(next))?;
         let base = base.unwrap_or_else(|| {
@@ -615,8 +655,8 @@ impl Plan {
 /// Why [`unapply`] refused.
 #[derive(Debug, thiserror::Error)]
 pub enum Unapplied {
-    /// The row holds other than what landed, or it is a new node that holds a row
-    /// that didn't land with it.
+    /// The row holds other than what landed (a source switch, any of the source), or
+    /// it is a new node that holds a row that didn't land with it.
     #[error("{0} changed since it landed")]
     Changed(RowId),
     /// What it puts back doesn't hold together.
@@ -634,7 +674,12 @@ pub fn unapply(intent: &Intent, suffix: &str, landed: &[Landed]) -> Result<Inten
     let cells = Cells::of(intent, suffix);
     for one in landed {
         let row = &one.row;
-        if *cells.at(row) != one.value {
+        let source = service(intent, &row.lineage).map(|s| &s.config.source);
+        let changed = match &one.was {
+            Was::Source { landed, .. } => source != Some(landed),
+            Was::Cell(_) => *cells.at(row) != one.value,
+        };
+        if changed {
             return Err(Unapplied::Changed(row.clone()));
         }
         if row.at != At::Node {
@@ -651,7 +696,14 @@ pub fn unapply(intent: &Intent, suffix: &str, landed: &[Landed]) -> Result<Inten
     order.sort_by_key(|one| std::cmp::Reverse(landing_order(intent, &one.row)));
     let mut intent = intent.clone();
     for one in order {
-        put_sealed(&mut intent, &one.row, &one.was)?;
+        match &one.was {
+            Was::Source { was, .. } => {
+                if let Some(service) = service_mut(&mut intent, &one.row.lineage) {
+                    service.config.source = (**was).clone();
+                }
+            }
+            Was::Cell(was) => put_sealed(&mut intent, &one.row, was)?,
+        }
     }
     Ok(intent)
 }

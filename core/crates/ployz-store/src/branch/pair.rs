@@ -573,7 +573,7 @@ enum Arrival {
     /// that landed it.
     Pending {
         prior: Cell,
-        was: SealedCell,
+        was: Was,
         sync: Option<SyncId>,
     },
     /// A Follow the receiver changed too, or discarded.

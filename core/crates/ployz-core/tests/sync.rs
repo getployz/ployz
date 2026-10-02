@@ -9,8 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
     Applied, Arrives, Cell, Cells, ConfigError, EncryptedSecretValue, Hostnames, NodeRef, Plan,
-    PlannedRow, Policy, RowId, SavedEnvironmentIntent, SealedSecret, Sides, Verdict, Way, Why,
-    name_of, parse_environment_intent, plan, put, redact_environment_intent, unapply,
+    PlannedRow, Policy, RowId, SavedEnvironmentIntent, SealedCell, SealedSecret, Sides, Verdict,
+    Was, Way, Why, name_of, parse_environment_intent, plan, put, redact_environment_intent,
+    unapply,
 };
 use serde_json::{Value, json};
 
@@ -1528,6 +1529,38 @@ fn a_new_node_is_not_undone_once_it_holds_a_row_it_didnt_land_with() {
     assert_eq!(
         refused.to_string(),
         format!("{JOBS}:routes changed since it landed")
+    );
+}
+
+/// Switching a source's kind is one change: Undo puts the whole source back, and is
+/// refused once any of it changed since.
+#[test]
+fn undoing_a_source_switch_puts_the_whole_source_back() {
+    let mut from = parent();
+    svc(&mut from, WEB)["config"]["source"] =
+        json!({"version": 1, "type": "image", "image": "web:9", "credentials": {"type": "none"}});
+    let plan = compare(Some(&parent()), &from, &parent(), Way::Sync);
+    let applied = land(&plan, &[format!("{WEB}:source.image")]).unwrap();
+    // As the Store keeps it; a row's own cell keeps the shape it always had.
+    let was = &applied.landed[0].was;
+    assert!(matches!(was, Was::Source { .. }), "{was:?}");
+    assert_eq!(serde_json::from_value::<Was>(json!(was)).unwrap(), *was);
+    let cell = SealedCell::Cell(Cell::Absent);
+    assert_eq!(json!(Was::Cell(cell.clone())), json!(cell));
+    let mut undone = json_of(&unapply(&applied.next, "", &applied.landed).unwrap());
+    let mut parent = parent();
+    assert_eq!(
+        svc(&mut undone, WEB)["config"]["source"],
+        svc(&mut parent, WEB)["config"]["source"]
+    );
+
+    let mut next = json_of(&applied.next);
+    svc(&mut next, WEB)["config"]["source"]["credentials"] =
+        json!({"type": "configured", "credentialId": id(0xd000_0000, 1)});
+    let refused = unapply(&intent(&next), "", &applied.landed).unwrap_err();
+    assert_eq!(
+        refused.to_string(),
+        format!("{WEB}:source.image changed since it landed")
     );
 }
 
