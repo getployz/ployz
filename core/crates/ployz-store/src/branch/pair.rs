@@ -288,18 +288,15 @@ fn changed(base: &SavedEnvironmentIntent, working: &SavedEnvironmentIntent) -> B
 
 /// `picks` without a row whose new node isn't picked too.
 pub(crate) fn whole(rows: &[PlannedRow], mut picks: BTreeSet<RowId>) -> BTreeSet<RowId> {
-    let orphans: Vec<RowId> = rows
-        .iter()
-        .filter(|row| picks.contains(&row.id))
-        .filter(|row| {
-            row.requires
-                .as_ref()
-                .is_some_and(|node| !picks.contains(node))
-        })
-        .map(|row| row.id.clone())
-        .collect();
-    for orphan in &orphans {
-        picks.remove(orphan);
+    // A node's own row requires nothing, so one pass sees every node as picked.
+    for row in rows {
+        if row
+            .requires
+            .as_ref()
+            .is_some_and(|node| !picks.contains(node))
+        {
+            picks.remove(&row.id);
+        }
     }
     picks
 }
