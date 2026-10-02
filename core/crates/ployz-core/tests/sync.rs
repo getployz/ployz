@@ -1564,6 +1564,33 @@ fn undoing_a_source_switch_puts_the_whole_source_back() {
     );
 }
 
+/// A discarded Follow that switched a source's kind puts the base's whole source back,
+/// whichever of the rows that switched it goes back first: never a source between.
+#[test]
+fn a_discarded_source_switch_rewinds_the_base_in_any_order() {
+    let mut from = parent();
+    svc(&mut from, WEB)["config"]["source"] =
+        json!({"version": 1, "type": "image", "image": "web:9", "credentials": {"type": "none"}});
+    let plan = compare(Some(&parent()), &from, &parent(), Way::Follow);
+    let mut landed = land(&plan, &moves(&plan)).unwrap();
+    let original = svc(&mut parent(), WEB)["config"]["source"].clone();
+    let arrived = svc(&mut json_of(&landed.base), WEB)["config"]["source"].clone();
+    for _ in 0..2 {
+        let mut base = landed.base.clone();
+        for one in &landed.landed {
+            base = one.prior.put_back(&base, &one.row).unwrap();
+            let source = svc(&mut json_of(&base), WEB)["config"]["source"].clone();
+            assert!(
+                source == original || source == arrived,
+                "{}: {source}",
+                one.row
+            );
+        }
+        assert_eq!(svc(&mut json_of(&base), WEB)["config"]["source"], original);
+        landed.landed.reverse();
+    }
+}
+
 #[test]
 fn put_refuses_what_a_row_cannot_hold() {
     let parent = intent(&parent());

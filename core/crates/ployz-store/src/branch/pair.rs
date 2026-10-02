@@ -447,8 +447,12 @@ pub(super) fn share(
 fn rewind_bases(
     tx: &mut dyn Tx,
     receiver: &EnvironmentId,
-    cells: Vec<(EnvironmentId, RowId, Was<Cell>)>,
+    mut cells: Vec<(EnvironmentId, RowId, Prior)>,
 ) -> Result<(), RpcError> {
+    // A whole source goes back before the rest of its lineage's rows, which arrived
+    // with it or before it, so they put back their own cells on it: those of the
+    // other kind of source `put` ignores.
+    cells.sort_by_key(|(_, _, prior)| !matches!(prior, Prior::Source(_)));
     let mut bases: BTreeMap<EnvironmentId, SavedEnvironmentIntent> = BTreeMap::new();
     for (other, row, cell) in cells {
         let base = match bases.remove(&other) {
@@ -575,7 +579,7 @@ enum Arrival {
     /// `was` the receiver's own, to rewind a discard and to undo `sync`, the Sync
     /// that landed it.
     Pending {
-        prior: Was<Cell>,
+        prior: Prior,
         was: Was,
         sync: Option<SyncId>,
     },
