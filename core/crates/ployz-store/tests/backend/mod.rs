@@ -64,7 +64,17 @@ pub fn deploy(
     environment: &str,
     n: u8,
 ) -> serde_json::Value {
-    use serde_json::json;
+    let id = admit(store, who, environment, n);
+    run(store, &id)
+}
+
+/// Admit Deployment `n` of `environment`, publishing its Working State; [`run`] runs it.
+pub fn admit(
+    store: &ConfigStore,
+    who: &ployz_store::Actor,
+    environment: &str,
+    n: u8,
+) -> ployz_store::DeploymentId {
     let id = ployz_store::DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}"))
         .unwrap();
     store
@@ -85,8 +95,14 @@ pub fn deploy(
             &ployz_store::Trusted::default(),
         )
         .unwrap();
+    id
+}
+
+/// Run admitted Deployment `id` to success; what the runner was handed.
+pub fn run(store: &ConfigStore, id: &ployz_store::DeploymentId) -> serde_json::Value {
+    use serde_json::json;
     let runner = ployz_store::RunnerId::parse("runner").unwrap();
-    let claimed = store.claim(&id, &runner).unwrap();
+    let claimed = store.claim(id, &runner).unwrap();
     let names: Vec<String> = claimed
         .intent
         .target
@@ -107,7 +123,7 @@ pub fn deploy(
     }))
     .unwrap();
     store
-        .record(&id, &runner, ployz_store::RunEvidence::Prepared(preview))
+        .record(id, &runner, ployz_store::RunEvidence::Prepared(preview))
         .unwrap();
     let outcome: ployz_core::DeployOutcome<ployz_core::ExecutionError> =
         serde_json::from_value(json!({
@@ -117,7 +133,7 @@ pub fn deploy(
         .unwrap();
     store
         .record(
-            &id,
+            id,
             &runner,
             ployz_store::RunEvidence::Executed {
                 outcome: Box::new(outcome),

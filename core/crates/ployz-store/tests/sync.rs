@@ -1053,3 +1053,15 @@ fn a_new_service_is_reviewed_and_undone_whole() {
     assert_eq!(undo(&store, &who, &synced), Ok("production".into()));
     assert_eq!(services(&store, &who, "production"), ["db", "web"]);
 }
+
+#[test]
+fn a_deploy_settles_only_what_it_shipped() {
+    let (store, who) = shop(true);
+    set(&store, &who, "fix-web", &[("web.image", json!("web:2"))]);
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("2"))]);
+    // Deployment 2 publishes before the Sync lands, so it ships web without it.
+    let id = backend::admit(&store, &who, "production", 2);
+    let synced = sync_into(&store, &who, ("fix-web", "production"), None);
+    backend::run(&store, &id);
+    assert_eq!(undo(&store, &who, &synced), Ok("production".into()));
+}

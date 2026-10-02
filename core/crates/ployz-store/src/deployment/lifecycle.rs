@@ -963,7 +963,6 @@ fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcE
                     scope::Node::Service(service) => &service.lineage_id,
                     scope::Node::Volume(volume) => &volume.resource_lineage_id,
                 };
-                crate::branch::deployed(tx, &stored.summary.environment_id, lineage)?;
                 deployed.insert(lineage.clone());
             }
             match applied {
@@ -990,6 +989,7 @@ fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcE
                 )?,
             };
         }
+        crate::branch::deployed(tx, &stored.summary.environment_id, &saved, &deployed)?;
         // Its Branches follow what it runs now.
         crate::branch::follow(tx, &stored.summary.environment_id, &deployed)?;
     }

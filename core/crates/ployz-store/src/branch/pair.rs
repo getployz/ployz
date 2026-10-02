@@ -510,17 +510,42 @@ pub(crate) fn rewind(
     rewind_bases(tx, receiver, undone)
 }
 
-/// `receiver` deployed lineage `lineage`: what arrived in it stays.
+/// `receiver` deployed `saved` to the nodes of `lineages`: what arrived there and
+/// shipped stays. An arrival `saved` lacks, one that landed after it was published,
+/// stays pending.
 pub(crate) fn deployed(
     tx: &mut dyn Tx,
     receiver: &EnvironmentId,
-    lineage: &str,
+    saved: &SavedEnvironmentIntent,
+    lineages: &BTreeSet<String>,
 ) -> Result<(), RpcError> {
-    tx.execute(
-        "UPDATE config_sync_arrival SET state = 'settled', prior = NULL, was = NULL \
-         WHERE environment_id = ?1 AND lineage = ?2 AND state = 'pending'",
-        &[receiver.as_str().into(), lineage.into()],
+    let pending = tx.query(
+        "SELECT other_id, lineage, at, value FROM config_sync_arrival \
+         WHERE environment_id = ?1 AND state = 'pending'",
+        &[receiver.as_str().into()],
     )?;
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let environment = scope::load_by_id(tx, receiver)?;
+    let suffix = suffix(tx, &environment)?;
+    for arrival in &pending {
+        let (lineage, at) = (arrival.text(1)?, arrival.text(2)?);
+        let value: Cell = arrival.json(3, "Sync")?;
+        if !lineages.contains(lineage) || cell_at(saved, &row_id(lineage, at)?, &suffix) != value {
+            continue;
+        }
+        tx.execute(
+            "UPDATE config_sync_arrival SET state = 'settled', prior = NULL, was = NULL \
+             WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4",
+            &[
+                receiver.as_str().into(),
+                arrival.text(0)?.into(),
+                lineage.into(),
+                at.into(),
+            ],
+        )?;
+    }
     Ok(())
 }
 
