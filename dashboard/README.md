@@ -54,7 +54,7 @@ any branch without CI:
 
 | Process | Start command | Healthcheck |
 | --- | --- | --- |
-| Web | `npm start` | `/` |
+| Web | `npm start` | `/api/health` |
 | Worker | `npm run start:worker` | `/ready` |
 
 Run one worker alongside the web service. Both use the same application variables
