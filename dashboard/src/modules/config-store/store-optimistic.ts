@@ -51,8 +51,8 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       return;
     case "create_service":
     case "create_git_service": {
+      // SAFETY: a new Service's id is its lineage, and a node's RowId is `{lineage}:node`.
       const service: ServiceListing = {
-        // SAFETY: a new Service's id is its lineage, and a node's RowId is `{lineage}:node`.
         id: command.id, row: `${command.id}:node` as RowId, name: command.name, private_dns: command.name, change: "create",
         source: command.command === "create_git_service" ? "git" : command.image === null ? "empty" : "image",
         template: command.command === "create_service" ? command.template ?? null : null,
