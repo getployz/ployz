@@ -191,7 +191,8 @@ pub(crate) fn live_names(
     Ok(names)
 }
 
-/// A Branch's view: its Parent, its Live Nodes and their owners, what Update would stage.
+/// A Branch's view: its Parent, its Live Nodes and their owners, what Update would
+/// stage, and how many changes it would sync into its Parent.
 pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, RpcError> {
     let row = branch_row(tx, branch)?;
     let chain = chain(tx, &row.parent)?;
@@ -233,6 +234,12 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
             .map(|row| moving.name(&branch.working, &row.key.to_string()))
             .collect()
     };
+    let to_parent = Moving::sync(tx, branch, &parent.environment)?
+        .compare(&parent.environment.working, None)?
+        .rows
+        .iter()
+        .filter(|row| ticked(row))
+        .count();
     let setup = row
         .setup
         .iter()
@@ -255,6 +262,7 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
         setup,
         live,
         update,
+        to_parent,
         pull_request: crate::pull_request::of(tx, &branch.summary.id)?,
     })
 }

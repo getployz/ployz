@@ -10,12 +10,16 @@ mod live;
 mod moving;
 mod pair;
 mod setup;
+mod sync;
 pub(crate) use create::*;
 pub(crate) use live::*;
 pub(crate) use moving::*;
 pub(crate) use pair::*;
 pub use setup::SetBranchSetup;
 pub(crate) use setup::{branch_setup, set_branch_setup};
+use sync::ticked;
+pub use sync::{SyncChanges, SyncQuery, SyncRow, SyncView, Synced};
+pub(crate) use sync::{sync, sync_view};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,9 +28,10 @@ use ployz_core::config::{
     BranchNodeReason, BranchNodeRole, BranchOption, BranchPick, BranchPickChoice, BranchPicks,
     BranchPlan, BranchPreset, BranchReason, BranchRole, BranchRow, ConfigError,
     EnvironmentNodeType, LiveLineageUse, LiveValuesInput, LiveValuesOwner, SavedEnvironmentIntent,
-    SavedServiceIntent, SavedVariableProducer, SavedVariableValue, ServiceImageCredentials,
-    ServiceSource, ValuePart, ValuePartOwner, branch_changes, canonicalize_environment_intent,
-    compile_environment_intent, live_values, parse_service_setting, plan_branch,
+    SavedServiceIntent, SavedVariableProducer, SavedVariableValue, SavedVolumeIntent,
+    ServiceImageCredentials, ServiceSource, ValuePart, ValuePartOwner, branch_changes,
+    canonicalize_environment_intent, compile_environment_intent, live_values,
+    parse_service_setting, plan_branch,
 };
 use ployz_core::{Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -433,6 +438,9 @@ pub struct BranchView {
     pub live: Vec<LiveNode>,
     /// The Parent's deployed changes Update would stage, as `NODE[.path]`.
     pub update: Vec<String>,
+    /// How many changes a Sync into its Parent carries: the Sync view's rows
+    /// ticked by default.
+    pub to_parent: usize,
     /// The pull request it is the PR Environment of; its Save waits for the merge.
     pub pull_request: Option<crate::PullRequestRef>,
 }
@@ -464,7 +472,6 @@ pub struct Branched {
 pub(crate) struct Row {
     pub(crate) parent: EnvironmentId,
     pub(crate) kept: bool,
-    pub(crate) base: SavedEnvironmentIntent,
     setup: Vec<Setup>,
 }
 
@@ -514,7 +521,7 @@ pub(crate) fn ancestors(
 
 pub(crate) fn row(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<Row>, RpcError> {
     let rows = tx.query(
-        "SELECT parent_id, kept, base, setup FROM config_environment_branch WHERE environment_id = ?1",
+        "SELECT parent_id, kept, setup FROM config_environment_branch WHERE environment_id = ?1",
         &[id.as_str().into()],
     )?;
     let Some(row) = rows.first() else {
@@ -523,8 +530,7 @@ pub(crate) fn row(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<Row>, Rp
     Ok(Some(Row {
         parent: row.parse::<EnvironmentId>(0, "Branch")?,
         kept: row.int(1)? != 0,
-        base: row.intent(2, "Branch")?,
-        setup: row.json(3, "Branch")?,
+        setup: row.json(2, "Branch")?,
     }))
 }
 

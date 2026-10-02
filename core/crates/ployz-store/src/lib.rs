@@ -43,8 +43,8 @@ pub use automation::{
 pub use branch::{
     BranchPlanQuery, BranchPlanView, BranchQuery, BranchView, Branched, CopyNode, CreateBranch,
     DifferRow, KeepBranch, LiveNode, Move, MoveChoice, MovePick, MoveQuery, MoveRow, MoveView,
-    Moved, PickChoice, PlannedNode, PlannedRole, Save, SetBranchSetup, SetupCommand, Take, Update,
-    When,
+    Moved, PickChoice, PlannedNode, PlannedRole, Save, SetBranchSetup, SetupCommand, SyncChanges,
+    SyncQuery, SyncRow, SyncView, Synced, Take, Update, When,
 };
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,

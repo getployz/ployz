@@ -139,6 +139,11 @@ pub(crate) fn discard(
     if canonicalize_environment_intent(working.clone())
         != canonicalize_environment_intent(environment.working.clone())
     {
+        crate::branch::rewind(
+            tx,
+            &environment.summary.id,
+            (&environment.working, &working),
+        )?;
         environment.working = working;
         scope::save_working_from(tx, &mut environment, Some(&runs))?;
     }

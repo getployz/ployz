@@ -728,7 +728,7 @@ fn retrack(
 
 /// Start closing a Branch: stop what it is deploying, then remove it as far as
 /// nothing needs the Servers.
-fn close(
+pub(crate) fn close(
     tx: &mut dyn Tx,
     who: &Actor,
     id: &EnvironmentId,

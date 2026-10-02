@@ -153,7 +153,7 @@ pub(crate) fn move_row(
 }
 
 /// A row's name and its two values as reads show them.
-fn shown_row(
+pub(super) fn shown_row(
     moving: &Moving,
     from: &Environment,
     into: &Environment,
@@ -187,8 +187,8 @@ pub(crate) enum Direction {
 
 /// A Branch and its Parent, as one Move addresses them.
 pub(super) struct Sides {
-    from: Environment,
-    into: Environment,
+    pub(super) from: Environment,
+    pub(super) into: Environment,
     direction: Direction,
 }
 

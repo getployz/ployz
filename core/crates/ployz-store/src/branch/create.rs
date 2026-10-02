@@ -157,20 +157,32 @@ pub(crate) fn create_branch(
         working: into,
         live: BTreeMap::new(),
     };
-    // A Branch first, so what it lands uses its Parent's nodes live.
+    // A Branch first, so what it lands uses its Parent's nodes live. What it is made
+    // with is what it and its Parent share.
+    let base = document(&base);
     tx.execute(
-        "INSERT INTO config_environment_branch (environment_id, organization_id, parent_id, kept, base, setup) \
+        "INSERT INTO config_environment_branch (environment_id, organization_id, parent_id, kept, made_with, setup) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         &[
             create.id.as_str().into(),
             who.organization.as_str().into(),
             parent.summary.id.as_str().into(),
             i64::from(create.keep).into(),
-            document(&base).as_str().into(),
+            base.as_str().into(),
             serde_json::to_string(&setup)
                 .expect("Setup Commands are JSON")
                 .as_str()
                 .into(),
+        ],
+    )?;
+    tx.execute(
+        "INSERT INTO config_sync_base (environment_id, other_id, organization_id, base) \
+         VALUES (?1, ?2, ?3, ?4)",
+        &[
+            create.id.as_str().into(),
+            parent.summary.id.as_str().into(),
+            who.organization.as_str().into(),
+            base.as_str().into(),
         ],
     )?;
     let carried = Carried::of(tx, &parent.summary.id, &from)?;

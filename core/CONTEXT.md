@@ -318,7 +318,7 @@ A command a Branch adds after one Own Copy's own pre-deploy command, in the same
 _Avoid_: Seed script, data hook, post-deploy hook
 
 **Kept Branch**:
-A Branch that stays after saving and never closes on its own, such as staging.
+A Branch that stays after syncing into its Parent and never closes on its own, such as staging.
 _Avoid_: Long-lived environment, permanent branch
 
 **Starting point**:
@@ -335,7 +335,11 @@ _Avoid_: Merge (a GitHub merge only), promote, deploy to parent, Publish
 
 **Update**:
 Staging the Parent's changes since the Branch was made or last updated in the Branch's Working State, to ship with the Branch's next Deploy.
-_Avoid_: Pull, sync, rebase
+_Avoid_: Pull, rebase
+
+**Sync**:
+Putting one Environment's changes, chosen change by change, into another Environment of the same Project as the receiver's changes to deploy. It takes the sender's Working State, deployed or not, and never deletes or deploys anything. It compares over what the two last shared, so a change left out, or discarded by the receiver before it deploys, is offered again; a change the receiver also made since then is flagged and, if synced, overwritten. Sizing, custom domains, generated addresses, the Git branch and Volume data never sync. Today a Branch syncs into its Parent; Sync replaces Save and Update.
+_Avoid_: Push, promote, merge (a GitHub merge only), Publish
 
 **Deploy Snapshot**:
 The observer-relative Machine, Service Container, and Docker Volume observations gathered for one Deploy, including target-specific Container and Docker Volume failures and omissions. Completeness is relative to the entry Machine's current visible required fan-out, not Cluster truth.

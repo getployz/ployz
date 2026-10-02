@@ -889,6 +889,128 @@ fn an_agent_branches_an_environment_without_servers() {
 }
 
 #[test]
+fn an_agent_syncs_a_branch_into_its_parent_without_servers() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["env", "branch", "fix-web", "--copy", "web"]);
+        let plan_next = json!("ployz env sync --to --plan --env fix-web");
+        let nothing = error(store, &["env", "sync", "--to", "--env", "fix-web"]);
+        assert_eq!(nothing["code"], json!("conflict"));
+        assert_eq!(nothing["details"]["next"], plan_next);
+        failed(store, &["env", "sync", "--env", "fix-web"], 2);
+        failed(store, &["env", "sync", "--to", "--plan", "--close"], 2);
+
+        ok(
+            store,
+            &[
+                "set",
+                "--env",
+                "fix-web",
+                "web.image=web:2",
+                "web.env.DEBUG=1",
+                "web.env.NEW=1",
+            ],
+        );
+        let plan = ok(
+            store,
+            &["env", "sync", "--to", "--plan", "--env", "fix-web"],
+        );
+        assert_eq!(plan["into"]["name"], json!("production"));
+        let rows = plan["rows"].as_array().unwrap();
+        let labels: Vec<&str> = rows
+            .iter()
+            .map(|row| row["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["web.env.DEBUG", "web.env.NEW", "web.image"]);
+        let image = &rows[2];
+        assert_eq!(
+            (&image["node"], &image["from"], &image["into"]),
+            (&json!("web"), &json!("web:2"), &json!("web:1"))
+        );
+        assert_eq!(
+            (&image["ticked"], &image["changed"], &image["new"]),
+            (&json!(true), &json!(false), &json!(false))
+        );
+        assert!(image["key"].as_str().unwrap().ends_with(":source.image"));
+        let version = plan["version"].as_str().unwrap();
+        assert_eq!(
+            plan["next"],
+            json!(format!(
+                "ployz env sync --to --version {version} --env fix-web"
+            ))
+        );
+
+        let stale = error(
+            store,
+            &[
+                "env",
+                "sync",
+                "--to",
+                "--env",
+                "fix-web",
+                "--version",
+                "0:0",
+            ],
+        );
+        assert_eq!(stale["code"], json!("conflict"));
+        assert_eq!(stale["details"]["next"], plan_next);
+        let unknown = error(
+            store,
+            &["env", "sync", "--to", "--env", "fix-web", "--only", "api"],
+        );
+        assert_eq!(unknown["code"], json!("not_found"));
+        assert_eq!(unknown["details"]["next"], plan_next);
+        let sideways = error(
+            store,
+            &["env", "sync", "--to", "fix-web", "--env", "fix-web"],
+        );
+        assert_eq!(sideways["code"], json!("invalid_argument"));
+
+        // Everything under web but its DEBUG variable, which is offered again.
+        let synced = ok(
+            store,
+            &[
+                "env",
+                "sync",
+                "--to",
+                "production",
+                "--env",
+                "fix-web",
+                "--only",
+                "web",
+                "--skip",
+                "web.env.DEBUG",
+                "--version",
+                version,
+            ],
+        );
+        assert_eq!(synced["staged"], json!(["web"]));
+        assert_eq!(synced["closing"], json!(false));
+        assert_eq!(synced["next"], json!("ployz deploy --env production"));
+        assert_eq!(
+            ok(store, &["get", "web.image"])["settings"][0]["value"],
+            json!("web:2")
+        );
+        let plan = ok(
+            store,
+            &["env", "sync", "--to", "--plan", "--env", "fix-web"],
+        );
+        assert_eq!(plan["rows"][0]["label"], json!("web.env.DEBUG"));
+        assert_eq!(plan["rows"].as_array().unwrap().len(), 1);
+
+        // --close closes the Branch once it synced; it never ran, so it is gone.
+        let closed = ok(
+            store,
+            &["env", "sync", "--to", "--env", "fix-web", "--close"],
+        );
+        assert_eq!(closed["closing"], json!(true));
+        let listed = ok(store, &["env", "ls"]);
+        assert_eq!(listed["environments"].as_array().unwrap().len(), 1);
+    }
+}
+
+#[test]
 fn an_agent_adds_mounts_detaches_and_removes_volumes() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);

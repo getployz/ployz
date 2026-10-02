@@ -209,6 +209,8 @@ commands! {
     /// Move changes between a Branch and its Parent: Save or Update.
     Move(crate::Move) -> Moved(crate::Moved) as *
         => crate::branch::move_changes(tx, who, sealing, c);
+    /// Sync a Branch's changes into its Parent: staged there, never deleting or deploying.
+    Sync(crate::SyncChanges) -> Synced(crate::Synced) => crate::branch::sync(tx, who, c);
     /// Turn a Branch's Live Node into an Own Copy.
     CopyNode(crate::CopyNode) -> Branch(crate::Branched) => crate::branch::copy_node(tx, who, c);
     /// Keep a Branch, or stop keeping it.
@@ -340,6 +342,7 @@ impl Written {
             Self::Deployment(deployment) => Some(&deployment.environment_id),
             Self::Domain(staged) => Some(&staged.environment.id),
             Self::Moved(moved) => Some(&moved.into.id),
+            Self::Synced(synced) => Some(&synced.into.id),
             Self::Batch(batched) => batched.results.last().and_then(Self::environment),
             // A new Project or Branch has no pull request yet; the rest write no
             // Environment's config, or delete it.
@@ -405,6 +408,8 @@ pub enum Written {
     BuildOrder(crate::BuildOrderView),
     /// Changes moved between a Branch and its Parent.
     Moved(Box<crate::Moved>),
+    /// Changes synced into another Environment.
+    Synced(crate::Synced),
     /// The Default Environment changed: the Project's Environments after it.
     DefaultEnvironment(crate::EnvironmentsView),
     /// A Branch setup changed: the Project's Environments after it.

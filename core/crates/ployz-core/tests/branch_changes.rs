@@ -2,6 +2,9 @@
     clippy::indexing_slicing,
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
+//! The comparison engine a Sync runs: the rows between two Environments over what
+//! they last shared, and landing the picked ones. A new Branch compares the same way,
+//! over no base.
 
 use ployz_core::config::{
     ConfigError, branch_changes, parse_environment_intent, redact_environment_intent,
@@ -230,7 +233,7 @@ fn own_copy_with_fresh_ids_has_only_meant_to_differ_rows() {
 }
 
 #[test]
-fn move_conflict_and_differ_rows_follow_the_one_rule() {
+fn sync_conflict_and_differ_rows_follow_the_one_rule() {
     let base = parent();
     let mut from = branch();
     let mut into = parent();
@@ -353,7 +356,7 @@ fn variable_choices_default_by_kind() {
 }
 
 #[test]
-fn update_marks_provided_nodes_live_and_base_only_nodes_left_out() {
+fn a_sync_into_a_branch_marks_its_live_nodes_live_and_base_only_nodes_left_out() {
     let result = changes(
         Some(&parent()),
         &parent(),
@@ -529,7 +532,7 @@ fn table_picks() -> Value {
 }
 
 #[test]
-fn picks_land_in_next_and_advance_base_by_exactly_the_picks() {
+fn a_sync_lands_its_picks_and_advances_the_base_by_exactly_them() {
     let from = changed_branch();
     let mut into = parent();
     svc(&mut into, API)["config"]["startCommand"] = json!("into-start");
@@ -791,7 +794,7 @@ fn create_copies_picked_nodes_with_fresh_ids_and_the_branch_naming() {
 }
 
 #[test]
-fn a_new_branch_service_is_introduced_into_the_parent() {
+fn a_sync_introduces_a_new_branch_service_into_the_parent() {
     let mut from = branch();
     let mut jobs = service(
         0xc000_0000,
@@ -854,7 +857,7 @@ fn a_new_branch_service_is_introduced_into_the_parent() {
 }
 
 #[test]
-fn update_introduces_parent_services_with_the_branch_naming() {
+fn a_sync_into_a_branch_introduces_parent_services_with_its_naming() {
     let mut from = parent();
     let mut mail = service(
         0xb000_0000,
@@ -871,7 +874,7 @@ fn update_introduces_parent_services_with_the_branch_naming() {
         .as_array_mut()
         .unwrap()
         .retain(|s| s["lineageId"] != WORKER);
-    let update = |provided: Value, picks: Value| {
+    let sync = |provided: Value, picks: Value| {
         run(request(
             Some(&base),
             &from,
@@ -880,12 +883,12 @@ fn update_introduces_parent_services_with_the_branch_naming() {
             "provided": provided, "hostnames": {"from": "", "into": "-pr-7"}, "picks": picks}),
         ))
     };
-    let result = update(json!([WORKER]), json!([{"key": format!("{JOBS}:node")}])).unwrap();
+    let result = sync(json!([WORKER]), json!([{"key": format!("{JOBS}:node")}])).unwrap();
     let mail = find(&result["next"]["services"], "lineageId", JOBS);
     assert_eq!(mail["config"]["managedHostnames"][0]["prefix"], "mail-pr-7");
     assert_eq!(row(&result, &format!("{CACHE}:node"))["why"], "left_out");
     // Dropping a lineage from `provided` offers it as an introduction.
-    let result = update(json!([]), json!([{"key": format!("{WORKER}:node")}])).unwrap();
+    let result = sync(json!([]), json!([{"key": format!("{WORKER}:node")}])).unwrap();
     assert_eq!(row(&result, &format!("{WORKER}:node"))["role"], "move");
     find(&result["next"]["services"], "lineageId", WORKER);
 }

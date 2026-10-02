@@ -45,6 +45,8 @@ const refreshedBy = {
   build_order: ["store_organization"],
   // A Move compares a Branch with its Parent's Working and Applied State; a PR's Conditional Save reads its facts.
   move: ["store_environment", "store_deployment", "store_pull_request"],
+  // A Sync compares a Branch's Working State with its Parent's over what the two last shared.
+  sync: ["store_environment", "store_deployment"],
   // The Project names its Default Environment; a removal is a Deployment.
   environments: ["store_project", "store_environment", "store_deployment"],
   projects: ["store_project", "store_environment"],

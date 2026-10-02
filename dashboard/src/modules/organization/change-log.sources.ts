@@ -15,6 +15,7 @@ export const storeChangeSources = {
   config_registry_credential: { key: ["environment_id"] },
   config_service_policy: { key: ["environment_id"] },
   config_environment_branch: { key: ["environment_id"] },
+  config_sync_base: { key: ["environment_id"] },
   config_build_order: { key: ["organization_id"] },
   config_pr_plan: { key: ["project_id"] },
   config_pr_environment: { key: ["environment_id"] },

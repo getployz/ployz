@@ -1,9 +1,9 @@
 //! `ployz env`: Environments in the Config Store, and Branches of them. `ls`,
 //! `default` and `rm` manage them; `rm` is the one teardown path. A Branch
 //! copies the Services and Volumes picked (and what they use that its Parent
-//! doesn't run) and uses the rest live; `save` stages its changes in its Parent,
-//! `update` stages what its Parent deployed since, `copy` turns a Live Node into
-//! its own copy, and `keep` keeps it after a Save.
+//! doesn't run) and uses the rest live; `sync` (or `save`) stages its changes in
+//! its Parent, `update` stages what its Parent deployed since, `copy` turns a Live
+//! Node into its own copy, and `keep` keeps it after syncing into its Parent.
 
 mod branch;
 mod pr;
@@ -110,10 +110,54 @@ pub(crate) fn command() -> Command {
                         .value_name("SERVICE=COMMAND")
                         .help("Run COMMAND in a copied Service before it first deploys"),
                 )
-                .arg(switch("keep", None).help("Keep it after a Save"))
+                .arg(switch("keep", None).help("Keep it after syncing into its Parent"))
                 .arg(value("fix", None).value_name("DEPLOYMENT").help(
                     "Fix this failed Deployment of the Parent: copies what it failed to apply",
                 )),
+        )
+        .subcommand(
+            store::scoped(
+                Command::new("sync")
+                    .about("Stage the Branch's changes in its Parent")
+                    .long_about(
+                        "Stage the Branch's changes in its Parent's Working State as the \
+                         Parent's changes to deploy: the Branch's Working State, deployed or \
+                         not. Nothing is deleted, published or deployed, and sizing, domains, \
+                         generated addresses, the Git branch and Volume data stay each \
+                         Environment's own. --plan lists the changes and the version to pass \
+                         back. A change left out is offered again next time, as is one the \
+                         Parent discards before it deploys. A change the Parent made too \
+                         since the two last shared is overwritten. Example: ployz env sync \
+                         --to --env fix-api --skip api.env.DEBUG --close",
+                    ),
+            )
+            .arg(
+                value("to", None)
+                    .value_name("ENV")
+                    .num_args(0..=1)
+                    .required(true)
+                    .help("Sync into ENV; with no value, the Branch's Parent"),
+            )
+            .arg(
+                repeated("only").value_name("ROW").help(
+                    "Sync only this change, or every change under it (web, web.env); repeatable",
+                ),
+            )
+            .arg(
+                repeated("skip")
+                    .value_name("ROW")
+                    .help("Leave out this change, or every change under it; repeatable"),
+            )
+            .arg(
+                value("version", None)
+                    .help("Refuse unless this is still the version --plan showed"),
+            )
+            .arg(switch("plan", None).help("List the changes and the version; sync nothing"))
+            .arg(
+                switch("close", None)
+                    .help("Close the Branch once its changes landed; refused for a kept Branch")
+                    .conflicts_with("plan"),
+            ),
         )
         .subcommand(
             moving(
@@ -159,8 +203,11 @@ pub(crate) fn command() -> Command {
             .arg(expect()),
         )
         .subcommand(
-            store::scoped(Command::new("keep").about("Keep the Branch after a Save and when idle"))
-                .arg(switch("off", None).help("Stop keeping it")),
+            store::scoped(
+                Command::new("keep")
+                    .about("Keep the Branch after syncing into its Parent and when idle"),
+            )
+            .arg(switch("off", None).help("Stop keeping it")),
         )
         .subcommand(deploy::following(
             base(
@@ -236,6 +283,7 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
         "setup" => setup,
         "rm" => rm,
         "branch" => branch::branch,
+        "sync" => branch::sync,
         "save" => branch::save,
         "update" => branch::update,
         "copy" => branch::copy,

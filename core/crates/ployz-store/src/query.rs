@@ -173,6 +173,8 @@ queries! {
     /// The Organization's Build Order.
     BuildOrder(crate::BuildOrderQuery) -> crate::BuildOrderView
         => crate::builders::build_order(tx, who);
+    /// What syncing a Branch's changes into its Parent would stage.
+    Sync(crate::SyncQuery) -> crate::SyncView => crate::branch::sync_view(tx, who, q);
     /// What moving changes between a Branch and its Parent would stage.
     Move(crate::MoveQuery) -> crate::MoveView => crate::branch::move_view(tx, who, q);
     /// A Project's Environments.

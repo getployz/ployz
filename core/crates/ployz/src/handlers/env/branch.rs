@@ -1,12 +1,13 @@
-//! Branches: create one, move changes between it and its Parent (Save, Update,
-//! withdraw, take), copy a Live Node into it, keep it.
+//! Branches: create one, sync its changes into its Parent, move changes between
+//! it and its Parent (Save, Update, withdraw, take), copy a Live Node into it, keep it.
 
 use clap::{ArgMatches, Command};
 use ployz_core::ServiceName;
 use ployz_store::{
     Branched, ConditionalSaveId, CopyNode, CreateBranch, DeploymentId, EnvironmentId,
     EnvironmentName, EnvironmentRef, EnvironmentSummary, KeepBranch, Move, MovePick, MoveQuery,
-    MoveView, Moved, PickChoice, Save, SaveState, SetupCommand, Take, Update, When,
+    MoveView, Moved, PickChoice, Save, SaveState, SetupCommand, SyncChanges, SyncQuery, SyncView,
+    Synced, Take, Update, When,
 };
 use serde_json::json;
 
@@ -52,6 +53,186 @@ pub(super) fn branch(root: &ArgMatches) -> Result<(), Error> {
     let made = store(root)?.write(&create)?;
     let deploy = store::next(matches, &["deploy", "--env", create.name.as_str()]);
     finish(&made, Some(deploy), "Made Branch")
+}
+
+/// `env sync`: with `--plan` the changes and their version, else the Sync, its rows
+/// picked by `--only` and `--skip` against the changes read first.
+pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let into = matches
+        .get_one::<String>("to")
+        .map(|name| {
+            Ok::<_, Error>(EnvironmentRef {
+                project: project(matches)?,
+                environment: Some(EnvironmentName::parse(name.as_str())?),
+            })
+        })
+        .transpose()?;
+    let query = SyncQuery {
+        from: store::environment(matches)?,
+        into,
+    };
+    let store = store(root)?;
+    let words = sync_words(matches);
+    if matches.get_flag("plan") {
+        let view = store.read(&query)?;
+        return sync_plan(matches, &words, &view);
+    }
+    let (only, skip) = (
+        super::super::string_values(matches, "only"),
+        super::super::string_values(matches, "skip"),
+    );
+    let mut version = matches.get_one::<String>("version").cloned();
+    let picks = match only.is_empty() && skip.is_empty() {
+        true => None,
+        false => {
+            let view = store.read(&query)?;
+            // The rows were picked from this view: sync exactly them.
+            let picks = picked(matches, &words, &view, (&only, &skip))?;
+            version.get_or_insert(view.version);
+            Some(picks)
+        }
+    };
+    let request = SyncChanges {
+        from: query.from,
+        into: query.into,
+        picks,
+        version,
+        close_after: matches.get_flag("close"),
+    };
+    let synced = store.try_write(&request).map_err(|error| {
+        // Stale, or nothing to sync: the plan shows what there is now.
+        store.fail(store::with_next(
+            error,
+            |refusal| refusal.details.get("version").is_some(),
+            || store::next(matches, &[words.as_slice(), &["--plan"]].concat()),
+        ))
+    })?;
+    synced_out(matches, &synced)
+}
+
+/// `env sync --to [ENV]`, as given.
+fn sync_words(matches: &ArgMatches) -> Vec<&str> {
+    let mut words = vec!["env", "sync", "--to"];
+    words.extend(matches.get_one::<String>("to").map(String::as_str));
+    words
+}
+
+/// Whether row `label` is `asked`, or under it: `web` covers `web.image`.
+fn under(label: &str, asked: &str) -> bool {
+    label
+        .strip_prefix(asked)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+}
+
+/// The keys of `view`'s rows `--only` names (else those ticked by default) less
+/// those `--skip` names; a name matching no row is refused.
+fn picked(
+    matches: &ArgMatches,
+    words: &[&str],
+    view: &SyncView,
+    (only, skip): (&[String], &[String]),
+) -> Result<Vec<String>, Error> {
+    if let Some(unknown) = only
+        .iter()
+        .chain(skip)
+        .find(|asked| !view.rows.iter().any(|row| under(&row.label, asked)))
+    {
+        let labels: Vec<&str> = view.rows.iter().map(|row| row.label.as_str()).collect();
+        return Err(Error::detailed(
+            ployz_core::RpcErrorCode::NotFound,
+            format!("No change named {unknown} syncs"),
+            json!({
+                "valid_children": labels,
+                "next": store::next(matches, &[words, &["--plan"]].concat()),
+            }),
+        ));
+    }
+    Ok(view
+        .rows
+        .iter()
+        .filter(|row| match only.is_empty() {
+            true => row.ticked,
+            false => only.iter().any(|asked| under(&row.label, asked)),
+        })
+        .filter(|row| !skip.iter().any(|asked| under(&row.label, asked)))
+        .map(|row| row.key.clone())
+        .collect())
+}
+
+fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<(), Error> {
+    let next = (!view.rows.is_empty()).then(|| {
+        store::next(
+            matches,
+            &[words, &["--version", view.version.as_str()]].concat(),
+        )
+    });
+    crate::output::finish(&Next::new(view, next), || {
+        say!(
+            "{} → {} (version {}):",
+            view.from.name,
+            view.into.name,
+            view.version
+        );
+        if view.rows.is_empty() {
+            say!("  nothing to sync");
+        }
+        for row in &view.rows {
+            let mut notes = Vec::new();
+            if !row.ticked {
+                notes.push("left out unless picked".to_owned());
+            }
+            if row.changed {
+                notes.push(format!("{} changed it too", view.into.name));
+            }
+            if row.new {
+                notes.push("new".to_owned());
+            }
+            let notes = match notes.is_empty() {
+                true => String::new(),
+                false => format!(" ({})", notes.join(", ")),
+            };
+            say!(
+                "  {}: {} → {}{notes}",
+                row.label,
+                store::shown(&row.into),
+                store::shown(&row.from)
+            );
+        }
+    })
+}
+
+/// What a Sync did, and `deploy` of where it landed when it staged something.
+fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
+    let into = &synced.into;
+    let next = (!synced.staged.is_empty())
+        .then(|| in_project(matches, &["deploy", "--env", into.name.as_str()]));
+    crate::output::finish(&Next::new(synced, next.clone()), || {
+        say!(
+            "Synced {} → {}/{}.",
+            synced.from.name,
+            into.project,
+            into.name
+        );
+        if !synced.staged.is_empty() {
+            say!("Staged: {}", crate::handlers::joined(&synced.staged));
+        }
+        if synced.closing {
+            say!("Closing {}.", synced.from.name);
+        }
+        if let Some(next) = &next {
+            say!("next: {next}");
+        }
+    })
+}
+
+/// `ployz WORDS…` in the same Project as this command, whatever its Environment.
+fn in_project(matches: &ArgMatches, words: &[&str]) -> String {
+    let mut words: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
+    if let Ok(Some(project)) = matches.try_get_one::<String>("project") {
+        words.extend(["--project".to_owned(), project.clone()]);
+    }
+    shell_words::join(std::iter::once("ployz".to_owned()).chain(words))
 }
 
 /// `env save` and `env update`: the Branch in scope, the changes picked, the guard.
@@ -266,13 +447,7 @@ fn moved_out(matches: &ArgMatches, shift: Shift, moved: &Moved) -> Result<(), Er
         #[serde(skip_serializing_if = "Option::is_none")]
         close: Option<String>,
     }
-    let scoped = |words: &[&str]| {
-        let mut words: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
-        if let Ok(Some(project)) = matches.try_get_one::<String>("project") {
-            words.extend(["--project".to_owned(), project.clone()]);
-        }
-        shell_words::join(std::iter::once("ployz".to_owned()).chain(words))
-    };
+    let scoped = |words: &[&str]| in_project(matches, words);
     let into: &EnvironmentSummary = &moved.into;
     let at_merge = moved
         .conditional_save
