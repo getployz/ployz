@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { ChangeKind } from "@ployz/sdk";
+import type { ChangeKind, RowId } from "@ployz/sdk";
 import { ArrowRightIcon, MinusIcon, MoreVerticalIcon, PencilIcon, PinIcon, PlusIcon, Undo2Icon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
@@ -33,11 +33,11 @@ export type EnvironmentChangesReviewProps = {
   onDiscardNode: (group: ChangeGroup) => void;
   onDiscardRow: (group: ChangeGroup, path: string) => void;
   /** A change's second line: a merged pull request's or the Parent's value, with Use. */
-  noteFor?: (group: ChangeGroup, row: ChangeRow) => ReactNode;
+  noteFor?: (row: ChangeRow) => ReactNode;
   /** Never sync for a change that arrived from another Environment: marks it and discards it. */
-  neverSyncFor?: (group: ChangeGroup, row: ChangeRow) => (() => void) | undefined;
-  /** Where a change (or without a row, its node) came from; none for this Environment's own edits. */
-  originFor?: (group: ChangeGroup, row?: ChangeRow) => ChangeOrigin | undefined;
+  neverSyncFor?: (row: ChangeRow) => (() => void) | undefined;
+  /** Where the changes in a Sync row (a setting's, or a node's) came from; none for this Environment's own edits. */
+  originFor?: (row: RowId) => ChangeOrigin | undefined;
   /** Lists after the changes: merged pull requests' and the Parent's values no change shows. */
   after?: ReactNode;
 };
@@ -82,11 +82,11 @@ type Line = { group: ChangeGroup; row?: ChangeRow };
 function changeSections(groups: readonly ChangeGroup[], originFor: EnvironmentChangesReviewProps["originFor"]) {
   const sections = new Map<string, { origin?: ChangeOrigin; lines: Line[] }>([["", { lines: [] }]]);
   for (const group of groups) {
-    const node = originFor?.(group);
+    const node = originFor?.(group.row);
     const lines: Line[] = group.lifecycle !== "update" || !group.rows.length ? [{ group }] : [];
     for (const line of [...lines, ...group.rows.map((row) => ({ group, row }))]) {
       // A setting of a node that arrived whole came with it.
-      const origin = (line.row && originFor?.(group, line.row)) || node;
+      const origin = (line.row?.row && originFor?.(line.row.row)) || node;
       const key = origin?.title ?? "";
       const section = sections.get(key) ?? { origin, lines: [] };
       section.lines.push(line);
@@ -121,8 +121,8 @@ function Groups({ groups, totalChanges, onClose, onDiscardNode, onDiscardRow, no
                 </ChangeLine>
               );
             }
-            const neverSync = neverSyncFor?.(group, row);
-            const note = noteFor?.(group, row);
+            const neverSync = neverSyncFor?.(row);
+            const note = noteFor?.(row);
             return (
               <ChangeLine key={row.changeKey} kind={row.kind} label={`${group.nodeName} ${row.label}`}
                 value={<Value kind={row.kind} before={row.currentValue} after={row.newValue} />}

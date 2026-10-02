@@ -58,10 +58,10 @@ describe("Details", () => {
 
   it("groups what arrived apart from the Environment's own changes, said once in words", () => {
     const own = row("api.env.LOG_LEVEL", { currentValue: "warn", newValue: "debug" });
-    const arrived = row("api.env.CACHE_TTL");
+    const arrived = row("api.env.CACHE_TTL", { row: "a:variables.CACHE_TTL" as RowId });
     review({
       groups: [api([own, arrived]), { ...nginx, nodeName: "web", discardPath: "web" }],
-      originFor: (_, line) => line?.path === arrived.path ? fromProduction : undefined,
+      originFor: (at) => at === arrived.row ? fromProduction : undefined,
     });
 
     const [mine, theirs] = screen.getAllByRole("region");
@@ -94,7 +94,7 @@ describe("Details", () => {
     const arrived = row("api.env.CACHE_TTL");
     const test = review({
       groups: [api([arrived, row("api.replicas", { label: "Replicas", name: "Replicas", variable: false })])], totalChanges: 1,
-      neverSyncFor: (_, line) => line.path === arrived.path ? neverSync : undefined,
+      neverSyncFor: (line) => line === arrived ? neverSync : undefined,
     });
 
     const own = await menuOf("api Replicas");
