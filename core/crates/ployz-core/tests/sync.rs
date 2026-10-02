@@ -8,10 +8,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
-    Applied, Arrives, Cell, ConfigError, EncryptedSecretValue, Hostnames, NodeRef, Plan,
+    Applied, Arrives, Cell, Cells, ConfigError, EncryptedSecretValue, Hostnames, NodeRef, Plan,
     PlannedRow, Policy, RowId, SavedEnvironmentIntent, SealedSecret, Sides, Verdict, Way, Why,
-    cell_at, name_of, parse_environment_intent, plan, put, redact_environment_intent,
-    row_of_change, unapply,
+    name_of, parse_environment_intent, plan, put, redact_environment_intent, row_of_change,
+    unapply,
 };
 use serde_json::{Value, json};
 
@@ -1556,15 +1556,11 @@ fn name_of_names_a_mount_by_its_volume() {
 #[test]
 fn a_cell_reads_as_the_plan_reads_it() {
     let plan = compare(Some(&parent()), &branch(), &parent(), Way::Sync);
-    let into = intent(&parent());
+    let into = Cells::of(&intent(&parent()), "");
     for row in plan.rows() {
-        assert_eq!(cell_at(&into, &row.id, ""), row.into, "{}", row.id);
+        assert_eq!(*into.at(&row.id), row.into, "{}", row.id);
     }
-    let secret = cell_at(
-        &into,
-        &format!("{API}:variables.TOKEN").parse().unwrap(),
-        "",
-    );
+    let secret = into.at(&format!("{API}:variables.TOKEN").parse().unwrap());
     assert!(secret.is_secret(), "{secret:?}");
     assert!(!Cell::Absent.is_secret());
 }

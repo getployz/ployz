@@ -39,7 +39,10 @@ pub(crate) fn never_sync(
     let environment = scope::lock(tx, who, &request.environment)?;
     let candidates = match request.off {
         true => never_synced(tx, &environment)?,
-        false => named_in(&[&environment.working], &rows_of(&environment.working)),
+        false => named_in(
+            &[&environment.working],
+            Cells::of(&environment.working, "").rows(),
+        ),
     };
     for row in &resolve_all(&request.rows, &candidates)? {
         let at = row.at().to_string();

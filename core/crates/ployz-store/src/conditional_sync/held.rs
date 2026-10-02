@@ -98,10 +98,9 @@ pub(crate) fn hold(
     }
     let mut brought = Vec::new();
     for (repository, stored) in &rows {
+        let from = Cells::of(&stored.from, &stored.hostnames.from);
         for pick in &stored.picks {
-            if pick.reviewed.is_secret()
-                || cell_at(&stored.from, &pick.at.row, &stored.hostnames.from).is_secret()
-            {
+            if pick.reviewed.is_secret() || from.at(&pick.at.row).is_secret() {
                 brought.push((*repository, pick.at.clone()));
             }
         }

@@ -27,8 +27,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    Applied, Arrives, At, Cell, Hostnames, Plan, PlannedRow, Policy as Rules, RowId,
-    SavedEnvironmentIntent, SealedSecret, Sides, Verdict, Way, cell_at, plan,
+    Applied, Arrives, At, Cell, Cells, Hostnames, Plan, PlannedRow, Policy as Rules, RowId,
+    SavedEnvironmentIntent, SealedSecret, Sides, Verdict, Way, plan,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -140,9 +140,9 @@ struct Pick {
 }
 
 impl Pick {
-    /// `suffix` is the Destination's generated-address suffix.
-    fn landed(&self, working: &SavedEnvironmentIntent, suffix: &str) -> Landed {
-        match self.staged.as_ref() == Some(&cell_at(working, &self.at.row, suffix)) {
+    /// `working` is the Destination's Working State.
+    fn landed(&self, working: &Cells) -> Landed {
+        match self.staged.as_ref() == Some(working.at(&self.at.row)) {
             true => Landed::Staged,
             false => Landed::Hint,
         }
@@ -228,6 +228,7 @@ fn admitted(
     marks: &BTreeSet<RowId>,
     held: &BTreeMap<RowId, SealedSecret>,
 ) -> Result<Admitted, RpcError> {
+    let working = Cells::of(working, &stored.hostnames.into);
     admit(stored, saved, marks, held, |row| {
         let needs_value = matches!(
             row.verdict,
@@ -240,7 +241,7 @@ fn admitted(
             .picks
             .iter()
             .any(|pick| pick.at.row == row.id && pick.reviewed == row.into)
-            && (!needs_value || cell_at(working, &row.id, &stored.hostnames.into) == row.into)
+            && (!needs_value || *working.at(&row.id) == row.into)
     })
 }
 
@@ -603,9 +604,9 @@ pub(crate) fn land(
             .filter(|node| arriving.contains(node.resource_lineage_id.as_str()))
             .cloned(),
     );
+    let latest_cells = Cells::of(&latest.intent, &stored.hostnames.into);
     let staged = admit(&stored, &working, &marks, &held, |row| {
-        !introduced.contains(row.id.lineage())
-            && row.into == cell_at(&latest.intent, &row.id, &stored.hostnames.into)
+        !introduced.contains(row.id.lineage()) && row.into == *latest_cells.at(&row.id)
     })?;
     let cells = staged_cells(&staged.applied);
     let next = with_variable_ids_of(next, &working, staged.applied.next);
@@ -663,9 +664,10 @@ pub(crate) fn hints(
             continue;
         }
         let number = row.number(1, "Conditional Sync")?;
+        let working = Cells::of(&environment.working, &stored.hostnames.into);
         for pick in stored.picks {
             hints.push(PullRequestHint {
-                landed: pick.landed(&environment.working, &stored.hostnames.into),
+                landed: pick.landed(&working),
                 conditional_sync: row.parse(0, "Conditional Sync ID")?,
                 pull_request: number,
                 at: pick.at,

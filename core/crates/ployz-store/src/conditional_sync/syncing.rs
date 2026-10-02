@@ -180,10 +180,11 @@ pub(crate) fn take(
     if found.state != ConditionalSyncState::Landed || stored.landed != latest {
         return Err(gone());
     }
+    let working = Cells::of(&into.working, &stored.hostnames.into);
     let hints: Vec<NamedRow> = stored
         .picks
         .iter()
-        .filter(|pick| pick.landed(&into.working, &stored.hostnames.into) == Landed::Hint)
+        .filter(|pick| pick.landed(&working) == Landed::Hint)
         .map(|pick| pick.at.clone())
         .collect();
     let rows = hints.iter().map(|hint| hint.row.clone()).collect();

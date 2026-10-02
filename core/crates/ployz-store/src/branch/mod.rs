@@ -31,12 +31,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
     Arrives, At, BranchNodeReason, BranchNodeRole, BranchPicks, BranchPlan, BranchPreset, Cell,
-    ConfigError, EnvironmentNodeType, Hostnames, Landed, LiveLineageUse, LiveValuesInput,
+    Cells, ConfigError, EnvironmentNodeType, Hostnames, Landed, LiveLineageUse, LiveValuesInput,
     LiveValuesOwner, NodeRef, Plan, PlannedRow, Policy as Rules, RowId, SavedEnvironmentIntent,
     SavedServiceIntent, SavedVariableProducer, SealedCell, SealedSecret, ServiceImageCredentials,
     ServiceSource, Setting, Sides, Unapplied, ValuePart, ValuePartOwner, Verdict, Way, Why,
-    canonicalize_environment_intent, cell_at, compile_environment_intent, live_values, marks_on,
-    parse_service_setting, plan, plan_branch, put, rows_of, unapply,
+    canonicalize_environment_intent, compile_environment_intent, live_values, marks_on,
+    parse_service_setting, plan, plan_branch, put, unapply,
 };
 use ployz_core::{Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};

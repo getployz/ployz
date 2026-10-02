@@ -478,12 +478,13 @@ pub(crate) fn rewind(
     (before, after): (&SavedEnvironmentIntent, &SavedEnvironmentIntent),
 ) -> Result<(), RpcError> {
     let mut undone = Vec::new();
+    let (before, after) = (Cells::of(before, ""), Cells::of(after, ""));
     for arrived in arrived(tx, receiver, "state = 'pending'", None)? {
         let Arrival::Pending { prior, .. } = arrived.arrival else {
             continue;
         };
         let row = arrived.row;
-        if cell_at(before, &row, "") == cell_at(after, &row, "") {
+        if before.at(&row) == after.at(&row) {
             continue;
         }
         let at = row.at().to_string();
@@ -524,10 +525,10 @@ pub(crate) fn deployed(
         return Ok(());
     }
     let environment = scope::load_by_id(tx, receiver)?;
-    let suffix = suffix(tx, &environment)?;
+    let saved = Cells::of(saved, &suffix(tx, &environment)?);
     for arrived in &pending {
         let row = &arrived.row;
-        if !lineages.contains(row.lineage()) || cell_at(saved, row, &suffix) != arrived.value {
+        if !lineages.contains(row.lineage()) || *saved.at(row) != arrived.value {
             continue;
         }
         tx.execute(

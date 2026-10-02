@@ -604,6 +604,9 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
         nodes(from),
         nodes(into),
     );
+    let base_cells = base.map(|base| Cells::of(base, &hostnames.into));
+    let from_cells = Cells::of(from, &hostnames.from);
+    let into_cells = Cells::of(into, &hostnames.into);
     let mut rows = Vec::new();
     let mut push = |id: RowId, cells: [Cell; 3], requires: Option<RowId>, verdict| {
         let [base, from, into] = cells;
@@ -616,14 +619,17 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
             verdict,
         });
     };
-    let node_cells = |lineage: &str| {
+    let cells_at = |row: &RowId| {
         [
-            (base, &hostnames.into),
-            (Some(from), &hostnames.from),
-            (Some(into), &hostnames.into),
+            base_cells
+                .as_ref()
+                .map_or(&Cell::Absent, |cells| cells.at(row)),
+            from_cells.at(row),
+            into_cells.at(row),
         ]
-        .map(|(env, suffix)| env.map_or(Cell::Absent, |env| node_cell(env, lineage, suffix)))
+        .map(Cell::clone)
     };
+    let node_cells = |lineage: &str| cells_at(&RowId::node(lineage));
     for lineage in from_nodes
         .keys()
         .chain(into_nodes.keys())
@@ -632,24 +638,14 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
         let in_base = base_nodes.contains_key(lineage);
         match (from_nodes.get(lineage), into_nodes.get(lineage)) {
             (Some(&from_node), Some(&into_node)) => {
-                let base_cells = base
-                    .zip(base_nodes.get(lineage))
-                    .map(|(env, node)| cells(env, *node, &hostnames.into))
-                    .unwrap_or_default();
-                let from_cells = cells(from, from_node, &hostnames.from);
-                let into_cells = cells(into, into_node, &hostnames.into);
-                for at in from_cells
-                    .keys()
-                    .chain(into_cells.keys())
+                for id in from_cells
+                    .places(lineage)
+                    .chain(into_cells.places(lineage))
+                    .map(|(id, _)| id)
                     .collect::<BTreeSet<_>>()
                 {
-                    let id = RowId {
-                        lineage: (*lineage).to_owned(),
-                        at: at.clone(),
-                    };
-                    let cell =
-                        |cells: &BTreeMap<At, Cell>| cells.get(at).cloned().unwrap_or(Cell::Absent);
-                    let sides = [cell(&base_cells), cell(&from_cells), cell(&into_cells)];
+                    let id = id.clone();
+                    let sides = cells_at(&id);
                     let [b, f, i] = &sides;
                     if let Some(verdict) = policy.verdict(&id, b, f, i) {
                         push(id, sides, None, verdict);
@@ -663,30 +659,27 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
                     push(id, node_cells(lineage), None, Verdict::Differs(Why::Data));
                 }
             }
-            (Some(&node), None) if !policy.live.contains(*lineage) && !in_base => {
+            (Some(_), None) if !policy.live.contains(*lineage) && !in_base => {
                 let id = RowId::node(lineage);
-                let from_cells = cells(from, node, &hostnames.from);
                 let node_cells = node_cells(lineage);
                 let Some(mut verdict) =
                     policy.verdict(&id, &Cell::Absent, &node_cells[1], &Cell::Absent)
                 else {
                     continue;
                 };
-                if from_cells.keys().any(|at| {
-                    at.needed()
-                        && policy.marked(&RowId {
-                            lineage: (*lineage).to_owned(),
-                            at: at.clone(),
-                        })
-                }) {
+                if from_cells
+                    .places(lineage)
+                    .any(|(child, _)| child.at.needed() && policy.marked(child))
+                {
                     verdict = Verdict::Differs(Why::NeverSynced);
                 }
                 push(id.clone(), node_cells, None, verdict);
-                for (at, cell) in from_cells.into_iter().filter(|(at, _)| !at.carried()) {
-                    let child = RowId {
-                        lineage: (*lineage).to_owned(),
-                        at,
-                    };
+                for (child, cell) in from_cells
+                    .places(lineage)
+                    .filter(|(id, _)| !id.at.carried())
+                {
+                    let child = child.clone();
+                    let cell = cell.clone();
                     let judge = match policy.way {
                         Way::Copy => Policy::moved,
                         Way::Sync | Way::Follow => Policy::verdict,
@@ -817,11 +810,13 @@ impl Plan {
         let mut base = self.base.clone();
         let mut landed = Vec::new();
         let mut waiting = Vec::new();
+        let into_cells = Cells::of(&self.into, &self.hostnames.into);
+        let from_cells = Cells::of(&self.from, &self.hostnames.from);
         for (row, arrives) in landing {
             let id = &row.id;
-            let was = sealed_cell(&self.into, id, &self.hostnames.into);
+            let was = sealed_cell(&self.into, &into_cells, id);
             let value = match arrives {
-                Arrives::AsIs => sealed_cell(&self.from, id, &self.hostnames.from),
+                Arrives::AsIs => sealed_cell(&self.from, &from_cells, id),
                 Arrives::NeedsValue => match values.get(id) {
                     Some(secret) => SealedCell::Secret(secret.clone()),
                     None => {
@@ -958,13 +953,6 @@ pub fn put(intent: &Intent, row: &RowId, cell: &Cell) -> Result<Intent, ConfigEr
     Ok(intent)
 }
 
-/// What `intent` holds at `row`, redacted, as a plan's cells read it: generated
-/// addresses without `suffix`, the one `intent`'s Environment gives them.
-#[must_use]
-pub fn cell_at(intent: &Intent, row: &RowId, suffix: &str) -> Cell {
-    cell(intent, row, suffix)
-}
-
 /// Why [`unapply`] refused.
 #[derive(Debug)]
 pub enum Unapplied {
@@ -982,31 +970,20 @@ pub enum Unapplied {
 /// Returns [`Unapplied::Changed`] for a row changed since it landed, and
 /// [`Unapplied::Invalid`] when what it held no longer fits.
 pub fn unapply(intent: &Intent, suffix: &str, landed: &[Landed]) -> Result<Intent, Unapplied> {
+    let cells = Cells::of(intent, suffix);
     for one in landed {
         let row = &one.row;
-        let changed = || Err(Unapplied::Changed(row.clone()));
-        if cell(intent, row, suffix) != one.value {
-            return changed();
+        if *cells.at(row) != one.value {
+            return Err(Unapplied::Changed(row.clone()));
         }
-        let Some(&node) = nodes(intent)
-            .get(row.lineage.as_str())
-            .filter(|_| row.at == At::Node)
-        else {
+        if row.at != At::Node {
             continue;
-        };
-        let with = |at: &At| {
-            landed
-                .iter()
-                .any(|l| l.row.lineage == row.lineage && l.row.at == *at)
-        };
-        if let Some(at) = cells(intent, node, suffix)
-            .into_keys()
-            .find(|at| !at.carried() && !with(at))
+        }
+        if let Some((child, _)) = cells
+            .places(&row.lineage)
+            .find(|(child, _)| !child.at.carried() && !landed.iter().any(|l| l.row == **child))
         {
-            return Err(Unapplied::Changed(RowId {
-                lineage: row.lineage.clone(),
-                at,
-            }));
+            return Err(Unapplied::Changed(child.clone()));
         }
     }
     let mut order: Vec<&Landed> = landed.iter().collect();
@@ -1099,20 +1076,6 @@ pub fn marks_on<'m>(row: &RowId, marks: &'m BTreeSet<RowId>) -> impl Iterator<It
     marks.iter().filter(move |mark| {
         *mark == row || (row.at == At::Node && mark.lineage == row.lineage && mark.at.needed())
     })
-}
-
-/// Every row `intent` holds something at: each node, and each place in it.
-#[must_use]
-pub fn rows_of(intent: &Intent) -> Vec<RowId> {
-    let mut rows = Vec::new();
-    for (lineage, node) in nodes(intent) {
-        rows.push(RowId::node(lineage));
-        rows.extend(cells(intent, node, "").into_keys().map(|at| RowId {
-            lineage: lineage.to_owned(),
-            at,
-        }));
-    }
-    rows
 }
 
 /// [`put_into`], a secret with its value.
@@ -1423,38 +1386,74 @@ fn volume<'intent>(env: &'intent Intent, lineage: &str) -> Option<&'intent Saved
         .find(|v| v.resource_lineage_id == lineage)
 }
 
+/// Every row an Environment holds something at, with what it holds there, redacted,
+/// as a plan reads it: projected once per Environment, then read by row.
+pub struct Cells(BTreeMap<RowId, Cell>);
+
+impl Cells {
+    /// Project `intent`, whose generated addresses end in `suffix`.
+    #[must_use]
+    pub fn of(intent: &Intent, suffix: &str) -> Self {
+        let mut rows = BTreeMap::new();
+        for (lineage, node) in nodes(intent) {
+            let cells = cells(intent, node, suffix);
+            rows.insert(RowId::node(lineage), node_cell(node, &cells));
+            rows.extend(cells.into_iter().map(|(at, cell)| {
+                let lineage = lineage.to_owned();
+                (RowId { lineage, at }, cell)
+            }));
+        }
+        Self(rows)
+    }
+
+    /// What it holds at `row`; a Volume's data reads as its node.
+    #[must_use]
+    pub fn at(&self, row: &RowId) -> &Cell {
+        let found = match row.at {
+            At::Data => self.0.get(&RowId::node(&row.lineage)),
+            At::Node | At::Name | At::Storage | At::Setting(_) | At::Mount(_) | At::Variable(_) => {
+                self.0.get(row)
+            }
+        };
+        found.unwrap_or(&Cell::Absent)
+    }
+
+    /// Every row it holds something at.
+    pub fn rows(&self) -> impl Iterator<Item = &RowId> {
+        self.0.keys()
+    }
+
+    /// The places in node `lineage`, without the node itself.
+    fn places<'cells>(
+        &'cells self,
+        lineage: &str,
+    ) -> impl Iterator<Item = (&'cells RowId, &'cells Cell)> {
+        self.0
+            .range(RowId::node(lineage)..)
+            .take_while(move |(id, _)| id.lineage == lineage)
+            .filter(|(id, _)| id.at != At::Node)
+    }
+}
+
 /// A node's cell is what it arrives with as a new node: its name and the settings it
 /// carries (no custom domains), each by where it is.
-fn node_cell(env: &Intent, lineage: &str, suffix: &str) -> Cell {
-    let Some(&node) = nodes(env).get(lineage) else {
-        return Cell::Absent;
-    };
+fn node_cell(node: NodeRef, cells: &BTreeMap<At, Cell>) -> Cell {
     let mut cell = serde_json::Map::new();
     if let NodeRef::Service(service) = node {
         cell.insert("name".to_owned(), json!(service.slug));
     }
-    for (at, value) in cells(env, node, suffix) {
+    for (at, value) in cells {
         if let (true, Cell::Value(value)) = (at.needed(), value) {
-            cell.insert(at.to_string(), value);
+            cell.insert(at.to_string(), value.clone());
         }
     }
     Cell::Value(Value::Object(cell))
 }
 
-/// `env`'s cell at `row`, sealed or redacted.
-fn cell(env: &Intent, row: &RowId, suffix: &str) -> Cell {
-    match (&row.at, nodes(env).get(row.lineage.as_str())) {
-        (At::Node | At::Data, _) => node_cell(env, &row.lineage, suffix),
-        (_, Some(node)) => cells(env, *node, suffix)
-            .remove(&row.at)
-            .unwrap_or(Cell::Absent),
-        (_, None) => Cell::Absent,
-    }
-}
-
-/// [`cell`], a secret with its value where `env` holds one.
-fn sealed_cell(env: &Intent, row: &RowId, suffix: &str) -> SealedCell {
-    let cell = cell(env, row, suffix);
+/// `env`'s cell at `row` as `cells` projects it, a secret with its value where `env`
+/// holds one.
+fn sealed_cell(env: &Intent, cells: &Cells, row: &RowId) -> SealedCell {
+    let cell = cells.at(row).clone();
     let (Cell::Secret { fingerprint }, At::Variable(key)) = (&cell, &row.at) else {
         return SealedCell::Cell(cell);
     };
