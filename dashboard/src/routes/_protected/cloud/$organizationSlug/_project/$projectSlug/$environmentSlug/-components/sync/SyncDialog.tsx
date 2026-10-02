@@ -64,7 +64,7 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
     const typed: Record<RowId, string> = {};
     for (const row of picked) {
       const value = values[row.row];
-      if (row.secret?.needs_value && value) typed[row.row] = value;
+      if (row.secret && value) typed[row.row] = value;
     }
     let written;
     try {
@@ -167,7 +167,7 @@ function SyncRowItem({ row, into, ticked, left, onFlip, onNeverSync, value, onVa
       </label>
       {!ticked && row.name !== null && !left ? (
         <Button variant="outline" size="sm" onClick={onNeverSync}><PinIcon data-icon="inline-start" />Never sync</Button>
-      ) : row.secret?.needs_value ? (
+      ) : row.secret ? (
         <Input type="password" autoComplete="off" aria-label={`Set ${into}'s value of ${line.name}`}
           placeholder={row.secret.held ? "Value held" : `Set ${into}'s value`} value={value}
           onChange={(event) => onValue(event.target.value)} className="w-48" />

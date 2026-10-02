@@ -326,7 +326,7 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
                 ployz_store::SyncChange::New => notes.push("new".to_owned()),
                 ployz_store::SyncChange::Changed => {}
             }
-            if row.secret.as_ref().is_some_and(|secret| secret.needs_value) {
+            if row.secret.is_some() {
                 notes.push(format!(
                     "{} lacks this secret: it arrives without a value",
                     view.into.name

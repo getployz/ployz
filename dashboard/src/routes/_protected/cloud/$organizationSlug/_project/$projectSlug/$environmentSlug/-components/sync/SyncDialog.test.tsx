@@ -21,7 +21,7 @@ const id = (value: string) => value as RowId;
 const row = (row: string, node: string, name: string | null, extra: Partial<SyncRow> = {}): SyncRow => ({
   row: id(row), node, kind: "service", name, change: "changed", from: null, into: null, ticked: true, requires: null, secret: null, ...extra,
 });
-const secret = { needs_value: true, held: false };
+const secret = { held: false };
 const rows = [
   row("a:variables.LOG_LEVEL", "api", "env.LOG_LEVEL", { from: "debug", into: "warn", change: "conflict" }),
   // Changed in production too, but a secret: its value never syncs, so Secret is what it says.
@@ -94,7 +94,7 @@ it("lists what is never synced from the footer, and offers to close the Branch a
 });
 
 it("says a Conditional Sync goes live at the merge, offers no Close, and shows a value already held", async () => {
-  open({ view: syncView({ at_merge: 142, rows: [row("a:variables.TOKEN", "api", "env.TOKEN", { secret: { needs_value: true, held: true } })] }) });
+  open({ view: syncView({ at_merge: 142, rows: [row("a:variables.TOKEN", "api", "env.TOKEN", { secret: { held: true } })] }) });
   const sync = await dialog();
   expect(sync.getByText("These changes from fix-api go live in production when #142 merges.")).toBeTruthy();
   expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();

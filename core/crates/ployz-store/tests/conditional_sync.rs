@@ -413,12 +413,7 @@ fn a_conditional_sync_goes_live_with_the_push_that_carries_its_merge() {
         ]
     );
     // Its secret goes by name only: production has no value of it yet.
-    let lacks = |held| {
-        Some(SecretRow {
-            needs_value: true,
-            held,
-        })
-    };
+    let lacks = |held| Some(SecretRow { held });
     assert_eq!(secret(&review, "web.env.MODE"), None);
     assert_eq!(secret(&review, "web.env.TOKEN"), lacks(false));
     // Nothing to hold a value for before it syncs.

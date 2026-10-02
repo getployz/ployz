@@ -39,7 +39,7 @@ const rows = [
   row("image", { from: "shop/api:1.9", into: "shop/api:1.8" }),
   row("env.LOG_LEVEL", { from: "debug", into: "warn", change: "conflict" }),
   row("env.APP_ENV", { from: "staging", into: "production" }),
-  row("env.STRIPE_WEBHOOK_SECRET", { from: { secret: true }, change: "new", secret: { needs_value: true, held: false } }),
+  row("env.STRIPE_WEBHOOK_SECRET", { from: { secret: true }, change: "new", secret: { held: false } }),
 ];
 const neverSynced = (name: string) =>
   ({ row: `a:${name}` as RowId, node: "api", kind: "service" as const, name, marks: [{ environment: "fix-api", row: `a:${name}` as RowId }] });

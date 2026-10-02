@@ -892,10 +892,7 @@ fn a_secret_the_receiver_lacks_syncs_with_the_value_given_or_without_one() {
     // production has TOKEN: it is never offered. The secrets it lacks are, flagged.
     let review = view(&store, &who);
     assert_eq!(labels(&review), ["api", "api.env.KEY", "web.env.API_KEY"]);
-    let lacking = Some(SecretRow {
-        needs_value: true,
-        held: false,
-    });
+    let lacking = Some(SecretRow { held: false });
     for label in ["api.env.KEY", "web.env.API_KEY"] {
         let secret = row(&review, label);
         assert_eq!(

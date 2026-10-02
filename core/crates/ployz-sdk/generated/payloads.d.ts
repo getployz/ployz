@@ -2595,11 +2595,6 @@ environment: EnvironmentSummary, pull_request: PullRequestNumber, row: RowId, };
 
 export type SecretRow = {
 /**
- * The receiver lacks it: give [`SyncChanges::values`] one, or it arrives
- * without one and the receiver's Deploy refuses until it has one.
- */
-needs_value: boolean,
-/**
  * A value is held for it to land with at the merge.
  */
 held: boolean, };

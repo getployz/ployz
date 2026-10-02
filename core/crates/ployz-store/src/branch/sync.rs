@@ -124,12 +124,10 @@ pub enum SyncChange {
     Conflict,
 }
 
-/// A secret a Sync carries.
+/// A secret a Sync carries without its value: give [`SyncChanges::values`] one, or
+/// it arrives without one and the receiver's Deploy refuses until it has one.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct SecretRow {
-    /// The receiver lacks it: give [`SyncChanges::values`] one, or it arrives
-    /// without one and the receiver's Deploy refuses until it has one.
-    pub needs_value: bool,
     /// A value is held for it to land with at the merge.
     pub held: bool,
 }
@@ -271,9 +269,7 @@ pub(crate) fn sync_view(
             .ok_or_else(|| error::corrupt("Sync row"))?;
         match row.verdict {
             Verdict::Moves {
-                conflict,
-                ticked,
-                arrives,
+                conflict, ticked, ..
             } => rows.push(SyncRow {
                 change: match (conflict, &row.into) {
                     (true, _) => SyncChange::Conflict,
@@ -285,7 +281,6 @@ pub(crate) fn sync_view(
                 ticked,
                 requires: row.requires.clone(),
                 secret: (row.from.is_secret() || row.into.is_secret()).then(|| SecretRow {
-                    needs_value: arrives == Arrives::NeedsValue,
                     held: held.contains_key(&row.id),
                 }),
                 at,

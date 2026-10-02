@@ -2461,7 +2461,7 @@ fn a_synced_secret_arrives_without_its_value_and_deploy_says_which_to_set() {
             (
                 "web.env.API_KEY".to_owned(),
                 &json!({ "secret": true }),
-                &json!({ "needs_value": true, "held": false })
+                &json!({ "held": false })
             )
         );
         ok(store, &["env", "sync", "--to", "--env", "fix-web"]);

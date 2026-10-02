@@ -7,7 +7,7 @@ import { closesIn, goesLive, syncButtonState, syncLine, syncPicks, syncSections 
 const row = (id: string, node: string, name: string | null, extra: Partial<SyncRow> = {}): SyncRow => ({
   row: id as RowId, node, kind: "service", name, change: "changed", from: null, into: null, ticked: true, requires: null, secret: null, ...extra,
 });
-const secret = { needs_value: true, held: false };
+const secret = { held: false };
 
 const image = row("a:source.image", "api", "image", { from: "shop/api:1.9", into: "shop/api:1.8" });
 const logLevel = row("a:variables.LOG_LEVEL", "api", "env.LOG_LEVEL", { from: "debug", into: "warn", change: "conflict" });
