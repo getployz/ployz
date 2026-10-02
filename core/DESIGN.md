@@ -34,7 +34,9 @@ new major line (1.0 first) may break the promise, and it says so. The promise co
 daemon carries or speaks — the replicated store and its bodies, the local
 Machine record, Machine RPC within `PROTOCOL_MAJOR`, the enrollment protocol,
 and the release source. The CLI surface is a client courtesy with ordinary
-deprecation, not a guarantee.
+deprecation, not a guarantee. Branch Sync broke it on purpose, with no users yet:
+`env save` and `env update` are gone, and the JSON field `save` is now
+`conditional_sync`.
 
 Frozen formats evolve **additively with tolerant readers**: rows and bodies only
 gain fields; every new field is optional with a default; nothing is renamed or
