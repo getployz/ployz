@@ -102,32 +102,6 @@ export type BindPropagation = "private" | "rprivate" | "shared" | "rshared" | "s
 
 export type BindRecursive = "disabled" | "writable" | "readonly";
 
-export type BranchChanges = { rows: Array<BranchRow>, next: SavedEnvironmentIntent, base: SavedEnvironmentIntent | null,
-/**
- * Canonical, id-free rendering of the rows and picks; callers hash it.
- */
-review: string, };
-
-export type BranchChangesInput = {
-/**
- * Null when creating: nothing is shared yet.
- */
-base: SavedEnvironmentIntent | null, from: SavedEnvironmentIntent, into: SavedEnvironmentIntent,
-/**
- * Lineages `into` may use live.
- */
-provided: Array<string>, hostnames: BranchHostnames,
-/**
- * Row keys marked Never sync, each covering the rows under it too
- * (`<lineage>:healthcheck` covers `<lineage>:healthcheck.path`): what would move
- * is shown as meant to differ instead.
- */
-neverSynced?: Array<string>, way?: BranchWay,
-/**
- * Row keys to move. Absent compares only; present moves the picked rows.
- */
-picks?: Array<string>, };
-
 export type BranchHead = { repository_id: RepositoryId, branch: BranchName,
 /**
  * The head Cloud compared from: the Store's, as [`crate::ConfigStore::branch_head`]
@@ -149,8 +123,6 @@ changed: Array<string> | null,
  * Cloud found `head` is or descends from: this push carries those.
  */
 merged: Array<CommitSha>, };
-
-export type BranchHostnames = { from: string, into: string, };
 
 export type BranchName = string;
 
@@ -206,18 +178,6 @@ export type BranchQuery = {
  */
 environment: EnvironmentRef, };
 
-export type BranchReason = "live" | "left_out" | "sizing" | "custom_domain" | "generated_address" | "git_branch" | "data" | "never_synced";
-
-export type BranchRow = {
-/**
- * `<lineageId>:<path>`.
- */
-key: string, base: JsonValue, from: JsonValue, into: JsonValue, } & ({ "role": "move",
-/**
- * `into` also changed since `base`; shown into → from.
- */
-conflict: boolean, } | { "role": "differ", why: BranchReason, });
-
 export type BranchView = {
 /**
  * The Branch.
@@ -255,8 +215,6 @@ closes_at: number | null,
  * waits for the merge.
  */
 pull_request: PullRequestRef | null, };
-
-export type BranchWay = "sync" | "follow" | "exact";
 
 export type Branched = {
 /**
