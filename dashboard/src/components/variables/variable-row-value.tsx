@@ -61,7 +61,7 @@ export function VariableRowValue({
 
   return (
     <div className="flex min-w-0 flex-1 items-center gap-1.5">
-      <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
+      <span className="ph-no-capture min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
         {isSealed || !revealed ? MASK : plainValue}
       </span>
       {!isSealed && unresolvedReferences.length > 0 ? (

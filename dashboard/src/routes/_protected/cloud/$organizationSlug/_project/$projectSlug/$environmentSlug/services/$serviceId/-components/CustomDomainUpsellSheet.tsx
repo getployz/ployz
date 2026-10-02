@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { ArrowDownIcon, CheckIcon, LockIcon, ZapIcon } from "lucide-react";
@@ -10,6 +10,7 @@ import { PRO_PRICE } from "#/modules/billing/billing";
 import { syncBillingAfterCheckoutServerFn } from "#/modules/billing/billing.functions";
 import { billingKeys } from "#/modules/billing/billing.queries";
 import { useEmbeddedCheckout } from "#/modules/billing/use-embedded-checkout";
+import { capturePostHog } from "#/modules/analytics/posthog";
 
 const PRO_PERKS = [
   { title: "HTTPS handled", detail: "Certificates issued and renewed for you." },
@@ -37,6 +38,8 @@ export function CustomDomainUpsellSheet({
   const queryClient = useQueryClient();
   // Paid; Cloud is reading Pro from Polar. Custom domains follow from Pro on hosted Cloud.
   const [finishing, setFinishing] = useState(false);
+  // The top of the paid funnel: checkout_started and subscription_started come from the server.
+  useEffect(() => capturePostHog("custom_domain_upsell_viewed"), []);
 
   async function finishUpgrade() {
     setFinishing(true);

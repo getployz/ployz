@@ -9,6 +9,7 @@ minimumReleaseAgeExclude:
 blockExoticSubdeps: false
 
 allowBuilds:
+  core-js: false
   esbuild: true
   inngest-cli: true
   lightningcss: true

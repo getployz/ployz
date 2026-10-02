@@ -1,6 +1,7 @@
 import { Route as RootRoute } from "#/routes/__root";
 import type { AuthSession } from "#/auth/auth";
 import { authClient } from "#/auth/auth-client";
+import { resetPostHog } from "#/modules/analytics/posthog";
 import { Data, Result } from "effect";
 import { useHydrated, useRouter } from "@tanstack/react-router";
 
@@ -39,6 +40,7 @@ export function useSignOut() {
         if (response.error) {
           throw response.error;
         }
+        resetPostHog();
 
         await router.navigate({ to: "/", reloadDocument: true });
         return Result.succeed(undefined);

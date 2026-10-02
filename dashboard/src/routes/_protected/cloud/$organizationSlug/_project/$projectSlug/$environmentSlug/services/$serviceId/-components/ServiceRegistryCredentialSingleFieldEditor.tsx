@@ -30,7 +30,7 @@ export function ServiceRegistryCredentialSingleFieldEditor({
   onClose,
 }: ServiceRegistryCredentialSingleFieldEditorProps) {
   return (
-    <div className="mt-4 flex flex-col gap-2">
+    <div className="mt-4 flex flex-col gap-2 ph-no-capture">
       <SchemaFieldInput
         schema={schema}
         value=""

@@ -44,6 +44,7 @@ what is missing or invalid.
 | `INNGEST_BASE_URL`, `INNGEST_CONNECT_GATEWAY_URL` | no | Inngest API and Connect gateway; local dev defaults otherwise |
 | `BETTER_AUTH_TRUSTED_ORIGINS`, `PORT` | no | `PORT` defaults to 3000 |
 | `POLAR_ACCESS_TOKEN`, `POLAR_WEBHOOK_SECRET`, `POLAR_PRODUCT_ID`, `POLAR_SERVER` | no | all or none; none disables billing and every Organization is unlimited |
+| `POSTHOG_KEY`, `POSTHOG_HOST` | no | product analytics, Ployz-hosted only; no key disables it. `POSTHOG_HOST` defaults to PostHog US Cloud; `pnpm posthog:backfill` sends existing users and Organizations once |
 
 ## Build and deploy
 
@@ -157,7 +158,7 @@ Download `ployz-cloud-compose.yml` as `compose.yml` and `ployz-cloud.env.example
 as `.env` from the release into one directory, then fill in `.env`. Every
 uncommented variable is required; web and worker exit with a
 `ConfigError` if one is missing.
-Leave all `POLAR_*` variables unset.
+Leave all `POLAR_*` and `POSTHOG_*` variables unset.
 
 ```sh
 docker compose run --rm web npm run db:migrate   # explicit, once per install/upgrade

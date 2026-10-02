@@ -22,7 +22,8 @@ export function ApplyChangeValueCell({
         <div
           className={cn(
             // Long values (image refs, hostnames) wrap rather than push New value off the table.
-            "flex min-h-8 items-center rounded-lg px-3 font-mono text-sm whitespace-normal wrap-anywhere",
+            // A value may be a variable's secret: replays hide it.
+            "ph-no-capture flex min-h-8 items-center rounded-lg px-3 font-mono text-sm whitespace-normal wrap-anywhere",
             side === "current" ? "bg-muted" : null,
             side === "current" && tone === "applied" ? "text-muted-foreground line-through" : null,
             side === "new" && tone === "applied" ? "border" : null,

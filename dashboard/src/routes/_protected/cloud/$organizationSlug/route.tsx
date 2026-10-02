@@ -6,12 +6,13 @@ import { DashboardShell } from "#/components/dashboard-shell";
 import type { DashboardScope } from "#/components/dashboard-navigation-model";
 import { rememberSelectedOrganization } from "#/modules/organization/organization-state.queries";
 import { RuntimeProvider } from "#/providers/runtime-provider";
+import { setPostHogOrganization } from "#/modules/analytics/posthog";
 
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug")({
   loader: async ({ params, context }) => {
     const organization = await requireOrganization(context, params.organizationSlug);
     await prefetchOrgStore(context, params.organizationSlug);
-    return { organizationId: organization.id };
+    return { organizationId: organization.id, organizationName: organization.name };
   },
   component: RouteComponent,
 });
@@ -19,7 +20,11 @@ export const Route = createFileRoute("/_protected/cloud/$organizationSlug")({
 function RouteComponent() {
   const params = Route.useParams();
   const { queryClient, session } = Route.useRouteContext();
+  const { organizationId, organizationName } = Route.useLoaderData();
   useOrganizationChanges(params.organizationSlug);
+  useEffect(() => {
+    setPostHogOrganization(organizationId, { name: organizationName, slug: params.organizationSlug });
+  }, [organizationId, organizationName, params.organizationSlug]);
   useEffect(() => {
     void rememberSelectedOrganization(queryClient, params.organizationSlug, session.session.activeOrganizationSlug);
   }, [queryClient, params.organizationSlug, session.session.activeOrganizationSlug]);

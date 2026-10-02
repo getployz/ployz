@@ -51,3 +51,7 @@ File names say where a source lives, not its kind: a Query file that projects or
 - Keep version calculation and readiness inside the owning data module. Test the SSR-to-hydration handoff for loading fallbacks as well as mismatched HTML.
 
 Verify cold SSR waits, cold client navigation commits with a pending region, readiness reveals content, and failures reach an error state. Warm navigation reuses cached data.
+
+## Session replay
+
+Ployz-hosted Cloud records sessions in PostHog with inputs and text visible; only password inputs are masked. Any element that shows or accepts a secret (variable values, credentials, tokens, commands that embed one, before and after values in a diff) carries the `ph-no-capture` class, which hides it from replays and autocapture. Put it on the shared component so every use is covered.

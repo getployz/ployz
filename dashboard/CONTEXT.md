@@ -89,7 +89,7 @@ An explicit local action that removes Ployz substrate and machine-local Ployz ma
 _Avoid_: Runtime wipe, machine removal, Cloud cleanup, destructive reset, force removed machine
 
 **Self-hosted Cloud**:
-A Cloud instance an operator runs on their own infrastructure from the released image: Cloud web, Cloud worker, Inngest, Redis and Postgres, with their own GitHub apps. It has no billing: Polar is never configured and every Organization runs unlimited, meaning every Custom Domain Capability check is granted. It still uses the Ployz-hosted relay, Hosted DNS, installer and release binaries.
+A Cloud instance an operator runs on their own infrastructure from the released image: Cloud web, Cloud worker, Inngest, Redis and Postgres, with their own GitHub apps. It has no billing: Polar is never configured and every Organization runs unlimited, meaning every Custom Domain Capability check is granted. It sends no product analytics: PostHog is never configured. It still uses the Ployz-hosted relay, Hosted DNS, installer and release binaries.
 _Avoid_: Standalone Cluster, on-prem control plane, self-hosted relay
 
 **Billing Plan**:
