@@ -245,6 +245,51 @@ fn a_parents_deploy_stages_its_changes_in_each_branch_once_tagged_with_where_fro
     assert!(incoming(&store, &who, "fix-web").is_empty());
 }
 
+/// Details joins a change to what brought it by row, not by name: a healthcheck's
+/// path is a part of the `healthcheck` row that followed.
+#[test]
+fn each_staged_change_names_the_row_it_falls_in() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.healthcheck", json!("/up"))],
+    );
+    deploy(&store, &who, "production", 2);
+    deploy(&store, &who, "fix-web", 3);
+    set(
+        &store,
+        &who,
+        "production",
+        &[
+            ("web.healthcheck", json!("/live")),
+            ("web.image", json!("web:2")),
+        ],
+    );
+    deploy(&store, &who, "production", 4);
+
+    let view = diff(&store, &who, "fix-web");
+    let arrived: Vec<_> = view.incoming.iter().map(|change| &change.at.row).collect();
+    let web = &view.changes[0];
+    assert_eq!(web.row.at(), "node");
+    let rows: Vec<(&str, Option<String>)> = web
+        .settings
+        .iter()
+        .map(|row| (row.path.as_str(), row.row.as_ref().map(RowId::at)))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("web.image", Some("source.image".to_owned())),
+            ("web.healthcheck.path", Some("healthcheck".to_owned())),
+        ]
+    );
+    for row in &web.settings {
+        assert!(arrived.contains(&row.row.as_ref().unwrap()), "{}", row.path);
+    }
+}
+
 #[test]
 fn a_branchs_own_change_wins_and_the_parents_value_is_a_hint_to_take() {
     let (store, who) = shop();

@@ -17,10 +17,10 @@ describe("planSummary", () => {
 
 describe("hintNotes", () => {
   const hint = (name: string): PullRequestHint =>
-    ({ conditional_sync: "s", pull_request: 5, row: `w:${name}` as RowId, node: "web", name, value: "x", landed: "hint" });
-  it("puts a hint beside its change by its path, the rest after", () => {
-    const notes = hintNotes([hint("startCommand"), hint("env.KEY")], new Set(["web.startCommand"]));
-    expect(notes.at("web.startCommand").map((note) => note.name)).toEqual(["startCommand"]);
+    ({ conditional_sync: "s", pull_request: 5, row: `w:${name}` as RowId, node: "web", kind: "service", name, value: "x", landed: "hint" });
+  it("puts a hint beside the change in its row, the rest after", () => {
+    const notes = hintNotes([hint("startCommand"), hint("env.KEY")], new Set(["w:startCommand" as RowId]));
+    expect(notes.at("w:startCommand" as RowId).map((note) => note.name)).toEqual(["startCommand"]);
     expect(notes.rest.map((note) => note.name)).toEqual(["env.KEY"]);
   });
 });

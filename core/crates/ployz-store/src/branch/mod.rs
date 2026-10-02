@@ -158,6 +158,8 @@ pub struct NamedRow {
     pub row: RowId,
     /// Its Service or Volume.
     pub node: NodeName,
+    /// Whether `node` is a Service or a Volume.
+    pub kind: EnvironmentNodeType,
     /// Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
     /// node itself.
     pub name: Option<String>,

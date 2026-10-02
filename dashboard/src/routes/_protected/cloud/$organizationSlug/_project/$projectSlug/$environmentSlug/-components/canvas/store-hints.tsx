@@ -2,10 +2,10 @@ import { useLoaderData, useParams } from "@tanstack/react-router";
 import type { DiffView, FollowHint, PullRequestHint, RowId } from "@ployz/sdk";
 import { Button } from "#/components/ui/button";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
-import { presentRow, rowPath } from "#/modules/config-store/store-branches";
+import { presentRow } from "#/modules/config-store/store-branches";
 import { hintNotes } from "#/modules/config-store/store-pull-requests";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import type { ChangeGroup } from "#/modules/config-store/store-deployments";
+import type { ChangeGroup, ChangeRow } from "#/modules/config-store/store-deployments";
 import type { ChangeOrigin } from "./EnvironmentChangesReview";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 
@@ -17,13 +17,16 @@ import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
  *   ("production has since set {value} · Use theirs").
  * Hints no change shows, such as a Parent's change discarded here, come after the changes.
  *
- * `path` is a row's, or the group's `discardPath` for the node itself: what the Store's rows line up with.
+ * Each joins a change to them by the Sync row it falls in: a setting's, or without one, its node's.
  */
 export function storeHintNotes(diff: DiffView, groups: readonly ChangeGroup[], neverSync: (path: string, row: RowId) => void) {
-  const paths = new Set(groups.flatMap((group) => group.rows.map((row) => row.path)));
-  const notes = hintNotes(diff.hints, paths);
-  const follows = hintNotes(diff.follow_hints, paths);
-  const incoming = (path: string) => diff.incoming.find((change) => rowPath(change) === path);
+  const rows = new Set(groups.flatMap((group) => group.rows.flatMap((row) => row.row ?? [])));
+  const notes = hintNotes(diff.hints, rows);
+  const follows = hintNotes(diff.follow_hints, rows);
+  const incoming = (group: ChangeGroup, row?: ChangeRow) => {
+    const at = row ? row.row : group.row;
+    return diff.incoming.find((change) => change.row === at);
+  };
   const name = diff.environment.name;
   // Hints no change shows, both kinds in one list.
   const rest = [
@@ -34,15 +37,15 @@ export function storeHintNotes(diff: DiffView, groups: readonly ChangeGroup[], n
     ...follows.rest.map((hint) => ({ key: `${hint.from}:${hint.row}`, hint, note: <FollowNote hint={hint} version={diff.version} />, staged: false })),
   ];
   return {
-    originFor: (_: ChangeGroup, path: string): ChangeOrigin | undefined => {
-      const from = incoming(path)?.from;
+    originFor: (group: ChangeGroup, row?: ChangeRow): ChangeOrigin | undefined => {
+      const from = incoming(group, row)?.from;
       return from
         ? { title: `From ${from}'s deploy`, description: `${name} is a Branch of ${from}, so what ${from} deploys arrives here too.` }
         : undefined;
     },
-    noteFor: (_: ChangeGroup, path: string) => {
-      const prs = notes.at(path);
-      const parents = follows.at(path);
+    noteFor: (_: ChangeGroup, row: ChangeRow) => {
+      const prs = notes.at(row.row);
+      const parents = follows.at(row.row);
       if (!prs.length && !parents.length) return null;
       return (
         <span className="flex flex-col items-start">
@@ -52,9 +55,9 @@ export function storeHintNotes(diff: DiffView, groups: readonly ChangeGroup[], n
       );
     },
     // A setting that arrived; a whole node can't be marked.
-    neverSyncFor: (_: ChangeGroup, path: string) => {
-      const change = incoming(path);
-      return change && change.name !== null ? () => neverSync(path, change.row) : undefined;
+    neverSyncFor: (group: ChangeGroup, row: ChangeRow) => {
+      const change = incoming(group, row);
+      return change && change.name !== null ? () => neverSync(row.path, change.row) : undefined;
     },
     after: rest.length ? (
       <ItemGroup role="group" aria-label="Not among these changes">
@@ -79,7 +82,7 @@ function HintNote({ hint, version }: { hint: PullRequestHint; version: string })
   return (
     <span className="flex min-w-0 items-center gap-1 text-muted-foreground">
       PR #{hint.pull_request}: <span className="truncate font-mono text-foreground">{presented(hint).after || "—"}</span>
-      <Button variant="link" size="xs" aria-label={`Use PR #${hint.pull_request}'s ${rowPath(hint)}`}
+      <Button variant="link" size="xs" aria-label={`Use PR #${hint.pull_request}'s ${named(hint)}`}
         onClick={() => take(hint.conditional_sync, hint.row, version)}>
         Use
       </Button>
@@ -93,7 +96,7 @@ function FollowNote({ hint, version }: { hint: FollowHint; version: string }) {
   return (
     <span className="flex min-w-0 items-center gap-1 text-muted-foreground">
       {hint.from} has since set <span className="truncate font-mono text-foreground">{presented(hint).after || "—"}</span>
-      <Button variant="link" size="xs" aria-label={`Use theirs: ${hint.from}'s ${rowPath(hint)}`} onClick={() => take(hint.from, hint.row, version)}>
+      <Button variant="link" size="xs" aria-label={`Use theirs: ${hint.from}'s ${named(hint)}`} onClick={() => take(hint.from, hint.row, version)}>
         Use theirs
       </Button>
     </span>
@@ -114,3 +117,6 @@ function useTake() {
 
 /** A hint in a Sync's words: its node and setting, and the value it offers (a secret stays hidden). */
 const presented = (hint: PullRequestHint | FollowHint) => presentRow(hint);
+
+/** A hint's node and setting, as a Use button names it: `api LOG_LEVEL`. */
+const named = (hint: PullRequestHint | FollowHint) => `${presented(hint).node} ${presented(hint).label}`;

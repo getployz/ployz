@@ -1,4 +1,4 @@
-import type { DeploymentView, DiffView, ServiceListing } from "@ployz/sdk";
+import type { DeploymentView, DiffView, RowId, ServiceListing } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
@@ -13,12 +13,12 @@ const diff = asTestDouble<DiffView>()({
     {
       type: "service", id: "s1", name: "web", lifecycle: "update", comparison: "head", data: null,
       settings: [
-        { path: "web.replicas", kind: "update", before: 1, after: 2, canRestore: true },
-        { path: "web.env.TOKEN", kind: "add", before: null, after: "abc", canRestore: true },
-        { path: "web.mounts.pg-data", kind: "remove", before: "/data", after: null, canRestore: true },
+        { path: "web.replicas", kind: "update", before: 1, after: 2, canRestore: true, row: null },
+        { path: "web.env.TOKEN", kind: "add", before: null, after: "abc", canRestore: true, row: null },
+        { path: "web.mounts.pg-data", kind: "remove", before: "/data", after: null, canRestore: true, row: null },
       ],
     },
-    { type: "volume", id: "v1", name: "pg-data", lifecycle: "create", comparison: null, data: null, settings: [] },
+    { type: "volume", id: "v1", row: "v1:node" as RowId, name: "pg-data", lifecycle: "create", comparison: null, data: null, settings: [] },
   ],
 });
 const services = [asTestDouble<ServiceListing>()({ id: "s1", source: "image" })];
@@ -36,9 +36,9 @@ it("groups the Store's review by node, labelling rows from the catalog; a whole 
 });
 
 it("lets a deployed Volume's row discard alone when the Store can restore it", () => {
-  const [volume] = changeGroups({ ...diff, changes: [{ type: "volume", id: "v1", name: "store", lifecycle: "update", comparison: null, data: null, settings: [
-    { path: "volumes.store.name", kind: "update", before: "pg-data", after: "store", canRestore: true },
-    { path: "volumes.store.storage", kind: "update", before: null, after: { kind: "docker" }, canRestore: false },
+  const [volume] = changeGroups({ ...diff, changes: [{ type: "volume", id: "v1", row: "v1:node" as RowId, name: "store", lifecycle: "update", comparison: null, data: null, settings: [
+    { path: "volumes.store.name", kind: "update", before: "pg-data", after: "store", canRestore: true, row: null },
+    { path: "volumes.store.storage", kind: "update", before: null, after: { kind: "docker" }, canRestore: false, row: null },
   ] }] }, services);
   expect(volume?.rows.map((row) => [row.path, row.canDiscard])).toEqual([["volumes.store.name", true], ["volumes.store.storage", false]]);
 });

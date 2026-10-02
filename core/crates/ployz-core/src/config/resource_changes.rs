@@ -73,17 +73,5 @@ fn resource_change(
     after: Value,
     can_restore: bool,
 ) -> ServiceSettingChange {
-    ServiceSettingChange {
-        kind: if before.is_null() {
-            ChangeKind::Add
-        } else if after.is_null() {
-            ChangeKind::Remove
-        } else {
-            ChangeKind::Update
-        },
-        path,
-        before,
-        after,
-        can_restore,
-    }
+    super::service_changes::change(&path, before, after, can_restore)
 }

@@ -75,6 +75,6 @@ it("marks the domains the next Deploy changes: the generated one by its list, a 
   expect(domainChanged(changes, domain({ kind: "custom", hostname: "old.acme.com" }))).toBe(true);
   expect(domainChanged(changes, domain({ kind: "custom", hostname: "www.acme.com" }))).toBe(false);
   expect(domainChanged(changes, domain({ kind: "generated", prefix: "web", hostname: null }))).toBe(false);
-  const listChanged = { path: "web.managedHostnames", kind: "update" as const, before: [], after: [{ prefix: "web", targetPort: null }], canRestore: true };
+  const listChanged = { path: "web.managedHostnames", kind: "update" as const, before: [], after: [{ prefix: "web", targetPort: null }], canRestore: true, row: null };
   expect(domainChanged(new Map([["managedHostnames", listChanged]]), domain({ kind: "generated", prefix: "web", hostname: null }))).toBe(true);
 });

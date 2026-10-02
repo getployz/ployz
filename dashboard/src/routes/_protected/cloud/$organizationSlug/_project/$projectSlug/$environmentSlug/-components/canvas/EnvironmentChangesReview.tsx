@@ -33,11 +33,11 @@ export type EnvironmentChangesReviewProps = {
   onDiscardNode: (group: ChangeGroup) => void;
   onDiscardRow: (group: ChangeGroup, path: string) => void;
   /** A change's second line: a merged pull request's or the Parent's value, with Use. */
-  noteFor?: (group: ChangeGroup, path: string) => ReactNode;
+  noteFor?: (group: ChangeGroup, row: ChangeRow) => ReactNode;
   /** Never sync for a change that arrived from another Environment: marks it and discards it. */
-  neverSyncFor?: (group: ChangeGroup, path: string) => (() => void) | undefined;
-  /** Where a change (or with the group's `discardPath`, its node) came from; none for this Environment's own edits. */
-  originFor?: (group: ChangeGroup, path: string) => ChangeOrigin | undefined;
+  neverSyncFor?: (group: ChangeGroup, row: ChangeRow) => (() => void) | undefined;
+  /** Where a change (or without a row, its node) came from; none for this Environment's own edits. */
+  originFor?: (group: ChangeGroup, row?: ChangeRow) => ChangeOrigin | undefined;
   /** Lists after the changes: merged pull requests' and the Parent's values no change shows. */
   after?: ReactNode;
 };
@@ -82,11 +82,11 @@ type Line = { group: ChangeGroup; row?: ChangeRow };
 function changeSections(groups: readonly ChangeGroup[], originFor: EnvironmentChangesReviewProps["originFor"]) {
   const sections = new Map<string, { origin?: ChangeOrigin; lines: Line[] }>([["", { lines: [] }]]);
   for (const group of groups) {
-    const node = originFor?.(group, group.discardPath);
+    const node = originFor?.(group);
     const lines: Line[] = group.lifecycle !== "update" || !group.rows.length ? [{ group }] : [];
     for (const line of [...lines, ...group.rows.map((row) => ({ group, row }))]) {
       // A setting of a node that arrived whole came with it.
-      const origin = (line.row && originFor?.(group, line.row.path)) || node;
+      const origin = (line.row && originFor?.(group, line.row)) || node;
       const key = origin?.title ?? "";
       const section = sections.get(key) ?? { origin, lines: [] };
       section.lines.push(line);
@@ -121,8 +121,8 @@ function Groups({ groups, totalChanges, onClose, onDiscardNode, onDiscardRow, no
                 </ChangeLine>
               );
             }
-            const neverSync = neverSyncFor?.(group, row.path);
-            const note = noteFor?.(group, row.path);
+            const neverSync = neverSyncFor?.(group, row);
+            const note = noteFor?.(group, row);
             return (
               <ChangeLine key={row.changeKey} kind={row.kind} label={`${group.nodeName} ${row.label}`}
                 value={<Value kind={row.kind} before={row.currentValue} after={row.newValue} />}

@@ -1,6 +1,6 @@
 import type {
-  ChangeKind, DeploymentStatus, DeploymentSummary, DeploymentView, DiffView, JsonValue, NodeChange, NodeOutcome, NodeStatus, Outcome, ServiceListing,
-  UploadedSource,
+  ChangeKind, DeploymentStatus, DeploymentSummary, DeploymentView, DiffView, JsonValue, NodeChange, NodeOutcome, NodeStatus, Outcome, RowId,
+  ServiceListing, UploadedSource,
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { settingTitle } from "./catalog";
@@ -16,6 +16,8 @@ export type ChangeRow = {
   kind: ChangeKind;
   /** Its Store path, which Discard takes. */
   path: string;
+  /** The Sync row it falls in: what hints, arrivals and Never sync join it by. */
+  row: RowId | null;
   currentValue: string;
   newValue: string;
   canDiscard: boolean;
@@ -28,6 +30,8 @@ export type ChangeGroup = {
   nodeName: string;
   /** What Discard names to put the whole node back: `SERVICE`, or `volumes.VOLUME`. */
   discardPath: string;
+  /** The node's own Sync row. */
+  row: RowId;
   lifecycle: NodeChange["lifecycle"];
   rows: ChangeRow[];
   changeCount: number;
@@ -56,6 +60,7 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
     nodeId: node.id,
     nodeName: node.name,
     discardPath: node.type === "volume" ? `volumes.${node.name}` : node.name,
+    row: node.row,
     lifecycle: node.lifecycle,
     changeCount: Math.max(node.settings.length, 1),
     canDiscard: true,
@@ -69,6 +74,7 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
       return {
         changeKey: `${node.id}:${row.path}`,
         path: row.path,
+        row: row.row,
         kind: row.kind,
         label,
         name: variable ? setting.slice("env.".length) : label,

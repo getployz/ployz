@@ -340,6 +340,10 @@ pub(crate) fn named(intents: &[&SavedEnvironmentIntent], row: &RowId) -> Option<
         };
         Some(NamedRow {
             row: row.clone(),
+            kind: match node {
+                NodeName::Service(_) => EnvironmentNodeType::Service,
+                NodeName::Volume(_) => EnvironmentNodeType::Volume,
+            },
             node,
             name,
         })

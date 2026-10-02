@@ -136,7 +136,9 @@ impl RowId {
         self.at.to_string()
     }
 
-    fn node(lineage: &str) -> Self {
+    /// The row of the node itself.
+    #[must_use]
+    pub fn node(lineage: &str) -> Self {
         Self {
             lineage: lineage.to_owned(),
             at: At::Node,
@@ -903,6 +905,53 @@ pub fn name_of<'a>(intent: &'a Intent, row: &RowId) -> Option<(NodeRef<'a>, Stri
         }
     };
     Some((node, at))
+}
+
+/// The row a reviewed change falls in: `path` as the review compares node `lineage`
+/// (`env.KEY`, `healthcheck.path`, a Volume's `storage`), from `before` to `after`. A
+/// healthcheck's parts fall in `healthcheck`, a route in `routes`, a source switch in
+/// the source it switches to, or drops. None for what no row carries, like a
+/// Service's name.
+#[must_use]
+pub fn row_of_change(
+    intents: &[&Intent],
+    lineage: &str,
+    path: &str,
+    (before, after): (&Value, &Value),
+) -> Option<RowId> {
+    let at = if let Some(key) = path.strip_prefix("env.") {
+        At::Variable(key.to_owned())
+    } else if let Some(id) = path.strip_prefix("mounts.") {
+        let volume = intents
+            .iter()
+            .flat_map(|intent| &intent.volumes)
+            .find(|volume| volume.resource_id == id)?;
+        At::Mount(volume.resource_lineage_id.clone())
+    } else if path.starts_with("routes.") {
+        At::Setting("routes")
+    } else if path.split('.').next() == Some("healthcheck") {
+        At::Setting("healthcheck")
+    } else if path == "source" {
+        let source = match at(after, "type").as_str() {
+            Some("git" | "image") => after,
+            _ => before,
+        };
+        match at(source, "type").as_str()? {
+            "git" => At::Setting("source.repository"),
+            "image" => At::Setting("source.image"),
+            _ => return None,
+        }
+    } else {
+        match path {
+            "name" => At::Name,
+            "storage" => At::Storage,
+            path => At::Setting(SETTINGS.iter().find(|setting| **setting == path)?),
+        }
+    };
+    Some(RowId {
+        lineage: lineage.to_owned(),
+        at,
+    })
 }
 
 /// The marks among `marks` that keep `row` from syncing: its own and, for a node,

@@ -19,7 +19,7 @@ const fixApi = { project: "shop", environment: "fix-api" };
 const summary = (name: string) => ({ id: `id-${name}`, project: "shop", name, revision: 1 });
 const id = (value: string) => value as RowId;
 const row = (row: string, node: string, name: string | null, extra: Partial<SyncRow> = {}): SyncRow => ({
-  row: id(row), node, name, change: "changed", from: null, into: null, ticked: true, requires: null, secret: null, ...extra,
+  row: id(row), node, kind: "service", name, change: "changed", from: null, into: null, ticked: true, requires: null, secret: null, ...extra,
 });
 const secret = { needs_value: true, held: false };
 const rows = [
@@ -32,7 +32,7 @@ const rows = [
 ];
 const syncView = (extra: Partial<SyncView> = {}): SyncView => ({
   from: summary("fix-api"), into: summary("production"), at_merge: null, version: "4:abc", rows,
-  never_synced: [{ row: id("a:variables.STRIPE_KEY"), node: "api", name: "env.STRIPE_KEY", marks: [{ environment: "fix-api", row: id("a:variables.STRIPE_KEY") }] }],
+  never_synced: [{ row: id("a:variables.STRIPE_KEY"), node: "api", kind: "service", name: "env.STRIPE_KEY", marks: [{ environment: "fix-api", row: id("a:variables.STRIPE_KEY") }] }],
   ...extra,
 });
 

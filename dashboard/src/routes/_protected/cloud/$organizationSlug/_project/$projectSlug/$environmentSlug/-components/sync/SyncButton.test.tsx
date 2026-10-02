@@ -32,7 +32,7 @@ const branchView = (extra: Partial<BranchView> = {}): BranchView => ({
   closes_at: Date.now() / 1000 + 5 * 24 * 60 * 60 - 60, pull_request: null, ...extra,
 });
 const row = (name: string, extra: Partial<SyncRow> = {}): SyncRow => ({
-  row: `a:${name}` as RowId, node: "api", name, change: "changed", from: null, into: null, ticked: true, requires: null, secret: null,
+  row: `a:${name}` as RowId, node: "api", kind: "service", name, change: "changed", from: null, into: null, ticked: true, requires: null, secret: null,
   ...extra,
 });
 const rows = [
@@ -42,7 +42,7 @@ const rows = [
   row("env.STRIPE_WEBHOOK_SECRET", { from: { secret: true }, change: "new", secret: { needs_value: true, held: false } }),
 ];
 const neverSynced = (name: string) =>
-  ({ row: `a:${name}` as RowId, node: "api", name, marks: [{ environment: "fix-api", row: `a:${name}` as RowId }] });
+  ({ row: `a:${name}` as RowId, node: "api", kind: "service" as const, name, marks: [{ environment: "fix-api", row: `a:${name}` as RowId }] });
 const syncView = (extra: Partial<SyncView> = {}): SyncView => ({
   from: summary("fix-api"), into: summary("production"), at_merge: null, version: "4:abc", rows,
   never_synced: [neverSynced("env.STRIPE_KEY")], ...extra,

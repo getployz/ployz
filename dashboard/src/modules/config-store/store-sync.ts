@@ -16,7 +16,7 @@ export function syncLine(row: SyncRow, into: string): SyncLine {
   const whole = row.name === null;
   return {
     // A whole node is named by its kind; its section names it.
-    ...row.name === null ? { name: row.node.startsWith("volumes.") ? "Volume" : "Service", variable: false } : settingName(row.name),
+    ...row.name === null ? { name: row.kind === "volume" ? "Volume" : "Service", variable: false } : settingName(row.name),
     // A secret's value never syncs, whatever else holds.
     badge: row.secret ? "Secret" : row.change === "conflict" ? `Changed in ${into}` : row.change === "new" ? "New" : null,
     before: whole || row.secret ? "" : rowText(row.into),
@@ -26,9 +26,13 @@ export function syncLine(row: SyncRow, into: string): SyncLine {
 
 /** The rows by node, in the Store's order: a section each. */
 export function syncSections(rows: readonly SyncRow[]) {
-  const sections = new Map<string, SyncRow[]>();
-  for (const row of rows) sections.set(row.node, [...sections.get(row.node) ?? [], row]);
-  return [...sections].map(([node, nodeRows]) => ({ node, rows: nodeRows }));
+  const sections = new Map<string, Pick<SyncRow, "node" | "kind"> & { rows: SyncRow[] }>();
+  for (const row of rows) {
+    const section = sections.get(row.node) ?? { node: row.node, kind: row.kind, rows: [] };
+    section.rows.push(row);
+    sections.set(row.node, section);
+  }
+  return [...sections.values()];
 }
 
 /**

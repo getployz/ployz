@@ -56,7 +56,7 @@ it("says which secret needs a value, and keeping it keeps it so", () => {
 });
 
 it("marks the variables their Environment never syncs, and only this Service's", () => {
-  const row = (node: string, name: string | null) => ({ row: `${node}:${name}` as RowId, node, name });
+  const row = (node: string, name: string | null) => ({ row: `${node}:${name}` as RowId, node, kind: "service" as const, name });
   const marked = { ...view, never_synced: [row("web", "env.LOG_LEVEL"), row("api", "env.API_KEY"), row("web", "startCommand"), row("web", null)] };
   expect(serviceVariables(serviceSettingRows(marked, "web"), "web-id", new Map(), serviceNeverSynced(marked, "web"))
     .map(({ key, neverSynced }) => ({ key, neverSynced }))).toEqual([

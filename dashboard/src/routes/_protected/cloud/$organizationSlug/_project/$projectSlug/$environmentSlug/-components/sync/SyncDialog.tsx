@@ -99,7 +99,7 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
           {syncSections(rows).map((section) => (
             <section key={section.node} aria-label={nodeName(section.node)} className="mt-4">
               <h3 className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                {section.node.startsWith("volumes.") ? <HardDriveIcon className="size-3.5" /> : <PackageIcon className="size-3.5" />}
+                {section.kind === "volume" ? <HardDriveIcon className="size-3.5" /> : <PackageIcon className="size-3.5" />}
                 {nodeName(section.node)}
               </h3>
               <ul>

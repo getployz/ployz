@@ -1,8 +1,7 @@
 import type {
-  NamedRow, PrPlan, PrPlansQuery, PullRequestQuery, PullRequestRef,
+  NamedRow, PrPlan, PrPlansQuery, PullRequestQuery, PullRequestRef, RowId,
 } from "@ployz/sdk";
 import { listNames, plural } from "#/lib/plural";
-import { rowPath } from "./store-branches";
 
 /** A Project's PR plans: one per repository its Services deploy from through the GitHub App. */
 export function prPlansQuery(project: string): { query: "pr_plans" } & PrPlansQuery {
@@ -29,11 +28,11 @@ export const goLiveWhen = (changes: number, number: number) => `${plural(changes
 
 /**
  * Hints, a merged pull request's or a Parent's values, split by where Details shows them: beside the change to deploy
- * at the same path, else after the changes (a hint whose row nothing stages, like a variable edited here since).
+ * in the same row, else after the changes (a hint whose row nothing stages, like a variable edited here since).
  */
-export function hintNotes<Hint extends NamedRow>(hints: readonly Hint[], paths: ReadonlySet<string>) {
+export function hintNotes<Hint extends NamedRow>(hints: readonly Hint[], rows: ReadonlySet<RowId>) {
   return {
-    at: (path: string) => hints.filter((hint) => rowPath(hint) === path),
-    rest: hints.filter((hint) => !paths.has(rowPath(hint))),
+    at: (row: RowId | null) => hints.filter((hint) => hint.row === row),
+    rest: hints.filter((hint) => !rows.has(hint.row)),
   };
 }

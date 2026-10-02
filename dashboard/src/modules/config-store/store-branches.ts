@@ -3,13 +3,7 @@ import { asRecord } from "#/lib/json";
 import { settingTitle } from "./catalog";
 
 /** A node as the user names it: `data`, not `volumes.data`. */
-export const nodeName = (node: string) => node.startsWith("volumes.") ? node.slice("volumes.".length) : node;
-
-/**
- * A row as reads spell its Setting, `NODE` or `NODE.name` (`web.env.KEY`): how a row the Sync reads give lines up with
- * Details' changes, which name Settings by path. Never sent back: commands take the row.
- */
-export const rowPath = (row: NamedRow) => row.name === null ? row.node : `${row.node}.${row.name}`;
+export const nodeName = (node: string) => node.replace(/^volumes\./, "");
 
 /** A value as Details or the Sync dialog shows it: a secret is hidden. */
 export function rowText(value: JsonValue): string {

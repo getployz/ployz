@@ -18,11 +18,11 @@ function cached() {
     queryClient.setQueryData<unknown>(key(query), { ok: true, value });
   put(diffQuery(ref), {
     environment, version: "3:1:1", saved: 1, published: false, hints: [], incoming: [], follow_hints: [], total_count: 3, changes: [
-      { type: "service", id: "w", name: "web", lifecycle: "update", comparison: null, data: null, settings: [
-        { path: "web.replicas", kind: "update", before: 1, after: 3, canRestore: true },
-        { path: "web.startCommand", kind: "update", before: null, after: "serve", canRestore: true },
+      { type: "service", id: "w", row: "w:node" as RowId, name: "web", lifecycle: "update", comparison: null, data: null, settings: [
+        { path: "web.replicas", kind: "update", before: 1, after: 3, canRestore: true, row: null },
+        { path: "web.startCommand", kind: "update", before: null, after: "serve", canRestore: true, row: null },
       ] },
-      { type: "service", id: "c", name: "cache", lifecycle: "create", comparison: null, data: null, settings: [] },
+      { type: "service", id: "c", row: "c:node" as RowId, name: "cache", lifecycle: "create", comparison: null, data: null, settings: [] },
     ],
   } satisfies DiffView);
   put(environmentSettingsQuery(ref), { environment, settings: [
@@ -120,7 +120,7 @@ it("shows each command of a Batch at once, as it would alone", async () => {
 
 it("shows a variable synced again at once; a new mark waits for the Store, which names it", async () => {
   const { queryClient, read } = cached();
-  const row = (name: string) => ({ row: `w:variables.${name}` as RowId, node: "web", name: `env.${name}` });
+  const row = (name: string) => ({ row: `w:variables.${name}` as RowId, node: "web", kind: "service" as const, name: `env.${name}` });
   queryClient.setQueryData<{ ok: true; value: EnvironmentView }>(
     storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, environmentSettingsQuery(ref)).queryKey,
     (cached) => cached && { ok: true, value: { ...cached.value, never_synced: [row("A"), row("B")] } },

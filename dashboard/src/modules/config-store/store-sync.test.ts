@@ -5,7 +5,7 @@ import { closesIn, goesLive, syncButtonState, syncLine, syncPicks, syncSections 
 
 // A row by its RowId, node and name in the node; no name brings the node whole.
 const row = (id: string, node: string, name: string | null, extra: Partial<SyncRow> = {}): SyncRow => ({
-  row: id as RowId, node, name, change: "changed", from: null, into: null, ticked: true, requires: null, secret: null, ...extra,
+  row: id as RowId, node, kind: "service", name, change: "changed", from: null, into: null, ticked: true, requires: null, secret: null, ...extra,
 });
 const secret = { needs_value: true, held: false };
 

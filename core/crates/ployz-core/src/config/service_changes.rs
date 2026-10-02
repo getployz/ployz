@@ -25,6 +25,9 @@ pub struct ServiceSettingChange {
     pub before: Value,
     pub after: Value,
     pub can_restore: bool,
+    /// The Sync row it falls in, which joins it to what moved it; the Store's to fill.
+    #[serde(default)]
+    pub row: Option<super::RowId>,
 }
 
 pub(super) const FIELDS: &[&str] = &[
@@ -238,6 +241,7 @@ pub(super) fn change(
         before,
         after,
         can_restore,
+        row: None,
     }
 }
 

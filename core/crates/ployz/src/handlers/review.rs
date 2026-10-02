@@ -45,10 +45,10 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
             say!("No staged changes in {where_}.");
         }
         // Where a staged change came from, when another Environment sent it.
-        let from = |row: &str| {
+        let from = |row: Option<&ployz_store::RowId>| {
             view.incoming
                 .iter()
-                .find(|incoming| incoming.at.label() == row)
+                .find(|incoming| Some(&incoming.at.row) == row)
                 .map_or_else(String::new, |incoming| format!(" (from {})", incoming.from))
         };
         for change in &view.changes {
@@ -56,7 +56,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 "{} ({}){}",
                 change.name,
                 super::store::word(&change.lifecycle),
-                from(&change.name)
+                from(Some(&change.row))
             );
             for row in &change.settings {
                 say!(
@@ -64,7 +64,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                     row.path,
                     super::store::shown(&row.before),
                     super::store::shown(&row.after),
-                    from(&row.path)
+                    from(row.row.as_ref())
                 );
             }
             match change.data {

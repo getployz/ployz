@@ -1329,6 +1329,10 @@ row: RowId,
  */
 node: NodeName,
 /**
+ * Whether `node` is a Service or a Volume.
+ */
+kind: EnvironmentNodeType,
+/**
  * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
  * node itself.
  */
@@ -1495,6 +1499,10 @@ row: RowId,
  * Its Service or Volume.
  */
 node: NodeName,
+/**
+ * Whether `node` is a Service or a Volume.
+ */
+kind: EnvironmentNodeType,
 /**
  * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
  * node itself.
@@ -1790,6 +1798,10 @@ row: RowId,
  */
 node: NodeName,
 /**
+ * Whether `node` is a Service or a Volume.
+ */
+kind: EnvironmentNodeType,
+/**
  * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
  * node itself.
  */
@@ -1853,6 +1865,10 @@ row: RowId,
  */
 node: NodeName,
 /**
+ * Whether `node` is a Service or a Volume.
+ */
+kind: EnvironmentNodeType,
+/**
  * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
  * node itself.
  */
@@ -1863,6 +1879,10 @@ export type NodeChange = {
  * Its name.
  */
 name: string,
+/**
+ * Its own Sync row, which joins it to what moved it.
+ */
+row: RowId,
 /**
  * Whether it is created, changed or removed.
  */
@@ -2221,6 +2241,10 @@ row: RowId,
  * Its Service or Volume.
  */
 node: NodeName,
+/**
+ * Whether `node` is a Service or a Volume.
+ */
+kind: EnvironmentNodeType,
 /**
  * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
  * node itself.
@@ -2712,7 +2736,11 @@ export type ServiceRestartPolicy = 'unless-stopped' | 'always' | 'on-failure' | 
 
 export type ServiceRoute = { id: string, hostname: string, targetPort: number | null, };
 
-export type ServiceSettingChange = { path: string, kind: ChangeKind, before: JsonValue, after: JsonValue, canRestore: boolean, };
+export type ServiceSettingChange = { path: string, kind: ChangeKind, before: JsonValue, after: JsonValue, canRestore: boolean,
+/**
+ * The Sync row it falls in, which joins it to what moved it; the Store's to fill.
+ */
+row: RowId | null, };
 
 export type ServiceSettingInput = { "field": "name", "value": string } | { "field": "source", "value": ServiceSource } | { "field": "rootDir", "value": string } | { "field": "command", "value": string } | { "field": "preDeployCommand", "value": string | null } | { "field": "startCommand", "value": string | null } | { "field": "healthcheck", "value": ServiceHealthcheck } | { "field": "healthcheckPath", "value": string } | { "field": "healthcheckTimeoutSeconds", "value": number } | { "field": "restartPolicy", "value": ServiceRestartPolicy } | { "field": "maxRetries", "value": number } | { "field": "replicas", "value": number } | { "field": "cpuLimit", "value": number | null } | { "field": "memLimit", "value": number | null } | { "field": "privateDns", "value": ServiceName } | { "field": "routes", "value": Array<ServiceRoute> } | { "field": "managedHostnames", "value": Array<ServiceManagedHostname> } | { "field": "managedHostnameValue", "value": ServiceManagedHostname } | { "field": "managedHostnamePrefix", "value": string } | { "field": "imageReference", "value": string } | { "field": "build", "value": ServiceBuildConfig } | { "field": "template", "value": ServiceTemplate | null };
 
@@ -3084,6 +3112,10 @@ row: RowId,
  * Its Service or Volume.
  */
 node: NodeName,
+/**
+ * Whether `node` is a Service or a Volume.
+ */
+kind: EnvironmentNodeType,
 /**
  * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
  * node itself.

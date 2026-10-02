@@ -11,9 +11,9 @@ pub(crate) mod publish;
 use ployz_core::RpcError;
 use ployz_core::config::{
     ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,
-    ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, SavedEnvironmentIntent,
+    ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId, SavedEnvironmentIntent,
     ServiceSettingChange, canonicalize_environment_intent, compile_environment_intent,
-    project_environment_changes,
+    project_environment_changes, row_of_change,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -63,6 +63,8 @@ pub struct NodeChange {
     pub node: ReviewNodeIdentity,
     /// Its name.
     pub name: String,
+    /// Its own Sync row, which joins it to what moved it.
+    pub row: RowId,
     /// Whether it is created, changed or removed.
     pub lifecycle: ReviewLifecycleKind,
     /// What `settings` compare against; `None` when nothing exists to compare.
@@ -120,6 +122,28 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     })
     .map_err(|_| error::corrupt("Environment document"))?;
     let intents = [&environment.working, &head.intent];
+    let every = [
+        &environment.working,
+        &head.intent,
+        &head.applied,
+        saved
+            .as_ref()
+            .map_or(&environment.working, |saved| &saved.intent),
+    ];
+    let lineage = |node: &ReviewNodeIdentity| {
+        every.iter().find_map(|intent| match node.node_type {
+            EnvironmentNodeType::Service => intent
+                .services
+                .iter()
+                .find(|service| service.id == node.id)
+                .map(|service| service.lineage_id.clone()),
+            EnvironmentNodeType::Volume => intent
+                .volumes
+                .iter()
+                .find(|volume| volume.resource_id == node.id)
+                .map(|volume| volume.resource_lineage_id.clone()),
+        })
+    };
     let name = |node: &ReviewNodeIdentity| {
         let services = intents
             .into_iter()
@@ -151,10 +175,14 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             .into_iter()
             .map(|group| {
                 let name = name(&group.node);
+                let lineage =
+                    lineage(&group.node).ok_or_else(|| error::corrupt("Environment document"))?;
                 let settings: Vec<ServiceSettingChange> = group
                     .settings
                     .into_iter()
                     .map(|mut row| {
+                        row.row =
+                            row_of_change(&every, &lineage, &row.path, (&row.before, &row.after));
                         if row.path.starts_with("mounts.") {
                             row.before = row.before.get("mountPath").cloned().unwrap_or_default();
                             row.after = row.after.get("mountPath").cloned().unwrap_or_default();
@@ -174,16 +202,17 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                     })
                     .collect();
                 let data = data_effect(&group.node, group.lifecycle, &settings, &head.applied);
-                NodeChange {
+                Ok(NodeChange {
                     node: group.node,
                     name,
+                    row: RowId::node(&lineage),
                     lifecycle: group.lifecycle,
                     comparison: group.comparison,
                     settings,
                     data,
-                }
+                })
             })
-            .collect(),
+            .collect::<Result<_, RpcError>>()?,
     };
     renames(&mut view, &environment.working, &head.intent);
     Ok(Review { view, saved, head })
@@ -255,6 +284,7 @@ fn renames(view: &mut DiffView, working: &SavedEnvironmentIntent, head: &SavedEn
             after: json!(service.slug),
             // Renaming it back undoes it: `discard` takes no name path.
             can_restore: false,
+            row: None,
         };
         view.total_count += 1;
         match view
@@ -269,6 +299,7 @@ fn renames(view: &mut DiffView, working: &SavedEnvironmentIntent, head: &SavedEn
                     id: service.id.clone(),
                 },
                 name: service.slug.clone(),
+                row: RowId::node(&service.lineage_id),
                 lifecycle: ReviewLifecycleKind::Update,
                 comparison: Some(ReviewComparisonRole::Head),
                 settings: vec![row],

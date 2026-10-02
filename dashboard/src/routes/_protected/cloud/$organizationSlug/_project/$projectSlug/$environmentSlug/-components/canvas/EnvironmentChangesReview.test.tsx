@@ -2,6 +2,7 @@
 
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { RowId } from "@ployz/sdk";
 import type { ChangeGroup, ChangeRow } from "#/modules/config-store/store-deployments";
 import { EnvironmentChangesReview, type EnvironmentChangesReviewProps } from "./EnvironmentChangesReview";
 
@@ -14,12 +15,13 @@ const nginx: ChangeGroup = {
   serviceSourceType: "image",
   lifecycle: "create",
   canDiscard: true,
+  row: "nginx:node" as RowId,
   rows: [],
 };
 
 const row = (path: string, extra: Partial<ChangeRow> = {}): ChangeRow => ({
   changeKey: `api:${path}`, path, kind: "update", label: `Environment variable ${path.split(".").at(-1)}`,
-  name: path.split(".").at(-1) ?? path, variable: true, currentValue: "60", newValue: "300", canDiscard: true, ...extra,
+  name: path.split(".").at(-1) ?? path, row: null, variable: true, currentValue: "60", newValue: "300", canDiscard: true, ...extra,
 });
 const api = (rows: ChangeRow[]): ChangeGroup => ({ ...nginx, nodeName: "api", discardPath: "api", lifecycle: "update", rows });
 const fromProduction = { title: "From production's deploy", description: "fix-api is a Branch of production, so what production deploys arrives here too." };
@@ -59,7 +61,7 @@ describe("Details", () => {
     const arrived = row("api.env.CACHE_TTL");
     review({
       groups: [api([own, arrived]), { ...nginx, nodeName: "web", discardPath: "web" }],
-      originFor: (_, path) => path === arrived.path ? fromProduction : undefined,
+      originFor: (_, line) => line?.path === arrived.path ? fromProduction : undefined,
     });
 
     const [mine, theirs] = screen.getAllByRole("region");
@@ -92,7 +94,7 @@ describe("Details", () => {
     const arrived = row("api.env.CACHE_TTL");
     const test = review({
       groups: [api([arrived, row("api.replicas", { label: "Replicas", name: "Replicas", variable: false })])], totalChanges: 1,
-      neverSyncFor: (_, path) => path === arrived.path ? neverSync : undefined,
+      neverSyncFor: (_, line) => line.path === arrived.path ? neverSync : undefined,
     });
 
     const own = await menuOf("api Replicas");

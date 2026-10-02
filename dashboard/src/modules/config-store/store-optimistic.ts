@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type {
   BranchView, BuildOrderView, ConfigCommand, ConfigQuery, DeploymentView, DiffView, DomainsView, EnvironmentRef, EnvironmentsView,
-  EnvironmentView, NodeChange, PrPlansView, ProjectsView, ServiceListing, ServicesView, VolumeListing,
+  EnvironmentView, NodeChange, PrPlansView, ProjectsView, RowId, ServiceListing, ServicesView, VolumeListing,
   VolumesView,
 } from "@ployz/sdk";
 import type { StoreResult } from "./store.contract";
@@ -32,9 +32,10 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       const node = view.changes.find((change) => change.type === "service" && change.name === service);
       const id = node?.id ?? listed(environment).find((listing) => listing.name === service)?.id;
       if (id === undefined) return view;
+      // SAFETY: `id` is the listing's, the Service's lineage, and a node's RowId is `{lineage}:node`.
       const changes: NodeChange[] = node
         ? view.changes.map((change) => change === node ? { ...change, settings: [...change.settings.filter((other) => other.path !== row.path), row] } : change)
-        : [...view.changes, { name: service, id, type: "service", lifecycle: "update", comparison: null, data: null, settings: [row] }];
+        : [...view.changes, { name: service, id, row: `${id}:node` as RowId, type: "service", lifecycle: "update", comparison: null, data: null, settings: [row] }];
       // The count and whether it's published are the Store's to say: they come with the write's answer.
       return { ...view, changes };
     });
@@ -163,7 +164,7 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
         domain,
       ] }));
       const path = command.hostname === null ? `${service}.managedHostnames` : `${service}.routes.${command.hostname}`;
-      await stage(command.environment, service, { path, kind: "add", before: null, after: command.hostname === null ? service : { hostname: command.hostname }, canRestore: false });
+      await stage(command.environment, service, { path, kind: "add", before: null, after: command.hostname === null ? service : { hostname: command.hostname }, canRestore: false, row: null });
       return;
     }
     case "set_generated_domain": {
@@ -174,7 +175,7 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
           ...domain, prefix, port: port === undefined ? domain.port : port,
           hostname: domain.hostname === null ? null : `${prefix}${domain.hostname.slice(domain.prefix.length)}`,
         }) }));
-      await stage(command.environment, service, { path: `${service}.managedHostnames`, kind: "update", before: null, after: prefix, canRestore: false });
+      await stage(command.environment, service, { path: `${service}.managedHostnames`, kind: "update", before: null, after: prefix, canRestore: false, row: null });
       return;
     }
     case "rename_project":
