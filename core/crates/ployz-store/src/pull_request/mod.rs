@@ -405,7 +405,7 @@ pub(crate) fn pull_request(
             retrack(tx, who, environment, event)?;
         }
     }
-    // Saves were made for the old target branch's Destinations: a new target
+    // Conditional Syncs were made for the old target branch's Destinations: a new target
     // withdraws them, so retargeting back never revives an old approval.
     let retargeted = before
         .as_ref()

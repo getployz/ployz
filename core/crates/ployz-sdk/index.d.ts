@@ -310,7 +310,7 @@ export interface ConfigStore {
   branchHead(organization: string, repositoryId: number, branch: string): Promise<string | null>;
   /**
    * Cloud's GitHub workers only: before a push reaches the Store, the pull requests into the branch with a Conditional
-   * Save standing (report each that merged first) and the merge commits of frozen ones (pass those the new head
+   * Sync standing (report each that merged first) and the merge commits of frozen ones (pass those the new head
    * contains as the branch head's `merged`).
    */
   pendingSyncs(organization: string, repositoryId: number, branch: string): Promise<{ standing: number[]; merged: string[] }>;
