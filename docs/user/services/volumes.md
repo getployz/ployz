@@ -1,0 +1,100 @@
+---
+title: Volumes
+description: Keep files across deploys and restarts.
+---
+
+Every deploy starts your service in fresh containers. A volume is a folder that survives:
+whatever your service writes there is still there after deploys and restarts. Use one for
+uploads, a SQLite file or a database's data. [Databases](databases.md) come with one.
+
+Think of a volume as a disk plugged into one of your servers: every service that mounts it
+runs on that server.
+
+## Add a volume
+
+1. Open your environment and click **Create**, then **Volume**. Right-clicking the canvas
+   works too.
+2. Enter a **Name**, like `uploads`, and a **Storage limit (GB)**. It's
+   [fixed once you deploy](#choose-the-storage-limit), so leave room to grow. Click
+   **Create volume**.
+3. Click the new volume. Under **Mount on a service**, pick the service, enter a path inside
+   its containers, like `/app/uploads`, and click **Mount**.
+4. Click **Deploy**.
+
+![A volume's panel: its storage limit, Advanced, and where it is mounted](../images/volume-panel.png)
+
+The volume shows as a tray under the service's card, and your app reads and writes files at
+that path. To change the path, click the pencil next to the mount.
+
+## Choose the storage limit
+
+The limit starts at 5 GB. A volume can't grow past it: once it's full, writes fail. The whole
+limit is set aside on the server's disk, so a deploy fails if no server has room for it.
+
+Choose with care. You can change the limit under **Storage** in the volume's panel until you
+deploy the volume; after that it's fixed, even if that deploy failed. Ployz can't resize a
+volume yet. To get more room, add a bigger volume, mount it in the same service at another
+path, copy the files across with `ployz exec`, then swap the mount paths.
+
+The dashboard doesn't show how full a volume is yet:
+
+```sh
+# CLI-only for now: how full is web's volume?
+ployz exec web -- df -h /app/uploads
+```
+
+## Share a volume
+
+By default, only one container writes to a volume. A service with a volume runs one replica, and no
+other service can mount it. To run more replicas, or to mount it in several services, turn on
+shared writes. This is CLI-only for now:
+
+```sh
+ployz volume set uploads --shared-writes
+```
+
+Do this only if your app copes with several writers at once; a database's data directory
+doesn't. Everything that mounts the volume still runs on its server.
+
+## When its server goes down
+
+The services that mount the volume stop until the server is back. Nothing moves to another
+server. To keep deploying your other services meanwhile, see
+[When a server goes down](scaling.md#when-a-server-goes-down).
+
+> [!WARNING]
+> Ployz doesn't back up, replicate or snapshot volumes yet. If the server is lost, so is the
+> data. Keep your own copies off the server; see [Back up a database](databases.md#back-up-a-database).
+
+## When your servers show Docker only
+
+A volume needs a server that shows **Managed volumes available** on the **Servers** page. A
+server added with **Start without it** shows **Docker only** instead. If none of your servers
+has managed volumes, deploying a volume fails, including the one a database gets.
+
+[Add a server](../servers/add-a-server.md) with managed volumes, or, before you deploy, open the
+volume and tick **Use a plain Docker volume (not recommended)** under **Advanced**. It has no
+storage limit, so it can fill the server's disk.
+
+## Detach a volume
+
+In the volume's panel, click the trash icon next to a mount (**Remove mount (keeps the
+data)**), then deploy. The volume and its data stay.
+
+## Delete a volume
+
+Deleting a deployed volume deletes its data from your servers for good.
+
+1. Open the volume and click **Delete volume** under **Danger**. **Keep volume** undoes it.
+2. Click **Delete data**, or **Deploy**.
+3. Ployz shows **Deploy deletes data** with what goes. Type your `project/environment`, like
+   `my-app/production`, and click **Deploy**.
+
+A volume that was never deployed holds no data, so it goes on your next deploy without asking.
+
+## Good to know
+
+- **A branch gets an empty volume.** A [branch](../environments/environments.md) that copies
+  a volume starts with no data, not a copy of yours.
+- **Deleting a service keeps its volumes.** The exception is a [database](databases.md)
+  deleted from the dashboard, which takes its volume with it.
