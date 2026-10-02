@@ -8,7 +8,7 @@
 //! object that `set SERVICE --patch` takes back.
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use ployz_store::{Change, Edit, EnvironmentQuery, Revision, SettingPath};
+use ployz_store::{Change, Edit, EnvironmentQuery, Instead, Revision, SettingPath, TypedAddresses};
 use serde_json::{Value, json};
 
 use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
@@ -351,7 +351,35 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
         if edited.staged.is_empty() && edited.immediate.is_empty() {
             say!("No change in {where_}: already set.");
         }
+        for typed in &edited.typed_addresses {
+            say_typed_addresses(matches, typed);
+        }
     })
+}
+
+/// What a variable's Typed Addresses cost, and what to set instead.
+fn say_typed_addresses(matches: &ArgMatches, typed: &TypedAddresses) {
+    let (path, services) = (&typed.path, super::joined(&typed.services));
+    let them = if typed.services.len() == 1 {
+        "it"
+    } else {
+        "them"
+    };
+    let consumer = path.node();
+    say!(
+        "{path} types the private address of {services}, so Ployz can't see that {consumer} uses {them}: a Branch that doesn't copy {them} can't reach {them}, and a Deploy won't start {them} first."
+    );
+    match &typed.instead {
+        Instead::Reference { value } => {
+            say!(
+                "Set the reference instead: {}",
+                next(matches, &["set", &format!("{path}={value}")])
+            );
+        }
+        Instead::Sealed => say!(
+            "It is sealed, so it can't hold a reference: seal only the password, in its own variable, and set {path} from references to it and to the address."
+        ),
+    }
 }
 
 /// A Setting value as a person reads it: escaped text, anything else as JSON.

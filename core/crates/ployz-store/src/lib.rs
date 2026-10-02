@@ -31,6 +31,7 @@ mod settings;
 mod storage;
 mod teardown;
 mod trusted;
+mod typed_address;
 mod variables;
 mod volume;
 

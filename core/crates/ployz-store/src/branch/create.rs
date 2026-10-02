@@ -211,7 +211,10 @@ pub(super) fn fresh_value(
             },
             sealing.fingerprint(text),
         ),
-        false => crate::variables::text_value(&key, text, names)?,
+        false => {
+            let (parts, fingerprint) = crate::variables::text_parts(&key, text, names)?;
+            (crate::variables::stored(parts), fingerprint)
+        }
     };
     Ok(BranchNewValue {
         value,

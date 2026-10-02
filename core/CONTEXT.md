@@ -227,6 +227,10 @@ _Avoid_: Generic canvas item, Service subtype
 A Service's name. Renaming it is a staged change to its slug in Working State, shipped by the next Deploy like any other; Private DNS stays as it was, so other Services keep reaching it. Private DNS changes only when set itself, also staged, and no two Services share a name or Private DNS name. References target IDs; managed `PLOYZ_SERVICE_NAME` exports the stable Private DNS name.
 _Avoid_: Deployable name, DNS alias
 
+**Typed Address**:
+Another Service's private address written into a variable's text instead of referenced: `NAME.internal` anywhere, or a bare `NAME` where only a host can stand, a URL's host or the whole value of a host key such as `DB_HOST`. It reaches the same place in this Environment, but nothing links the two Services, so a Branch that doesn't copy the other can't reach it and a Deploy doesn't order them. An edit that writes one keeps it as typed and answers with the reference to set instead; nothing refuses or rewrites it.
+_Avoid_: Hardcoded host, literal link
+
 **Volume Kind**:
 The explicit, user-chosen kind of an Environment's Volume: a Provisioned Volume (sized, quota-enforced, hosted only on a Server with a managed pool) or a plain Docker Volume (unsized, any Server). Both are machine-local. Creation defaults to a Provisioned Volume; plain Docker storage requires an explicit opt-out. The kind and maximum can change in Working State until the first Deployment targeting that Volume is admitted. Admission fixes both, including failed, cancelled and pending attempts, because frozen attempts can prepare storage or be retried. Saved documents always carry the explicit kind and never infer it from a missing size.
 _Avoid_: Storage class, volume type dropdown

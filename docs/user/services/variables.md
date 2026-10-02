@@ -50,7 +50,7 @@ another service's variable and `${{ KEY }}` for one of this service's own:
 
 ```sh
 DATABASE_URL=${{ postgres.DATABASE_URL }}
-WEB_URL=http://${{ web.PLOYZ_PRIVATE_DOMAIN }}:8080
+WEB_URL=http://${{ web.PLOYZ_PRIVATE_DOMAIN }}:${{ web.PORT }}
 ```
 
 Untick **Sealed**, then type `${{` in the value. The dashboard suggests this service's

@@ -168,16 +168,25 @@ fn env_value(variable: &SavedVariableIntent, slugs: &BTreeMap<String, String>) -
     }
 }
 
+/// The built-in variable that holds a Service's [`private_domain`].
+pub const PRIVATE_DOMAIN_KEY: &str = "PLOYZ_PRIVATE_DOMAIN";
+
 /// The variables every Service provides without declaring them, which any
 /// reference may read.
 pub const BUILT_IN_VARIABLES: [&str; 6] = [
-    "PLOYZ_PRIVATE_DOMAIN",
+    PRIVATE_DOMAIN_KEY,
     "PORT",
     "PLOYZ_ENVIRONMENT_NAME",
     "PLOYZ_SERVICE_NAME",
     "PLOYZ_ENVIRONMENT_ID",
     "PLOYZ_SERVICE_ID",
 ];
+
+/// A Service's private address: its Private DNS name in the `.internal` zone.
+#[must_use]
+pub fn private_domain(private_dns: &crate::ServiceName) -> String {
+    format!("{private_dns}.internal")
+}
 
 /// Compile a validated authored document into node snapshots and variable producers.
 ///
@@ -226,7 +235,7 @@ pub fn compile_environment_intent(
             encrypted_registry_secret: None,
         });
         let built_in: [String; BUILT_IN_VARIABLES.len()] = [
-            format!("{}.internal", service.config.private_dns),
+            private_domain(&service.config.private_dns),
             DEFAULT_SERVICE_PORT.to_string(),
             intent.environment_slug.clone(),
             service.config.private_dns.to_string(),

@@ -1210,7 +1210,12 @@ staged: Array<SettingPath>,
 /**
  * Settings that took effect at once.
  */
-immediate: Array<SettingPath>, };
+immediate: Array<SettingPath>,
+/**
+ * Variables this edit set to a value with Typed Addresses, each with what to set
+ * instead.
+ */
+typed_addresses: Array<TypedAddresses>, };
 
 export type EncryptedSecretValue = { version: 1, iv: string, tag: string, ciphertext: string, };
 
@@ -1493,6 +1498,8 @@ accepts_services: boolean,
  * Whether to admit the trusted Ingress Proxy; revocation preserves existing work.
  */
 accepts_ingress: boolean, };
+
+export type Instead = { "kind": "reference", value: string, } | { "kind": "sealed" };
 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
@@ -3047,6 +3054,20 @@ bridge: BridgeEndpointCapacity, };
 export type TemplateWarning = { kind: 'missing', ownerId: string | null, key: string, };
 
 export type TransportProtocol = "tcp" | "udp";
+
+export type TypedAddresses = {
+/**
+ * The variable, as SERVICE.env.KEY.
+ */
+path: SettingPath,
+/**
+ * The Services whose private addresses it types.
+ */
+services: Array<ServiceName>,
+/**
+ * What to set instead.
+ */
+instead: Instead, };
 
 export type Ulimit = { soft: number, hard: number, };
 
