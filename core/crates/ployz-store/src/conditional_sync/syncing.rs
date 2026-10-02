@@ -27,7 +27,7 @@ pub(crate) fn sync(
     let sync = Move::sync(tx, &from, &into)?;
     let checked = sync.check(tx, &into, Guard::Sync(&request.version))?;
     let sides = [&from.working, &into.working];
-    let picks = branch::picks(checked.rows(), &sides, request)?;
+    let picks = branch::picks(checked.rows(), request)?;
     if picks.is_empty() {
         return Err(error::conflict(
             format!("Nothing to sync into {}", into.summary.name),

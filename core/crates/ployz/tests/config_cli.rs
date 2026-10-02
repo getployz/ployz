@@ -802,14 +802,14 @@ fn an_agent_branches_an_environment_without_servers() {
         assert!(unkept.get("next").is_none());
 
         // Conditional Syncs are a PR Environment's; a take names a retained one.
-        let withdraw = error(
+        let at_merge = error(
             store,
-            &["env", "sync", "--to", "--env", "fix-web", "--withdraw"],
+            &["env", "sync", "--to", "--env", "fix-web", "--at-merge"],
         );
-        assert_eq!(withdraw["code"], json!("invalid_argument"));
+        assert_eq!(at_merge["code"], json!("invalid_argument"));
         failed(
             store,
-            &["env", "sync", "--to", "--withdraw", "--only", "web.image"],
+            &["env", "sync", "--undo", "sync", "--only", "web.image"],
             2,
         );
         let take = error(
@@ -856,12 +856,12 @@ fn an_agent_marks_settings_never_sync_without_servers() {
         );
         assert_eq!(marked["environment"]["name"], json!("fix-web"));
         assert_eq!(
-            marked["never_synced"],
-            json!(["web.env.APP_ENV", "web.image"])
+            labels(&marked["never_synced"]),
+            ["web.env.APP_ENV", "web.image"]
         );
         assert_eq!(
-            ok(store, &["get", "--env", "fix-web"])["never_synced"],
-            json!(["web.env.APP_ENV", "web.image"])
+            labels(&ok(store, &["get", "--env", "fix-web"])["never_synced"]),
+            ["web.env.APP_ENV", "web.image"]
         );
 
         // The plan lists them apart, so there is nothing to sync.
@@ -870,13 +870,10 @@ fn an_agent_marks_settings_never_sync_without_servers() {
             &["env", "sync", "--to", "--plan", "--env", "fix-web"],
         );
         assert_eq!(plan["rows"], json!([]));
-        let apart: Vec<&Value> = plan["never_synced"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|row| &row["label"])
-            .collect();
-        assert_eq!(apart, [&json!("web.env.APP_ENV"), &json!("web.image")]);
+        assert_eq!(
+            labels(&plan["never_synced"]),
+            ["web.image", "web.env.APP_ENV"]
+        );
         assert_eq!(plan["never_synced"][0]["marked_in"], json!(["fix-web"]));
         let nothing = error(store, &["env", "sync", "--to", "--env", "fix-web"]);
         assert_eq!(nothing["code"], json!("conflict"));
@@ -892,16 +889,20 @@ fn an_agent_marks_settings_never_sync_without_servers() {
                 "fix-web",
             ],
         );
-        assert_eq!(again["never_synced"], json!(["web.env.APP_ENV"]));
+        assert_eq!(labels(&again["never_synced"]), ["web.env.APP_ENV"]);
         let plan = ok(
             store,
             &["env", "sync", "--to", "--plan", "--env", "fix-web"],
         );
-        assert_eq!(plan["rows"][0]["label"], json!("web.image"));
+        assert_eq!(label(&plan["rows"][0]), "web.image");
 
         failed(store, &["env", "never-sync", "--env", "fix-web"], 2);
-        let whole = error(store, &["env", "never-sync", "web", "--env", "fix-web"]);
-        assert_eq!(whole["code"], json!("invalid_argument"));
+        // A node's name marks each of its rows.
+        let whole = ok(store, &["env", "never-sync", "web", "--env", "fix-web"]);
+        assert_eq!(
+            labels(&whole["never_synced"]),
+            ["web.env.APP_ENV", "web.image"]
+        );
         let missing = error(
             store,
             &["env", "never-sync", "api.env.KEY", "--env", "fix-web"],
@@ -940,21 +941,20 @@ fn an_agent_syncs_a_branch_into_its_parent_without_servers() {
         );
         assert_eq!(plan["into"]["name"], json!("production"));
         let rows = plan["rows"].as_array().unwrap();
-        let labels: Vec<&str> = rows
-            .iter()
-            .map(|row| row["label"].as_str().unwrap())
-            .collect();
-        assert_eq!(labels, ["web.env.DEBUG", "web.env.NEW", "web.image"]);
-        let image = &rows[2];
+        assert_eq!(
+            labels(&plan["rows"]),
+            ["web.image", "web.env.DEBUG", "web.env.NEW"]
+        );
+        let image = &rows[0];
         assert_eq!(
             (&image["node"], &image["from"], &image["into"]),
             (&json!("web"), &json!("web:2"), &json!("web:1"))
         );
         assert_eq!(
-            (&image["ticked"], &image["changed"], &image["new"]),
-            (&json!(true), &json!(false), &json!(false))
+            (&image["ticked"], &image["change"]),
+            (&json!(true), &json!("changed"))
         );
-        assert!(image["key"].as_str().unwrap().ends_with(":source.image"));
+        assert!(image["row"].as_str().unwrap().ends_with(":source.image"));
         let version = plan["version"].as_str().unwrap();
         assert_eq!(
             plan["next"],
@@ -1018,8 +1018,7 @@ fn an_agent_syncs_a_branch_into_its_parent_without_servers() {
             store,
             &["env", "sync", "--to", "--plan", "--env", "fix-web"],
         );
-        assert_eq!(plan["rows"][0]["label"], json!("web.env.DEBUG"));
-        assert_eq!(plan["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(labels(&plan["rows"]), ["web.env.DEBUG"]);
 
         // --close closes the Branch once it synced; it never ran, so it is gone.
         let closed = ok(
@@ -1074,7 +1073,7 @@ fn an_agent_syncs_between_any_two_environments_of_a_project() {
             (&plan["from"]["name"], &plan["into"]["name"]),
             (&json!("production"), &json!("staging"))
         );
-        assert_eq!(plan["rows"][0]["label"], json!("web"));
+        assert_eq!(label(&plan["rows"][0]), "web");
         let version = plan["version"].as_str().unwrap();
         assert_eq!(
             plan["next"],
@@ -2259,6 +2258,18 @@ fn github_lists_branches_and_disconnects_in_cloud() {
 }
 
 /// Run `ployz --json ARGS` against `store` with `input` on stdin; returns (exit code, stdout).
+/// `NODE`, or `NODE.name`: a row as reads name it.
+fn label(row: &Value) -> String {
+    match row["name"].as_str() {
+        Some(name) => format!("{}.{name}", row["node"].as_str().unwrap()),
+        None => row["node"].as_str().unwrap().to_owned(),
+    }
+}
+
+fn labels(rows: &Value) -> Vec<String> {
+    rows.as_array().unwrap().iter().map(label).collect()
+}
+
 fn piped(store: &Target, args: &[&str], input: &str) -> (Option<i32>, String) {
     let home = tempfile::tempdir().unwrap();
     let mut command = store.command(home.path());
@@ -2441,11 +2452,11 @@ fn a_synced_secret_arrives_without_its_value_and_deploy_says_which_to_set() {
         );
         let row = &plan["rows"][0];
         assert_eq!(
-            (&row["label"], &row["from"], &row["secret"]),
+            (label(row), &row["from"], &row["secret"]),
             (
-                &json!("web.env.API_KEY"),
+                "web.env.API_KEY".to_owned(),
                 &json!({ "secret": true }),
-                &json!(true)
+                &json!({ "needs_value": true, "held": false })
             )
         );
         ok(store, &["env", "sync", "--to", "--env", "fix-web"]);
@@ -2462,6 +2473,32 @@ fn a_synced_secret_arrives_without_its_value_and_deploy_says_which_to_set() {
         // With its own value, production's Deploy is admitted.
         let (_, deployed) = ployz(Some(store), &["deploy"]);
         assert_eq!(deployed["number"], json!(1), "{deployed}");
+
+        // A sync can give the receiver its value, a line of stdin per --value.
+        ok(store, &["env", "branch", "fix-key", "--copy", "web"]);
+        let other = ["set", "web.env.OTHER_KEY", "--secret", "--env", "fix-key"];
+        let (code, set) = piped(store, &other, "branch-key\n");
+        assert_eq!(code, Some(0), "{set}");
+        let to = ["env", "sync", "--to", "--env", "fix-key"];
+        let (code, short) = piped(
+            store,
+            &[
+                &to[..],
+                &["--value", "web.env.OTHER_KEY", "--value", "web.image"],
+            ]
+            .concat(),
+            "given-key\n",
+        );
+        assert_eq!(code, Some(2), "{short}");
+        let (code, synced) = piped(
+            store,
+            &[&to[..], &["--value", "web.env.OTHER_KEY"]].concat(),
+            "given-key\n",
+        );
+        assert_eq!(code, Some(0), "{synced}");
+        assert!(!synced.contains("given-key"), "{synced}");
+        let (_, deployed) = ployz(Some(store), &["deploy"]);
+        assert_eq!(deployed["number"], json!(2), "{deployed}");
     }
 }
 
@@ -2641,14 +2678,15 @@ fn a_branch_follows_its_parent_and_diff_shows_where_changes_came_from_and_the_hi
         applied(store, "production");
 
         let diff = ok(store, &["diff", "--env", "fix-web"]);
+        assert_eq!(labels(&diff["incoming"]), ["web.env.NEW"], "{diff}");
+        assert_eq!(diff["incoming"][0]["from"], json!("production"));
+        assert_eq!(labels(&diff["follow_hints"]), ["web.image"]);
         assert_eq!(
-            diff["incoming"],
-            json!([{"row": "web.env.NEW", "path": "web.env.NEW", "whole": false, "from": "production"}]),
-            "{diff}"
-        );
-        assert_eq!(
-            diff["follow_hints"],
-            json!([{"from": "production", "row": "web.image", "path": "web.image", "whole": false, "value": "web:2"}])
+            (
+                &diff["follow_hints"][0]["from"],
+                &diff["follow_hints"][0]["value"]
+            ),
+            (&json!("production"), &json!("web:2"))
         );
         let took = ok(
             store,
@@ -2752,40 +2790,77 @@ fn an_agent_syncs_a_pr_environment_at_its_merge_and_withdraws_it() {
     drop(local);
 
     ok(&store, &["set", "--env", "pr-5", "web.env.MODE=fast"]);
-    // From a PR Environment, --to with no value is its only Destination, at the merge.
-    let plan = ok(&store, &["env", "sync", "--to", "--plan", "--env", "pr-5"]);
-    assert_eq!(
-        (&plan["into"]["name"], &plan["at_merge"]),
-        (&json!("production"), &json!(5))
-    );
-    assert_eq!(plan["rows"][0]["label"], json!("web.env.MODE"));
-    let synced = ok(&store, &["env", "sync", "--to", "--env", "pr-5"]);
-    assert_eq!(
-        (&synced["staged"], &synced["conditional_sync"]["state"]),
-        (&json!([]), &json!("standing"))
-    );
-    assert_eq!(synced["conditional_sync"]["rows"], json!(["web.env.MODE"]));
-    assert!(synced.get("next").is_none());
-    let withdrew = ok(
+    let (code, set) = piped(
         &store,
-        &["env", "sync", "--to", "--withdraw", "--env", "pr-5"],
+        &["set", "web.env.TOKEN", "--secret", "--env", "pr-5"],
+        "pr-token\n",
     );
-    assert_eq!(withdrew["conditional_sync"], json!(null));
-    failed(
+    assert_eq!(code, Some(0), "{set}");
+    // From a PR Environment, --to with no value is its only Destination.
+    let plan = ok(
         &store,
         &[
             "env",
             "sync",
             "--to",
-            "--withdraw",
-            "--only",
-            "web",
+            "--at-merge",
+            "--plan",
             "--env",
             "pr-5",
         ],
-        2,
     );
-    // Only a PR Environment has a Conditional Sync to withdraw.
-    let refused = error(&store, &["env", "sync", "--to", "pr-5", "--withdraw"]);
+    assert_eq!(
+        (&plan["into"]["name"], &plan["at_merge"]),
+        (&json!("production"), &json!(5))
+    );
+    assert_eq!(labels(&plan["rows"]), ["web.env.MODE", "web.env.TOKEN"]);
+    let synced = ok(
+        &store,
+        &["env", "sync", "--to", "--at-merge", "--env", "pr-5"],
+    );
+    assert_eq!(
+        (&synced["staged"], &synced["conditional_sync"]["state"]),
+        (&json!([]), &json!("standing"))
+    );
+    assert_eq!(
+        labels(&synced["conditional_sync"]["rows"]),
+        ["web.env.MODE", "web.env.TOKEN"]
+    );
+    assert!(synced.get("next").is_none());
+
+    // Production holds its own value for the secret, named as the plan names it.
+    let (code, held) = piped(
+        &store,
+        &["set", "web.env.TOKEN", "--secret", "--at-merge", "5"],
+        "prod-token\n",
+    );
+    assert_eq!(code, Some(0), "{held}");
+    assert!(!held.contains("-token"), "{held}");
+    let (code, unheld) = piped(
+        &store,
+        &["set", "web.env.MODE", "--secret", "--at-merge", "5"],
+        "prod-token\n",
+    );
+    assert_eq!(code, Some(1), "{unheld}");
+
+    let sync = synced["sync"].as_str().unwrap();
+    let undone = ok(&store, &["env", "sync", "--undo", sync]);
+    assert_eq!(undone["into"]["name"], json!("production"));
+    let plan = ok(
+        &store,
+        &[
+            "env",
+            "sync",
+            "--to",
+            "--at-merge",
+            "--plan",
+            "--env",
+            "pr-5",
+        ],
+    );
+    assert_eq!(labels(&plan["rows"]), ["web.env.MODE", "web.env.TOKEN"]);
+    failed(&store, &["env", "sync", "--undo", sync, "--only", "web"], 2);
+    // Only a PR Environment syncs at a merge.
+    let refused = error(&store, &["env", "sync", "--to", "pr-5", "--at-merge"]);
     assert_eq!(refused["code"], json!("invalid_argument"));
 }

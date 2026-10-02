@@ -714,7 +714,15 @@ pub(crate) mod tests {
                     when: crate::When::Now,
                     close_after: false,
                     version: view.version.clone(),
-                    picks: Some(labels.iter().map(|label| (*label).to_owned()).collect()),
+                    picks: Some(
+                        labels
+                            .iter()
+                            .map(|label| {
+                                let row = view.rows.iter().find(|row| row.at.label() == *label);
+                                row.unwrap().at.row.clone()
+                            })
+                            .collect(),
+                    ),
                     skip: Vec::new(),
                     values: std::collections::BTreeMap::new(),
                 },

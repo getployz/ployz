@@ -216,7 +216,12 @@ fn sync(view: &SyncView, picks: Option<&[&str]>) -> SyncChanges {
         when: ployz_store::When::Now,
         close_after: false,
         version: view.version.clone(),
-        picks: picks.map(|picks| picks.iter().map(ToString::to_string).collect()),
+        picks: picks.map(|picks| {
+            picks
+                .iter()
+                .map(|label| row(view, label).at.row.clone())
+                .collect()
+        }),
         skip: Vec::new(),
         values: BTreeMap::new(),
     }
@@ -322,14 +327,17 @@ fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_nex
     let stale = store.write(&who, &stale).unwrap_err();
     assert_eq!(stale.code, RpcErrorCode::Conflict);
     assert_eq!(stale.details["version"], json!(review.version));
-    // An unknown name is refused with the names there are; no picks, nothing to do.
-    let unknown = store
-        .write(&who, &sync(&review, Some(&["web.env.NOPE"])))
-        .unwrap_err();
+    // A row not offered is refused with the rows there are; no picks, nothing to do.
+    let nope = new.at.row.to_string().replace("NEW", "NOPE");
+    let unknown = SyncChanges {
+        picks: Some(vec![serde_json::from_value(json!(nope)).unwrap()]),
+        ..sync(&review, None)
+    };
+    let unknown = store.write(&who, &unknown).unwrap_err();
     assert_eq!(unknown.code, RpcErrorCode::NotFound);
     assert_eq!(
-        unknown.details["valid_children"],
-        json!(["web.env.NEW", "web.image"])
+        unknown.details["valid_children"].as_array().unwrap().len(),
+        2
     );
     assert_eq!(
         store
@@ -374,7 +382,7 @@ fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_nex
     let review = view(&store, &who);
     assert_eq!(labels(&review), ["web.env.NEW", "web.env.OTHER"]);
     let skipping = SyncChanges {
-        skip: vec!["web.env.OTHER".into()],
+        skip: vec![row(&review, "web.env.OTHER").at.row.clone()],
         ..sync(&review, None)
     };
     store.write(&who, &skipping).unwrap();
@@ -404,7 +412,7 @@ fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_nex
 }
 
 #[test]
-fn a_name_two_rows_answer_to_is_refused_until_the_row_is_named() {
+fn a_row_lands_in_what_the_receiver_calls_its_node() {
     let (store, who) = shop(false);
     // production renames web to site; fix-web makes a site of its own:
     // `site.env.X` names web's X in production and the new site's in fix-web.
@@ -426,19 +434,9 @@ fn a_name_two_rows_answer_to_is_refused_until_the_row_is_named() {
         &[("web.env.X", json!("web")), ("site.env.X", json!("site"))],
     );
     let review = view(&store, &who);
-    let web_x = row(&review, "web.env.X");
-    let ambiguous = store
-        .write(&who, &sync(&review, Some(&["site.env.X"])))
-        .unwrap_err();
-    assert_eq!(ambiguous.code, RpcErrorCode::NotFound);
-    let rows = ambiguous.details["valid_children"].as_array().unwrap();
-    assert_eq!(rows.len(), 2);
-    assert!(rows.contains(&json!(web_x.at.row.to_string())));
-
-    // Named by its row, only web's X lands, in what production calls site.
-    let by_row = web_x.at.row.to_string();
+    // Picked by its row, only web's X lands, in what production calls site.
     store
-        .write(&who, &sync(&review, Some(&[by_row.as_str()])))
+        .write(&who, &sync(&review, Some(&["web.env.X"])))
         .unwrap();
     assert_eq!(
         values(&store, &who, "production", "site")["env"]["X"],

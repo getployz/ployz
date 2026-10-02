@@ -3028,14 +3028,14 @@ close_after?: boolean,
  */
 version: string,
 /**
- * The rows to sync, by [`SyncRow::row`] or by name (`web.image`); omitted,
- * every row ticked. One left out is offered again next time.
+ * The rows to sync, by [`SyncRow::row`]; omitted, every row ticked. One left
+ * out is offered again next time.
  */
-picks?: Array<string> | null,
+picks?: Array<RowId> | null,
 /**
- * Rows not to sync, as `picks` names them.
+ * Rows not to sync.
  */
-skip?: Array<string>,
+skip?: Array<RowId>,
 /**
  * A value for each picked secret the receiver lacks: sealed at once, never
  * shown back. At the merge it is held until then.

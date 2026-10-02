@@ -1,12 +1,14 @@
 //! Branches: create one, sync changes between two Environments of a Project (or undo a
 //! Sync, or take a hint), copy a Live Node into it, keep it.
 
+use std::collections::BTreeSet;
+
 use clap::ArgMatches;
 use ployz_core::ServiceName;
 use ployz_store::{
     Branched, ConditionalSyncId, CopyNode, CreateBranch, DeploymentId, DiffQuery, EnvironmentId,
-    EnvironmentName, EnvironmentRef, HintSource, KeepBranch, SetupCommand, SyncChanges, SyncId,
-    SyncQuery, SyncView, Synced, Take, Taken, UndoSync, Undone, When,
+    EnvironmentName, EnvironmentRef, HintSource, KeepBranch, RowId, SetupCommand, SyncChanges,
+    SyncId, SyncQuery, SyncView, Synced, Take, Taken, UndoSync, Undone, When,
 };
 
 use super::super::config::expected;
@@ -52,8 +54,8 @@ pub(super) fn branch(root: &ArgMatches) -> Result<(), Error> {
     finish(&made, Some(deploy), "Made Branch")
 }
 
-/// `env sync`: with `--plan` the changes and their version, else the Sync of the
-/// rows `--only` and `--skip` name, at the version read first unless `--version`.
+/// `env sync`: with `--plan` the rows and their version, else the Sync of the rows
+/// `--only` and `--skip` name, at the version read first unless `--version`.
 pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let named = |flag: &str| {
@@ -92,35 +94,75 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
     };
     let store = store(root)?;
     let words = sync_words(matches);
+    let view = store.read(&query)?;
     if matches.get_flag("plan") {
-        let view = store.read(&query)?;
         return sync_plan(matches, &words, &view);
     }
-    let only = super::super::string_values(matches, "only");
-    // The rows are picked against the changes as read now, unless --version pins them.
-    let version = match matches.get_one::<String>("version") {
-        Some(version) => version.clone(),
-        None => store.read(&query)?.version,
+    // Names resolve against the rows read now; a stale --version is refused anyway.
+    let plan_next = || store::next(matches, &[words.as_slice(), &["--plan"]].concat());
+    let refused = |error| {
+        store.fail(store::with_next(
+            StoreCallError::Refused(error),
+            |_| true,
+            plan_next,
+        ))
     };
+    let rows = || view.rows.iter().map(|row| &row.at);
+    let named_rows = |flag: &str| -> Result<Vec<RowId>, Error> {
+        let mut found = BTreeSet::new();
+        for asked in super::super::string_values(matches, flag) {
+            found.extend(store::rows(&asked, rows()).map_err(refused)?);
+        }
+        Ok(found.into_iter().collect())
+    };
+    let only = named_rows("only")?;
+    let values = secret_values(matches)?
+        .into_iter()
+        .map(|(asked, value)| Ok((store::row(&asked, rows()).map_err(refused)?, value)))
+        .collect::<Result<_, Error>>()?;
     let request = SyncChanges {
         from: query.from,
         into: query.into,
         when,
         close_after: matches.get_flag("close"),
-        version,
+        version: matches
+            .get_one::<String>("version")
+            .cloned()
+            .unwrap_or(view.version),
         picks: (!only.is_empty()).then_some(only),
-        skip: super::super::string_values(matches, "skip"),
-        values: std::collections::BTreeMap::new(),
+        skip: named_rows("skip")?,
+        values,
     };
     let synced = store.try_write(&request).map_err(|error| {
         // Stale, or nothing to sync: the plan shows what there is now.
         store.fail(store::with_next(
             error,
             |refusal| refusal.details.get("version").is_some(),
-            || store::next(matches, &[words.as_slice(), &["--plan"]].concat()),
+            plan_next,
         ))
     })?;
     synced_out(matches, &synced)
+}
+
+/// `--value ROW` names, each with its secret value: one line of stdin per name, in
+/// order, as `set --secret` reads one.
+// ponytail: a line per value, so a value can't hold a newline; read an env file if one must.
+fn secret_values(matches: &ArgMatches) -> Result<Vec<(String, String)>, Error> {
+    let rows = super::super::string_values(matches, "value");
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let input = std::io::read_to_string(std::io::stdin())?;
+    let mut lines = input.lines();
+    rows.into_iter()
+        .map(|row| match lines.next() {
+            Some(value) => Ok((row, value.to_owned())),
+            None => Err(Error::usage(format!(
+                "Expected a line of stdin for each --value: none for {row}"
+            ))
+            .with_exit(USAGE_EXIT)),
+        })
+        .collect()
 }
 
 /// `env sync --undo SYNC`: undo a Sync, or withdraw its Conditional Sync.
@@ -171,10 +213,14 @@ fn take(root: &ArgMatches, source: &str, into: EnvironmentRef) -> Result<(), Err
             .map(|hint| &hint.at)
             .collect(),
     };
-    let rows = only
-        .iter()
-        .map(|asked| store::row(asked, hints.iter().copied()))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut rows = BTreeSet::new();
+    for asked in &only {
+        rows.extend(
+            store::rows(asked, hints.iter().copied())
+                .map_err(|error| store.fail(StoreCallError::Refused(error)))?,
+        );
+    }
+    let rows: Vec<RowId> = rows.into_iter().collect();
     let request = Take {
         from,
         into: Some(into),

@@ -196,7 +196,7 @@ fn labels(view: &SyncView) -> Vec<String> {
 }
 
 /// A Sync from fix-web into its Parent of `picks`, or of every ticked row.
-fn sync(view: &SyncView, picks: Option<Vec<String>>) -> SyncChanges {
+fn sync(view: &SyncView, picks: Option<Vec<ployz_store::RowId>>) -> SyncChanges {
     SyncChanges {
         from: at("fix-web"),
         into: None,
@@ -274,17 +274,12 @@ fn a_setting_either_side_marks_never_sync_is_never_a_row_and_is_listed_apart() {
         .to_parent;
     assert_eq!(to_parent, 1);
 
-    // Picked by row or by name, a marked setting is refused; synced by default, it
-    // stays put.
-    for pick in [
-        offered.never_synced[0].at.row.to_string(),
-        "web.env.PLAIN".to_owned(),
-    ] {
-        let refused = store
-            .write(&who, &sync(&offered, Some(vec![pick])))
-            .unwrap_err();
-        assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
-    }
+    // Picked, a marked setting is refused; synced by default, it stays put.
+    let pick = offered.never_synced[0].at.row.clone();
+    let refused = store
+        .write(&who, &sync(&offered, Some(vec![pick])))
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
     store.write(&who, &sync(&offered, None)).unwrap();
     let production = values(&store, &who, "production");
     assert_eq!(production["image"], json!("web:2"));

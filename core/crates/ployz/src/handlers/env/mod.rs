@@ -13,7 +13,7 @@ use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 use ployz_store::{
     CreateEnvironment, DeploymentSummary, EnvironmentId, EnvironmentName, EnvironmentRef,
-    EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView, NeverSync, RemoveEnvironment,
+    EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView, NeverSync, RemoveEnvironment, RowId,
     SetDefaultEnvironment,
 };
 use serde_json::json;
@@ -136,11 +136,13 @@ pub(crate) fn command() -> Command {
                          hint `ployz diff` lists; --take PARENT stages it. With --at-merge, \
                          from a PR Environment into one of its Destinations, it is a \
                          Conditional Sync: the changes go live there with the pull request's \
-                         merge. --undo SYNC undoes a Sync while what it staged is undeployed \
-                         and unchanged, or withdraws its Conditional Sync. A merged pull request's value its Conditional Sync left beside \
-                         the Destination's own edit is a hint too; --take ID stages it, even \
-                         once its PR Environment is gone. Example: ployz env sync --to --env fix-api --skip api.env.DEBUG \
-                         --close",
+                         merge. A secret the receiver lacks arrives without its value unless \
+                         --value gives it one. --undo SYNC undoes a Sync while what it staged \
+                         is undeployed and unchanged, or withdraws its Conditional Sync. A \
+                         merged pull request's value its Conditional Sync left beside the \
+                         Destination's own edit is a hint too; --take ID stages it, even \
+                         once its PR Environment is gone. Example: ployz env sync --to \
+                         --env fix-api --skip api.env.DEBUG --close",
                     ),
             )
             .arg(
@@ -158,13 +160,18 @@ pub(crate) fn command() -> Command {
             )
             .arg(
                 repeated("only").value_name("ROW").help(
-                    "Sync only this change, or every change under it (web, web.env); repeatable",
+                    "Sync only this row (web.image), or every row of a node (web); repeatable",
                 ),
             )
             .arg(
                 repeated("skip")
                     .value_name("ROW")
-                    .help("Leave out this change, or every change under it; repeatable"),
+                    .help("Leave out this row, or every row of a node; repeatable"),
+            )
+            .arg(
+                repeated("value").value_name("ROW").help(
+                    "Give a secret the receiver lacks its value, read as one line of stdin per --value, in order; repeatable",
+                ),
             )
             .arg(
                 value("version", None)
@@ -185,13 +192,13 @@ pub(crate) fn command() -> Command {
                 value("undo", None)
                     .value_name("SYNC")
                     .help("Undo the Sync a sync printed, or withdraw its Conditional Sync")
-                    .conflicts_with_all(["from", "only", "skip", "plan", "version", "close", "at-merge"]),
+                    .conflicts_with_all(["from", "only", "skip", "value", "plan", "version", "close", "at-merge"]),
             )
             .arg(
                 value("take", None)
                     .value_name("ID")
                     .help("Stage the hints `ployz diff` lists from ID (the Parent, or a Conditional Sync) in --env; --only picks them")
-                    .conflicts_with_all(["to", "from", "skip", "plan", "close", "undo", "at-merge"]),
+                    .conflicts_with_all(["to", "from", "skip", "value", "plan", "close", "undo", "at-merge"]),
             ),
         )
         .subcommand(
@@ -493,38 +500,54 @@ fn node_names(names: &[String]) -> Result<Vec<ployz_store::NodeName>, Error> {
         .collect::<Result<_, _>>()?)
 }
 
-/// `env never-sync`: mark rows Never sync, or with `--off` sync them again. A row
-/// is named as the Sync from this Environment shows it, or by its RowId.
+/// `env never-sync`: mark rows Never sync, or with `--off` sync them again. A row is
+/// named as the Sync from this Environment into its Parent shows it, a node's name
+/// covers its rows, and `--off` names the rows marked.
 fn never_sync(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let asked = super::string_values(matches, "path");
     let environment = store::environment(matches)?;
+    let off = matches.get_flag("off");
     let store = store(root)?;
-    let mut view = None;
-    let mut rows = Vec::new();
-    for asked in &asked {
-        if let Ok(row) = asked.parse::<ployz_store::RowId>() {
-            rows.push(row);
-            continue;
-        }
-        let view: &ployz_store::SyncView = match &view {
-            Some(view) => view,
-            None => view.insert(store.read(&ployz_store::SyncQuery {
-                from: environment.clone(),
-                into: None,
-                when: ployz_store::When::Now,
-            })?),
+    // ponytail: a root has no Parent to read the names from, so it marks by RowId;
+    // read them from its own Settings if roots need names.
+    let named: Vec<ployz_store::NamedRow> =
+        match asked.iter().all(|asked| asked.parse::<RowId>().is_ok()) {
+            true => Vec::new(),
+            false if off => {
+                store
+                    .read(&ployz_store::EnvironmentQuery {
+                        environment: environment.clone(),
+                        path: None,
+                        all: false,
+                    })?
+                    .never_synced
+            }
+            false => {
+                let view = store.read(&ployz_store::SyncQuery {
+                    from: environment.clone(),
+                    into: None,
+                    when: ployz_store::When::Now,
+                })?;
+                let rows = view.rows.into_iter().map(|row| row.at);
+                rows.chain(view.never_synced.into_iter().map(|row| row.at))
+                    .collect()
+            }
         };
-        let named = view.rows.iter().map(|row| &row.at);
-        rows.push(store::row(
-            asked,
-            named.chain(view.never_synced.iter().map(|row| &row.at)),
-        )?);
+    let mut rows = std::collections::BTreeSet::new();
+    for asked in &asked {
+        match asked.parse::<RowId>() {
+            Ok(row) => {
+                rows.insert(row);
+            }
+            Err(_) => rows.extend(store::rows(asked, &named)?),
+        }
     }
+    let rows = rows.into_iter().collect();
     let request = NeverSync {
         environment,
         rows,
-        off: matches.get_flag("off"),
+        off,
     };
     let marked = store.write(&request)?;
     crate::output::finish(&marked, || {

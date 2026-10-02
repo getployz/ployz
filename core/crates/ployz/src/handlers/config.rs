@@ -9,11 +9,12 @@
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_store::{
-    Change, Edit, EnvironmentQuery, HoldSecret, PullRequestNumber, Revision, SettingPath,
+    Change, Edit, EnvironmentQuery, EnvironmentRef, HoldSecret, PrPlansQuery, PullRequestNumber,
+    RepositoryId, Revision, RowId, SettingPath, SyncQuery, When,
 };
 use serde_json::{Value, json};
 
-use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
+use super::store::{Next, Store, environment, next, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
 use crate::failure::USAGE_EXIT;
@@ -366,8 +367,9 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
     })
 }
 
-/// Hold `secret` as the Destination's value of row `row` for pull request `number`'s merge.
-fn hold(root: &ArgMatches, number: &str, row: &str, secret: String) -> Result<(), Error> {
+/// Hold `secret` as the Destination's value of the row `asked` names for pull
+/// request `number`'s merge.
+fn hold(root: &ArgMatches, number: &str, asked: &str, secret: String) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let pull_request = number
         .trim_start_matches('#')
@@ -378,28 +380,67 @@ fn hold(root: &ArgMatches, number: &str, row: &str, secret: String) -> Result<()
             Error::usage("Expected --at-merge PR to be a pull request number, for example 142")
                 .with_exit(USAGE_EXIT)
         })?;
+    let environment = environment(matches)?;
+    let store = store(root)?;
+    let (row, repository) = match asked.parse::<RowId>() {
+        Ok(row) => (row, None),
+        Err(_) => brought(&store, matches, &environment, pull_request, asked)?,
+    };
     let request = HoldSecret {
-        environment: environment(matches)?,
+        environment,
         pull_request,
-        repository: None,
-        // ponytail: a RowId only; resolve a name against the PR's Sync rows in phase 3.
-        row: row.parse().map_err(|_| {
-            Error::usage(
-                "Expected the secret's row as `env sync --at-merge --plan --json` lists it",
-            )
-            .with_exit(USAGE_EXIT)
-        })?,
+        repository,
+        row,
         value: secret,
     };
-    let held = store(root)?.write(&request)?;
+    let held = store.write(&request)?;
     crate::output::finish(&held, || {
         say!(
-            "Holding {}'s value of {} for #{}'s merge.",
+            "Holding {}'s value of {asked} for #{}'s merge.",
             held.environment.name,
-            held.row,
             held.pull_request
         );
     })
+}
+
+/// The secret row `asked` names among those pull request `number`'s PR Environments
+/// sync into `destination` at the merge, and the repository of the one that brings it.
+fn brought(
+    store: &Store<'_>,
+    matches: &ArgMatches,
+    destination: &EnvironmentRef,
+    number: PullRequestNumber,
+    asked: &str,
+) -> Result<(RowId, Option<RepositoryId>), Error> {
+    let project = super::store::project(matches)?;
+    let plans = store.read(&PrPlansQuery {
+        project: project.clone(),
+    })?;
+    let mut rows = Vec::new();
+    for plan in &plans.plans {
+        for open in plan.open.iter().filter(|open| open.number == number) {
+            let view = store.read(&SyncQuery {
+                from: EnvironmentRef {
+                    project: project.clone(),
+                    environment: Some(open.environment.clone()),
+                },
+                into: Some(destination.clone()),
+                when: When::AtMerge,
+            })?;
+            rows.extend(
+                view.rows
+                    .into_iter()
+                    .filter(|row| row.secret.is_some())
+                    .map(|row| (plan.repository_id, row.at)),
+            );
+        }
+    }
+    let row = super::store::row(asked, rows.iter().map(|(_, row)| row))?;
+    let repository = rows
+        .iter()
+        .find(|(_, named)| named.row == row)
+        .map(|(repository, _)| *repository);
+    Ok((row, repository))
 }
 
 /// A Setting value as a person reads it: escaped text, anything else as JSON.

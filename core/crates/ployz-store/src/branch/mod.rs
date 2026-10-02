@@ -51,7 +51,7 @@ use crate::id::{
 use crate::policy::{self, Policy};
 use crate::project::insert_environment;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
-use crate::settings::{NodeName, SettingPath};
+use crate::settings::NodeName;
 use crate::storage::Tx;
 use crate::{Actor, registry, review};
 

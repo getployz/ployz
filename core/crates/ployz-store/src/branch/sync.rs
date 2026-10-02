@@ -32,15 +32,15 @@ pub struct SyncChanges {
     pub close_after: bool,
     /// Refused with `conflict` unless the Sync view is still at this version.
     pub version: String,
-    /// The rows to sync, by [`SyncRow::row`] or by name (`web.image`); omitted,
-    /// every row ticked. One left out is offered again next time.
+    /// The rows to sync, by [`SyncRow::row`]; omitted, every row ticked. One left
+    /// out is offered again next time.
     #[serde(default)]
     #[ts(optional = nullable)]
-    pub picks: Option<Vec<String>>,
-    /// Rows not to sync, as `picks` names them.
+    pub picks: Option<Vec<RowId>>,
+    /// Rows not to sync.
     #[serde(default)]
-    #[ts(as = "Option<Vec<String>>", optional)]
-    pub skip: Vec<String>,
+    #[ts(as = "Option<Vec<RowId>>", optional)]
+    pub skip: Vec<RowId>,
     /// A value for each picked secret the receiver lacks: sealed at once, never
     /// shown back. At the merge it is held until then.
     #[serde(default)]
@@ -212,7 +212,7 @@ pub(crate) fn sync(
     let sync = Move::sync(tx, &from, &into)?;
     let checked = sync.check(tx, &into, Guard::Sync(&request.version))?;
     let sides = [&from.working, &into.working];
-    let picks = picks(checked.rows(), &sides, request)?;
+    let picks = picks(checked.rows(), request)?;
     let values = sealed(sealing, checked.rows(), &sides, &picks, &request.values)?;
     let id = SyncId::parse(uuid::Uuid::new_v4().to_string())?;
     let staged = sync.apply(tx, who, &mut into, &checked, &picks, &values, Some(&id))?;
@@ -413,67 +413,30 @@ fn destination(
     Ok((into, pr))
 }
 
-/// The rows `asked` names among `rows`: by row, or by name in either side.
-fn resolve(
-    rows: &[PlannedRow],
-    sides: &[&SavedEnvironmentIntent; 2],
-    asked: &str,
-) -> Result<RowId, RpcError> {
-    if let Ok(row) = asked.parse::<RowId>()
-        && rows.iter().any(|planned| planned.id == row)
-    {
-        return Ok(row);
-    }
-    let labels: BTreeSet<(String, &RowId)> = rows
-        .iter()
-        .flat_map(|row| {
-            sides
-                .iter()
-                .filter_map(|side| named(&[side], &row.id))
-                .map(|named| (named.label(), &row.id))
-        })
-        .collect();
-    let asked_as = SettingPath::parse(asked).map_or_else(|_| asked.to_owned(), |p| p.to_string());
-    let found: BTreeSet<&RowId> = labels
-        .iter()
-        .filter(|(label, _)| *label == asked_as)
-        .map(|(_, row)| *row)
-        .collect();
-    match found.len() {
-        1 => Ok(found.into_iter().next().expect("one row").clone()),
-        0 => Err(error::choices(
-            format!("No change {asked} to sync"),
-            asked,
-            labels.iter().map(|(label, _)| label.as_str()),
-        )),
-        _ => {
-            let rows: Vec<String> = found.iter().map(ToString::to_string).collect();
-            Err(error::choices(
-                format!("{asked} names more than one change: name its row"),
-                asked,
-                rows.iter().map(String::as_str),
-            ))
-        }
-    }
-}
-
 /// The rows a Sync lands: those `request` picks, else every ticked one, less those
 /// it skips.
 pub(crate) fn picks(
     rows: &[PlannedRow],
-    sides: &[&SavedEnvironmentIntent; 2],
     request: &SyncChanges,
 ) -> Result<BTreeSet<RowId>, RpcError> {
-    let resolved = |asked: &[String]| -> Result<BTreeSet<RowId>, RpcError> {
-        asked
-            .iter()
-            .map(|asked| resolve(rows, sides, asked))
-            .collect()
-    };
-    let skip = resolved(&request.skip)?;
+    let known: BTreeSet<&RowId> = rows.iter().map(|row| &row.id).collect();
+    let asked = request.picks.iter().flatten().chain(&request.skip);
+    if let Some(unknown) = asked.into_iter().find(|row| !known.contains(row)) {
+        let rows: Vec<String> = known.iter().map(ToString::to_string).collect();
+        return Err(error::choices(
+            format!("No change {unknown} to sync"),
+            &unknown.to_string(),
+            rows.iter().map(String::as_str),
+        ));
+    }
+    let skip: BTreeSet<&RowId> = request.skip.iter().collect();
     Ok(match &request.picks {
         // Picked by hand, a row without its new node is refused, not dropped.
-        Some(asked) => resolved(asked)?.difference(&skip).cloned().collect(),
+        Some(picks) => picks
+            .iter()
+            .filter(|row| !skip.contains(row))
+            .cloned()
+            .collect(),
         None => whole(
             rows,
             rows.iter()

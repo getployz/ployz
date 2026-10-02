@@ -269,7 +269,7 @@ fn sync(review: &SyncView, labels: Option<&[&str]>) -> SyncChanges {
                 .rows
                 .iter()
                 .filter(|row| named(&row.at.label()))
-                .map(|row| row.at.row.to_string())
+                .map(|row| row.at.row.clone())
                 .collect(),
         ),
         skip: Vec::new(),
