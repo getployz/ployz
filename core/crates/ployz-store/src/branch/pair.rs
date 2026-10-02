@@ -474,7 +474,7 @@ pub(crate) fn rewind(
 ) -> Result<(), RpcError> {
     let mut undone = Vec::new();
     let (before, after) = (Cells::of(before, ""), Cells::of(after, ""));
-    for arrived in arrived(tx, receiver, "state = 'pending'", None)? {
+    for arrived in arrived(tx, receiver, Which::Pending)? {
         let Arrival::Pending { prior, .. } = arrived.arrival else {
             continue;
         };
@@ -515,7 +515,7 @@ pub(crate) fn deployed(
     saved: &SavedEnvironmentIntent,
     lineages: &BTreeSet<String>,
 ) -> Result<(), RpcError> {
-    let pending = arrived(tx, receiver, "state = 'pending'", None)?;
+    let pending = arrived(tx, receiver, Which::Pending)?;
     if pending.is_empty() {
         return Ok(());
     }
@@ -636,21 +636,35 @@ fn arrive(
     Ok(())
 }
 
-/// What arrived in `receiver` that `filter` (SQL on `config_sync_arrival`, `?2`
-/// being `param`) selects.
+/// Which of an Environment's arrivals [`arrived`] reads.
+enum Which<'a> {
+    /// Those not yet deployed.
+    Pending,
+    /// Those from this Environment.
+    From(&'a EnvironmentId),
+    /// Those this Sync landed.
+    Of(&'a SyncId),
+}
+
+/// What arrived in `receiver` that `which` selects.
 fn arrived(
     tx: &mut dyn Tx,
     receiver: &EnvironmentId,
-    filter: &str,
-    param: Option<&str>,
+    which: Which<'_>,
 ) -> Result<Vec<Arrived>, RpcError> {
-    let sql = format!(
-        "SELECT other_id, lineage, at, how, state, value, prior, was, sync_id \
-         FROM config_sync_arrival WHERE environment_id = ?1 AND {filter}"
-    );
-    let rows = match param {
-        Some(param) => tx.query(&sql, &[receiver.as_str().into(), param.into()])?,
-        None => tx.query(&sql, &[receiver.as_str().into()])?,
+    const SELECT: &str = "SELECT other_id, lineage, at, how, state, value, prior, was, sync_id \
+         FROM config_sync_arrival WHERE environment_id = ?1";
+    let receiver = receiver.as_str().into();
+    let rows = match which {
+        Which::Pending => tx.query(&format!("{SELECT} AND state = 'pending'"), &[receiver])?,
+        Which::From(other) => tx.query(
+            &format!("{SELECT} AND other_id = ?2"),
+            &[receiver, other.as_str().into()],
+        )?,
+        Which::Of(sync) => tx.query(
+            &format!("{SELECT} AND sync_id = ?2"),
+            &[receiver, sync.as_str().into()],
+        )?,
     };
     rows.iter()
         .map(|row| {
@@ -681,12 +695,10 @@ pub(super) fn arrivals(
     receiver: &EnvironmentId,
     other: &EnvironmentId,
 ) -> Result<BTreeMap<RowId, Cell>, RpcError> {
-    Ok(
-        arrived(tx, receiver, "other_id = ?2", Some(other.as_str()))?
-            .into_iter()
-            .map(|arrived| (arrived.row, arrived.value))
-            .collect(),
-    )
+    Ok(arrived(tx, receiver, Which::From(other))?
+        .into_iter()
+        .map(|arrived| (arrived.row, arrived.value))
+        .collect())
 }
 
 /// Undo Sync `sync` in `receiver`, whose lock the caller holds: put back what each
@@ -699,7 +711,7 @@ pub(super) fn undo(
     sync: &SyncId,
 ) -> Result<bool, RpcError> {
     let id = receiver.summary.id.clone();
-    let rows = arrived(tx, &id, "sync_id = ?2", Some(sync.as_str()))?;
+    let rows = arrived(tx, &id, Which::Of(sync))?;
     if rows.is_empty() {
         return Ok(false);
     }
