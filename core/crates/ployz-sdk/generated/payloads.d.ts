@@ -2914,7 +2914,11 @@ default: JsonValue,
 /**
  * Whether a change to it waits for a Deploy.
  */
-apply: Apply, };
+apply: Apply,
+/**
+ * A variable's row, which [`crate::NeverSync`] names it by.
+ */
+row?: RowId, };
 
 export type SetupCommand = {
 /**
