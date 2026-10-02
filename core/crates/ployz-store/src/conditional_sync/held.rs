@@ -15,6 +15,7 @@ pub struct HoldSecret {
     /// The Destination.
     #[serde(default)]
     pub environment: EnvironmentRef,
+    /// The pull request whose merge brings the secret.
     pub pull_request: PullRequestNumber,
     /// The pull request's repository: needed only when pull requests of two
     /// repositories with this number bring the secret.
@@ -32,7 +33,9 @@ pub struct HoldSecret {
 pub struct SecretHeld {
     /// The Destination.
     pub environment: EnvironmentSummary,
+    /// The pull request it waits for.
     pub pull_request: PullRequestNumber,
+    /// The secret's row.
     pub row: RowId,
 }
 

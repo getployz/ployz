@@ -22,6 +22,8 @@ pub struct SyncChanges {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub into: Option<EnvironmentRef>,
+    /// When they land; omitted, at the merge from a PR Environment into one of its
+    /// Destinations, else now.
     #[serde(default)]
     #[ts(optional = nullable)]
     pub when: Option<When>,
@@ -77,6 +79,7 @@ pub struct SyncView {
 /// A row a Sync would carry but for Never sync.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct NeverSyncedRow {
+    /// The row.
     #[serde(flatten)]
     #[ts(flatten)]
     pub at: NamedRow,
@@ -88,16 +91,20 @@ pub struct NeverSyncedRow {
 /// A row marked Never sync in an Environment.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Mark {
+    /// The Environment that marked it.
     pub environment: EnvironmentName,
+    /// The marked row, as that Environment holds it.
     pub row: RowId,
 }
 
 /// One row a Sync can carry.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct SyncRow {
+    /// The row.
     #[serde(flatten)]
     #[ts(flatten)]
     pub at: NamedRow,
+    /// What syncing it does there.
     pub change: SyncChange,
     /// The value that syncs; secrets read `{"secret": true}`.
     pub from: Value,
@@ -141,6 +148,7 @@ pub struct Synced {
     pub from: EnvironmentSummary,
     /// Where they landed.
     pub into: EnvironmentSummary,
+    /// When they land.
     pub when: SyncedWhen,
 }
 
@@ -148,12 +156,14 @@ pub struct Synced {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SyncedWhen {
+    /// Staged in the receiver now.
     Now {
         /// Nodes staged in `into`'s Working State.
         staged: Vec<NodeName>,
         /// The Branch is closing, as [`When::Now`] asked.
         closing: bool,
     },
+    /// Held for the pull request's merge.
     AtMerge {
         /// The Conditional Sync standing now.
         conditional_sync: crate::ConditionalSync,

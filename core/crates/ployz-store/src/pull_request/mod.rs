@@ -212,6 +212,7 @@ pub struct PrEnvironment {
 /// An Environment a PR Environment's changes go live in at the merge.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Destination {
+    /// The Environment.
     pub name: EnvironmentName,
     /// The changes a Sync there would hold: the Sync view's ticked rows.
     pub changes: usize,

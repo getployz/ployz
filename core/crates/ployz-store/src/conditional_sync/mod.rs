@@ -46,9 +46,11 @@ use crate::{Actor, error, policy, review};
 pub struct ConditionalSync {
     /// Pass to [`crate::Take::from`] to use a hint it left.
     pub id: ConditionalSyncId,
+    /// The pull request whose merge lands it.
     pub pull_request: PullRequestNumber,
     /// The rows it holds.
     pub rows: Vec<NamedRow>,
+    /// Where it is.
     pub state: ConditionalSyncState,
 }
 
@@ -79,6 +81,7 @@ pub enum Landed {
 pub struct PullRequestHint {
     /// The Conditional Sync: pass to [`crate::Take::from`].
     pub conditional_sync: ConditionalSyncId,
+    /// The pull request it merged with.
     pub pull_request: PullRequestNumber,
     /// What [`crate::Take::rows`] names.
     #[serde(flatten)]
@@ -86,6 +89,7 @@ pub struct PullRequestHint {
     pub at: NamedRow,
     /// The pull request's value; secrets read `{"secret": true}`.
     pub value: Value,
+    /// How it stands there.
     pub landed: Landed,
 }
 

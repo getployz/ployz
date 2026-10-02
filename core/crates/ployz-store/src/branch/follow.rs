@@ -23,6 +23,7 @@ pub struct FollowHint {
 /// the value it arrived with, until it deploys.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct IncomingChange {
+    /// The row it is in.
     #[serde(flatten)]
     #[ts(flatten)]
     pub at: NamedRow,

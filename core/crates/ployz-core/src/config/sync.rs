@@ -221,17 +221,24 @@ impl<'de> Deserialize<'de> for RowId {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Cell {
+    /// Nothing there, or a setting at its default.
     Absent,
+    /// A plain value.
     Value(Value),
+    /// A secret with a value.
     Secret {
+        /// Tells two values apart without showing either.
         fingerprint: String,
+        /// The value, encrypted; only where the caller asked for it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sealed: Option<EncryptedSecretValue>,
     },
+    /// A secret still waiting for its value.
     SecretWithoutValue,
 }
 
 impl Cell {
+    /// Whether it is a secret, with a value or without one.
     #[must_use]
     pub fn is_secret(&self) -> bool {
         matches!(self, Self::Secret { .. } | Self::SecretWithoutValue)
@@ -252,16 +259,22 @@ impl Cell {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Hostnames {
+    /// The sender's.
     pub from: String,
+    /// The receiver's.
     pub into: String,
 }
 
 /// The three configurations of one move: changes flow from `from` into `into`, judged
 /// against what the two last shared. No `base` means nothing is shared yet.
 pub struct Sides<'a> {
+    /// What the two last shared.
     pub base: Option<&'a Intent>,
+    /// The sender.
     pub from: &'a Intent,
+    /// The receiver.
     pub into: &'a Intent,
+    /// Each side's generated-address suffix.
     pub hostnames: Hostnames,
 }
 
@@ -279,6 +292,7 @@ pub enum Way {
 
 /// The caller's context for a comparison.
 pub struct Policy<'a> {
+    /// How the changes travel.
     pub way: Way,
     /// Rows `from` marked Never sync.
     pub from_marks: &'a BTreeSet<RowId>,
@@ -295,45 +309,65 @@ pub struct Policy<'a> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Why {
+    /// Its node is in use live.
     Live,
+    /// One side removed its node, and removals never move.
     LeftOut,
+    /// Each Environment sizes its own Services.
     Sizing,
+    /// Each Environment keeps its own custom domains.
     CustomDomain,
+    /// A generated address names its own Environment.
     GeneratedAddress,
+    /// Each Environment builds from its own git branch.
     GitBranch,
+    /// A Volume's data stays where it is.
     Data,
+    /// Either side marked it Never sync.
     NeverSynced,
 }
 
+/// Whether a row moves, and how.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
+    /// It moves when picked.
     Moves {
         /// `into` changed it too since the base.
         conflict: bool,
         /// Picked unless someone unticks it.
         ticked: bool,
+        /// Whether it lands as it is.
         arrives: Arrives,
     },
+    /// It differs, but never moves.
     Differs(Why),
 }
 
+/// How a moving row lands.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Arrives {
+    /// With the sender's cell.
     AsIs,
     /// A secret that lands without its value unless [`Plan::apply`] gets one.
     NeedsValue,
 }
 
+/// One row that differs between the sides, and what a move does with it.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct PlannedRow {
+    /// Which row.
     pub id: RowId,
+    /// What the sides last shared there; redacted.
     pub base: Cell,
+    /// The sender's cell; redacted.
     pub from: Cell,
+    /// The receiver's cell; redacted.
     pub into: Cell,
     /// The new node's row, which must be picked too.
     pub requires: Option<RowId>,
+    /// Whether it moves.
     pub verdict: Verdict,
 }
 
@@ -351,9 +385,11 @@ pub struct Plan {
 /// `into` after a Plan's picks landed, and the base advanced by exactly them.
 #[derive(Clone, Debug)]
 pub struct Applied {
+    /// `into` with the picks landed.
     pub next: Intent,
     /// Redacted. Creating (no base), `from` minus what `into` uses live.
     pub base: Intent,
+    /// Each picked row, as it landed.
     pub landed: Vec<Landed>,
     /// `NeedsValue` picks that landed without a value.
     pub waiting: Vec<RowId>,
@@ -362,6 +398,7 @@ pub struct Applied {
 /// One landed row: what to [`put`] back to rewind the base or undo the landing.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Landed {
+    /// Which row.
     pub row: RowId,
     /// The base's cell before; redacted.
     pub prior: Cell,
@@ -374,7 +411,9 @@ pub struct Landed {
 /// A node, as [`name_of`] finds it.
 #[derive(Clone, Copy, Debug)]
 pub enum NodeRef<'a> {
+    /// A Service.
     Service(&'a SavedServiceIntent),
+    /// A Volume.
     Volume(&'a SavedVolumeIntent),
 }
 
@@ -604,6 +643,7 @@ pub fn plan(sides: Sides, policy: Policy) -> Plan {
 }
 
 impl Plan {
+    /// Every row that differs, in row order.
     #[must_use]
     pub fn rows(&self) -> &[PlannedRow] {
         &self.rows
@@ -838,6 +878,7 @@ pub enum Unapplied {
     /// The row holds other than what landed, or it is a new node that holds a row
     /// that didn't land with it.
     Changed(RowId),
+    /// What it puts back doesn't hold together.
     Invalid(ConfigError),
 }
 

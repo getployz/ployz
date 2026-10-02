@@ -398,11 +398,19 @@ export type ConditionalSync = {
 /**
  * Pass to [`crate::Take::from`] to use a hint it left.
  */
-id: ConditionalSyncId, pull_request: PullRequestNumber,
+id: ConditionalSyncId,
+/**
+ * The pull request whose merge lands it.
+ */
+pull_request: PullRequestNumber,
 /**
  * The rows it holds.
  */
-rows: Array<NamedRow>, state: ConditionalSyncState, };
+rows: Array<NamedRow>,
+/**
+ * Where it is.
+ */
+state: ConditionalSyncState, };
 
 export type ConditionalSyncId = string;
 
@@ -961,7 +969,11 @@ export type DeploymentsView = { environment: EnvironmentSummary, deployments: Ar
  */
 next_cursor: string | null, };
 
-export type Destination = { name: EnvironmentName,
+export type Destination = {
+/**
+ * The Environment.
+ */
+name: EnvironmentName,
 /**
  * The changes a Sync there would hold: the Sync view's ticked rows.
  */
@@ -1451,7 +1463,11 @@ export type HoldSecret = {
 /**
  * The Destination.
  */
-environment: EnvironmentRef, pull_request: PullRequestNumber,
+environment: EnvironmentRef,
+/**
+ * The pull request whose merge brings the secret.
+ */
+pull_request: PullRequestNumber,
 /**
  * The pull request's repository: needed only when pull requests of two
  * repositories with this number bring the secret.
@@ -1766,7 +1782,15 @@ export type MachineUpdated = { machine: Machine, };
 
 export type ManagementClientLabel = string;
 
-export type Mark = { environment: EnvironmentName, row: RowId, };
+export type Mark = {
+/**
+ * The Environment that marked it.
+ */
+environment: EnvironmentName,
+/**
+ * The marked row, as that Environment holds it.
+ */
+row: RowId, };
 
 export type MembershipObservation = "unknown" | "up" | "suspect" | "down" | string;
 
@@ -2228,11 +2252,19 @@ export type PullRequestHint = {
 /**
  * The Conditional Sync: pass to [`crate::Take::from`].
  */
-conditional_sync: ConditionalSyncId, pull_request: PullRequestNumber,
+conditional_sync: ConditionalSyncId,
+/**
+ * The pull request it merged with.
+ */
+pull_request: PullRequestNumber,
 /**
  * The pull request's value; secrets read `{"secret": true}`.
  */
-value: JsonValue, landed: Landed,
+value: JsonValue,
+/**
+ * How it stands there.
+ */
+landed: Landed,
 /**
  * What commands name it by; stable across renames.
  */
@@ -2591,7 +2623,15 @@ export type SecretHeld = {
 /**
  * The Destination.
  */
-environment: EnvironmentSummary, pull_request: PullRequestNumber, row: RowId, };
+environment: EnvironmentSummary,
+/**
+ * The pull request it waits for.
+ */
+pull_request: PullRequestNumber,
+/**
+ * The secret's row.
+ */
+row: RowId, };
 
 export type SecretRow = {
 /**
@@ -3045,7 +3085,12 @@ from: EnvironmentRef,
  * Where they land, in the same Project; omitted, a PR Environment's only
  * Destination at the merge, else the sender's Parent.
  */
-into?: EnvironmentRef | null, when?: When | null,
+into?: EnvironmentRef | null,
+/**
+ * When they land; omitted, at the merge from a PR Environment into one of its
+ * Destinations, else now.
+ */
+when?: When | null,
 /**
  * Refused with `conflict` unless the Sync view is still at this version.
  */
@@ -3077,7 +3122,11 @@ into?: EnvironmentRef | null,
  */
 when?: When | null, };
 
-export type SyncRow = { change: SyncChange,
+export type SyncRow = {
+/**
+ * What syncing it does there.
+ */
+change: SyncChange,
 /**
  * The value that syncs; secrets read `{"secret": true}`.
  */
@@ -3156,7 +3205,11 @@ from: EnvironmentSummary,
 /**
  * Where they landed.
  */
-into: EnvironmentSummary, when: SyncedWhen, };
+into: EnvironmentSummary,
+/**
+ * When they land.
+ */
+when: SyncedWhen, };
 
 export type SyncedWhen = { "kind": "now",
 /**
