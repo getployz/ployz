@@ -11,7 +11,7 @@ import { environmentKey, queryOf, storeViewPrefix } from "./store-view.queries";
 /**
  * Shows a Store command in the cached views at once, as the Store will answer once it commits: what the user sees while
  * it saves. The writer's refetch after the commit (or its refusal, which is the rollback) replaces the guess. It guesses
- * only what the command says outright; anything the Store derives (a rename's diff rows, a Move's changes) waits.
+ * only what the command says outright; anything the Store derives (a rename's diff rows, a Sync's changes) waits.
  */
 export async function applyOptimistic(queryClient: QueryClient, organizationSlug: string, command: ConfigCommand) {
   const cached = (kind: ConfigQuery["query"], environment: EnvironmentRef | null) =>

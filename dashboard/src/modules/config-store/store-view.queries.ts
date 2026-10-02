@@ -44,7 +44,6 @@ const refreshedBy = {
   // A plan reads the Environment's Working State and what it and its ancestors run.
   branch_plan: ["store_environment", "store_deployment"],
   build_order: ["store_organization"],
-  // A Move compares a Branch with its Parent's Working and Applied State; a PR's Conditional Sync reads its facts.
   // A Sync compares two Environments over what they last shared; from a PR Environment into a Destination it is a
   // Conditional Sync, which reads the pull request.
   sync: ["store_environment", "store_deployment", "store_pull_request"],

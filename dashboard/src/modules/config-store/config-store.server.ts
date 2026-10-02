@@ -230,7 +230,7 @@ export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizatio
 /**
  * The dashboard's write: `command` as `actor`, answered with the committed `diff`, `services` and Settings views of the
  * Environment it names, so the review's rows, count, pink and values arrive with the write. A view that can't be read is left
- * out (the writer's refetch brings it); a command naming no Environment, or several (a Move), carries none.
+ * out (the writer's refetch brings it); a command naming no Environment, or several (a Sync), carries none.
  */
 export const writeStoreAsMember = (actor: Actor, organizationSlug: string, command: ConfigCommand) => Effect.gen(function* () {
   const organization = yield* memberOrganization(actor, organizationSlug);
