@@ -218,11 +218,19 @@ pub enum Prior {
 }
 
 impl Prior {
-    /// `intent` with `row` back as this holds it.
+    /// `intent` with `row` back as this holds it. A row whose node is gone from
+    /// `intent` stays as it is.
     ///
     /// # Errors
-    /// Returns ConfigError where [`put`] does.
+    /// Returns ConfigError where [`put`] does on a node that is there.
     pub fn put_back(&self, intent: &Intent, row: &RowId) -> Result<Intent, ConfigError> {
+        // ponytail: so a discarded Follow removal is not offered again: the node it
+        // would bring back reads as the receiver's own. Put it back whole if that matters.
+        let nodes = nodes(intent);
+        let gone = |lineage: &str| !nodes.contains_key(lineage);
+        if gone(&row.lineage) || matches!(&row.at, At::Mount(volume) if gone(volume)) {
+            return Ok(intent.clone());
+        }
         match self {
             Self::Cell(cell) => put(intent, row, cell),
             Self::Source(was) => {

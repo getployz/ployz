@@ -440,10 +440,6 @@ pub(super) fn share(
 
 /// Put `cells` into the bases `receiver` shares with each other side, as one write
 /// per pair. A pair gone with its other side has no base left to put back.
-// ponytail: a prior that no longer fits the base (its node went since) leaves that
-// row of the base as it is; it then reads as the receiver's own change. So a
-// discarded Follow removal is not offered again: the node it brings back reads as
-// the Branch's own. Put the node back into the base whole if that matters.
 fn rewind_bases(
     tx: &mut dyn Tx,
     receiver: &EnvironmentId,
@@ -462,7 +458,7 @@ fn rewind_bases(
                 None => continue,
             },
         };
-        let base = cell.put_back(&base, &row).unwrap_or(base);
+        let base = cell.put_back(&base, &row).map_err(config)?;
         bases.insert(other, base);
     }
     for (other, base) in &bases {

@@ -9,9 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
     Applied, Arrives, Cell, Cells, ConfigError, EncryptedSecretValue, Hostnames, NodeRef, Plan,
-    PlannedRow, Policy, RowId, SavedEnvironmentIntent, SealedCell, SealedSecret, Sides, Verdict,
-    Was, Way, Why, name_of, parse_environment_intent, plan, put, redact_environment_intent,
-    unapply,
+    PlannedRow, Policy, Prior, RowId, SavedEnvironmentIntent, SealedCell, SealedSecret, Sides,
+    Verdict, Was, Way, Why, name_of, parse_environment_intent, plan, put,
+    redact_environment_intent, unapply,
 };
 use serde_json::{Value, json};
 
@@ -1616,6 +1616,15 @@ fn put_refuses_what_a_row_cannot_hold() {
     ] {
         assert!(put(&parent, &at(row.clone()), &cell).is_err(), "{row}");
     }
+    // Putting a base back refuses the same, but leaves a row whose node is gone.
+    let back = |row: String, cell| Prior::Cell(cell).put_back(&parent, &at(row));
+    assert!(back(format!("{API}:replicas"), val(json!("many"))).is_err());
+    assert_eq!(
+        back(format!("{JOBS}:node"), val(json!("jobs"))).unwrap(),
+        parent
+    );
+    let mount = back(format!("{API}:mounts.{JOBS}"), val(json!("/x")));
+    assert_eq!(mount.unwrap(), parent);
 }
 
 #[test]
