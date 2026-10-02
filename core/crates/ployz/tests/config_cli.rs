@@ -859,7 +859,7 @@ fn an_agent_branches_an_environment_without_servers() {
         );
         assert_eq!(saved["staged"], json!(["web"]));
         assert_eq!(saved["next"], json!("ployz deploy --env production"));
-        // Conditional Saves are a PR Environment's; a take names a retained one.
+        // Conditional Syncs are a PR Environment's; a take names a retained one.
         let withdraw = error(store, &["env", "save", "--env", "fix-web", "--withdraw"]);
         assert_eq!(withdraw["code"], json!("invalid_argument"));
         failed(
@@ -2737,4 +2737,116 @@ fn a_branch_follows_its_parent_and_diff_shows_where_changes_came_from_and_the_hi
         assert_eq!(gone["code"], json!("conflict"));
         assert_eq!(gone["details"]["next"], json!("ployz diff --env fix-web"));
     }
+}
+
+/// Only the in-process Store: Cloud reports the pull request, which the test does
+/// here through the Store itself.
+#[test]
+fn an_agent_syncs_a_pr_environment_at_its_merge_and_withdraws_it() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    let Target::Local(dir) = &store else {
+        unreachable!("a local Store")
+    };
+    ok(&store, &["project", "new", "shop"]);
+    let local = ConfigStore::open(
+        &format!("sqlite:{}", dir.path().join("store.db").display()),
+        SealingKey::from_file(&dir.path().join("store.db.key")).unwrap(),
+    )
+    .unwrap();
+    let who = Actor::system(OrganizationId::parse("local").unwrap());
+    let shop = Some(ployz_store::ProjectName::parse("shop").unwrap());
+    local
+        .write_trusted(
+            &who,
+            &ployz_store::CreateGitService {
+                id: ployz_store::ServiceLineageId::parse("00000000-0000-4000-8000-000000000003")
+                    .unwrap(),
+                environment: ployz_store::EnvironmentRef {
+                    project: shop.clone(),
+                    environment: None,
+                },
+                name: ployz_core::ServiceName::parse("web").unwrap(),
+                repository: ployz_store::RepositoryName::parse("acme/web").unwrap(),
+                branch: None,
+            },
+            &github(),
+        )
+        .unwrap();
+    ok(&store, &["publish"]);
+    local
+        .write(
+            &who,
+            &ployz_store::SetPrPlan {
+                project: shop,
+                repository: ployz_store::RepositoryName::parse("acme/web").unwrap(),
+                enabled: Some(true),
+                start_from: Some(ployz_store::EnvironmentName::parse("production").unwrap()),
+                copy: None,
+                setup: None,
+                remove_on_close: None,
+                include_bots: None,
+            },
+        )
+        .unwrap();
+    let opened = ployz_store::PullRequest {
+        repository_id: ployz_store::RepositoryId::parse(11).unwrap(),
+        number: ployz_store::PullRequestNumber::parse(5).unwrap(),
+        title: "Add search".into(),
+        author: "ada".into(),
+        bot: false,
+        head_branch: ployz_store::BranchName::parse("search").unwrap(),
+        head: ployz_store::CommitSha::parse("1".repeat(40)).unwrap(),
+        target_branch: ployz_store::BranchName::parse("main").unwrap(),
+        commits: 1,
+        open: true,
+        merge_commit: None,
+        merge_reached: None,
+        updated: ployz_store::GithubTimestamp::parse("2026-09-29T10:00:01Z").unwrap(),
+    };
+    local
+        .system(
+            &who.organization,
+            &ployz_store::SystemEvent::PullRequest(opened),
+            &Trusted::default(),
+        )
+        .unwrap();
+    drop(local);
+
+    ok(&store, &["set", "--env", "pr-5", "web.env.MODE=fast"]);
+    // From a PR Environment, --to with no value is its only Destination, at the merge.
+    let plan = ok(&store, &["env", "sync", "--to", "--plan", "--env", "pr-5"]);
+    assert_eq!(
+        (&plan["into"]["name"], &plan["at_merge"]),
+        (&json!("production"), &json!(5))
+    );
+    assert_eq!(plan["rows"][0]["label"], json!("web.env.MODE"));
+    let synced = ok(&store, &["env", "sync", "--to", "--env", "pr-5"]);
+    assert_eq!(
+        (&synced["staged"], &synced["conditional_sync"]["state"]),
+        (&json!([]), &json!("standing"))
+    );
+    assert_eq!(synced["conditional_sync"]["rows"], json!(["web.env.MODE"]));
+    assert!(synced.get("next").is_none());
+    let withdrew = ok(
+        &store,
+        &["env", "sync", "--to", "--withdraw", "--env", "pr-5"],
+    );
+    assert_eq!(withdrew["conditional_sync"], json!(null));
+    failed(
+        &store,
+        &[
+            "env",
+            "sync",
+            "--to",
+            "--withdraw",
+            "--only",
+            "web",
+            "--env",
+            "pr-5",
+        ],
+        2,
+    );
+    // Only a PR Environment has a Conditional Sync to withdraw.
+    let refused = error(&store, &["env", "sync", "--to", "pr-5", "--withdraw"]);
+    assert_eq!(refused["code"], json!("invalid_argument"));
 }

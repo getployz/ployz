@@ -234,7 +234,13 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
             .map(|row| moving.name(&branch.working, &row.key.to_string()))
             .collect()
     };
-    let to_parent = Moving::sync(tx, branch, &parent.environment)?;
+    let parent_id = &parent.environment.summary.id;
+    // As the Sync view compares: a Conditional Sync into a PR Environment's Destination.
+    let to_parent = match crate::conditional_sync::merging_into(tx, &branch.summary.id, parent_id)?
+    {
+        Some(_) => Moving::save(tx, branch, &parent.environment)?,
+        None => Moving::sync(tx, branch, &parent.environment)?,
+    };
     let to_parent = to_parent
         .compare(&parent.environment.working, None)?
         .rows

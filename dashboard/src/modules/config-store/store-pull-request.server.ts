@@ -54,7 +54,7 @@ export const observeStorePullRequest = Effect.fn("StorePullRequest.observe")(fun
   const repository = merge === null ? null : yield* resolveGithubRepository(payload.installationId, payload.repositoryId);
   for (const organizationId of organizations) {
     // Merged: whether the head the Store last saw of the target branch already has the merge commit, so its
-    // Conditional Saves land with what that push deployed.
+    // Conditional Syncs land with what that push deployed.
     let reached: string | null = null;
     if (merge !== null && repository !== null) {
       const head = yield* storeTry(() => store.branchHead(organizationId, payload.repositoryId, live.targetBranch));
@@ -119,7 +119,7 @@ export const closeStoreEnvironments = Effect.fn("StorePullRequest.close")(functi
 });
 
 /**
- * A Store write named the pull request (a Conditional Save, for one): publish its check again, through the GitHub
+ * A Store write named the pull request (a Conditional Sync, for one): publish its check again, through the GitHub
  * installation a member of the Organization reads the repository with.
  */
 export const publishRequestedStorePrCheck = Effect.fn("StorePullRequest.publishRequestedCheck")(function* (

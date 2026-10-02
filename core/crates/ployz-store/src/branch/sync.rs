@@ -31,6 +31,13 @@ pub struct SyncChanges {
     #[serde(default)]
     #[ts(as = "Option<bool>", optional)]
     pub close_after: bool,
+    /// `now` stages the changes; `at_merge` makes them a Conditional Sync that goes
+    /// live with the pull request's merge, and `picks: []` withdraws it. Omitted:
+    /// `at_merge` from a PR Environment into one of its Destinations (`into`
+    /// omitted, its only one), else `now`.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub when: Option<When>,
 }
 
 /// Read what a Sync would stage.
@@ -40,7 +47,8 @@ pub struct SyncQuery {
     /// As [`SyncChanges::from`].
     #[serde(default)]
     pub from: EnvironmentRef,
-    /// As [`SyncChanges::into`].
+    /// As [`SyncChanges::into`]; from a PR Environment, omitted means its only
+    /// Destination.
     #[serde(default)]
     #[ts(optional = nullable)]
     pub into: Option<EnvironmentRef>,
@@ -53,6 +61,9 @@ pub struct SyncView {
     pub from: EnvironmentSummary,
     /// Where they land.
     pub into: EnvironmentSummary,
+    /// The pull request whose merge they go live with, as a Conditional Sync; none
+    /// when they are staged now.
+    pub at_merge: Option<PullRequestNumber>,
     /// Pass to [`SyncChanges::version`] to sync exactly these changes.
     pub version: String,
     /// Each change a Sync can carry. Settings each Environment keeps as its own
@@ -112,6 +123,9 @@ pub struct Synced {
     /// The Branch is closing, as [`SyncChanges::close_after`] asked: it leaves the
     /// Servers, then is deleted.
     pub closing: bool,
+    /// The Conditional Sync standing now, for a Sync at merge; none for a Sync now
+    /// and once withdrawn.
+    pub conditional_sync: Option<crate::ConditionalSync>,
 }
 
 pub(crate) fn sync(
@@ -119,7 +133,11 @@ pub(crate) fn sync(
     who: &Actor,
     request: &SyncChanges,
 ) -> Result<Synced, RpcError> {
-    let (from, mut into) = pair(tx, who, (&request.from, request.into.as_ref()), true)?;
+    let sides = (&request.from, request.into.as_ref());
+    if crate::conditional_sync::at_merge(tx, who, sides, request.when)? {
+        return crate::conditional_sync::sync(tx, who, request);
+    }
+    let (from, mut into) = pair(tx, who, sides, true)?;
     if let Some(removal) = crate::teardown::removing(tx, &from.summary.id)? {
         return Err(crate::teardown::being_removed(&from, &removal));
     }
@@ -129,7 +147,7 @@ pub(crate) fn sync(
     let moving = Moving::sync(tx, &from, &into)?;
     let changes = reviewed(&moving, &into, request.version.as_deref())?;
     let current = version(&into, &changes.review);
-    let picks = picked(&moving, (&changes.rows, &current), request.picks.as_deref())?;
+    let picks = sync_picks(&moving, (&changes.rows, &current), request.picks.as_deref())?;
     let staged = moving.apply(tx, who, &mut into, picks)?;
     if request.close_after {
         crate::pull_request::close(tx, who, &from.summary.id, &mut Default::default())?;
@@ -139,6 +157,7 @@ pub(crate) fn sync(
         into: into.summary,
         staged,
         closing: request.close_after,
+        conditional_sync: None,
     })
 }
 
@@ -147,15 +166,30 @@ pub(crate) fn sync_view(
     who: &Actor,
     query: &SyncQuery,
 ) -> Result<SyncView, RpcError> {
-    let (from, into) = pair(tx, who, (&query.from, query.into.as_ref()), false)?;
+    let sides = (&query.from, query.into.as_ref());
+    if crate::conditional_sync::at_merge(tx, who, sides, None)? {
+        return crate::conditional_sync::sync_view(tx, who, query);
+    }
+    let (from, into) = pair(tx, who, sides, false)?;
     let moving = Moving::sync(tx, &from, &into)?;
+    sync_view_of(&moving, from, into, None)
+}
+
+/// What `moving` would stage from `from` into `into`, as the Sync view shows it;
+/// `at_merge` once the pull request merges.
+pub(crate) fn sync_view_of(
+    moving: &Moving,
+    from: Environment,
+    into: Environment,
+    at_merge: Option<PullRequestNumber>,
+) -> Result<SyncView, RpcError> {
     let changes = moving.compare(&into.working, None)?;
     let rows = changes
         .rows
         .iter()
         .filter(|row| matches!(row.role, BranchRole::Move { .. }))
         .map(|row| {
-            let (label, shown_from, shown_into) = shown_row(&moving, &from, &into, row);
+            let (label, shown_from, shown_into) = shown_row(moving, &from, &into, row);
             let key = row.key.to_string();
             let (lineage, path) = split(&key);
             let node = node_of(&moving.from, lineage)
@@ -163,7 +197,7 @@ pub(crate) fn sync_view(
                 .ok_or_else(|| error::corrupt("Sync row"))?;
             Ok(SyncRow {
                 new: path == "node" || (path.starts_with("variables.") && row.into.is_null()),
-                secret: secret(row),
+                secret: secret(row) && !moving.carries_secrets(),
                 changed: matches!(row.role, BranchRole::Move { conflict: true, .. }),
                 ticked: moving.ticked(row),
                 key,
@@ -187,7 +221,7 @@ pub(crate) fn sync_view(
         })
         .map(|row| {
             let key = row.key.to_string();
-            let (label, ..) = shown_row(&moving, &from, &into, row);
+            let (label, ..) = shown_row(moving, &from, &into, row);
             let node = node_of(&moving.from, split(&key).0)
                 .or_else(|| node_of(&into.working, split(&key).0))
                 .ok_or_else(|| error::corrupt("Sync row"))?;
@@ -211,6 +245,7 @@ pub(crate) fn sync_view(
         .collect::<Result<_, RpcError>>()?;
     Ok(SyncView {
         version: version(&into, &changes.review),
+        at_merge,
         from: from.summary,
         into: into.summary,
         rows,
@@ -264,9 +299,9 @@ fn secret(row: &BranchRow) -> bool {
 }
 
 /// Core's picks: the rows `asked` names by key, else every row ticked by default;
-/// each variable lands with the sender's value, but a secret lands without one.
-/// Nothing picked is refused with the `current` version to pick from.
-fn picked(
+/// each variable lands with the sender's value, but a Sync's secret lands without
+/// one. Nothing picked is refused with the `current` version to pick from.
+pub(crate) fn sync_picks(
     moving: &Moving,
     (rows, current): (&[BranchRow], &str),
     asked: Option<&[String]>,
@@ -298,7 +333,7 @@ fn picked(
                 BranchRole::Move {
                     choice: Some(offered),
                     ..
-                } => Some(if offered.secret {
+                } => Some(if offered.secret && !moving.carries_secrets() {
                     BranchPickChoice::New { value: None }
                 } else {
                     BranchPickChoice::From

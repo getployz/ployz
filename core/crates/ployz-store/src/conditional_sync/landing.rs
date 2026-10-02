@@ -1,4 +1,4 @@
-//! Where a frozen Conditional Save lands: decided from the documents alone, so the
+//! Where a frozen Conditional Sync lands: decided from the documents alone, so the
 //! caller only writes what this returns.
 
 use super::*;

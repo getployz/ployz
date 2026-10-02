@@ -22,7 +22,7 @@ use ts_rs::TS;
 
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::error;
-use crate::id::{ConditionalSaveId, DeploymentId, EnvironmentId, Hostname, OrganizationId};
+use crate::id::{ConditionalSyncId, DeploymentId, EnvironmentId, Hostname, OrganizationId};
 use crate::policy::{self, is_repository_path};
 use crate::review;
 use crate::scope::{self, EnvironmentSummary};
@@ -69,7 +69,7 @@ pub struct BranchHead {
     /// Service that follows the branch.
     #[serde(default)]
     pub changed: Option<Vec<String>>,
-    /// The merge commits of frozen Conditional Saves ([`crate::PendingSaves::merged`])
+    /// The merge commits of frozen Conditional Syncs ([`crate::PendingSyncs::merged`])
     /// Cloud found `head` is or descends from: this push carries those saves.
     #[serde(default)]
     pub merged: Vec<CommitSha>,
@@ -291,7 +291,7 @@ fn branch_head(
         &[organization.into()],
     )?;
     let mut carried =
-        crate::conditional_save::carried(tx, who, event.repository_id, branch, &event.merged)?;
+        crate::conditional_sync::carried(tx, who, event.repository_id, branch, &event.merged)?;
     let mut automated = Automated::default();
     for row in environments {
         let environment = row.parse::<EnvironmentId>(0, "Environment ID")?;
@@ -355,7 +355,7 @@ fn check_suite(
     for row in waiting {
         let environment = row.parse::<EnvironmentId>(0, "Environment ID")?;
         let services: Vec<String> = row.json(2, "waiting deploy")?;
-        let saves: Vec<ConditionalSaveId> = row.json(3, "waiting deploy")?;
+        let saves: Vec<ConditionalSyncId> = row.json(3, "waiting deploy")?;
         let branch: BranchName = row.parse(1, "waiting deploy")?;
         let push = Push {
             repository_id: event.repository_id,
@@ -390,13 +390,13 @@ enum Select<'a> {
 }
 
 /// Deploy `environment`'s Services the push selects, wait for CI, or skip it; the
-/// frozen Conditional Saves it carries there land first, wait with it, or land now.
+/// frozen Conditional Syncs it carries there land first, wait with it, or land now.
 fn deploy(
     tx: &mut dyn Tx,
     who: &Actor,
     environment: &EnvironmentId,
     push: &Push<'_>,
-    (select, saves): (Select<'_>, &[ConditionalSaveId]),
+    (select, saves): (Select<'_>, &[ConditionalSyncId]),
     trusted: &Trusted,
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
@@ -447,7 +447,7 @@ fn admit(
     who: &Actor,
     id: &EnvironmentId,
     push: &Push<'_>,
-    (select, saves): (Select<'_>, &[ConditionalSaveId]),
+    (select, saves): (Select<'_>, &[ConditionalSyncId]),
     trusted: &Trusted,
 ) -> Result<Option<Deploy>, RpcError> {
     let mut environment = scope::lock_id(tx, who, id)?;
@@ -455,7 +455,7 @@ fn admit(
     let land = |tx: &mut dyn Tx, environment: &mut scope::Environment| {
         saves
             .iter()
-            .try_for_each(|save| crate::conditional_save::land(tx, who, save, environment))
+            .try_for_each(|save| crate::conditional_sync::land(tx, who, save, environment))
     };
     // Closing, or being removed: a push leaves it be. A shut-down PR Environment
     // (its removal applied) comes back on: the push deploys all of it again.
@@ -525,7 +525,7 @@ fn admit(
                     .as_str()
                     .into(),
                 serde_json::to_string(saves)
-                    .expect("Conditional Save IDs are JSON")
+                    .expect("Conditional Sync IDs are JSON")
                     .as_str()
                     .into(),
             ],

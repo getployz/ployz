@@ -1,4 +1,4 @@
-import type { BranchView, DeploymentSummary, NeverSyncedRow, SyncRow } from "@ployz/sdk";
+import type { BranchView, DeploymentSummary, NeverSyncedRow, PullRequestView, SyncRow } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
 import { settingTitle } from "./catalog";
 import { moveText, nodeName } from "./store-branches";
@@ -67,20 +67,42 @@ export function undoPaths(synced: readonly SyncRow[]) {
   return [...new Set(synced.flatMap((row) => wholes.has(row.node) && !isWholeNode(row) ? [] : [syncRowPath(row)]))];
 }
 
-/** What the Sync button says, and the count of changes a Sync into the Parent carries, if that's what it says. */
+/**
+ * A PR Environment's Destination, as its pull request's view has it: where a Sync goes live at the merge (#`number`),
+ * how many changes it would hold, and whether one stands there. The first Destination, or the one a Sync stands in.
+ */
+export type MergeSync = { number: number; into: string; changes: number; standing: boolean };
+
+export function mergeSync(view: PullRequestView, environment: string): MergeSync | null {
+  const destinations = view.environments.find((row) => row.environment.name === environment)?.destinations ?? [];
+  const destination = destinations.find((row) => row.conditional_sync?.standing) ?? destinations[0];
+  if (!view.pull_request || !destination) return null;
+  const standing = destination.conditional_sync?.standing === true;
+  return { number: view.pull_request.number, into: destination.name, changes: destination.changes, standing };
+}
+
+/** What the Sync button says, and the count of changes its Sync carries, if that's what it says. */
 export type SyncButtonState = { label: string; count: number | null };
 
 /**
- * The Sync button's words, the first that applies: a shutdown under way or failed, Off, then what a Sync into the
- * Parent carries. A PR Environment shuts down until its next push; any other Branch comes off the Servers to close.
+ * The Sync button's words, the first that applies: a shutdown under way or failed, Off, a Conditional Sync standing,
+ * then what a Sync into the Parent (a PR Environment's Destination, `merge`) carries. A PR Environment shuts down until
+ * its next push; any other Branch comes off the Servers to close.
  */
-export function syncButtonState(branch: Pick<BranchView, "parent" | "to_parent" | "pull_request">, removal: DeploymentSummary | null):
-  SyncButtonState {
+export function syncButtonState(branch: Pick<BranchView, "parent" | "to_parent" | "pull_request">, removal: DeploymentSummary | null,
+  merge: MergeSync | null = null): SyncButtonState {
   const shuts = branch.pull_request !== null;
   if (removal?.in_flight) return { label: shuts ? "Shutting down" : "Closing", count: null };
   if (removal?.status === "applied") return { label: shuts ? "Off" : "Closing", count: null };
   if (removal) return { label: shuts ? "Shutdown failed" : "Closing failed", count: null };
-  return branch.to_parent > 0 ? { label: `Sync to ${branch.parent}`, count: branch.to_parent } : { label: `In sync with ${branch.parent}`, count: null };
+  if (merge?.standing) return { label: `Goes live with #${merge.number}`, count: null };
+  const [into, count] = merge ? [merge.into, merge.changes] : [branch.parent, branch.to_parent];
+  return count > 0 ? { label: `Sync to ${into}`, count } : { label: `In sync with ${into}`, count: null };
+}
+
+/** "3 changes go live in production when #142 merges". */
+export function goesLive(changes: number, into: string, number: number) {
+  return `${plural(changes, "change")} ${changes === 1 ? "goes" : "go"} live in ${into} when #${number} merges`;
 }
 
 const DAY = 24 * 60 * 60;

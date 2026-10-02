@@ -1,6 +1,6 @@
 //! How two Environments compare: which base, what each side sends, how a variable
 //! lands by default, and landing. Sync, Follow, Save, Update, Own Copy, a new Branch, the
-//! pull request page's counts and Conditional Save all compare through here; nothing
+//! pull request page's counts and Conditional Sync all compare through here; nothing
 //! else builds a comparison.
 //!
 //! A pair's base is what the two last shared (`config_sync_base`), advanced by what
@@ -14,7 +14,7 @@ pub(crate) struct Moving {
     /// The Environment `from` belongs to: what arriving nodes carry comes from it.
     pub(crate) source: EnvironmentId,
     /// The pair whose base this compares over and advances by what lands; none for a
-    /// Conditional Save landing, which advances no base.
+    /// Conditional Sync landing, which advances no base.
     pair: Option<[EnvironmentId; 2]>,
     /// Why nothing moves.
     pub(crate) nothing: String,
@@ -216,6 +216,12 @@ impl Moving {
         }
     }
 
+    /// Whether a secret the receiver lacks arrives with its value: a Sync's arrives
+    /// without one; a Conditional Sync's and a Follow's carry it.
+    pub(crate) fn carries_secrets(&self) -> bool {
+        !matches!(self.way, Way::Sync)
+    }
+
     /// A Save's deployed Parent values on offer; none for a Sync or an Update.
     pub(crate) fn parent(&self) -> Option<&SavedEnvironmentIntent> {
         match &self.way {
@@ -289,7 +295,7 @@ impl Moving {
         let [a, b] = self
             .pair
             .as_ref()
-            .ok_or_else(|| error::internal("A Conditional Save landing advances no base"))?;
+            .ok_or_else(|| error::internal("A Conditional Sync landing advances no base"))?;
         let other = if *a == into.summary.id { b } else { a };
         let moved = self.compare(&into.working, Some(picks.clone()))?;
         let base = moved
@@ -723,7 +729,8 @@ pub(super) fn creating(
     })
 }
 
-/// How many rows a Save of Branch `from` into `into` offers.
+/// How many changes a Conditional Sync of PR Environment `from` into Destination
+/// `into` holds by default: the Sync view's ticked rows.
 pub(crate) fn changes_into(
     tx: &mut dyn Tx,
     from: &Environment,

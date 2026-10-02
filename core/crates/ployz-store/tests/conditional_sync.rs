@@ -2,19 +2,21 @@
     clippy::indexing_slicing,
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
-//! Conditional Saves through the Store's interface only, on SQLite and on Postgres
-//! (see `backend`): saving a PR Environment's changes for its merge, withdrawing,
+//! Conditional Syncs through the Store's interface only, on SQLite and on Postgres
+//! (see `backend`): syncing a PR Environment's changes for its merge, withdrawing,
 //! the check, freezing at the merge, landing with the push that carries the merge
-//! commit (never one without it), and taking a sealed hint after PR teardown.
+//! commit (never one without it), taking a sealed hint after PR teardown, syncing
+//! now where the merge doesn't reach, and a Follow that leaves it standing.
 
 use ployz_core::RpcErrorCode;
 use ployz_core::config::ServiceGitAccess;
 use ployz_store::{
-    Actor, AuthorizedRepository, Automated, BranchHead, Change, CheckSuite, Command, ConfigStore,
-    CreateGitService, CreateProject, DiffQuery, Edit, EnvironmentId, EnvironmentName,
-    EnvironmentRef, Landed, Move, MovePick, MoveQuery, OrganizationId, PickChoice, ProjectId,
-    ProjectName, Publish, PullRequest, PullRequestQuery, RunnerId, Save, SaveState,
-    ServiceLineageId, SetPrPlan, SettingPath, SystemEvent, Take, Trusted, When, Written,
+    Actor, AuthorizedRepository, Automated, BranchHead, BranchQuery, Change, CheckSuite, Command,
+    ConditionalSyncState, ConfigStore, CreateBranch, CreateGitService, CreateProject, DiffQuery,
+    Edit, EnvironmentId, EnvironmentName, EnvironmentRef, Landed, Move, MovePick, OrganizationId,
+    PickChoice, ProjectId, ProjectName, Publish, PullRequest, PullRequestQuery, RunnerId, Save,
+    ServiceLineageId, SetPrPlan, SettingPath, SyncChanges, SyncQuery, SyncView, SystemEvent, Take,
+    Trusted, When, Written,
 };
 use serde_json::{Value, json};
 
@@ -216,6 +218,84 @@ fn saving(rows: &[&str], version: Option<String>) -> Save {
     }
 }
 
+/// What a Sync from `pr-5` into `into` (omitted: its only Destination) carries.
+fn offered(store: &ConfigStore, who: &Actor, into: Option<&str>) -> SyncView {
+    store
+        .read(
+            who,
+            &SyncQuery {
+                from: at("pr-5"),
+                into: into.map(at),
+            },
+        )
+        .unwrap()
+}
+
+/// Sync `review`'s rows named by or under `labels` (omitted: those ticked) as reviewed.
+fn sync(review: &SyncView, labels: Option<&[&str]>) -> SyncChanges {
+    let named = |label: &str| {
+        labels.is_none_or(|labels| {
+            labels.iter().any(|asked| {
+                label == *asked
+                    || label
+                        .strip_prefix(asked)
+                        .is_some_and(|rest| rest.starts_with('.'))
+            })
+        })
+    };
+    SyncChanges {
+        from: at("pr-5"),
+        into: Some(at(review.into.name.as_str())),
+        picks: Some(
+            review
+                .rows
+                .iter()
+                .filter(|row| named(&row.label))
+                .map(|row| row.key.clone())
+                .collect(),
+        ),
+        version: Some(review.version.clone()),
+        ..SyncChanges::default()
+    }
+}
+
+/// Withdraw `pr-5`'s Conditional Sync, as the Sync button's Undo does.
+fn withdraw() -> SyncChanges {
+    SyncChanges {
+        from: at("pr-5"),
+        picks: Some(Vec::new()),
+        when: Some(When::AtMerge),
+        ..SyncChanges::default()
+    }
+}
+
+/// How many changes the pull request's page counts for `pr-5` into production.
+fn destination_changes(store: &ConfigStore, who: &Actor) -> usize {
+    let view = store
+        .read(
+            who,
+            &PullRequestQuery {
+                repository_id: backend::repo_id(11),
+                number: backend::pr_number(5),
+            },
+        )
+        .unwrap();
+    view.environments[0].destinations[0].changes
+}
+
+/// The Sync button's count on `pr-5`, into its Parent.
+fn to_parent(store: &ConfigStore, who: &Actor) -> usize {
+    store
+        .read(
+            who,
+            &BranchQuery {
+                environment: at("pr-5"),
+            },
+        )
+        .unwrap()
+        .to_parent
+}
+
 fn env(store: &ConfigStore, who: &Actor, environment: &str) -> Value {
     store
         .read(
@@ -260,7 +340,7 @@ fn resolved(store: &ConfigStore, deployment: &ployz_store::DeploymentId, key: &s
 }
 
 #[test]
-fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
+fn a_conditional_sync_goes_live_with_the_push_that_carries_its_merge() {
     let (store, who) = shop();
     set(
         &store,
@@ -271,45 +351,60 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
             ("web.env.TOKEN", json!({ "secret": "pr-secret" })),
         ],
     );
-    // From a PR Environment a Save is for the merge, into its one Destination.
-    let query = MoveQuery::Save {
-        from: at("pr-5"),
-        into: None,
-        when: None,
-    };
-    let review = store.read(&who, &query).unwrap();
-    assert_eq!(review.into.name.as_str(), "production");
-    let rows: Vec<&str> = review.rows.iter().map(|row| row.row.as_str()).collect();
-    assert_eq!(rows, ["web.env.MODE", "web.env.TOKEN"]);
-    let now = Move::Save(Save {
+    // From a PR Environment a Sync is for the merge, into its one Destination.
+    let review = offered(&store, &who, None);
+    assert_eq!(
+        (review.into.name.as_str(), review.at_merge),
+        ("production", Some(backend::pr_number(5)))
+    );
+    let rows: Vec<(&str, bool)> = review
+        .rows
+        .iter()
+        .map(|row| (row.label.as_str(), row.ticked))
+        .collect();
+    assert_eq!(rows, [("web.env.MODE", true), ("web.env.TOKEN", true)]);
+    // Its secret goes with its value at the merge.
+    assert!(review.rows.iter().all(|row| !row.secret));
+    // The pull request's page and the Sync button count what it ticks.
+    assert_eq!(destination_changes(&store, &who), 2);
+    assert_eq!(to_parent(&store, &who), 2);
+    let now = SyncChanges {
         when: Some(When::Now),
-        ..saving(&["web.env"], None)
-    });
+        ..sync(&review, None)
+    };
     assert_eq!(
         store.write(&who, &now).unwrap_err().code,
         RpcErrorCode::InvalidArgument
     );
+    let closing = SyncChanges {
+        close_after: true,
+        ..sync(&review, None)
+    };
+    assert_eq!(
+        store.write(&who, &closing).unwrap_err().code,
+        RpcErrorCode::InvalidArgument
+    );
     assert_eq!(
         check(&store, &who),
-        (false, "2 changes to save in Ployz".into())
+        (false, "2 changes to sync in Ployz".into())
     );
 
     let committed = store
         .commit(
             &who,
-            &Command::Move(save(&["web.env"], Some(review.version))),
+            &Command::Sync(sync(&review, Some(&["web.env"]))),
             &Trusted::default(),
         )
         .unwrap();
     // Cloud publishes the PR's check again.
     assert_eq!(committed.checks.len(), 1);
-    let Written::Moved(saved) = committed.written else {
-        panic!("a Save writes Moved")
+    let Written::Synced(synced) = committed.written else {
+        panic!("a Sync writes Synced")
     };
-    let conditional = saved.conditional_save.unwrap();
-    assert_eq!(conditional.state, SaveState::Standing);
+    let conditional = synced.conditional_sync.unwrap();
+    assert_eq!(conditional.state, ConditionalSyncState::Standing);
     assert_eq!(conditional.rows, ["web.env.MODE", "web.env.TOKEN"]);
-    assert!(saved.staged.is_empty());
+    assert!(synced.staged.is_empty());
     // Nothing lands before the merge.
     assert!(env(&store, &who, "production").get("MODE").is_none());
     assert_eq!(
@@ -317,19 +412,20 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
         (true, "2 changes go live with this PR".into())
     );
 
-    // A settings change in the PR Environment withdraws it; saving again restores it.
+    // A settings change in the PR Environment withdraws it; syncing again restores it.
     set(&store, &who, "pr-5", &[("web.env.MODE", json!("slow"))]);
     assert_eq!(
         check(&store, &who),
-        (false, "Changed since saved · save again".into())
+        (false, "Changed since synced · sync again".into())
     );
-    let withdrawn = store.write(&who, &save(&[], None)).unwrap();
-    assert!(withdrawn.conditional_save.is_none());
+    let withdrawn = store.write(&who, &withdraw()).unwrap();
+    assert!(withdrawn.conditional_sync.is_none());
     assert_eq!(
         check(&store, &who),
-        (false, "2 changes to save in Ployz".into())
+        (false, "2 changes to sync in Ployz".into())
     );
-    store.write(&who, &save(&["web.env"], None)).unwrap();
+    let review = offered(&store, &who, None);
+    store.write(&who, &sync(&review, None)).unwrap();
     set(
         &store,
         &who,
@@ -339,7 +435,7 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
 
     // The merge push arrived first: Cloud reports the merge, and the save freezes.
     let pending = store
-        .pending_saves(
+        .pending_syncs(
             &who.organization,
             backend::repo_id(11),
             &backend::git_branch("main"),
@@ -356,7 +452,7 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
     );
     assert_eq!(closed.removed.len(), 1, "{closed:?}");
     let pending = store
-        .pending_saves(
+        .pending_syncs(
             &who.organization,
             backend::repo_id(11),
             &backend::git_branch("main"),
@@ -395,7 +491,7 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
         json!("pr-secret")
     );
     let pending = store
-        .pending_saves(
+        .pending_syncs(
             &who.organization,
             backend::repo_id(11),
             &backend::git_branch("main"),
@@ -475,7 +571,7 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
     );
     let take = |row: Option<&str>| {
         Move::Take(Take {
-            from: ployz_store::HintSource::Save(hint.save.clone()),
+            from: ployz_store::HintSource::ConditionalSync(hint.save.clone()),
             into: None,
             rows: row.map(|row| vec![row.to_owned()]),
             version: None,
@@ -492,7 +588,10 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
     let taken = store.write(&who, &take(Some("web.env.MODE"))).unwrap();
     assert_eq!(texts(&taken.staged), ["web"]);
     assert_eq!(taken.from.name.as_str(), "pr-5");
-    assert_eq!(taken.conditional_save.unwrap().state, SaveState::Landed);
+    assert_eq!(
+        taken.conditional_sync.unwrap().state,
+        ConditionalSyncState::Landed
+    );
     assert_eq!(env(&store, &who, "production")["MODE"], json!("pr"));
     assert_eq!(diff(&store)[0].landed, Landed::Staged);
     // Nothing is left to take.
@@ -563,7 +662,7 @@ fn a_secret_hint_taken(choice: PickChoice) -> Value {
         .write(
             &who,
             &Move::Take(Take {
-                from: ployz_store::HintSource::Save(hints[0].save.clone()),
+                from: ployz_store::HintSource::ConditionalSync(hints[0].save.clone()),
                 into: None,
                 rows: None,
                 version: None,
@@ -586,4 +685,105 @@ fn a_secret_hint_keeps_the_new_value_picked_for_it() {
         a_secret_hint_taken(PickChoice::New("prod".into())),
         json!("prod")
     );
+}
+
+#[test]
+fn a_pr_environment_syncs_into_an_environment_its_merge_doesnt_reach_now() {
+    let (store, who) = shop();
+    // staging is made from production, which deploys main: it isn't a Destination.
+    store
+        .write(
+            &who,
+            &CreateBranch {
+                id: EnvironmentId::parse(uuid(20)).unwrap(),
+                from: at("production"),
+                name: EnvironmentName::parse("staging").unwrap(),
+                copy: vec![ployz_store::NodeName::parse("web").unwrap()],
+                live: Vec::new(),
+                setup: Vec::new(),
+                keep: true,
+                fix: None,
+            },
+        )
+        .unwrap();
+    set(&store, &who, "pr-5", &[("web.env.MODE", json!("fast"))]);
+    let review = offered(&store, &who, Some("staging"));
+    assert_eq!(review.at_merge, None);
+    let synced = store.write(&who, &sync(&review, None)).unwrap();
+    assert!(synced.conditional_sync.is_none());
+    assert_eq!(texts(&synced.staged), ["web"]);
+    assert_eq!(env(&store, &who, "staging")["MODE"], json!("fast"));
+    // It is still waiting to go to production at the merge.
+    assert_eq!(
+        check(&store, &who),
+        (false, "1 change to sync in Ployz".into())
+    );
+}
+
+#[test]
+fn a_follow_into_the_pr_environment_leaves_its_conditional_sync_standing() {
+    let (store, who) = shop();
+    set(&store, &who, "pr-5", &[("web.env.MODE", json!("fast"))]);
+    store
+        .write(&who, &sync(&offered(&store, &who, None), None))
+        .unwrap();
+    // production deploys a change of its own, which follows into pr-5.
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.SHARED", json!("1"))],
+    );
+    publish(&store, &who, "production");
+    let pushed = push(&store, &who, 4, &[]);
+    run(&store, &pushed.admitted[0].deployment.id, &["web", "api"]);
+    assert_eq!(env(&store, &who, "pr-5")["SHARED"], json!("1"));
+    assert_eq!(
+        check(&store, &who),
+        (true, "1 change goes live with this PR".into())
+    );
+    // The author's own edit still withdraws it.
+    set(&store, &who, "pr-5", &[("web.env.MODE", json!("slow"))]);
+    assert_eq!(
+        check(&store, &who),
+        (false, "Changed since synced · sync again".into())
+    );
+}
+
+/// Run Deployment `id` to `applied`, touching `services`.
+fn run(store: &ConfigStore, id: &ployz_store::DeploymentId, services: &[&str]) {
+    let runner = RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(id, &runner).unwrap();
+    let operation = |index: usize| {
+        json!({"type": "remove_container", "machine_id": "a".repeat(32),
+               "container_id": format!("{index:x}").repeat(64)})
+    };
+    let preview: ployz_core::DeployPreview = serde_json::from_value(json!({
+        "namespace": claimed.intent.namespace,
+        "operations": services.iter().enumerate().map(|(index, name)| json!({
+            "index": index, "machine_id": "a".repeat(32), "service_name": name,
+            "operation": operation(index), "status": {"type": "pending"}
+        })).collect::<Vec<_>>(),
+        "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store
+        .record(id, &runner, ployz_store::RunEvidence::Prepared(preview))
+        .unwrap();
+    let outcome: ployz_core::DeployOutcome<ployz_core::ExecutionError> =
+        serde_json::from_value(json!({
+            "type": "success",
+            "completed": (0..services.len()).map(operation).collect::<Vec<_>>()
+        }))
+        .unwrap();
+    store
+        .record(
+            id,
+            &runner,
+            ployz_store::RunEvidence::Executed {
+                outcome: Box::new(outcome),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
 }

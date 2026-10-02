@@ -1,10 +1,48 @@
-//! Saving a PR Environment's changes conditionally, and taking a save's rows.
+//! Syncing a PR Environment's changes conditionally, and taking a Conditional
+//! Sync's rows.
 
 use super::*;
 use ployz_core::config::BranchPickChoice;
 
-/// Save a PR Environment's picked changes for one Destination, replacing its save
-/// there; `picks: []` withdraws it.
+/// Sync a PR Environment's picked changes (row keys) for one Destination at the
+/// merge, replacing its Conditional Sync there; `picks: []` withdraws it.
+pub(crate) fn sync(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    request: &SyncChanges,
+) -> Result<Synced, RpcError> {
+    if request.close_after {
+        return Err(error::invalid(
+            "A PR Environment closes with its pull request: sync it without close_after",
+            json!({}),
+        ));
+    }
+    let sides = sides(tx, who, &request.from, request.into.as_ref(), true)?;
+    let conditional_sync = match request.picks.as_ref().is_some_and(Vec::is_empty) {
+        true => {
+            withdraw_from(tx, &sides)?;
+            None
+        }
+        false => {
+            let moving = ready(tx, &sides)?;
+            let changes = branch::reviewed(&moving, &sides.into, request.version.as_deref())?;
+            let current = branch::version(&sides.into, &changes.review);
+            let picks =
+                branch::sync_picks(&moving, (&changes.rows, &current), request.picks.as_deref())?;
+            Some(stand(tx, who, &sides, moving, (&changes, picks))?)
+        }
+    };
+    Ok(Synced {
+        from: sides.pr.summary,
+        into: sides.into.summary,
+        staged: Vec::new(),
+        closing: false,
+        conditional_sync,
+    })
+}
+
+/// Save a PR Environment's picked changes for one Destination, replacing its
+/// Conditional Sync there; `picks: []` withdraws it.
 pub(crate) fn save(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -12,27 +50,51 @@ pub(crate) fn save(
     request: &Save,
 ) -> Result<Moved, RpcError> {
     let sides = sides(tx, who, &request.from, request.into.as_ref(), true)?;
-    let withdraw = request.picks.as_ref().is_some_and(Vec::is_empty);
-    let replace = |tx: &mut dyn Tx| {
-        tx.execute(
-            "DELETE FROM config_conditional_save \
-             WHERE pr_environment_id = ?1 AND environment_id = ?2 AND state = 'standing'",
-            &[
-                sides.pr.summary.id.as_str().into(),
-                sides.into.summary.id.as_str().into(),
-            ],
-        )
-    };
-    if withdraw {
-        replace(tx)?;
+    if request.picks.as_ref().is_some_and(Vec::is_empty) {
+        withdraw_from(tx, &sides)?;
         return Ok(Moved {
             branch: Some(branch::view(tx, &sides.pr)?),
             from: sides.pr.summary,
             into: sides.into.summary,
             staged: Vec::new(),
-            conditional_save: None,
+            conditional_sync: None,
         });
     }
+    let moving = ready(tx, &sides)?;
+    let changes = branch::reviewed(&moving, &sides.into, request.version.as_deref())?;
+    let picks = branch::picks(
+        &moving,
+        &sides.into,
+        sealing,
+        &changes.rows,
+        request.picks.as_deref(),
+    )?;
+    let conditional_sync = stand(tx, who, &sides, moving, (&changes, picks))?;
+    Ok(Moved {
+        branch: Some(branch::view(tx, &sides.pr)?),
+        from: sides.pr.summary,
+        into: sides.into.summary,
+        staged: Vec::new(),
+        conditional_sync: Some(conditional_sync),
+    })
+}
+
+/// Withdraw the PR Environment's standing Conditional Sync into the Destination.
+fn withdraw_from(tx: &mut dyn Tx, sides: &Sides) -> Result<(), RpcError> {
+    tx.execute(
+        "DELETE FROM config_conditional_sync \
+         WHERE pr_environment_id = ?1 AND environment_id = ?2 AND state = 'standing'",
+        &[
+            sides.pr.summary.id.as_str().into(),
+            sides.into.summary.id.as_str().into(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// The comparison a Conditional Sync records, refused while the pull request is
+/// closed or its PR Environment is going.
+fn ready(tx: &mut dyn Tx, sides: &Sides) -> Result<Moving, RpcError> {
     if !sides.facts.open {
         return Err(error::conflict(
             format!("PR #{} is closed", sides.facts.number),
@@ -48,15 +110,18 @@ pub(crate) fn save(
     if let Some(removal) = teardown::removing(tx, &sides.pr.summary.id)? {
         return Err(teardown::being_removed(&sides.pr, &removal));
     }
-    let moving = moving(tx, &sides)?;
-    let changes = branch::reviewed(&moving, &sides.into, request.version.as_deref())?;
-    let picks = branch::picks(
-        &moving,
-        &sides.into,
-        sealing,
-        &changes.rows,
-        request.picks.as_deref(),
-    )?;
+    moving(tx, sides)
+}
+
+/// Record `picks` of `changes` as the PR Environment's standing Conditional Sync
+/// into the Destination, replacing the one there.
+fn stand(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    sides: &Sides,
+    moving: Moving,
+    (changes, picks): (&BranchChanges, Vec<BranchPick>),
+) -> Result<ConditionalSync, RpcError> {
     // Core refuses picks it couldn't land, such as a new Service's variable without it.
     moving.compare(&sides.into.working, Some(picks.clone()))?;
     let picked: BTreeSet<String> = picks.iter().map(|pick| pick.key.clone()).collect();
@@ -92,10 +157,10 @@ pub(crate) fn save(
         from: sides.pr.summary.clone(),
         landed: None,
     };
-    replace(tx)?;
-    let id = ConditionalSaveId::parse(uuid::Uuid::new_v4().to_string())?;
+    withdraw_from(tx, sides)?;
+    let id = ConditionalSyncId::parse(uuid::Uuid::new_v4().to_string())?;
     tx.execute(
-        "INSERT INTO config_conditional_save (id, organization_id, environment_id, state, \
+        "INSERT INTO config_conditional_sync (id, organization_id, environment_id, state, \
          pr_environment_id, repository_id, number, target_branch, working_revision, merge_commit, \
          saved_at, saved) VALUES (?1, ?2, ?3, 'standing', ?4, ?5, ?6, ?7, ?8, NULL, ?9, ?10)",
         &[
@@ -111,17 +176,11 @@ pub(crate) fn save(
             document(&stored).as_str().into(),
         ],
     )?;
-    Ok(Moved {
-        branch: Some(branch::view(tx, &sides.pr)?),
-        from: sides.pr.summary,
-        into: sides.into.summary,
-        staged: Vec::new(),
-        conditional_save: Some(ConditionalSave {
-            id,
-            pull_request: sides.facts.number,
-            rows: names,
-            state: SaveState::Standing,
-        }),
+    Ok(ConditionalSync {
+        id,
+        pull_request: sides.facts.number,
+        rows: names,
+        state: ConditionalSyncState::Standing,
     })
 }
 
@@ -220,22 +279,22 @@ pub(super) fn secret_hints(moving: &Moving, into: &Environment) -> Vec<Row> {
     rows
 }
 
-/// Stage the picked hints (omitted: every one) of a landed Conditional Save in its
+/// Stage the picked hints (omitted: every one) of a landed Conditional Sync in its
 /// Destination: the pull request's value replaces the Destination's own edit.
 pub(crate) fn take(
     tx: &mut dyn Tx,
     who: &Actor,
-    id: &ConditionalSaveId,
+    id: &ConditionalSyncId,
     take: &Take,
 ) -> Result<Moved, RpcError> {
-    let missing = || error::not_found(format!("No Conditional Save {id}"), json!({}));
+    let missing = || error::not_found(format!("No Conditional Sync {id}"), json!({}));
     let found = load(tx, who, id)?.ok_or_else(missing)?;
     let mut into = scope::lock_id(tx, who, &found.environment)?;
     if let Some(at) = &take.into
         && scope::environment(tx, who, at)?.summary.id != into.summary.id
     {
         return Err(error::invalid(
-            format!("Conditional Save {id} landed in {}", into.summary.name),
+            format!("Conditional Sync {id} landed in {}", into.summary.name),
             json!({}),
         ));
     }
@@ -252,7 +311,7 @@ pub(crate) fn take(
         )
     };
     let mut stored = found.stored;
-    if found.state != SaveState::Landed || stored.landed != latest {
+    if found.state != ConditionalSyncState::Landed || stored.landed != latest {
         return Err(gone());
     }
     let hints: Vec<&Row> = stored
@@ -327,7 +386,7 @@ pub(crate) fn take(
         into: into.summary,
         staged,
         branch: None,
-        conditional_save: Some(ConditionalSave {
+        conditional_sync: Some(ConditionalSync {
             id: id.clone(),
             pull_request: found.number,
             rows: stored
@@ -335,7 +394,7 @@ pub(crate) fn take(
                 .iter()
                 .map(|row| row.shown.row.clone())
                 .collect(),
-            state: SaveState::Landed,
+            state: ConditionalSyncState::Landed,
         }),
     })
 }

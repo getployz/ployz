@@ -313,7 +313,7 @@ export interface ConfigStore {
    * Save standing (report each that merged first) and the merge commits of frozen ones (pass those the new head
    * contains as the branch head's `merged`).
    */
-  pendingSaves(organization: string, repositoryId: number, branch: string): Promise<{ standing: number[]; merged: string[] }>;
+  pendingSyncs(organization: string, repositoryId: number, branch: string): Promise<{ standing: number[]; merged: string[] }>;
   /**
    * Cloud's worker only: start GitHub build `build` (`DEPLOYMENT.SERVICE`). An earlier image may serve it (`reused`);
    * GitHub may be unable to take it (`skipped`, recorded for the next Builder); else dispatch on `runner`.

@@ -68,7 +68,7 @@ pub struct PullRequest {
     pub merge_commit: Option<CommitSha>,
     /// Once merged: the target branch's head as the Store last saw it
     /// ([`crate::ConfigStore::branch_head`]), when Cloud found the merge commit in it
-    /// already. Its Conditional Saves then land with what that push deployed.
+    /// already. Its Conditional Syncs then land with what that push deployed.
     #[serde(default)]
     pub merge_reached: Option<CommitSha>,
     /// When GitHub last changed it.
@@ -182,7 +182,7 @@ pub struct PullRequestView {
     pub pull_request: Option<PullRequest>,
     /// Its PR Environments, one per Project, not being closed.
     pub environments: Vec<PrEnvironment>,
-    /// Ready to merge: nothing waits to be saved into an Environment that deploys
+    /// Ready to merge: nothing waits to be synced into an Environment that deploys
     /// its target branch.
     pub passing: bool,
     /// Why, in a few words.
@@ -199,21 +199,21 @@ pub struct PrEnvironment {
     pub destinations: Vec<Destination>,
 }
 
-/// An Environment a PR Environment's changes would be saved into.
+/// An Environment a PR Environment's changes go live in at the merge.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Destination {
     pub name: EnvironmentName,
-    /// The PR Environment's changes a Save would move there.
+    /// The changes a Sync there would hold: the Sync view's ticked rows.
     pub changes: usize,
-    /// Its Conditional Save there, if any.
-    pub save: Option<DestinationSave>,
+    /// Its Conditional Sync there, if any.
+    pub conditional_sync: Option<DestinationSync>,
 }
 
-/// A PR Environment's Conditional Save into one Destination.
+/// A PR Environment's Conditional Sync into one Destination.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct DestinationSave {
-    pub id: crate::ConditionalSaveId,
-    /// False once the PR Environment or the target branch changed since: save again.
+pub struct DestinationSync {
+    pub id: crate::ConditionalSyncId,
+    /// False once the PR Environment or the target branch changed since: sync again.
     pub standing: bool,
     /// How many changes it holds.
     pub changes: usize,
@@ -394,7 +394,7 @@ pub(crate) fn pull_request(
     // Everything this event may touch, locked first and in ID order: its PR
     // Environments, where their saves land, and where new ones start from.
     let mut touched: Vec<EnvironmentId> = current.iter().map(|(id, _)| id.clone()).collect();
-    touched.extend(crate::conditional_save::involved(tx, who, event)?);
+    touched.extend(crate::conditional_sync::involved(tx, who, event)?);
     touched.extend(start_froms(tx, who, event.repository_id)?);
     scope::lock_all(tx, touched)?;
     let renamed = before
@@ -411,10 +411,10 @@ pub(crate) fn pull_request(
         .as_ref()
         .is_some_and(|before| before.target_branch != event.target_branch);
     if retargeted {
-        crate::conditional_save::withdraw(tx, who, event)?;
+        crate::conditional_sync::withdraw(tx, who, event)?;
     }
     if !event.open {
-        crate::conditional_save::settle(tx, who, event)?;
+        crate::conditional_sync::settle(tx, who, event)?;
         for (environment, project) in &current {
             let plan = load(tx, project, event.repository_id)?.unwrap_or_else(off);
             if plan.remove_on_close {

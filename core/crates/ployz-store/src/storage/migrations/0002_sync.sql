@@ -52,3 +52,6 @@ CREATE TABLE config_followed (
     value TEXT NOT NULL,
     PRIMARY KEY (environment_id, lineage, path)
 );
+
+-- Conditional Save is Conditional Sync now.
+ALTER TABLE config_conditional_save RENAME TO config_conditional_sync;

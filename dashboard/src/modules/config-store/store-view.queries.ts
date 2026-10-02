@@ -38,15 +38,17 @@ const refreshedBy = {
   volumes: ["store_environment", "store_deployment"],
   volume: ["store_environment", "store_deployment"],
   removals: ["store_environment", "store_deployment"],
-  // A Branch's Live Nodes and pending Update follow what its Parent and ancestors run.
-  branch: ["store_environment", "store_deployment"],
+  // A Branch's Live Nodes and pending Update follow what its Parent and ancestors run; a PR Environment counts
+  // toward its pull request's Destination.
+  branch: ["store_environment", "store_deployment", "store_pull_request"],
   // A plan reads the Environment's Working State and what it and its ancestors run.
   branch_plan: ["store_environment", "store_deployment"],
   build_order: ["store_organization"],
-  // A Move compares a Branch with its Parent's Working and Applied State; a PR's Conditional Save reads its facts.
+  // A Move compares a Branch with its Parent's Working and Applied State; a PR's Conditional Sync reads its facts.
   move: ["store_environment", "store_deployment", "store_pull_request"],
-  // A Sync compares a Branch's Working State with its Parent's over what the two last shared.
-  sync: ["store_environment", "store_deployment"],
+  // A Sync compares two Environments over what they last shared; from a PR Environment into a Destination it is a
+  // Conditional Sync, which reads the pull request.
+  sync: ["store_environment", "store_deployment", "store_pull_request"],
   // The Project names its Default Environment; a removal is a Deployment.
   environments: ["store_project", "store_environment", "store_deployment"],
   projects: ["store_project", "store_environment"],
@@ -351,7 +353,7 @@ export function useStoreView<Q extends ConfigQuery>(organizationSlug: string, qu
 }
 
 /**
- * Changes open pull requests saved into `environment` for their merge (standing Conditional Saves), by pull request:
+ * Changes open pull requests synced into `environment` for their merge (standing Conditional Syncs), by pull request:
  * the bottom bar's "goes live when #N merges". Chrome, so nothing waits on it; the Project's plans name the open ones.
  */
 // ponytail: one pull request view per open PR of the Project; a Store view of saves into an Environment when PRs pile up.
@@ -364,8 +366,8 @@ export function useSavesInto(organizationSlug: string, project: string, environm
     if (!data?.ok || !data.value.pull_request) return [];
     const { number } = data.value.pull_request;
     return data.value.environments.flatMap((pr) => pr.destinations.flatMap((destination) =>
-      destination.name === environment && destination.save?.standing
-        ? [{ number, changes: destination.save.changes, environment: pr.environment.name }] : []));
+      destination.name === environment && destination.conditional_sync?.standing
+        ? [{ number, changes: destination.conditional_sync.changes, environment: pr.environment.name }] : []));
   });
 }
 

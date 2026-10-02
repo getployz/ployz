@@ -1,7 +1,7 @@
 import type { DeploymentSummary, SyncRow } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { closesIn, syncButtonState, syncLine, syncPicks, syncRowPath, syncSections, undoPaths } from "./store-sync";
+import { closesIn, goesLive, syncButtonState, syncLine, syncPicks, syncRowPath, syncSections, undoPaths } from "./store-sync";
 
 const row = (key: string, node: string, label: string, extra: Partial<SyncRow> = {}): SyncRow =>
   ({ key, node, label, from: null, into: null, ticked: true, changed: false, new: false, secret: false, ...extra });
@@ -73,6 +73,23 @@ describe("the Sync button", () => {
       { label: "Closing", count: null },
       { label: "Sync to production", count: 4 },
       { label: "In sync with production", count: null },
+    ]);
+  });
+
+  it("reads a PR Environment's Destination: Goes live once its Conditional Sync stands, after Off", () => {
+    const pr = { parent: "staging", to_parent: 1, pull_request: { repository_id: 1, number: 142 } };
+    const merge = { number: 142, into: "production", changes: 3, standing: false };
+    const off = asTestDouble<DeploymentSummary>()({ status: "applied", in_flight: false });
+    expect([
+      syncButtonState(pr, null, merge),
+      syncButtonState(pr, null, { ...merge, standing: true }),
+      syncButtonState(pr, off, { ...merge, standing: true }),
+      goesLive(1, "production", 142),
+    ]).toEqual([
+      { label: "Sync to production", count: 3 },
+      { label: "Goes live with #142", count: null },
+      { label: "Off", count: null },
+      "1 change goes live in production when #142 merges",
     ]);
   });
 

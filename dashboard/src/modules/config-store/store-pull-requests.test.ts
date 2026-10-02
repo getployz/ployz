@@ -29,10 +29,10 @@ const view = (destinations: PullRequestView["environments"][number]["destination
 describe("destinationNews", () => {
   it("reads each Destination as to save, saved or stale", () => {
     expect(destinationNews(view([
-      { name: "production", changes: 2, save: null },
-      { name: "staging", changes: 0, save: { id: "s", standing: true, changes: 3 } },
-      { name: "eu", changes: 1, save: { id: "t", standing: false, changes: 2 } },
-      { name: "quiet", changes: 0, save: null },
+      { name: "production", changes: 2, conditional_sync: null },
+      { name: "staging", changes: 0, conditional_sync: { id: "s", standing: true, changes: 3 } },
+      { name: "eu", changes: 1, conditional_sync: { id: "t", standing: false, changes: 2 } },
+      { name: "quiet", changes: 0, conditional_sync: null },
     ]), "pr-5")).toEqual([
       { kind: "save", into: "production", changes: 2 },
       { kind: "saved", into: "staging", changes: 3, save: "s" },
@@ -41,7 +41,7 @@ describe("destinationNews", () => {
   });
 
   it("finds nothing for another Environment", () => {
-    expect(destinationNews(view([{ name: "production", changes: 2, save: null }]), "pr-6")).toEqual([]);
+    expect(destinationNews(view([{ name: "production", changes: 2, conditional_sync: null }]), "pr-6")).toEqual([]);
   });
 });
 
