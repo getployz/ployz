@@ -82,26 +82,16 @@ it("discards a Setting by its Store path, through the Environment's queue", asyn
   expect(test.admits()).toEqual([{ command: "discard", environment: ref, path: "web.replicas", version: "2:1:0" }]);
 });
 
-it("discards an arrived change, then marks its row Never sync here, so it goes and nothing follows into it again", async () => {
+it("marks an arrived change's row Never sync here and discards it in one Batch, so it goes and nothing follows into it again", async () => {
   const test = setup();
-  test.write.mockResolvedValueOnce({ ok: true, value: { written: "discarded" } } as never)
-    .mockResolvedValueOnce({ ok: true, value: { written: "never_synced" } } as never);
+  test.write.mockResolvedValueOnce({ ok: true, value: { written: "batch", results: [] } } as never);
 
   act(() => { fireEvent.click(screen.getByText("Never sync CACHE_TTL")); });
-  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(2));
-  expect(test.admits()).toEqual([
-    { command: "discard", environment: ref, path: "api.env.CACHE_TTL", version: "2:1:0" },
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
+  expect(test.admits()).toEqual([{ command: "batch", environment: ref, commands: [
     { command: "never_sync", environment: ref, rows: ["a:variables.CACHE_TTL"] },
-  ]);
-});
-
-it("marks nothing when the discard is refused", async () => {
-  const test = setup();
-  test.write.mockResolvedValueOnce(refusal("conflict", null));
-
-  act(() => { fireEvent.click(screen.getByText("Never sync CACHE_TTL")); });
-  await waitFor(() => expect(toast.error).toHaveBeenCalled());
-  expect(test.write).toHaveBeenCalledTimes(1);
+    { command: "discard", environment: ref, path: "api.env.CACHE_TTL", version: "2:1:0" },
+  ] }]);
 });
 
 it("fails closed when the Servers can't be checked: nothing to accept, and the Store's reason shows", async () => {

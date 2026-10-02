@@ -11,9 +11,10 @@
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::RowId;
 use ployz_store::{
-    Actor, Change, ConfigStore, CreateBranch, CreateProject, CreateService, DiffQuery, DiffView,
-    Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, HintSource, OrganizationId,
-    ProjectId, ProjectName, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, Take,
+    Actor, Batch, BatchCommand, Change, ConfigStore, CreateBranch, CreateProject, CreateService,
+    DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentQuery,
+    EnvironmentRef, HintSource, NeverSync, OrganizationId, ProjectId, ProjectName,
+    ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, Take,
 };
 use serde_json::{Value, json};
 
@@ -523,4 +524,70 @@ fn a_change_the_branch_refuses_is_a_hint_and_the_rest_still_follows() {
         hints.iter().any(|hint| hint.starts_with("api ")),
         "{hints:?}"
     );
+}
+
+/// Never sync from Details on `web`'s `path` in fix-web, the review at `version`:
+/// discard what arrived and mark its row `at`, as one Batch.
+fn never_sync_arrived(at_row: &str, path: &str, version: String) -> Batch {
+    Batch {
+        environment: at("fix-web"),
+        commands: vec![
+            BatchCommand::NeverSync(NeverSync {
+                environment: EnvironmentRef::default(),
+                rows: vec![row(at_row).into()],
+                off: false,
+            }),
+            BatchCommand::Discard(Discard {
+                environment: EnvironmentRef::default(),
+                path: Some(SettingPath::parse(path).unwrap()),
+                version: Some(version),
+            }),
+        ],
+        expect: None,
+    }
+}
+
+#[test]
+fn never_sync_on_what_arrived_discards_it_and_marks_its_row_or_neither() {
+    let (store, who) = shop();
+    set(&store, &who, "production", &[("web.image", json!("web:2"))]);
+    deploy(&store, &who, "production", 2);
+    let marked = || {
+        store
+            .read(
+                &who,
+                &EnvironmentQuery {
+                    environment: at("fix-web"),
+                    path: None,
+                    all: false,
+                },
+            )
+            .unwrap()
+            .never_synced
+            .len()
+    };
+
+    // The review moved on: the discard is refused, and so is the mark.
+    let stale = never_sync_arrived("source.image", "web.image", "0:stale".into());
+    let refused = store.write(&who, &stale).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert_eq!(marked(), 0);
+    assert_eq!(web(&store, &who, "fix-web")["image"], json!("web:2"));
+
+    let version = diff(&store, &who, "fix-web").version;
+    store
+        .write(
+            &who,
+            &never_sync_arrived("source.image", "web.image", version),
+        )
+        .unwrap();
+    assert_eq!(marked(), 1);
+    assert_eq!(web(&store, &who, "fix-web")["image"], json!("web:1"));
+    assert!(incoming(&store, &who, "fix-web").is_empty());
+    assert!(hints(&store, &who, "fix-web").is_empty());
+
+    // production's next image doesn't follow.
+    set(&store, &who, "production", &[("web.image", json!("web:3"))]);
+    deploy(&store, &who, "production", 3);
+    assert_eq!(web(&store, &who, "fix-web")["image"], json!("web:1"));
 }

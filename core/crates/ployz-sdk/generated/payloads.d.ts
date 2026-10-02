@@ -95,7 +95,7 @@ commands: Array<BatchCommand>,
  */
 expect?: Revision | null, };
 
-export type BatchCommand = { "command": "create_service" } & CreateService | { "command": "create_volume" } & CreateVolume | { "command": "edit" } & Edit | { "command": "discard" } & Discard;
+export type BatchCommand = { "command": "create_service" } & CreateService | { "command": "create_volume" } & CreateVolume | { "command": "edit" } & Edit | { "command": "discard" } & Discard | { "command": "never_sync" } & NeverSync;
 
 export type Batched = {
 /**

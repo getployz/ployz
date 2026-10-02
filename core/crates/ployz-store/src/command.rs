@@ -289,6 +289,8 @@ pub enum BatchCommand {
     Edit(Edit),
     /// See [`Command::Discard`].
     Discard(Discard),
+    /// See [`Command::NeverSync`].
+    NeverSync(crate::NeverSync),
 }
 
 impl BatchCommand {
@@ -300,6 +302,7 @@ impl BatchCommand {
             Self::CreateVolume(create) => &create.environment,
             Self::Edit(edit) => &edit.environment,
             Self::Discard(discard) => &discard.environment,
+            Self::NeverSync(mark) => &mark.environment,
         };
         if named != environment && *named != unnamed {
             return Err(error::invalid(
@@ -332,6 +335,12 @@ impl BatchCommand {
             }
             .apply(at)
             .map(Written::Discarded),
+            Self::NeverSync(mark) => crate::NeverSync {
+                environment: environment.clone(),
+                ..mark.clone()
+            }
+            .apply(at)
+            .map(Written::NeverSynced),
         }
     }
 }

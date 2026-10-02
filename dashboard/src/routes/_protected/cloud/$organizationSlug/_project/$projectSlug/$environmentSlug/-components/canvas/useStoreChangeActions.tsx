@@ -60,11 +60,12 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     writer.commit({ command: "discard", environment, path, version });
   }
 
-  /** Discards `path` and marks its `row` Never sync here: what arrived goes, and nothing follows into it again. */
+  /** Marks `row` Never sync here and discards `path`, all or none: what arrived goes, and nothing follows into it again. */
   function neverSync(path: string, row: RowId) {
-    // ponytail: two writes, not one transaction (a Batch can't mark); a refused discard marks nothing, a refused mark toasts.
-    void writer.commit({ command: "discard", environment, path, version }).isPersisted.promise
-      .then(() => writer.commit({ command: "never_sync", environment, rows: [row] }), () => undefined);
+    writer.commit({ command: "batch", environment, commands: [
+      { command: "never_sync", environment, rows: [row] },
+      { command: "discard", environment, path, version },
+    ] });
   }
 
   return {
