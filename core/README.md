@@ -60,6 +60,7 @@ Run Cargo and engine script commands from `core/`.
 
 - `crates/ployz-core`: domain and wire contracts shared by both binaries
 - `crates/ployz`: CLI for Linux, macOS, and Windows through WSL
+- `crates/ployz-store`: the Config Store, all authored configuration and its history behind one read/write interface, served to Cloud through `@ployz/sdk`
 - `crates/ployz-build`: BuildKit execution for one captured Build
 - `crates/ployz-config-wasm`: the SDK's config ABI, compiled to WASM
 - `crates/ployz-sdk`: internal workspace package `@ployz/sdk`, never published. napi serves Machine RPC; config runs on the `ployz-config-wasm` build in Node and the browser. Its TypeScript declarations are derived from the Rust wire types by `cargo test -p ployz --test sdk_payloads`
