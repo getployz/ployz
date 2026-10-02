@@ -5,6 +5,7 @@ import { Layer, ManagedRuntime } from "effect";
 import { OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { PloyzLive } from "#/modules/runtime/ployz.server";
 import { PolarLive } from "#/modules/billing/polar-provider.server";
+import { PostHogLive } from "#/modules/analytics/posthog.server";
 import { GithubApiLive } from "#/modules/github/github-observation.api";
 import { GithubOidcKeysLive } from "#/modules/github/github-oidc.server";
 import { InngestLive } from "#/modules/inngest/client";
@@ -17,6 +18,7 @@ import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 const InfrastructureLive = Layer.mergeAll(
   SecretEncryptionLive,
   PolarLive,
+  PostHogLive,
   InngestLive,
   GithubApiLive,
   GithubOidcKeysLive,

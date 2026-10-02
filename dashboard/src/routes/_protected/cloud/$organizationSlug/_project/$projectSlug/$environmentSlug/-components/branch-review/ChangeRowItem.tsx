@@ -20,7 +20,7 @@ export function ChangeRowItem({ row, conflict, description }: {
           {conflict ? <Badge variant="warning"><TriangleAlertIcon />Changed in {conflict} too</Badge> : null}
         </ItemTitle>
         {description ?? (row.after ? (
-          <ItemDescription className="flex flex-wrap items-center gap-1.5 font-mono wrap-anywhere">
+          <ItemDescription className="ph-no-capture flex flex-wrap items-center gap-1.5 font-mono wrap-anywhere">
             {row.before ? <><span className="line-through">{row.before}</span><span aria-label="becomes">→</span></> : null}
             <span className="text-foreground">{row.after}</span>
           </ItemDescription>

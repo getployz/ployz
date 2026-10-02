@@ -14,6 +14,7 @@ import {
 
 const Uuid = Schema.String.check(Schema.isUUID());
 const DEFAULT_HOSTED_DNS_URL = new URL("https://dns.ployz.app/");
+const DEFAULT_POSTHOG_HOST = new URL("https://us.i.posthog.com");
 const NonEmptySecret = Schema.Redacted(Schema.NonEmptyString);
 const EncryptionSecret = Schema.Redacted(
   Schema.String.check(Schema.isMinLength(32)),
@@ -68,6 +69,10 @@ const rawFields = {
     Config.schema(NonEmptySecret, "POLAR_WEBHOOK_SECRET"),
   ),
   polarProductId: optional(Config.schema(Uuid, "POLAR_PRODUCT_ID")),
+  posthogKey: optional(Config.nonEmptyString("POSTHOG_KEY")),
+  posthogHost: Config.url("POSTHOG_HOST").pipe(
+    Config.withDefault(DEFAULT_POSTHOG_HOST),
+  ),
   hostedDnsUrl: Config.url("PLOYZ_HOSTED_DNS_URL").pipe(
     Config.withDefault(DEFAULT_HOSTED_DNS_URL),
   ),
@@ -163,6 +168,10 @@ const makeAppConfig = Effect.gen(function* () {
       appWebhookSecret: raw.githubAppWebhookSecret,
     },
     polar,
+    // Unset (Self-hosted Cloud): no product analytics. The project key is public; browsers send it too.
+    posthog: raw.posthogKey === undefined
+      ? null
+      : { key: raw.posthogKey, host: raw.posthogHost.origin },
     ployz: {
       hostedDnsUrl: raw.hostedDnsUrl,
       hostedDnsMintKey: raw.hostedDnsMintKey,

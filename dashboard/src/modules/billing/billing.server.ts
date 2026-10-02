@@ -9,6 +9,7 @@ import {
   type ManagedSubscriptionSnapshot,
 } from "#/modules/billing/billing";
 import { Polar } from "#/modules/billing/polar-provider.server";
+import { PostHog } from "#/modules/analytics/posthog.server";
 import {
   getOrganizationForUserBySlug,
 } from "#/modules/organization/organization-state.server";
@@ -94,14 +95,22 @@ export const persistOrganizationBillingStateSnapshot = Effect.fn(
     ...sourceOrdering,
   };
 
-  yield* database.drizzle
+  const saved = yield* database.drizzle
     .insert(schemaOrganizationBillingState)
     .values({ organizationId, ...values })
     .onConflictDoUpdate({
       target: schemaOrganizationBillingState.organizationId,
       set: values,
       ...updateOrdering,
+    })
+    .returning({ organizationId: schemaOrganizationBillingState.organizationId });
+  // Every path to the billing row passes here (webhooks, checkout, the nightly reconcile); a stale snapshot saves nothing.
+  if (saved.length > 0) {
+    yield* (yield* PostHog).identifyOrganization(organizationId, {
+      pro: snapshot.hasActiveSubscription,
+      cancel_at_period_end: snapshot.cancelAtPeriodEnd,
     });
+  }
 
   return snapshot;
 });
@@ -178,7 +187,7 @@ export const createEmbeddedCheckout = Effect.fn("Billing.createCheckout")(
     }
     const profile = yield* getBillingUser(actor.userId);
     const config = yield* AppConfig;
-    return yield* polar.createCheckout({
+    const checkout = yield* polar.createCheckout({
       successUrl: `${billingPage(config.app.url, input.organizationSlug)}?checkout_id={CHECKOUT_ID}`,
       embedOrigin: config.app.url.origin,
       externalCustomerId: profile.id,
@@ -186,6 +195,8 @@ export const createEmbeddedCheckout = Effect.fn("Billing.createCheckout")(
       customerName: profile.name,
       referenceId: organization.id,
     });
+    yield* (yield* PostHog).capture({ userId: actor.userId, organizationId: organization.id, event: "checkout_started" });
+    return checkout;
   },
 );
 
@@ -214,7 +225,12 @@ export const syncBillingAfterCheckout = Effect.fn("Billing.syncAfterCheckout")(
       Effect.repeat({ schedule: Schedule.spaced("1 second"), times: 9, until: (next) => next.hasActiveSubscription }),
     );
     // An inactive read is left to the webhook: saving it could overwrite a Pro the webhook just recorded.
-    if (snapshot.hasActiveSubscription) yield* persistOrganizationBillingStateSnapshot(organization.id, snapshot);
+    if (snapshot.hasActiveSubscription) {
+      yield* persistOrganizationBillingStateSnapshot(organization.id, snapshot);
+      // ponytail: a retried finish captures twice; funnels count each Organization once. A tab closed before this
+      // leaves only the webhook's `pro` group property, which has no user to credit. Move to a transition check if that gap matters.
+      yield* (yield* PostHog).capture({ userId: actor.userId, organizationId: organization.id, event: "subscription_started" });
+    }
     return snapshot.hasActiveSubscription;
   },
 );

@@ -1,6 +1,7 @@
 import type { ComponentType } from "react";
 import { initializeAuthSession } from "./auth/auth-client";
 import type { AuthSession } from "./auth/auth";
+import { getPostHogBrowserConfig, startPostHog, type PostHogBrowserConfig } from "./modules/analytics/posthog";
 import {
   createRouter as createTanStackRouter,
   useHydrated,
@@ -65,14 +66,17 @@ export function getRouter() {
     scrollToTopSelectors: [
       '[data-scroll-restoration-id="wireframe-content"]',
     ],
-    dehydrate: () => {
+    dehydrate: async () => {
       // The root loader owns auth; Start serializes this shared reference once.
       const root = router.state.matches.find((match) => match.routeId === "__root__");
       // SAFETY: __root__ loader returns this session shape; router matches erase loader-specific types.
       const data = root?.loaderData as { session: AuthSession | null } | undefined;
-      return { authSession: data?.session ?? null };
+      return { authSession: data?.session ?? null, posthog: await getPostHogBrowserConfig() };
     },
-    hydrate: (data: { authSession: AuthSession | null }) => initializeAuthSession(data.authSession),
+    hydrate: (data: { authSession: AuthSession | null; posthog: PostHogBrowserConfig }) => {
+      initializeAuthSession(data.authSession);
+      startPostHog(data.posthog, data.authSession);
+    },
     defaultPreload: "viewport",
     defaultPreloadStaleTime: 0,
     defaultPendingMs: 220,

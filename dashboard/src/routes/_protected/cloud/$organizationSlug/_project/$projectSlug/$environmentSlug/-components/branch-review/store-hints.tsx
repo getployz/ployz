@@ -28,7 +28,7 @@ export function storeHintNotes(diff: DiffView, groups: readonly ChangeGroup[]) {
           <Item key={`${hint.save}:${hint.row}`} variant="outline" size="sm">
             <ItemContent className="min-w-0">
               <ItemTitle>{presented(hint).node} · {presented(hint).label}</ItemTitle>
-              {hint.landed === "staged" ? <ItemDescription className="font-mono">{presented(hint).after || "—"}</ItemDescription> : null}
+              {hint.landed === "staged" ? <ItemDescription className="ph-no-capture font-mono">{presented(hint).after || "—"}</ItemDescription> : null}
             </ItemContent>
             <ItemActions><HintNote hint={hint} /></ItemActions>
           </Item>
@@ -47,7 +47,7 @@ function HintNote({ hint }: { hint: PullRequestHint }) {
   if (hint.landed === "staged") return tag;
   return (
     <span className="flex min-w-0 items-center gap-1 text-muted-foreground">
-      {tag}<span className="truncate font-mono text-foreground">{presented(hint).after || "—"}</span>
+      {tag}<span className="ph-no-capture truncate font-mono text-foreground">{presented(hint).after || "—"}</span>
       <Button variant="link" size="xs" aria-label={`Use PR #${hint.pull_request}'s ${hint.row}`}
         // Stages the pull request's value over this Environment's own; the refetched review shows it, a refusal toasts.
         onClick={() => void writer.commit({ command: "move", move: "take", from: hint.save, into: store, rows: [hint.row] })}>

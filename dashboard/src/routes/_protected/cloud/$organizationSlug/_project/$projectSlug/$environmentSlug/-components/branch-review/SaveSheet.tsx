@@ -152,7 +152,7 @@ function NewValue({ entry: { row, choice, pick, presented }, picks, destination 
   if (!pick?.ticked) return <Value className="opacity-50">{presented.after || "—"}</Value>;
   if (choice && pick.option === "new") {
     return (
-      <Input className="font-mono" type={choice.secret ? "password" : "text"} autoComplete="off" autoFocus={editing}
+      <Input className="ph-no-capture font-mono" type={choice.secret ? "password" : "text"} autoComplete="off" autoFocus={editing}
         value={pick.value} placeholder="new value" aria-label={`${presented.label} in ${destination}`}
         onChange={(event) => picks.edit(row.key, { value: event.target.value })} />
     );
@@ -167,7 +167,7 @@ function NewValue({ entry: { row, choice, pick, presented }, picks, destination 
 }
 
 function Value({ className, children }: { className?: string; children: string }) {
-  return <span className={cn("block truncate rounded-md border px-2 py-1.5 font-mono", className)} title={children}>{children}</span>;
+  return <span className={cn("ph-no-capture block truncate rounded-md border px-2 py-1.5 font-mono", className)} title={children}>{children}</span>;
 }
 
 function LeaveOut({ entry: { row, pick, presented }, picks }: { entry: Entry; picks: Picks }) {
