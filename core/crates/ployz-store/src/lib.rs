@@ -42,9 +42,8 @@ pub use automation::{
 };
 pub use branch::{
     BranchPlanQuery, BranchPlanView, BranchQuery, BranchView, Branched, CopyNode, CreateBranch,
-    DifferRow, KeepBranch, LiveNode, Move, MoveChoice, MovePick, MoveQuery, MoveRow, MoveView,
-    Moved, PickChoice, PlannedNode, PlannedRole, Save, SetBranchSetup, SetupCommand, SyncChanges,
-    SyncQuery, SyncRow, SyncView, Synced, Take, Update, When,
+    KeepBranch, LiveNode, PlannedNode, PlannedRole, SetBranchSetup, SetupCommand, SyncChanges,
+    SyncQuery, SyncRow, SyncView, Synced, Take, Taken, When,
 };
 pub use branch::{FollowHint, HintSource, IncomingChange, NeverSync, NeverSynced, NeverSyncedRow};
 pub use build::{

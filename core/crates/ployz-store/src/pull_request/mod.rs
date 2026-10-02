@@ -392,7 +392,7 @@ pub(crate) fn pull_request(
     }
     let current = current(tx, who, event.repository_id, event.number)?;
     // Everything this event may touch, locked first and in ID order: its PR
-    // Environments, where their saves land, and where new ones start from.
+    // Environments, where their Conditional Syncs land, and where new ones start from.
     let mut touched: Vec<EnvironmentId> = current.iter().map(|(id, _)| id.clone()).collect();
     touched.extend(crate::conditional_sync::involved(tx, who, event)?);
     touched.extend(start_froms(tx, who, event.repository_id)?);

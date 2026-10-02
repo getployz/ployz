@@ -206,11 +206,11 @@ commands! {
     /// Make a Branch of an Environment.
     CreateBranch(crate::CreateBranch) -> Branch(crate::Branched)
         keyed [c.id.as_str()] => crate::branch::create_branch(tx, who, c);
-    /// Move changes between a Branch and its Parent: Save or Update.
-    Move(crate::Move) -> Moved(crate::Moved) as *
-        => crate::branch::move_changes(tx, who, sealing, c);
-    /// Sync a Branch's changes into its Parent: staged there, never deleting or deploying.
+    /// Sync one Environment's changes into another of its Project: staged there,
+    /// never deleting or deploying.
     Sync(crate::SyncChanges) -> Synced(crate::Synced) => crate::branch::sync(tx, who, c);
+    /// Stage the hints a Conditional Sync or a Parent left in an Environment.
+    Take(crate::Take) -> Taken(crate::Taken) => crate::branch::take(tx, who, c);
     /// Turn a Branch's Live Node into an Own Copy.
     CopyNode(crate::CopyNode) -> Branch(crate::Branched) => crate::branch::copy_node(tx, who, c);
     /// Mark settings of an Environment Never sync, or sync them again.
@@ -344,7 +344,7 @@ impl Written {
             Self::Discarded(discarded) => Some(&discarded.environment.id),
             Self::Deployment(deployment) => Some(&deployment.environment_id),
             Self::Domain(staged) => Some(&staged.environment.id),
-            Self::Moved(moved) => Some(&moved.into.id),
+            Self::Taken(taken) => Some(&taken.into.id),
             Self::Synced(synced) => Some(&synced.into.id),
             Self::NeverSynced(marked) => Some(&marked.environment.id),
             Self::Batch(batched) => batched.results.last().and_then(Self::environment),
@@ -410,10 +410,10 @@ pub enum Written {
     Branch(crate::Branched),
     /// The Build Order was set; it applies to the next build.
     BuildOrder(crate::BuildOrderView),
-    /// Changes moved between a Branch and its Parent.
-    Moved(Box<crate::Moved>),
     /// Changes synced into another Environment.
     Synced(crate::Synced),
+    /// Hints were staged.
+    Taken(crate::Taken),
     /// An Environment's settings marked Never sync changed.
     NeverSynced(crate::NeverSynced),
     /// The Default Environment changed: the Project's Environments after it.

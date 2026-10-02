@@ -10,7 +10,7 @@ use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Admit, AuthorizedRepository, Automated, BranchHead, Change, CreateBranch,
     CreateGitService, CreateProject, CreateService, Deploy, DeploymentId, DeploymentStatus, Edit,
-    EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentsQuery, MoveQuery, OrganizationId,
+    EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentsQuery, OrganizationId,
     PrPlansQuery, ProjectId, ProjectName, PullRequest, PullRequestQuery, Removal, RunEvidence,
     RunnerId, ServiceLineageId, SetPrPlan, SettingPath, SetupCommand, Sweep, SystemEvent, Trusted,
     Written,
@@ -689,7 +689,7 @@ fn image_service(store: &ConfigStore, who: &Actor, environment: &str, n: u8, nam
 }
 
 #[test]
-fn a_destinations_count_is_the_rows_its_save_offers_where_nodes_are_used_live() {
+fn a_destinations_count_is_the_rows_its_sync_offers_where_nodes_are_used_live() {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
@@ -772,15 +772,14 @@ fn a_destinations_count_is_the_rows_its_save_offers_where_nodes_are_used_live() 
     let review = store
         .read(
             &who,
-            &MoveQuery::Save {
+            &ployz_store::SyncQuery {
                 from: at("pr-5"),
                 into: None,
-                when: None,
             },
         )
         .unwrap();
     assert_eq!(review.into.name.as_str(), "qa");
-    let rows: Vec<&str> = review.rows.iter().map(|row| row.row.as_str()).collect();
+    let rows: Vec<&str> = review.rows.iter().map(|row| row.label.as_str()).collect();
     assert_eq!(rows, ["site.env.MODE"]);
     let view = store
         .read(

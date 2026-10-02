@@ -35,7 +35,7 @@ pub(crate) struct Facts<'a> {
 /// Refuse a write that turns `before` into `after` if `after` breaks a rule that
 /// neither `before` nor `inherited` already broke. `inherited` is what the write
 /// copies or restores — the Parent a Branch is made from, the other side of a
-/// Save or Update, the Head a Discard returns to — read with `after`'s Live Nodes
+/// Sync or Follow, the Head a Discard returns to — read with `after`'s Live Nodes
 /// and Setup Commands, so what it brings along is not new.
 ///
 /// # Errors
@@ -671,7 +671,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_save_that_lands_a_broken_reference_is_refused() {
+    fn a_sync_that_lands_a_broken_reference_is_refused() {
         let (store, who) = shop();
         branch(&store, &who, &["db", "redis"]).unwrap();
         let feature = EnvironmentRef {
@@ -698,32 +698,36 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-        // Saving the reference without the variable it names breaks production.
-        let save = |rows: &[&str]| {
+        // Syncing the reference without the variable it names breaks production.
+        let query = crate::SyncQuery {
+            from: feature.clone(),
+            into: None,
+        };
+        let view = store.read(&who, &query).unwrap();
+        let sync = |labels: &[&str]| {
+            let picks = view
+                .rows
+                .iter()
+                .filter(|row| labels.contains(&row.label.as_str()))
+                .map(|row| row.key.clone())
+                .collect();
             store.write(
                 &who,
-                &crate::Move::Save(crate::Save {
+                &crate::SyncChanges {
                     from: feature.clone(),
-                    picks: Some(
-                        rows.iter()
-                            .map(|row| crate::MovePick {
-                                row: (*row).to_owned(),
-                                choice: None,
-                            })
-                            .collect(),
-                    ),
-                    ..crate::Save::default()
-                }),
+                    picks: Some(picks),
+                    ..crate::SyncChanges::default()
+                },
             )
         };
-        let refused = save(&["redis.env.DB_PASS"]).unwrap_err();
+        let refused = sync(&["redis.env.DB_PASS"]).unwrap_err();
         assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
         assert!(
             refused
                 .message
                 .starts_with("DB_PASS: db has no variable PASS")
         );
-        save(&["redis.env.DB_PASS", "db.env.PASS"]).unwrap();
+        sync(&["redis.env.DB_PASS", "db.env.PASS"]).unwrap();
     }
 
     #[test]

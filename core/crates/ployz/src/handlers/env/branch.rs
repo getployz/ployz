@@ -1,20 +1,18 @@
-//! Branches: create one, sync changes between two Environments of a Project, move changes between
-//! it and its Parent (Save, Update, withdraw, take), copy a Live Node into it, keep it.
+//! Branches: create one, sync changes between two Environments of a Project (or withdraw a
+//! Conditional Sync, or take a hint), copy a Live Node into it, keep it.
 
-use clap::{ArgMatches, Command};
+use clap::ArgMatches;
 use ployz_core::ServiceName;
 use ployz_store::{
-    Branched, ConditionalSyncId, ConditionalSyncState, CopyNode, CreateBranch, DeploymentId,
-    EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentSummary, HintSource, KeepBranch,
-    Move, MovePick, MoveQuery, MoveView, Moved, PickChoice, Save, SetupCommand, SyncChanges,
-    SyncQuery, SyncView, Synced, Take, Update, When,
+    Branched, ConditionalSyncId, CopyNode, CreateBranch, DeploymentId, EnvironmentId,
+    EnvironmentName, EnvironmentRef, HintSource, KeepBranch, SetupCommand, SyncChanges, SyncQuery,
+    SyncView, Synced, Take, Taken, When,
 };
 use serde_json::json;
 
 use super::super::config::expected;
 use super::super::store::{self, Next, mint, project, store};
 use super::super::{Error, leaf_matches, required};
-use crate::cli::{repeated, switch, value};
 use crate::cloud_account::StoreCallError;
 use crate::failure::USAGE_EXIT;
 use crate::output::say;
@@ -149,17 +147,37 @@ fn take(root: &ArgMatches, source: &str, into: EnvironmentRef) -> Result<(), Err
                 .with_exit(USAGE_EXIT)
         })?;
     let only = super::super::string_values(matches, "only");
-    let request = Move::Take(Take {
+    let request = Take {
         from,
         into: Some(into),
         rows: (!only.is_empty()).then_some(only),
         version: matches.get_one::<String>("version").cloned(),
-    });
+    };
     let store = store(root)?;
-    let moved = store
+    let taken = store
         .try_write(&request)
         .map_err(|error| store.fail(store::with_refresh_hint(error, matches, "diff")))?;
-    moved_out(matches, Shift::Take, &moved)
+    taken_out(matches, &taken)
+}
+
+/// What a take staged, and `deploy` of where it landed.
+fn taken_out(matches: &ArgMatches, taken: &Taken) -> Result<(), Error> {
+    let into = &taken.into;
+    let next = (!taken.staged.is_empty())
+        .then(|| in_project(matches, &["deploy", "--env", into.name.as_str()]));
+    crate::output::finish(&Next::new(taken, next.clone()), || {
+        let into = format!("{}/{}", into.project, into.name);
+        match &taken.conditional_sync {
+            Some(sync) => say!("Took PR #{}'s value into {into}.", sync.pull_request),
+            None => say!("Took {}'s value into {into}.", taken.from.name),
+        }
+        if !taken.staged.is_empty() {
+            say!("Staged: {}", crate::handlers::joined(&taken.staged));
+        }
+        if let Some(next) = &next {
+            say!("next: {next}");
+        }
+    })
 }
 
 /// `env sync --to [ENV]` or `env sync --from ENV`, as given.
@@ -307,261 +325,6 @@ fn in_project(matches: &ArgMatches, words: &[&str]) -> String {
     shell_words::join(std::iter::once("ployz".to_owned()).chain(words))
 }
 
-/// `env save` and `env update`: the Branch in scope, the changes picked, the guard.
-pub(super) fn moving(command: Command) -> Command {
-    store::scoped(command)
-        .arg(
-            repeated("only")
-                .value_name("ROW[=CHOICE]")
-                .help("Move only this change, or every change under it (web, web.env); a variable may say how it lands: from, parent, leave_out, or new=VALUE for its own value here"),
-        )
-        .arg(value("version", None).help("Refuse unless this is still the version --plan showed"))
-        .arg(switch("plan", None).help("List the changes and the version; move nothing"))
-}
-
-pub(super) fn save(root: &ArgMatches) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    let here = store::environment(matches)?;
-    if matches.get_one::<String>("take").is_some() {
-        return shift(root, Shift::Take, (EnvironmentRef::default(), Some(here)));
-    }
-    let into = matches
-        .get_one::<String>("into")
-        .map(|name| {
-            Ok::<_, Error>(EnvironmentRef {
-                project: project(matches)?,
-                environment: Some(EnvironmentName::parse(name.as_str())?),
-            })
-        })
-        .transpose()?;
-    let shift_as = match matches.get_flag("withdraw") {
-        true => Shift::Withdraw,
-        false => Shift::Save,
-    };
-    shift(root, shift_as, (here, into))
-}
-
-pub(super) fn update(root: &ArgMatches) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    let into = Some(store::environment(matches)?);
-    shift(root, Shift::Update, (EnvironmentRef::default(), into))
-}
-
-/// What `env save` or `env update` does.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Shift {
-    Save,
-    Update,
-    /// `env save --withdraw`: withdraw a Conditional Sync.
-    Withdraw,
-    /// `env save --take`: take a retained Conditional Sync's value.
-    Take,
-}
-
-impl Shift {
-    /// The `env` subcommand it runs as.
-    fn command(self) -> &'static str {
-        match self {
-            Self::Update => "update",
-            Self::Save | Self::Withdraw | Self::Take => "save",
-        }
-    }
-}
-
-/// A Save, Update, withdrawal or take: with `--plan` its changes, else the Move itself.
-fn shift(
-    root: &ArgMatches,
-    shift: Shift,
-    (from, into): (EnvironmentRef, Option<EnvironmentRef>),
-) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    let store = store(root)?;
-    let command = shift.command();
-    if matches.get_flag("plan") {
-        let sides = match shift {
-            Shift::Update | Shift::Take => MoveQuery::Update {
-                into: into.unwrap_or_default(),
-            },
-            Shift::Save | Shift::Withdraw => MoveQuery::Save {
-                from,
-                into,
-                when: None,
-            },
-        };
-        let view = store.read(&sides)?;
-        return plan(matches, command, &view);
-    }
-    let picks = match shift {
-        Shift::Withdraw => Some(Vec::new()),
-        Shift::Save | Shift::Update | Shift::Take => matches
-            .get_many::<String>("only")
-            .map(|only| only.map(|only| pick(only)).collect::<Result<Vec<_>, _>>())
-            .transpose()?,
-    };
-    let version = matches.get_one::<String>("version").cloned();
-    let request = match shift {
-        Shift::Take => {
-            let save = matches
-                .try_get_one::<String>("take")
-                .ok()
-                .flatten()
-                .map(|id| ConditionalSyncId::parse(id.as_str()))
-                .transpose()?
-                .ok_or_else(|| Error::usage("Name the Conditional Sync to take from"))?;
-            Move::Take(Take {
-                from: HintSource::ConditionalSync(save),
-                into,
-                rows: picks.map(|picks| picks.into_iter().map(|pick| pick.row).collect()),
-                version,
-            })
-        }
-        Shift::Update => Move::Update(Update {
-            into: into.unwrap_or_default(),
-            picks,
-            version,
-        }),
-        Shift::Save | Shift::Withdraw => Move::Save(Save {
-            from,
-            into,
-            picks,
-            version,
-            when: (shift == Shift::Withdraw).then_some(When::AtMerge),
-        }),
-    };
-    let moved = store
-        .try_write(&request)
-        .map_err(|error| store.fail(reviewed(error, matches, command)))?;
-    moved_out(matches, shift, &moved)
-}
-
-/// `--only ROW[=CHOICE]`, where CHOICE is `from`, `parent`, `leave_out` or `new=VALUE`.
-fn pick(only: &str) -> Result<MovePick, Error> {
-    let (row, choice) = match only.split_once('=') {
-        Some((row, choice)) => {
-            let choice = match choice.split_once('=') {
-                Some(("new", value)) => PickChoice::New(value.to_owned()),
-                _ => serde_json::from_value(json!(choice)).map_err(|_| {
-                    Error::usage(format!(
-                        "Expected --only {row}=CHOICE with from, parent, leave_out or new=VALUE"
-                    ))
-                    .with_exit(USAGE_EXIT)
-                })?,
-            };
-            (row, Some(choice))
-        }
-        None => (only, None),
-    };
-    Ok(MovePick {
-        row: row.to_owned(),
-        choice,
-    })
-}
-
-/// A stale version names the read that shows the changes again.
-fn reviewed(error: StoreCallError, matches: &ArgMatches, verb: &str) -> StoreCallError {
-    store::with_next(
-        error,
-        |refusal| refusal.details.get("version").is_some(),
-        || store::next(matches, &["env", verb, "--plan"]),
-    )
-}
-
-fn plan(matches: &ArgMatches, verb: &str, view: &MoveView) -> Result<(), Error> {
-    let next = (!view.rows.is_empty())
-        .then(|| store::next(matches, &["env", verb, "--version", view.version.as_str()]));
-    crate::output::finish(&Next::new(view, next), || {
-        say!(
-            "{} → {} (version {}):",
-            view.from.name,
-            view.into.name,
-            view.version
-        );
-        if view.rows.is_empty() {
-            say!("  nothing to move");
-        }
-        for row in &view.rows {
-            let mut notes = Vec::new();
-            if row.conflict {
-                notes.push(format!("{} changed it too", view.into.name));
-            }
-            if let Some(choice) = &row.choice {
-                notes.push(format!("lands as {}", store::word(&choice.default)));
-            }
-            let notes = match notes.is_empty() {
-                true => String::new(),
-                false => format!(" ({})", notes.join(", ")),
-            };
-            say!("  {}: {} → {}{notes}", row.row, row.into, row.from);
-        }
-        // Meant to differ: a Move never carries them, so they don't count as moving.
-        for row in &view.differ {
-            say!(
-                "  {} stays {} ({}; {} has {})",
-                row.row,
-                row.into,
-                store::word(&row.why),
-                view.from.name,
-                row.from
-            );
-        }
-    })
-}
-
-/// What a Move did: `deploy` of where it landed, and after a Save of a Branch not
-/// kept, the command that closes it. A Conditional Sync stages nothing.
-fn moved_out(matches: &ArgMatches, shift: Shift, moved: &Moved) -> Result<(), Error> {
-    #[derive(serde::Serialize)]
-    struct Out<'a> {
-        #[serde(flatten)]
-        moved: &'a Moved,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        next: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        close: Option<String>,
-    }
-    let scoped = |words: &[&str]| in_project(matches, words);
-    let into: &EnvironmentSummary = &moved.into;
-    let at_merge = moved
-        .conditional_sync
-        .as_ref()
-        .filter(|save| save.state == ConditionalSyncState::Standing);
-    let close = match (&moved.branch, shift, at_merge) {
-        (Some(branch), Shift::Save, None) if !branch.kept => {
-            let name = branch.environment.name.as_str();
-            let typed = format!("{}/{name}", branch.environment.project);
-            Some(scoped(&["env", "rm", name, "--confirm", &typed]))
-        }
-        _ => None,
-    };
-    let out = Out {
-        moved,
-        next: (!moved.staged.is_empty()).then(|| scoped(&["deploy", "--env", into.name.as_str()])),
-        close,
-    };
-    crate::output::finish(&out, || {
-        let (from, into) = (&moved.from.name, format!("{}/{}", into.project, into.name));
-        match (shift, at_merge, &moved.conditional_sync) {
-            (Shift::Withdraw, ..) => say!("Withdrew {from}'s Conditional Sync into {into}."),
-            (_, Some(save), _) => say!(
-                "Saved for PR #{}'s merge into {into}: {}.",
-                save.pull_request,
-                save.rows.join(", ")
-            ),
-            (Shift::Take, _, Some(save)) => {
-                say!("Took PR #{}'s value into {into}.", save.pull_request);
-            }
-            (Shift::Take, _, None) => say!("Took {from}'s value into {into}."),
-            _ => say!("Moved {from} → {into}."),
-        }
-        if !moved.staged.is_empty() {
-            say!("Staged: {}", crate::handlers::joined(&moved.staged));
-        }
-        if let Some(close) = &out.close {
-            say!("Close the Branch when done: {close}");
-        }
-    })
-}
-
 pub(super) fn copy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let node = store::service_name(matches, "node")?;
@@ -648,24 +411,4 @@ pub(super) fn setups(values: &[String]) -> Result<Vec<SetupCommand>, Error> {
                 })
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_takes_every_choice_a_variable_lands_as() {
-        for (only, choice) in [
-            ("web.env.A=from", Some(PickChoice::From)),
-            ("web.env.A=parent", Some(PickChoice::Parent)),
-            ("web.env.A=leave_out", Some(PickChoice::LeaveOut)),
-            ("web.env.A=new=x=1", Some(PickChoice::New("x=1".into()))),
-            ("web.env.A", None),
-        ] {
-            let picked = pick(only).unwrap();
-            assert_eq!((picked.row.as_str(), picked.choice), ("web.env.A", choice));
-        }
-        assert!(pick("web.env.A=New").is_err());
-    }
 }

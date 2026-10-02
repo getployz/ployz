@@ -1,7 +1,7 @@
-//! How two Environments compare: which base, what each side sends, how a variable
-//! lands by default, and landing. Sync, Follow, Save, Update, Own Copy, a new Branch, the
-//! pull request page's counts and Conditional Sync all compare through here; nothing
-//! else builds a comparison.
+//! How two Environments compare: which base, what each side sends, whether secrets
+//! carry their value, and landing. Sync, Follow, Own Copy, a new Branch, the pull
+//! request page's counts and Conditional Sync all compare through here; nothing else
+//! builds a comparison.
 //!
 //! A pair's base is what the two last shared (`config_sync_base`), advanced by what
 //! lands. Until the receiver deploys a landed row, discarding it rewinds the base for
@@ -32,22 +32,17 @@ pub(crate) struct Moving {
     pub(super) never_synced: Vec<Mark>,
 }
 
-/// Which way a move goes, with what only that way needs.
-#[derive(Clone, Debug)]
+/// Which way a move goes.
+#[derive(Clone, Copy, Debug)]
 enum Way {
-    /// A Sync: every variable lands with `from`'s value by default.
+    /// A Sync: a secret the receiver lacks arrives without its value.
     Sync,
-    /// A Parent's deployed changes into its Branch (Follow, Update, Own Copy): as a
-    /// Sync, and a secret the Branch never set its own follows the Parent's value.
+    /// A Parent's deployed changes into its Branch (Follow, Own Copy): secrets carry
+    /// their value, and a secret the Branch never set its own follows the Parent's.
     Follow,
-    /// Into a Parent, or a PR Environment's Destination: nothing there is deleted.
-    Save {
-        /// The Parent's deployed values, offered for a variable; none when it
-        /// deployed nothing.
-        parent: Option<SavedEnvironmentIntent>,
-        /// Whether `from` is a kept Branch: its secrets then stay by default.
-        from_kept: bool,
-    },
+    /// A PR Environment into one of its Destinations at the merge: secrets carry
+    /// their sealed value.
+    Conditional,
 }
 
 /// `id`'s Branch row: every move has a Branch side.
@@ -58,7 +53,7 @@ fn row_of(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Row, RpcError> {
 impl Moving {
     /// What `parent` deployed (its Applied State) into `branch`, over the base
     /// `branch` shares with its Parent.
-    pub(super) fn update(
+    pub(super) fn follow(
         tx: &mut dyn Tx,
         parent: &Environment,
         branch: &Environment,
@@ -134,7 +129,7 @@ impl Moving {
                 .is_none_or(|own| own.contains(&row.key.to_string()))
     }
 
-    /// An Own Copy of the `copied` lineages from `owner` into `branch`: an Update in
+    /// An Own Copy of the `copied` lineages from `owner` into `branch`: a Follow in
     /// which they are neither in the base nor used live, so they arrive as new.
     pub(super) fn copy(
         tx: &mut dyn Tx,
@@ -142,7 +137,7 @@ impl Moving {
         branch: &Environment,
         copied: &BTreeSet<String>,
     ) -> Result<Self, RpcError> {
-        let mut moving = Self::update(tx, owner, branch)?;
+        let mut moving = Self::follow(tx, owner, branch)?;
         moving.nothing = format!("Nothing to copy from {}", owner.summary.name);
         moving
             .base
@@ -158,21 +153,20 @@ impl Moving {
         Ok(moving)
     }
 
-    /// Branch `from`'s Working State into `into` over the base `from` shares with its
-    /// Parent, with what that Parent deployed on offer.
-    pub(crate) fn save(
+    /// A Conditional Sync: PR Environment `from`'s Working State into Destination
+    /// `into`, over the base `from` shares with its Parent.
+    pub(crate) fn conditional(
         tx: &mut dyn Tx,
         from: &Environment,
         into: &Environment,
     ) -> Result<Self, RpcError> {
-        let row = row_of(tx, &from.summary.id)?;
-        let parent = scope::load_by_id(tx, &row.parent)?;
-        let pair = [from.summary.id.clone(), row.parent];
-        let parent = deployment::head(tx, &parent)?.applied;
-        let deployed = !(parent.services.is_empty() && parent.volumes.is_empty());
+        let pair = [
+            from.summary.id.clone(),
+            row_of(tx, &from.summary.id)?.parent,
+        ];
         Ok(Self {
             source: from.summary.id.clone(),
-            nothing: format!("Nothing to save into {}", into.summary.name),
+            nothing: format!("Nothing to sync into {}", into.summary.name),
             from: from.working.clone(),
             base: base_of(tx, &pair)?,
             pair: Some(pair),
@@ -181,22 +175,18 @@ impl Moving {
                 from: suffix(tx, from)?,
                 into: suffix(tx, into)?,
             },
-            way: Way::Save {
-                parent: deployed.then_some(parent),
-                from_kept: row.kept,
-            },
+            way: Way::Conditional,
             own: None,
             never_synced: marks(tx, &from.summary.id, &into.summary.id)?,
         })
     }
 
-    /// A saved move landing later: `from`'s changes over `base` from Branch
-    /// `branch`, with `parent`'s deployed values on offer, into `into`.
+    /// A Conditional Sync landing later: `from`'s changes over `base` from Branch
+    /// `branch` into `into`.
     pub(crate) fn landed(
         branch: &EnvironmentId,
         (from, base): (&SavedEnvironmentIntent, &SavedEnvironmentIntent),
         hostnames: &BranchHostnames,
-        parent: Option<&SavedEnvironmentIntent>,
         into: &SavedEnvironmentIntent,
     ) -> Self {
         Self {
@@ -207,10 +197,7 @@ impl Moving {
             base: base.clone(),
             provided: used_live(into).into_keys().collect(),
             hostnames: hostnames.clone(),
-            way: Way::Save {
-                parent: parent.cloned(),
-                from_kept: false,
-            },
+            way: Way::Conditional,
             own: None,
             never_synced: Vec::new(),
         }
@@ -222,23 +209,11 @@ impl Moving {
         !matches!(self.way, Way::Sync)
     }
 
-    /// A Save's deployed Parent values on offer; none for a Sync or an Update.
-    pub(crate) fn parent(&self) -> Option<&SavedEnvironmentIntent> {
-        match &self.way {
-            Way::Save { parent, .. } => parent.as_ref(),
-            Way::Sync | Way::Follow => None,
-        }
-    }
-
     pub(crate) fn compare(
         &self,
         into: &SavedEnvironmentIntent,
-        picks: Option<Vec<BranchPick>>,
+        picks: Option<Vec<String>>,
     ) -> Result<BranchChanges, RpcError> {
-        let (parent, from_kept) = match &self.way {
-            Way::Sync | Way::Follow => (None, false),
-            Way::Save { parent, from_kept } => (parent.as_ref(), *from_kept),
-        };
         let never_synced: Vec<String> = self
             .never_synced
             .iter()
@@ -248,22 +223,13 @@ impl Moving {
             base: Some(&self.base),
             from: &self.from,
             into,
-            parent,
             provided: &self.provided,
             hostnames: &self.hostnames,
-            from_kept,
             never_synced: &never_synced,
             follow: matches!(self.way, Way::Follow),
+            carry_secrets: self.carries_secrets(),
             picks,
         })
-    }
-
-    /// How a variable lands unless picked otherwise.
-    pub(super) fn default(&self, offered: &BranchChoice) -> BranchOption {
-        match self.way {
-            Way::Sync | Way::Follow => BranchOption::From,
-            Way::Save { .. } => offered.default,
-        }
     }
 
     /// Row `key` as `NODE[.path]` in the catalog's words (`web.image`,
@@ -290,7 +256,7 @@ impl Moving {
         tx: &mut dyn Tx,
         who: &Actor,
         into: &mut Environment,
-        picks: Vec<BranchPick>,
+        picks: Vec<String>,
     ) -> Result<Vec<NodeName>, RpcError> {
         let [a, b] = self
             .pair
@@ -315,7 +281,7 @@ impl Moving {
         let carried = Carried::of(tx, &self.source, &self.from)?;
         let staged = land(tx, who, into, (&self.from, &carried), moved.next, &picks)?;
         for pick in &picks {
-            let (lineage, path) = split(&pick.key);
+            let (lineage, path) = split(pick);
             let prior =
                 serde_json::to_string(&Prior::of(&self.base, lineage)).expect("a node is JSON");
             tx.execute(
@@ -549,12 +515,8 @@ fn rewound(
         .rows
         .into_iter()
         .find(|row| row.key.to_string() == key);
-    if let Some(BranchRole::Move { choice, .. }) = row.map(|row| row.role) {
-        let pick = BranchPick {
-            key: key.to_owned(),
-            choice: choice.map(|_| BranchPickChoice::From),
-        };
-        return Ok(within(&base, &was, &base, Some(vec![pick]))?.next);
+    if let Some(BranchRole::Move { .. }) = row.map(|row| row.role) {
+        return Ok(within(&base, &was, &base, Some(vec![key.to_owned()]))?.next);
     }
     // A variable the base didn't hold before, it forgets.
     if let Some(variable) = path.strip_prefix("variables.") {
@@ -567,26 +529,26 @@ fn rewound(
     Ok(base)
 }
 
-/// `from` into `into` over `base`, all three named alike, nothing used live.
+/// `from` into `into` over `base`, all three named alike, nothing used live, secrets
+/// as they are.
 fn within(
     base: &SavedEnvironmentIntent,
     from: &SavedEnvironmentIntent,
     into: &SavedEnvironmentIntent,
-    picks: Option<Vec<BranchPick>>,
+    picks: Option<Vec<String>>,
 ) -> Result<BranchChanges, RpcError> {
     compare(Comparing {
         base: Some(base),
         from,
         into,
-        parent: None,
         provided: &[],
         hostnames: &BranchHostnames {
             from: String::new(),
             into: String::new(),
         },
-        from_kept: false,
         never_synced: &[],
         follow: false,
+        carry_secrets: true,
         picks,
     })
 }
@@ -635,7 +597,7 @@ pub(crate) fn land(
     branch: &mut Environment,
     (from, carried): (&SavedEnvironmentIntent, &Carried),
     next: SavedEnvironmentIntent,
-    picks: &[BranchPick],
+    picks: &[String],
 ) -> Result<Vec<NodeName>, RpcError> {
     let before = std::mem::replace(&mut branch.working, next);
     crate::volume::check_storage(tx, &branch.summary.id, &branch.working)?;
@@ -679,7 +641,7 @@ pub(crate) fn land(
         scope::introduce(tx, who, &id, scope::Node::Service(service))?;
     }
     for pick in picks {
-        let Some(lineage) = pick.key.strip_suffix(":source.credentials") else {
+        let Some(lineage) = pick.strip_suffix(":source.credentials") else {
             continue;
         };
         let receiver = before.services.iter().find(|old| old.lineage_id == lineage);
@@ -705,26 +667,25 @@ pub(crate) fn land(
     Ok(staged)
 }
 
-/// A new Branch: `from` arriving in its empty Working State `into`, but for what it
-/// uses `live`, moving `picks`. There is no base yet: the comparison's new base is
-/// what the Branch is made with.
+/// A new Branch: `from` arriving in its empty Working State `into`, secrets and all,
+/// but for what it uses `live`, moving `picks`. There is no base yet: the
+/// comparison's new base is what the Branch is made with.
 pub(super) fn creating(
     from: &SavedEnvironmentIntent,
     into: &SavedEnvironmentIntent,
     live: &[String],
     hostnames: &BranchHostnames,
-    picks: Vec<BranchPick>,
+    picks: Vec<String>,
 ) -> Result<BranchChanges, RpcError> {
     compare(Comparing {
         base: None,
         from,
         into,
-        parent: None,
         provided: live,
         hostnames,
-        from_kept: false,
         never_synced: &[],
         follow: false,
+        carry_secrets: true,
         picks: Some(picks),
     })
 }
@@ -736,7 +697,7 @@ pub(crate) fn changes_into(
     from: &Environment,
     into: &Environment,
 ) -> Result<usize, RpcError> {
-    Ok(Moving::save(tx, from, into)?
+    Ok(Moving::conditional(tx, from, into)?
         .compare(&into.working, None)?
         .rows
         .iter()
@@ -749,13 +710,12 @@ struct Comparing<'a> {
     base: Option<&'a SavedEnvironmentIntent>,
     from: &'a SavedEnvironmentIntent,
     into: &'a SavedEnvironmentIntent,
-    parent: Option<&'a SavedEnvironmentIntent>,
     provided: &'a [String],
     hostnames: &'a BranchHostnames,
-    from_kept: bool,
     never_synced: &'a [String],
     follow: bool,
-    picks: Option<Vec<BranchPick>>,
+    carry_secrets: bool,
+    picks: Option<Vec<String>>,
 }
 
 fn compare(sides: Comparing<'_>) -> Result<BranchChanges, RpcError> {
@@ -766,12 +726,11 @@ fn compare(sides: Comparing<'_>) -> Result<BranchChanges, RpcError> {
         base: sides.base.map(value),
         from: value(sides.from),
         into: value(sides.into),
-        parent: sides.parent.map(value),
         provided: sides.provided.to_vec(),
         hostnames: sides.hostnames.clone(),
-        from_kept: sides.from_kept,
         never_synced: sides.never_synced.to_vec(),
         follow: sides.follow,
+        carry_secrets: sides.carry_secrets,
         picks: sides.picks,
     })
     .map_err(config)

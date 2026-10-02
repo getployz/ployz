@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use ts_rs::TS;
 
-use super::{SavedEnvironmentIntent, SavedVariableValue};
+use super::SavedEnvironmentIntent;
 
 /// The sides of one move: changes flow from `from` into `into`, judged against `base`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -19,14 +19,9 @@ pub struct BranchChangesInput {
     pub from: Value,
     #[ts(as = "SavedEnvironmentIntent")]
     pub into: Value,
-    /// The Parent, when the caller can offer its values as a variable choice.
-    #[serde(default)]
-    #[ts(optional, as = "Option<SavedEnvironmentIntent>")]
-    pub parent: Option<Value>,
     /// Lineages `into` may use live.
     pub provided: Vec<String>,
     pub hostnames: BranchHostnames,
-    pub from_kept: bool,
     /// Row keys marked Never sync, each covering the rows under it too
     /// (`<lineage>:healthcheck` covers `<lineage>:healthcheck.path`): what would move
     /// is shown as meant to differ instead.
@@ -38,54 +33,16 @@ pub struct BranchChangesInput {
     #[serde(default)]
     #[ts(as = "Option<bool>", optional)]
     pub follow: bool,
-    /// Absent compares only; present moves the picked rows.
+    /// A secret the receiver lacks arrives with its sealed value; without this (a
+    /// Sync) it arrives without one, and the receiver's Deploy waits for it. Following
+    /// always carries it.
+    #[serde(default)]
+    #[ts(as = "Option<bool>", optional)]
+    pub carry_secrets: bool,
+    /// Row keys to move. Absent compares only; present moves the picked rows.
     #[serde(default)]
     #[ts(optional)]
-    pub picks: Option<Vec<BranchPick>>,
-}
-
-/// One chosen move row. Only a variable row takes a choice.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BranchPick {
-    pub key: String,
-    #[serde(default)]
-    #[ts(optional)]
-    pub choice: Option<BranchPickChoice>,
-}
-
-/// How a picked variable lands. Only `new` carries a value, and it is never reviewed.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "option", rename_all = "snake_case", deny_unknown_fields)]
-pub enum BranchPickChoice {
-    From,
-    Parent,
-    /// Without a value, a secret lands without one, and the receiver's Deploy waits for it.
-    New {
-        #[serde(default)]
-        #[ts(optional)]
-        value: Option<BranchNewValue>,
-    },
-    LeaveOut,
-}
-
-impl BranchPickChoice {
-    pub(super) const fn option(&self) -> BranchOption {
-        match self {
-            Self::From => BranchOption::From,
-            Self::Parent => BranchOption::Parent,
-            Self::New { .. } => BranchOption::New,
-            Self::LeaveOut => BranchOption::LeaveOut,
-        }
-    }
-}
-
-/// A caller-supplied variable value; core never encrypts or fingerprints. A secret's is sealed.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BranchNewValue {
-    pub value: SavedVariableValue,
-    pub value_fingerprint: String,
+    pub picks: Option<Vec<String>>,
 }
 
 /// Each side's generated-address suffix, appended to managed hostname prefixes.
@@ -141,6 +98,13 @@ pub(super) enum RowPath {
     Setting(&'static str),
 }
 
+impl BranchRow {
+    /// Whether it moves a secret.
+    pub fn secret(&self) -> bool {
+        matches!(self.key.path, RowPath::Variable(_)) && self.from["kind"] == "secret"
+    }
+}
+
 impl fmt::Display for BranchRowKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let lineage = &self.lineage;
@@ -173,10 +137,6 @@ pub enum BranchRole {
     Move {
         /// `into` also changed since `base`; shown into → from.
         conflict: bool,
-        /// Present only on variable rows.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        choice: Option<BranchChoice>,
     },
     Differ {
         why: BranchReason,
@@ -196,23 +156,4 @@ pub enum BranchReason {
     Data,
     /// Marked Never sync in one of the two Environments.
     NeverSynced,
-}
-
-/// The ways a moving variable can land.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct BranchChoice {
-    pub default: BranchOption,
-    pub options: Vec<BranchOption>,
-    pub secret: bool,
-}
-
-/// A variable's source when it moves.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum BranchOption {
-    From,
-    Parent,
-    New,
-    LeaveOut,
 }

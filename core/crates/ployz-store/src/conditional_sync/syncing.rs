@@ -2,7 +2,6 @@
 //! Sync's rows.
 
 use super::*;
-use ployz_core::config::BranchPickChoice;
 
 /// Sync a PR Environment's picked changes (row keys) for one Destination at the
 /// merge, replacing its Conditional Sync there; `picks: []` withdraws it.
@@ -38,44 +37,6 @@ pub(crate) fn sync(
         staged: Vec::new(),
         closing: false,
         conditional_sync,
-    })
-}
-
-/// Save a PR Environment's picked changes for one Destination, replacing its
-/// Conditional Sync there; `picks: []` withdraws it.
-pub(crate) fn save(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    sealing: &crate::SealingKey,
-    request: &Save,
-) -> Result<Moved, RpcError> {
-    let sides = sides(tx, who, &request.from, request.into.as_ref(), true)?;
-    if request.picks.as_ref().is_some_and(Vec::is_empty) {
-        withdraw_from(tx, &sides)?;
-        return Ok(Moved {
-            branch: Some(branch::view(tx, &sides.pr)?),
-            from: sides.pr.summary,
-            into: sides.into.summary,
-            staged: Vec::new(),
-            conditional_sync: None,
-        });
-    }
-    let moving = ready(tx, &sides)?;
-    let changes = branch::reviewed(&moving, &sides.into, request.version.as_deref())?;
-    let picks = branch::picks(
-        &moving,
-        &sides.into,
-        sealing,
-        &changes.rows,
-        request.picks.as_deref(),
-    )?;
-    let conditional_sync = stand(tx, who, &sides, moving, (&changes, picks))?;
-    Ok(Moved {
-        branch: Some(branch::view(tx, &sides.pr)?),
-        from: sides.pr.summary,
-        into: sides.into.summary,
-        staged: Vec::new(),
-        conditional_sync: Some(conditional_sync),
     })
 }
 
@@ -120,39 +81,46 @@ fn stand(
     who: &Actor,
     sides: &Sides,
     moving: Moving,
-    (changes, picks): (&BranchChanges, Vec<BranchPick>),
+    (changes, picks): (&BranchChanges, Vec<String>),
 ) -> Result<ConditionalSync, RpcError> {
     // Core refuses picks it couldn't land, such as a new Service's variable without it.
     moving.compare(&sides.into.working, Some(picks.clone()))?;
-    let picked: BTreeSet<String> = picks.iter().map(|pick| pick.key.clone()).collect();
     let mut rows: Vec<Row> = changes
         .rows
         .iter()
-        .filter(|row| picked.contains(&row.key.to_string()))
+        .filter(|row| picks.contains(&row.key.to_string()))
         .filter_map(|row| {
+            let BranchRole::Move { conflict } = row.role else {
+                return None;
+            };
+            let (name, from, into) = branch::shown_row(&moving, &sides.pr, &sides.into, row);
+            let key = row.key.to_string();
             Some(Row {
-                key: row.key.to_string(),
-                into: row.into.clone(),
-                shown: branch::move_row(&moving, &sides.pr, &sides.into, row)?,
-                landed: None,
                 // Kept sealed in case the Destination gains the key before the merge:
                 // core never moves a secret over one it holds, so it lands as a hint.
-                secret: picked_secret(&moving, &picks, &row.key.to_string()),
+                secret: sealed(&moving, &key),
+                key,
+                into: row.into.clone(),
+                shown: Shown {
+                    row: name,
+                    conflict,
+                    from,
+                    into,
+                },
+                landed: None,
             })
         })
         .collect();
     rows.extend(secret_hints(&moving, &sides.into));
     let names = rows.iter().map(|row| row.shown.row.clone()).collect();
-    let parent = moving.parent().cloned();
     let stored = Stored {
         rows,
-        picks,
+        picks: picks.into_iter().map(|key| Pick { key }).collect(),
         carried: Carried::of(tx, &sides.pr.summary.id, &moving.from)?,
         landing: Landing {
             from: moving.from,
             base: moving.base,
             hostnames: moving.hostnames,
-            parent,
         },
         from: sides.pr.summary.clone(),
         landed: None,
@@ -201,27 +169,6 @@ fn sealed(moving: &Moving, key: &str) -> Option<SavedVariableIntent> {
         .cloned()
 }
 
-/// The sealed secret row `key` lands as its pick has it: the pull request's, or the
-/// new value picked for it; none when it is left out or takes the Parent's.
-fn picked_secret(moving: &Moving, picks: &[BranchPick], key: &str) -> Option<SavedVariableIntent> {
-    let mut secret = sealed(moving, key)?;
-    match &picks.iter().find(|pick| pick.key == key)?.choice {
-        None | Some(BranchPickChoice::From) => {}
-        Some(BranchPickChoice::New { value: Some(value) }) => {
-            secret.value = value.value.clone();
-            secret
-                .value_fingerprint
-                .clone_from(&value.value_fingerprint);
-        }
-        Some(
-            BranchPickChoice::New { value: None }
-            | BranchPickChoice::Parent
-            | BranchPickChoice::LeaveOut,
-        ) => return None,
-    }
-    Some(secret)
-}
-
 /// The secrets the PR Environment changed that the Destination holds too: core
 /// moves none of them, so each is kept, sealed, to land as a hint.
 pub(super) fn secret_hints(moving: &Moving, into: &Environment) -> Vec<Row> {
@@ -262,10 +209,9 @@ pub(super) fn secret_hints(moving: &Moving, into: &Environment) -> Vec<Row> {
             }
             let key = format!("{lineage}:variables.{}", variable.key);
             rows.push(Row {
-                shown: MoveRow {
+                shown: Shown {
                     row: moving.name(&into.working, &key),
                     conflict: true,
-                    choice: None,
                     from: json!({ "secret": true }),
                     into: json!({ "secret": true }),
                 },
@@ -286,7 +232,7 @@ pub(crate) fn take(
     who: &Actor,
     id: &ConditionalSyncId,
     take: &Take,
-) -> Result<Moved, RpcError> {
+) -> Result<Taken, RpcError> {
     let missing = || error::not_found(format!("No Conditional Sync {id}"), json!({}));
     let found = load(tx, who, id)?.ok_or_else(missing)?;
     let mut into = scope::lock_id(tx, who, &found.environment)?;
@@ -350,11 +296,11 @@ pub(crate) fn take(
         .filter(|row| row.secret.is_some())
         .map(|row| row.key.as_str())
         .collect();
-    let picks: Vec<BranchPick> = stored
+    let picks: Vec<String> = stored
         .picks
         .iter()
         .filter(|pick| chosen.contains(&pick.key) && !sealed.contains(pick.key.as_str()))
-        .cloned()
+        .map(|pick| pick.key.clone())
         .collect();
     let mut next = match picks.is_empty() {
         true => into.working.clone(),
@@ -381,11 +327,10 @@ pub(crate) fn take(
         }
     }
     write(tx, id, &stored)?;
-    Ok(Moved {
+    Ok(Taken {
         from: stored.from.clone(),
         into: into.summary,
         staged,
-        branch: None,
         conditional_sync: Some(ConditionalSync {
             id: id.clone(),
             pull_request: found.number,

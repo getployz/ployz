@@ -3,15 +3,15 @@
 
 use super::*;
 
-/// What landing a save does.
+/// What landing a Conditional Sync does.
 pub(super) struct Planned {
     /// The Destination's next Saved State.
     pub(super) saved: SavedEnvironmentIntent,
     /// Its next Working State.
     pub(super) next: SavedEnvironmentIntent,
     /// Every pick that landed, Saved's then Working's.
-    pub(super) picks: Vec<BranchPick>,
-    /// The rows left as hints or staged changes; none deletes the save.
+    pub(super) picks: Vec<String>,
+    /// The rows left as hints or staged changes; none deletes the Conditional Sync.
     pub(super) left: Vec<Row>,
 }
 
@@ -49,27 +49,27 @@ pub(super) fn plan(
             .map_or(key, |(lineage, _)| lineage)
             .to_owned()
     };
-    let nodes = |picks: &[&BranchPick]| -> BTreeSet<String> {
+    let nodes = |picks: &[&String]| -> BTreeSet<String> {
         picks
             .iter()
-            .filter(|pick| pick.key.ends_with(":node"))
-            .map(|pick| lineage(&pick.key))
+            .filter(|pick| pick.ends_with(":node"))
+            .map(|pick| lineage(pick))
             .collect()
     };
-    let all: Vec<&BranchPick> = stored.picks.iter().collect();
+    let all: Vec<&String> = stored.picks.iter().map(|pick| &pick.key).collect();
     let introduced = nodes(&all);
 
     // 1. Saved. A node the pull request introduced arrives with its variables, or not at all.
-    let to_saved: Vec<&BranchPick> = all
+    let to_saved: Vec<&String> = all
         .iter()
         .copied()
-        .filter(|pick| in_saved.contains_key(&pick.key) && unchanged(&pick.key))
+        .filter(|pick| in_saved.contains_key(*pick) && unchanged(pick))
         .collect();
     let arriving = nodes(&to_saved);
-    let saved_picks: Vec<BranchPick> = to_saved
+    let saved_picks: Vec<String> = to_saved
         .into_iter()
         .filter(|pick| {
-            let lineage = lineage(&pick.key);
+            let lineage = lineage(pick);
             !introduced.contains(&lineage) || arriving.contains(&lineage)
         })
         .cloned()
@@ -97,12 +97,12 @@ pub(super) fn plan(
             .filter(|node| arriving.contains(&node.resource_lineage_id))
             .cloned(),
     );
-    let working_picks: Vec<BranchPick> = all
+    let working_picks: Vec<String> = all
         .iter()
         .filter(|pick| {
-            !introduced.contains(&lineage(&pick.key))
-                && in_working.contains_key(&pick.key)
-                && same(in_saved.get(&pick.key), in_working.get(&pick.key))
+            !introduced.contains(&lineage(pick))
+                && in_working.contains_key(**pick)
+                && same(in_saved.get(**pick), in_working.get(**pick))
         })
         .map(|pick| (*pick).clone())
         .collect();
@@ -114,8 +114,8 @@ pub(super) fn plan(
         }
     };
 
-    let staged: BTreeSet<&str> = working_picks.iter().map(|pick| pick.key.as_str()).collect();
-    let landed: BTreeSet<&str> = saved_picks.iter().map(|pick| pick.key.as_str()).collect();
+    let staged: BTreeSet<&str> = working_picks.iter().map(String::as_str).collect();
+    let landed: BTreeSet<&str> = saved_picks.iter().map(String::as_str).collect();
     // A secret that didn't land, such as one the Destination holds too, stays as a
     // hint with its sealed value.
     let left: Vec<Row> = stored

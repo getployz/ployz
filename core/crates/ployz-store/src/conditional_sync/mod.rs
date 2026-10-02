@@ -21,25 +21,24 @@
 //! stages. Landed rows stay marked until the Destination's next Saved revision.
 
 mod landing;
-mod saving;
+mod syncing;
 use landing::{Planned, plan};
-pub(crate) use saving::*;
+pub(crate) use syncing::*;
 
 use crate::id::{BranchName, CommitSha, PullRequestNumber, RepositoryId};
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    BranchChanges, BranchHostnames, BranchPick, BranchRole, SavedEnvironmentIntent,
-    SavedVariableIntent, SavedVariableValue,
+    BranchChanges, BranchHostnames, BranchRole, SavedEnvironmentIntent, SavedVariableIntent,
+    SavedVariableValue,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::branch::{
-    self, Carried, MoveRow, MoveView, Moved, Moving, Save, SyncChanges, SyncQuery, SyncView,
-    Synced, Take, When,
+    self, Carried, Moving, SyncChanges, SyncQuery, SyncView, Synced, Take, Taken, When,
 };
 use crate::id::{ConditionalSyncId, EnvironmentId, Revision};
 use crate::pull_request::{self, PullRequest, PullRequestRef};
@@ -47,7 +46,7 @@ use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
 use crate::{Actor, deployment, error, policy, review, teardown};
 
-/// A Conditional Sync, as a Move answers it.
+/// A Conditional Sync, as a Sync or a take answers it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConditionalSync {
     /// Pass to [`Take::from`] to use a hint it left.
@@ -84,9 +83,9 @@ pub enum Landed {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PullRequestHint {
     /// The Conditional Sync: pass to [`Take::from`].
-    pub save: ConditionalSyncId,
+    pub conditional_sync: ConditionalSyncId,
     pub pull_request: PullRequestNumber,
-    /// `NODE.path`, as a Move names it.
+    /// `NODE.path`, as a Sync names it.
     pub row: String,
     /// The pull request's value; secrets read `{"secret": true}`.
     pub value: Value,
@@ -97,7 +96,7 @@ pub struct PullRequestHint {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PendingSyncs {
     /// Pull requests into the branch with a Conditional Sync standing: Cloud reports
-    /// each that merged first, so its saves freeze.
+    /// each that merged first, so its Conditional Syncs freeze.
     pub standing: Vec<PullRequestNumber>,
     /// Merge commits of frozen ones: Cloud reports which the new head contains
     /// ([`crate::BranchHead::merged`]).
@@ -108,9 +107,9 @@ pub struct PendingSyncs {
 #[derive(Serialize, Deserialize)]
 struct Stored {
     rows: Vec<Row>,
-    /// Core's picks, sealed values included.
-    picks: Vec<BranchPick>,
-    /// The PR Environment's side as saved.
+    /// Core's picks.
+    picks: Vec<Pick>,
+    /// The PR Environment's side as synced.
     landing: Landing,
     /// What its Services carry: registry credentials and Deployment Policies.
     carried: Carried,
@@ -121,23 +120,28 @@ struct Stored {
     landed: Option<Revision>,
 }
 
-/// What landing compares: the PR Environment's Working State over its base, with
-/// its Parent's deployed values on offer.
+/// A row core lands, by key. One stored before Sync may also hold a value choice,
+/// which landing ignores.
+#[derive(Clone, Serialize, Deserialize)]
+struct Pick {
+    key: String,
+}
+
+/// What landing compares: the PR Environment's Working State over its base.
 #[derive(Serialize, Deserialize)]
 struct Landing {
     from: SavedEnvironmentIntent,
     base: SavedEnvironmentIntent,
     hostnames: BranchHostnames,
-    parent: Option<SavedEnvironmentIntent>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Row {
     /// Core's row key.
     key: String,
-    /// The Destination's value the save was reviewed against (core's, redacted).
+    /// The Destination's value the Sync was reviewed against (core's, redacted).
     into: Value,
-    shown: MoveRow,
+    shown: Shown,
     #[serde(default)]
     landed: Option<Landed>,
     /// For a secret the pull request changed that the Destination holds too: the
@@ -147,6 +151,19 @@ struct Row {
     secret: Option<SavedVariableIntent>,
 }
 
+/// A row as the Sync showed it.
+#[derive(Clone, Serialize, Deserialize)]
+struct Shown {
+    /// `NODE`, or `NODE.path`.
+    row: String,
+    /// The Destination changed it too.
+    conflict: bool,
+    /// The pull request's value; secrets read `{"secret": true}`.
+    from: Value,
+    /// The Destination's value.
+    into: Value,
+}
+
 struct Found {
     environment: EnvironmentId,
     state: ConditionalSyncState,
@@ -154,7 +171,7 @@ struct Found {
     stored: Stored,
 }
 
-/// Whether a Sync (or Save) from `from` into `into` is a Conditional Sync: asked
+/// Whether a Sync from `from` into `into` is a Conditional Sync: asked
 /// `at_merge`, or from a PR Environment into one of its Destinations with `when`
 /// omitted; `into` omitted, its only Destination unless asked `now`. A PR
 /// Environment never syncs into a Destination now.
@@ -238,7 +255,7 @@ fn sides(
     else {
         return Err(error::invalid(
             format!(
-                "{} is not a PR Environment: its changes save now",
+                "{} is not a PR Environment: its changes sync now",
                 pr.summary.name
             ),
             json!({}),
@@ -260,7 +277,7 @@ fn sides(
             [] => {
                 return Err(error::conflict(
                     format!(
-                        "Nothing deploys {} now: there is nowhere to save into",
+                        "Nothing deploys {} now: there is nowhere to sync into",
                         facts.target_branch
                     ),
                     json!({}),
@@ -277,7 +294,7 @@ fn sides(
     if !destinations.contains(&into) {
         return Err(error::conflict(
             format!(
-                "That Environment doesn't deploy {}: save into one that does",
+                "That Environment doesn't deploy {}: sync into one that does",
                 facts.target_branch
             ),
             json!({ "valid_children": names }),
@@ -289,18 +306,7 @@ fn sides(
 
 /// The PR Environment's Working State into the Destination's, as the review shows it.
 fn moving(tx: &mut dyn Tx, sides: &Sides) -> Result<Moving, RpcError> {
-    Moving::save(tx, &sides.pr, &sides.into)
-}
-
-pub(crate) fn view(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    from: &EnvironmentRef,
-    into: Option<&EnvironmentRef>,
-) -> Result<MoveView, RpcError> {
-    let sides = sides(tx, who, from, into, false)?;
-    let moving = moving(tx, &sides)?;
-    branch::view_of(&moving, sides.pr, sides.into)
+    Moving::conditional(tx, &sides.pr, &sides.into)
 }
 
 /// What a Conditional Sync would hold, as the Sync view shows it.
@@ -449,7 +455,7 @@ pub(crate) fn settle(tx: &mut dyn Tx, who: &Actor, event: &PullRequest) -> Resul
             continue;
         }
         // A deploy waiting for CI at that head lands it; else that head deployed
-        // nothing here, so it saves now.
+        // nothing here, so it lands now.
         if !wait_with(tx, &into, event, reached, &id)? {
             land(tx, who, &id, &mut destination)?;
         }
@@ -457,7 +463,7 @@ pub(crate) fn settle(tx: &mut dyn Tx, who: &Actor, event: &PullRequest) -> Resul
     Ok(())
 }
 
-/// Attach frozen save `id` to the deploy waiting for CI at `head` in `into`.
+/// Attach frozen Conditional Sync `id` to the deploy waiting for CI at `head` in `into`.
 fn wait_with(
     tx: &mut dyn Tx,
     into: &EnvironmentId,
@@ -479,8 +485,8 @@ fn wait_with(
     let Some(row) = rows.first() else {
         return Ok(false);
     };
-    let mut saves: Vec<ConditionalSyncId> = row.json(0, "waiting deploy")?;
-    saves.push(id.clone());
+    let mut syncs: Vec<ConditionalSyncId> = row.json(0, "waiting deploy")?;
+    syncs.push(id.clone());
     let [environment, repository, branch, head] = key;
     tx.execute(
         "UPDATE config_waiting_deploy SET saves = ?5 \
@@ -490,7 +496,7 @@ fn wait_with(
             repository,
             branch,
             head,
-            serde_json::to_string(&saves)
+            serde_json::to_string(&syncs)
                 .expect("Conditional Sync IDs are JSON")
                 .as_str()
                 .into(),
@@ -519,7 +525,7 @@ fn deploys_on_push(
     Ok(false)
 }
 
-/// The frozen saves a push of `branch` carries, by Destination: those whose merge
+/// The frozen Conditional Syncs a push of `branch` carries, by Destination: those whose merge
 /// commit Cloud found in the new head, oldest first.
 pub(crate) fn carried(
     tx: &mut dyn Tx,
@@ -591,7 +597,7 @@ pub(crate) fn pending(
     Ok(pending)
 }
 
-/// Land frozen save `id` in `destination`, whose lock the caller holds.
+/// Land frozen Conditional Sync `id` in `destination`, whose lock the caller holds.
 pub(crate) fn land(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -616,7 +622,7 @@ pub(crate) fn land(
         left,
     } = plan(&stored, &latest.intent, &destination.working)?;
 
-    // Publish, stage, then what's left of the save.
+    // Publish, stage, then what's left of the Conditional Sync.
     let (revision, _) = review::publish(tx, who, &destination.summary.id, saved, Some(&latest))?;
     if next != destination.working {
         branch::land(
@@ -645,8 +651,8 @@ pub(crate) fn land(
     Ok(())
 }
 
-/// The pull requests' values landed saves left in `environment`, until its next
-/// Saved revision.
+/// The pull requests' values landed Conditional Syncs left in `environment`, until
+/// its next Saved revision.
 pub(crate) fn hints(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -664,21 +670,21 @@ pub(crate) fn hints(
             continue;
         }
         let number = row.number(1, "Conditional Sync")?;
-        for saved in stored.rows {
+        for held in stored.rows {
             hints.push(PullRequestHint {
-                save: row.parse(0, "Conditional Sync ID")?,
+                conditional_sync: row.parse(0, "Conditional Sync ID")?,
                 pull_request: number,
-                row: saved.shown.row,
-                value: saved.shown.from,
-                landed: saved.landed.unwrap_or(Landed::Hint),
+                row: held.shown.row,
+                value: held.shown.from,
+                landed: held.landed.unwrap_or(Landed::Hint),
             });
         }
     }
     Ok(hints)
 }
 
-/// PR Environment `pr`'s save for Destination `into`: its ID, whether it still
-/// stands, and how many rows it holds.
+/// PR Environment `pr`'s Conditional Sync into Destination `into`: its ID, whether
+/// it still stands, and how many rows it holds.
 pub(crate) fn standing_in(
     tx: &mut dyn Tx,
     pr: &Environment,
@@ -703,18 +709,17 @@ pub(crate) fn standing_in(
     )))
 }
 
-/// Core's comparison of the saved side into `into`, with what `into` uses live.
+/// Core's comparison of the synced side into `into`, with what `into` uses live.
 fn against(
     stored: &Stored,
     into: &SavedEnvironmentIntent,
-    picks: Option<Vec<BranchPick>>,
+    picks: Option<Vec<String>>,
 ) -> Result<BranchChanges, RpcError> {
     let landing = &stored.landing;
     Moving::landed(
         &stored.from.id,
         (&landing.from, &landing.base),
         &landing.hostnames,
-        landing.parent.as_ref(),
         into,
     )
     .compare(into, picks)

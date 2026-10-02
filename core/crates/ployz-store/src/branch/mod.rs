@@ -1,14 +1,13 @@
 //! Branches: an Environment made from a Parent in the same Project. It holds Own
 //! Copies of the Parent nodes it picked (fresh ids, the same lineage) and uses the
 //! rest live from the nearest Environment it comes from that runs them. Its base is
-//! what it and its Parent last shared, so Follow (and Update) stages exactly the
-//! Parent's deployed changes since. Core plans the picks and moves the rows
+//! what it and its Parent last shared, so Follow stages exactly the Parent's
+//! deployed changes since. Core plans the picks and moves the rows
 //! (`plan_branch`, `branch_changes`, `live_values`); this module stores and lands them.
 
 mod create;
 mod follow;
 mod live;
-mod moving;
 mod never_sync;
 mod pair;
 mod setup;
@@ -17,21 +16,21 @@ pub(crate) use create::*;
 pub use follow::{FollowHint, IncomingChange};
 pub(crate) use follow::{follow, hints, incoming};
 pub(crate) use live::*;
-pub(crate) use moving::*;
 pub(crate) use never_sync::{Mark, marks, never_sync, never_synced};
 pub use never_sync::{NeverSync, NeverSynced};
 pub(crate) use pair::*;
 pub use setup::SetBranchSetup;
 pub(crate) use setup::{branch_setup, set_branch_setup};
 pub use sync::{NeverSyncedRow, SyncChanges, SyncQuery, SyncRow, SyncView, Synced};
-pub(crate) use sync::{sync, sync_picks, sync_view, sync_view_of};
+pub(crate) use sync::{
+    reviewed, shown_row, sync, sync_picks, sync_view, sync_view_of, take, under, version,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
-    BranchChanges, BranchChangesInput, BranchChoice, BranchHostnames, BranchNewValue,
-    BranchNodeReason, BranchNodeRole, BranchOption, BranchPick, BranchPickChoice, BranchPicks,
-    BranchPlan, BranchPreset, BranchReason, BranchRole, BranchRow, ConfigError,
+    BranchChanges, BranchChangesInput, BranchHostnames, BranchNodeReason, BranchNodeRole,
+    BranchPicks, BranchPlan, BranchPreset, BranchReason, BranchRole, BranchRow, ConfigError,
     EnvironmentNodeType, LiveLineageUse, LiveValuesInput, LiveValuesOwner, SavedEnvironmentIntent,
     SavedServiceIntent, SavedVariableProducer, SavedVariableValue, SavedVolumeIntent,
     ServiceImageCredentials, ServiceSource, ValuePart, ValuePartOwner, branch_changes,
@@ -52,7 +51,6 @@ use crate::id::{
 use crate::policy::{self, Policy};
 use crate::project::insert_environment;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
-use crate::sealing::SealingKey;
 use crate::settings::{NodeName, SettingPath, shown};
 use crate::storage::Tx;
 use crate::{Actor, registry, review};
@@ -80,7 +78,7 @@ pub struct CreateBranch {
     /// copy of a database.
     #[serde(default)]
     pub setup: Vec<SetupCommand>,
-    /// Keep it after a Save, and never close it for being idle.
+    /// Keep it after it syncs into its Parent, and never close it for being idle.
     #[serde(default)]
     pub keep: bool,
     /// Fix this failed Deployment of the Parent on the Branch: each copied Service
@@ -101,72 +99,10 @@ pub struct SetupCommand {
     pub command: String,
 }
 
-/// Move changes between a Branch and its Parent, staging them in the other's
-/// Working State; nothing is published or deployed. Or take a pull request's
-/// value a Conditional Sync left.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "move", rename_all = "snake_case")]
-pub enum Move {
-    /// The Branch's Working State into its Parent's; nothing there is deleted. From
-    /// a PR Environment, a Conditional Sync into one of its Destinations (the
-    /// Environments that deploy its target branch): it stages nothing now and goes
-    /// live with the pull request's merge.
-    Save(Save),
-    /// What the Branch's Parent deployed since the two last shared, into the
-    /// Branch; refused unless the Branch runs its Working State.
-    Update(Update),
-    /// Stage the pull request's values a landed Conditional Sync left as hints,
-    /// sealed secrets included, even once its PR Environment is gone: each replaces
-    /// the Destination's own edit.
-    Take(Take),
-}
-
-/// A Save: see [`Move::Save`].
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct Save {
-    /// The Branch whose changes move.
-    #[serde(default)]
-    pub from: EnvironmentRef,
-    /// Its Parent; from a PR Environment, the Destination. Omitted: the Parent, or
-    /// the only Destination.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub into: Option<EnvironmentRef>,
-    /// The changes to move; omitted, every change, each variable its default way.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub picks: Option<Vec<MovePick>>,
-    /// Refuse with `conflict` unless the Move view is still at this version.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub version: Option<String>,
-    /// `now` stages the changes; `at_merge` saves them as a Conditional Sync that
-    /// goes live with the pull request's merge, and `picks: []` withdraws it.
-    /// Omitted: `at_merge` from a PR Environment, else `now`.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub when: Option<When>,
-}
-
-/// An Update: see [`Move::Update`].
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct Update {
-    /// The Branch the changes move into.
-    #[serde(default)]
-    pub into: EnvironmentRef,
-    /// The changes to move; omitted, every change.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub picks: Option<Vec<MovePick>>,
-    /// Refuse with `conflict` unless the Move view is still at this version.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub version: Option<String>,
-}
-
-/// A take: see [`Move::Take`].
+/// Stage the hints left in an Environment: a merged pull request's values its
+/// landed Conditional Sync left, sealed secrets included, even once its PR
+/// Environment is gone; or a Parent's deployed values that followed into its
+/// Branch but aren't staged there. Each replaces the receiver's own edit.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Take {
@@ -192,13 +128,13 @@ pub struct Take {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(untagged)]
 pub enum HintSource {
-    /// A merged pull request's Conditional Sync: [`crate::PullRequestHint::save`].
+    /// A merged pull request's Conditional Sync: [`crate::PullRequestHint::conditional_sync`].
     ConditionalSync(ConditionalSyncId),
     /// The Branch's Parent: [`FollowHint::from`].
     Parent(EnvironmentName),
 }
 
-/// When a Move's changes land.
+/// When a Sync's changes land.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum When {
@@ -208,138 +144,16 @@ pub enum When {
     AtMerge,
 }
 
-/// Changes to move, by the name the Move view gives them.
+/// What a take staged.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct MovePick {
-    /// A change (`web.source.image`), or a prefix of changes: `web` is every change
-    /// of web, `web.variables` every variable of it.
-    pub row: String,
-    /// How the variables picked land; omitted, each its default.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub choice: Option<PickChoice>,
-}
-
-/// How a picked variable lands.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum PickChoice {
-    /// The moving value, sealed secrets included.
-    From,
-    /// The Parent's deployed value.
-    Parent,
-    /// Not at all.
-    LeaveOut,
-    /// Its own value in the receiver: text that may reference Services there by
-    /// name, or a secret's plaintext, sealed before it is stored.
-    New(String),
-}
-
-impl PickChoice {
-    const fn option(&self) -> BranchOption {
-        match self {
-            Self::From => BranchOption::From,
-            Self::Parent => BranchOption::Parent,
-            Self::LeaveOut => BranchOption::LeaveOut,
-            Self::New(_) => BranchOption::New,
-        }
-    }
-}
-
-/// Read what a Save or Update would stage.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "move", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MoveQuery {
-    /// As [`Move::Save`].
-    Save {
-        #[serde(default)]
-        from: EnvironmentRef,
-        #[serde(default)]
-        #[ts(optional = nullable)]
-        into: Option<EnvironmentRef>,
-        #[serde(default)]
-        #[ts(optional = nullable)]
-        when: Option<When>,
-    },
-    /// As [`Move::Update`].
-    Update {
-        #[serde(default)]
-        into: EnvironmentRef,
-    },
-}
-
-/// The changes a Move would stage, and the version that guards it.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct MoveView {
-    /// Where the changes come from.
-    pub from: EnvironmentSummary,
-    /// Where they land.
-    pub into: EnvironmentSummary,
-    /// Pass to [`Move::version`] to move exactly these changes.
-    pub version: String,
-    /// Each change that moves.
-    pub rows: Vec<MoveRow>,
-    /// Each setting that differs and stays: sizing, domains and the Git branch
-    /// belong to each Environment, so a Move never carries them.
-    pub differ: Vec<DifferRow>,
-}
-
-/// A setting that differs between the two and stays as it is.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct DifferRow {
-    /// `NODE.path`.
-    pub row: String,
-    /// Why it stays.
-    pub why: BranchReason,
-    /// The value on the side changes come from.
-    pub from: Value,
-    /// The receiver's value.
-    pub into: Value,
-}
-
-/// One change a Move carries.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct MoveRow {
-    /// `NODE`, or `NODE.path` for one of its settings or variables.
-    pub row: String,
-    /// The receiver changed it too since the two last shared: moving it overwrites that.
-    pub conflict: bool,
-    /// How a variable can land.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub choice: Option<MoveChoice>,
-    /// The value that moves; secrets read `{"secret": true}`.
-    pub from: Value,
-    /// The receiver's value now.
-    pub into: Value,
-}
-
-/// The ways a moving variable can land.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct MoveChoice {
-    /// How it lands when not picked otherwise. `new` means a secret needs a fresh
-    /// value: pick `leave_out` and set one, or `from` to move the Branch's own.
-    pub default: BranchOption,
-    /// Each way offered.
-    pub options: Vec<BranchOption>,
-    /// Whether it is a secret.
-    pub secret: bool,
-}
-
-/// What a Move staged.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct Moved {
-    /// Where the changes came from.
+pub struct Taken {
+    /// Where the values came from: the Parent, or the pull request's PR Environment.
     pub from: EnvironmentSummary,
     /// Where they landed.
     pub into: EnvironmentSummary,
     /// Nodes staged in `into`'s Working State.
     pub staged: Vec<NodeName>,
-    /// The Branch now; none for a take.
-    pub branch: Option<BranchView>,
-    /// The Conditional Sync now: standing after a Save at merge, the one taken
-    /// from after a take; none once withdrawn and for a Move now.
+    /// The Conditional Sync taken from; none for a Parent's values.
     pub conditional_sync: Option<crate::ConditionalSync>,
 }
 
@@ -358,7 +172,8 @@ pub struct CopyNode {
     pub expect: Option<Revision>,
 }
 
-/// Keep a Branch after a Save and from closing when idle, or stop keeping it.
+/// Keep a Branch after it syncs into its Parent and from closing when idle, or stop
+/// keeping it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct KeepBranch {
@@ -440,21 +255,20 @@ pub struct BranchQuery {
     pub environment: EnvironmentRef,
 }
 
-/// A Branch: its Parent, what it uses live and from where, and what Update would stage.
+/// A Branch: its Parent, what it uses live and from where, and what it would sync
+/// into its Parent.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct BranchView {
     /// The Branch.
     pub environment: EnvironmentSummary,
     /// The Environment it was made from, in the same Project.
     pub parent: EnvironmentName,
-    /// Whether it outlives a Save and never closes for being idle.
+    /// Whether it stays after syncing into its Parent and never closes for being idle.
     pub kept: bool,
     /// What runs in each Own Copy before it first deploys.
     pub setup: Vec<SetupCommand>,
     /// The nodes it uses live.
     pub live: Vec<LiveNode>,
-    /// The Parent's deployed changes Update would stage, as `NODE[.path]`.
-    pub update: Vec<String>,
     /// How many changes a Sync into its Parent carries: the Sync view's rows
     /// ticked by default.
     pub to_parent: usize,
@@ -463,7 +277,8 @@ pub struct BranchView {
     /// closing already.
     #[ts(type = "number | null")]
     pub closes_at: Option<i64>,
-    /// The pull request it is the PR Environment of; its Save waits for the merge.
+    /// The pull request it is the PR Environment of; its Sync into a Destination
+    /// waits for the merge.
     pub pull_request: Option<crate::PullRequestRef>,
 }
 

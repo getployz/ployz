@@ -792,99 +792,38 @@ fn an_agent_branches_an_environment_without_servers() {
             json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}")
         );
 
-        // Update and Own Copy wait until the Branch runs its Working State.
-        let unsettled = error(store, &["env", "update", "--env", "fix-web"]);
-        assert_eq!(unsettled["code"], json!("conflict"));
-        assert_eq!(
-            unsettled["details"]["next"],
-            json!("ployz diff --project shop --env fix-web")
-        );
+        // An Own Copy of a node it owns already is refused.
         assert_eq!(
             error(store, &["env", "copy", "db", "--env", "fix-web"])["code"],
             json!("conflict")
-        );
-        assert_eq!(
-            error(store, &["env", "update"])["code"],
-            json!("invalid_argument")
         );
         let unkept = ok(store, &["env", "keep", "--env", "fix-web", "--off"]);
         assert_eq!(unkept["branch"]["kept"], json!(false));
         assert!(unkept.get("next").is_none());
 
-        // Save: review, then move the picked change into production with its version.
-        ok(store, &["set", "web.image=web:2", "--env", "fix-web"]);
-        let plan = ok(store, &["env", "save", "--plan", "--env", "fix-web"]);
-        assert_eq!(plan["into"]["name"], json!("production"));
-        assert_eq!(
-            plan["rows"],
-            json!([{ "row": "web.image", "conflict": false, "choice": null, "from": "web:2", "into": "web:1" }])
-        );
-        let version = plan["version"].as_str().unwrap();
-        assert_eq!(
-            plan["next"],
-            json!(format!("ployz env save --version {version} --env fix-web"))
-        );
-        let stale = error(
-            store,
-            &["env", "save", "--env", "fix-web", "--version", "0:0"],
-        );
-        assert_eq!(
-            stale["details"]["next"],
-            json!("ployz env save --plan --env fix-web")
-        );
-        failed(
-            store,
-            &[
-                "env",
-                "save",
-                "--env",
-                "fix-web",
-                "--only",
-                "web.image=maybe",
-            ],
-            2,
-        );
-        let saved = ok(
-            store,
-            &[
-                "env",
-                "save",
-                "--env",
-                "fix-web",
-                "--only",
-                "web.image",
-                "--version",
-                version,
-            ],
-        );
-        assert_eq!(saved["staged"], json!(["web"]));
-        assert_eq!(saved["next"], json!("ployz deploy --env production"));
         // Conditional Syncs are a PR Environment's; a take names a retained one.
-        let withdraw = error(store, &["env", "save", "--env", "fix-web", "--withdraw"]);
+        let withdraw = error(
+            store,
+            &["env", "sync", "--to", "--env", "fix-web", "--withdraw"],
+        );
         assert_eq!(withdraw["code"], json!("invalid_argument"));
         failed(
             store,
-            &["env", "save", "--withdraw", "--only", "web.image"],
+            &["env", "sync", "--to", "--withdraw", "--only", "web.image"],
             2,
         );
         let take = error(
             store,
             &[
                 "env",
-                "save",
+                "sync",
                 "--take",
                 "00000000-0000-4000-8000-000000000099",
+                "--env",
+                "fix-web",
             ],
         );
         assert_eq!(take["code"], json!("not_found"));
-        assert_eq!(
-            saved["close"],
-            json!("ployz env rm fix-web --confirm shop/fix-web")
-        );
-        assert_eq!(
-            ok(store, &["get", "web.image"])["settings"][0]["value"],
-            json!("web:2")
-        );
     }
 }
 

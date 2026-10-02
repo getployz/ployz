@@ -136,7 +136,7 @@ store_string!(
     VolumeName, "a Volume name: up to 63 lowercase letters, digits and -", is_name
 );
 store_string!(
-    /// A Conditional Sync's identity, minted by the Store when a PR Environment saves.
+    /// A Conditional Sync's identity, minted by the Store when a PR Environment syncs.
     ConditionalSyncId, "a Conditional Sync ID (a UUID)", is_uuid
 );
 store_string!(

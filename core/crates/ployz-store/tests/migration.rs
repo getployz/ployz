@@ -5,9 +5,8 @@
 use ployz_core::ServiceName;
 use ployz_store::{
     Actor, BranchQuery, BranchView, Change, ConfigStore, CreateBranch, CreateProject,
-    CreateService, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, Move, MovePick, MoveQuery,
-    MoveView, OrganizationId, ProjectId, ProjectName, Save, ServiceLineageId, SettingPath,
-    SyncQuery, SyncView,
+    CreateService, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, OrganizationId, ProjectId,
+    ProjectName, ServiceLineageId, SettingPath, SyncChanges, SyncQuery, SyncView,
 };
 use serde_json::{Value, json};
 
@@ -44,15 +43,7 @@ fn set(store: &ConfigStore, who: &Actor, environment: &str, changes: &[(&str, Va
 }
 
 /// How Branch `fix-web` compares with its Parent, every way it can be read.
-fn comparisons(store: &ConfigStore, who: &Actor) -> (SyncView, MoveView, MoveView, BranchView) {
-    let save = MoveQuery::Save {
-        from: at("fix-web"),
-        into: None,
-        when: None,
-    };
-    let update = MoveQuery::Update {
-        into: at("fix-web"),
-    };
+fn comparisons(store: &ConfigStore, who: &Actor) -> (SyncView, BranchView) {
     (
         store
             .read(
@@ -63,8 +54,6 @@ fn comparisons(store: &ConfigStore, who: &Actor) -> (SyncView, MoveView, MoveVie
                 },
             )
             .unwrap(),
-        store.read(who, &save).unwrap(),
-        store.read(who, &update).unwrap(),
         store
             .read(
                 who,
@@ -159,18 +148,21 @@ fn a_branch_compares_with_its_parent_as_before_the_sync_migration() {
                 ("web.env.MORE", json!("2")),
             ],
         );
-        // A Save moves the base past what the Branch was made with.
+        // A Sync moves the base past what the Branch was made with.
+        let (view, _) = comparisons(&store, &who);
+        let image = view
+            .rows
+            .iter()
+            .find(|row| row.label == "web.image")
+            .unwrap();
         store
             .write(
                 &who,
-                &Move::Save(Save {
+                &SyncChanges {
                     from: at("fix-web"),
-                    picks: Some(vec![MovePick {
-                        row: "web.image".into(),
-                        choice: None,
-                    }]),
-                    ..Save::default()
-                }),
+                    picks: Some(vec![image.key.clone()]),
+                    ..SyncChanges::default()
+                },
             )
             .unwrap();
         set(&store, &who, "production", &[("web.env.NEW", json!("0"))]);

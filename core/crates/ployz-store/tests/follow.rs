@@ -12,8 +12,8 @@ use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateBranch, CreateProject, CreateService, Deploy,
     DeploymentId, DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentName,
-    EnvironmentRef, HintSource, Move, OrganizationId, ProjectId, ProjectName, RunEvidence,
-    RunnerId, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, Take, Trusted,
+    EnvironmentRef, HintSource, OrganizationId, ProjectId, ProjectName, RunEvidence, RunnerId,
+    ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, Take, Trusted,
 };
 use serde_json::{Value, json};
 
@@ -150,13 +150,13 @@ fn hints(store: &ConfigStore, who: &Actor, environment: &str) -> Vec<String> {
         .collect()
 }
 
-fn take(parent: &str, into: &str, rows: &[&str], version: Option<String>) -> Move {
-    Move::Take(Take {
+fn take(parent: &str, into: &str, rows: &[&str], version: Option<String>) -> Take {
+    Take {
         from: HintSource::Parent(EnvironmentName::parse(parent).unwrap()),
         into: Some(at(into)),
         rows: Some(rows.iter().map(|row| (*row).to_owned()).collect()),
         version,
-    })
+    }
 }
 
 fn discard(store: &ConfigStore, who: &Actor, environment: &str, path: &str) {

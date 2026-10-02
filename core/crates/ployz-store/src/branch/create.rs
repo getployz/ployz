@@ -138,10 +138,7 @@ pub(crate) fn create_branch(
     };
     let node_picks = own
         .iter()
-        .map(|lineage| BranchPick {
-            key: format!("{lineage}:node"),
-            choice: None,
-        })
+        .map(|lineage| format!("{lineage}:node"))
         .collect();
     let changes = creating(&from, &into, &live, &hostnames, node_picks)?;
     // A fix's base is what the Parent runs, so the failed change shows as staged.
@@ -190,32 +187,6 @@ pub(crate) fn create_branch(
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged,
-    })
-}
-
-/// Variable row `name`'s own value in the receiver: sealed for a secret, else text
-/// referencing the receiver's Services by `names`.
-pub(super) fn fresh_value(
-    name: &str,
-    secret: bool,
-    text: &str,
-    names: &BTreeMap<String, String>,
-    sealing: &SealingKey,
-) -> Result<BranchNewValue, RpcError> {
-    let key = crate::variables::VariableKey::parse(name.rsplit('.').next().unwrap_or(name))?;
-    crate::variables::validate_text(&key, text)?;
-    let (value, value_fingerprint) = match secret {
-        true => (
-            SavedVariableValue::Secret {
-                encrypted_value: Some(sealing.seal(text)),
-            },
-            sealing.fingerprint(text),
-        ),
-        false => crate::variables::text_value(&key, text, names)?,
-    };
-    Ok(BranchNewValue {
-        value,
-        value_fingerprint,
     })
 }
 
@@ -280,20 +251,13 @@ pub(crate) fn copy_node(
     }
     let moving = Moving::copy(tx, &owner.environment, &branch, &copied)?;
     // Every change of the copy, variables with the owner's values.
-    let picks: Vec<BranchPick> = moving
+    let picks: Vec<String> = moving
         .compare(&branch.working, None)?
         .rows
         .iter()
-        .filter_map(|row| {
-            let BranchRole::Move { choice, .. } = &row.role else {
-                return None;
-            };
-            let key = row.key.to_string();
-            copied.contains(split(&key).0).then(|| BranchPick {
-                choice: choice.as_ref().map(|_| BranchPickChoice::From),
-                key,
-            })
-        })
+        .filter(|row| matches!(row.role, BranchRole::Move { .. }))
+        .map(|row| row.key.to_string())
+        .filter(|key| copied.contains(split(key).0))
         .collect();
     if picks.is_empty() {
         return Err(error::conflict(moving.nothing, json!({})));
@@ -303,6 +267,28 @@ pub(crate) fn copy_node(
         branch: view(tx, &branch)?,
         staged,
     })
+}
+
+/// An Own Copy rewrites what a Branch runs, so it waits until the Branch runs its
+/// Working State: no Deployment in flight and nothing staged.
+fn settled(tx: &mut dyn Tx, branch: &Environment) -> Result<(), RpcError> {
+    let scope = format!(
+        "--project {} --env {}",
+        branch.summary.project, branch.summary.name
+    );
+    if deployment::in_flight(tx, &branch.summary.id)?.is_some() {
+        return Err(error::conflict(
+            "A Deployment of this Branch is still running: wait for it to finish",
+            json!({ "next": format!("ployz deployment ls {scope}") }),
+        ));
+    }
+    if !review::review(tx, branch)?.view.changes.is_empty() {
+        return Err(error::conflict(
+            "This Branch has changes that aren't deployed: deploy or discard them first",
+            json!({ "next": format!("ployz diff {scope}") }),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn keep_branch(

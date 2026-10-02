@@ -1,9 +1,9 @@
 //! `ployz env`: Environments in the Config Store, and Branches of them. `ls`,
 //! `default` and `rm` manage them; `rm` is the one teardown path. A Branch
 //! copies the Services and Volumes picked (and what they use that its Parent
-//! doesn't run) and uses the rest live; `sync` (or `save`) stages its changes in
-//! its Parent, `update` stages what its Parent deployed since, `copy` turns a Live
-//! Node into its own copy, and `keep` keeps it after syncing into its Parent.
+//! doesn't run) and uses the rest live; `sync` stages one Environment's changes in
+//! another, `copy` turns a Live Node into its own copy, and `keep` keeps it after
+//! syncing into its Parent.
 //! `never-sync` marks settings an Environment keeps as its own.
 
 mod branch;
@@ -25,7 +25,6 @@ use super::teardown::{Inventory, confirmed, inventory, remove_all};
 use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, repeated, switch, value};
 use crate::output::say;
-use branch::moving;
 
 pub(crate) fn command() -> Command {
     Command::new("env")
@@ -138,7 +137,9 @@ pub(crate) fn command() -> Command {
                          Environment into one of its Destinations it is a Conditional Sync: \
                          the changes go live there with the pull request's merge, and \
                          --withdraw withdraws it; into any other Environment they are staged \
-                         now. Example: ployz env sync --to --env fix-api --skip api.env.DEBUG \
+                         now. A merged pull request's value its Conditional Sync left beside \
+                         the Destination's own edit is a hint too; --take ID stages it, even \
+                         once its PR Environment is gone. Example: ployz env sync --to --env fix-api --skip api.env.DEBUG \
                          --close",
                     ),
             )
@@ -187,40 +188,6 @@ pub(crate) fn command() -> Command {
                     .conflicts_with_all(["to", "from", "skip", "plan", "close", "withdraw"]),
             ),
         )
-        .subcommand(
-            moving(
-                Command::new("save")
-                    .about("Stage the Branch's changes in its Parent")
-                    .long_about(
-                        "Stage the Branch's changes in its Parent's Working State; nothing is \
-                         published or deployed, and nothing in the Parent is deleted. --plan \
-                         lists them and the version to pass back. A secret the Branch added \
-                         moves only when picked `=from`. From a PR Environment it is a \
-                         Conditional Sync instead: the changes go live in the Destination \
-                         with the pull request's merge; --withdraw withdraws it. --take ID \
-                         stages a merged pull request's value its Conditional Sync left \
-                         beside the Environment's own edit (`ployz diff` lists them), even \
-                         once its PR Environment is gone.",
-                    ),
-            )
-            .arg(value("into", None).value_name("ENV").help(
-                "From a PR Environment: the Destination, when several deploy its target branch",
-            ))
-            .arg(
-                switch("withdraw", None)
-                    .help("From a PR Environment: withdraw its Conditional Sync")
-                    .conflicts_with_all(["only", "plan", "version", "take"]),
-            )
-            .arg(
-                value("take", None)
-                    .value_name("ID")
-                    .help("Stage the hints (or --only ROW) of this Conditional Sync in --env")
-                    .conflicts_with_all(["plan", "version", "into"]),
-            ),
-        )
-        .subcommand(moving(Command::new("update").about(
-            "Stage what the Branch's Parent deployed since, in the Branch",
-        )))
         .subcommand(
             store::scoped(
                 Command::new("copy").about(
@@ -333,8 +300,6 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
         "rm" => rm,
         "branch" => branch::branch,
         "sync" => branch::sync,
-        "save" => branch::save,
-        "update" => branch::update,
         "copy" => branch::copy,
         "keep" => branch::keep,
         "never-sync" => never_sync,

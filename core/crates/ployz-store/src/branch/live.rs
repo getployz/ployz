@@ -191,8 +191,8 @@ pub(crate) fn live_names(
     Ok(names)
 }
 
-/// A Branch's view: its Parent, its Live Nodes and their owners, what Update would
-/// stage, and how many changes it would sync into its Parent.
+/// A Branch's view: its Parent, its Live Nodes and their owners, and how many
+/// changes it would sync into its Parent.
 pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, RpcError> {
     let row = branch_row(tx, branch)?;
     let chain = chain(tx, &row.parent)?;
@@ -222,23 +222,11 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
             }
         })
         .collect();
-    let update = if parent.applied.services.is_empty() && parent.applied.volumes.is_empty() {
-        Vec::new()
-    } else {
-        let moving = Moving::update(tx, &parent.environment, branch)?;
-        moving
-            .compare(&branch.working, None)?
-            .rows
-            .iter()
-            .filter(|row| matches!(row.role, BranchRole::Move { .. }))
-            .map(|row| moving.name(&branch.working, &row.key.to_string()))
-            .collect()
-    };
     let parent_id = &parent.environment.summary.id;
     // As the Sync view compares: a Conditional Sync into a PR Environment's Destination.
     let to_parent = match crate::conditional_sync::merging_into(tx, &branch.summary.id, parent_id)?
     {
-        Some(_) => Moving::save(tx, branch, &parent.environment)?,
+        Some(_) => Moving::conditional(tx, branch, &parent.environment)?,
         None => Moving::sync(tx, branch, &parent.environment)?,
     };
     let to_parent = to_parent
@@ -268,7 +256,6 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
         kept: row.kept,
         setup,
         live,
-        update,
         to_parent,
         closes_at: crate::pull_request::closes_at(tx, &branch.summary.id)?,
         pull_request: crate::pull_request::of(tx, &branch.summary.id)?,

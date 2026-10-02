@@ -197,7 +197,7 @@ pub(crate) fn sync_view_of(
                 .ok_or_else(|| error::corrupt("Sync row"))?;
             Ok(SyncRow {
                 new: path == "node" || (path.starts_with("variables.") && row.into.is_null()),
-                secret: secret(row) && !moving.carries_secrets(),
+                secret: row.secret() && !moving.carries_secrets(),
                 changed: matches!(row.role, BranchRole::Move { conflict: true, .. }),
                 ticked: moving.ticked(row),
                 key,
@@ -293,19 +293,13 @@ fn pair(
     scope::load_pair(tx, who, (&summary.id, &into.id), lock)
 }
 
-/// Whether `row` moves a secret: core offers one only to a receiver that lacks it.
-fn secret(row: &BranchRow) -> bool {
-    matches!(&row.role, BranchRole::Move { choice: Some(choice), .. } if choice.secret)
-}
-
-/// Core's picks: the rows `asked` names by key, else every row ticked by default;
-/// each variable lands with the sender's value, but a Sync's secret lands without
-/// one. Nothing picked is refused with the `current` version to pick from.
+/// Core's picks: the rows `asked` names by key, else every row ticked by default.
+/// Nothing picked is refused with the `current` version to pick from.
 pub(crate) fn sync_picks(
     moving: &Moving,
     (rows, current): (&[BranchRow], &str),
     asked: Option<&[String]>,
-) -> Result<Vec<BranchPick>, RpcError> {
+) -> Result<Vec<String>, RpcError> {
     let offered: Vec<(String, &BranchRow)> = rows
         .iter()
         .filter(|row| matches!(row.role, BranchRole::Move { .. }))
@@ -322,26 +316,13 @@ pub(crate) fn sync_picks(
             offered.iter().map(|(key, _)| key.as_str()),
         ));
     }
-    let picks: Vec<BranchPick> = offered
+    let picks: Vec<String> = offered
         .into_iter()
         .filter(|(key, row)| match asked {
             Some(asked) => asked.contains(key),
             None => moving.ticked(row),
         })
-        .map(|(key, row)| {
-            let choice = match &row.role {
-                BranchRole::Move {
-                    choice: Some(offered),
-                    ..
-                } => Some(if offered.secret && !moving.carries_secrets() {
-                    BranchPickChoice::New { value: None }
-                } else {
-                    BranchPickChoice::From
-                }),
-                BranchRole::Move { choice: None, .. } | BranchRole::Differ { .. } => None,
-            };
-            BranchPick { key, choice }
-        })
+        .map(|(key, _)| key)
         .collect();
     if picks.is_empty() {
         return Err(error::conflict(
@@ -362,4 +343,70 @@ fn closable(tx: &mut dyn Tx, branch: &Environment) -> Result<(), RpcError> {
         ));
     }
     crate::teardown::guard(tx, branch)
+}
+
+/// Stage the hints `take` names, from a landed Conditional Sync or the Parent.
+pub(crate) fn take(tx: &mut dyn Tx, who: &Actor, take: &Take) -> Result<Taken, RpcError> {
+    match &take.from {
+        HintSource::ConditionalSync(id) => crate::conditional_sync::take(tx, who, id, take),
+        HintSource::Parent(parent) => follow::take(tx, who, parent, take),
+    }
+}
+
+/// Compare `moving` into `into`, refusing unless `asked`, if any, is still the
+/// version of that comparison.
+pub(crate) fn reviewed(
+    moving: &Moving,
+    into: &Environment,
+    asked: Option<&str>,
+) -> Result<BranchChanges, RpcError> {
+    let changes = moving.compare(&into.working, None)?;
+    let current = version(into, &changes.review);
+    if asked.is_some_and(|asked| asked != current) {
+        return Err(error::conflict(
+            "Changed since you reviewed: review the sync again",
+            json!({ "version": current }),
+        ));
+    }
+    Ok(changes)
+}
+
+/// A Sync's guard: the receiver's revision and core's review of the changes.
+pub(crate) fn version(into: &Environment, review: &str) -> String {
+    format!(
+        "{}:{}",
+        into.summary.revision,
+        crate::removal::short_digest(review)
+    )
+}
+
+/// A row's name and its two values as reads show them.
+pub(crate) fn shown_row(
+    moving: &Moving,
+    from: &Environment,
+    into: &Environment,
+    row: &BranchRow,
+) -> (String, Value, Value) {
+    let key = row.key.to_string();
+    let (lineage, path) = split(&key);
+    let variable = |intent: &SavedEnvironmentIntent, names| {
+        let key = path.strip_prefix("variables.")?;
+        let service = intent.services.iter().find(|s| s.lineage_id == lineage)?;
+        let found = service.variables.iter().find(|v| v.key == key)?;
+        Some(crate::variables::shown(found, names))
+    };
+    let (from_names, into_names) = (from.names(), into.names());
+    let from_value =
+        variable(&moving.from, &from_names).unwrap_or_else(|| shown(path, row.from.clone()));
+    let into_value =
+        variable(&into.working, &into_names).unwrap_or_else(|| shown(path, row.into.clone()));
+    (moving.name(&into.working, &key), from_value, into_value)
+}
+
+/// Whether row `name` is `asked`, or under it: `web` covers `web.image`.
+pub(crate) fn under(name: &str, asked: &str) -> bool {
+    name == asked
+        || name
+            .strip_prefix(asked)
+            .is_some_and(|rest| rest.starts_with('.'))
 }

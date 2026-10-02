@@ -90,7 +90,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                             "env",
                             "sync",
                             "--take",
-                            hint.save.as_str(),
+                            hint.conditional_sync.as_str(),
                             "--only",
                             &hint.row
                         ]

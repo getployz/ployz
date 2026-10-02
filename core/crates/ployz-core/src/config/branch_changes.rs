@@ -8,11 +8,10 @@ use serde_json::{Value, json};
 use super::branch_changes_types::RowPath;
 use super::service_changes::{FIELDS, at};
 use super::{
-    BranchChanges, BranchChangesInput, BranchChoice, BranchHostnames, BranchNewValue, BranchOption,
-    BranchPick, BranchPickChoice, BranchReason, BranchRole, BranchRow, BranchRowKey, ConfigError,
-    SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent, SavedVariableValue,
-    SavedVolumeIntent, ServiceConfig, ServiceImageCredentials, ServiceSource, VolumeAttachment,
-    parse_environment_intent, redact_environment_intent, restore_service_setting,
+    BranchChanges, BranchChangesInput, BranchHostnames, BranchReason, BranchRole, BranchRow,
+    BranchRowKey, ConfigError, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent,
+    SavedVariableValue, SavedVolumeIntent, ServiceConfig, ServiceImageCredentials, ServiceSource,
+    VolumeAttachment, parse_environment_intent, redact_environment_intent, restore_service_setting,
 };
 
 /// Compare `from` and `into` against `base`. Without picks (`None`) this only compares: `next` is
@@ -21,22 +20,20 @@ use super::{
 ///
 /// # Errors
 /// Returns ConfigError when any supplied configuration is invalid, or a pick is unknown, meant to
-/// differ, offers no such choice, lacks a required value, or cannot produce a valid `next`.
+/// differ, or cannot produce a valid `next`.
 pub fn branch_changes(input: BranchChangesInput) -> Result<BranchChanges, ConfigError> {
     let base = input.base.map(parse_environment_intent).transpose()?;
     let from = parse_environment_intent(input.from)?;
     let into = parse_environment_intent(input.into)?;
-    let parent = input.parent.map(parse_environment_intent).transpose()?;
     let comparison = Comparison {
         base: base.as_ref(),
         from: &from,
         into: &into,
-        parent: parent.as_ref(),
         provided: input.provided.iter().map(String::as_str).collect(),
         hostnames: &input.hostnames,
-        from_kept: input.from_kept,
         never_synced: &input.never_synced,
         follow: input.follow,
+        carry_secrets: input.carry_secrets || input.follow,
     };
     let rows = comparison.rows();
     let picks = input.picks.as_deref();
@@ -53,13 +50,10 @@ pub fn branch_changes(input: BranchChangesInput) -> Result<BranchChanges, Config
     })
 }
 
-/// The one canonical review: rows plus each pick's key and option, never a supplied value.
-fn review(rows: &[BranchRow], picks: &[BranchPick]) -> String {
-    let mut picks: Vec<_> = picks
-        .iter()
-        .map(|pick| json!({"choice": pick.choice.as_ref().map(BranchPickChoice::option), "key": pick.key}))
-        .collect();
-    picks.sort_by(|a, b| a["key"].as_str().cmp(&b["key"].as_str()));
+/// The one canonical review: rows plus the picked keys.
+fn review(rows: &[BranchRow], picks: &[String]) -> String {
+    let mut picks = picks.to_vec();
+    picks.sort();
     serde_json::to_string(&json!({"picks": picks, "rows": rows})).expect("rows are JSON")
 }
 
@@ -73,10 +67,7 @@ struct Admitted<'a> {
 /// What an admitted pick changes.
 enum Landing<'a> {
     Node,
-    Variable {
-        key: &'a str,
-        choice: &'a BranchPickChoice,
-    },
+    Variable(&'a str),
     Setting(SettingPath<'a>),
 }
 
@@ -100,12 +91,11 @@ struct Comparison<'a> {
     base: Option<&'a SavedEnvironmentIntent>,
     from: &'a SavedEnvironmentIntent,
     into: &'a SavedEnvironmentIntent,
-    parent: Option<&'a SavedEnvironmentIntent>,
     provided: BTreeSet<&'a str>,
     hostnames: &'a BranchHostnames,
-    from_kept: bool,
     never_synced: &'a [String],
     follow: bool,
+    carry_secrets: bool,
 }
 
 impl Comparison<'_> {
@@ -190,32 +180,20 @@ impl Comparison<'_> {
                 if from_value.is_null() || from_value == base_value || from_value == into_value {
                     continue;
                 }
-                let choice = match path {
-                    RowPath::Variable(key) => {
-                        let secret = *at(&from_value, "kind") == "secret";
-                        // A secret moves only into a receiver that lacks it, or, following,
-                        // one that never set its own.
-                        if secret
-                            && !into_value.is_null()
-                            && !(self.follow && into_value == base_value)
-                        {
-                            continue;
-                        }
-                        Some(self.choice(lineage, key, secret))
-                    }
-                    RowPath::Node
-                    | RowPath::Data
-                    | RowPath::Name
-                    | RowPath::Storage
-                    | RowPath::Mount(_)
-                    | RowPath::Setting(_) => None,
-                };
+                // A secret moves only into a receiver that lacks it, or, following,
+                // one that never set its own.
+                if matches!(path, RowPath::Variable(_))
+                    && *at(&from_value, "kind") == "secret"
+                    && !into_value.is_null()
+                    && !(self.follow && into_value == base_value)
+                {
+                    continue;
+                }
                 self.unless_never_synced(
                     lineage,
                     path,
                     BranchRole::Move {
                         conflict: into_value != base_value,
-                        choice,
                     },
                 )
             };
@@ -241,10 +219,7 @@ impl Comparison<'_> {
     fn introduction_rows(&self, lineage: &str, node: Node, rows: &mut Vec<BranchRow>) {
         rows.push(BranchRow {
             key: key(lineage, RowPath::Node),
-            role: BranchRole::Move {
-                conflict: false,
-                choice: None,
-            },
+            role: BranchRole::Move { conflict: false },
             base: Value::Null,
             from: node_value(node),
             into: Value::Null,
@@ -253,24 +228,12 @@ impl Comparison<'_> {
             return;
         };
         for variable in &service.variables {
-            let secret = matches!(
-                variable.value,
-                SavedVariableValue::Secret { .. } | SavedVariableValue::SecretWithoutValue
-            );
-            let mut choice = self.choice(lineage, &variable.key, secret);
-            // A Branch starts with its Parent's values, secrets included.
-            if self.base.is_none() {
-                choice.default = BranchOption::From;
-            }
             let path = RowPath::Variable(variable.key.clone());
             rows.push(BranchRow {
                 role: self.unless_never_synced(
                     lineage,
                     &path,
-                    BranchRole::Move {
-                        conflict: false,
-                        choice: Some(choice),
-                    },
+                    BranchRole::Move { conflict: false },
                 ),
                 key: key(lineage, path),
                 base: Value::Null,
@@ -295,34 +258,12 @@ impl Comparison<'_> {
         }
     }
 
-    fn choice(&self, lineage: &str, key: &str, secret: bool) -> BranchChoice {
-        let parent_has = self
-            .parent
-            .and_then(|parent| service(parent, lineage))
-            .is_some_and(|service| service.variables.iter().any(|v| v.key == key));
-        let mut options = vec![BranchOption::From];
-        if parent_has {
-            options.push(BranchOption::Parent);
-        }
-        options.extend([BranchOption::New, BranchOption::LeaveOut]);
-        let default = match (secret, self.from_kept) {
-            (false, _) => BranchOption::From,
-            (true, false) => BranchOption::New,
-            (true, true) => BranchOption::LeaveOut,
-        };
-        BranchChoice {
-            default,
-            options,
-            secret,
-        }
-    }
-
     /// Move the picked rows into `next` and advance `base` by what lands there.
     /// Creating (no `base`) returns `from` minus the lineages `into` uses live as the new base.
     fn apply(
         &self,
         rows: &[BranchRow],
-        picks: &[BranchPick],
+        picks: &[String],
     ) -> Result<(SavedEnvironmentIntent, Option<SavedEnvironmentIntent>), ConfigError> {
         let admitted = self.admit_picks(rows, picks)?;
         let mut next = self.into.clone();
@@ -346,7 +287,7 @@ impl Comparison<'_> {
     fn admit_picks<'r>(
         &self,
         rows: &'r [BranchRow],
-        picks: &'r [BranchPick],
+        picks: &'r [String],
     ) -> Result<Admitted<'r>, ConfigError> {
         let by_key: BTreeMap<String, &BranchRow> =
             rows.iter().map(|row| (row.key.to_string(), row)).collect();
@@ -357,35 +298,24 @@ impl Comparison<'_> {
         };
         for pick in picks {
             let row = by_key
-                .get(pick.key.as_str())
+                .get(pick.as_str())
                 .copied()
                 .ok_or_else(|| ConfigError::at("picks.key", "Unknown change"))?;
             if !admitted.picked.insert(&row.key) {
                 return Err(ConfigError::at("picks.key", "Each change is picked once"));
             }
-            let BranchRole::Move {
-                choice: offered, ..
-            } = &row.role
-            else {
-                return Err(ConfigError::at("picks.key", "Change is meant to differ"));
+            let differ = || ConfigError::at("picks.key", "Change is meant to differ");
+            let BranchRole::Move { .. } = &row.role else {
+                return Err(differ());
             };
-            let landing = match (&row.key.path, offered, &pick.choice) {
-                (RowPath::Variable(key), Some(offered), Some(choice))
-                    if offered.options.contains(&choice.option()) =>
-                {
-                    admit_new_value(offered, choice)?;
-                    Landing::Variable { key, choice }
-                }
-                (RowPath::Node, None, None) => Landing::Node,
-                (RowPath::Name, None, None) => Landing::Setting(SettingPath::Name),
-                (RowPath::Storage, None, None) => Landing::Setting(SettingPath::Storage),
-                (RowPath::Mount(volume), None, None) => {
-                    Landing::Setting(SettingPath::Mount(volume))
-                }
-                (RowPath::Setting(field), None, None) => {
-                    Landing::Setting(SettingPath::Field(field))
-                }
-                _ => return Err(ConfigError::at("picks.choice", "Choice is not offered")),
+            let landing = match &row.key.path {
+                RowPath::Variable(key) => Landing::Variable(key),
+                RowPath::Node => Landing::Node,
+                RowPath::Name => Landing::Setting(SettingPath::Name),
+                RowPath::Storage => Landing::Setting(SettingPath::Storage),
+                RowPath::Mount(volume) => Landing::Setting(SettingPath::Mount(volume)),
+                RowPath::Setting(field) => Landing::Setting(SettingPath::Field(field)),
+                RowPath::Data => return Err(differ()),
             };
             let lineage = row.key.lineage.as_str();
             if matches!(landing, Landing::Node) {
@@ -407,7 +337,7 @@ impl Comparison<'_> {
             .sort_by_key(|(lineage, landing)| match landing {
                 Landing::Node if volume(self.from, lineage).is_some() => 0,
                 Landing::Node => 1,
-                Landing::Variable { .. } | Landing::Setting(_) => 2,
+                Landing::Variable(_) | Landing::Setting(_) => 2,
             });
         Ok(admitted)
     }
@@ -421,18 +351,8 @@ impl Comparison<'_> {
     ) -> Result<(), ConfigError> {
         match *landing {
             Landing::Node => self.introduce(next, base, lineage)?,
-            Landing::Variable { key, choice } => {
-                let new_value = match choice {
-                    BranchPickChoice::New { value } => value.as_ref(),
-                    BranchPickChoice::From
-                    | BranchPickChoice::Parent
-                    | BranchPickChoice::LeaveOut => None,
-                };
-                if let Some(variable) =
-                    self.chosen_variable(lineage, key, choice.option(), new_value)
-                {
-                    put_variable(next, lineage, variable);
-                }
+            Landing::Variable(key) => {
+                put_variable(next, lineage, self.landed_variable(lineage, key));
                 if let Some(base) = base {
                     adopt_node(base, self.into, lineage, None);
                     put_variable(base, lineage, variable(self.from, lineage, key));
@@ -453,8 +373,8 @@ impl Comparison<'_> {
         Ok(())
     }
 
-    /// An introduced node's unpicked variables land in `next` by their default choice, and
-    /// `base` records each one that lands; one left out stays proposed.
+    /// An introduced node's unpicked variables land in `next` with it, and `base` records
+    /// each; one marked Never sync stays out.
     fn land_defaults(
         &self,
         rows: &[BranchRow],
@@ -463,13 +383,7 @@ impl Comparison<'_> {
         mut base: Option<&mut SavedEnvironmentIntent>,
     ) {
         for row in rows {
-            let (
-                RowPath::Variable(key),
-                BranchRole::Move {
-                    choice: Some(choice),
-                    ..
-                },
-            ) = (&row.key.path, &row.role)
+            let (RowPath::Variable(key), BranchRole::Move { .. }) = (&row.key.path, &row.role)
             else {
                 continue;
             };
@@ -477,10 +391,7 @@ impl Comparison<'_> {
             if !admitted.introduced.contains(lineage) || admitted.picked.contains(&row.key) {
                 continue;
             }
-            let Some(landed) = self.chosen_variable(lineage, key, choice.default, None) else {
-                continue;
-            };
-            put_variable(next, lineage, landed);
+            put_variable(next, lineage, self.landed_variable(lineage, key));
             if let Some(base) = base.as_deref_mut() {
                 put_variable(base, lineage, variable(self.from, lineage, key));
             }
@@ -555,56 +466,17 @@ impl Comparison<'_> {
         Ok(())
     }
 
-    fn chosen_variable(
-        &self,
-        lineage: &str,
-        key: &str,
-        option: BranchOption,
-        new_value: Option<&BranchNewValue>,
-    ) -> Option<SavedVariableIntent> {
-        match option {
-            BranchOption::From => Some(variable(self.from, lineage, key)),
-            BranchOption::Parent => self.parent.map(|parent| variable(parent, lineage, key)),
-            // Only a secret takes `new` without a value: it lands without one.
-            BranchOption::New => {
-                let (value, value_fingerprint) = new_value.map_or_else(
-                    || (SavedVariableValue::SecretWithoutValue, String::new()),
-                    |new| (new.value.clone(), new.value_fingerprint.clone()),
-                );
-                Some(SavedVariableIntent {
-                    value,
-                    value_fingerprint,
-                    ..variable(self.from, lineage, key)
-                })
-            }
-            BranchOption::LeaveOut => None,
+    /// `from`'s variable as it lands: a secret without its value unless secrets carry.
+    fn landed_variable(&self, lineage: &str, key: &str) -> SavedVariableIntent {
+        let variable = variable(self.from, lineage, key);
+        match variable.value {
+            SavedVariableValue::Secret { .. } if !self.carry_secrets => SavedVariableIntent {
+                value: SavedVariableValue::SecretWithoutValue,
+                value_fingerprint: String::new(),
+                ..variable
+            },
+            _ => variable,
         }
-    }
-}
-
-/// A plain `new` needs its value; a secret's value must be sealed material, never plaintext.
-fn admit_new_value(offered: &BranchChoice, chosen: &BranchPickChoice) -> Result<(), ConfigError> {
-    let BranchPickChoice::New { value } = chosen else {
-        return Ok(());
-    };
-    let sealed = |value: &BranchNewValue| {
-        matches!(
-            value.value,
-            SavedVariableValue::Secret {
-                encrypted_value: Some(_)
-            }
-        )
-    };
-    match (offered.secret, value) {
-        (false, None) => Err(ConfigError::at("picks.value", "A new value is required")),
-        (false, Some(value)) if matches!(value.value, SavedVariableValue::Secret { .. }) => Err(
-            ConfigError::at("picks.value", "A plain variable takes a plain value"),
-        ),
-        (true, Some(value)) if !sealed(value) => Err(ConfigError::at(
-            "picks.value",
-            "A secret's new value must be sealed",
-        )),
-        _ => Ok(()),
     }
 }
 
@@ -783,11 +655,11 @@ fn uses(env: &SavedEnvironmentIntent, lineage: &str) -> bool {
         .any(|v| v.value.referenced_lineages().any(|used| used == lineage))
 }
 
-/// The variable a row was computed from; offered choices guarantee it exists.
+/// The variable a row was computed from; move rows guarantee it exists.
 fn variable(env: &SavedEnvironmentIntent, lineage: &str, key: &str) -> SavedVariableIntent {
     service(env, lineage)
         .and_then(|service| service.variables.iter().find(|v| v.key == key))
-        .expect("offered variables exist")
+        .expect("moving variables exist")
         .clone()
 }
 

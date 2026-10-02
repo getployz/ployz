@@ -10,8 +10,8 @@ use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Admit, BranchQuery, Change, ConfigStore, CreateBranch, CreateProject, CreateService,
     Deploy, DeploymentId, Edit, EnvironmentId, EnvironmentName, EnvironmentQuery, EnvironmentRef,
-    MoveQuery, NeverSync, OrganizationId, ProjectId, ProjectName, RunEvidence, RunnerId,
-    ServiceLineageId, ServiceQuery, SettingPath, SyncChanges, SyncQuery, SyncView, Trusted,
+    NeverSync, OrganizationId, ProjectId, ProjectName, RunEvidence, RunnerId, ServiceLineageId,
+    ServiceQuery, SettingPath, SyncChanges, SyncQuery, SyncView, Trusted,
 };
 use serde_json::{Value, json};
 
@@ -187,22 +187,6 @@ fn labels(view: &SyncView) -> Vec<&str> {
     let mut labels: Vec<&str> = view.rows.iter().map(|row| row.label.as_str()).collect();
     labels.sort_unstable();
     labels
-}
-
-/// The labels of what the Parent's deployed changes would stage in `fix-web`.
-fn following(store: &ConfigStore, who: &Actor) -> Vec<String> {
-    store
-        .read(
-            who,
-            &MoveQuery::Update {
-                into: at("fix-web"),
-            },
-        )
-        .unwrap()
-        .rows
-        .into_iter()
-        .map(|row| row.row)
-        .collect()
 }
 
 /// Deploy `environment` in full and record every Service applied.
@@ -384,7 +368,13 @@ fn a_branch_follows_its_parents_value_for_a_setting_the_parent_marks() {
     set(&store, &who, "production", &[("web.env.PLAIN", json!("3"))]);
     deploy(&store, &who, "production", 3);
     assert_eq!(values(&store, &who, "fix-web")["env"]["PLAIN"], json!("2"));
-    assert!(following(&store, &who).is_empty());
+    // Nor would a Sync from production carry it.
+    let (rows, apart) = between(&store, &who, ("production", "fix-web"));
+    assert!(rows.is_empty(), "{rows:?}");
+    assert_eq!(
+        apart,
+        [("web.env.PLAIN".to_owned(), vec!["fix-web".to_owned()])]
+    );
 }
 
 #[test]

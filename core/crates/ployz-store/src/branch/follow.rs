@@ -68,12 +68,12 @@ fn into(
     lineages: &BTreeSet<String>,
 ) -> Result<(), RpcError> {
     let mut branch = scope::lock_id(tx, who, branch)?;
-    let moving = Moving::update(tx, parent, &branch)?;
+    let moving = Moving::follow(tx, parent, &branch)?;
     let changes = moving.compare(&branch.working, None)?;
     let delivered = delivered(tx, &branch.summary.id)?;
     let mut picks = Vec::new();
     for row in &changes.rows {
-        let BranchRole::Move { conflict, choice } = &row.role else {
+        let BranchRole::Move { conflict } = &row.role else {
             continue;
         };
         let key = row.key.to_string();
@@ -96,7 +96,7 @@ fn into(
         )?;
         // The Branch's own change wins: the Parent's value is a hint.
         if !conflict {
-            picks.push(from_parent(key, choice.as_ref()));
+            picks.push(key);
         }
     }
     if !picks.is_empty() {
@@ -114,7 +114,7 @@ pub(crate) fn hints(tx: &mut dyn Tx, branch: &Environment) -> Result<Vec<FollowH
         return Ok(Vec::new());
     };
     let parent = scope::load_by_id(tx, &row.parent)?;
-    let moving = Moving::update(tx, &parent, branch)?;
+    let moving = Moving::follow(tx, &parent, branch)?;
     let changes = moving.compare(&branch.working, None)?;
     Ok(hinted(&delivered, &changes.rows)
         .into_iter()
@@ -136,7 +136,7 @@ pub(crate) fn take(
     who: &Actor,
     parent: &EnvironmentName,
     take: &Take,
-) -> Result<Moved, RpcError> {
+) -> Result<Taken, RpcError> {
     let Some(at) = &take.into else {
         return Err(error::invalid(
             format!("Name the Branch that follows {parent}"),
@@ -158,7 +158,7 @@ pub(crate) fn take(
     if take.version.is_some() {
         review::check(&review::review(tx, &branch)?, take.version.as_deref())?;
     }
-    let moving = Moving::update(tx, &from, &branch)?;
+    let moving = Moving::follow(tx, &from, &branch)?;
     let changes = moving.compare(&branch.working, None)?;
     let delivered = delivered(tx, &branch.summary.id)?;
     let hints: Vec<(String, &BranchRow)> = hinted(&delivered, &changes.rows)
@@ -171,8 +171,8 @@ pub(crate) fn take(
             .rows
             .as_ref()
             .is_none_or(|asked| asked.iter().any(|asked| under(label, asked)));
-        if let (true, BranchRole::Move { choice, .. }) = (asked, &row.role) {
-            picks.push(from_parent(row.key.to_string(), choice.as_ref()));
+        if asked {
+            picks.push(row.key.to_string());
         }
     }
     if let Some(unknown) = take
@@ -194,8 +194,7 @@ pub(crate) fn take(
         ));
     }
     let staged = moving.apply(tx, who, &mut branch, picks)?;
-    Ok(Moved {
-        branch: Some(view(tx, &branch)?),
+    Ok(Taken {
         from: from.summary,
         into: branch.summary,
         staged,
@@ -262,12 +261,4 @@ fn delivered(
         ))
     })
     .collect()
-}
-
-/// Pick row `key` with the Parent's value, a secret's sealed value included.
-fn from_parent(key: String, choice: Option<&BranchChoice>) -> BranchPick {
-    BranchPick {
-        key,
-        choice: choice.map(|_| BranchPickChoice::From),
-    }
 }

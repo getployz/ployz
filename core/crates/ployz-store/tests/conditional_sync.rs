@@ -13,10 +13,9 @@ use ployz_core::config::ServiceGitAccess;
 use ployz_store::{
     Actor, AuthorizedRepository, Automated, BranchHead, BranchQuery, Change, CheckSuite, Command,
     ConditionalSyncState, ConfigStore, CreateBranch, CreateGitService, CreateProject, DiffQuery,
-    Edit, EnvironmentId, EnvironmentName, EnvironmentRef, Landed, Move, MovePick, OrganizationId,
-    PickChoice, ProjectId, ProjectName, Publish, PullRequest, PullRequestQuery, RunnerId, Save,
-    ServiceLineageId, SetPrPlan, SettingPath, SyncChanges, SyncQuery, SyncView, SystemEvent, Take,
-    Trusted, When, Written,
+    Edit, EnvironmentId, EnvironmentName, EnvironmentRef, Landed, OrganizationId, ProjectId,
+    ProjectName, Publish, PullRequest, PullRequestQuery, RunnerId, ServiceLineageId, SetPrPlan,
+    SettingPath, SyncChanges, SyncQuery, SyncView, SystemEvent, Take, Trusted, When, Written,
 };
 use serde_json::{Value, json};
 
@@ -195,27 +194,6 @@ fn push(store: &ConfigStore, who: &Actor, head: u8, merged: &[&str]) -> Automate
             merged: merged.iter().map(|merge| backend::sha(merge)).collect(),
         }),
     )
-}
-
-/// Save `rows` of `pr-5` for its merge; `[]` withdraws.
-fn save(rows: &[&str], version: Option<String>) -> Move {
-    Move::Save(saving(rows, version))
-}
-
-fn saving(rows: &[&str], version: Option<String>) -> Save {
-    Save {
-        from: at("pr-5"),
-        picks: Some(
-            rows.iter()
-                .map(|row| MovePick {
-                    row: (*row).to_owned(),
-                    choice: Some(PickChoice::From),
-                })
-                .collect(),
-        ),
-        version,
-        ..Save::default()
-    }
 }
 
 /// What a Sync from `pr-5` into `into` (omitted: its only Destination) carries.
@@ -433,7 +411,7 @@ fn a_conditional_sync_goes_live_with_the_push_that_carries_its_merge() {
         &[("web.waitForCi", json!(true))],
     );
 
-    // The merge push arrived first: Cloud reports the merge, and the save freezes.
+    // The merge push arrived first: Cloud reports the merge, and the Conditional Sync freezes.
     let pending = store
         .pending_syncs(
             &who.organization,
@@ -512,7 +490,10 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
             ("web.env.TOKEN", json!({ "secret": "pr-secret" })),
         ],
     );
-    store.write(&who, &save(&["web.env"], None)).unwrap();
+    let review = offered(&store, &who, None);
+    store
+        .write(&who, &sync(&review, Some(&["web.env"])))
+        .unwrap();
     // Production changes MODE live, then stages its own edit on top.
     set(
         &store,
@@ -569,13 +550,11 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
             backend::pr_number(5)
         )
     );
-    let take = |row: Option<&str>| {
-        Move::Take(Take {
-            from: ployz_store::HintSource::ConditionalSync(hint.save.clone()),
-            into: None,
-            rows: row.map(|row| vec![row.to_owned()]),
-            version: None,
-        })
+    let take = |row: Option<&str>| Take {
+        from: ployz_store::HintSource::ConditionalSync(hint.conditional_sync.clone()),
+        into: None,
+        rows: row.map(|row| vec![row.to_owned()]),
+        version: None,
     };
     assert_eq!(
         store
@@ -608,9 +587,10 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
     );
 }
 
-/// PR #5 saves TOKEN as `choice`; production gains its own TOKEN before the merge,
-/// so TOKEN lands as a hint. Taking every hint and deploying resolves TOKEN to what.
-fn a_secret_hint_taken(choice: PickChoice) -> Value {
+/// PR #5 syncs TOKEN; production gains its own TOKEN before the merge, so TOKEN
+/// lands as a hint. Taking every hint and deploying resolves TOKEN to PR #5's.
+#[test]
+fn a_secret_the_destination_gains_after_the_sync_lands_as_a_hint() {
     let (store, who) = shop();
     set(
         &store,
@@ -618,18 +598,9 @@ fn a_secret_hint_taken(choice: PickChoice) -> Value {
         "pr-5",
         &[("web.env.TOKEN", json!({ "secret": "pr-secret" }))],
     );
+    let review = offered(&store, &who, None);
     store
-        .write(
-            &who,
-            &Move::Save(Save {
-                from: at("pr-5"),
-                picks: Some(vec![MovePick {
-                    row: "web.env.TOKEN".into(),
-                    choice: Some(choice),
-                }]),
-                ..Save::default()
-            }),
-        )
+        .write(&who, &sync(&review, Some(&["web.env.TOKEN"])))
         .unwrap();
     set(
         &store,
@@ -661,29 +632,19 @@ fn a_secret_hint_taken(choice: PickChoice) -> Value {
     store
         .write(
             &who,
-            &Move::Take(Take {
-                from: ployz_store::HintSource::ConditionalSync(hints[0].save.clone()),
+            &Take {
+                from: ployz_store::HintSource::ConditionalSync(hints[0].conditional_sync.clone()),
                 into: None,
                 rows: None,
                 version: None,
-            }),
+            },
         )
         .unwrap();
     publish(&store, &who, "production");
     let pushed = push(&store, &who, 5, &[]);
-    resolved(&store, &pushed.admitted[0].deployment.id, "TOKEN")
-}
-
-#[test]
-fn a_secret_the_destination_gains_after_the_save_lands_as_a_hint() {
-    assert_eq!(a_secret_hint_taken(PickChoice::From), json!("pr-secret"));
-}
-
-#[test]
-fn a_secret_hint_keeps_the_new_value_picked_for_it() {
     assert_eq!(
-        a_secret_hint_taken(PickChoice::New("prod".into())),
-        json!("prod")
+        resolved(&store, &pushed.admitted[0].deployment.id, "TOKEN"),
+        json!("pr-secret")
     );
 }
 
