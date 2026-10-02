@@ -18,6 +18,7 @@ import { Route as HomeRouteImport } from './routes/home'
 import { Route as ProtectedCloudRouteRouteImport } from './routes/_protected/cloud/route'
 import { Route as ProtectedDashboardRouteImport } from './routes/_protected/dashboard'
 import { Route as PublicAuthRouteImport } from './routes/_public/auth'
+import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ProtectedCloudIndexRouteImport } from './routes/_protected/cloud/index'
 import { Route as ProtectedCloudOrganizationSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/route'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
@@ -101,6 +102,11 @@ const PublicAuthRoute = PublicAuthRouteImport.update({
   id: '/auth',
   path: '/auth',
   getParentRoute: () => PublicRouteRoute,
+} as any)
+const ApiHealthRoute = ApiHealthRouteImport.update({
+  id: '/api/health',
+  path: '/api/health',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const ProtectedCloudIndexRoute = ProtectedCloudIndexRouteImport.update({
   id: '/',
@@ -372,6 +378,7 @@ export interface FileRoutesByFullPath {
   '/cloud': typeof ProtectedCloudRouteRouteWithChildren
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
+  '/api/health': typeof ApiHealthRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
@@ -417,6 +424,7 @@ export interface FileRoutesByTo {
   '/home': typeof HomeRoute
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
+  '/api/health': typeof ApiHealthRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
@@ -464,6 +472,7 @@ export interface FileRoutesById {
   '/_protected/cloud': typeof ProtectedCloudRouteRouteWithChildren
   '/_protected/dashboard': typeof ProtectedDashboardRoute
   '/_public/auth': typeof PublicAuthRoute
+  '/api/health': typeof ApiHealthRoute
   '/_protected/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
@@ -515,6 +524,7 @@ export interface FileRouteTypes {
     | '/cloud'
     | '/dashboard'
     | '/auth'
+    | '/api/health'
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/auth/github'
@@ -560,6 +570,7 @@ export interface FileRouteTypes {
     | '/home'
     | '/dashboard'
     | '/auth'
+    | '/api/health'
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/auth/github'
@@ -606,6 +617,7 @@ export interface FileRouteTypes {
     | '/_protected/cloud'
     | '/_protected/dashboard'
     | '/_public/auth'
+    | '/api/health'
     | '/_protected/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/auth/github'
@@ -655,6 +667,7 @@ export interface RootRouteChildren {
   SplatRoute: typeof SplatRoute
   DeviceRoute: typeof DeviceRoute
   HomeRoute: typeof HomeRoute
+  ApiHealthRoute: typeof ApiHealthRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiAuthGithubRoute: typeof ApiAuthGithubRoute
   ApiCliSplatRoute: typeof ApiCliSplatRoute
@@ -735,6 +748,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/auth'
       preLoaderRoute: typeof PublicAuthRouteImport
       parentRoute: typeof PublicRouteRoute
+    }
+    '/api/health': {
+      id: '/api/health'
+      path: '/api/health'
+      fullPath: '/api/health'
+      preLoaderRoute: typeof ApiHealthRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/_protected/cloud/': {
       id: '/_protected/cloud/'
@@ -1219,6 +1239,7 @@ const rootRouteChildren: RootRouteChildren = {
   SplatRoute: SplatRoute,
   DeviceRoute: DeviceRoute,
   HomeRoute: HomeRoute,
+  ApiHealthRoute: ApiHealthRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiAuthGithubRoute: ApiAuthGithubRoute,
   ApiCliSplatRoute: ApiCliSplatRoute,
