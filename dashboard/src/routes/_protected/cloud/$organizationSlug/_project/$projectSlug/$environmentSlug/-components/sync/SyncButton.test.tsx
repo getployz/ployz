@@ -32,7 +32,7 @@ const branchView = (extra: Partial<BranchView> = {}): BranchView => ({
   closes_at: Date.now() / 1000 + 5 * 24 * 60 * 60 - 60, pull_request: null, ...extra,
 });
 const row = (key: string, label: string, extra: Partial<SyncRow> = {}): SyncRow =>
-  ({ key, node: "api", label, from: null, into: null, ticked: true, changed: false, new: false, secret: false, ...extra });
+  ({ key, node: "api", label, from: null, into: null, ticked: true, changed: false, new: false, secret: false, value_set: false, ...extra });
 const rows = [
   row("a:source.image", "api.image", { from: "shop/api:1.9", into: "shop/api:1.8" }),
   row("a:variables.LOG_LEVEL", "api.env.LOG_LEVEL", { from: "debug", into: "warn", changed: true }),
@@ -51,7 +51,7 @@ const pullRequestView = (synced: boolean): PullRequestView => ({
     commits: 1, open: true, merge_commit: null, merge_reached: null, updated: "2026-09-29T10:00:00Z",
   },
   environments: [{ environment: summary("fix-api"), deployment: null, destinations: [{
-    name: "production", changes: 3, conditional_sync: synced ? { id: "cs", standing: true, changes: 3 } : null,
+    name: "production", changes: 3, conditional_sync: synced ? { id: "cs", standing: true, changes: 3, waiting: [] } : null,
   }] }],
   passing: synced, reason: synced ? "3 changes go live with this PR" : "3 changes to sync in Ployz",
 });
@@ -118,8 +118,10 @@ it("says what a Sync into the Parent carries, and opens the dialog into the Pare
     "Container imageshop/api:1.8shop/api:1.9",
     "LOG_LEVELChanged in productionwarndebug",
     "APP_ENVproductionstaging",
-    "STRIPE_WEBHOOK_SECRETSecretValue set in production",
+    "STRIPE_WEBHOOK_SECRETSecret",
   ]);
+  // A secret arrives by name only: the row takes production's own value.
+  expect(sync.getByLabelText("Set production's value of STRIPE_WEBHOOK_SECRET").getAttribute("placeholder")).toBe("Set production's value");
   expect(sync.getByRole("button", { name: "Sync 4 changes" })).toBeTruthy();
 });
 
@@ -216,15 +218,19 @@ it("syncs a PR Environment into its Destination at the merge, staying put, and U
   expect(sync.getByText("These changes from fix-api go live in production when #142 merges.")).toBeTruthy();
   // A PR Environment closes with its pull request.
   expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();
+  fireEvent.change(sync.getByLabelText("Set production's value of STRIPE_WEBHOOK_SECRET"), { target: { value: "whsec" } });
   fireEvent.click(sync.getByRole("button", { name: "Sync 4 changes" }));
   await waitFor(() => expect(app.success).toHaveBeenCalled());
   expect(app.commands()[0]).toMatchObject({ command: "sync", from: fixApi, close_after: false });
+  // The value is held for the merge.
+  await waitFor(() => expect(app.commands()[1]).toEqual({ command: "hold_secret", environment: { project: "shop", environment: "production" },
+    pull_request: 142, path: "api.env.STRIPE_WEBHOOK_SECRET", value: "whsec" }));
   expect(app.router.state.location.pathname).toBe("/cloud/acme/shop/fix-api");
   expect(app.success.mock.calls.at(0)?.[0]).toBe("4 changes go live in production when #142 merges");
   // SAFETY: the Sync button's toast action is a label and a click, never a node.
   const action = app.success.mock.calls.at(0)?.[1]?.action as Action | undefined;
   action?.onClick(asTestDouble<MouseEvent<HTMLButtonElement>>()({}));
-  await waitFor(() => expect(app.commands()[1]).toEqual({
+  await waitFor(() => expect(app.commands()[2]).toEqual({
     command: "sync", from: fixApi, into: { project: "shop", environment: "production" }, picks: [], when: "at_merge",
   }));
 });
@@ -247,8 +253,12 @@ it("syncs a PR Environment into another Environment now, from the menu", async (
   fireEvent.click((await menu()).getByRole("menuitem", { name: "Sync to staging" }));
   const sync = within(await screen.findByRole("dialog", { name: "Sync to staging" }));
   expect(sync.getByText("These changes from fix-api become staging's changes to deploy.")).toBeTruthy();
+  fireEvent.change(sync.getByLabelText("Set staging's value of STRIPE_WEBHOOK_SECRET"), { target: { value: "whsec" } });
   fireEvent.click(sync.getByRole("button", { name: "Sync 4 changes" }));
   await waitFor(() => expect(app.router.state.location.pathname).toBe("/cloud/acme/shop/staging"));
+  // A value set now sets the secret.
+  await waitFor(() => expect(app.commands()[1]).toEqual({ command: "edit", environment: { project: "shop", environment: "staging" },
+    expect: null, changes: [{ op: "set", path: "api.env.STRIPE_WEBHOOK_SECRET", value: { secret: "whsec" } }] }));
   expect(app.success.mock.calls.at(0)?.[0]).toBe("Synced 4 changes from fix-api");
 });
 

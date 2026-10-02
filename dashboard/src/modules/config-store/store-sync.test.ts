@@ -4,7 +4,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { closesIn, goesLive, syncButtonState, syncLine, syncPicks, syncRowPath, syncSections, undoPaths } from "./store-sync";
 
 const row = (key: string, node: string, label: string, extra: Partial<SyncRow> = {}): SyncRow =>
-  ({ key, node, label, from: null, into: null, ticked: true, changed: false, new: false, secret: false, ...extra });
+  ({ key, node, label, from: null, into: null, ticked: true, changed: false, new: false, secret: false, value_set: false, ...extra });
 
 const image = row("a:source.image", "api", "api.image", { from: "shop/api:1.9", into: "shop/api:1.8" });
 const logLevel = row("a:variables.LOG_LEVEL", "api", "api.env.LOG_LEVEL", { from: "debug", into: "warn", changed: true });

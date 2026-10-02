@@ -133,7 +133,7 @@ it("moves a change marked Never sync into the Sync dialog's never-synced list at
   const key = storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, query).queryKey;
   const side = (name: string) => ({ id: name, project: "shop", name, revision: 1 });
   const change = (variable: string) => ({ key: `w:variables.${variable}`, node: "web", label: `web.env.${variable}`, from: "a", into: "b",
-    ticked: true, changed: false, new: false, secret: false });
+    ticked: true, changed: false, new: false, secret: false, value_set: false });
   queryClient.setQueryData<unknown>(key, { ok: true, value: {
     from: side("fix-web"), into: side("production"), at_merge: null, version: "1:1", rows: [change("A"), change("B")],
     never_synced: [{ key: "w:variables.C", node: "web", label: "web.env.C", marked_in: ["fix-web", "production"] }],

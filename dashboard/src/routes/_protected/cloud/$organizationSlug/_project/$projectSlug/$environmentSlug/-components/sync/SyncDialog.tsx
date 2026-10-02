@@ -5,6 +5,7 @@ import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
+import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
 import { plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
@@ -18,7 +19,8 @@ import { StoreRefused } from "#/modules/config-store/store.contract";
  * The one review of a Sync: each change `from` would put in `into` as one row, ticked as the Store suggests. Unticked,
  * a change stays out this time and can be marked Never sync; the footer lists what is never synced, with undo.
  * Nothing deploys: the changes become `into`'s changes to deploy, or, from a PR Environment into its Destination, go
- * live there when the pull request merges. Monochrome: pink stays for staged intent and Deploy.
+ * live there when the pull request merges. A secret `into` lacks arrives by name only: its row takes `into`'s own
+ * value, set now or held for the merge. Monochrome: pink stays for staged intent and Deploy.
  */
 export function SyncDialog({ organizationSlug, from, into, parent, closable, onClose, onSynced }: {
   organizationSlug: string; from: EnvironmentRef; into: string; parent: string;
@@ -33,6 +35,8 @@ export function SyncDialog({ organizationSlug, from, into, parent, closable, onC
   const view = useStoreView(organizationSlug, syncQuery(from, into === parent ? null : into));
   // Rows the user flipped from their default, by key: they survive a refetch.
   const [flipped, setFlipped] = useState<ReadonlySet<string>>(new Set());
+  // `into`'s values typed for secret rows, by key: sent after the Sync, never shown back.
+  const [values, setValues] = useState<Readonly<Record<string, string>>>({});
   const [closeAfter, setCloseAfter] = useState(true);
   const [pending, setPending] = useState(false);
   const [stale, setStale] = useState(false);
@@ -69,6 +73,20 @@ export function SyncDialog({ organizationSlug, from, into, parent, closable, onC
       setPending(false);
       return;
     }
+    // Once synced: a value now sets the secret, one at the merge is held for it.
+    const receiver = { project: from.project, environment: into };
+    const typed = picked.flatMap((row) => {
+      const value = row.secret ? values[row.key] : undefined;
+      return value ? [{ path: syncRowPath(row), value }] : [];
+    });
+    if (atMerge !== null) {
+      for (const { path, value } of typed) writer.commit({ command: "hold_secret", environment: receiver, pull_request: atMerge, path, value });
+    } else if (typed.length) {
+      writer.commit({
+        command: "edit", environment: receiver, expect: null,
+        changes: typed.map(({ path, value }) => ({ op: "set", path, value: { secret: value } })),
+      });
+    }
     onSynced(picked, atMerge);
   }
 
@@ -96,7 +114,8 @@ export function SyncDialog({ organizationSlug, from, into, parent, closable, onC
                   const follows = isWholeNode(row) ? undefined : wholes.get(row.node);
                   return (
                     <SyncRowItem key={row.key} row={row} into={into} ticked={follows ?? picked.includes(row)} follows={follows !== undefined}
-                      onFlip={() => flip(row.key)} onNeverSync={() => neverSync(name, syncRowPath(row), false)} />
+                      onFlip={() => flip(row.key)} onNeverSync={() => neverSync(name, syncRowPath(row), false)}
+                      value={values[row.key] ?? ""} onValue={(value) => setValues((current) => ({ ...current, [row.key]: value }))} />
                   );
                 })}
               </ul>
@@ -137,11 +156,13 @@ export function SyncDialog({ organizationSlug, from, into, parent, closable, onC
 }
 
 /**
- * One change: tick, name (a variable's key in monospace), at most one badge, and old → new on the right. Unticked, it
- * dims and offers Never sync instead. A setting of a new node follows the node's tick.
+ * One change: tick, name (a variable's key in monospace), at most one badge, and old → new on the right; a secret takes
+ * `into`'s value there instead. Unticked, it dims and offers Never sync instead. A setting of a new node follows the
+ * node's tick.
  */
-function SyncRowItem({ row, into, ticked, follows, onFlip, onNeverSync }: {
+function SyncRowItem({ row, into, ticked, follows, onFlip, onNeverSync, value, onValue }: {
   row: SyncRow; into: string; ticked: boolean; follows: boolean; onFlip: () => void; onNeverSync: () => void;
+  value: string; onValue: (value: string) => void;
 }) {
   const line = syncLine(row, into);
   const id = `sync-${row.key}`;
@@ -155,7 +176,9 @@ function SyncRowItem({ row, into, ticked, follows, onFlip, onNeverSync }: {
       {!ticked && !isWholeNode(row) && !follows ? (
         <Button variant="outline" size="sm" onClick={onNeverSync}><PinIcon data-icon="inline-start" />Never sync</Button>
       ) : row.secret ? (
-        <span className="text-muted-foreground">Value set in {into}</span>
+        <Input type="password" autoComplete="off" aria-label={`Set ${into}'s value of ${line.name}`}
+          placeholder={row.value_set ? "Value set" : `Set ${into}'s value`} value={value}
+          onChange={(event) => onValue(event.target.value)} className="h-7 w-48 font-mono text-xs" />
       ) : (
         <span className="flex max-w-60 min-w-0 items-center justify-end gap-1.5 font-mono text-xs">
           {line.before ? <><span className="truncate text-muted-foreground">{line.before}</span><ArrowRightIcon className="size-3 shrink-0 text-muted-foreground" /></> : null}
