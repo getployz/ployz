@@ -15,6 +15,7 @@ const TRY_PROMISE_ALLOWLIST = new Set([
   "modules/cluster-domain/sync.server.ts",
   "server/auth.server.ts",
   "server/database.server.ts",
+  "server/marketing-proxy.server.ts",
   "modules/inngest/client.ts",
   "modules/inngest/worker.server.ts",
   "modules/organization/organization-state.server.ts",
