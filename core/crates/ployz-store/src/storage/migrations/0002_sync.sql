@@ -27,10 +27,12 @@ ALTER TABLE config_environment_branch RENAME COLUMN base TO made_with;
 -- `hint` (a Follow the receiver changed too, or discarded) or `settled` (deployed).
 -- `value` is the cell delivered, redacted; `prior` the pair base's cell before and
 -- `was` the receiver's own (sealed), kept while pending to rewind a discard and to
--- undo the Sync (`sync_id`) that landed it.
+-- undo the Sync (`sync_id`) that landed it. `other_id` outlives its Environment, so
+-- a Sync that closed its Branch can still be undone.
+-- ponytail: rows from a removed Environment stay once settled; prune them if this grows.
 CREATE TABLE config_sync_arrival (
     environment_id TEXT NOT NULL REFERENCES config_environment (id) ON DELETE CASCADE,
-    other_id TEXT NOT NULL REFERENCES config_environment (id) ON DELETE CASCADE,
+    other_id TEXT NOT NULL,
     lineage TEXT NOT NULL,
     at TEXT NOT NULL,
     organization_id TEXT NOT NULL,

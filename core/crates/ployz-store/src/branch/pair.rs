@@ -437,7 +437,7 @@ pub(super) fn share(
 }
 
 /// Put `cells` into the bases `receiver` shares with each other side, as one write
-/// per pair.
+/// per pair. A pair gone with its other side has no base left to put back.
 // ponytail: a prior that no longer fits the base (its node went since) leaves that
 // row of the base as it is; it then reads as the receiver's own change. So a
 // discarded Follow removal is not offered again: the node it brings back reads as
@@ -451,7 +451,10 @@ fn rewind_bases(
     for (other, row, cell) in cells {
         let base = match bases.remove(&other) {
             Some(base) => base,
-            None => base_of(tx, (receiver, &other))?,
+            None => match stored(tx, (receiver, &other))? {
+                Some(base) => base,
+                None => continue,
+            },
         };
         let base = put(&base, &row, &cell).unwrap_or(base);
         bases.insert(other, base);

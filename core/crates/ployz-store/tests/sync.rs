@@ -1065,3 +1065,20 @@ fn a_deploy_settles_only_what_it_shipped() {
     backend::run(&store, &id);
     assert_eq!(undo(&store, &who, &synced), Ok("production".into()));
 }
+
+#[test]
+fn a_sync_that_closed_its_branch_can_still_be_undone() {
+    let (store, who) = shop(false);
+    set(&store, &who, "fix-web", &[("web.image", json!("web:2"))]);
+    let closing = SyncChanges {
+        close_after: true,
+        ..sync(&view(&store, &who), None)
+    };
+    let synced = store.write(&who, &closing).unwrap();
+    assert!(synced.closing);
+    assert_eq!(undo(&store, &who, &synced), Ok("production".into()));
+    assert_eq!(
+        values(&store, &who, "production", "web")["image"],
+        json!("web:1")
+    );
+}
