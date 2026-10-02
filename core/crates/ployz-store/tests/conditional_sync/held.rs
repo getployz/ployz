@@ -235,33 +235,22 @@ fn shop_with_docs() -> (ConfigStore, Actor) {
     (store, who)
 }
 
-/// Before either syncs, the refusal names the asked repository's PR Environment.
+/// Before either syncs, two PR Environments with the number leave the hint's
+/// sender to the user.
 #[test]
-fn a_value_held_before_the_sync_names_the_asked_repositorys_pr_environment() {
-    let (store, who) = shop_with_docs();
-    let early = HoldSecret {
-        repository: Some(backend::repo_id(12)),
-        ..hold("TOKEN", "prod-secret")
-    };
-    assert_eq!(
-        store.write(&who, &early).unwrap_err().details["next"],
-        json!("ployz env sync --to production --at-merge --project shop --env pr-5-2")
-    );
-}
-
-/// Unasked, two repositories' PR Environments with the number are the choices.
-#[test]
-fn a_value_held_before_the_sync_without_a_repository_offers_both_pr_environments() {
+fn a_value_held_before_the_sync_of_two_repositories_names_no_pr_environment() {
     let (store, who) = shop_with_docs();
     let refused = store
         .write(&who, &hold("TOKEN", "prod-secret"))
         .unwrap_err();
-    assert_eq!(refused.code, RpcErrorCode::NotFound, "{refused:?}");
-    assert_eq!(refused.details["valid_children"], json!(["pr-5", "pr-5-2"]));
+    assert_eq!(
+        refused.details["next"],
+        json!("ployz env sync --to production --at-merge --project shop --env PR_ENV")
+    );
 }
 
 #[test]
-fn a_value_held_for_a_pull_request_number_two_repositories_share_names_the_repository() {
+fn a_value_held_for_a_pull_request_number_two_repositories_share_is_held_for_both() {
     let (store, who) = shop_with_docs();
     let token = [("web.env.TOKEN", json!({ "secret": "pr-secret" }))];
     for pr in ["pr-5", "pr-5-2"] {
@@ -275,26 +264,21 @@ fn a_value_held_for_a_pull_request_number_two_repositories_share_names_the_repos
             .write(&who, &sync(&store.read(&who, &query).unwrap(), None))
             .unwrap();
     }
-
-    let refused = store
-        .write(&who, &hold("TOKEN", "prod-secret"))
-        .unwrap_err();
-    assert_eq!(
-        (refused.code, refused.message.as_str()),
-        (
-            RpcErrorCode::InvalidArgument,
-            "#5 of more than one repository brings web.env.TOKEN: name the repository"
-        )
-    );
-    let named = HoldSecret {
-        repository: Some(backend::repo_id(11)),
-        ..hold("TOKEN", "prod-secret")
+    let passing = |repository: u64| {
+        store
+            .read(
+                &who,
+                &PullRequestQuery {
+                    repository_id: backend::repo_id(repository),
+                    number: backend::pr_number(5),
+                },
+            )
+            .unwrap()
+            .passing
     };
-    store.write(&who, &named).unwrap();
-    assert_eq!(
-        check(&store, &who),
-        (true, "1 change goes live with this PR".into())
-    );
+    assert_eq!((passing(11), passing(12)), (false, false));
+    store.write(&who, &hold("TOKEN", "prod-secret")).unwrap();
+    assert_eq!((passing(11), passing(12)), (true, true));
 }
 
 /// A value given with a Sync at the merge is held for it, or neither stands; given

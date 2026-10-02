@@ -384,7 +384,6 @@ fn hold(root: &ArgMatches, number: &str, asked: &str, secret: String) -> Result<
     let request = HoldSecret {
         environment,
         pull_request,
-        repository: None,
         row: asked.into(),
         value: secret,
     };

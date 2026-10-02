@@ -7,7 +7,8 @@ use crate::scope::EnvironmentRef;
 
 /// Hold a Destination's value for a secret a pull request's Conditional Sync brings
 /// it: it lands with the merge. Refused unless the pull request has a standing
-/// Conditional Sync there that brings that secret.
+/// Conditional Sync there that brings that secret; held for each repository whose
+/// pull request of this number brings it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct HoldSecret {
@@ -16,11 +17,6 @@ pub struct HoldSecret {
     pub environment: EnvironmentRef,
     /// The pull request whose merge brings the secret.
     pub pull_request: PullRequestNumber,
-    /// The pull request's repository: needed only when pull requests of two
-    /// repositories with this number bring the secret.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub repository: Option<RepositoryId>,
     /// The secret's row.
     pub row: branch::RowRef,
     /// The value, sealed at once and never shown back.
@@ -46,8 +42,6 @@ pub(crate) fn hold(
 ) -> Result<SecretHeld, RpcError> {
     let into = scope::lock(tx, who, &request.environment)?;
     let number = request.pull_request;
-    let asked =
-        |repository: RepositoryId| request.repository.is_none_or(|asked| asked == repository);
     let mut rows = Vec::new();
     for stand in tx.query(
         "SELECT repository_id, stored FROM config_conditional_sync \
@@ -55,35 +49,17 @@ pub(crate) fn hold(
         &[into.summary.id.as_str().into(), number.into()],
     )? {
         let repository: RepositoryId = stand.number(0, "Conditional Sync")?;
-        if asked(repository) {
-            rows.push((repository, stand.json::<Stored>(1, "Conditional Sync")?));
-        }
+        rows.push((repository, stand.json::<Stored>(1, "Conditional Sync")?));
     }
     if rows.is_empty() {
-        let mut prs = Vec::new();
-        for pr in tx.query(
-            "SELECT p.repository_id, e.name FROM config_pr_environment p JOIN config_environment e \
-             ON e.id = p.environment_id WHERE p.organization_id = ?1 AND p.number = ?2 \
-             ORDER BY e.name",
+        let prs = tx.query(
+            "SELECT e.name FROM config_pr_environment p JOIN config_environment e \
+             ON e.id = p.environment_id WHERE p.organization_id = ?1 AND p.number = ?2",
             &[who.organization.as_str().into(), number.into()],
-        )? {
-            let repository: RepositoryId = pr.number(0, "PR Environment")?;
-            if asked(repository) {
-                prs.push(pr.text(1)?.to_owned());
-            }
-        }
+        )?;
         let from = match prs.as_slice() {
-            [] => "PR_ENV",
-            [only] => only.as_str(),
-            _ => {
-                return Err(error::choices(
-                    format!(
-                        "#{number} of more than one repository has a PR Environment: name the repository"
-                    ),
-                    "",
-                    prs.iter().map(String::as_str),
-                ));
-            }
+            [only] => only.text(0)?,
+            _ => "PR_ENV",
         };
         return Err(error::invalid(
             format!(
@@ -107,12 +83,9 @@ pub(crate) fn hold(
     }
     let named: Vec<NamedRow> = brought.iter().map(|(_, at)| at.clone()).collect();
     let row = &branch::resolve_one(&request.row, &named)?;
-    let found: Vec<(RepositoryId, String)> = brought
-        .iter()
-        .filter(|(_, at)| at.row == *row)
-        .map(|(repository, at)| (*repository, at.to_string()))
-        .collect();
-    let Some((repository, label)) = found.first().cloned() else {
+    let found: Vec<&(RepositoryId, NamedRow)> =
+        brought.iter().filter(|(_, at)| at.row == *row).collect();
+    let Some((_, label)) = found.first() else {
         let rows: Vec<String> = named.iter().map(|at| at.row.to_string()).collect();
         return Err(error::choices(
             format!(
@@ -123,20 +96,14 @@ pub(crate) fn hold(
             rows.iter().map(String::as_str),
         ));
     };
-    if found.len() > 1 {
-        let repositories: Vec<RepositoryId> =
-            found.iter().map(|(repository, _)| *repository).collect();
-        return Err(error::invalid(
-            format!("#{number} of more than one repository brings {label}: name the repository"),
-            json!({ "valid_children": repositories }),
-        ));
+    let secret = branch::seal_secret(sealing, row, &label.to_string(), &request.value)?;
+    for (repository, _) in found {
+        let pr = PullRequestRef {
+            repository_id: *repository,
+            number,
+        };
+        keep(tx, who, &into.summary.id, &pr, row, &secret)?;
     }
-    let secret = branch::seal_secret(sealing, row, &label, &request.value)?;
-    let pr = PullRequestRef {
-        repository_id: repository,
-        number,
-    };
-    keep(tx, who, &into.summary.id, &pr, row, &secret)?;
     Ok(SecretHeld {
         environment: into.summary,
         pull_request: number,

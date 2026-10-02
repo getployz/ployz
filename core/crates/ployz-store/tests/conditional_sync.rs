@@ -350,7 +350,6 @@ fn hold(key: &str, value: &str) -> HoldSecret {
     HoldSecret {
         environment: at("production"),
         pull_request: backend::pr_number(5),
-        repository: None,
         row: row(key).into(),
         value: value.into(),
     }

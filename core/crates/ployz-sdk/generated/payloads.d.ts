@@ -1469,11 +1469,6 @@ environment: EnvironmentRef,
  */
 pull_request: PullRequestNumber,
 /**
- * The pull request's repository: needed only when pull requests of two
- * repositories with this number bring the secret.
- */
-repository?: RepositoryId | null,
-/**
  * The secret's row.
  */
 row: RowRef,
