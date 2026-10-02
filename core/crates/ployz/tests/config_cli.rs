@@ -1007,8 +1007,10 @@ fn an_agent_syncs_a_branch_into_its_parent_without_servers() {
                 version,
             ],
         );
-        assert_eq!(synced["staged"], json!(["web"]));
-        assert_eq!(synced["closing"], json!(false));
+        assert_eq!(
+            synced["when"],
+            json!({ "kind": "now", "staged": ["web"], "closing": false })
+        );
         assert_eq!(synced["next"], json!("ployz deploy --env production"));
         assert_eq!(
             ok(store, &["get", "web.image"])["settings"][0]["value"],
@@ -1025,7 +1027,7 @@ fn an_agent_syncs_a_branch_into_its_parent_without_servers() {
             store,
             &["env", "sync", "--to", "--env", "fix-web", "--close"],
         );
-        assert_eq!(closed["closing"], json!(true));
+        assert_eq!(closed["when"]["closing"], json!(true));
         let listed = ok(store, &["env", "ls"]);
         assert_eq!(listed["environments"].as_array().unwrap().len(), 1);
     }
@@ -1108,7 +1110,7 @@ fn an_agent_syncs_between_any_two_environments_of_a_project() {
                 version,
             ],
         );
-        assert_eq!(synced["staged"], json!(["web"]));
+        assert_eq!(synced["when"]["staged"], json!(["web"]));
         assert_eq!(
             ok(store, &["get", "web.image", "--env", "staging"])["settings"][0]["value"],
             json!("web:1")
@@ -2796,7 +2798,14 @@ fn an_agent_syncs_a_pr_environment_at_its_merge_and_withdraws_it() {
         "pr-token\n",
     );
     assert_eq!(code, Some(0), "{set}");
-    // From a PR Environment, --to with no value is its only Destination.
+    // From a PR Environment, --to with no value is its only Destination, at the merge.
+    let plan = ok(&store, &["env", "sync", "--to", "--plan", "--env", "pr-5"]);
+    assert_eq!(
+        (&plan["into"]["name"], &plan["at_merge"]),
+        (&json!("production"), &json!(5))
+    );
+    assert_eq!(labels(&plan["rows"]), ["web.env.MODE", "web.env.TOKEN"]);
+    // Asked for, --at-merge stays in the command the plan offers next.
     let plan = ok(
         &store,
         &[
@@ -2809,21 +2818,18 @@ fn an_agent_syncs_a_pr_environment_at_its_merge_and_withdraws_it() {
             "pr-5",
         ],
     );
-    assert_eq!(
-        (&plan["into"]["name"], &plan["at_merge"]),
-        (&json!("production"), &json!(5))
+    assert!(
+        plan["next"].as_str().unwrap().contains(" --at-merge "),
+        "{plan}"
     );
-    assert_eq!(labels(&plan["rows"]), ["web.env.MODE", "web.env.TOKEN"]);
-    let synced = ok(
-        &store,
-        &["env", "sync", "--to", "--at-merge", "--env", "pr-5"],
-    );
+    let synced = ok(&store, &["env", "sync", "--to", "--env", "pr-5"]);
+    let conditional_sync = &synced["when"]["conditional_sync"];
     assert_eq!(
-        (&synced["staged"], &synced["conditional_sync"]["state"]),
-        (&json!([]), &json!("standing"))
+        (&synced["when"]["kind"], &conditional_sync["state"]),
+        (&json!("at_merge"), &json!("standing"))
     );
     assert_eq!(
-        labels(&synced["conditional_sync"]["rows"]),
+        labels(&conditional_sync["rows"]),
         ["web.env.MODE", "web.env.TOKEN"]
     );
     assert!(synced.get("next").is_none());

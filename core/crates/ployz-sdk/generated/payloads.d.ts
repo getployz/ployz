@@ -3013,20 +3013,10 @@ export type SyncChanges = {
  */
 from: EnvironmentRef,
 /**
- * Where they land, in the same Project; omitted, the sender's Parent now, or a
- * PR Environment's only Destination at the merge.
+ * Where they land, in the same Project; omitted, a PR Environment's only
+ * Destination at the merge, else the sender's Parent.
  */
-into?: EnvironmentRef | null,
-/**
- * `now` stages the changes; `at_merge` makes them a Conditional Sync that goes
- * live with the pull request's merge, replacing the one standing there.
- */
-when: When,
-/**
- * Close the Branch once its changes landed in its Parent: refused for a kept
- * Branch, and for a Sync into anything but its Parent.
- */
-close_after?: boolean,
+into?: EnvironmentRef | null, when?: When | null,
 /**
  * Refused with `conflict` unless the Sync view is still at this version.
  */
@@ -3058,9 +3048,9 @@ from: EnvironmentRef,
  */
 into?: EnvironmentRef | null,
 /**
- * As [`SyncChanges::when`]: which Sync to read, so no default picks it.
+ * As [`SyncChanges::when`]; `close_after` reads nothing different.
  */
-when: When, };
+when?: When | null, };
 
 export type SyncRow = { change: SyncChange,
 /**
@@ -3137,19 +3127,21 @@ from: EnvironmentSummary,
 /**
  * Where they landed.
  */
-into: EnvironmentSummary,
+into: EnvironmentSummary, when: SyncedWhen, };
+
+export type SyncedWhen = { "kind": "now",
 /**
  * Nodes staged in `into`'s Working State.
  */
 staged: Array<NodeName>,
 /**
- * The Branch is closing, as [`SyncChanges::close_after`] asked.
+ * The Branch is closing, as [`When::Now`] asked.
  */
-closing: boolean,
+closing: boolean, } | { "kind": "at_merge",
 /**
- * The Conditional Sync standing now, for a Sync at the merge.
+ * The Conditional Sync standing now.
  */
-conditional_sync: ConditionalSync | null, };
+conditional_sync: ConditionalSync, };
 
 export type SystemEvent = { "event": "branch_head" } & BranchHead | { "event": "check_suite" } & CheckSuite | { "event": "pull_request" } & PullRequest | { "event": "sweep" } & Sweep | { "event": "cluster_forgotten" };
 
@@ -3462,7 +3454,12 @@ environment: EnvironmentSummary,
  */
 volumes: Array<VolumeListing>, };
 
-export type When = "now" | "at_merge";
+export type When = { "kind": "now",
+/**
+ * Close the Branch once its changes landed in its Parent: refused for a
+ * kept Branch, and for a Sync into anything but its Parent.
+ */
+close_after?: boolean, } | { "kind": "at_merge" };
 
 export type WireGuardPublicKey = Array<number>;
 

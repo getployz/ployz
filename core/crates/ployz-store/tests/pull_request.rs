@@ -775,7 +775,7 @@ fn a_destinations_count_is_the_rows_its_sync_offers_where_nodes_are_used_live() 
             &ployz_store::SyncQuery {
                 from: at("pr-5"),
                 into: None,
-                when: ployz_store::When::AtMerge,
+                when: Some(ployz_store::When::AtMerge),
             },
         )
         .unwrap();

@@ -17,19 +17,14 @@ pub struct SyncChanges {
     /// The Environment whose changes sync.
     #[serde(default)]
     pub from: EnvironmentRef,
-    /// Where they land, in the same Project; omitted, the sender's Parent now, or a
-    /// PR Environment's only Destination at the merge.
+    /// Where they land, in the same Project; omitted, a PR Environment's only
+    /// Destination at the merge, else the sender's Parent.
     #[serde(default)]
     #[ts(optional = nullable)]
     pub into: Option<EnvironmentRef>,
-    /// `now` stages the changes; `at_merge` makes them a Conditional Sync that goes
-    /// live with the pull request's merge, replacing the one standing there.
-    pub when: When,
-    /// Close the Branch once its changes landed in its Parent: refused for a kept
-    /// Branch, and for a Sync into anything but its Parent.
     #[serde(default)]
-    #[ts(as = "Option<bool>", optional)]
-    pub close_after: bool,
+    #[ts(optional = nullable)]
+    pub when: Option<When>,
     /// Refused with `conflict` unless the Sync view is still at this version.
     pub version: String,
     /// The rows to sync, by [`SyncRow::row`]; omitted, every row ticked. One left
@@ -59,8 +54,10 @@ pub struct SyncQuery {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub into: Option<EnvironmentRef>,
-    /// As [`SyncChanges::when`]: which Sync to read, so no default picks it.
-    pub when: When,
+    /// As [`SyncChanges::when`]; `close_after` reads nothing different.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub when: Option<When>,
 }
 
 /// The rows a Sync would carry, and the version that guards them.
@@ -142,12 +139,23 @@ pub struct Synced {
     pub from: EnvironmentSummary,
     /// Where they landed.
     pub into: EnvironmentSummary,
-    /// Nodes staged in `into`'s Working State.
-    pub staged: Vec<NodeName>,
-    /// The Branch is closing, as [`SyncChanges::close_after`] asked.
-    pub closing: bool,
-    /// The Conditional Sync standing now, for a Sync at the merge.
-    pub conditional_sync: Option<crate::ConditionalSync>,
+    pub when: SyncedWhen,
+}
+
+/// When a Sync's changes land, as it decided.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SyncedWhen {
+    Now {
+        /// Nodes staged in `into`'s Working State.
+        staged: Vec<NodeName>,
+        /// The Branch is closing, as [`When::Now`] asked.
+        closing: bool,
+    },
+    AtMerge {
+        /// The Conditional Sync standing now.
+        conditional_sync: crate::ConditionalSync,
+    },
 }
 
 /// Undo a Sync: what it staged goes back to what the receiver held, refused once
@@ -173,6 +181,7 @@ pub(crate) enum Target {
     Now {
         from: Environment,
         into: Environment,
+        close_after: bool,
     },
     AtMerge {
         from: Environment,
@@ -188,16 +197,20 @@ pub(crate) fn sync(
     request: &SyncChanges,
 ) -> Result<Synced, RpcError> {
     let side = (&request.from, request.into.as_ref());
-    let (from, mut into) = match target(tx, who, side, request.when, true)? {
+    let (from, mut into, close_after) = match target(tx, who, side, request.when, true)? {
         Target::AtMerge { from, into, pr } => {
             return crate::conditional_sync::sync(tx, who, sealing, request, (from, into, pr));
         }
-        Target::Now { from, into } => (from, into),
+        Target::Now {
+            from,
+            into,
+            close_after,
+        } => (from, into, close_after),
     };
     if let Some(removal) = crate::teardown::removing(tx, &from.summary.id)? {
         return Err(crate::teardown::being_removed(&from, &removal));
     }
-    if request.close_after {
+    if close_after {
         if row(tx, &from.summary.id)?.is_some_and(|row| row.parent != into.summary.id) {
             return Err(error::invalid(
                 format!(
@@ -216,16 +229,17 @@ pub(crate) fn sync(
     let values = sealed(sealing, checked.rows(), &sides, &picks, &request.values)?;
     let id = SyncId::parse(uuid::Uuid::new_v4().to_string())?;
     let staged = sync.apply(tx, who, &mut into, &checked, &picks, &values, Some(&id))?;
-    if request.close_after {
+    if close_after {
         crate::pull_request::close(tx, who, &from.summary.id, &mut Default::default())?;
     }
     Ok(Synced {
         sync: id,
         from: from.summary,
         into: into.summary,
-        staged,
-        closing: request.close_after,
-        conditional_sync: None,
+        when: SyncedWhen::Now {
+            staged,
+            closing: close_after,
+        },
     })
 }
 
@@ -236,7 +250,7 @@ pub(crate) fn sync_view(
 ) -> Result<SyncView, RpcError> {
     let side = (&query.from, query.into.as_ref());
     let (from, into, pr) = match target(tx, who, side, query.when, false)? {
-        Target::Now { from, into } => (from, into, None),
+        Target::Now { from, into, .. } => (from, into, None),
         Target::AtMerge { from, into, pr } => (from, into, Some(pr)),
     };
     let held = match &pr {
@@ -295,14 +309,15 @@ pub(crate) fn sync_view(
     })
 }
 
-/// Where a Sync from `from` goes. Now: `into`, or omitted the sender's Parent. At
-/// the merge: `from` must be a PR Environment and `into` one of its Destinations,
-/// omitted its only one. `lock` takes the Project's lock, then both sides'.
+/// Where a Sync from `from` goes, and when: `when`, or omitted at the merge from a
+/// PR Environment into one of its Destinations (omitted, its only one), else now
+/// into `into` or the sender's Parent. `lock` takes the Project's lock, then both
+/// sides'.
 pub(crate) fn target(
     tx: &mut dyn Tx,
     who: &Actor,
     (from, into): (&EnvironmentRef, Option<&EnvironmentRef>),
-    when: When,
+    when: Option<When>,
     lock: bool,
 ) -> Result<Target, RpcError> {
     let summary = scope::environment(tx, who, from)?.summary;
@@ -311,14 +326,36 @@ pub(crate) fn target(
         Some(into) => Some(scope::environment(tx, who, into)?.summary),
         None => None,
     };
-    let (into, pr) = match (when, named) {
-        (When::AtMerge, named) => {
-            let (into, pr) = destination(tx, who, &summary, named)?;
-            (into, Some(pr))
+    let merge = match when {
+        Some(When::Now { .. }) => None,
+        Some(When::AtMerge) | None => merge_of(tx, who, &summary)?,
+    };
+    let (into, pr) = match (when, merge) {
+        (Some(When::AtMerge), None) => {
+            return Err(error::invalid(
+                format!(
+                    "{} is not a PR Environment: its changes sync now",
+                    summary.name
+                ),
+                json!({}),
+            ));
         }
-        (When::Now, Some(into)) => (into, None),
-        (When::Now, None) => match row(tx, &summary.id)? {
-            Some(row) => (scope::load_by_id(tx, &row.parent)?.summary, None),
+        (None, Some((_, destinations)))
+            if named
+                .as_ref()
+                .is_some_and(|into| !destinations.contains(&into.id)) =>
+        {
+            (named, None)
+        }
+        (Some(When::AtMerge) | None, Some((pr, destinations))) => {
+            (Some(destination(tx, &pr, &destinations, named)?), Some(pr))
+        }
+        (Some(When::Now { .. }) | None, _) => (named, None),
+    };
+    let into = match into {
+        Some(into) => into,
+        None => match row(tx, &summary.id)? {
+            Some(row) => scope::load_by_id(tx, &row.parent)?.summary,
             None => {
                 return Err(error::invalid(
                     format!("{} has no Parent: name where it syncs", summary.name),
@@ -348,69 +385,69 @@ pub(crate) fn target(
     let (from, into) = scope::load_pair(tx, who, (&summary.id, &into.id), lock)?;
     Ok(match pr {
         Some(pr) => Target::AtMerge { from, into, pr },
-        None => Target::Now { from, into },
+        None => Target::Now {
+            from,
+            into,
+            close_after: matches!(when, Some(When::Now { close_after: true })),
+        },
     })
 }
 
-/// The Destination a PR Environment's Sync at the merge goes into: `named`, or its
-/// only one; and its pull request.
-fn destination(
+/// A PR Environment's pull request and the Environments that deploy its target
+/// branch: its Destinations. None for any other Environment.
+fn merge_of(
     tx: &mut dyn Tx,
     who: &Actor,
     from: &EnvironmentSummary,
-    named: Option<EnvironmentSummary>,
-) -> Result<(EnvironmentSummary, PullRequest), RpcError> {
+) -> Result<Option<(PullRequest, Vec<EnvironmentId>)>, RpcError> {
     let Some(PullRequestRef {
         repository_id,
         number,
     }) = crate::pull_request::of(tx, &from.id)?
     else {
-        return Err(error::invalid(
-            format!(
-                "{} is not a PR Environment: its changes sync now",
-                from.name
-            ),
-            json!({}),
-        ));
+        return Ok(None);
     };
     let pr = crate::pull_request::facts(tx, who, repository_id, number)?
         .ok_or_else(|| error::corrupt("pull request"))?;
     let project = scope::project_of(tx, &from.id)?.id;
     let destinations =
         crate::pull_request::destinations_of(tx, &project, repository_id, &pr.target_branch)?;
+    Ok(Some((pr, destinations)))
+}
+
+/// The Destination of `pr` a Sync at the merge goes into: `named`, or its only one.
+fn destination(
+    tx: &mut dyn Tx,
+    pr: &PullRequest,
+    destinations: &[EnvironmentId],
+    named: Option<EnvironmentSummary>,
+) -> Result<EnvironmentSummary, RpcError> {
     let mut names = Vec::new();
-    for id in &destinations {
+    for id in destinations {
         names.push(scope::load_by_id(tx, id)?.summary.name.to_string());
     }
-    let into = match (named, destinations.as_slice()) {
-        (Some(into), _) if destinations.contains(&into.id) => into,
-        (Some(_), _) => {
-            return Err(error::conflict(
-                format!(
-                    "That Environment doesn't deploy {}: sync into one that does",
-                    pr.target_branch
-                ),
-                json!({ "valid_children": names }),
-            ));
-        }
-        (None, [one]) => scope::load_by_id(tx, one)?.summary,
-        (None, []) => {
-            return Err(error::conflict(
-                format!(
-                    "Nothing deploys {} now: there is nowhere to sync into",
-                    pr.target_branch
-                ),
-                json!({}),
-            ));
-        }
-        (None, _) => {
-            return Err(error::invalid(
-                format!("Name the Destination: {}", names.join(", ")),
-                json!({ "valid_children": names }),
-            ));
-        }
-    };
-    Ok((into, pr))
+    match (named, destinations) {
+        (Some(into), _) if destinations.contains(&into.id) => Ok(into),
+        (Some(_), _) => Err(error::conflict(
+            format!(
+                "That Environment doesn't deploy {}: sync into one that does",
+                pr.target_branch
+            ),
+            json!({ "valid_children": names }),
+        )),
+        (None, [one]) => Ok(scope::load_by_id(tx, one)?.summary),
+        (None, []) => Err(error::conflict(
+            format!(
+                "Nothing deploys {} now: there is nowhere to sync into",
+                pr.target_branch
+            ),
+            json!({}),
+        )),
+        (None, _) => Err(error::invalid(
+            format!("Name the Destination: {}", names.join(", ")),
+            json!({ "valid_children": names }),
+        )),
+    }
 }
 
 /// The rows a Sync lands: those `request` picks, else every ticked one, less those

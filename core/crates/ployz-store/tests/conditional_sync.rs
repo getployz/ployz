@@ -18,7 +18,7 @@ use ployz_store::{
     Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, HintSource, HoldSecret, Landed,
     NeverSync, OrganizationId, ProjectId, ProjectName, Publish, PullRequest, PullRequestQuery,
     RunnerId, SecretRow, ServiceLineageId, SetPrPlan, SettingPath, SyncChanges, SyncQuery,
-    SyncView, SystemEvent, Take, Trusted, UndoSync, When, Written,
+    SyncView, SyncedWhen, SystemEvent, Take, Trusted, UndoSync, When, Written,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -224,19 +224,26 @@ fn push(store: &ConfigStore, who: &Actor, head: u8, merged: &[&str]) -> Automate
     )
 }
 
-/// What a Sync from `pr-5` carries: into `into` now, or omitted into its only
-/// Destination at the merge.
+/// What a Sync from `pr-5` carries into `into`, omitted its only Destination, when
+/// the Store decides.
 fn offered(store: &ConfigStore, who: &Actor, into: Option<&str>) -> SyncView {
+    read_sync(store, who, into, None)
+}
+
+/// What a Sync from `pr-5` into `into` carries now.
+fn offered_now(store: &ConfigStore, who: &Actor, into: &str) -> SyncView {
+    let now = Some(When::Now { close_after: false });
+    read_sync(store, who, Some(into), now)
+}
+
+fn read_sync(store: &ConfigStore, who: &Actor, into: Option<&str>, when: Option<When>) -> SyncView {
     store
         .read(
             who,
             &SyncQuery {
                 from: at("pr-5"),
                 into: into.map(at),
-                when: match into {
-                    Some(_) => ployz_store::When::Now,
-                    None => ployz_store::When::AtMerge,
-                },
+                when,
             },
         )
         .unwrap()
@@ -258,11 +265,10 @@ fn sync(review: &SyncView, labels: Option<&[&str]>) -> SyncChanges {
     SyncChanges {
         from: at(review.from.name.as_str()),
         into: Some(at(review.into.name.as_str())),
-        when: match review.at_merge {
+        when: Some(match review.at_merge {
             Some(_) => When::AtMerge,
-            None => When::Now,
-        },
-        close_after: false,
+            None => When::Now { close_after: false },
+        }),
         version: review.version.clone(),
         picks: Some(
             review
@@ -274,6 +280,14 @@ fn sync(review: &SyncView, labels: Option<&[&str]>) -> SyncChanges {
         ),
         skip: Vec::new(),
         values: BTreeMap::new(),
+    }
+}
+
+/// What a Sync staged now.
+fn staged(synced: ployz_store::Synced) -> Vec<ployz_store::NodeName> {
+    match synced.when {
+        SyncedWhen::Now { staged, .. } => staged,
+        SyncedWhen::AtMerge { .. } => panic!("a Sync staged now"),
     }
 }
 
@@ -420,14 +434,6 @@ fn a_conditional_sync_goes_live_with_the_push_that_carries_its_merge() {
     // The pull request's page and the Sync button count what it ticks.
     assert_eq!(destination_changes(&store, &who), 2);
     assert_eq!(to_parent(&store, &who), 2);
-    let closing = SyncChanges {
-        close_after: true,
-        ..sync(&review, None)
-    };
-    assert_eq!(
-        store.write(&who, &closing).unwrap_err().code,
-        RpcErrorCode::InvalidArgument
-    );
     assert_eq!(
         check(&store, &who),
         (false, "2 changes to sync in Ployz".into())
@@ -445,12 +451,16 @@ fn a_conditional_sync_goes_live_with_the_push_that_carries_its_merge() {
     let Written::Synced(synced) = committed.written else {
         panic!("a Sync writes Synced")
     };
-    let conditional = synced.conditional_sync.unwrap();
+    let SyncedWhen::AtMerge {
+        conditional_sync: conditional,
+    } = synced.when
+    else {
+        panic!("a Sync into the Destination stands for the merge")
+    };
     assert_eq!(conditional.state, ConditionalSyncState::Standing);
     let labels: Vec<String> = conditional.rows.iter().map(|row| row.label()).collect();
     assert_eq!(labels, ["web.env.MODE", "web.env.TOKEN"]);
     assert_eq!(synced.sync.as_str(), conditional.id.as_str());
-    assert!(synced.staged.is_empty());
     // Nothing lands before the merge.
     assert!(env(&store, &who, "production").get("MODE").is_none());
     // The check waits for production's value of the secret, held ahead of the merge.
@@ -806,8 +816,7 @@ fn a_pr_environment_syncs_into_an_environment_its_merge_doesnt_reach_now() {
     let review = offered(&store, &who, Some("staging"));
     assert_eq!(review.at_merge, None);
     let synced = store.write(&who, &sync(&review, None)).unwrap();
-    assert!(synced.conditional_sync.is_none());
-    assert_eq!(texts(&synced.staged), ["web"]);
+    assert_eq!(texts(&staged(synced)), ["web"]);
     assert_eq!(env(&store, &who, "staging")["MODE"], json!("fast"));
     // It is still waiting to go to production at the merge.
     assert_eq!(
@@ -855,7 +864,7 @@ fn a_pr_environment_syncs_into_its_parent_now_and_into_its_destination_at_the_me
     let into_parent = offered(&store, &who, Some("staging"));
     assert_eq!(into_parent.at_merge, None);
     let synced = store.write(&who, &sync(&into_parent, None)).unwrap();
-    assert!(synced.conditional_sync.is_none());
+    assert!(matches!(synced.when, SyncedWhen::Now { .. }));
     assert_eq!(env(&store, &who, "staging")["MODE"], json!("fast"));
     // Unnamed, the Sync is into production, at the merge.
     let review = offered(&store, &who, None);
@@ -869,10 +878,15 @@ fn a_pr_environment_syncs_into_its_parent_now_and_into_its_destination_at_the_me
 fn now_syncs_a_pr_environment_into_its_destination_at_once() {
     let (store, who) = shop();
     set(&store, &who, "pr-5", &[("web.env.MODE", json!("fast"))]);
-    let now = sync(&offered(&store, &who, Some("production")), None);
-    let synced = store.write(&who, &now).unwrap();
-    assert!(synced.conditional_sync.is_none());
-    assert_eq!(texts(&synced.staged), ["web"]);
+    // Unasked, into its Destination is at the merge.
+    assert_eq!(
+        offered(&store, &who, Some("production")).at_merge,
+        Some(backend::pr_number(5))
+    );
+    let review = offered_now(&store, &who, "production");
+    assert_eq!(review.at_merge, None);
+    let synced = store.write(&who, &sync(&review, None)).unwrap();
+    assert_eq!(texts(&staged(synced)), ["web"]);
     assert_eq!(env(&store, &who, "production")["MODE"], json!("fast"));
 }
 

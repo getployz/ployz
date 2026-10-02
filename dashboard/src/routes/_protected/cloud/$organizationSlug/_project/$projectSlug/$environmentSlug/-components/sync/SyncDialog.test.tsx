@@ -41,13 +41,13 @@ function open({ view = syncView(), closable = true } = {}) {
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
   vi.spyOn(toast, "error").mockImplementation(() => "toast");
   // Always into the explicit receiver: nothing else is cached.
-  queryClient.setQueryData([...storeViewPrefix("acme"), "session", "user", syncQuery(fixApi, "production", view.at_merge === null ? "now" : "at_merge")], { ok: true, value: { view: "sync", ...view } });
+  queryClient.setQueryData([...storeViewPrefix("acme"), "session", "user", syncQuery(fixApi, "production")], { ok: true, value: { view: "sync", ...view } });
   vi.spyOn(functions, "readStoreViewServerFn").mockResolvedValue({ ok: true, value: { view: "sync", ...view } } as never);
   const write = vi.spyOn(functions, "writeStoreServerFn").mockResolvedValue({ ok: true, value: { written: "synced" } } as never);
   render(
     <QueryClientProvider client={queryClient}>
       <Suspense fallback={null}>
-        <SyncDialog organizationSlug="acme" from={fixApi} into="production" when={view.at_merge === null ? "now" : "at_merge"} closable={closable} onClose={() => {}} onSynced={() => {}} />
+        <SyncDialog organizationSlug="acme" from={fixApi} into="production" closable={closable} onClose={() => {}} onSynced={() => {}} />
       </Suspense>
     </QueryClientProvider>,
   );

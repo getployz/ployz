@@ -269,7 +269,7 @@ fn a_value_held_for_a_pull_request_number_two_repositories_share_names_the_repos
         let query = SyncQuery {
             from: at(pr),
             into: None,
-            when: ployz_store::When::AtMerge,
+            when: Some(ployz_store::When::AtMerge),
         };
         store
             .write(&who, &sync(&store.read(&who, &query).unwrap(), None))
@@ -339,7 +339,7 @@ fn a_value_for_a_secret_lands_with_its_sync_or_neither_does() {
         "pr-5",
         &[("web.env.KEY", json!({ "secret": "pr-key" }))],
     );
-    let now = offered(&store, &who, Some("production"));
+    let now = offered_now(&store, &who, "production");
     store.write(&who, &with(&now, "KEY", "prod-key")).unwrap();
     publish(&store, &who, "production");
     let pushed = push(&store, &who, 4, &[]);

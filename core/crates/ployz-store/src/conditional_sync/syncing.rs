@@ -2,7 +2,7 @@
 //! a landed Conditional Sync's hints.
 
 use super::*;
-use crate::branch::{Guard, Move, SyncChanges, Synced, Take, Taken};
+use crate::branch::{Guard, Move, SyncChanges, Synced, SyncedWhen, Take, Taken};
 use crate::id::SyncId;
 use crate::{SealingKey, deployment, teardown};
 use ployz_core::config::redact_environment_intent;
@@ -17,12 +17,6 @@ pub(crate) fn sync(
     request: &SyncChanges,
     (from, into, pr): (Environment, Environment, PullRequest),
 ) -> Result<Synced, RpcError> {
-    if request.close_after {
-        return Err(error::invalid(
-            "A PR Environment closes with its pull request: sync it without close_after",
-            json!({}),
-        ));
-    }
     ready(tx, &from, &pr)?;
     let sync = Move::sync(tx, &from, &into)?;
     let checked = sync.check(tx, &into, Guard::Sync(&request.version))?;
@@ -94,14 +88,14 @@ pub(crate) fn sync(
         sync: SyncId::parse(id.as_str())?,
         from: from.summary,
         into: into.summary,
-        staged: Vec::new(),
-        closing: false,
-        conditional_sync: Some(ConditionalSync {
-            id,
-            pull_request: pr.number,
-            rows,
-            state: ConditionalSyncState::Standing,
-        }),
+        when: SyncedWhen::AtMerge {
+            conditional_sync: ConditionalSync {
+                id,
+                pull_request: pr.number,
+                rows,
+                state: ConditionalSyncState::Standing,
+            },
+        },
     })
 }
 

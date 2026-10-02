@@ -148,7 +148,7 @@ it("runs a Sync after pending edits in every Environment", async () => {
   const edit = deferred<StoreResult<ConfigWritten>>();
   test.write.mockImplementationOnce(() => edit.promise).mockResolvedValueOnce({ ok: true, value: { written: "synced" } as never });
   act(() => { void test.edit({ environment: { project: "shop", environment: "staging" }, changes: replicas(3) }).isPersisted.promise.catch(() => {}); });
-  const synced = test.writer.commit({ command: "sync", from: ref, into: null, when: "now", version: "1", picks: null });
+  const synced = test.writer.commit({ command: "sync", from: ref, into: null, version: "1", picks: null });
   await new Promise((resolve) => setTimeout(resolve, 10));
   expect(test.write).toHaveBeenCalledTimes(1);
   edit.resolve(edited(3));
@@ -165,7 +165,7 @@ it("runs a Sync after a pending Batch that edits, as after an edit", async () =>
     void test.writer.commit({ command: "batch", environment: staging, commands: [{ command: "edit", environment: staging, expect: null, changes: replicas(3) }] })
       .isPersisted.promise.catch(() => {});
   });
-  const synced = test.writer.commit({ command: "sync", from: ref, into: null, when: "now", version: "1", picks: null });
+  const synced = test.writer.commit({ command: "sync", from: ref, into: null, version: "1", picks: null });
   await new Promise((resolve) => setTimeout(resolve, 10));
   expect(test.write).toHaveBeenCalledTimes(1);
   batch.resolve({ ok: true, value: { written: "batch", results: [] } as never });

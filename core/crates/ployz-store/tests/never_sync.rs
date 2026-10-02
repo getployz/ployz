@@ -12,7 +12,7 @@ use ployz_store::{
     Actor, BranchQuery, Change, ConfigStore, CreateBranch, CreateProject, CreateService, Edit,
     EnvironmentId, EnvironmentName, EnvironmentQuery, EnvironmentRef, NamedRow, NeverSync,
     OrganizationId, ProjectId, ProjectName, RenameService, ServiceLineageId, ServiceQuery,
-    SettingPath, SyncChanges, SyncQuery, SyncView, When,
+    SettingPath, SyncChanges, SyncQuery, SyncView,
 };
 use serde_json::{Value, json};
 
@@ -156,7 +156,7 @@ fn view(store: &ConfigStore, who: &Actor) -> SyncView {
             &SyncQuery {
                 from: at("fix-web"),
                 into: None,
-                when: ployz_store::When::Now,
+                when: None,
             },
         )
         .unwrap()
@@ -174,7 +174,7 @@ fn between(
             &SyncQuery {
                 from: at(from),
                 into: Some(at(into)),
-                when: ployz_store::When::Now,
+                when: None,
             },
         )
         .unwrap();
@@ -200,8 +200,7 @@ fn sync(view: &SyncView, picks: Option<Vec<ployz_store::RowId>>) -> SyncChanges 
     SyncChanges {
         from: at("fix-web"),
         into: None,
-        when: When::Now,
-        close_after: false,
+        when: None,
         version: view.version.clone(),
         picks,
         skip: Vec::new(),

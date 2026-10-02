@@ -185,7 +185,7 @@ pub(crate) fn command() -> Command {
             )
             .arg(
                 switch("at-merge", None)
-                    .help("From a PR Environment: go live in --to with the pull request's merge")
+                    .help("Go live in --to with the pull request's merge; the default from a PR Environment into a Destination")
                     .conflicts_with("close"),
             )
             .arg(
@@ -527,7 +527,7 @@ fn never_sync(root: &ArgMatches) -> Result<(), Error> {
                 let view = store.read(&ployz_store::SyncQuery {
                     from: environment.clone(),
                     into: None,
-                    when: ployz_store::When::Now,
+                    when: Some(ployz_store::When::Now { close_after: false }),
                 })?;
                 let rows = view.rows.into_iter().map(|row| row.at);
                 rows.chain(view.never_synced.into_iter().map(|row| row.at))

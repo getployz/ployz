@@ -62,10 +62,8 @@ function BranchSync({ params, store, branch, environments }: {
   const standing = merge?.standing ?? null;
   // Its main half syncs into the Parent, or a PR Environment's Destination at the merge.
   const state = syncButtonState(branch, removal, merge);
-  // Into the Destination it syncs at the merge; anywhere else, now.
-  const when = (to: string) => merge && to === merge.into ? "at_merge" : "now";
   // Warm the main half's dialog.
-  useCachedStoreView(params.organizationSlug, syncQuery(store, state.into, when(state.into)));
+  useCachedStoreView(params.organizationSlug, syncQuery(store, state.into));
   // The Store closes a Branch only once its own Branches are gone.
   const children = environments.filter((environment) => environment.parent === name).map((environment) => environment.name);
   const others = storeEnvironmentTree(environments).map(({ environment }) => environment.name)
@@ -78,9 +76,9 @@ function BranchSync({ params, store, branch, environments }: {
   function synced(to: string, changes: number, sync: Synced) {
     setInto(null);
     const action = { label: "Undo", onClick: () => void undo(sync.sync) };
-    if (sync.conditional_sync) {
+    if (sync.when.kind === "at_merge") {
       // Nothing is staged in `to` until the merge: the user stays here, where the button now reads "Goes live".
-      toast.success(goesLive(changes, to, sync.conditional_sync.pull_request), { action });
+      toast.success(goesLive(changes, to, sync.when.conditional_sync.pull_request), { action });
       return;
     }
     void navigate(getDashboardDestination({ kind: "environment", ...params, environmentSlug: to }, "architecture"));
@@ -157,7 +155,7 @@ function BranchSync({ params, store, branch, environments }: {
       </ButtonGroup>
       {into === null ? null : (
         <Suspense fallback={null}>
-          <SyncDialog organizationSlug={params.organizationSlug} from={store} into={into} when={when(into)}
+          <SyncDialog organizationSlug={params.organizationSlug} from={store} into={into}
             // Closing after syncs only a Branch that isn't kept, and only into its Parent; a PR Environment closes
             // with its pull request.
             closable={into === branch.parent && !branch.kept && !me?.default && !shuttable}

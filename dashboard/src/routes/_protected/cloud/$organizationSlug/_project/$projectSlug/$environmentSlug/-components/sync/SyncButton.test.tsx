@@ -48,8 +48,9 @@ const syncView = (extra: Partial<SyncView> = {}): SyncView => ({
 });
 /** What a Sync answers: its id, and the Conditional Sync standing for one at the merge. */
 const synced = (atMerge: number | null) => ({ ok: true, value: {
-  written: "synced", sync: "sync-1", staged: [], closing: false,
-  conditional_sync: atMerge === null ? null : { id: "cs-new", pull_request: atMerge, rows: [], state: "standing" },
+  written: "synced", sync: "sync-1",
+  when: atMerge === null ? { kind: "now", staged: [], closing: false }
+    : { kind: "at_merge", conditional_sync: { id: "cs-new", pull_request: atMerge, rows: [], state: "standing" } },
 } });
 const pr142 = { repository_id: 1, number: 142 };
 /** PR #142's view: fix-api is its PR Environment, production its Destination with 3 changes; `synced`, they stand there. */
@@ -75,7 +76,7 @@ function open({ branch = branchView(), sync = syncView(), pullRequest = null, en
     queryClient.setQueryData([...storeViewPrefix("acme"), "session", "user", query], { ok: true, value });
   seed(branchQuery(fixApi), { view: "branch", ...branch });
   seed(environmentsQuery("shop"), { view: "environments", project: { id: "shop", name: "shop" }, environments });
-  seed(syncQuery(fixApi, "production", sync.at_merge === null ? "now" : "at_merge"), { view: "sync", ...sync });
+  seed(syncQuery(fixApi, "production"), { view: "sync", ...sync });
   if (pullRequest) seed(pullRequestQuery(pr142), { view: "pull_request", ...pullRequest });
   // The Sync view as the Store has it now: a test changes it to what a write leaves.
   const store = { sync };
@@ -201,8 +202,8 @@ it("syncs what's ticked, closes the Branch after, lands on the receiver, and Und
   fireEvent.click(sync.getByRole("button", { name: "Sync 3 changes" }));
   await waitFor(() => expect(app.router.state.location.pathname).toBe("/cloud/acme/shop/production"));
   expect(app.commands()).toEqual([{
-    command: "sync", from: fixApi, into: { project: "shop", environment: "production" }, when: "now", version: "4:abc",
-    close_after: true, picks: ["a:image", "a:env.LOG_LEVEL", "a:env.STRIPE_WEBHOOK_SECRET"], values: {},
+    command: "sync", from: fixApi, into: { project: "shop", environment: "production" }, version: "4:abc",
+    when: { kind: "now", close_after: true }, picks: ["a:image", "a:env.LOG_LEVEL", "a:env.STRIPE_WEBHOOK_SECRET"], values: {},
   }]);
   expect(app.success.mock.calls.at(0)?.[0]).toBe("Synced 3 changes from fix-api");
   // SAFETY: the Sync button's toast action is a label and a click, never a node.
@@ -230,7 +231,7 @@ it("syncs a PR Environment into its Destination at the merge, staying put, and U
   // The value is held for the merge, with the Sync.
   const production = { project: "shop", environment: "production" };
   expect(app.commands()[0]).toMatchObject({
-    command: "sync", from: fixApi, into: production, when: "at_merge", close_after: false,
+    command: "sync", from: fixApi, into: production, when: null,
     values: { "a:env.STRIPE_WEBHOOK_SECRET": "whsec" },
   });
   expect(app.router.state.location.pathname).toBe("/cloud/acme/shop/fix-api");
@@ -264,7 +265,7 @@ it("syncs a PR Environment into another Environment now, from the menu", async (
   // A value set now seals the secret, with the Sync.
   const staging = { project: "shop", environment: "staging" };
   expect(app.commands()).toEqual([{
-    command: "sync", from: fixApi, into: staging, when: "now", version: "4:abc", close_after: false,
+    command: "sync", from: fixApi, into: staging, when: null, version: "4:abc",
     picks: ["a:image", "a:env.LOG_LEVEL", "a:env.APP_ENV", "a:env.STRIPE_WEBHOOK_SECRET"],
     values: { "a:env.STRIPE_WEBHOOK_SECRET": "whsec" },
   }]);

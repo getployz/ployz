@@ -8,7 +8,7 @@ use ployz_core::ServiceName;
 use ployz_store::{
     Branched, ConditionalSyncId, CopyNode, CreateBranch, DeploymentId, DiffQuery, EnvironmentId,
     EnvironmentName, EnvironmentRef, HintSource, KeepBranch, RowId, SetupCommand, SyncChanges,
-    SyncId, SyncQuery, SyncView, Synced, Take, Taken, UndoSync, Undone, When,
+    SyncId, SyncQuery, SyncView, Synced, SyncedWhen, Take, Taken, UndoSync, Undone, When,
 };
 
 use super::super::config::expected;
@@ -76,9 +76,11 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
     if let Some(sync) = matches.get_one::<String>("undo") {
         return undo(root, sync);
     }
-    let when = match matches.get_flag("at-merge") {
-        true => When::AtMerge,
-        false => When::Now,
+    // Omitted, the Store decides: at the merge from a PR Environment into a Destination.
+    let when = match (matches.get_flag("at-merge"), matches.get_flag("close")) {
+        (true, _) => Some(When::AtMerge),
+        (false, true) => Some(When::Now { close_after: true }),
+        (false, false) => None,
     };
     let query = match named("from")? {
         Some(from) => SyncQuery {
@@ -124,7 +126,6 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
         from: query.from,
         into: query.into,
         when,
-        close_after: matches.get_flag("close"),
         version: matches
             .get_one::<String>("version")
             .cloned()
@@ -257,16 +258,20 @@ fn taken_out(matches: &ArgMatches, taken: &Taken) -> Result<(), Error> {
     })
 }
 
-/// `env sync --to [ENV]` or `env sync --from ENV`, as given.
+/// `env sync --to [ENV]` or `env sync --from ENV`, and `--at-merge`, as given.
 fn sync_words(matches: &ArgMatches) -> Vec<&str> {
-    match matches.get_one::<String>("from") {
+    let mut words = match matches.get_one::<String>("from") {
         Some(from) => vec!["env", "sync", "--from", from.as_str()],
         None => {
             let mut words = vec!["env", "sync", "--to"];
             words.extend(matches.get_one::<String>("to").map(String::as_str));
             words
         }
+    };
+    if matches.get_flag("at-merge") {
+        words.push("--at-merge");
     }
+    words
 }
 
 fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<(), Error> {
@@ -332,33 +337,36 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
 /// What a Sync did, and `deploy` of where it landed when it staged something.
 fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
     let into = &synced.into;
-    let next = (!synced.staged.is_empty())
+    let next = matches!(&synced.when, SyncedWhen::Now { staged, .. } if !staged.is_empty())
         .then(|| in_project(matches, &["deploy", "--env", into.name.as_str()]));
     crate::output::finish(&Next::new(synced, next.clone()), || {
         let (from, into) = (&synced.from.name, format!("{}/{}", into.project, into.name));
-        match &synced.conditional_sync {
-            Some(sync) => say!(
-                "Goes live in {into} with PR #{}'s merge: {}.",
-                sync.pull_request,
-                crate::handlers::joined(
-                    &sync
-                        .rows
-                        .iter()
-                        .map(ployz_store::NamedRow::label)
-                        .collect::<Vec<_>>()
-                )
-            ),
-            None => say!("Synced {from} → {into}."),
-        }
-        say!(
-            "Undo it: {}",
-            in_project(matches, &["env", "sync", "--undo", synced.sync.as_str()])
-        );
-        if !synced.staged.is_empty() {
-            say!("Staged: {}", crate::handlers::joined(&synced.staged));
-        }
-        if synced.closing {
-            say!("Closing {}.", synced.from.name);
+        let undo = in_project(matches, &["env", "sync", "--undo", synced.sync.as_str()]);
+        match &synced.when {
+            SyncedWhen::AtMerge { conditional_sync } => {
+                say!(
+                    "Goes live in {into} with PR #{}'s merge: {}.",
+                    conditional_sync.pull_request,
+                    crate::handlers::joined(
+                        &conditional_sync
+                            .rows
+                            .iter()
+                            .map(ployz_store::NamedRow::label)
+                            .collect::<Vec<_>>()
+                    )
+                );
+                say!("Undo it: {undo}");
+            }
+            SyncedWhen::Now { staged, closing } => {
+                say!("Synced {from} → {into}.");
+                say!("Undo it: {undo}");
+                if !staged.is_empty() {
+                    say!("Staged: {}", crate::handlers::joined(staged));
+                }
+                if *closing {
+                    say!("Closing {from}.");
+                }
+            }
         }
         if let Some(next) = &next {
             say!("next: {next}");

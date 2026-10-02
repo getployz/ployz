@@ -425,7 +425,7 @@ fn brought(
                     environment: Some(open.environment.clone()),
                 },
                 into: Some(destination.clone()),
-                when: When::AtMerge,
+                when: Some(When::AtMerge),
             })?;
             rows.extend(
                 view.rows

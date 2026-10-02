@@ -58,10 +58,10 @@ it.live(
       // PR #5 changes a variable and syncs it for its merge; its check is named for Cloud to publish.
       const pr = { project: null, environment: "pr-5" };
       yield* write({ command: "edit", environment: pr, expect: null, changes: [{ op: "set", path: "web.env.MODE", value: "fast" }] });
-      const view = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "sync", from: pr, when: "at_merge" }));
-      const synced = yield* write({ command: "sync", from: pr, when: "at_merge", version: view.version });
+      const view = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "sync", from: pr }));
+      const synced = yield* write({ command: "sync", from: pr, version: view.version });
       expect(synced).toMatchObject({
-        written: "synced", staged: [], conditional_sync: { state: "standing", rows: [{ node: "web", name: "env.MODE" }] },
+        written: "synced", when: { kind: "at_merge", conditional_sync: { state: "standing", rows: [{ node: "web", name: "env.MODE" }] } },
         checks: [{ repository_id: 42, number: 5 }],
       });
 

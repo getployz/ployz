@@ -16,7 +16,7 @@ use ployz_store::{
     Deploy, DeploymentId, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentRef,
     KeepBranch, OrganizationId, ProjectId, ProjectName, RemoveService, RenameService, SecretRow,
     ServiceLineageId, ServiceQuery, SettingPath, SyncChange, SyncChanges, SyncId, SyncQuery,
-    SyncRow, SyncView, Synced, Trusted, UndoSync,
+    SyncRow, SyncView, Synced, SyncedWhen, Trusted, UndoSync, When,
 };
 use serde_json::{Value, json};
 
@@ -159,7 +159,7 @@ fn offered(store: &ConfigStore, who: &Actor, from: &str, into: &str) -> SyncView
             &SyncQuery {
                 from: at(from),
                 into: Some(at(into)),
-                when: ployz_store::When::Now,
+                when: None,
             },
         )
         .unwrap()
@@ -173,7 +173,7 @@ fn view(store: &ConfigStore, who: &Actor) -> SyncView {
             &SyncQuery {
                 from: at("fix-web"),
                 into: None,
-                when: ployz_store::When::Now,
+                when: None,
             },
         )
         .unwrap()
@@ -213,8 +213,7 @@ fn sync(view: &SyncView, picks: Option<&[&str]>) -> SyncChanges {
     SyncChanges {
         from: at(view.from.name.as_str()),
         into: Some(at(view.into.name.as_str())),
-        when: ployz_store::When::Now,
-        close_after: false,
+        when: None,
         version: view.version.clone(),
         picks: picks.map(|picks| {
             picks
@@ -352,15 +351,14 @@ fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_nex
         .write(&who, &sync(&review, Some(&["web.image"])))
         .unwrap();
     assert_eq!(synced.into.name.as_str(), "production");
+    let SyncedWhen::Now { staged, closing } = &synced.when else {
+        panic!("a Sync between Branches stages now")
+    };
     assert_eq!(
-        synced
-            .staged
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
+        staged.iter().map(ToString::to_string).collect::<Vec<_>>(),
         ["web"]
     );
-    assert!(!synced.closing);
+    assert!(!closing);
     // What a Sync brings is the receiver's own change, not one from a deploy.
     let diff = store
         .read(
@@ -611,7 +609,7 @@ fn a_sync_closes_a_branch_that_isnt_kept_when_asked() {
         kept,
     };
     let closing = SyncChanges {
-        close_after: true,
+        when: Some(When::Now { close_after: true }),
         ..sync(&view(&store, &who), None)
     };
     store.write(&who, &keep(true)).unwrap();
@@ -652,7 +650,7 @@ fn a_sync_closes_a_branch_that_isnt_kept_when_asked() {
         ..closing
     };
     let synced = store.write(&who, &closing).unwrap();
-    assert!(synced.closing);
+    assert!(matches!(synced.when, SyncedWhen::Now { closing: true, .. }));
     assert_eq!(
         values(&store, &who, "production", "web")["image"],
         json!("web:2")
@@ -836,7 +834,7 @@ fn a_sync_stays_within_its_project() {
     let across = SyncQuery {
         from: in_project("shop", "fix-web"),
         into: Some(in_project("blog", "production")),
-        when: ployz_store::When::Now,
+        when: None,
     };
     let refused = store.read(&who, &across).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
@@ -863,7 +861,7 @@ fn a_sync_stays_within_its_project() {
             &SyncQuery {
                 from: in_project("shop", "production"),
                 into: None,
-                when: ployz_store::When::Now,
+                when: None,
             },
         )
         .unwrap_err();
@@ -1071,11 +1069,11 @@ fn a_sync_that_closed_its_branch_can_still_be_undone() {
     let (store, who) = shop(false);
     set(&store, &who, "fix-web", &[("web.image", json!("web:2"))]);
     let closing = SyncChanges {
-        close_after: true,
+        when: Some(When::Now { close_after: true }),
         ..sync(&view(&store, &who), None)
     };
     let synced = store.write(&who, &closing).unwrap();
-    assert!(synced.closing);
+    assert!(matches!(synced.when, SyncedWhen::Now { closing: true, .. }));
     assert_eq!(undo(&store, &who, &synced), Ok("production".into()));
     assert_eq!(
         values(&store, &who, "production", "web")["image"],

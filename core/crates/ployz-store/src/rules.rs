@@ -702,7 +702,7 @@ pub(crate) mod tests {
         let query = crate::SyncQuery {
             from: feature.clone(),
             into: None,
-            when: crate::When::Now,
+            when: None,
         };
         let view = store.read(&who, &query).unwrap();
         let sync = |labels: &[&str]| {
@@ -711,8 +711,7 @@ pub(crate) mod tests {
                 &crate::SyncChanges {
                     from: feature.clone(),
                     into: None,
-                    when: crate::When::Now,
-                    close_after: false,
+                    when: None,
                     version: view.version.clone(),
                     picks: Some(
                         labels

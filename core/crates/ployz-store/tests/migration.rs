@@ -51,7 +51,7 @@ fn comparisons(store: &ConfigStore, who: &Actor) -> (SyncView, BranchView) {
                 &SyncQuery {
                     from: at("fix-web"),
                     into: None,
-                    when: ployz_store::When::Now,
+                    when: None,
                 },
             )
             .unwrap(),
@@ -164,8 +164,7 @@ fn a_branch_compares_with_its_parent_as_before_the_sync_migration() {
                 &SyncChanges {
                     from: at("fix-web"),
                     into: None,
-                    when: When::Now,
-                    close_after: false,
+                    when: None,
                     version: view.version.clone(),
                     picks: Some(vec![image.at.row.clone()]),
                     skip: Vec::new(),

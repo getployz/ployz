@@ -23,7 +23,7 @@ pub use setup::SetBranchSetup;
 pub(crate) use setup::{branch_setup, set_branch_setup};
 pub use sync::{
     NeverSyncedRow, SecretRow, SyncChange, SyncChanges, SyncQuery, SyncRow, SyncView, Synced,
-    UndoSync, Undone,
+    SyncedWhen, UndoSync, Undone,
 };
 pub(crate) use sync::{picks, sealed, sync, sync_view, take, undo};
 
@@ -133,13 +133,21 @@ pub enum HintSource {
     Parent(EnvironmentName),
 }
 
-/// When a Sync's changes land.
+/// When a Sync's changes land. Omitted: at the merge from a PR Environment into one
+/// of its Destinations, else now.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum When {
     /// Staged in the receiver now.
-    Now,
-    /// With the pull request's merge: a Conditional Sync.
+    Now {
+        /// Close the Branch once its changes landed in its Parent: refused for a
+        /// kept Branch, and for a Sync into anything but its Parent.
+        #[serde(default)]
+        #[ts(as = "Option<bool>", optional)]
+        close_after: bool,
+    },
+    /// With the pull request's merge: a Conditional Sync, replacing the one
+    /// standing there.
     AtMerge,
 }
 

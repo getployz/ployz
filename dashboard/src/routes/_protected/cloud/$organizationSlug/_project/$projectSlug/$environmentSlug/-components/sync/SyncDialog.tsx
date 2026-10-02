@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { EnvironmentRef, NeverSyncedRow, RowId, SyncRow, Synced, When } from "@ployz/sdk";
+import type { EnvironmentRef, NeverSyncedRow, RowId, SyncRow, Synced } from "@ployz/sdk";
 import { ArrowRightIcon, ChevronDownIcon, HardDriveIcon, PackageIcon, PinIcon, PinOffIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
@@ -22,10 +22,8 @@ import { StoreRefused } from "#/modules/config-store/store.contract";
  * live there when the pull request merges. A secret `into` lacks arrives by name only: its row takes `into`'s own
  * value, set now or held for the merge. Monochrome: pink stays for staged intent and Deploy.
  */
-export function SyncDialog({ organizationSlug, from, into, when, closable, onClose, onSynced }: {
+export function SyncDialog({ organizationSlug, from, into, closable, onClose, onSynced }: {
   organizationSlug: string; from: EnvironmentRef; into: string;
-  /** Stage the changes now, or have them go live with `from`'s pull request's merge. */
-  when: When;
   /** Offer to close `from` once synced: a Branch that isn't kept, into its Parent. */
   closable: boolean;
   onClose: () => void;
@@ -33,7 +31,7 @@ export function SyncDialog({ organizationSlug, from, into, when, closable, onClo
   onSynced: (changes: number, synced: Synced) => void;
 }) {
   const writer = useStoreWriter(organizationSlug);
-  const view = useStoreView(organizationSlug, syncQuery(from, into, when));
+  const view = useStoreView(organizationSlug, syncQuery(from, into));
   // Rows the user flipped from their default: they survive a refetch.
   const [flipped, setFlipped] = useState<ReadonlySet<RowId>>(new Set());
   // `into`'s values typed for secrets it lacks: sent with the Sync, never shown back.
@@ -71,9 +69,10 @@ export function SyncDialog({ organizationSlug, from, into, when, closable, onClo
     let written;
     try {
       // Awaited: the page opens the receiver once it holds the changes, and a stale review stays open, refetched.
+      // The Store decides when it lands, as the review read it; only closing after says now.
       written = await writer.commit({
-        command: "sync", from, into: { project: from.project, environment: into }, when, picks: [...pickedRows],
-        values: typed, version: view.value.version, close_after: closing && closeAfter,
+        command: "sync", from, into: { project: from.project, environment: into }, picks: [...pickedRows],
+        values: typed, version: view.value.version, when: closing && closeAfter ? { kind: "now", close_after: true } : null,
       }, ["conflict"]).isPersisted.promise;
     } catch (error) {
       // Any other refusal is the writer's toast.

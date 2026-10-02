@@ -43,7 +43,7 @@ pub use automation::{
 pub use branch::{
     BranchPlanQuery, BranchPlanView, BranchQuery, BranchView, Branched, CopyNode, CreateBranch,
     KeepBranch, LiveNode, PlannedNode, PlannedRole, SetBranchSetup, SetupCommand, SyncChanges,
-    SyncQuery, SyncRow, SyncView, Synced, Take, Taken, UndoSync, Undone, When,
+    SyncQuery, SyncRow, SyncView, Synced, SyncedWhen, Take, Taken, UndoSync, Undone, When,
 };
 pub use branch::{
     FollowHint, HintSource, IncomingChange, NamedRow, NeverSync, NeverSynced, NeverSyncedRow,
