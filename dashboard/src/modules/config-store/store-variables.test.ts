@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import type { EnvironmentView } from "@ployz/sdk";
 import { serviceSettingRows } from "./store-services";
-import { serviceVariables } from "./store-variables";
+import { serviceNeverSynced, serviceVariables } from "./store-variables";
 import { withPendingChanges } from "./store-view.queries";
 
 const view: EnvironmentView = {
@@ -42,4 +42,13 @@ it("shows pending variable writes at once, and a new secret only as sealed", () 
   ]);
   expect(JSON.stringify(shown)).not.toMatch(/hunter2|s3cret|ghp_rotated/u);
   expect(shown.settings.find((row) => row.path === "web.registryCredential")?.value).toEqual({ secret: true });
+});
+
+it("marks the variables their Environment never syncs, and only this Service's", () => {
+  const marked = { ...view, never_synced: ["web.env.LOG_LEVEL", "api.env.API_KEY", "web.startCommand"] };
+  expect(serviceVariables(serviceSettingRows(marked, "web"), "web-id", new Map(), serviceNeverSynced(marked, "web"))
+    .map(({ key, neverSynced }) => ({ key, neverSynced }))).toEqual([
+    { key: "API_KEY", neverSynced: false },
+    { key: "LOG_LEVEL", neverSynced: true },
+  ]);
 });

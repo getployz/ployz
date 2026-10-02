@@ -24,6 +24,8 @@ pub(crate) struct Moving {
     provided: Vec<String>,
     pub(crate) hostnames: BranchHostnames,
     way: Way,
+    /// What either side marked Never sync, as it applies to this move.
+    pub(super) never_synced: Vec<Mark>,
 }
 
 /// Which way a move goes, with what only that way needs.
@@ -71,6 +73,7 @@ impl Moving {
                 into: suffix(tx, branch)?,
             },
             way: Way::Sync,
+            never_synced: marks(tx, &parent.summary.id, &branch.summary.id)?,
         })
     }
 
@@ -94,6 +97,7 @@ impl Moving {
                 into: suffix(tx, into)?,
             },
             way: Way::Sync,
+            never_synced: marks(tx, &from.summary.id, &into.summary.id)?,
         })
     }
 
@@ -116,6 +120,8 @@ impl Moving {
             .volumes
             .retain(|volume| !copied.contains(&volume.resource_lineage_id));
         moving.provided.retain(|lineage| !copied.contains(lineage));
+        // A copy is whole, even from an Environment further up than the Parent.
+        moving.never_synced.clear();
         Ok(moving)
     }
 
@@ -146,6 +152,7 @@ impl Moving {
                 parent: deployed.then_some(parent),
                 from_kept: row.kept,
             },
+            never_synced: marks(tx, &from.summary.id, &into.summary.id)?,
         })
     }
 
@@ -170,6 +177,7 @@ impl Moving {
                 parent: parent.cloned(),
                 from_kept: false,
             },
+            never_synced: Vec::new(),
         }
     }
 
@@ -190,6 +198,11 @@ impl Moving {
             Way::Sync => (None, false),
             Way::Save { parent, from_kept } => (parent.as_ref(), *from_kept),
         };
+        let never_synced: Vec<String> = self
+            .never_synced
+            .iter()
+            .map(|mark| mark.key.clone())
+            .collect();
         compare(Comparing {
             base: Some(&self.base),
             from: &self.from,
@@ -198,6 +211,7 @@ impl Moving {
             provided: &self.provided,
             hostnames: &self.hostnames,
             from_kept,
+            never_synced: &never_synced,
             picks,
         })
     }
@@ -485,6 +499,7 @@ fn within(
             into: String::new(),
         },
         from_kept: false,
+        never_synced: &[],
         picks,
     })
 }
@@ -621,6 +636,7 @@ pub(super) fn creating(
         provided: live,
         hostnames,
         from_kept: false,
+        never_synced: &[],
         picks: Some(picks),
     })
 }
@@ -648,6 +664,7 @@ struct Comparing<'a> {
     provided: &'a [String],
     hostnames: &'a BranchHostnames,
     from_kept: bool,
+    never_synced: &'a [String],
     picks: Option<Vec<BranchPick>>,
 }
 
@@ -663,6 +680,7 @@ fn compare(sides: Comparing<'_>) -> Result<BranchChanges, RpcError> {
         provided: sides.provided.to_vec(),
         hostnames: sides.hostnames.clone(),
         from_kept: sides.from_kept,
+        never_synced: sides.never_synced.to_vec(),
         picks: sides.picks,
     })
     .map_err(config)

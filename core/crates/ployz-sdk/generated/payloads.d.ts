@@ -122,6 +122,12 @@ parent?: SavedEnvironmentIntent,
  */
 provided: Array<string>, hostnames: BranchHostnames, fromKept: boolean,
 /**
+ * Row keys marked Never sync, each covering the rows under it too
+ * (`<lineage>:healthcheck` covers `<lineage>:healthcheck.path`): what would move
+ * is shown as meant to differ instead.
+ */
+neverSynced?: Array<string>,
+/**
  * Absent compares only; present moves the picked rows.
  */
 picks?: Array<BranchPick>, };
@@ -214,7 +220,7 @@ export type BranchQuery = {
  */
 environment: EnvironmentRef, };
 
-export type BranchReason = "live" | "left_out" | "sizing" | "custom_domain" | "generated_address" | "git_branch" | "data";
+export type BranchReason = "live" | "left_out" | "sizing" | "custom_domain" | "generated_address" | "git_branch" | "data" | "never_synced";
 
 export type BranchRow = {
 /**
@@ -450,14 +456,14 @@ rows: Array<string>, state: SaveState, };
 
 export type ConditionalSaveId = string;
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "rename_project" } & RenameProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "set_volume_storage" } & SetVolumeStorage | { "command": "set_volume_shared_writes" } & SetVolumeSharedWrites | { "command": "remove_volume" } & RemoveVolume | { "command": "rename_volume" } & RenameVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "set_generated_domain" } & SetGeneratedDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "move" } & Move | { "command": "sync" } & SyncChanges | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "set_branch_setup" } & SetBranchSetup | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "set_pr_plan" } & SetPrPlan | { "command": "batch" } & Batch;
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "rename_project" } & RenameProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "set_volume_storage" } & SetVolumeStorage | { "command": "set_volume_shared_writes" } & SetVolumeSharedWrites | { "command": "remove_volume" } & RemoveVolume | { "command": "rename_volume" } & RenameVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "set_generated_domain" } & SetGeneratedDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "move" } & Move | { "command": "sync" } & SyncChanges | { "command": "copy_node" } & CopyNode | { "command": "never_sync" } & NeverSync | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "set_branch_setup" } & SetBranchSetup | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "set_pr_plan" } & SetPrPlan | { "command": "batch" } & Batch;
 
 export type ConfigCommitted = {
 /**
  * The open PR Environments' pull requests in the Project of the Environment it
  * wrote; none when it wrote none.
  */
-checks: Array<PullRequestRef>, } & ({ "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "moved" } & Moved | { "written": "synced" } & Synced | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "environment_removed" } & Teardown<EnvironmentRemoved> | { "written": "project_removed" } & Teardown<ProjectRemoved> | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched);
+checks: Array<PullRequestRef>, } & ({ "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "moved" } & Moved | { "written": "synced" } & Synced | { "written": "never_synced" } & NeverSynced | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "environment_removed" } & Teardown<EnvironmentRemoved> | { "written": "project_removed" } & Teardown<ProjectRemoved> | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched);
 
 export type ConfigDomainEvidence = {
 /**
@@ -519,7 +525,7 @@ servers?: number, };
 
 export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "numbered_deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "namespaces" } & NamespacesView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "branch" } & BranchView | { "view": "branch_plan" } & BranchPlanView | { "view": "build_order" } & BuildOrderView | { "view": "sync" } & SyncView | { "view": "move" } & MoveView | { "view": "environments" } & EnvironmentsView | { "view": "projects" } & ProjectsView | { "view": "pr_plans" } & PrPlansView | { "view": "pull_request" } & PullRequestView;
 
-export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "moved" } & Moved | { "written": "synced" } & Synced | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "environment_removed" } & Teardown<EnvironmentRemoved> | { "written": "project_removed" } & Teardown<ProjectRemoved> | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched;
+export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "moved" } & Moved | { "written": "synced" } & Synced | { "written": "never_synced" } & NeverSynced | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "environment_removed" } & Teardown<EnvironmentRemoved> | { "written": "project_removed" } & Teardown<ProjectRemoved> | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched;
 
 export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null, };
 
@@ -1336,7 +1342,11 @@ settings: Array<SettingRow>,
  * For one Service: its Settings as one object, the shape `set --patch` takes.
  * Settings without a value are left out.
  */
-values?: { [key in string]: JsonValue } | null, };
+values?: { [key in string]: JsonValue } | null,
+/**
+ * Every setting the Environment marks Never sync, whichever Settings were asked for.
+ */
+never_synced?: Array<SettingPath>, };
 
 export type EnvironmentsQuery = {
 /**
@@ -1869,6 +1879,49 @@ services: { [key in ServiceName]: ServiceName }, };
 export type NamespacesQuery = Record<symbol, never>;
 
 export type NamespacesView = { namespaces: Array<OwnedNamespace>, };
+
+export type NeverSync = {
+/**
+ * The Environment.
+ */
+environment: EnvironmentRef,
+/**
+ * Its settings: `SERVICE.SETTING`, `SERVICE.env.KEY`, `SERVICE.mounts.VOLUME`,
+ * or `volumes.VOLUME.name` / `volumes.VOLUME.storage`.
+ */
+paths: Array<SettingPath>,
+/**
+ * Sync them again.
+ */
+off?: boolean, };
+
+export type NeverSynced = {
+/**
+ * The Environment.
+ */
+environment: EnvironmentSummary,
+/**
+ * Every setting it marks Never sync.
+ */
+never_synced: Array<SettingPath>, };
+
+export type NeverSyncedRow = {
+/**
+ * As [`SyncRow::key`].
+ */
+key: string,
+/**
+ * As [`SyncRow::node`].
+ */
+node: NodeName,
+/**
+ * As [`SyncRow::label`].
+ */
+label: string,
+/**
+ * Where it is marked Never sync: unmark it there to sync it.
+ */
+marked_in: Array<EnvironmentName>, };
 
 export type NodeChange = {
 /**
@@ -3096,7 +3149,11 @@ version: string,
  * Each change a Sync can carry. Settings each Environment keeps as its own
  * (sizing, domains, generated addresses, the Git branch, Volume data) never are.
  */
-rows: Array<SyncRow>, };
+rows: Array<SyncRow>,
+/**
+ * The changes it would carry but that either side marked Never sync.
+ */
+never_synced: Array<NeverSyncedRow>, };
 
 export type Synced = {
 /**

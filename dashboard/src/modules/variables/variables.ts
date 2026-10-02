@@ -8,6 +8,8 @@ export type VariableRecord = {
   unresolvedReferences?: readonly string[];
   /** The next Deploy changes it: the pink trail. */
   changed?: boolean;
+  /** Its Environment marks it Never sync: Sync never carries it in or out. */
+  neverSynced?: boolean;
   id: string;
   serviceId: string;
   key: string;

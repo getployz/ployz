@@ -54,6 +54,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "env default",
             "env keep",
             "env ls",
+            "env never-sync",
             "env new",
             "env pr",
             "env rm",

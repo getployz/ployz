@@ -199,6 +199,13 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
                 store::shown(&row.from)
             );
         }
+        for row in &view.never_synced {
+            say!(
+                "  {}: never synced (marked in {})",
+                row.label,
+                crate::handlers::joined(&row.marked_in)
+            );
+        }
     })
 }
 

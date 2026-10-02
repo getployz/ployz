@@ -213,6 +213,9 @@ commands! {
     Sync(crate::SyncChanges) -> Synced(crate::Synced) => crate::branch::sync(tx, who, c);
     /// Turn a Branch's Live Node into an Own Copy.
     CopyNode(crate::CopyNode) -> Branch(crate::Branched) => crate::branch::copy_node(tx, who, c);
+    /// Mark settings of an Environment Never sync, or sync them again.
+    NeverSync(crate::NeverSync) -> NeverSynced(crate::NeverSynced)
+        => crate::branch::never_sync(tx, who, c);
     /// Keep a Branch, or stop keeping it.
     KeepBranch(crate::KeepBranch) -> Branch(crate::Branched)
         => crate::branch::keep_branch(tx, who, c);
@@ -343,6 +346,7 @@ impl Written {
             Self::Domain(staged) => Some(&staged.environment.id),
             Self::Moved(moved) => Some(&moved.into.id),
             Self::Synced(synced) => Some(&synced.into.id),
+            Self::NeverSynced(marked) => Some(&marked.environment.id),
             Self::Batch(batched) => batched.results.last().and_then(Self::environment),
             // A new Project or Branch has no pull request yet; the rest write no
             // Environment's config, or delete it.
@@ -410,6 +414,8 @@ pub enum Written {
     Moved(Box<crate::Moved>),
     /// Changes synced into another Environment.
     Synced(crate::Synced),
+    /// An Environment's settings marked Never sync changed.
+    NeverSynced(crate::NeverSynced),
     /// The Default Environment changed: the Project's Environments after it.
     DefaultEnvironment(crate::EnvironmentsView),
     /// A Branch setup changed: the Project's Environments after it.

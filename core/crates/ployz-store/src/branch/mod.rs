@@ -8,17 +8,20 @@
 mod create;
 mod live;
 mod moving;
+mod never_sync;
 mod pair;
 mod setup;
 mod sync;
 pub(crate) use create::*;
 pub(crate) use live::*;
 pub(crate) use moving::*;
+pub(crate) use never_sync::{Mark, marks, never_sync, never_synced};
+pub use never_sync::{NeverSync, NeverSynced};
 pub(crate) use pair::*;
 pub use setup::SetBranchSetup;
 pub(crate) use setup::{branch_setup, set_branch_setup};
 use sync::ticked;
-pub use sync::{SyncChanges, SyncQuery, SyncRow, SyncView, Synced};
+pub use sync::{NeverSyncedRow, SyncChanges, SyncQuery, SyncRow, SyncView, Synced};
 pub(crate) use sync::{sync, sync_view};
 
 use std::collections::{BTreeMap, BTreeSet};

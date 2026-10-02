@@ -857,6 +857,74 @@ fn a_sync_introduces_a_new_branch_service_into_the_parent() {
 }
 
 #[test]
+fn never_synced_rows_differ_and_never_land() {
+    let mut from = branch();
+    let api = svc(&mut from, API);
+    api["config"]["startCommand"] = json!("from-start");
+    api["config"]["healthcheck"] = json!({"type": "http", "path": "/up", "timeoutSeconds": 30});
+    var(&mut from, API, "PLAIN")["value"] = literal("b");
+    var(&mut from, API, "PLAIN")["valueFingerprint"] = json!("fp-plain-b");
+    let mut jobs = service(
+        0xc000_0000,
+        50,
+        JOBS,
+        "jobs",
+        json!({"version": 1, "type": "image", "image": "jobs:1", "credentials": {"type": "none"}}),
+    );
+    jobs["variables"] = json!([
+        variable(0xc000_0000, 51, "MODE", literal("test"), "fp-mode"),
+        variable(0xc000_0000, 52, "LEVEL", literal("debug"), "fp-level"),
+    ]);
+    from["services"].as_array_mut().unwrap().push(jobs);
+    // A mark covers the rows under it: `healthcheck` covers its path and timeout.
+    let marked = json!([
+        format!("{API}:variables.PLAIN"),
+        format!("{API}:healthcheck"),
+        format!("{JOBS}:variables.MODE"),
+    ]);
+    let compared = changes(
+        Some(&parent()),
+        &from,
+        &parent(),
+        &json!({"neverSynced": marked}),
+    );
+    let rows = summary(&compared);
+    for expected in [
+        format!("{API}:startCommand move conflict=false default=-"),
+        format!("{API}:variables.PLAIN differ never_synced"),
+        format!("{API}:healthcheck.path differ never_synced"),
+        format!("{API}:healthcheck.timeoutSeconds differ never_synced"),
+        format!("{JOBS}:node move conflict=false default=-"),
+        format!("{JOBS}:variables.MODE differ never_synced"),
+        format!("{JOBS}:variables.LEVEL move conflict=false default=from"),
+    ] {
+        assert!(
+            rows.contains(&expected),
+            "{expected} missing from {rows:#?}"
+        );
+    }
+
+    // A marked row is never picked, and a node it arrives with lands without it.
+    let picked = |picks: Value| {
+        run(request(
+            Some(&parent()),
+            &from,
+            &parent(),
+            &json!({"neverSynced": marked, "picks": picks}),
+        ))
+    };
+    let error = picked(json!([
+        {"key": format!("{API}:variables.PLAIN"), "choice": {"option": "from"}}
+    ]))
+    .unwrap_err();
+    assert_eq!(error.path, "picks.key");
+    let result = picked(json!([{"key": format!("{JOBS}:node")}])).unwrap();
+    let jobs = find(&result["next"]["services"], "lineageId", JOBS);
+    assert_eq!(jobs["variables"].as_array().unwrap().len(), 1);
+    assert_eq!(jobs["variables"][0]["key"], "LEVEL");
+}
+
+#[test]
 fn a_sync_into_a_branch_introduces_parent_services_with_its_naming() {
     let mut from = parent();
     let mut mail = service(

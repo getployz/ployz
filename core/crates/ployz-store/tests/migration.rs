@@ -86,6 +86,7 @@ const BEFORE_SYNC: &str = "
     ALTER TABLE config_environment_branch RENAME COLUMN made_with TO base;
     DROP TABLE config_sync_pending;
     DROP TABLE config_sync_base;
+    DROP TABLE config_never_sync;
     DELETE FROM config_migration WHERE name = '0002_sync';
 ";
 

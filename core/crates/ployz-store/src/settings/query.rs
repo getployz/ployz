@@ -44,6 +44,10 @@ pub struct EnvironmentView {
     /// Settings without a value are left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub values: Option<Map<String, Value>>,
+    /// Every setting the Environment marks Never sync, whichever Settings were asked for.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<SettingPath>>", optional)]
+    pub never_synced: Vec<SettingPath>,
 }
 
 /// One Setting's current Working State value.
@@ -146,6 +150,7 @@ pub(crate) fn environment(
         }
     }
     Ok(EnvironmentView {
+        never_synced: crate::branch::never_synced(tx, &environment)?,
         environment: environment.summary,
         settings,
         values,
