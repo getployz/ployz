@@ -2,7 +2,7 @@ import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useMut
 import type {
   BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, Change, ConfigQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
   DeploymentsView, DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, EnvironmentView, MoveQuery, NamespaceQuery,
-  ProjectsQuery, RemovalsQuery, ServicesQuery, VolumesQuery,
+  ProjectsQuery, RemovalsQuery, ServicesQuery, SyncQuery, VolumesQuery,
 } from "@ployz/sdk";
 import { Schema } from "effect";
 import type { CollectionScope } from "#/collections/scope";
@@ -108,8 +108,10 @@ export function environmentKey(ref: EnvironmentRef) {
   return `${ref.project ?? ""}/${ref.environment ?? ""}`;
 }
 
+/** Whether a cached view reads the Environment: its own views, and a Sync's from either side. */
 function isOfEnvironment(query: Query, key: string) {
   const config = queryOf(query);
+  if (config?.query === "sync") return [config.from, config.into].some((side) => side && environmentKey(side) === key);
   return config !== null && "environment" in config && environmentKey(config.environment) === key;
 }
 
@@ -240,7 +242,7 @@ export function buildLogQuery(deployment: string, service: string): { query: "bu
   return { query: "build_log", deployment, service };
 }
 
-/** A Branch: its Parent, what it uses live and what Update would stage. Anything else is refused: not a Branch. */
+/** A Branch: its Parent, what it uses live, how much it has to sync and when it closes. Anything else is refused: not a Branch. */
 export function branchQuery(environment: EnvironmentRef): { query: "branch" } & BranchQuery {
   return { query: "branch", environment };
 }
@@ -248,6 +250,11 @@ export function branchQuery(environment: EnvironmentRef): { query: "branch" } & 
 /** What Save would put in a Branch's Parent. */
 export function saveQuery(branch: EnvironmentRef): { query: "move" } & MoveQuery {
   return { query: "move", move: "save", from: branch };
+}
+
+/** What a Sync from `from` into `into` (by name; null, its Parent) would stage: the Sync dialog's rows. */
+export function syncQuery(from: EnvironmentRef, into: string | null = null): { query: "sync" } & SyncQuery {
+  return { query: "sync", from, into: into === null ? null : { project: from.project, environment: into } };
 }
 
 /** What Update would bring into a Branch from what its Parent runs. */

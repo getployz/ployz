@@ -805,13 +805,35 @@ fn settle(
     Ok(())
 }
 
+/// What the idle rule reads of each Branch: `environment_id`, kept, closing, its
+/// latest admission (-1 for none), its Branches and whether it is a Default.
+const IDLE_FACTS: &str = "SELECT b.environment_id, b.kept, b.closing, \
+     (SELECT COALESCE(MAX(d.admitted), -1) FROM config_deployment d WHERE d.environment_id = b.environment_id), \
+     (SELECT COUNT(*) FROM config_environment_branch c WHERE c.parent_id = b.environment_id), \
+     (SELECT COUNT(*) FROM config_project p WHERE p.default_environment_id = b.environment_id) \
+     FROM config_environment_branch b";
+
+/// When the sweep closes a Branch for sitting idle, from an [`IDLE_FACTS`] row: a
+/// week after its latest Deployment. Never when it is kept, closing already, never
+/// deployed, a Parent or the Default Environment.
+fn idle_close(row: &crate::storage::Row) -> Result<Option<i64>, RpcError> {
+    let (kept, closing, admitted) = (row.int(1)?, row.int(2)?, row.int(3)?);
+    let held = kept != 0 || closing != 0 || admitted < 0 || row.int(4)? != 0 || row.int(5)? != 0;
+    Ok((!held).then_some(admitted + IDLE))
+}
+
+/// When a Branch closes for sitting idle, in seconds since the Unix epoch.
+pub(crate) fn closes_at(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<i64>, RpcError> {
+    let rows = tx.query(
+        &format!("{IDLE_FACTS} WHERE b.environment_id = ?1"),
+        &[id.as_str().into()],
+    )?;
+    rows.first().map_or(Ok(None), idle_close)
+}
+
 pub(crate) fn sweep(tx: &mut dyn Tx, who: &Actor, sweep: &Sweep) -> Result<Automated, RpcError> {
     let rows = tx.query(
-        "SELECT b.environment_id, b.kept, b.closing, \
-         (SELECT COALESCE(MAX(d.admitted), -1) FROM config_deployment d WHERE d.environment_id = b.environment_id), \
-         (SELECT COUNT(*) FROM config_environment_branch c WHERE c.parent_id = b.environment_id), \
-         (SELECT COUNT(*) FROM config_project p WHERE p.default_environment_id = b.environment_id) \
-         FROM config_environment_branch b WHERE b.organization_id = ?1 ORDER BY b.environment_id",
+        &format!("{IDLE_FACTS} WHERE b.organization_id = ?1 ORDER BY b.environment_id"),
         &[who.organization.as_str().into()],
     )?;
     let mut automated = Automated::default();
@@ -821,14 +843,7 @@ pub(crate) fn sweep(tx: &mut dyn Tx, who: &Actor, sweep: &Sweep) -> Result<Autom
             settle(tx, who, &id, &mut automated)?;
             continue;
         }
-        // Idle: not kept, deployed at least once, a week ago; never the Default
-        // Environment or a Parent.
-        let idle = row.int(1)? == 0
-            && row.int(3)? >= 0
-            && sweep.now - row.int(3)? >= IDLE
-            && row.int(4)? == 0
-            && row.int(5)? == 0;
-        if idle {
+        if idle_close(&row)?.is_some_and(|at| sweep.now >= at) {
             close(tx, who, &id, &mut automated)?;
         }
     }

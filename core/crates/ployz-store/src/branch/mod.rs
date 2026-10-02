@@ -457,6 +457,11 @@ pub struct BranchView {
     /// How many changes a Sync into its Parent carries: the Sync view's rows
     /// ticked by default.
     pub to_parent: usize,
+    /// When it closes for sitting idle, in seconds since the Unix epoch: a week
+    /// after its latest Deployment. None while kept, never deployed, a Parent or
+    /// closing already.
+    #[ts(type = "number | null")]
+    pub closes_at: Option<i64>,
     /// The pull request it is the PR Environment of; its Save waits for the merge.
     pub pull_request: Option<crate::PullRequestRef>,
 }

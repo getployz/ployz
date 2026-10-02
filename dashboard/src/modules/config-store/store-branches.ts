@@ -16,8 +16,8 @@ export const isNodeRow = (row: string) => row.split(".").length === nodeParts(ro
 /** A node as the user names it: `data`, not `volumes.data`. */
 export const nodeName = (node: string) => node.startsWith("volumes.") ? node.slice("volumes.".length) : node;
 
-/** A value as a sheet shows it: a secret is hidden, a node row names only the node. */
-function moveText(value: JsonValue): string {
+/** A value as a sheet or the Sync dialog shows it: a secret is hidden. */
+export function moveText(value: JsonValue): string {
   if (value === null) return "";
   if (Array.isArray(value)) return value.map(moveText).join(", ");
   const record = asRecord(value);
