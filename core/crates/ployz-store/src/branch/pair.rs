@@ -226,31 +226,22 @@ impl Move {
         let carried = Carried::of(tx, &self.source, &self.from)?;
         let staged = land(tx, who, into, (&self.from, &carried), applied.next, picks)?;
         let how = match self.way {
-            Way::Follow => "follow",
-            Way::Sync | Way::Copy => "sync",
+            Way::Follow => How::Follow,
+            Way::Sync | Way::Copy => How::Sync,
         };
-        for landed in &applied.landed {
-            tx.execute(
-                "INSERT INTO config_sync_arrival (environment_id, other_id, lineage, at, \
-                 organization_id, how, state, value, prior, was, sync_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?8, ?9, ?10) \
-                 ON CONFLICT (environment_id, other_id, lineage, at) DO UPDATE SET \
-                 how = excluded.how, value = excluded.value, was = excluded.was, \
-                 sync_id = excluded.sync_id, prior = CASE WHEN config_sync_arrival.state = 'pending' \
-                 THEN config_sync_arrival.prior ELSE excluded.prior END, state = 'pending'",
-                &[
-                    into.summary.id.as_str().into(),
-                    self.other.as_str().into(),
-                    landed.row.lineage().into(),
-                    landed.row.at().as_str().into(),
-                    who.organization.as_str().into(),
-                    how.into(),
-                    json_of(&landed.value).as_str().into(),
-                    json_of(&landed.prior).as_str().into(),
-                    json_of(&landed.was).as_str().into(),
-                    sync.map(SyncId::as_str).into(),
-                ],
-            )?;
+        for landed in applied.landed {
+            let arrived = Arrived {
+                other: self.other.clone(),
+                row: landed.row,
+                how,
+                value: landed.value,
+                arrival: Arrival::Pending {
+                    prior: landed.prior,
+                    was: landed.was,
+                    sync: sync.cloned(),
+                },
+            };
+            arrive(tx, who, &into.summary.id, &arrived)?;
         }
         share(tx, (&into.summary.id, &self.other), &applied.base)?;
         Ok(staged)
@@ -485,42 +476,35 @@ pub(crate) fn rewind(
     receiver: &EnvironmentId,
     (before, after): (&SavedEnvironmentIntent, &SavedEnvironmentIntent),
 ) -> Result<(), RpcError> {
-    let pending = tx.query(
-        "SELECT other_id, lineage, at, how, prior FROM config_sync_arrival \
-         WHERE environment_id = ?1 AND state = 'pending'",
-        &[receiver.as_str().into()],
-    )?;
     let mut undone = Vec::new();
-    for arrival in &pending {
-        let (lineage, at) = (arrival.text(1)?, arrival.text(2)?);
-        let row = row_id(lineage, at)?;
+    for arrived in arrived(tx, receiver, "state = 'pending'", None)? {
+        let Arrival::Pending { prior, .. } = arrived.arrival else {
+            continue;
+        };
+        let row = arrived.row;
         if cell_at(before, &row, "") == cell_at(after, &row, "") {
             continue;
         }
-        let other = arrival.parse::<EnvironmentId>(0, "Sync")?;
+        let at = row.at();
         let key = [
             receiver.as_str().into(),
-            other.as_str().into(),
-            lineage.into(),
-            at.into(),
+            arrived.other.as_str().into(),
+            row.lineage().into(),
+            at.as_str().into(),
         ];
-        match arrival.text(3)? {
-            "follow" => tx.execute(
+        match arrived.how {
+            How::Follow => tx.execute(
                 "UPDATE config_sync_arrival SET state = 'hint', prior = NULL, was = NULL \
                  WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4",
                 &key,
             )?,
-            _ => tx.execute(
+            How::Sync => tx.execute(
                 "DELETE FROM config_sync_arrival \
                  WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4",
                 &key,
             )?,
         };
-        let prior = arrival
-            .optional_text(4)?
-            .ok_or_else(|| error::corrupt("Sync"))?;
-        let prior = serde_json::from_str(prior).map_err(|_| error::corrupt("Sync"))?;
-        undone.push((other, row, prior));
+        undone.push((arrived.other, row, prior));
     }
     rewind_bases(tx, receiver, undone)
 }
@@ -534,20 +518,15 @@ pub(crate) fn deployed(
     saved: &SavedEnvironmentIntent,
     lineages: &BTreeSet<String>,
 ) -> Result<(), RpcError> {
-    let pending = tx.query(
-        "SELECT other_id, lineage, at, value FROM config_sync_arrival \
-         WHERE environment_id = ?1 AND state = 'pending'",
-        &[receiver.as_str().into()],
-    )?;
+    let pending = arrived(tx, receiver, "state = 'pending'", None)?;
     if pending.is_empty() {
         return Ok(());
     }
     let environment = scope::load_by_id(tx, receiver)?;
     let suffix = suffix(tx, &environment)?;
-    for arrival in &pending {
-        let (lineage, at) = (arrival.text(1)?, arrival.text(2)?);
-        let value: Cell = arrival.json(3, "Sync")?;
-        if !lineages.contains(lineage) || cell_at(saved, &row_id(lineage, at)?, &suffix) != value {
+    for arrived in &pending {
+        let row = &arrived.row;
+        if !lineages.contains(row.lineage()) || cell_at(saved, row, &suffix) != arrived.value {
             continue;
         }
         tx.execute(
@@ -555,9 +534,9 @@ pub(crate) fn deployed(
              WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4",
             &[
                 receiver.as_str().into(),
-                arrival.text(0)?.into(),
-                lineage.into(),
-                at.into(),
+                arrived.other.as_str().into(),
+                row.lineage().into(),
+                row.at().as_str().into(),
             ],
         )?;
     }
@@ -572,21 +551,142 @@ pub(super) fn hint(
     row: &RowId,
     value: &Cell,
 ) -> Result<(), RpcError> {
+    let arrived = Arrived {
+        other: other.clone(),
+        row: row.clone(),
+        how: How::Follow,
+        value: value.clone(),
+        arrival: Arrival::Hint,
+    };
+    arrive(tx, who, receiver, &arrived)
+}
+
+/// How a row arrived.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum How {
+    Follow,
+    Sync,
+}
+
+/// Where an arrived row stands in its receiver.
+#[expect(clippy::large_enum_variant, reason = "decoded one row at a time")]
+enum Arrival {
+    /// Staged, not deployed: `prior` is the pair base's cell before it landed
+    /// (redacted) and `was` the receiver's own (sealed), to rewind a discard and to
+    /// undo `sync`, the Sync that landed it.
+    Pending {
+        prior: Cell,
+        was: Cell,
+        sync: Option<SyncId>,
+    },
+    /// A Follow the receiver changed too, or discarded.
+    Hint,
+    /// Deployed.
+    Settled,
+}
+
+/// A row that arrived in a receiver from `other`.
+struct Arrived {
+    other: EnvironmentId,
+    row: RowId,
+    how: How,
+    /// The cell delivered; redacted.
+    value: Cell,
+    arrival: Arrival,
+}
+
+/// Record `arrived` in `receiver`, replacing what arrived at that row from that side
+/// before. A row still pending keeps the base's cell from before its first arrival.
+fn arrive(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    receiver: &EnvironmentId,
+    arrived: &Arrived,
+) -> Result<(), RpcError> {
+    let (state, prior, was, sync) = match &arrived.arrival {
+        Arrival::Pending { prior, was, sync } => (
+            "pending",
+            Some(json_of(prior)),
+            Some(json_of(was)),
+            sync.as_ref().map(SyncId::as_str),
+        ),
+        Arrival::Hint => ("hint", None, None, None),
+        Arrival::Settled => ("settled", None, None, None),
+    };
+    let how = match arrived.how {
+        How::Follow => "follow",
+        How::Sync => "sync",
+    };
     tx.execute(
         "INSERT INTO config_sync_arrival (environment_id, other_id, lineage, at, \
-         organization_id, how, state, value) VALUES (?1, ?2, ?3, ?4, ?5, 'follow', 'hint', ?6) \
-         ON CONFLICT (environment_id, other_id, lineage, at) DO UPDATE SET how = 'follow', \
-         state = 'hint', value = excluded.value, prior = NULL, was = NULL, sync_id = NULL",
+         organization_id, how, state, value, prior, was, sync_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+         ON CONFLICT (environment_id, other_id, lineage, at) DO UPDATE SET \
+         how = excluded.how, state = excluded.state, value = excluded.value, \
+         was = excluded.was, sync_id = excluded.sync_id, prior = CASE \
+         WHEN config_sync_arrival.state = 'pending' AND excluded.state = 'pending' \
+         THEN config_sync_arrival.prior ELSE excluded.prior END",
         &[
             receiver.as_str().into(),
-            other.as_str().into(),
-            row.lineage().into(),
-            row.at().as_str().into(),
+            arrived.other.as_str().into(),
+            arrived.row.lineage().into(),
+            arrived.row.at().as_str().into(),
             who.organization.as_str().into(),
-            json_of(value).as_str().into(),
+            how.into(),
+            state.into(),
+            json_of(&arrived.value).as_str().into(),
+            prior.as_deref().into(),
+            was.as_deref().into(),
+            sync.into(),
         ],
     )?;
     Ok(())
+}
+
+/// What arrived in `receiver` that `filter` (SQL on `config_sync_arrival`, `?2`
+/// being `param`) selects.
+fn arrived(
+    tx: &mut dyn Tx,
+    receiver: &EnvironmentId,
+    filter: &str,
+    param: Option<&str>,
+) -> Result<Vec<Arrived>, RpcError> {
+    let sql = format!(
+        "SELECT other_id, lineage, at, how, state, value, prior, was, sync_id \
+         FROM config_sync_arrival WHERE environment_id = ?1 AND {filter}"
+    );
+    let rows = match param {
+        Some(param) => tx.query(&sql, &[receiver.as_str().into(), param.into()])?,
+        None => tx.query(&sql, &[receiver.as_str().into()])?,
+    };
+    rows.iter()
+        .map(|row| {
+            let stored = |index| -> Result<Cell, RpcError> {
+                let text = row
+                    .optional_text(index)?
+                    .ok_or_else(|| error::corrupt("Sync"))?;
+                serde_json::from_str(text).map_err(|_| error::corrupt("Sync"))
+            };
+            let arrival = match row.text(4)? {
+                "pending" => Arrival::Pending {
+                    prior: stored(6)?,
+                    was: stored(7)?,
+                    sync: row.parse_optional(8, "Sync")?,
+                },
+                "hint" => Arrival::Hint,
+                "settled" => Arrival::Settled,
+                _ => return Err(error::corrupt("Sync")),
+            };
+            Ok(Arrived {
+                other: row.parse(0, "Sync")?,
+                row: row_id(row.text(1)?, row.text(2)?)?,
+                how: row.variant(3, "Sync")?,
+                value: row.json(5, "Sync")?,
+                arrival,
+            })
+        })
+        .collect()
 }
 
 /// What arrived in `receiver` from `other`, by row: the cell delivered.
@@ -595,19 +695,12 @@ pub(super) fn arrivals(
     receiver: &EnvironmentId,
     other: &EnvironmentId,
 ) -> Result<BTreeMap<RowId, Cell>, RpcError> {
-    tx.query(
-        "SELECT lineage, at, value FROM config_sync_arrival \
-         WHERE environment_id = ?1 AND other_id = ?2",
-        &[receiver.as_str().into(), other.as_str().into()],
-    )?
-    .iter()
-    .map(|arrival| {
-        Ok((
-            row_id(arrival.text(0)?, arrival.text(1)?)?,
-            arrival.json(2, "Sync")?,
-        ))
-    })
-    .collect()
+    Ok(
+        arrived(tx, receiver, "other_id = ?2", Some(other.as_str()))?
+            .into_iter()
+            .map(|arrived| (arrived.row, arrived.value))
+            .collect(),
+    )
 }
 
 /// Undo Sync `sync` in `receiver`, whose lock the caller holds: put back what each
@@ -620,11 +713,7 @@ pub(super) fn undo(
     sync: &SyncId,
 ) -> Result<bool, RpcError> {
     let id = receiver.summary.id.clone();
-    let rows = tx.query(
-        "SELECT other_id, lineage, at, state, value, prior, was FROM config_sync_arrival \
-         WHERE environment_id = ?1 AND sync_id = ?2",
-        &[id.as_str().into(), sync.as_str().into()],
-    )?;
+    let rows = arrived(tx, &id, "sync_id = ?2", Some(sync.as_str()))?;
     if rows.is_empty() {
         return Ok(false);
     }
@@ -633,26 +722,22 @@ pub(super) fn undo(
     };
     let mut others = Vec::new();
     let mut landed = Vec::new();
-    for arrival in &rows {
-        let row = row_id(arrival.text(1)?, arrival.text(2)?)?;
-        if arrival.text(3)? != "pending" {
+    for arrived in rows {
+        let Arrival::Pending { prior, was, .. } = arrived.arrival else {
             return Err(error::conflict(
-                format!("{} is deployed: change it back instead", label(&row)),
-                json!({ "row": row }),
+                format!(
+                    "{} is deployed: change it back instead",
+                    label(&arrived.row)
+                ),
+                json!({ "row": arrived.row }),
             ));
-        }
-        let cell = |index| -> Result<Cell, RpcError> {
-            let text = arrival
-                .optional_text(index)?
-                .ok_or_else(|| error::corrupt("Sync"))?;
-            serde_json::from_str(text).map_err(|_| error::corrupt("Sync"))
         };
-        others.push(arrival.parse::<EnvironmentId>(0, "Sync")?);
+        others.push(arrived.other);
         landed.push(Landed {
-            row,
-            value: arrival.json(4, "Sync")?,
-            prior: cell(5)?,
-            was: cell(6)?,
+            row: arrived.row,
+            value: arrived.value,
+            prior,
+            was,
         });
     }
     receiver.working = match unapply(&receiver.working, &suffix(tx, receiver)?, &landed) {
