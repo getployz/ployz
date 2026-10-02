@@ -32,7 +32,7 @@ const rows = [
 ];
 const syncView = (extra: Partial<SyncView> = {}): SyncView => ({
   from: summary("fix-api"), into: summary("production"), at_merge: null, version: "4:abc", rows,
-  never_synced: [{ row: id("a:variables.STRIPE_KEY"), node: "api", name: "env.STRIPE_KEY", marked_in: ["fix-api"] }],
+  never_synced: [{ row: id("a:variables.STRIPE_KEY"), node: "api", name: "env.STRIPE_KEY", marks: [{ environment: "fix-api", row: id("a:variables.STRIPE_KEY") }] }],
   ...extra,
 });
 

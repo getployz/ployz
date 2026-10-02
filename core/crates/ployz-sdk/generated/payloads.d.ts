@@ -1758,6 +1758,8 @@ export type MachineUpdated = { machine: Machine, };
 
 export type ManagementClientLabel = string;
 
+export type Mark = { environment: EnvironmentName, row: RowId, };
+
 export type MembershipObservation = "unknown" | "up" | "suspect" | "down" | string;
 
 export type MintBuildGrantRequest = {
@@ -1838,9 +1840,10 @@ never_synced: Array<NamedRow>, };
 
 export type NeverSyncedRow = {
 /**
- * Where it is marked Never sync: unmark it there to sync it.
+ * The marks keeping it from syncing: unmark them to sync it. A new node's row
+ * counts those on what it can't arrive without.
  */
-marked_in: Array<EnvironmentName>,
+marks: Array<Mark>,
 /**
  * What commands name it by; stable across renames.
  */

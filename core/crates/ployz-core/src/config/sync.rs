@@ -85,6 +85,12 @@ impl At {
             Self::Node | Self::Data | Self::Mount(_) | Self::Variable(_) => false,
         }
     }
+
+    /// Whether a new node can't arrive without the row here: it needs what it is
+    /// carried with, but arrives without custom domains anyway.
+    fn needed(&self) -> bool {
+        self.carried() && *self != Self::Setting("routes")
+    }
 }
 
 fn on_node(path: &str) -> bool {
@@ -522,11 +528,8 @@ pub fn plan(sides: Sides, policy: Policy) -> Plan {
                 else {
                     continue;
                 };
-                // A new node can't arrive without what it needs to exist; it arrives
-                // without custom domains anyway.
                 if from_cells.keys().any(|at| {
-                    at.carried()
-                        && *at != At::Setting("routes")
+                    at.needed()
                         && policy.marked(&RowId {
                             lineage: (*lineage).to_owned(),
                             at: at.clone(),
@@ -900,6 +903,16 @@ pub fn name_of<'a>(intent: &'a Intent, row: &RowId) -> Option<(NodeRef<'a>, Stri
         }
     };
     Some((node, at))
+}
+
+/// The marks among `marks` that keep `row` from syncing: its own and, for a node,
+/// those on what it can't arrive without.
+// ponytail: a removed node's row also counts its children's marks; split by the
+// row's sides if unmarking those ever surprises.
+pub fn marks_on<'m>(row: &RowId, marks: &'m BTreeSet<RowId>) -> impl Iterator<Item = &'m RowId> {
+    marks.iter().filter(move |mark| {
+        *mark == row || (row.at == At::Node && mark.lineage == row.lineage && mark.at.needed())
+    })
 }
 
 /// Every row `intent` holds something at: each node, and each place in it.

@@ -182,7 +182,11 @@ fn between(
         .never_synced
         .iter()
         .map(|row| {
-            let sides = row.marked_in.iter().map(ToString::to_string).collect();
+            let sides = row
+                .marks
+                .iter()
+                .map(|mark| mark.environment.to_string())
+                .collect();
             (row.at.label(), sides)
         })
         .collect();
@@ -250,7 +254,10 @@ fn a_setting_either_side_marks_never_sync_is_never_a_row_and_is_listed_apart() {
         .map(|row| {
             (
                 row.at.label(),
-                row.marked_in.iter().map(EnvironmentName::as_str).collect(),
+                row.marks
+                    .iter()
+                    .map(|mark| mark.environment.as_str())
+                    .collect(),
             )
         })
         .collect();
@@ -418,6 +425,57 @@ fn marks_hold_between_any_two_environments_but_a_parents_own_toward_its_direct_b
     assert_eq!(apart, marked_in("web.env.PLAIN", "production"));
 }
 
+/// A mark on what a new Service can't arrive without keeps the Service out, and the
+/// Sync view names that mark so it can be undone.
+#[test]
+fn a_new_services_row_kept_out_by_a_mark_names_the_mark_to_undo() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(4)).unwrap(),
+                environment: at("fix-web"),
+                name: ServiceName::parse("api").unwrap(),
+                image: Some("api:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &NeverSync {
+                environment: at("fix-web"),
+                rows: vec!["api.image".into()],
+                off: false,
+            },
+        )
+        .unwrap();
+    let apart = view(&store, &who).never_synced;
+    assert_eq!(apart.len(), 1);
+    assert_eq!(apart[0].at.label(), "api");
+    let [mark] = apart[0].marks.as_slice() else {
+        panic!("one mark: {:?}", apart[0].marks);
+    };
+    assert_eq!(mark.environment.as_str(), "fix-web");
+    assert_ne!(mark.row, apart[0].at.row);
+
+    store
+        .write(
+            &who,
+            &NeverSync {
+                environment: at(mark.environment.as_str()),
+                rows: vec![mark.row.clone().into()],
+                off: true,
+            },
+        )
+        .unwrap();
+    let offered = view(&store, &who);
+    assert!(offered.never_synced.is_empty());
+    assert!(labels(&offered).contains(&"api".to_owned()));
+}
+
 /// production renames `web` to `frontend`: one row, however each side names it, is
 /// marked from either side and unmarked the same way.
 #[test]
@@ -446,7 +504,7 @@ fn a_row_is_marked_from_either_side_whatever_each_names_it() {
     }
     let apart = &view(&store, &who).never_synced;
     assert_eq!(apart.len(), 1);
-    assert_eq!(apart[0].marked_in.len(), 2);
+    assert_eq!(apart[0].marks.len(), 2);
     for environment in ["fix-web", "production"] {
         store
             .write(&who, &never_sync(environment, &["variables.PLAIN"], true))

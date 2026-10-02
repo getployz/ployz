@@ -874,7 +874,10 @@ fn an_agent_marks_settings_never_sync_without_servers() {
             labels(&plan["never_synced"]),
             ["web.image", "web.env.APP_ENV"]
         );
-        assert_eq!(plan["never_synced"][0]["marked_in"], json!(["fix-web"]));
+        assert_eq!(
+            plan["never_synced"][0]["marks"][0]["environment"],
+            json!("fix-web")
+        );
         let nothing = error(store, &["env", "sync", "--to", "--env", "fix-web"]);
         assert_eq!(nothing["code"], json!("conflict"));
 

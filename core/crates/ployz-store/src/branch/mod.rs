@@ -22,7 +22,7 @@ pub(crate) use pair::*;
 pub use setup::SetBranchSetup;
 pub(crate) use setup::{branch_setup, set_branch_setup};
 pub use sync::{
-    NeverSyncedRow, SecretRow, SyncChange, SyncChanges, SyncQuery, SyncRow, SyncView, Synced,
+    Mark, NeverSyncedRow, SecretRow, SyncChange, SyncChanges, SyncQuery, SyncRow, SyncView, Synced,
     SyncedWhen, UndoSync, Undone,
 };
 pub(crate) use sync::{picks, sealed, sync, sync_view, take, undo};
@@ -35,8 +35,8 @@ use ployz_core::config::{
     LiveValuesOwner, NodeRef, Plan, PlannedRow, Policy as Rules, RowId, SavedEnvironmentIntent,
     SavedServiceIntent, SavedVariableProducer, ServiceImageCredentials, ServiceSource, Sides,
     Unapplied, ValuePart, ValuePartOwner, Verdict, Way, Why, canonicalize_environment_intent,
-    cell_at, compile_environment_intent, live_values, parse_service_setting, plan, plan_branch,
-    put, rows_of, unapply,
+    cell_at, compile_environment_intent, live_values, marks_on, parse_service_setting, plan,
+    plan_branch, put, rows_of, unapply,
 };
 use ployz_core::{Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};

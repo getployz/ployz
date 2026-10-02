@@ -46,7 +46,7 @@ pub use branch::{
     SyncQuery, SyncRow, SyncView, Synced, SyncedWhen, Take, Taken, UndoSync, Undone, When,
 };
 pub use branch::{
-    FollowHint, HintSource, IncomingChange, NamedRow, NeverSync, NeverSynced, NeverSyncedRow,
+    FollowHint, HintSource, IncomingChange, Mark, NamedRow, NeverSync, NeverSynced, NeverSyncedRow,
     RowRef, SecretRow, SyncChange, resolve,
 };
 pub use build::{

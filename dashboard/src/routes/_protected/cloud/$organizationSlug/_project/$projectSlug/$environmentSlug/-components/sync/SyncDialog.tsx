@@ -117,7 +117,7 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
         {listing && neverSynced.length ? (
           <ul id="never-synced" aria-label="Never synced" className="max-h-40 shrink-0 overflow-y-auto border-t px-6 py-1">
             {neverSynced.map((row) => <NeverSyncedItem key={row.row} row={row} onSyncAgain={() => {
-              for (const environment of row.marked_in) neverSync(environment, row.row, true);
+              for (const mark of row.marks) neverSync(mark.environment, mark.row, true);
             }} />)}
           </ul>
         ) : null}
@@ -188,7 +188,7 @@ function NeverSyncedItem({ row, onSyncAgain }: { row: NeverSyncedRow; onSyncAgai
     <li className="flex min-h-10 items-center gap-3">
       <span className="min-w-0 flex-1 truncate">
         <span className={cn(variable && "font-mono")}>{name}</span>
-        <span className="text-muted-foreground"> · {nodeName(row.node)}, marked in {row.marked_in.join(" and ")}</span>
+        <span className="text-muted-foreground"> · {nodeName(row.node)}, marked in {[...new Set(row.marks.map((mark) => mark.environment))].join(" and ")}</span>
       </span>
       <Button variant="ghost" size="sm" onClick={onSyncAgain}><PinOffIcon data-icon="inline-start" />Sync again</Button>
     </li>

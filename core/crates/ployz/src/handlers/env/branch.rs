@@ -344,10 +344,15 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
             );
         }
         for row in &view.never_synced {
+            let sides: std::collections::BTreeSet<_> = row
+                .marks
+                .iter()
+                .map(|mark| mark.environment.as_str())
+                .collect();
             say!(
                 "  {}: never synced (marked in {})",
                 row.at.label(),
-                crate::handlers::joined(&row.marked_in)
+                Vec::from_iter(sides).join(", ")
             );
         }
     })

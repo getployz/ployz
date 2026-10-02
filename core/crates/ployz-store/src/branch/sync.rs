@@ -80,8 +80,16 @@ pub struct NeverSyncedRow {
     #[serde(flatten)]
     #[ts(flatten)]
     pub at: NamedRow,
-    /// Where it is marked Never sync: unmark it there to sync it.
-    pub marked_in: Vec<EnvironmentName>,
+    /// The marks keeping it from syncing: unmark them to sync it. A new node's row
+    /// counts those on what it can't arrive without.
+    pub marks: Vec<Mark>,
+}
+
+/// A row marked Never sync in an Environment.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct Mark {
+    pub environment: EnvironmentName,
+    pub row: RowId,
 }
 
 /// One row a Sync can carry.
@@ -285,10 +293,14 @@ pub(crate) fn sync_view(
                 at,
             }),
             Verdict::Differs(Why::NeverSynced) => never_synced.push(NeverSyncedRow {
-                marked_in: [(&from, &sync.from_marks), (&into, &sync.into_marks)]
+                marks: [(&from, &sync.from_marks), (&into, &sync.into_marks)]
                     .into_iter()
-                    .filter(|(_, marks)| marks.contains(&row.id))
-                    .map(|(side, _)| side.summary.name.clone())
+                    .flat_map(|(side, marks)| {
+                        marks_on(&row.id, marks).map(|row| Mark {
+                            environment: side.summary.name.clone(),
+                            row: row.clone(),
+                        })
+                    })
                     .collect(),
                 at,
             }),

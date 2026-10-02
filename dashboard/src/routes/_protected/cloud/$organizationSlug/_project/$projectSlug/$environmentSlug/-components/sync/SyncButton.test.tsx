@@ -41,7 +41,8 @@ const rows = [
   row("env.APP_ENV", { from: "staging", into: "production" }),
   row("env.STRIPE_WEBHOOK_SECRET", { from: { secret: true }, change: "new", secret: { needs_value: true, held: false } }),
 ];
-const neverSynced = (name: string) => ({ row: `a:${name}` as RowId, node: "api", name, marked_in: ["fix-api"] });
+const neverSynced = (name: string) =>
+  ({ row: `a:${name}` as RowId, node: "api", name, marks: [{ environment: "fix-api", row: `a:${name}` as RowId }] });
 const syncView = (extra: Partial<SyncView> = {}): SyncView => ({
   from: summary("fix-api"), into: summary("production"), at_merge: null, version: "4:abc", rows,
   never_synced: [neverSynced("env.STRIPE_KEY")], ...extra,
