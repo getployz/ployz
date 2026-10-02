@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
-use super::{ConfigError, ServiceConfig, parse_service_config};
+use super::{At, ConfigError, ServiceConfig, Setting, parse_service_config};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Whether an owned setting appeared, changed, or disappeared.
@@ -25,31 +25,38 @@ pub struct ServiceSettingChange {
     pub before: Value,
     pub after: Value,
     pub can_restore: bool,
-    /// The Sync row it falls in, which joins it to what moved it; the Store's to fill.
+    /// The Sync row it falls in, which joins it to what moved it; the Store's to fill
+    /// from `at` and the node's lineage.
     #[serde(default)]
     pub row: Option<super::RowId>,
+    /// Where in its node `row` is, as the comparison found it; none for a mount, whose
+    /// Volume lineage only the Store knows.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub at: Option<At>,
 }
 
-pub(super) const FIELDS: &[&str] = &[
-    "source.repository",
-    "source.branch",
-    "source.rootDir",
-    "source.image",
-    "source.credentials",
-    "preDeployCommand",
-    "startCommand",
-    "healthcheck.path",
-    "healthcheck.timeoutSeconds",
-    "restartPolicy",
-    "maxRetries",
-    "replicas",
-    "cpuLimit",
-    "memLimit",
-    "privateDns",
-    "managedHostnames",
-    "build.buildMethod",
-    "build.dockerfilePath",
-    "build.command",
+/// Each compared field and the Setting whose row it falls in.
+const FIELDS: &[(&str, Setting)] = &[
+    ("source.repository", Setting::Repository),
+    ("source.branch", Setting::Branch),
+    ("source.rootDir", Setting::RootDir),
+    ("source.image", Setting::Image),
+    ("source.credentials", Setting::Credentials),
+    ("preDeployCommand", Setting::PreDeployCommand),
+    ("startCommand", Setting::StartCommand),
+    ("healthcheck.path", Setting::Healthcheck),
+    ("healthcheck.timeoutSeconds", Setting::Healthcheck),
+    ("restartPolicy", Setting::RestartPolicy),
+    ("maxRetries", Setting::MaxRetries),
+    ("replicas", Setting::Replicas),
+    ("cpuLimit", Setting::CpuLimit),
+    ("memLimit", Setting::MemLimit),
+    ("privateDns", Setting::PrivateDns),
+    ("managedHostnames", Setting::ManagedHostnames),
+    ("build.buildMethod", Setting::BuildMethod),
+    ("build.dockerfilePath", Setting::DockerfilePath),
+    ("build.command", Setting::BuildCommand),
 ];
 
 /// Compare settings against an available authored baseline, keeping derived effects separate.
@@ -64,8 +71,13 @@ pub fn compare_service_settings(
     let source_changed =
         !baseline.is_null() && at(&current, "source.type") != at(&baseline, "source.type");
     if source_changed {
+        // A switch falls in the row of the source it switches to.
+        let setting = match at(&current, "source.type").as_str() {
+            Some("git") => Setting::Repository,
+            _ => Setting::Image,
+        };
         changes.push(change(
-            "source",
+            ("source", Some(At::Setting(setting))),
             at(&baseline, "source").clone(),
             at(&current, "source").clone(),
             true,
@@ -74,13 +86,13 @@ pub fn compare_service_settings(
     let healthcheck_changed = at(&current, "healthcheck.type") != at(&baseline, "healthcheck.type");
     if healthcheck_changed && (!baseline.is_null() || at(&current, "healthcheck.type") != "none") {
         changes.push(change(
-            "healthcheck",
+            ("healthcheck", Some(At::Setting(Setting::Healthcheck))),
             at(&baseline, "healthcheck").clone(),
             at(&current, "healthcheck").clone(),
             !baseline.is_null(),
         ));
     }
-    for path in FIELDS {
+    for &(path, setting) in FIELDS {
         if healthcheck_changed && path.starts_with("healthcheck.") {
             continue;
         }
@@ -89,7 +101,7 @@ pub fn compare_service_settings(
         }
         let before = at(&baseline, path);
         let after = at(&current, path);
-        let repository_changed = *path == "source.repository"
+        let repository_changed = path == "source.repository"
             && !before.is_null()
             && !after.is_null()
             && (at(&baseline, "source.repositoryId") != at(&current, "source.repositoryId")
@@ -101,7 +113,7 @@ pub fn compare_service_settings(
             continue;
         }
         changes.push(change(
-            path,
+            (path, Some(At::Setting(setting))),
             before.clone(),
             after.clone(),
             !baseline.is_null(),
@@ -149,7 +161,8 @@ pub fn restore_service_setting(
         }
         return parse_service_config(json!(current));
     }
-    if path != "source" && path != "healthcheck" && !FIELDS.contains(&path) {
+    if path != "source" && path != "healthcheck" && !FIELDS.iter().any(|(field, _)| *field == path)
+    {
         return Err(ConfigError::at(
             "path",
             "Setting has no authored restore operation",
@@ -222,8 +235,9 @@ pub(super) fn default_value(path: &str) -> Value {
     }
 }
 
+/// A change at `path`, in the row at `at` of its node.
 pub(super) fn change(
-    path: &str,
+    (path, at): (&str, Option<At>),
     before: Value,
     after: Value,
     can_restore: bool,
@@ -242,6 +256,7 @@ pub(super) fn change(
         after,
         can_restore,
         row: None,
+        at,
     }
 }
 
@@ -267,8 +282,9 @@ fn compare_related_settings(current: &Value, baseline: &Value) -> Vec<ServiceSet
                 before == after
             };
             if !equal {
+                let at = (family == "routes").then_some(At::Setting(Setting::Routes));
                 changes.push(change(
-                    &format!("{family}.{id}"),
+                    (&format!("{family}.{id}"), at),
                     before.clone(),
                     after.clone(),
                     family == "routes" && !baseline.is_null(),
@@ -289,13 +305,12 @@ fn compare_related_settings(current: &Value, baseline: &Value) -> Vec<ServiceSet
         if comparable_env(before) == comparable_env(after) {
             continue;
         }
-        let row = change(
-            &format!("env.{key}"),
+        changes.push(change(
+            (&format!("env.{key}"), Some(At::Variable(key.clone()))),
             redacted_env(before),
             redacted_env(after),
             false,
-        );
-        changes.push(row);
+        ));
     }
     changes
 }

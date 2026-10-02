@@ -10,8 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::config::{
     Applied, Arrives, Cell, Cells, ConfigError, EncryptedSecretValue, Hostnames, NodeRef, Plan,
     PlannedRow, Policy, RowId, SavedEnvironmentIntent, SealedSecret, Sides, Verdict, Way, Why,
-    name_of, parse_environment_intent, plan, put, redact_environment_intent, row_of_change,
-    unapply,
+    name_of, parse_environment_intent, plan, put, redact_environment_intent, unapply,
 };
 use serde_json::{Value, json};
 
@@ -1563,57 +1562,4 @@ fn a_cell_reads_as_the_plan_reads_it() {
     let secret = into.at(&format!("{API}:variables.TOKEN").parse().unwrap());
     assert!(secret.is_secret(), "{secret:?}");
     assert!(!Cell::Absent.is_secret());
-}
-
-/// A reviewed change falls in the row a Sync moves it by: composite parts in their
-/// whole, a mount by its Volume's lineage, a source switch in the source it lands.
-#[test]
-fn a_reviewed_change_falls_in_its_row() {
-    let parent = intent(&parent());
-    let row = |lineage: &str, path: &str, after: Value| {
-        row_of_change(&[&parent], lineage, path, (&Value::Null, &after)).map(|row| row.to_string())
-    };
-    let mount = format!("mounts.{}", id(0xb000_0000, 30));
-    for (lineage, path, after, expected) in [
-        (
-            API,
-            "env.PLAIN",
-            Value::Null,
-            Some(format!("{API}:variables.PLAIN")),
-        ),
-        (
-            API,
-            "healthcheck.path",
-            Value::Null,
-            Some(format!("{API}:healthcheck")),
-        ),
-        (API, "routes.x", Value::Null, Some(format!("{API}:routes"))),
-        (
-            API,
-            mount.as_str(),
-            Value::Null,
-            Some(format!("{API}:mounts.{DATA}")),
-        ),
-        (
-            API,
-            "source",
-            json!({"type": "git"}),
-            Some(format!("{API}:source.repository")),
-        ),
-        (
-            API,
-            "replicas",
-            Value::Null,
-            Some(format!("{API}:replicas")),
-        ),
-        (
-            DATA,
-            "storage",
-            Value::Null,
-            Some(format!("{DATA}:storage")),
-        ),
-        (API, "nonsense", Value::Null, None),
-    ] {
-        assert_eq!(row(lineage, path, after), expected, "{path}");
-    }
 }

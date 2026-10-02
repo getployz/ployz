@@ -4,7 +4,8 @@
 )]
 
 use ployz_core::config::{
-    compare_service_settings, parse_service_config, parse_service_setting, restore_service_setting,
+    At, Setting, compare_service_settings, parse_service_config, parse_service_setting,
+    restore_service_setting,
 };
 use serde_json::{Value, json};
 
@@ -32,6 +33,10 @@ fn service_comparison_and_restore_preserve_authored_source_identity() {
         rows.iter().map(|row| row.path.as_str()).collect::<Vec<_>>(),
         ["source.repository", "source.branch", "startCommand"]
     );
+    assert_eq!(
+        rows.iter().map(|row| row.at.clone()).collect::<Vec<_>>(),
+        [Setting::Repository, Setting::Branch, Setting::StartCommand].map(|s| Some(At::Setting(s)))
+    );
     let restored =
         restore_service_setting(current.clone(), &baseline, "source.repository").unwrap();
     assert_eq!(
@@ -51,9 +56,12 @@ fn service_comparison_and_restore_preserve_authored_source_identity() {
     image["source"] = json!({"version": 1, "type": "image", "image": "api:latest",
         "credentials": {"type": "configured", "credentialId": "00000000-0000-4000-8000-000000000002"}});
     let image = parse_service_config(image).unwrap();
+    let switched = &compare_service_settings(&image, Some(&baseline))[0];
+    assert_eq!(switched.path, "source");
     assert_eq!(
-        compare_service_settings(&image, Some(&baseline))[0].path,
-        "source"
+        switched.at,
+        Some(At::Setting(Setting::Image)),
+        "the source it switches to"
     );
     assert_eq!(
         restore_service_setting(image.clone(), &baseline, "source.branch").unwrap(),
@@ -76,6 +84,10 @@ fn compound_settings_compare_and_restore_the_edited_field() {
     assert_eq!(
         rows.iter().map(|row| row.path.as_str()).collect::<Vec<_>>(),
         ["healthcheck.timeoutSeconds", "build.dockerfilePath"]
+    );
+    assert_eq!(
+        rows.iter().map(|row| row.at.clone()).collect::<Vec<_>>(),
+        [Setting::Healthcheck, Setting::DockerfilePath].map(|s| Some(At::Setting(s)))
     );
     let restored =
         restore_service_setting(current.clone(), &baseline, "build.dockerfilePath").unwrap();
@@ -166,6 +178,12 @@ fn related_settings_preserve_ownership_redact_secrets_and_restore_stable_routes(
     assert_eq!(rows.len(), 2, "volume rename is not a mount edit");
     let secret = rows.iter().find(|row| row.path == "env.TOKEN").unwrap();
     assert!(!secret.can_restore);
+    assert_eq!(secret.at, Some(At::Variable("TOKEN".into())));
+    let route = rows
+        .iter()
+        .find(|row| row.path.starts_with("routes."))
+        .unwrap();
+    assert_eq!(route.at, Some(At::Setting(Setting::Routes)));
     let output = serde_json::to_string(&rows).unwrap();
     assert!(!output.contains("private-"));
     let restored = restore_service_setting(
@@ -215,6 +233,10 @@ fn canonical_references_survive_renames_and_mount_changes_keep_one_owner() {
     let added = compare_service_settings(&mounted, Some(&baseline));
     assert_eq!(added.len(), 1);
     assert_eq!(added[0].kind, ployz_core::config::ChangeKind::Add);
+    assert_eq!(
+        added[0].at, None,
+        "a mount's Volume lineage is the Store's to find"
+    );
     before["mounts"][0]["mountPath"] = json!("/other");
     let moved = compare_service_settings(&parse_service_config(before).unwrap(), Some(&mounted));
     assert_eq!(moved.len(), 1);

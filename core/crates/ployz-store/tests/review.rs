@@ -378,6 +378,17 @@ fn discard_keeps_mounts_it_does_not_name() {
         )
         .unwrap();
     publish(&store, &who, None).unwrap();
+    // The mount falls in web's row for the Volume's lineage, as a Sync moves it.
+    let mount = diff(&store, &who)
+        .changes
+        .into_iter()
+        .flat_map(|change| change.settings)
+        .find(|row| row.path == "web.mounts.data")
+        .unwrap();
+    assert_eq!(
+        mount.row.unwrap().to_string(),
+        "00000000-0000-4000-8000-000000000003:mounts.00000000-0000-4000-8000-000000000005"
+    );
     set(&store, &who, "web.replicas", json!(3));
     discard(&store, &who, Some("web.replicas"), None).unwrap();
     assert_eq!(value(&store, &who, "web.mounts.data"), Some(json!("/data")));

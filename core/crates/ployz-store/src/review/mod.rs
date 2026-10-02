@@ -10,10 +10,10 @@ pub(crate) mod publish;
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,
+    At, ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,
     ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId, SavedEnvironmentIntent,
     ServiceSettingChange, canonicalize_environment_intent, compile_environment_intent,
-    project_environment_changes, row_of_change,
+    project_environment_changes,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -181,8 +181,15 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                     .settings
                     .into_iter()
                     .map(|mut row| {
-                        row.row =
-                            row_of_change(&every, &lineage, &row.path, (&row.before, &row.after));
+                        let at = match row.path.strip_prefix("mounts.") {
+                            Some(id) => every
+                                .iter()
+                                .flat_map(|intent| &intent.volumes)
+                                .find(|volume| volume.resource_id == id)
+                                .map(|volume| At::Mount(volume.resource_lineage_id.clone())),
+                            None => row.at.take(),
+                        };
+                        row.row = at.map(|at| RowId::of(&lineage, at));
                         if row.path.starts_with("mounts.") {
                             row.before = row.before.get("mountPath").cloned().unwrap_or_default();
                             row.after = row.after.get("mountPath").cloned().unwrap_or_default();
@@ -285,6 +292,7 @@ fn renames(view: &mut DiffView, working: &SavedEnvironmentIntent, head: &SavedEn
             // Renaming it back undoes it: `discard` takes no name path.
             can_restore: false,
             row: None,
+            at: None,
         };
         view.total_count += 1;
         match view

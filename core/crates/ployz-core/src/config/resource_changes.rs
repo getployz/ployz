@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 
-use super::service_changes::at;
+use super::service_changes::{at, change};
 use super::*;
 
 /// Decode a node configuration according to its owner family.
@@ -46,10 +46,10 @@ pub fn compare_resource_settings(
         .transpose()?;
     let mut changes = Vec::new();
     if let Some(baseline) = &baseline {
-        for path in ["name", "storage"] {
+        for (path, row) in [("name", At::Name), ("storage", At::Storage)] {
             if at(&current, path) != at(baseline, path) {
-                changes.push(resource_change(
-                    path.into(),
+                changes.push(change(
+                    (path, Some(row)),
                     at(baseline, path).clone(),
                     at(&current, path).clone(),
                     true,
@@ -57,21 +57,12 @@ pub fn compare_resource_settings(
             }
         }
     } else {
-        changes.push(resource_change(
-            "node".into(),
+        changes.push(change(
+            ("node", Some(At::Node)),
             Value::Null,
             at(&current, "name").clone(),
             true,
         ));
     }
     Ok(changes)
-}
-
-fn resource_change(
-    path: String,
-    before: Value,
-    after: Value,
-    can_restore: bool,
-) -> ServiceSettingChange {
-    super::service_changes::change(&path, before, after, can_restore)
 }

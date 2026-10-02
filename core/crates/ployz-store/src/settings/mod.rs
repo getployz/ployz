@@ -90,6 +90,31 @@ impl ServiceSetting {
         Self::Policy(PolicySetting::PreferredBuilder),
     ];
 
+    /// The Setting a core row's `setting` is, if `set` has one.
+    pub(crate) const fn of(setting: ployz_core::config::Setting) -> Option<Self> {
+        use ployz_core::config::Setting as Core;
+        Some(match setting {
+            Core::Repository => Self::Git(GitSetting::Repository),
+            Core::Image => Self::Image,
+            Core::RootDir => Self::Git(GitSetting::RootDir),
+            Core::Branch => Self::Git(GitSetting::Branch),
+            Core::Credentials => Self::RegistryCredential,
+            Core::PrivateDns => Self::PrivateDns,
+            Core::PreDeployCommand => Self::PreDeployCommand,
+            Core::StartCommand => Self::StartCommand,
+            Core::Healthcheck => Self::Healthcheck,
+            Core::RestartPolicy => Self::RestartPolicy,
+            Core::MaxRetries => Self::MaxRetries,
+            Core::Replicas => Self::Replicas,
+            Core::CpuLimit => Self::CpuLimit,
+            Core::MemLimit => Self::MemLimit,
+            Core::BuildMethod => Self::Git(GitSetting::BuildMethod),
+            Core::DockerfilePath => Self::Git(GitSetting::DockerfilePath),
+            Core::BuildCommand => Self::Git(GitSetting::BuildCommand),
+            Core::ManagedHostnames | Core::Routes => return None,
+        })
+    }
+
     /// The Setting a core change row at `field` writes, if one does.
     pub(crate) fn of_field(field: &str) -> Option<Self> {
         Self::ALL

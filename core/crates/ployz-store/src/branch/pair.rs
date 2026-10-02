@@ -320,10 +320,9 @@ pub(crate) fn named(intents: &[&SavedEnvironmentIntent], row: &RowId) -> Option<
         let name = match row.at() {
             At::Node => None,
             At::Variable(key) => Some(format!("env.{key}")),
-            At::Setting(setting) => Some(
-                ServiceSetting::of_field(setting.path())
-                    .map_or(at, |setting| setting.name().to_owned()),
-            ),
+            At::Setting(setting) => {
+                Some(ServiceSetting::of(*setting).map_or(at, |setting| setting.name().to_owned()))
+            }
             At::Data | At::Name | At::Storage | At::Mount(_) => Some(at),
         };
         Some(NamedRow {
