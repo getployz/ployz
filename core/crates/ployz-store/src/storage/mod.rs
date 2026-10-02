@@ -271,11 +271,3 @@ fn migrate(tx: &mut dyn Tx) -> Result<(), RpcError> {
     }
     Ok(())
 }
-
-/// The text a unit variant `value` is stored as, which [`Row::variant`] reads back.
-pub(crate) fn variant_text(value: &impl serde::Serialize) -> String {
-    match serde_json::to_value(value) {
-        Ok(serde_json::Value::String(text)) => text,
-        _ => unreachable!("only a unit variant is stored as its text"),
-    }
-}

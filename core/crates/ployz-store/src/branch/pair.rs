@@ -628,7 +628,7 @@ fn arrive(
             arrived.row.lineage().into(),
             arrived.row.at().to_string().as_str().into(),
             who.organization.as_str().into(),
-            storage::variant_text(&arrived.how).as_str().into(),
+            storage::name_of(arrived.how).as_str().into(),
             state.into(),
             json_of(&arrived.value).as_str().into(),
             prior.as_deref().into(),
