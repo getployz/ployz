@@ -37,8 +37,7 @@ export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceI
 
 /** What the Environment marks Never sync in one Service, by Setting (`env.KEY`), as `serviceVariables` takes it. */
 export function serviceNeverSynced(view: EnvironmentView, service: string): Set<string> {
-  const prefix = `${service}.`;
-  return new Set((view.never_synced ?? []).flatMap((path) => path.startsWith(prefix) ? [path.slice(prefix.length)] : []));
+  return new Set((view.never_synced ?? []).flatMap((row) => row.node === service && row.name !== null ? [row.name] : []));
 }
 
 /**
@@ -47,6 +46,8 @@ export function serviceNeverSynced(view: EnvironmentView, service: string): Set<
  */
 export function storeVariableWriter(
   writer: ReturnType<typeof useStoreWriter>, environment: EnvironmentRef, service: string, variables: readonly VariableRecord[],
+  /** The Service's Setting rows (`serviceSettingRows`): each variable's row, which Never sync names. */
+  settings: ReadonlyMap<string, SettingRow>,
 ) {
   const path = (key: string) => `${service}.env.${key}`;
   const edit = (...changes: Change[]) => writer.edit({ environment, changes });
@@ -74,7 +75,11 @@ export function storeVariableWriter(
     seal: (key: string, value: string) => edit({ op: "set", path: path(key), value: { secret: value } }),
     export: (key: string, exported: boolean) => edit({ op: "set", path: `${path(key)}.exported`, value: exported }),
     /** Marks the variable Never sync, or with `marked` false syncs it again: at once, nothing to deploy. */
-    neverSync: (key: string, marked: boolean) => writer.commit({ command: "never_sync", environment, paths: [path(key)], off: !marked }),
+    neverSync: (key: string, marked: boolean) => {
+      const row = settings.get(`env.${key}`)?.row;
+      if (!row) throw new Error("Variable is not loaded.");
+      return writer.commit({ command: "never_sync", environment, rows: [row], off: !marked });
+    },
     /** The raw editor's changes: sets and removals in one edit. */
     replace: (sets: readonly { key: string; value: string }[], removed: readonly string[]) => edit(
       ...sets.map(({ key, value }): Change => ({ op: "set", path: path(key), value })),

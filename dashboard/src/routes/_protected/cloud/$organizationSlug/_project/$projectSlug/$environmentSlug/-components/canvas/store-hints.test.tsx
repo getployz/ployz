@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import {
   createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider,
 } from "@tanstack/react-router";
-import type { ConfigCommand, DiffView, NodeChange } from "@ployz/sdk";
+import type { ConfigCommand, DiffView, NodeChange, RowId } from "@ployz/sdk";
 import { toast } from "sonner";
 import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
@@ -16,6 +16,7 @@ import { storeHintNotes } from "./store-hints";
 afterEach(() => { cleanup(); vi.restoreAllMocks(); document.body.replaceChildren(); });
 
 const fixApi = { project: "shop", environment: "fix-api" };
+const id = (value: string) => value as RowId;
 const setting = (path: string, before: string, after: string) => ({ path, kind: "update" as const, before, after, canRestore: true });
 const api = (settings: NodeChange["settings"]): NodeChange =>
   ({ type: "service", id: "api", name: "api", lifecycle: "update", settings }) as NodeChange;
@@ -68,7 +69,7 @@ async function menuOf(label: string) {
 it("groups what the Parent's deploy brought apart from the Branch's own, and Never sync on it marks that setting", async () => {
   const test = open(diff({
     changes: [api([setting("api.env.CACHE_TTL", "60", "300"), setting("api.replicas", "1", "2")])], total_count: 2,
-    incoming: [{ row: "api.env.CACHE_TTL", path: "api.env.CACHE_TTL", whole: false, from: "production" }],
+    incoming: [{ row: id("a:variables.CACHE_TTL"), node: "api", name: "env.CACHE_TTL", from: "production" }],
   }));
 
   const incoming = within(await screen.findByRole("region", { name: "From production's deploy" }));
@@ -80,23 +81,23 @@ it("groups what the Parent's deploy brought apart from the Branch's own, and Nev
   expect(own.queryByRole("menuitem", { name: "Never sync" })).toBeNull();
   fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
   fireEvent.click((await menuOf("api Environment variable CACHE_TTL")).getByRole("menuitem", { name: "Never sync" }));
-  expect(test.neverSync).toHaveBeenCalledWith("api.env.CACHE_TTL");
+  expect(test.neverSync).toHaveBeenCalledWith("api.env.CACHE_TTL", "a:variables.CACHE_TTL");
 });
 
 it("matches a Volume's setting by the path the receiver names it by", async () => {
   const test = open(diff({
     changes: [{ type: "volume", id: "data", name: "data", lifecycle: "update", settings: [setting("volumes.data.name", "pg", "pg-2")] } as NodeChange],
-    total_count: 1, incoming: [{ row: "data.name", path: "volumes.data.name", whole: false, from: "production" }],
+    total_count: 1, incoming: [{ row: id("d:name"), node: "volumes.data", name: "name", from: "production" }],
   }));
 
   fireEvent.click((await menuOf("data Name")).getByRole("menuitem", { name: "Never sync" }));
-  expect(test.neverSync).toHaveBeenCalledWith("volumes.data.name");
+  expect(test.neverSync).toHaveBeenCalledWith("volumes.data.name", "d:name");
 });
 
 it("groups a whole node that arrived, with its settings, under where it came from; it can't be marked", async () => {
   const test = open(diff({
     changes: [{ ...api([setting("api.replicas", "1", "2")]), lifecycle: "create" }], total_count: 2,
-    incoming: [{ row: "api", path: "api", whole: true, from: "production" }],
+    incoming: [{ row: id("a:node"), node: "api", name: null, from: "production" }],
   }));
 
   const incoming = within(await screen.findByRole("region", { name: "From production's deploy" }));
@@ -109,31 +110,31 @@ it("groups a whole node that arrived, with its settings, under where it came fro
 it("offers the Parent's value beside the Branch's own change, and Use stages it", async () => {
   const test = open(diff({
     changes: [api([setting("api.env.LOG_LEVEL", "info", "debug")])], total_count: 1,
-    follow_hints: [{ from: "production", row: "api.env.LOG_LEVEL", path: "api.env.LOG_LEVEL", whole: false, value: "warn" }],
+    follow_hints: [{ from: "production", row: id("a:variables.LOG_LEVEL"), node: "api", name: "env.LOG_LEVEL", value: "warn" }],
   }));
 
   const own = within(await rowOf("LOG_LEVEL"));
   expect(own.getByText(/production has since set/u).textContent).toContain("warn");
   fireEvent.click(own.getByRole("button", { name: "Use theirs: production's api.env.LOG_LEVEL" }));
   await waitFor(() => expect(test.commands()).toEqual([
-    { command: "take", from: "production", into: fixApi, rows: ["api.env.LOG_LEVEL"], version: "4:abc" },
+    { command: "take", from: "production", into: fixApi, rows: ["a:variables.LOG_LEVEL"], version: "4:abc" },
   ]));
 });
 
 it("keeps hints no change shows after the changes, both kinds in one list, each Use taking the version the user saw", async () => {
   const test = open(diff({
     changes: [api([setting("api.replicas", "1", "2")])], total_count: 1,
-    follow_hints: [{ from: "production", row: "api.env.CACHE_TTL", path: "api.env.CACHE_TTL", whole: false, value: "300" }],
-    hints: [{ conditional_sync: "cs1", pull_request: 142, row: "data.name", path: "volumes.data.name", whole: false, value: "pg-2", landed: "hint" }],
+    follow_hints: [{ from: "production", row: id("a:variables.CACHE_TTL"), node: "api", name: "env.CACHE_TTL", value: "300" }],
+    hints: [{ conditional_sync: "cs1", pull_request: 142, row: id("d:name"), node: "volumes.data", name: "name", value: "pg-2", landed: "hint" }],
   }));
 
   const after = within(await screen.findByRole("group", { name: "Not among these changes" }));
   expect(after.getByText("api · CACHE_TTL")).toBeTruthy();
   expect(after.getByText("data · Name")).toBeTruthy();
   fireEvent.click(after.getByRole("button", { name: "Use theirs: production's api.env.CACHE_TTL" }));
-  fireEvent.click(after.getByRole("button", { name: "Use PR #142's data.name" }));
+  fireEvent.click(after.getByRole("button", { name: "Use PR #142's volumes.data.name" }));
   await waitFor(() => expect(test.commands()).toEqual([
-    { command: "take", from: "production", into: fixApi, rows: ["api.env.CACHE_TTL"], version: "4:abc" },
-    { command: "take", from: "cs1", into: fixApi, rows: ["volumes.data.name"], version: "4:abc" },
+    { command: "take", from: "production", into: fixApi, rows: ["a:variables.CACHE_TTL"], version: "4:abc" },
+    { command: "take", from: "cs1", into: fixApi, rows: ["d:name"], version: "4:abc" },
   ]));
 });

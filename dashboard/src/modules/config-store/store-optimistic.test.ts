@@ -1,5 +1,5 @@
 import { QueryClient } from "@tanstack/react-query";
-import type { DeploymentView, DiffView, DomainsView, EnvironmentView, ServiceId, ServicesView } from "@ployz/sdk";
+import type { DeploymentView, DiffView, DomainsView, EnvironmentView, RowId, ServiceId, ServicesView } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import { expect, it } from "vitest";
 import { applyOptimistic } from "./store-optimistic";
@@ -118,11 +118,16 @@ it("shows each command of a Batch at once, as it would alone", async () => {
     .toEqual([["web", "update"], ["cache", "create"], ["postgres", "create"]]);
 });
 
-it("shows a variable marked Never sync at once, and synced again", async () => {
+it("shows a variable synced again at once; a new mark waits for the Store, which names it", async () => {
   const { queryClient, read } = cached();
-  const marks = () => read<EnvironmentView>(environmentSettingsQuery(ref))?.never_synced;
-  await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: ref, paths: ["web.env.B", "web.env.A"] });
-  expect(marks()).toEqual(["web.env.A", "web.env.B"]);
-  await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: ref, paths: ["web.env.A"], off: true });
-  expect(marks()).toEqual(["web.env.B"]);
+  const row = (name: string) => ({ row: `w:variables.${name}` as RowId, node: "web", name: `env.${name}` });
+  queryClient.setQueryData<{ ok: true; value: EnvironmentView }>(
+    storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, environmentSettingsQuery(ref)).queryKey,
+    (cached) => cached && { ok: true, value: { ...cached.value, never_synced: [row("A"), row("B")] } },
+  );
+  const marks = () => read<EnvironmentView>(environmentSettingsQuery(ref))?.never_synced?.map((one) => one.name);
+  await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: ref, rows: [row("C").row] });
+  expect(marks()).toEqual(["env.A", "env.B"]);
+  await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: ref, rows: [row("A").row], off: true });
+  expect(marks()).toEqual(["env.B"]);
 });

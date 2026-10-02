@@ -1,8 +1,8 @@
 import { useLoaderData, useParams } from "@tanstack/react-router";
-import type { DiffView, FollowHint, JsonValue, PullRequestHint } from "@ployz/sdk";
+import type { DiffView, FollowHint, PullRequestHint, RowId } from "@ployz/sdk";
 import { Button } from "#/components/ui/button";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
-import { presentRow } from "#/modules/config-store/store-branches";
+import { presentRow, rowPath } from "#/modules/config-store/store-branches";
 import { hintNotes } from "#/modules/config-store/store-pull-requests";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
@@ -17,21 +17,21 @@ import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
  *   ("production has since set {value} · Use theirs").
  * Hints no change shows, such as a Parent's change discarded here, come after the changes.
  *
- * `path` is a row's, or the group's `discardPath` for the node itself.
+ * `path` is a row's, or the group's `discardPath` for the node itself: what the Store's rows line up with.
  */
-export function storeHintNotes(diff: DiffView, groups: readonly ChangeGroup[], neverSync: (path: string) => void) {
+export function storeHintNotes(diff: DiffView, groups: readonly ChangeGroup[], neverSync: (path: string, row: RowId) => void) {
   const paths = new Set(groups.flatMap((group) => group.rows.map((row) => row.path)));
   const notes = hintNotes(diff.hints, paths);
   const follows = hintNotes(diff.follow_hints, paths);
-  const incoming = (path: string) => diff.incoming.find((change) => change.path === path);
+  const incoming = (path: string) => diff.incoming.find((change) => rowPath(change) === path);
   const name = diff.environment.name;
   // Hints no change shows, both kinds in one list.
   const rest = [
     ...notes.rest.map((hint) => ({
-      key: `${hint.conditional_sync}:${hint.path}`, hint, note: <HintNote hint={hint} version={diff.version} />,
+      key: `${hint.conditional_sync}:${hint.row}`, hint, note: <HintNote hint={hint} version={diff.version} />,
       staged: hint.landed === "staged",
     })),
-    ...follows.rest.map((hint) => ({ key: `${hint.from}:${hint.path}`, hint, note: <FollowNote hint={hint} version={diff.version} />, staged: false })),
+    ...follows.rest.map((hint) => ({ key: `${hint.from}:${hint.row}`, hint, note: <FollowNote hint={hint} version={diff.version} />, staged: false })),
   ];
   return {
     originFor: (_: ChangeGroup, path: string): ChangeOrigin | undefined => {
@@ -46,15 +46,15 @@ export function storeHintNotes(diff: DiffView, groups: readonly ChangeGroup[], n
       if (!prs.length && !parents.length) return null;
       return (
         <span className="flex flex-col items-start">
-          {prs.map((hint) => <HintNote key={`${hint.conditional_sync}:${hint.path}`} hint={hint} version={diff.version} />)}
-          {parents.map((hint) => <FollowNote key={hint.path} hint={hint} version={diff.version} />)}
+          {prs.map((hint) => <HintNote key={`${hint.conditional_sync}:${hint.row}`} hint={hint} version={diff.version} />)}
+          {parents.map((hint) => <FollowNote key={hint.row} hint={hint} version={diff.version} />)}
         </span>
       );
     },
     // A setting that arrived; a whole node can't be marked.
     neverSyncFor: (_: ChangeGroup, path: string) => {
       const change = incoming(path);
-      return change && !change.whole ? () => neverSync(path) : undefined;
+      return change && change.name !== null ? () => neverSync(path, change.row) : undefined;
     },
     after: rest.length ? (
       <ItemGroup role="group" aria-label="Not among these changes">
@@ -79,8 +79,8 @@ function HintNote({ hint, version }: { hint: PullRequestHint; version: string })
   return (
     <span className="flex min-w-0 items-center gap-1 text-muted-foreground">
       PR #{hint.pull_request}: <span className="truncate font-mono text-foreground">{presented(hint).after || "—"}</span>
-      <Button variant="link" size="xs" aria-label={`Use PR #${hint.pull_request}'s ${hint.row}`}
-        onClick={() => take(hint.conditional_sync, hint.path, version)}>
+      <Button variant="link" size="xs" aria-label={`Use PR #${hint.pull_request}'s ${rowPath(hint)}`}
+        onClick={() => take(hint.conditional_sync, hint.row, version)}>
         Use
       </Button>
     </span>
@@ -93,7 +93,7 @@ function FollowNote({ hint, version }: { hint: FollowHint; version: string }) {
   return (
     <span className="flex min-w-0 items-center gap-1 text-muted-foreground">
       {hint.from} has since set <span className="truncate font-mono text-foreground">{presented(hint).after || "—"}</span>
-      <Button variant="link" size="xs" aria-label={`Use theirs: ${hint.from}'s ${hint.row}`} onClick={() => take(hint.from, hint.path, version)}>
+      <Button variant="link" size="xs" aria-label={`Use theirs: ${hint.from}'s ${rowPath(hint)}`} onClick={() => take(hint.from, hint.row, version)}>
         Use theirs
       </Button>
     </span>
@@ -108,9 +108,9 @@ function useTake() {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const writer = useStoreWriter(params.organizationSlug);
-  return (from: string, path: string, version: string) =>
-    void writer.commit({ command: "take", from, into: store, rows: [path], version });
+  return (from: string, row: RowId, version: string) =>
+    void writer.commit({ command: "take", from, into: store, rows: [row], version });
 }
 
 /** A hint in a Sync's words: its node and setting, and the value it offers (a secret stays hidden). */
-const presented = (hint: { path: string; value: JsonValue }) => presentRow({ row: hint.path, from: hint.value, into: null });
+const presented = (hint: PullRequestHint | FollowHint) => presentRow(hint);

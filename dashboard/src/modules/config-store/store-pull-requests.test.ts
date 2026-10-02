@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { PrPlan, PullRequestHint } from "@ployz/sdk";
+import type { PrPlan, PullRequestHint, RowId } from "@ployz/sdk";
 import { hintNotes, planSummary } from "./store-pull-requests";
 
 const plan: PrPlan = {
@@ -16,11 +16,11 @@ describe("planSummary", () => {
 });
 
 describe("hintNotes", () => {
-  const hint = (path: string): PullRequestHint =>
-    ({ conditional_sync: "s", pull_request: 5, row: path, path, whole: false, value: "x", landed: "hint" });
-  it("puts a hint beside its change, the rest after", () => {
-    const notes = hintNotes([hint("web.startCommand"), hint("web.env.KEY")], new Set(["web.startCommand"]));
-    expect(notes.at("web.startCommand").map((note) => note.path)).toEqual(["web.startCommand"]);
-    expect(notes.rest.map((note) => note.path)).toEqual(["web.env.KEY"]);
+  const hint = (name: string): PullRequestHint =>
+    ({ conditional_sync: "s", pull_request: 5, row: `w:${name}` as RowId, node: "web", name, value: "x", landed: "hint" });
+  it("puts a hint beside its change by its path, the rest after", () => {
+    const notes = hintNotes([hint("startCommand"), hint("env.KEY")], new Set(["web.startCommand"]));
+    expect(notes.at("web.startCommand").map((note) => note.name)).toEqual(["startCommand"]);
+    expect(notes.rest.map((note) => note.name)).toEqual(["env.KEY"]);
   });
 });

@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import type { EnvironmentView } from "@ployz/sdk";
+import type { EnvironmentView, RowId } from "@ployz/sdk";
 import { serviceSettingRows } from "./store-services";
 import { serviceNeverSynced, serviceVariables } from "./store-variables";
 import { withPendingChanges } from "./store-view.queries";
@@ -56,7 +56,8 @@ it("says which secret needs a value, and keeping it keeps it so", () => {
 });
 
 it("marks the variables their Environment never syncs, and only this Service's", () => {
-  const marked = { ...view, never_synced: ["web.env.LOG_LEVEL", "api.env.API_KEY", "web.startCommand"] };
+  const row = (node: string, name: string | null) => ({ row: `${node}:${name}` as RowId, node, name });
+  const marked = { ...view, never_synced: [row("web", "env.LOG_LEVEL"), row("api", "env.API_KEY"), row("web", "startCommand"), row("web", null)] };
   expect(serviceVariables(serviceSettingRows(marked, "web"), "web-id", new Map(), serviceNeverSynced(marked, "web"))
     .map(({ key, neverSynced }) => ({ key, neverSynced }))).toEqual([
     { key: "API_KEY", neverSynced: false },

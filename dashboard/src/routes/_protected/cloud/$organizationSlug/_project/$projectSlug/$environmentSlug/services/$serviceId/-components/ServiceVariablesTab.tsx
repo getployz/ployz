@@ -36,8 +36,9 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
   changes: ReadonlyMap<string, unknown>;
 }) {
   const store = useStoreWriter(organizationSlug);
-  const variables = serviceVariables(serviceSettingRows(settings, service.name), service.id, changes, serviceNeverSynced(settings, service.name));
-  const writer = storeVariableWriter(store, environment, service.name, variables);
+  const rows = serviceSettingRows(settings, service.name);
+  const variables = serviceVariables(rows, service.id, changes, serviceNeverSynced(settings, service.name));
+  const writer = storeVariableWriter(store, environment, service.name, variables, rows);
 
   return (
     <ServiceVariablesView

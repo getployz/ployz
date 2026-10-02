@@ -1,7 +1,7 @@
 import { Suspense, useState } from "react";
 import { useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
-import type { BranchView, EnvironmentListing, EnvironmentRef, SyncRow } from "@ployz/sdk";
+import type { BranchView, EnvironmentListing, EnvironmentRef, SyncId, Synced } from "@ployz/sdk";
 import {
   ChevronDownIcon, CircleCheckIcon, GitBranchIcon, GitPullRequestIcon, TriangleAlertIcon, Undo2Icon,
 } from "lucide-react";
@@ -16,9 +16,9 @@ import {
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { plural } from "#/lib/plural";
 import { pullRequestQuery } from "#/modules/config-store/store-pull-requests";
-import { closesIn, goesLive, mergeSync, syncButtonState, undoPaths } from "#/modules/config-store/store-sync";
+import { closesIn, goesLive, mergeSync, syncButtonState } from "#/modules/config-store/store-sync";
 import {
-  branchQuery, diffQuery, environmentsQuery, fetchStoreView, requireView, servicesQuery, storeViewOptions, syncQuery,
+  branchQuery, environmentsQuery, fetchStoreView, requireView, servicesQuery, syncQuery,
   useCachedStoreView, useStoreViews, volumesQuery,
 } from "#/modules/config-store/store-view.queries";
 import { storeEnvironmentTree } from "#/modules/config-store/store-workspace";
@@ -59,39 +59,32 @@ function BranchSync({ params, store, branch, environments }: {
   const pullRequest = useCachedStoreView(params.organizationSlug, branch.pull_request ? pullRequestQuery(branch.pull_request) : null);
   const check = pullRequest?.ok && pullRequest.value.pull_request?.open ? pullRequest.value : null;
   const merge = pullRequest?.ok ? mergeSync(pullRequest.value, name) : null;
+  const standing = merge?.standing ?? null;
   // Its main half syncs into the Parent, or a PR Environment's Destination at the merge.
   const state = syncButtonState(branch, removal, merge);
+  // Into the Destination it syncs at the merge; anywhere else, now.
+  const when = (to: string) => merge && to === merge.into ? "at_merge" : "now";
   // Warm the main half's dialog.
-  useCachedStoreView(params.organizationSlug, syncQuery(store, state.into));
+  useCachedStoreView(params.organizationSlug, syncQuery(store, state.into, when(state.into)));
   // The Store closes a Branch only once its own Branches are gone.
   const children = environments.filter((environment) => environment.parent === name).map((environment) => environment.name);
   const others = storeEnvironmentTree(environments).map(({ environment }) => environment.name)
     .filter((other) => other !== name && other !== state.into);
   const shuttable = branch.pull_request !== null;
-  const withdraw = (to: string) =>
-    writer.commit({ command: "sync", from: store, into: { project: store.project, environment: to }, when: "withdraw" });
+  // Takes the synced changes back out of the receiver, or withdraws a Conditional Sync (its id names it too), and
+  // the next Sync offers them again.
+  const undo = (sync: SyncId) => writer.commit({ command: "undo_sync", sync });
 
-  function synced(to: string, rows: readonly SyncRow[], atMerge: number | null) {
+  function synced(to: string, changes: number, sync: Synced) {
     setInto(null);
-    if (atMerge !== null) {
+    const action = { label: "Undo", onClick: () => void undo(sync.sync) };
+    if (sync.conditional_sync) {
       // Nothing is staged in `to` until the merge: the user stays here, where the button now reads "Goes live".
-      toast.success(goesLive(rows.length, to, atMerge), { action: { label: "Undo", onClick: () => void withdraw(to) } });
+      toast.success(goesLive(changes, to, sync.conditional_sync.pull_request), { action });
       return;
     }
-    const receiver = { project: store.project, environment: to };
     void navigate(getDashboardDestination({ kind: "environment", ...params, environmentSlug: to }, "architecture"));
-    toast.success(`Synced ${plural(rows.length, "change")} from ${name}`, {
-      // The synced changes go from the receiver's changes to deploy, and the next Sync offers them again: at once, and
-      // only if the receiver is as the user sees it.
-      action: { label: "Undo", onClick: () => {
-        const seen = scope.queryClient.getQueryData(storeViewOptions(params.organizationSlug, scope, diffQuery(receiver)).queryKey);
-        const version = seen?.ok ? seen.value.version : null;
-        writer.commit({ command: "batch", environment: receiver, commands: undoPaths(rows).map((path, index) => ({
-          // One version guards the whole Batch.
-          command: "discard", environment: receiver, path, version: index === 0 ? version : null,
-        })) });
-      } },
-    });
+    toast.success(`Synced ${plural(changes, "change")} from ${name}`, { action });
   }
 
   return (
@@ -99,7 +92,7 @@ function BranchSync({ params, store, branch, environments }: {
       <ButtonGroup className="pointer-events-auto">
         <Button variant="outline" aria-label={state.count === null ? state.label : `${state.label} · ${state.count}`}
           onClick={() => setInto(state.into)}>
-          {merge?.standing ? <GitPullRequestIcon data-icon="inline-start" /> : <GitBranchIcon data-icon="inline-start" />}
+          {standing ? <GitPullRequestIcon data-icon="inline-start" /> : <GitBranchIcon data-icon="inline-start" />}
           {state.label}
           {state.count === null ? null : <span className="text-muted-foreground tabular-nums">{state.count}</span>}
         </Button>
@@ -115,7 +108,7 @@ function BranchSync({ params, store, branch, environments }: {
               </DropdownMenuItem>
               {others.map((other) => <DropdownMenuItem key={other} onClick={() => setInto(other)}>Sync to {other}</DropdownMenuItem>)}
             </DropdownMenuGroup>
-            {check || merge?.standing ? <>
+            {check || standing ? <>
               <DropdownMenuSeparator />
               <DropdownMenuGroup>
                 {check ? (
@@ -129,8 +122,8 @@ function BranchSync({ params, store, branch, environments }: {
                   </DropdownMenuLabel>
                 ) : null}
                 {/* Withdraws the Conditional Sync: the changes no longer go live with the merge. */}
-                {merge?.standing ? (
-                  <DropdownMenuItem onClick={() => void withdraw(merge.into)}>
+                {merge && standing ? (
+                  <DropdownMenuItem onClick={() => void undo(standing)}>
                     <Undo2Icon />Undo sync to {merge.into}
                   </DropdownMenuItem>
                 ) : null}
@@ -164,11 +157,11 @@ function BranchSync({ params, store, branch, environments }: {
       </ButtonGroup>
       {into === null ? null : (
         <Suspense fallback={null}>
-          <SyncDialog organizationSlug={params.organizationSlug} from={store} into={into}
+          <SyncDialog organizationSlug={params.organizationSlug} from={store} into={into} when={when(into)}
             // Closing after syncs only a Branch that isn't kept, and only into its Parent; a PR Environment closes
             // with its pull request.
             closable={into === branch.parent && !branch.kept && !me?.default && !shuttable}
-            onClose={() => setInto(null)} onSynced={(rows, atMerge) => synced(into, rows, atMerge)} />
+            onClose={() => setInto(null)} onSynced={(changes, sync) => synced(into, changes, sync)} />
         </Suspense>
       )}
       {closing.dialog}

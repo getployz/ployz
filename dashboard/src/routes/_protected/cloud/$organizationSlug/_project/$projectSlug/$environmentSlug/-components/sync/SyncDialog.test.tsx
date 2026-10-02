@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import type { SyncRow, SyncView } from "@ployz/sdk";
+import type { RowId, SyncRow, SyncView } from "@ployz/sdk";
 import { Suspense } from "react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -17,21 +17,22 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); docume
 
 const fixApi = { project: "shop", environment: "fix-api" };
 const summary = (name: string) => ({ id: `id-${name}`, project: "shop", name, revision: 1 });
-const row = (key: string, node: string, path: string, extra: Partial<SyncRow> = {}): SyncRow => ({
-  key, node, label: path, path, whole: path === node, from: null, into: null, ticked: true, changed: false, new: false, secret: false,
-  value_set: false, ...extra,
+const id = (value: string) => value as RowId;
+const row = (row: string, node: string, name: string | null, extra: Partial<SyncRow> = {}): SyncRow => ({
+  row: id(row), node, name, change: "changed", from: null, into: null, ticked: true, requires: null, secret: null, ...extra,
 });
+const secret = { needs_value: true, held: false };
 const rows = [
-  row("a:variables.LOG_LEVEL", "api", "api.env.LOG_LEVEL", { from: "debug", into: "warn", changed: true }),
+  row("a:variables.LOG_LEVEL", "api", "env.LOG_LEVEL", { from: "debug", into: "warn", change: "conflict" }),
   // Changed in production too, but a secret: its value never syncs, so Secret is what it says.
-  row("a:variables.TOKEN", "api", "api.env.TOKEN", { from: { secret: true }, changed: true, secret: true }),
-  row("w:node", "worker", "worker", { new: true }),
-  row("w:variables.MODE", "worker", "worker.env.MODE", { from: "fast", new: true }),
-  row("w:variables.KEY", "worker", "worker.env.KEY", { from: { secret: true }, new: true, secret: true }),
+  row("a:variables.TOKEN", "api", "env.TOKEN", { from: { secret: true }, change: "conflict", secret }),
+  row("w:node", "worker", null, { change: "new" }),
+  row("w:variables.MODE", "worker", "env.MODE", { from: "fast", change: "new", requires: id("w:node") }),
+  row("w:variables.KEY", "worker", "env.KEY", { from: { secret: true }, change: "new", secret, requires: id("w:node") }),
 ];
 const syncView = (extra: Partial<SyncView> = {}): SyncView => ({
   from: summary("fix-api"), into: summary("production"), at_merge: null, version: "4:abc", rows,
-  never_synced: [{ key: "a:variables.STRIPE_KEY", node: "api", label: "api.env.STRIPE_KEY", path: "api.env.STRIPE_KEY", marked_in: ["fix-api"] }],
+  never_synced: [{ row: id("a:variables.STRIPE_KEY"), node: "api", name: "env.STRIPE_KEY", marked_in: ["fix-api"] }],
   ...extra,
 });
 
@@ -40,13 +41,13 @@ function open({ view = syncView(), closable = true } = {}) {
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
   vi.spyOn(toast, "error").mockImplementation(() => "toast");
   // Always into the explicit receiver: nothing else is cached.
-  queryClient.setQueryData([...storeViewPrefix("acme"), "session", "user", syncQuery(fixApi, "production")], { ok: true, value: { view: "sync", ...view } });
+  queryClient.setQueryData([...storeViewPrefix("acme"), "session", "user", syncQuery(fixApi, "production", view.at_merge === null ? "now" : "at_merge")], { ok: true, value: { view: "sync", ...view } });
   vi.spyOn(functions, "readStoreViewServerFn").mockResolvedValue({ ok: true, value: { view: "sync", ...view } } as never);
   const write = vi.spyOn(functions, "writeStoreServerFn").mockResolvedValue({ ok: true, value: { written: "synced" } } as never);
   render(
     <QueryClientProvider client={queryClient}>
       <Suspense fallback={null}>
-        <SyncDialog organizationSlug="acme" from={fixApi} into="production" closable={closable} onClose={() => {}} onSynced={() => {}} />
+        <SyncDialog organizationSlug="acme" from={fixApi} into="production" when={view.at_merge === null ? "now" : "at_merge"} closable={closable} onClose={() => {}} onSynced={() => {}} />
       </Suspense>
     </QueryClientProvider>,
   );
@@ -93,9 +94,9 @@ it("lists what is never synced from the footer, and offers to close the Branch a
 });
 
 it("says a Conditional Sync goes live at the merge, offers no Close, and shows a value already held", async () => {
-  open({ view: syncView({ at_merge: 142, rows: [row("a:variables.TOKEN", "api", "api.env.TOKEN", { secret: true, value_set: true })] }) });
+  open({ view: syncView({ at_merge: 142, rows: [row("a:variables.TOKEN", "api", "env.TOKEN", { secret: { needs_value: true, held: true } })] }) });
   const sync = await dialog();
   expect(sync.getByText("These changes from fix-api go live in production when #142 merges.")).toBeTruthy();
   expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();
-  expect(sync.getByLabelText("Set production's value of TOKEN").getAttribute("placeholder")).toBe("Value set");
+  expect(sync.getByLabelText("Set production's value of TOKEN").getAttribute("placeholder")).toBe("Value held");
 });

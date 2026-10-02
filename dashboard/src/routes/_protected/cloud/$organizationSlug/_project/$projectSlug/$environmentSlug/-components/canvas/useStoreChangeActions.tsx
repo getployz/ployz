@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { EnvironmentRef } from "@ployz/sdk";
+import type { EnvironmentRef, RowId } from "@ployz/sdk";
 import { DeletionDialog, type DeletionCheck } from "#/components/deletion-dialog";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
@@ -60,12 +60,11 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     writer.commit({ command: "discard", environment, path, version });
   }
 
-  /** Discards `path` and marks it Never sync here, in one Batch: what arrived goes, and nothing follows into it again. */
-  function neverSync(path: string) {
-    writer.commit({ command: "batch", environment, commands: [
-      { command: "discard", environment, path, version },
-      { command: "never_sync", environment, paths: [path] },
-    ] });
+  /** Discards `path` and marks its `row` Never sync here: what arrived goes, and nothing follows into it again. */
+  function neverSync(path: string, row: RowId) {
+    // ponytail: two writes, not one transaction (a Batch can't mark); a refused discard marks nothing, a refused mark toasts.
+    void writer.commit({ command: "discard", environment, path, version }).isPersisted.promise
+      .then(() => writer.commit({ command: "never_sync", environment, rows: [row] }), () => undefined);
   }
 
   return {

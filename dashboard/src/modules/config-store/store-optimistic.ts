@@ -124,17 +124,15 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       });
       return;
     }
-    case "never_sync":
-      // At once: a mark changes what Sync offers, not Working State.
-      await views<EnvironmentView>("environment", command.environment, (view) => {
-        const marked = new Set(view.never_synced ?? []);
-        for (const path of command.paths) {
-          if (command.off) marked.delete(path);
-          else marked.add(path);
-        }
-        return { ...view, never_synced: [...marked].sort() };
-      });
+    case "never_sync": {
+      // At once: a mark changes what Sync offers, not Working State. Only an unmark: a new mark's name is the Store's.
+      if (!command.off) return;
+      const unmarked = new Set(command.rows);
+      await views<EnvironmentView>("environment", command.environment, (view) => ({
+        ...view, never_synced: view.never_synced?.filter((row) => !unmarked.has(row.row)),
+      }));
       return;
+    }
     case "keep_branch":
       // Kept, it never closes for sitting idle; when it would again is the Store's to say.
       await views<BranchView>("branch", command.environment, (view) => ({ ...view, kept: command.kept, closes_at: command.kept ? null : view.closes_at }));

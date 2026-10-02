@@ -1,4 +1,4 @@
-import type { BranchView, DeploymentSummary, PullRequestView, SyncRow } from "@ployz/sdk";
+import type { BranchView, ConditionalSyncId, DeploymentSummary, PullRequestView, RowId, SyncRow } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
 import { rowText, settingName } from "./store-branches";
 
@@ -13,13 +13,14 @@ export type SyncLine = {
 };
 
 export function syncLine(row: SyncRow, into: string): SyncLine {
+  const whole = row.name === null;
   return {
     // A whole node is named by its kind; its section names it.
-    ...row.whole ? { name: row.node.startsWith("volumes.") ? "Volume" : "Service", variable: false } : settingName(row.path),
+    ...row.name === null ? { name: row.node.startsWith("volumes.") ? "Volume" : "Service", variable: false } : settingName(row.name),
     // A secret's value never syncs, whatever else holds.
-    badge: row.secret ? "Secret" : row.changed ? `Changed in ${into}` : row.new ? "New" : null,
-    before: row.whole || row.secret ? "" : rowText(row.into),
-    after: row.whole || row.secret ? "" : rowText(row.from),
+    badge: row.secret ? "Secret" : row.change === "conflict" ? `Changed in ${into}` : row.change === "new" ? "New" : null,
+    before: whole || row.secret ? "" : rowText(row.into),
+    after: whole || row.secret ? "" : rowText(row.from),
   };
 }
 
@@ -31,32 +32,30 @@ export function syncSections(rows: readonly SyncRow[]) {
 }
 
 /**
- * What a Sync carries, from the rows the user flipped away from their default (`flipped`, by key). Leaving a new node
- * out leaves its settings out; ticked, each of its settings can still be left out on its own.
+ * What a Sync carries, from the rows the user flipped away from their default (`flipped`). A row `requires` its new
+ * node: leaving the node out leaves it out; ticked, each can still be left out on its own.
  */
-export function syncPicks(rows: readonly SyncRow[], flipped: ReadonlySet<string>) {
-  const ticked = (row: SyncRow) => row.ticked !== flipped.has(row.key);
-  const left = new Set(rows.filter((row) => row.whole && !ticked(row)).map((row) => row.node));
-  return rows.filter((row) => !left.has(row.node) && ticked(row));
-}
-
-/** What undoing a Sync discards in the receiver: each synced setting, or a new node whole. */
-export function undoPaths(synced: readonly SyncRow[]) {
-  const wholes = new Set(synced.filter((row) => row.whole).map((row) => row.node));
-  return [...new Set(synced.flatMap((row) => wholes.has(row.node) && !row.whole ? [] : [row.path]))];
+export function syncPicks(rows: readonly SyncRow[], flipped: ReadonlySet<RowId>) {
+  const ticked = (row: SyncRow) => row.ticked !== flipped.has(row.row);
+  const left = new Set(rows.filter((row) => !ticked(row)).map((row) => row.row));
+  return rows.filter((row) => ticked(row) && !(row.requires !== null && left.has(row.requires)));
 }
 
 /**
  * A PR Environment's Destination, as its pull request's view has it: where a Sync goes live at the merge (#`number`),
  * how many changes it would hold, and whether one stands there. The first Destination, or the one a Sync stands in.
  */
-export type MergeSync = { number: number; into: string; changes: number; standing: boolean };
+export type MergeSync = {
+  number: number; into: string; changes: number;
+  /** The Conditional Sync standing there: what Undo passes. */
+  standing: ConditionalSyncId | null;
+};
 
 export function mergeSync(view: PullRequestView, environment: string): MergeSync | null {
   const destinations = view.environments.find((row) => row.environment.name === environment)?.destinations ?? [];
   const destination = destinations.find((row) => row.conditional_sync?.standing) ?? destinations[0];
   if (!view.pull_request || !destination) return null;
-  const standing = destination.conditional_sync?.standing === true;
+  const standing = destination.conditional_sync?.standing ? destination.conditional_sync.id : null;
   return { number: view.pull_request.number, into: destination.name, changes: destination.changes, standing };
 }
 

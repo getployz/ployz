@@ -2,7 +2,7 @@ import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useMut
 import type {
   BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, Change, ConfigQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
   DeploymentsView, DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, EnvironmentView, NamespaceQuery,
-  ProjectsQuery, RemovalsQuery, ServicesQuery, SyncQuery, VolumesQuery,
+  ProjectsQuery, RemovalsQuery, ServicesQuery, SyncQuery, VolumesQuery, When,
 } from "@ployz/sdk";
 import { Schema } from "effect";
 import type { CollectionScope } from "#/collections/scope";
@@ -248,9 +248,9 @@ export function branchQuery(environment: EnvironmentRef): { query: "branch" } & 
   return { query: "branch", environment };
 }
 
-/** What a Sync from `from` into `into` (by name; null, its Parent) would stage: the Sync dialog's rows. */
-export function syncQuery(from: EnvironmentRef, into: string | null = null): { query: "sync" } & SyncQuery {
-  return { query: "sync", from, into: into === null ? null : { project: from.project, environment: into } };
+/** What a Sync from `from` into `into` (by name) would carry, now or at the merge: the Sync dialog's rows. */
+export function syncQuery(from: EnvironmentRef, into: string, when: When): { query: "sync" } & SyncQuery {
+  return { query: "sync", from, into: { project: from.project, environment: into }, when };
 }
 
 /** What a Branch of `from` would copy and use live, for the picks so far (by name), or for a preset around `focus`. */
