@@ -450,3 +450,32 @@ fn a_followed_variable_the_branch_removes_is_its_own() {
         .unwrap();
     assert_eq!(incoming(&store, &who, "fix-web"), ["web.image production"]);
 }
+
+#[test]
+fn a_change_the_branch_refuses_is_a_hint_and_the_rest_still_follows() {
+    let (store, who) = shop();
+    // fix-web made its own `api`: production's `api` clashes with it by name.
+    for (n, environment) in [(12, "fix-web"), (11, "production")] {
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(uuid(n)).unwrap(),
+                    environment: at(environment),
+                    name: ServiceName::parse("api").unwrap(),
+                    image: Some(format!("api:{n}")),
+                    template: None,
+                },
+            )
+            .unwrap();
+    }
+    set(&store, &who, "production", &[("web.image", json!("web:2"))]);
+    deploy(&store, &who, "production", 2);
+    assert_eq!(web(&store, &who, "fix-web")["image"], json!("web:2"));
+    assert_eq!(incoming(&store, &who, "fix-web"), ["web.image production"]);
+    let hints = hints(&store, &who, "fix-web");
+    assert!(
+        hints.iter().any(|hint| hint.starts_with("api ")),
+        "{hints:?}"
+    );
+}

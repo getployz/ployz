@@ -611,6 +611,27 @@ impl Plan {
         serde_json::to_string(&self.rows).expect("rows are JSON")
     }
 
+    /// The most of `picks` that [`Self::apply`] takes with no `values`: each pick in
+    /// landing order, left out when it would fail, and with it the rows of its node.
+    #[must_use]
+    pub fn landable(&self, picks: &BTreeSet<RowId>) -> BTreeSet<RowId> {
+        let none = BTreeMap::new();
+        if self.apply(picks, &none).is_ok() {
+            return picks.clone();
+        }
+        let mut order: Vec<&RowId> = picks.iter().collect();
+        order.sort_by_key(|row| landing_order(&self.from, row));
+        // ponytail: one apply per pick, O(n²) only once something is refused.
+        let mut landable = BTreeSet::new();
+        for pick in order {
+            landable.insert(pick.clone());
+            if self.apply(&landable, &none).is_err() {
+                landable.remove(pick);
+            }
+        }
+        landable
+    }
+
     /// Land `picks` in `into`: [`put`] once per pick, a new node first. A `NeedsValue`
     /// pick takes its sealed secret from `values`, or lands without one and is `waiting`;
     /// `values` for any other row are ignored.
