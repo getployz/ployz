@@ -35,13 +35,13 @@ export type DestinationNews =
   | { kind: "stale"; into: string; changes: number; save: string };
 
 /**
- * A PR Environment's news per Destination, from its pull request's view: a standing Conditional Save reads as saved
+ * A PR Environment's news per Destination, from its pull request's view: a standing Conditional Sync reads as saved
  * (Undo), one the PR Environment or target branch moved past as stale (save again), and changes nobody saved as to save.
  */
 export function destinationNews(view: PullRequestView, environment: string): DestinationNews[] {
   const destinations = view.environments.find((row) => row.environment.name === environment)?.destinations ?? [];
   return destinations.flatMap((destination): DestinationNews[] => {
-    const { save, name: into, changes } = destination;
+    const { conditional_sync: save, name: into, changes } = destination;
     if (save?.standing) return [{ kind: "saved", into, changes: save.changes, save: save.id }];
     if (save) return [{ kind: "stale", into, changes: Math.max(changes, save.changes), save: save.id }];
     return changes > 0 ? [{ kind: "save", into, changes }] : [];

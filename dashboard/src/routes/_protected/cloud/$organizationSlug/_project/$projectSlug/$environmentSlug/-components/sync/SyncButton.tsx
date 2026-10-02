@@ -2,19 +2,24 @@ import { Suspense, useState } from "react";
 import { useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
 import type { BranchView, EnvironmentListing, EnvironmentRef, SyncRow } from "@ployz/sdk";
-import { ChevronDownIcon, GitBranchIcon } from "lucide-react";
+import {
+  ChevronDownIcon, CircleCheckIcon, GitBranchIcon, GitPullRequestIcon, TriangleAlertIcon, Undo2Icon,
+} from "lucide-react";
 import { getDashboardDestination } from "#/components/dashboard-navigation-model";
 import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
 import { Button } from "#/components/ui/button";
 import { ButtonGroup } from "#/components/ui/button-group";
 import {
-  DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuSeparator,
-  DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel,
+  DropdownMenuSeparator, DropdownMenuTrigger,
 } from "#/components/ui/dropdown-menu";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { plural } from "#/lib/plural";
-import { closesIn, syncButtonState, undoPaths } from "#/modules/config-store/store-sync";
-import { branchQuery, environmentsQuery, fetchStoreView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { pullRequestQuery } from "#/modules/config-store/store-pull-requests";
+import { closesIn, goesLive, mergeSync, syncButtonState, undoPaths } from "#/modules/config-store/store-sync";
+import {
+  branchQuery, environmentsQuery, fetchStoreView, servicesQuery, useCachedStoreView, useStoreViews, volumesQuery,
+} from "#/modules/config-store/store-view.queries";
 import { storeEnvironmentTree } from "#/modules/config-store/store-workspace";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
@@ -25,7 +30,9 @@ type Params = { organizationSlug: string; projectSlug: string; environmentSlug: 
 
 /**
  * A Branch's one control, at the canvas's top right: it says what a Sync into its Parent carries and opens the Sync
- * dialog; ▾ syncs anywhere else in the Project and holds Keep, Shut down and Close. Elsewhere it isn't there.
+ * dialog; ▾ syncs anywhere else in the Project and holds Keep, Shut down and Close. On a PR Environment it syncs into
+ * the Destination at the merge, reads "Goes live with #N" once that stands, and ▾ adds the GitHub check and Undo.
+ * Elsewhere it isn't there.
  */
 export function SyncButton() {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
@@ -49,16 +56,30 @@ function BranchSync({ params, store, branch, environments }: {
   const name = branch.environment.name;
   const me = environments.find((environment) => environment.name === name);
   const removal = me?.removal ?? null;
-  const state = syncButtonState(branch, removal);
+  // A PR Environment's pull request: its Destination, its Conditional Sync there and its GitHub check. Chrome.
+  const pullRequest = useCachedStoreView(params.organizationSlug, branch.pull_request ? pullRequestQuery(branch.pull_request) : null);
+  const check = pullRequest?.ok && pullRequest.value.pull_request?.open ? pullRequest.value : null;
+  const merge = pullRequest?.ok ? mergeSync(pullRequest.value, name) : null;
+  const state = syncButtonState(branch, removal, merge);
+  // Where its main half syncs: the Parent, or a PR Environment's Destination at the merge.
+  const target = merge?.into ?? branch.parent;
+  const targetCount = merge ? merge.changes : branch.to_parent;
   // The Store closes a Branch only once its own Branches are gone.
   const children = environments.filter((environment) => environment.parent === name).map((environment) => environment.name);
   const others = storeEnvironmentTree(environments).map(({ environment }) => environment.name)
-    .filter((other) => other !== name && other !== branch.parent);
+    .filter((other) => other !== name && other !== target);
   const shuttable = branch.pull_request !== null;
+  const withdraw = (to: string) =>
+    writer.commit({ command: "sync", from: store, into: { project: store.project, environment: to }, picks: [], when: "at_merge" });
 
-  function synced(to: string, rows: readonly SyncRow[]) {
-    const receiver = { project: store.project, environment: to };
+  function synced(to: string, rows: readonly SyncRow[], atMerge: number | null) {
     setInto(null);
+    if (atMerge !== null) {
+      // Nothing is staged in `to` until the merge: the user stays here, where the button now reads "Goes live".
+      toast.success(goesLive(rows.length, to, atMerge), { action: { label: "Undo", onClick: () => void withdraw(to) } });
+      return;
+    }
+    const receiver = { project: store.project, environment: to };
     void navigate(getDashboardDestination({ kind: "environment", ...params, environmentSlug: to }, "architecture"));
     toast.success(`Synced ${plural(rows.length, "change")} from ${name}`, {
       // The synced changes go from the receiver's changes to deploy, and the next Sync offers them again.
@@ -72,8 +93,8 @@ function BranchSync({ params, store, branch, environments }: {
     <>
       <ButtonGroup className="pointer-events-auto">
         <Button variant="outline" aria-label={state.count === null ? state.label : `${state.label} · ${state.count}`}
-          onClick={() => setInto(branch.parent)}>
-          <GitBranchIcon data-icon="inline-start" />
+          onClick={() => setInto(target)}>
+          {merge?.standing ? <GitPullRequestIcon data-icon="inline-start" /> : <GitBranchIcon data-icon="inline-start" />}
           {state.label}
           {state.count === null ? null : <span className="text-muted-foreground tabular-nums">{state.count}</span>}
         </Button>
@@ -83,12 +104,33 @@ function BranchSync({ params, store, branch, environments }: {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-auto min-w-56">
             <DropdownMenuGroup>
-              <DropdownMenuItem onClick={() => setInto(branch.parent)}>
-                Sync to {branch.parent}
-                {branch.to_parent ? <span className="ml-auto pl-4 text-muted-foreground">{plural(branch.to_parent, "change")}</span> : null}
+              <DropdownMenuItem onClick={() => setInto(target)}>
+                Sync to {target}
+                {targetCount ? <span className="ml-auto pl-4 text-muted-foreground">{plural(targetCount, "change")}</span> : null}
               </DropdownMenuItem>
               {others.map((other) => <DropdownMenuItem key={other} onClick={() => setInto(other)}>Sync to {other}</DropdownMenuItem>)}
             </DropdownMenuGroup>
+            {check || merge?.standing ? <>
+              <DropdownMenuSeparator />
+              <DropdownMenuGroup>
+                {check ? (
+                  <DropdownMenuLabel className="flex items-start gap-2 text-sm font-normal">
+                    {check.passing ? <CircleCheckIcon className="mt-0.5 size-4 shrink-0 text-success" />
+                      : <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />}
+                    <span>
+                      <span className="block text-foreground">{check.passing ? "Ready to merge on GitHub" : "Not ready to merge on GitHub"}</span>
+                      {check.reason}
+                    </span>
+                  </DropdownMenuLabel>
+                ) : null}
+                {/* Withdraws the Conditional Sync: the changes no longer go live with the merge. */}
+                {merge?.standing ? (
+                  <DropdownMenuItem onClick={() => void withdraw(merge.into)}>
+                    <Undo2Icon />Undo sync to {merge.into}
+                  </DropdownMenuItem>
+                ) : null}
+              </DropdownMenuGroup>
+            </> : null}
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
               <DropdownMenuCheckboxItem checked={branch.kept}
@@ -118,9 +160,10 @@ function BranchSync({ params, store, branch, environments }: {
       {into === null ? null : (
         <Suspense fallback={null}>
           <SyncDialog organizationSlug={params.organizationSlug} from={store} into={into} parent={branch.parent}
-            // Closing after syncs only a Branch that isn't kept, and only into its Parent.
-            closable={into === branch.parent && !branch.kept && !me?.default}
-            onClose={() => setInto(null)} onSynced={(rows) => synced(into, rows)} />
+            // Closing after syncs only a Branch that isn't kept, and only into its Parent; a PR Environment closes
+            // with its pull request.
+            closable={into === branch.parent && !branch.kept && !me?.default && !shuttable}
+            onClose={() => setInto(null)} onSynced={(rows, atMerge) => synced(into, rows, atMerge)} />
         </Suspense>
       )}
       {closing.dialog}

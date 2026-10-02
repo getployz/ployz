@@ -34,7 +34,7 @@ const github = fakeGithubApiBy(({ url }): JsonValue => url.endsWith("/pulls/5")
       : { id: 42, full_name: "acme/web", private: true }).service;
 
 it.live(
-  "a merge pushed before its closed delivery freezes the Conditional Save, and that push lands it before it deploys",
+  "a merge pushed before its closed delivery freezes the Conditional Sync, and that push lands it before it deploys",
   () =>
     Effect.gen(function* () {
       const services = yield* Layer.build(yield* storeTestCloud({ github }));
@@ -55,12 +55,12 @@ it.live(
       };
       yield* Effect.promise(() => store.system(ORGANIZATION, opened));
 
-      // PR #5 changes a variable and saves it for its merge; its check is named for Cloud to publish.
+      // PR #5 changes a variable and syncs it for its merge; its check is named for Cloud to publish.
       const pr = { project: null, environment: "pr-5" };
       yield* write({ command: "edit", environment: pr, expect: null, changes: [{ op: "set", path: "web.env.MODE", value: "fast" }] });
-      const saved = yield* write({ command: "move", move: "save", from: pr });
-      expect(saved).toMatchObject({
-        written: "moved", staged: [], conditional_save: { state: "standing", rows: ["web.env.MODE"] },
+      const synced = yield* write({ command: "sync", from: pr });
+      expect(synced).toMatchObject({
+        written: "synced", staged: [], conditional_sync: { state: "standing", rows: ["web.env.MODE"] },
         checks: [{ repository_id: 42, number: 5 }],
       });
 
@@ -68,7 +68,7 @@ it.live(
       const runner: Parameters<typeof createStoreGithubPush>[1] = makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(
         Effect.provide(services))));
       const pushed = (yield* Effect.promise(async () => (await new InngestTestEngine({
-        function: createStoreGithubPush(new Inngest({ id: "store-conditional-save-test" }), runner),
+        function: createStoreGithubPush(new Inngest({ id: "store-conditional-sync-test" }), runner),
         events: [{
           name: githubPushReceivedEvent,
           data: {
@@ -81,7 +81,7 @@ it.live(
       expect(pushed.admitted).toHaveLength(1);
       const web = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "service", environment: here, service: "web" }));
       expect(web).toMatchObject({ values: { env: { MODE: "fast" } } });
-      expect(yield* Effect.promise(() => store.pendingSaves(ORGANIZATION, 42, "main"))).toEqual({ standing: [], merged: [] });
+      expect(yield* Effect.promise(() => store.pendingSyncs(ORGANIZATION, 42, "main"))).toEqual({ standing: [], merged: [] });
       const environments = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "environments", project: null }));
       expect(environments.environments.map((listing) => listing.name)).toEqual(["production"]);
     }),

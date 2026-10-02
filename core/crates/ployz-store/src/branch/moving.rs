@@ -12,12 +12,21 @@ pub(crate) fn move_changes(
     let (named, direction, picks, version) = match request {
         Move::Take(take) => {
             return match &take.from {
-                HintSource::Save(save) => crate::conditional_save::take(tx, who, save, take),
+                HintSource::ConditionalSync(save) => {
+                    crate::conditional_sync::take(tx, who, save, take)
+                }
                 HintSource::Parent(parent) => follow::take(tx, who, parent, take),
             };
         }
-        Move::Save(save) if crate::conditional_save::at_merge(tx, who, &save.from, save.when)? => {
-            return crate::conditional_save::save(tx, who, sealing, save);
+        Move::Save(save)
+            if crate::conditional_sync::at_merge(
+                tx,
+                who,
+                (&save.from, save.into.as_ref()),
+                save.when,
+            )? =>
+        {
+            return crate::conditional_sync::save(tx, who, sealing, save);
         }
         Move::Save(save) => (
             (&save.from, save.into.as_ref()),
@@ -48,7 +57,7 @@ pub(crate) fn move_changes(
         from: sides.from.summary,
         into: sides.into.summary,
         staged,
-        conditional_save: None,
+        conditional_sync: None,
     })
 }
 
@@ -59,8 +68,8 @@ pub(crate) fn move_view(
 ) -> Result<MoveView, RpcError> {
     let (named, direction) = match query {
         MoveQuery::Save { from, into, when } => {
-            if crate::conditional_save::at_merge(tx, who, from, *when)? {
-                return crate::conditional_save::view(tx, who, from, into.as_ref());
+            if crate::conditional_sync::at_merge(tx, who, (from, into.as_ref()), *when)? {
+                return crate::conditional_sync::view(tx, who, from, into.as_ref());
             }
             ((from, into.as_ref()), Direction::Save)
         }

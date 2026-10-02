@@ -4,13 +4,16 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import {
   createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider,
 } from "@tanstack/react-router";
-import type { BranchView, ConfigCommand, ConfigQuery, ConfigView, EnvironmentListing, SyncRow, SyncView } from "@ployz/sdk";
+import type {
+  BranchView, ConfigCommand, ConfigQuery, ConfigView, EnvironmentListing, PullRequestView, SyncRow, SyncView,
+} from "@ployz/sdk";
 import type { MouseEvent } from "react";
 import { toast, type Action } from "sonner";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import { asTestDouble } from "#/lib/test-double";
 import * as functions from "#/modules/config-store/store.functions";
+import { pullRequestQuery } from "#/modules/config-store/store-pull-requests";
 import { branchQuery, environmentsQuery, storeViewPrefix, syncQuery } from "#/modules/config-store/store-view.queries";
 import { SyncButton } from "./SyncButton";
 
@@ -37,13 +40,25 @@ const rows = [
   row("a:variables.STRIPE_WEBHOOK_SECRET", "api.env.STRIPE_WEBHOOK_SECRET", { from: { secret: true }, new: true, secret: true }),
 ];
 const syncView = (extra: Partial<SyncView> = {}): SyncView => ({
-  from: summary("fix-api"), into: summary("production"), version: "4:abc", rows,
+  from: summary("fix-api"), into: summary("production"), at_merge: null, version: "4:abc", rows,
   never_synced: [{ key: "a:variables.STRIPE_KEY", node: "api", label: "api.env.STRIPE_KEY", marked_in: ["fix-api"] }], ...extra,
 });
+const pr142 = { repository_id: 1, number: 142 };
+/** PR #142's view: fix-api is its PR Environment, production its Destination with 3 changes; `synced`, they stand there. */
+const pullRequestView = (synced: boolean): PullRequestView => ({
+  pull_request: {
+    ...pr142, title: "Add search", author: "ada", bot: false, head_branch: "search", head: "1".repeat(40), target_branch: "main",
+    commits: 1, open: true, merge_commit: null, merge_reached: null, updated: "2026-09-29T10:00:00Z",
+  },
+  environments: [{ environment: summary("fix-api"), deployment: null, destinations: [{
+    name: "production", changes: 3, conditional_sync: synced ? { id: "cs", standing: true, changes: 3 } : null,
+  }] }],
+  passing: synced, reason: synced ? "3 changes go live with this PR" : "3 changes to sync in Ployz",
+});
 
-function open({ branch = branchView(), sync = syncView(), environments = [
+function open({ branch = branchView(), sync = syncView(), pullRequest = null, environments = [
   listing("production", { default: true }), listing("fix-api", { parent: "production" }), listing("staging"), listing("demo"),
-] }: { branch?: BranchView; sync?: SyncView; environments?: EnvironmentListing[] } = {}) {
+] }: { branch?: BranchView; sync?: SyncView; pullRequest?: PullRequestView | null; environments?: EnvironmentListing[] } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
   vi.spyOn(toast, "error").mockImplementation(() => "toast");
@@ -53,6 +68,7 @@ function open({ branch = branchView(), sync = syncView(), environments = [
   seed(branchQuery(fixApi), { view: "branch", ...branch });
   seed(environmentsQuery("shop"), { view: "environments", project: { id: "shop", name: "shop" }, environments });
   seed(syncQuery(fixApi), { view: "sync", ...sync });
+  if (pullRequest) seed(pullRequestQuery(pr142), { view: "pull_request", ...pullRequest });
   // The Sync view as the Store has it now: a test changes it to what a write leaves.
   const store = { sync };
   // What a refetch reads: that Sync view, fix-api's own views as seeded, and no Branch elsewhere.
@@ -192,6 +208,48 @@ it("keeps a kept Branch open after syncing: no Close checkbox", async () => {
   open({ branch: branchView({ kept: true, closes_at: null }) });
   const sync = await dialog();
   expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();
+});
+
+it("syncs a PR Environment into its Destination at the merge, staying put, and Undo withdraws it", async () => {
+  const app = open({ branch: branchView({ pull_request: pr142 }), sync: syncView({ at_merge: 142 }), pullRequest: pullRequestView(false) });
+  const sync = await dialog();
+  expect(sync.getByText("These changes from fix-api go live in production when #142 merges.")).toBeTruthy();
+  // A PR Environment closes with its pull request.
+  expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();
+  fireEvent.click(sync.getByRole("button", { name: "Sync 4 changes" }));
+  await waitFor(() => expect(app.success).toHaveBeenCalled());
+  expect(app.commands()[0]).toMatchObject({ command: "sync", from: fixApi, close_after: false });
+  expect(app.router.state.location.pathname).toBe("/cloud/acme/shop/fix-api");
+  expect(app.success.mock.calls.at(0)?.[0]).toBe("4 changes go live in production when #142 merges");
+  // SAFETY: the Sync button's toast action is a label and a click, never a node.
+  const action = app.success.mock.calls.at(0)?.[1]?.action as Action | undefined;
+  action?.onClick(asTestDouble<MouseEvent<HTMLButtonElement>>()({}));
+  await waitFor(() => expect(app.commands()[1]).toEqual({
+    command: "sync", from: fixApi, into: { project: "shop", environment: "production" }, picks: [], when: "at_merge",
+  }));
+});
+
+it("reads Goes live with #N once a Conditional Sync stands, with the GitHub check and Undo in its menu", async () => {
+  const app = open({ branch: branchView({ pull_request: pr142 }), pullRequest: pullRequestView(true) });
+  expect(await screen.findByRole("button", { name: "Goes live with #142" })).toBeTruthy();
+  const items = await menu();
+  expect(items.getByText("Ready to merge on GitHub")).toBeTruthy();
+  expect(items.getByText("3 changes go live with this PR")).toBeTruthy();
+  expect(items.getByRole("menuitem", { name: "Shut down until the next push" })).toBeTruthy();
+  fireEvent.click(items.getByRole("menuitem", { name: "Undo sync to production" }));
+  await waitFor(() => expect(app.commands()).toEqual([{
+    command: "sync", from: fixApi, into: { project: "shop", environment: "production" }, picks: [], when: "at_merge",
+  }]));
+});
+
+it("syncs a PR Environment into another Environment now, from the menu", async () => {
+  const app = open({ branch: branchView({ pull_request: pr142 }), pullRequest: pullRequestView(true) });
+  fireEvent.click((await menu()).getByRole("menuitem", { name: "Sync to staging" }));
+  const sync = within(await screen.findByRole("dialog", { name: "Sync to staging" }));
+  expect(sync.getByText("These changes from fix-api become staging's changes to deploy.")).toBeTruthy();
+  fireEvent.click(sync.getByRole("button", { name: "Sync 4 changes" }));
+  await waitFor(() => expect(app.router.state.location.pathname).toBe("/cloud/acme/shop/staging"));
+  expect(app.success.mock.calls.at(0)?.[0]).toBe("Synced 4 changes from fix-api");
 });
 
 it("shows the fresh rows when the review went stale, and stays open", async () => {

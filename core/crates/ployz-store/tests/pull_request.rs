@@ -403,7 +403,7 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
         )
         .unwrap();
     assert!(!view.passing);
-    assert_eq!(view.reason, "1 change to save in Ployz");
+    assert_eq!(view.reason, "1 change to sync in Ployz");
 }
 
 #[test]
@@ -795,5 +795,5 @@ fn a_destinations_count_is_the_rows_its_save_offers_where_nodes_are_used_live() 
     assert_eq!(destinations.len(), 1);
     assert_eq!(destinations[0].name.as_str(), "qa");
     assert_eq!(destinations[0].changes, review.rows.len());
-    assert_eq!(view.reason, "1 change to save in Ployz");
+    assert_eq!(view.reason, "1 change to sync in Ployz");
 }

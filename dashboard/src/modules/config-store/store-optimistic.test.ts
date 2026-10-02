@@ -135,7 +135,7 @@ it("moves a change marked Never sync into the Sync dialog's never-synced list at
   const change = (variable: string) => ({ key: `w:variables.${variable}`, node: "web", label: `web.env.${variable}`, from: "a", into: "b",
     ticked: true, changed: false, new: false, secret: false });
   queryClient.setQueryData<unknown>(key, { ok: true, value: {
-    from: side("fix-web"), into: side("production"), version: "1:1", rows: [change("A"), change("B")],
+    from: side("fix-web"), into: side("production"), at_merge: null, version: "1:1", rows: [change("A"), change("B")],
     never_synced: [{ key: "w:variables.C", node: "web", label: "web.env.C", marked_in: ["fix-web", "production"] }],
   } satisfies SyncView });
   const read = () => queryClient.getQueryData<{ value: SyncView }>(key)?.value;

@@ -297,9 +297,9 @@ _Avoid_: Saved Service config, copied consumer snapshot, second source of truth
 An Environment made from another, its Parent, and deployed to its own Namespace. Its nodes keep their Parent's lineage. It runs Own Copies of the nodes picked, and uses what those need from its Parent's Namespace as Live Nodes. It closes when it is deleted after a Save, unless it is a Kept Branch. Branching rules are pure authored-configuration rules, the same for every client.
 _Avoid_: Fork, clone, preview; "branch" alone for a Git branch
 
-**Conditional Save**:
-A PR Environment's Save into one of its Destinations that goes live with its pull request's merge. It keeps what landing needs, sealed secrets and registry credentials included, so it lands even once the PR Environment is gone. Where the Destination changed a row too, the pull request's value lands only as a hint, which a take stages.
-_Avoid_: Approval, deferred save
+**Conditional Sync**:
+A PR Environment's Sync into one of its Destinations that goes live with its pull request's merge; a Sync from it into any other Environment stages now. It keeps what landing needs, sealed secrets and registry credentials included, so it lands even once the PR Environment is gone. Where the Destination changed a row too, the pull request's value lands only as a hint, which a take stages. The author's own edits to the PR Environment, or a new target Git branch, withdraw it; what the PR Environment follows from its Parent doesn't.
+_Avoid_: Approval, deferred sync, Conditional Save
 
 **Parent**:
 The Environment a Branch was made from, whose Namespace lends the Branch its Live Nodes. An Environment without one, such as production, is a root.

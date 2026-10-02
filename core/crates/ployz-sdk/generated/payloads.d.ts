@@ -156,7 +156,7 @@ head: CommitSha | null,
  */
 changed: Array<string> | null,
 /**
- * The merge commits of frozen Conditional Saves ([`crate::PendingSaves::merged`])
+ * The merge commits of frozen Conditional Syncs ([`crate::PendingSyncs::merged`])
  * Cloud found `head` is or descends from: this push carries those saves.
  */
 merged: Array<CommitSha>, };
@@ -455,17 +455,19 @@ export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, n
 
 export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
 
-export type ConditionalSave = {
+export type ConditionalSync = {
 /**
  * Pass to [`Take::from`] to use a hint it left.
  */
-id: ConditionalSaveId, pull_request: PullRequestNumber,
+id: ConditionalSyncId, pull_request: PullRequestNumber,
 /**
  * The rows it holds.
  */
-rows: Array<string>, state: SaveState, };
+rows: Array<string>, state: ConditionalSyncState, };
 
-export type ConditionalSaveId = string;
+export type ConditionalSyncId = string;
+
+export type ConditionalSyncState = "standing" | "frozen" | "landed";
 
 export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "rename_project" } & RenameProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "set_volume_storage" } & SetVolumeStorage | { "command": "set_volume_shared_writes" } & SetVolumeSharedWrites | { "command": "remove_volume" } & RemoveVolume | { "command": "rename_volume" } & RenameVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "set_generated_domain" } & SetGeneratedDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "move" } & Move | { "command": "sync" } & SyncChanges | { "command": "copy_node" } & CopyNode | { "command": "never_sync" } & NeverSync | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "set_branch_setup" } & SetBranchSetup | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "set_pr_plan" } & SetPrPlan | { "command": "batch" } & Batch;
 
@@ -1022,17 +1024,17 @@ next_cursor: string | null, };
 
 export type Destination = { name: EnvironmentName,
 /**
- * The PR Environment's changes a Save would move there.
+ * The changes a Sync there would hold: the Sync view's ticked rows.
  */
 changes: number,
 /**
- * Its Conditional Save there, if any.
+ * Its Conditional Sync there, if any.
  */
-save: DestinationSave | null, };
+conditional_sync: DestinationSync | null, };
 
-export type DestinationSave = { id: ConditionalSaveId,
+export type DestinationSync = { id: ConditionalSyncId,
 /**
- * False once the PR Environment or the target branch changed since: save again.
+ * False once the PR Environment or the target branch changed since: sync again.
  */
 standing: boolean,
 /**
@@ -1504,7 +1506,7 @@ export type HealthcheckCommand = [string, ...string[]];
 
 export type HealthcheckSpec = { "state": "disabled" } | { "state": "configured" } & ConfiguredHealthcheck | { "state": "http" } & HttpHealthcheck;
 
-export type HintSource = ConditionalSaveId | EnvironmentName;
+export type HintSource = ConditionalSyncId | EnvironmentName;
 
 export type HookContainer = ContainerObservation;
 
@@ -1906,10 +1908,10 @@ staged: Array<NodeName>,
  */
 branch: BranchView | null,
 /**
- * The Conditional Save now: standing after a Save at merge, the one taken
+ * The Conditional Sync now: standing after a Save at merge, the one taken
  * from after a take; none once withdrawn and for a Move now.
  */
-conditional_save: ConditionalSave | null, };
+conditional_sync: ConditionalSync | null, };
 
 export type Namespace = string;
 
@@ -2310,7 +2312,7 @@ merge_commit: CommitSha | null,
 /**
  * Once merged: the target branch's head as the Store last saw it
  * ([`crate::ConfigStore::branch_head`]), when Cloud found the merge commit in it
- * already. Its Conditional Saves then land with what that push deployed.
+ * already. Its Conditional Syncs then land with what that push deployed.
  */
 merge_reached: CommitSha | null,
 /**
@@ -2320,9 +2322,9 @@ updated: GithubTimestamp, };
 
 export type PullRequestHint = {
 /**
- * The Conditional Save: pass to [`Take::from`].
+ * The Conditional Sync: pass to [`Take::from`].
  */
-save: ConditionalSaveId, pull_request: PullRequestNumber,
+save: ConditionalSyncId, pull_request: PullRequestNumber,
 /**
  * `NODE.path`, as a Move names it.
  */
@@ -2348,7 +2350,7 @@ pull_request: PullRequest | null,
  */
 environments: Array<PrEnvironment>,
 /**
- * Ready to merge: nothing waits to be saved into an Environment that deploys
+ * Ready to merge: nothing waits to be synced into an Environment that deploys
  * its target branch.
  */
 passing: boolean,
@@ -2652,13 +2654,11 @@ picks?: Array<MovePick> | null,
  */
 version?: string | null,
 /**
- * `now` stages the changes; `at_merge` saves them as a Conditional Save that
+ * `now` stages the changes; `at_merge` saves them as a Conditional Sync that
  * goes live with the pull request's merge, and `picks: []` withdraws it.
  * Omitted: `at_merge` from a PR Environment, else `now`.
  */
 when?: When | null, };
-
-export type SaveState = "standing" | "frozen" | "landed";
 
 export type SavedEnvironmentIntent = { version: 1, environmentSlug: string, services: Array<SavedServiceIntent>, volumes: Array<SavedVolumeIntent>, };
 
@@ -3134,7 +3134,14 @@ version?: string | null,
 /**
  * Close the Branch once its changes landed: refused for a kept Branch.
  */
-close_after?: boolean, };
+close_after?: boolean,
+/**
+ * `now` stages the changes; `at_merge` makes them a Conditional Sync that goes
+ * live with the pull request's merge, and `picks: []` withdraws it. Omitted:
+ * `at_merge` from a PR Environment into one of its Destinations (`into`
+ * omitted, its only one), else `now`.
+ */
+when?: When | null, };
 
 export type SyncQuery = {
 /**
@@ -3142,7 +3149,8 @@ export type SyncQuery = {
  */
 from: EnvironmentRef,
 /**
- * As [`SyncChanges::into`].
+ * As [`SyncChanges::into`]; from a PR Environment, omitted means its only
+ * Destination.
  */
 into?: EnvironmentRef | null, };
 
@@ -3196,6 +3204,11 @@ from: EnvironmentSummary,
  */
 into: EnvironmentSummary,
 /**
+ * The pull request whose merge they go live with, as a Conditional Sync; none
+ * when they are staged now.
+ */
+at_merge: PullRequestNumber | null,
+/**
  * Pass to [`SyncChanges::version`] to sync exactly these changes.
  */
 version: string,
@@ -3226,13 +3239,18 @@ staged: Array<NodeName>,
  * The Branch is closing, as [`SyncChanges::close_after`] asked: it leaves the
  * Servers, then is deleted.
  */
-closing: boolean, };
+closing: boolean,
+/**
+ * The Conditional Sync standing now, for a Sync at merge; none for a Sync now
+ * and once withdrawn.
+ */
+conditional_sync: ConditionalSync | null, };
 
 export type SystemEvent = { "event": "branch_head" } & BranchHead | { "event": "check_suite" } & CheckSuite | { "event": "pull_request" } & PullRequest | { "event": "sweep" } & Sweep | { "event": "cluster_forgotten" };
 
 export type Take = {
 /**
- * The retained Conditional Save whose hints to take, or the Parent whose Follow
+ * The retained Conditional Sync whose hints to take, or the Parent whose Follow
  * hints to take.
  */
 from: HintSource,

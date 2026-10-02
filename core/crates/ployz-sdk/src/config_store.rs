@@ -295,13 +295,13 @@ impl ConfigStore {
             .await
     }
 
-    /// The Conditional Saves a push to a GitHub branch may freeze or carry:
+    /// The Conditional Syncs a push to a GitHub branch may freeze or carry:
     /// `{standing: [number], merged: [commit]}`. Only Cloud's GitHub workers call this.
     ///
     /// # Errors
     /// Returns a storage error.
     #[napi]
-    pub async fn pending_saves(
+    pub async fn pending_syncs(
         &self,
         organization: String,
         repository_id: i64,
@@ -309,7 +309,7 @@ impl ConfigStore {
     ) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
         let (repository_id, branch) = github_branch(repository_id, &branch)?;
-        self.run(move |store| store.pending_saves(&who.organization, repository_id, &branch))
+        self.run(move |store| store.pending_syncs(&who.organization, repository_id, &branch))
             .await
     }
 }

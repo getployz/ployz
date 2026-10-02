@@ -24,7 +24,7 @@ pub(crate) use pair::*;
 pub use setup::SetBranchSetup;
 pub(crate) use setup::{branch_setup, set_branch_setup};
 pub use sync::{NeverSyncedRow, SyncChanges, SyncQuery, SyncRow, SyncView, Synced};
-pub(crate) use sync::{sync, sync_view};
+pub(crate) use sync::{sync, sync_picks, sync_view, sync_view_of};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -46,7 +46,8 @@ use ts_rs::TS;
 use crate::deployment::{self, DeploymentStatus};
 use crate::error;
 use crate::id::{
-    ConditionalSaveId, DeploymentId, EnvironmentId, EnvironmentName, Revision, VolumeName,
+    ConditionalSyncId, DeploymentId, EnvironmentId, EnvironmentName, PullRequestNumber, Revision,
+    VolumeName,
 };
 use crate::policy::{self, Policy};
 use crate::project::insert_environment;
@@ -102,19 +103,19 @@ pub struct SetupCommand {
 
 /// Move changes between a Branch and its Parent, staging them in the other's
 /// Working State; nothing is published or deployed. Or take a pull request's
-/// value a Conditional Save left.
+/// value a Conditional Sync left.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "move", rename_all = "snake_case")]
 pub enum Move {
     /// The Branch's Working State into its Parent's; nothing there is deleted. From
-    /// a PR Environment, a Conditional Save into one of its Destinations (the
+    /// a PR Environment, a Conditional Sync into one of its Destinations (the
     /// Environments that deploy its target branch): it stages nothing now and goes
     /// live with the pull request's merge.
     Save(Save),
     /// What the Branch's Parent deployed since the two last shared, into the
     /// Branch; refused unless the Branch runs its Working State.
     Update(Update),
-    /// Stage the pull request's values a landed Conditional Save left as hints,
+    /// Stage the pull request's values a landed Conditional Sync left as hints,
     /// sealed secrets included, even once its PR Environment is gone: each replaces
     /// the Destination's own edit.
     Take(Take),
@@ -140,7 +141,7 @@ pub struct Save {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub version: Option<String>,
-    /// `now` stages the changes; `at_merge` saves them as a Conditional Save that
+    /// `now` stages the changes; `at_merge` saves them as a Conditional Sync that
     /// goes live with the pull request's merge, and `picks: []` withdraws it.
     /// Omitted: `at_merge` from a PR Environment, else `now`.
     #[serde(default)]
@@ -169,7 +170,7 @@ pub struct Update {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Take {
-    /// The retained Conditional Save whose hints to take, or the Parent whose Follow
+    /// The retained Conditional Sync whose hints to take, or the Parent whose Follow
     /// hints to take.
     pub from: HintSource,
     /// Its Destination, or the Branch following the Parent; refused unless it is.
@@ -191,8 +192,8 @@ pub struct Take {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(untagged)]
 pub enum HintSource {
-    /// A merged pull request's Conditional Save: [`crate::PullRequestHint::save`].
-    Save(ConditionalSaveId),
+    /// A merged pull request's Conditional Sync: [`crate::PullRequestHint::save`].
+    ConditionalSync(ConditionalSyncId),
     /// The Branch's Parent: [`FollowHint::from`].
     Parent(EnvironmentName),
 }
@@ -337,9 +338,9 @@ pub struct Moved {
     pub staged: Vec<NodeName>,
     /// The Branch now; none for a take.
     pub branch: Option<BranchView>,
-    /// The Conditional Save now: standing after a Save at merge, the one taken
+    /// The Conditional Sync now: standing after a Save at merge, the one taken
     /// from after a take; none once withdrawn and for a Move now.
-    pub conditional_save: Option<crate::ConditionalSave>,
+    pub conditional_sync: Option<crate::ConditionalSync>,
 }
 
 /// Turn a Live Node into an Own Copy, from the Environment that runs it; a Volume

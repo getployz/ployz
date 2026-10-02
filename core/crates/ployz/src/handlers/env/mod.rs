@@ -134,8 +134,12 @@ pub(crate) fn command() -> Command {
                          picked. A Branch follows its Parent on its own: what the Parent \
                          deploys is staged in it, but where the Branch changed a setting \
                          too, or discarded the Parent's change, the Parent's value is a \
-                         hint `ployz diff` lists; --take PARENT stages it. Example: ployz \
-                         env sync --to --env fix-api --skip api.env.DEBUG --close",
+                         hint `ployz diff` lists; --take PARENT stages it. From a PR \
+                         Environment into one of its Destinations it is a Conditional Sync: \
+                         the changes go live there with the pull request's merge, and \
+                         --withdraw withdraws it; into any other Environment they are staged \
+                         now. Example: ployz env sync --to --env fix-api --skip api.env.DEBUG \
+                         --close",
                     ),
             )
             .arg(
@@ -144,7 +148,7 @@ pub(crate) fn command() -> Command {
                     .num_args(0..=1)
                     .required_unless_present_any(["from", "take"])
                     .conflicts_with("from")
-                    .help("Sync into ENV; with no value, the Branch's Parent"),
+                    .help("Sync into ENV; with no value, the Branch's Parent, or a PR Environment's only Destination"),
             )
             .arg(
                 value("from", None)
@@ -172,10 +176,15 @@ pub(crate) fn command() -> Command {
                     .conflicts_with("plan"),
             )
             .arg(
+                switch("withdraw", None)
+                    .help("From a PR Environment: withdraw its Conditional Sync into --to")
+                    .conflicts_with_all(["from", "only", "skip", "plan", "version", "close"]),
+            )
+            .arg(
                 value("take", None)
                     .value_name("ID")
-                    .help("Stage the hints `ployz diff` lists from ID (the Parent, or a Conditional Save) in --env; --only picks them")
-                    .conflicts_with_all(["to", "from", "skip", "plan", "close"]),
+                    .help("Stage the hints `ployz diff` lists from ID (the Parent, or a Conditional Sync) in --env; --only picks them")
+                    .conflicts_with_all(["to", "from", "skip", "plan", "close", "withdraw"]),
             ),
         )
         .subcommand(
@@ -187,9 +196,9 @@ pub(crate) fn command() -> Command {
                          published or deployed, and nothing in the Parent is deleted. --plan \
                          lists them and the version to pass back. A secret the Branch added \
                          moves only when picked `=from`. From a PR Environment it is a \
-                         Conditional Save instead: the changes go live in the Destination \
+                         Conditional Sync instead: the changes go live in the Destination \
                          with the pull request's merge; --withdraw withdraws it. --take ID \
-                         stages a merged pull request's value its Conditional Save left \
+                         stages a merged pull request's value its Conditional Sync left \
                          beside the Environment's own edit (`ployz diff` lists them), even \
                          once its PR Environment is gone.",
                     ),
@@ -199,13 +208,13 @@ pub(crate) fn command() -> Command {
             ))
             .arg(
                 switch("withdraw", None)
-                    .help("From a PR Environment: withdraw its Conditional Save")
+                    .help("From a PR Environment: withdraw its Conditional Sync")
                     .conflicts_with_all(["only", "plan", "version", "take"]),
             )
             .arg(
                 value("take", None)
                     .value_name("ID")
-                    .help("Stage the hints (or --only ROW) of this Conditional Save in --env")
+                    .help("Stage the hints (or --only ROW) of this Conditional Sync in --env")
                     .conflicts_with_all(["plan", "version", "into"]),
             ),
         )

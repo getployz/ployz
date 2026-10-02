@@ -100,7 +100,9 @@ fn into(
         }
     }
     if !picks.is_empty() {
+        let before = branch.summary.revision;
         moving.apply(tx, who, &mut branch, picks)?;
+        crate::conditional_sync::followed(tx, &branch.summary, before)?;
     }
     Ok(())
 }
@@ -197,7 +199,7 @@ pub(crate) fn take(
         from: from.summary,
         into: branch.summary,
         staged,
-        conditional_save: None,
+        conditional_sync: None,
     })
 }
 

@@ -4,10 +4,10 @@
 use clap::{ArgMatches, Command};
 use ployz_core::ServiceName;
 use ployz_store::{
-    Branched, ConditionalSaveId, CopyNode, CreateBranch, DeploymentId, EnvironmentId,
-    EnvironmentName, EnvironmentRef, EnvironmentSummary, HintSource, KeepBranch, Move, MovePick,
-    MoveQuery, MoveView, Moved, PickChoice, Save, SaveState, SetupCommand, SyncChanges, SyncQuery,
-    SyncView, Synced, Take, Update, When,
+    Branched, ConditionalSyncId, ConditionalSyncState, CopyNode, CreateBranch, DeploymentId,
+    EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentSummary, HintSource, KeepBranch,
+    Move, MovePick, MoveQuery, MoveView, Moved, PickChoice, Save, SetupCommand, SyncChanges,
+    SyncQuery, SyncView, Synced, Take, Update, When,
 };
 use serde_json::json;
 
@@ -86,6 +86,19 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
     };
     let store = store(root)?;
     let words = sync_words(matches);
+    if matches.get_flag("withdraw") {
+        let request = SyncChanges {
+            from: query.from,
+            into: query.into,
+            picks: Some(Vec::new()),
+            when: Some(When::AtMerge),
+            ..SyncChanges::default()
+        };
+        let synced = store
+            .try_write(&request)
+            .map_err(|error| store.fail(error))?;
+        return synced_out(matches, &synced);
+    }
     if matches.get_flag("plan") {
         let view = store.read(&query)?;
         return sync_plan(matches, &words, &view);
@@ -111,6 +124,7 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
         picks,
         version,
         close_after: matches.get_flag("close"),
+        when: None,
     };
     let synced = store.try_write(&request).map_err(|error| {
         // Stale, or nothing to sync: the plan shows what there is now.
@@ -124,14 +138,14 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// `env sync --take ID`: stage the hints (or those `--only` names) that the Parent
-/// named `ID`, or Conditional Save `ID`, left in `into`.
+/// named `ID`, or Conditional Sync `ID`, left in `into`.
 fn take(root: &ArgMatches, source: &str, into: EnvironmentRef) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let from = ConditionalSaveId::parse(source)
-        .map(HintSource::Save)
+    let from = ConditionalSyncId::parse(source)
+        .map(HintSource::ConditionalSync)
         .or_else(|_| EnvironmentName::parse(source).map(HintSource::Parent))
         .map_err(|_| {
-            Error::usage("Expected --take ID to be the Parent's name or a Conditional Save ID")
+            Error::usage("Expected --take ID to be the Parent's name or a Conditional Sync ID")
                 .with_exit(USAGE_EXIT)
         })?;
     let only = super::super::string_values(matches, "only");
@@ -210,8 +224,12 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
         )
     });
     crate::output::finish(&Next::new(view, next), || {
+        let when = view
+            .at_merge
+            .map(|number| format!(" at #{number}'s merge"))
+            .unwrap_or_default();
         say!(
-            "{} → {} (version {}):",
+            "{} → {}{when} (version {}):",
             view.from.name,
             view.into.name,
             view.version
@@ -256,13 +274,18 @@ fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
     let into = &synced.into;
     let next = (!synced.staged.is_empty())
         .then(|| in_project(matches, &["deploy", "--env", into.name.as_str()]));
+    let withdrew = matches.get_flag("withdraw");
     crate::output::finish(&Next::new(synced, next.clone()), || {
-        say!(
-            "Synced {} → {}/{}.",
-            synced.from.name,
-            into.project,
-            into.name
-        );
+        let (from, into) = (&synced.from.name, format!("{}/{}", into.project, into.name));
+        match &synced.conditional_sync {
+            _ if withdrew => say!("Withdrew {from}'s Conditional Sync into {into}."),
+            Some(sync) => say!(
+                "Goes live in {into} with PR #{}'s merge: {}.",
+                sync.pull_request,
+                sync.rows.join(", ")
+            ),
+            None => say!("Synced {from} → {into}."),
+        }
         if !synced.staged.is_empty() {
             say!("Staged: {}", crate::handlers::joined(&synced.staged));
         }
@@ -329,9 +352,9 @@ pub(super) fn update(root: &ArgMatches) -> Result<(), Error> {
 enum Shift {
     Save,
     Update,
-    /// `env save --withdraw`: withdraw a Conditional Save.
+    /// `env save --withdraw`: withdraw a Conditional Sync.
     Withdraw,
-    /// `env save --take`: take a retained Conditional Save's value.
+    /// `env save --take`: take a retained Conditional Sync's value.
     Take,
 }
 
@@ -382,11 +405,11 @@ fn shift(
                 .try_get_one::<String>("take")
                 .ok()
                 .flatten()
-                .map(|id| ConditionalSaveId::parse(id.as_str()))
+                .map(|id| ConditionalSyncId::parse(id.as_str()))
                 .transpose()?
-                .ok_or_else(|| Error::usage("Name the Conditional Save to take from"))?;
+                .ok_or_else(|| Error::usage("Name the Conditional Sync to take from"))?;
             Move::Take(Take {
-                from: HintSource::Save(save),
+                from: HintSource::ConditionalSync(save),
                 into,
                 rows: picks.map(|picks| picks.into_iter().map(|pick| pick.row).collect()),
                 version,
@@ -485,7 +508,7 @@ fn plan(matches: &ArgMatches, verb: &str, view: &MoveView) -> Result<(), Error> 
 }
 
 /// What a Move did: `deploy` of where it landed, and after a Save of a Branch not
-/// kept, the command that closes it. A Conditional Save stages nothing.
+/// kept, the command that closes it. A Conditional Sync stages nothing.
 fn moved_out(matches: &ArgMatches, shift: Shift, moved: &Moved) -> Result<(), Error> {
     #[derive(serde::Serialize)]
     struct Out<'a> {
@@ -499,9 +522,9 @@ fn moved_out(matches: &ArgMatches, shift: Shift, moved: &Moved) -> Result<(), Er
     let scoped = |words: &[&str]| in_project(matches, words);
     let into: &EnvironmentSummary = &moved.into;
     let at_merge = moved
-        .conditional_save
+        .conditional_sync
         .as_ref()
-        .filter(|save| save.state == SaveState::Standing);
+        .filter(|save| save.state == ConditionalSyncState::Standing);
     let close = match (&moved.branch, shift, at_merge) {
         (Some(branch), Shift::Save, None) if !branch.kept => {
             let name = branch.environment.name.as_str();
@@ -517,8 +540,8 @@ fn moved_out(matches: &ArgMatches, shift: Shift, moved: &Moved) -> Result<(), Er
     };
     crate::output::finish(&out, || {
         let (from, into) = (&moved.from.name, format!("{}/{}", into.project, into.name));
-        match (shift, at_merge, &moved.conditional_save) {
-            (Shift::Withdraw, ..) => say!("Withdrew {from}'s Conditional Save into {into}."),
+        match (shift, at_merge, &moved.conditional_sync) {
+            (Shift::Withdraw, ..) => say!("Withdrew {from}'s Conditional Sync into {into}."),
             (_, Some(save), _) => say!(
                 "Saved for PR #{}'s merge into {into}: {}.",
                 save.pull_request,

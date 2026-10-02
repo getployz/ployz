@@ -329,8 +329,8 @@ async function openConfigStore(url, sealingSecret) {
     unclaimed: (before) => withRpcError(store.unclaimed(before)),
     branchHead: (organization, repositoryId, branch) =>
       withRpcError(store.branchHead(organization, repositoryId, branch)),
-    pendingSaves: (organization, repositoryId, branch) =>
-      withRpcError(store.pendingSaves(organization, repositoryId, branch)),
+    pendingSyncs: (organization, repositoryId, branch) =>
+      withRpcError(store.pendingSyncs(organization, repositoryId, branch)),
     githubStart: (build, connections) => withRpcError(store.githubStart(build, connections)),
     githubDispatched: (build, run) => withRpcError(store.githubDispatched(build, run)),
     githubBuild: (build) => withRpcError(store.githubBuild(build)),

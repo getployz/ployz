@@ -1,21 +1,22 @@
-//! Conditional Saves: a PR Environment's Save into one of its Destinations that
+//! Conditional Syncs: a PR Environment's Sync into one of its Destinations that
 //! goes live with the pull request's merge.
 //!
-//! Saving records the picked rows, core's picks and what landing needs (the PR
-//! Environment's side as saved, sealed values included), so landing and a later
-//! take never read the PR Environment, which may be gone by then. A save stands
-//! while the PR Environment's Working State and the pull request's target branch
-//! are what they were; edits in the Destination never withdraw it. When the pull
-//! request closes it freezes with the merge commit if it merged and still stands,
-//! else it drops. A frozen save lands with the first push to the target branch
-//! whose head contains the merge commit (Cloud observes the ancestry): before the
-//! Deployment that push admits in its Destination, with the deploy that push waits
-//! for CI with, or at once where the push deploys nothing. A Destination that
-//! doesn't deploy the branch on push saves it at the merge.
+//! Syncing records the picked rows, core's picks and what landing needs (the PR
+//! Environment's side as synced, sealed values included), so landing and a later
+//! take never read the PR Environment, which may be gone by then. A Conditional
+//! Sync stands while the PR Environment's Working State, but for what it follows
+//! from its Parent, and the pull request's target branch are what they were; edits
+//! in the Destination never withdraw it. When the pull request closes it freezes
+//! with the merge commit if it merged and still stands, else it drops. A frozen
+//! one lands with the first push to the target branch whose head contains the
+//! merge commit (Cloud observes the ancestry): before the Deployment that push
+//! admits in its Destination, with the deploy that push waits for CI with, or at
+//! once where the push deploys nothing. A Destination that doesn't deploy the
+//! branch on push gets it at the merge.
 //!
 //! Landing, per picked row: the Destination left it alone, or has an undeployed
 //! edit of it → saved, the edit on top; it changed it live (neither its Saved nor
-//! its Working State holds the value saved against) → not saved but staged,
+//! its Working State holds the value synced against) → not saved but staged,
 //! `staged`; both → not saved, the pull request's value only a `hint` a take
 //! stages. Landed rows stay marked until the Destination's next Saved revision.
 
@@ -36,28 +37,31 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
-use crate::branch::{self, Carried, MoveRow, MoveView, Moved, Moving, Save, Take, When};
-use crate::id::{ConditionalSaveId, EnvironmentId, Revision};
+use crate::branch::{
+    self, Carried, MoveRow, MoveView, Moved, Moving, Save, SyncChanges, SyncQuery, SyncView,
+    Synced, Take, When,
+};
+use crate::id::{ConditionalSyncId, EnvironmentId, Revision};
 use crate::pull_request::{self, PullRequest, PullRequestRef};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
 use crate::{Actor, deployment, error, policy, review, teardown};
 
-/// A Conditional Save, as a Move answers it.
+/// A Conditional Sync, as a Move answers it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct ConditionalSave {
+pub struct ConditionalSync {
     /// Pass to [`Take::from`] to use a hint it left.
-    pub id: ConditionalSaveId,
+    pub id: ConditionalSyncId,
     pub pull_request: PullRequestNumber,
     /// The rows it holds.
     pub rows: Vec<String>,
-    pub state: SaveState,
+    pub state: ConditionalSyncState,
 }
 
-/// Where a Conditional Save is.
+/// Where a Conditional Sync is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
-pub enum SaveState {
+pub enum ConditionalSyncState {
     /// Waiting for the merge, with its PR Environment.
     Standing,
     /// Merged: waiting for a push of the merge commit.
@@ -76,11 +80,11 @@ pub enum Landed {
     Hint,
 }
 
-/// A pull request's value a landed Conditional Save left in an Environment.
+/// A pull request's value a landed Conditional Sync left in an Environment.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PullRequestHint {
-    /// The Conditional Save: pass to [`Take::from`].
-    pub save: ConditionalSaveId,
+    /// The Conditional Sync: pass to [`Take::from`].
+    pub save: ConditionalSyncId,
     pub pull_request: PullRequestNumber,
     /// `NODE.path`, as a Move names it.
     pub row: String,
@@ -91,8 +95,8 @@ pub struct PullRequestHint {
 
 /// What Cloud checks before telling the Store about a push to a branch.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct PendingSaves {
-    /// Pull requests into the branch with a Conditional Save standing: Cloud reports
+pub struct PendingSyncs {
+    /// Pull requests into the branch with a Conditional Sync standing: Cloud reports
     /// each that merged first, so its saves freeze.
     pub standing: Vec<PullRequestNumber>,
     /// Merge commits of frozen ones: Cloud reports which the new head contains
@@ -100,7 +104,7 @@ pub struct PendingSaves {
     pub merged: Vec<CommitSha>,
 }
 
-/// A Conditional Save as stored.
+/// A Conditional Sync as stored.
 #[derive(Serialize, Deserialize)]
 struct Stored {
     rows: Vec<Row>,
@@ -145,37 +149,74 @@ struct Row {
 
 struct Found {
     environment: EnvironmentId,
-    state: SaveState,
+    state: ConditionalSyncState,
     number: PullRequestNumber,
     stored: Stored,
 }
 
-/// Whether a Save is a Conditional Save: asked `at_merge`, or from a PR Environment
-/// with `when` omitted. A PR Environment never saves now.
+/// Whether a Sync (or Save) from `from` into `into` is a Conditional Sync: asked
+/// `at_merge`, or from a PR Environment into one of its Destinations with `when`
+/// omitted; `into` omitted, its only Destination unless asked `now`. A PR
+/// Environment never syncs into a Destination now.
 pub(crate) fn at_merge(
     tx: &mut dyn Tx,
     who: &Actor,
-    from: &EnvironmentRef,
+    (from, into): (&EnvironmentRef, Option<&EnvironmentRef>),
     when: Option<When>,
 ) -> Result<bool, RpcError> {
     if when == Some(When::AtMerge) {
         return Ok(true);
     }
     let from = scope::environment(tx, who, from)?;
-    let pr = pull_request::of(tx, &from.summary.id)?.is_some();
-    if pr && when == Some(When::Now) {
+    let into = match into {
+        Some(into) => scope::environment(tx, who, into)?.summary,
+        None if when.is_none() && pull_request::of(tx, &from.summary.id)?.is_some() => {
+            return Ok(true);
+        }
+        None => match branch::row(tx, &from.summary.id)? {
+            Some(row) => scope::load_by_id(tx, &row.parent)?.summary,
+            None => return Ok(false),
+        },
+    };
+    let Some(number) = merging_into(tx, &from.summary.id, &into.id)? else {
+        return Ok(false);
+    };
+    if when == Some(When::Now) {
         return Err(error::invalid(
             format!(
-                "{} is a PR Environment: its changes go live with its merge (when at_merge)",
-                from.summary.name
+                "{} is a PR Environment: its changes go live in {} with #{number}'s merge (when at_merge)",
+                from.summary.name, into.name
             ),
             json!({}),
         ));
     }
-    Ok(pr)
+    Ok(true)
 }
 
-/// A Conditional Save's sides: the PR Environment and the Destination.
+/// The pull request whose merge a Sync from `from` into `into` waits for: `from`
+/// is its PR Environment, and `into` one of its Destinations.
+pub(crate) fn merging_into(
+    tx: &mut dyn Tx,
+    from: &EnvironmentId,
+    into: &EnvironmentId,
+) -> Result<Option<PullRequestNumber>, RpcError> {
+    let rows = tx.query(
+        "SELECT p.facts FROM config_pr_environment e JOIN config_pull_request p \
+         ON p.organization_id = e.organization_id AND p.repository_id = e.repository_id \
+         AND p.number = e.number WHERE e.environment_id = ?1",
+        &[from.as_str().into()],
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    let facts: PullRequest = row.json(0, "pull request")?;
+    let project = scope::project_of(tx, from)?.id;
+    let destinations =
+        pull_request::destinations_of(tx, &project, facts.repository_id, &facts.target_branch)?;
+    Ok(destinations.contains(into).then_some(facts.number))
+}
+
+/// A Conditional Sync's sides: the PR Environment and the Destination.
 struct Sides {
     pr: Environment,
     into: Environment,
@@ -262,7 +303,18 @@ pub(crate) fn view(
     branch::view_of(&moving, sides.pr, sides.into)
 }
 
-/// The Environments the standing Conditional Saves of `event`'s pull request
+/// What a Conditional Sync would hold, as the Sync view shows it.
+pub(crate) fn sync_view(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    query: &SyncQuery,
+) -> Result<SyncView, RpcError> {
+    let sides = sides(tx, who, &query.from, query.into.as_ref(), false)?;
+    let moving = moving(tx, &sides)?;
+    branch::sync_view_of(&moving, sides.pr, sides.into, Some(sides.facts.number))
+}
+
+/// The Environments the standing Conditional Syncs of `event`'s pull request
 /// involve: their PR Environments and Destinations.
 pub(crate) fn involved(
     tx: &mut dyn Tx,
@@ -270,7 +322,7 @@ pub(crate) fn involved(
     event: &PullRequest,
 ) -> Result<Vec<EnvironmentId>, RpcError> {
     let rows = tx.query(
-        "SELECT pr_environment_id, environment_id FROM config_conditional_save \
+        "SELECT pr_environment_id, environment_id FROM config_conditional_sync \
          WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3 AND state = 'standing'",
         &[
             who.organization.as_str().into(),
@@ -286,10 +338,33 @@ pub(crate) fn involved(
     Ok(ids)
 }
 
-/// Withdraw every standing Conditional Save of `event`'s pull request.
+/// A Follow staged the Parent's changes in `branch`, whose Working State was at
+/// revision `before`: what stood there still stands, as only the author's own
+/// edits withdraw a Conditional Sync.
+pub(crate) fn followed(
+    tx: &mut dyn Tx,
+    branch: &EnvironmentSummary,
+    before: Revision,
+) -> Result<(), RpcError> {
+    if branch.revision == before {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE config_conditional_sync SET working_revision = ?3 \
+         WHERE pr_environment_id = ?1 AND state = 'standing' AND working_revision = ?2",
+        &[
+            branch.id.as_str().into(),
+            scope::revision_param(before)?.into(),
+            scope::revision_param(branch.revision)?.into(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Withdraw every standing Conditional Sync of `event`'s pull request.
 pub(crate) fn withdraw(tx: &mut dyn Tx, who: &Actor, event: &PullRequest) -> Result<(), RpcError> {
     tx.execute(
-        "DELETE FROM config_conditional_save \
+        "DELETE FROM config_conditional_sync \
          WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3 AND state = 'standing'",
         &[
             who.organization.as_str().into(),
@@ -300,7 +375,7 @@ pub(crate) fn withdraw(tx: &mut dyn Tx, who: &Actor, event: &PullRequest) -> Res
     Ok(())
 }
 
-/// The pull request closed: each of its Conditional Saves freezes with the merge
+/// The pull request closed: each of its Conditional Syncs freezes with the merge
 /// commit if it merged and still stands where it is still a Destination, and drops
 /// otherwise. Frozen ones land at once where nothing deploys the target branch on
 /// push, or where the head Cloud found the merge commit in
@@ -309,7 +384,7 @@ pub(crate) fn withdraw(tx: &mut dyn Tx, who: &Actor, event: &PullRequest) -> Res
 pub(crate) fn settle(tx: &mut dyn Tx, who: &Actor, event: &PullRequest) -> Result<(), RpcError> {
     let rows = tx.query(
         "SELECT id, pr_environment_id, environment_id, working_revision, target_branch \
-         FROM config_conditional_save \
+         FROM config_conditional_sync \
          WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3 AND state = 'standing' \
          ORDER BY saved_at, id",
         &[
@@ -320,7 +395,7 @@ pub(crate) fn settle(tx: &mut dyn Tx, who: &Actor, event: &PullRequest) -> Resul
     )?;
     let mut frozen = Vec::new();
     for row in rows {
-        let id = row.parse::<ConditionalSaveId>(0, "Conditional Save ID")?;
+        let id = row.parse::<ConditionalSyncId>(0, "Conditional Sync ID")?;
         let pr = row.parse::<EnvironmentId>(1, "Environment ID")?;
         let into = row.parse::<EnvironmentId>(2, "Environment ID")?;
         let environment = scope::lock_id(tx, who, &pr)?;
@@ -342,7 +417,7 @@ pub(crate) fn settle(tx: &mut dyn Tx, who: &Actor, event: &PullRequest) -> Resul
         };
         if stands {
             tx.execute(
-                "UPDATE config_conditional_save \
+                "UPDATE config_conditional_sync \
                  SET state = 'frozen', pr_environment_id = NULL, merge_commit = ?2 WHERE id = ?1",
                 &[
                     id.as_str().into(),
@@ -388,7 +463,7 @@ fn wait_with(
     into: &EnvironmentId,
     event: &PullRequest,
     head: &CommitSha,
-    id: &ConditionalSaveId,
+    id: &ConditionalSyncId,
 ) -> Result<bool, RpcError> {
     let key: [crate::storage::Param<'_>; 4] = [
         into.as_str().into(),
@@ -404,7 +479,7 @@ fn wait_with(
     let Some(row) = rows.first() else {
         return Ok(false);
     };
-    let mut saves: Vec<ConditionalSaveId> = row.json(0, "waiting deploy")?;
+    let mut saves: Vec<ConditionalSyncId> = row.json(0, "waiting deploy")?;
     saves.push(id.clone());
     let [environment, repository, branch, head] = key;
     tx.execute(
@@ -416,7 +491,7 @@ fn wait_with(
             branch,
             head,
             serde_json::to_string(&saves)
-                .expect("Conditional Save IDs are JSON")
+                .expect("Conditional Sync IDs are JSON")
                 .as_str()
                 .into(),
         ],
@@ -452,13 +527,13 @@ pub(crate) fn carried(
     repository_id: RepositoryId,
     branch: &BranchName,
     merged: &[CommitSha],
-) -> Result<BTreeMap<EnvironmentId, Vec<ConditionalSaveId>>, RpcError> {
-    let mut carried: BTreeMap<EnvironmentId, Vec<ConditionalSaveId>> = BTreeMap::new();
+) -> Result<BTreeMap<EnvironmentId, Vec<ConditionalSyncId>>, RpcError> {
+    let mut carried: BTreeMap<EnvironmentId, Vec<ConditionalSyncId>> = BTreeMap::new();
     if merged.is_empty() {
         return Ok(carried);
     }
     let rows = tx.query(
-        "SELECT id, environment_id, merge_commit FROM config_conditional_save \
+        "SELECT id, environment_id, merge_commit FROM config_conditional_sync \
          WHERE organization_id = ?1 AND repository_id = ?2 AND target_branch = ?3 AND state = 'frozen' \
          ORDER BY saved_at, id",
         &[
@@ -473,7 +548,7 @@ pub(crate) fn carried(
             carried
                 .entry(row.parse::<EnvironmentId>(1, "Environment ID")?)
                 .or_default()
-                .push(row.parse(0, "Conditional Save ID")?);
+                .push(row.parse(0, "Conditional Sync ID")?);
         }
     }
     Ok(carried)
@@ -484,9 +559,9 @@ pub(crate) fn pending(
     who: &Actor,
     repository_id: RepositoryId,
     branch: &BranchName,
-) -> Result<PendingSaves, RpcError> {
+) -> Result<PendingSyncs, RpcError> {
     let rows = tx.query(
-        "SELECT DISTINCT state, number, merge_commit FROM config_conditional_save \
+        "SELECT DISTINCT state, number, merge_commit FROM config_conditional_sync \
          WHERE organization_id = ?1 AND repository_id = ?2 AND target_branch = ?3 \
          AND state IN ('standing', 'frozen') ORDER BY state, number, merge_commit",
         &[
@@ -495,22 +570,22 @@ pub(crate) fn pending(
             branch.as_str().into(),
         ],
     )?;
-    let mut pending = PendingSaves::default();
+    let mut pending = PendingSyncs::default();
     for row in rows {
-        match row.variant(0, "Conditional Save")? {
-            SaveState::Standing => {
-                let number = row.number(1, "Conditional Save")?;
+        match row.variant(0, "Conditional Sync")? {
+            ConditionalSyncState::Standing => {
+                let number = row.number(1, "Conditional Sync")?;
                 if !pending.standing.contains(&number) {
                     pending.standing.push(number);
                 }
             }
-            SaveState::Frozen => {
-                let commit = row.parse(2, "Conditional Save")?;
+            ConditionalSyncState::Frozen => {
+                let commit = row.parse(2, "Conditional Sync")?;
                 if !pending.merged.contains(&commit) {
                     pending.merged.push(commit);
                 }
             }
-            SaveState::Landed => return Err(error::corrupt("Conditional Save")),
+            ConditionalSyncState::Landed => return Err(error::corrupt("Conditional Sync")),
         }
     }
     Ok(pending)
@@ -520,13 +595,13 @@ pub(crate) fn pending(
 pub(crate) fn land(
     tx: &mut dyn Tx,
     who: &Actor,
-    id: &ConditionalSaveId,
+    id: &ConditionalSyncId,
     destination: &mut Environment,
 ) -> Result<(), RpcError> {
     let Some(found) = load(tx, who, id)? else {
         return Ok(());
     };
-    if found.state != SaveState::Frozen || found.environment != destination.summary.id {
+    if found.state != ConditionalSyncState::Frozen || found.environment != destination.summary.id {
         return Ok(());
     }
     let mut stored = found.stored;
@@ -554,7 +629,7 @@ pub(crate) fn land(
         )?;
     }
     tx.execute(
-        "DELETE FROM config_conditional_save \
+        "DELETE FROM config_conditional_sync \
          WHERE environment_id = ?1 AND state = 'landed' AND id <> ?2",
         &[destination.summary.id.as_str().into(), id.as_str().into()],
     )?;
@@ -564,7 +639,7 @@ pub(crate) fn land(
     stored.rows = left;
     stored.landed = Some(revision);
     tx.execute(
-        "UPDATE config_conditional_save SET state = 'landed', saved = ?2 WHERE id = ?1",
+        "UPDATE config_conditional_sync SET state = 'landed', saved = ?2 WHERE id = ?1",
         &[id.as_str().into(), document(&stored).as_str().into()],
     )?;
     Ok(())
@@ -578,20 +653,20 @@ pub(crate) fn hints(
 ) -> Result<Vec<PullRequestHint>, RpcError> {
     let latest = review::latest_saved(tx, environment)?.map(|saved| saved.revision);
     let rows = tx.query(
-        "SELECT id, number, saved FROM config_conditional_save \
+        "SELECT id, number, saved FROM config_conditional_sync \
          WHERE environment_id = ?1 AND state = 'landed' ORDER BY saved_at, id",
         &[environment.as_str().into()],
     )?;
     let mut hints = Vec::new();
     for row in rows {
-        let stored = row.json::<Stored>(2, "Conditional Save")?;
+        let stored = row.json::<Stored>(2, "Conditional Sync")?;
         if stored.landed != latest {
             continue;
         }
-        let number = row.number(1, "Conditional Save")?;
+        let number = row.number(1, "Conditional Sync")?;
         for saved in stored.rows {
             hints.push(PullRequestHint {
-                save: row.parse(0, "Conditional Save ID")?,
+                save: row.parse(0, "Conditional Sync ID")?,
                 pull_request: number,
                 row: saved.shown.row,
                 value: saved.shown.from,
@@ -609,9 +684,9 @@ pub(crate) fn standing_in(
     pr: &Environment,
     into: &EnvironmentId,
     target: Option<&BranchName>,
-) -> Result<Option<(ConditionalSaveId, bool, usize)>, RpcError> {
+) -> Result<Option<(ConditionalSyncId, bool, usize)>, RpcError> {
     let rows = tx.query(
-        "SELECT id, working_revision, target_branch, saved FROM config_conditional_save \
+        "SELECT id, working_revision, target_branch, saved FROM config_conditional_sync \
          WHERE pr_environment_id = ?1 AND environment_id = ?2 AND state = 'standing'",
         &[pr.summary.id.as_str().into(), into.as_str().into()],
     )?;
@@ -622,9 +697,9 @@ pub(crate) fn standing_in(
     let stands = u64::try_from(row.int(1)?).ok() == Some(pr.summary.revision.0)
         && target.is_some_and(|target| held == target.as_str());
     Ok(Some((
-        row.parse(0, "Conditional Save ID")?,
+        row.parse(0, "Conditional Sync ID")?,
         stands,
-        row.json::<Stored>(3, "Conditional Save")?.rows.len(),
+        row.json::<Stored>(3, "Conditional Sync")?.rows.len(),
     )))
 }
 
@@ -678,9 +753,9 @@ fn with_variable_ids_of(
     next
 }
 
-fn load(tx: &mut dyn Tx, who: &Actor, id: &ConditionalSaveId) -> Result<Option<Found>, RpcError> {
+fn load(tx: &mut dyn Tx, who: &Actor, id: &ConditionalSyncId) -> Result<Option<Found>, RpcError> {
     let rows = tx.query(
-        "SELECT environment_id, state, number, saved FROM config_conditional_save \
+        "SELECT environment_id, state, number, saved FROM config_conditional_sync \
          WHERE id = ?1 AND organization_id = ?2",
         &[id.as_str().into(), who.organization.as_str().into()],
     )?;
@@ -689,28 +764,28 @@ fn load(tx: &mut dyn Tx, who: &Actor, id: &ConditionalSaveId) -> Result<Option<F
     };
     Ok(Some(Found {
         environment: row.parse(0, "Environment ID")?,
-        state: row.variant(1, "Conditional Save")?,
-        number: row.number(2, "Conditional Save")?,
-        stored: row.json(3, "Conditional Save")?,
+        state: row.variant(1, "Conditional Sync")?,
+        number: row.number(2, "Conditional Sync")?,
+        stored: row.json(3, "Conditional Sync")?,
     }))
 }
 
-fn write(tx: &mut dyn Tx, id: &ConditionalSaveId, stored: &Stored) -> Result<(), RpcError> {
+fn write(tx: &mut dyn Tx, id: &ConditionalSyncId, stored: &Stored) -> Result<(), RpcError> {
     tx.execute(
-        "UPDATE config_conditional_save SET saved = ?2 WHERE id = ?1",
+        "UPDATE config_conditional_sync SET saved = ?2 WHERE id = ?1",
         &[id.as_str().into(), document(stored).as_str().into()],
     )?;
     Ok(())
 }
 
-fn delete(tx: &mut dyn Tx, id: &ConditionalSaveId) -> Result<(), RpcError> {
+fn delete(tx: &mut dyn Tx, id: &ConditionalSyncId) -> Result<(), RpcError> {
     tx.execute(
-        "DELETE FROM config_conditional_save WHERE id = ?1",
+        "DELETE FROM config_conditional_sync WHERE id = ?1",
         &[id.as_str().into()],
     )?;
     Ok(())
 }
 
 fn document(stored: &Stored) -> String {
-    serde_json::to_string(stored).expect("a Conditional Save is JSON")
+    serde_json::to_string(stored).expect("a Conditional Sync is JSON")
 }
