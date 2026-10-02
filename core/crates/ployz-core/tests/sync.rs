@@ -1492,7 +1492,7 @@ fn put_undoes_every_landing() {
     let next = unapply(&applied.next, "", &applied.landed).unwrap();
     let mut base = applied.base;
     for landed in applied.landed.iter().rev() {
-        base = put(&base, &landed.row, &landed.prior).unwrap();
+        base = landed.prior.put_back(&base, &landed.row).unwrap();
     }
     let unchanged = |a: &SavedEnvironmentIntent, b: &Value| {
         let rows = moves(&compare(None, &json_of(a), b, Way::Copy));

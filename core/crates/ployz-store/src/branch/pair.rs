@@ -447,7 +447,7 @@ pub(super) fn share(
 fn rewind_bases(
     tx: &mut dyn Tx,
     receiver: &EnvironmentId,
-    cells: Vec<(EnvironmentId, RowId, Cell)>,
+    cells: Vec<(EnvironmentId, RowId, Was<Cell>)>,
 ) -> Result<(), RpcError> {
     let mut bases: BTreeMap<EnvironmentId, SavedEnvironmentIntent> = BTreeMap::new();
     for (other, row, cell) in cells {
@@ -458,7 +458,7 @@ fn rewind_bases(
                 None => continue,
             },
         };
-        let base = put(&base, &row, &cell).unwrap_or(base);
+        let base = cell.put_back(&base, &row).unwrap_or(base);
         bases.insert(other, base);
     }
     for (other, base) in &bases {
@@ -571,11 +571,11 @@ enum How {
 
 /// Where an arrived row stands in its receiver.
 enum Arrival {
-    /// Staged, not deployed: `prior` is the pair base's cell before it landed and
+    /// Staged, not deployed: `prior` is what the pair base held before it landed and
     /// `was` the receiver's own, to rewind a discard and to undo `sync`, the Sync
     /// that landed it.
     Pending {
-        prior: Cell,
+        prior: Was<Cell>,
         was: Was,
         sync: Option<SyncId>,
     },

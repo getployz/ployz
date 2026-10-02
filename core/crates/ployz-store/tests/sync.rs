@@ -10,13 +10,15 @@
 
 use std::collections::BTreeMap;
 
+use ployz_core::config::ServiceGitAccess;
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, Admit, BranchQuery, Change, ConfigStore, CreateBranch, CreateProject, CreateService,
-    Deploy, DeploymentId, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentRef,
-    KeepBranch, OrganizationId, ProjectId, ProjectName, RemoveService, RenameService, SecretRow,
-    ServiceLineageId, ServiceQuery, SettingPath, SyncChange, SyncChanges, SyncId, SyncQuery,
-    SyncRow, SyncView, Synced, SyncedWhen, Trusted, UndoSync, When,
+    Actor, Admit, AuthorizedRepository, BranchQuery, Change, ConfigStore, CreateBranch,
+    CreateProject, CreateService, Deploy, DeploymentId, Discard, Edit, EnvironmentId,
+    EnvironmentName, EnvironmentRef, KeepBranch, OrganizationId, ProjectId, ProjectName,
+    RemoveService, RenameService, SecretRow, ServiceLineageId, ServiceQuery, SettingPath,
+    SyncChange, SyncChanges, SyncId, SyncQuery, SyncRow, SyncView, Synced, SyncedWhen, Trusted,
+    UndoSync, When,
 };
 use serde_json::{Value, json};
 
@@ -635,6 +637,89 @@ fn undoing_a_sync_puts_back_only_what_it_changed_and_offers_it_again() {
         undo(&store, &who, &never).unwrap_err().0,
         RpcErrorCode::NotFound
     );
+}
+
+/// Edit `environment` with Cloud's evidence for the repositories `acme/web` and
+/// `acme/docs`.
+fn edit_git(store: &ConfigStore, who: &Actor, environment: &str, changes: Vec<Change>) {
+    let repository = |name: &str, n| AuthorizedRepository {
+        repository: backend::repo_name(name),
+        repository_id: backend::repo_id(n),
+        access: ServiceGitAccess::Public,
+        default_branch: backend::git_branch("main"),
+        branches: Vec::new(),
+    };
+    let evidence = Trusted {
+        repositories: vec![repository("acme/web", 11), repository("acme/docs", 12)],
+        ..Trusted::default()
+    };
+    let edit = Edit {
+        environment: at(environment),
+        expect: None,
+        changes,
+    };
+    store.write_trusted(who, &edit, &evidence).unwrap();
+}
+
+/// `web` in `environment` switched from its source to `to`, one setting of the other kind.
+fn switch(store: &ConfigStore, who: &Actor, environment: &str, from: &str, to: (&str, Value)) {
+    let unset = Change::Unset {
+        path: SettingPath::parse(from).unwrap(),
+    };
+    let set = Change::Set {
+        path: SettingPath::parse(to.0).unwrap(),
+        value: to.1,
+    };
+    edit_git(store, who, environment, vec![unset, set]);
+}
+
+#[test]
+fn undoing_a_source_switch_rewinds_the_base_to_the_whole_source() {
+    let (store, who) = shop(false);
+    switch(
+        &store,
+        &who,
+        "production",
+        "web.image",
+        ("web.repository", json!("acme/web")),
+    );
+    branch(&store, &who, 10, "production", "fix-git");
+    switch(
+        &store,
+        &who,
+        "fix-git",
+        "web.repository",
+        ("web.image", json!("web:2")),
+    );
+    let synced = sync_into(&store, &who, ("fix-git", "production"), None);
+    assert_eq!(
+        values(&store, &who, "production", "web")["image"],
+        json!("web:2")
+    );
+    assert_eq!(undo(&store, &who, &synced), Ok("production".into()));
+    assert_eq!(
+        values(&store, &who, "production", "web")["repository"],
+        json!("acme/web")
+    );
+
+    // The base holds production's repository again, so only fix-git changed it.
+    switch(
+        &store,
+        &who,
+        "fix-git",
+        "web.image",
+        ("web.repository", json!("acme/docs")),
+    );
+    let offered = offered(&store, &who, "fix-git", "production");
+    assert!(
+        offered
+            .rows
+            .iter()
+            .all(|row| row.change != SyncChange::Conflict),
+        "{:?}",
+        ticks(&offered)
+    );
+    assert_eq!(row(&offered, "web.repository").change, SyncChange::Changed);
 }
 
 #[test]

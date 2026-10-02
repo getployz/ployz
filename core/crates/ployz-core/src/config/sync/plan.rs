@@ -159,18 +159,19 @@ pub struct Applied {
 pub struct Landed {
     /// Which row.
     pub row: RowId,
-    /// The base's cell before; redacted.
-    pub prior: Cell,
+    /// What the base held before: its cell, redacted, or its whole source.
+    pub prior: Was<Cell>,
     /// `into`'s cell before.
     pub was: Was,
     /// What arrived; redacted.
     pub value: Cell,
 }
 
-/// What a landed row held in `into` before, for [`unapply`] to check and put back.
+/// What a landed row held before: in `into` (a [`SealedCell`]) for [`unapply`] to
+/// check and put back, and in the base (a redacted [`Cell`]) to rewind it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Was {
+pub enum Was<C = SealedCell> {
     /// A Service's whole source, when landing the row switched what kind of source it
     /// is: one change, whichever source row made it.
     Source {
@@ -181,7 +182,47 @@ pub enum Was {
     },
     /// The row's own cell.
     #[serde(untagged)]
-    Cell(SealedCell),
+    Cell(C),
+}
+
+impl<C> Was<C> {
+    /// `cell`, or the whole source `was` when landing switched `lineage`'s source,
+    /// as `now` holds it after the landing.
+    fn of(
+        cell: C,
+        was: Option<ServiceSource>,
+        now: &Intent,
+        lineage: &str,
+    ) -> Result<Self, ConfigError> {
+        let Some(was) = was else {
+            return Ok(Self::Cell(cell));
+        };
+        let landed = service(now, lineage)
+            .ok_or_else(|| ConfigError::at(lineage, "The Service whose source landed is gone"))?;
+        Ok(Self::Source {
+            was: Box::new(was),
+            landed: Box::new(landed.config.source.clone()),
+        })
+    }
+}
+
+impl Was<Cell> {
+    /// `intent` with `row` back as this holds it.
+    ///
+    /// # Errors
+    /// Returns ConfigError where [`put`] does.
+    pub fn put_back(&self, intent: &Intent, row: &RowId) -> Result<Intent, ConfigError> {
+        match self {
+            Self::Cell(cell) => put(intent, row, cell),
+            Self::Source { was, .. } => {
+                let mut intent = intent.clone();
+                if let Some(service) = service_mut(&mut intent, &row.lineage) {
+                    service.config.source = (**was).clone();
+                }
+                Ok(intent)
+            }
+        }
+    }
 }
 
 impl Policy {
@@ -496,13 +537,21 @@ impl Plan {
         landing.sort_by_key(|(row, _)| landing_order(&self.from, &row.id));
         let mut next = self.into.clone();
         let mut base = self.base.clone();
-        let mut landed = Vec::new();
         let mut waiting = Vec::new();
         let into_cells = Cells::of(&self.into, &self.hostnames.into);
         let from_cells = Cells::of(&self.from, &self.hostnames.from);
+        let source = |env: &Intent, lineage: &str| {
+            service(env, lineage).map(|service| service.config.source.clone())
+        };
+        let kind = |env: &Intent, lineage: &str| {
+            service(env, lineage).map(|service| std::mem::discriminant(&service.config.source))
+        };
+        // Each row as it landed, with the whole source it switched in `into` and in
+        // the base: what each was is known now, what it became once all have landed.
+        let mut landing_rows = Vec::new();
         for (row, arrives) in landing {
             let id = &row.id;
-            let mut was = Was::Cell(sealed_cell(&self.into, &into_cells, id));
+            let was = sealed_cell(&self.into, &into_cells, id);
             let value = match arrives {
                 Arrives::AsIs => sealed_cell(&self.from, &from_cells, id),
                 Arrives::NeedsValue => match values.get(id) {
@@ -513,48 +562,45 @@ impl Plan {
                     }
                 },
             };
+            let (mut switched, mut base_switched) = (None, None);
             if id.at == At::Node {
                 self.introduce(&mut next, base.as_mut(), &id.lineage)?;
             } else {
-                let kind = |env: &Intent| {
-                    service(env, &id.lineage).map(|s| std::mem::discriminant(&s.config.source))
-                };
-                let before = kind(&next);
+                let before = kind(&next, &id.lineage);
                 put_sealed(&mut next, id, &value)?;
-                if kind(&next) != before
-                    && let Some(service) = service(&self.into, &id.lineage)
-                {
-                    let source = Box::new(service.config.source.clone());
-                    // `landed` is the source as the whole landing leaves it; see below.
-                    was = Was::Source {
-                        landed: source.clone(),
-                        was: source,
-                    };
+                if kind(&next, &id.lineage) != before {
+                    switched = source(&self.into, &id.lineage);
                 }
-                if let (At::Variable(key), Was::Cell(SealedCell::Cell(Cell::Absent))) =
-                    (&id.at, &was)
-                {
+                if let (At::Variable(key), SealedCell::Cell(Cell::Absent)) = (&id.at, &was) {
                     self.describe(&mut next, &id.lineage, key);
                 }
                 if let Some(base) = base.as_mut() {
                     adopt(base, &self.into, id);
+                    let before = source(base, &id.lineage);
                     put_into(base, id, &row.from)?;
+                    if kind(base, &id.lineage) != before.as_ref().map(std::mem::discriminant) {
+                        base_switched = before;
+                    }
                 }
             }
-            landed.push(Landed {
-                row: id.clone(),
-                prior: row.base.clone(),
-                was,
-                value: value.to_redacted(),
-            });
+            landing_rows.push((row, (was, switched), base_switched, value));
         }
-        for one in &mut landed {
-            if let (Was::Source { landed, .. }, Some(service)) =
-                (&mut one.was, service(&next, &one.row.lineage))
-            {
-                **landed = service.config.source.clone();
-            }
-        }
+        let landed = landing_rows
+            .into_iter()
+            .map(|(row, (was, switched), base_switched, value)| {
+                let lineage = &row.id.lineage;
+                let prior = match base.as_ref() {
+                    Some(base) => Was::of(row.base.clone(), base_switched, base, lineage)?,
+                    None => Was::Cell(row.base.clone()),
+                };
+                Ok(Landed {
+                    row: row.id.clone(),
+                    prior,
+                    was: Was::of(was, switched, &next, lineage)?,
+                    value: value.to_redacted(),
+                })
+            })
+            .collect::<Result<_, ConfigError>>()?;
         let next = parse_environment_intent(json!(next))?;
         let base = base.unwrap_or_else(|| {
             let mut base = self.from.clone();
