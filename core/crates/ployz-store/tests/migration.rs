@@ -6,7 +6,7 @@ use ployz_core::ServiceName;
 use ployz_store::{
     Actor, BranchQuery, BranchView, Change, ConfigStore, CreateBranch, CreateProject,
     CreateService, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, OrganizationId, ProjectId,
-    ProjectName, ServiceLineageId, SettingPath, SyncChanges, SyncQuery, SyncView,
+    ProjectName, ServiceLineageId, SettingPath, SyncChanges, SyncQuery, SyncView, When,
 };
 use serde_json::{Value, json};
 
@@ -51,6 +51,7 @@ fn comparisons(store: &ConfigStore, who: &Actor) -> (SyncView, BranchView) {
                 &SyncQuery {
                     from: at("fix-web"),
                     into: None,
+                    when: ployz_store::When::Now,
                 },
             )
             .unwrap(),
@@ -75,10 +76,9 @@ const BEFORE_SYNC: &str = "
           AND s.other_id = config_environment_branch.environment_id)
     );
     ALTER TABLE config_environment_branch RENAME COLUMN made_with TO base;
-    DROP TABLE config_sync_pending;
+    DROP TABLE config_sync_arrival;
     DROP TABLE config_sync_base;
     DROP TABLE config_never_sync;
-    DROP TABLE config_followed;
     DROP TABLE config_held_secret;
     ALTER TABLE config_conditional_sync RENAME TO config_conditional_save;
     DELETE FROM config_migration WHERE name = '0002_sync';
@@ -156,15 +156,20 @@ fn a_branch_compares_with_its_parent_as_before_the_sync_migration() {
         let image = view
             .rows
             .iter()
-            .find(|row| row.label == "web.image")
+            .find(|row| row.at.label() == "web.image")
             .unwrap();
         store
             .write(
                 &who,
                 &SyncChanges {
                     from: at("fix-web"),
-                    picks: Some(vec![image.key.clone()]),
-                    ..SyncChanges::default()
+                    into: None,
+                    when: When::Now,
+                    close_after: false,
+                    version: view.version.clone(),
+                    picks: Some(vec![image.at.row.to_string()]),
+                    skip: Vec::new(),
+                    values: std::collections::BTreeMap::new(),
                 },
             )
             .unwrap();

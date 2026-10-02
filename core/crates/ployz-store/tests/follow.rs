@@ -9,6 +9,7 @@
 //! deploy; and a secret follows only into a Branch that never set its own.
 
 use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_store::RowId;
 use ployz_store::{
     Actor, Change, ConfigStore, CreateBranch, CreateProject, CreateService, DiffQuery, DiffView,
     Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, HintSource, OrganizationId,
@@ -135,7 +136,7 @@ fn incoming(store: &ConfigStore, who: &Actor, environment: &str) -> Vec<String> 
     let mut incoming: Vec<String> = diff(store, who, environment)
         .incoming
         .iter()
-        .map(|change| format!("{} {}", change.row, change.from))
+        .map(|change| format!("{} {}", change.at.label(), change.from))
         .collect();
     incoming.sort();
     incoming
@@ -146,15 +147,20 @@ fn hints(store: &ConfigStore, who: &Actor, environment: &str) -> Vec<String> {
     diff(store, who, environment)
         .follow_hints
         .iter()
-        .map(|hint| format!("{} = {} from {}", hint.row, hint.value, hint.from))
+        .map(|hint| format!("{} = {} from {}", hint.at.label(), hint.value, hint.from))
         .collect()
+}
+
+/// `web`'s row `at`, as `variables.KEY` or `source.image`.
+fn row(at: &str) -> RowId {
+    format!("{}:{at}", uuid(3)).parse().unwrap()
 }
 
 fn take(parent: &str, into: &str, rows: &[&str], version: String) -> Take {
     Take {
         from: HintSource::Parent(EnvironmentName::parse(parent).unwrap()),
         into: Some(at(into)),
-        rows: Some(rows.iter().map(|row| (*row).to_owned()).collect()),
+        rows: Some(rows.iter().map(|at| row(at)).collect()),
         version,
     }
 }
@@ -272,7 +278,7 @@ fn a_branchs_own_change_wins_and_the_parents_value_is_a_hint_to_take() {
             &take(
                 "fix-web",
                 "fix-web",
-                &["web.image"],
+                &["source.image"],
                 diff(&store, &who, "fix-web").version,
             ),
         )
@@ -284,7 +290,7 @@ fn a_branchs_own_change_wins_and_the_parents_value_is_a_hint_to_take() {
             &take(
                 "production",
                 "fix-web",
-                &["web.env"],
+                &["variables.PLAIN"],
                 diff(&store, &who, "fix-web").version,
             ),
         )
@@ -293,7 +299,7 @@ fn a_branchs_own_change_wins_and_the_parents_value_is_a_hint_to_take() {
     let stale = store
         .write(
             &who,
-            &take("production", "fix-web", &["web.image"], "0:0:0".into()),
+            &take("production", "fix-web", &["source.image"], "0:0:0".into()),
         )
         .unwrap_err();
     assert_eq!(stale.code, RpcErrorCode::Conflict);
@@ -302,7 +308,7 @@ fn a_branchs_own_change_wins_and_the_parents_value_is_a_hint_to_take() {
     let took = store
         .write(
             &who,
-            &take("production", "fix-web", &["web.image"], version),
+            &take("production", "fix-web", &["source.image"], version),
         )
         .unwrap();
     assert_eq!(
@@ -418,4 +424,29 @@ fn a_secret_follows_into_a_branch_that_never_set_its_own_and_not_one_that_did() 
         deployed_env(&store, &who, "qa", 5)["TOKEN"],
         json!("qa-own")
     );
+}
+
+#[test]
+fn a_followed_variable_the_branch_removes_is_its_own() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.image", json!("web:2")), ("web.env.NEW", json!("1"))],
+    );
+    deploy(&store, &who, "production", 2);
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: at("fix-web"),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("web.env.NEW").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    assert_eq!(incoming(&store, &who, "fix-web"), ["web.image production"]);
 }

@@ -775,11 +775,12 @@ fn a_destinations_count_is_the_rows_its_sync_offers_where_nodes_are_used_live() 
             &ployz_store::SyncQuery {
                 from: at("pr-5"),
                 into: None,
+                when: ployz_store::When::AtMerge,
             },
         )
         .unwrap();
     assert_eq!(review.into.name.as_str(), "qa");
-    let rows: Vec<&str> = review.rows.iter().map(|row| row.label.as_str()).collect();
+    let rows: Vec<String> = review.rows.iter().map(|row| row.at.label()).collect();
     assert_eq!(rows, ["site.env.MODE"]);
     let view = store
         .read(

@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
     Applied, Arrives, Cell, ConfigError, EncryptedSecretValue, Hostnames, NodeRef, Plan,
-    PlannedRow, Policy, RowId, SavedEnvironmentIntent, Sides, Verdict, Way, Why, name_of,
+    PlannedRow, Policy, RowId, SavedEnvironmentIntent, Sides, Verdict, Way, Why, cell_at, name_of,
     parse_environment_intent, plan, put, redact_environment_intent,
 };
 use serde_json::{Value, json};
@@ -303,6 +303,7 @@ fn row_ids_read_back_as_they_print() {
         let id: RowId = text.parse().unwrap();
         assert_eq!(id.to_string(), text);
         assert_eq!(id.lineage(), text.split_once(':').unwrap().0);
+        assert_eq!(id.at(), text.split_once(':').unwrap().1);
         assert_eq!(json!(id), json!(text));
         assert_eq!(serde_json::from_value::<RowId>(json!(text)).unwrap(), id);
     }
@@ -1559,4 +1560,16 @@ fn name_of_names_a_mount_by_its_volume() {
     assert!(matches!(node, NodeRef::Volume(volume) if volume.name == "data"));
     assert_eq!(place, "storage");
     assert!(name_of(&parent, &at(format!("{JOBS}:node"))).is_none());
+}
+
+#[test]
+fn a_cell_reads_as_the_plan_reads_it() {
+    let plan = compare(Some(&parent()), &branch(), &parent(), Way::Sync);
+    let into = intent(&parent());
+    for row in plan.rows() {
+        assert_eq!(cell_at(&into, &row.id), row.into, "{}", row.id);
+    }
+    let secret = cell_at(&into, &format!("{API}:variables.TOKEN").parse().unwrap());
+    assert!(secret.is_secret(), "{secret:?}");
+    assert!(!Cell::Absent.is_secret());
 }

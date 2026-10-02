@@ -7,11 +7,12 @@
 //! view lists it apart, and a Branch of the marking Environment still gets its value.
 
 use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_store::RowId;
 use ployz_store::{
     Actor, BranchQuery, Change, ConfigStore, CreateBranch, CreateProject, CreateService, Edit,
-    EnvironmentId, EnvironmentName, EnvironmentQuery, EnvironmentRef, NeverSync, OrganizationId,
-    ProjectId, ProjectName, ServiceLineageId, ServiceQuery, SettingPath, SyncChanges, SyncQuery,
-    SyncView,
+    EnvironmentId, EnvironmentName, EnvironmentQuery, EnvironmentRef, NamedRow, NeverSync,
+    OrganizationId, ProjectId, ProjectName, RenameService, ServiceLineageId, ServiceQuery,
+    SettingPath, SyncChanges, SyncQuery, SyncView, When,
 };
 use serde_json::{Value, json};
 
@@ -99,33 +100,38 @@ fn set(store: &ConfigStore, who: &Actor, environment: &str, changes: &[(&str, Va
         .unwrap();
 }
 
-fn never_sync(environment: &str, paths: &[&str], off: bool) -> NeverSync {
+/// `web`'s row `at`, as `variables.KEY` or `startCommand`.
+fn row(at: &str) -> RowId {
+    format!("{}:{at}", uuid(3)).parse().unwrap()
+}
+
+fn never_sync(environment: &str, rows: &[&str], off: bool) -> NeverSync {
     NeverSync {
         environment: at(environment),
-        paths: paths
-            .iter()
-            .map(|path| SettingPath::parse(path).unwrap())
-            .collect(),
+        rows: rows.iter().map(|at| row(at)).collect(),
         off,
     }
 }
 
+fn labels_of(rows: &[NamedRow]) -> Vec<String> {
+    rows.iter().map(NamedRow::label).collect()
+}
+
 /// What `environment` marks Never sync, as the Environment view lists it.
 fn marked(store: &ConfigStore, who: &Actor, environment: &str) -> Vec<String> {
-    store
-        .read(
-            who,
-            &EnvironmentQuery {
-                environment: at(environment),
-                path: None,
-                all: false,
-            },
-        )
-        .unwrap()
-        .never_synced
-        .iter()
-        .map(ToString::to_string)
-        .collect()
+    labels_of(
+        &store
+            .read(
+                who,
+                &EnvironmentQuery {
+                    environment: at(environment),
+                    path: None,
+                    all: false,
+                },
+            )
+            .unwrap()
+            .never_synced,
+    )
 }
 
 fn values(store: &ConfigStore, who: &Actor, environment: &str) -> Value {
@@ -150,6 +156,7 @@ fn view(store: &ConfigStore, who: &Actor) -> SyncView {
             &SyncQuery {
                 from: at("fix-web"),
                 into: None,
+                when: ployz_store::When::Now,
             },
         )
         .unwrap()
@@ -167,6 +174,7 @@ fn between(
             &SyncQuery {
                 from: at(from),
                 into: Some(at(into)),
+                when: ployz_store::When::Now,
             },
         )
         .unwrap();
@@ -175,19 +183,30 @@ fn between(
         .iter()
         .map(|row| {
             let sides = row.marked_in.iter().map(ToString::to_string).collect();
-            (row.label.clone(), sides)
+            (row.at.label(), sides)
         })
         .collect();
-    (
-        labels(&view).into_iter().map(str::to_owned).collect(),
-        apart,
-    )
+    (labels(&view), apart)
 }
 
-fn labels(view: &SyncView) -> Vec<&str> {
-    let mut labels: Vec<&str> = view.rows.iter().map(|row| row.label.as_str()).collect();
+fn labels(view: &SyncView) -> Vec<String> {
+    let mut labels: Vec<String> = view.rows.iter().map(|row| row.at.label()).collect();
     labels.sort_unstable();
     labels
+}
+
+/// A Sync from fix-web into its Parent of `picks`, or of every ticked row.
+fn sync(view: &SyncView, picks: Option<Vec<String>>) -> SyncChanges {
+    SyncChanges {
+        from: at("fix-web"),
+        into: None,
+        when: When::Now,
+        close_after: false,
+        version: view.version.clone(),
+        picks,
+        skip: Vec::new(),
+        values: Default::default(),
+    }
 }
 
 #[test]
@@ -207,33 +226,31 @@ fn a_setting_either_side_marks_never_sync_is_never_a_row_and_is_listed_apart() {
     let marked_now = store
         .write(
             &who,
-            &never_sync("fix-web", &["web.env.APP_ENV", "web.startCommand"], false),
+            &never_sync("fix-web", &["variables.APP_ENV", "startCommand"], false),
         )
         .unwrap();
     assert_eq!(marked_now.environment.name.as_str(), "fix-web");
-    let listed: Vec<String> = marked_now
-        .never_synced
-        .iter()
-        .map(ToString::to_string)
-        .collect();
-    assert_eq!(listed, ["web.env.APP_ENV", "web.startCommand"]);
+    assert_eq!(
+        labels_of(&marked_now.never_synced),
+        ["web.env.APP_ENV", "web.startCommand"]
+    );
     // Marking again changes nothing; the receiver marks its own.
     store
-        .write(&who, &never_sync("fix-web", &["web.env.APP_ENV"], false))
+        .write(&who, &never_sync("fix-web", &["variables.APP_ENV"], false))
         .unwrap();
     store
-        .write(&who, &never_sync("production", &["web.env.PLAIN"], false))
+        .write(&who, &never_sync("production", &["variables.PLAIN"], false))
         .unwrap();
     assert_eq!(marked(&store, &who, "production"), ["web.env.PLAIN"]);
 
     let offered = view(&store, &who);
     assert_eq!(labels(&offered), ["web.image"]);
-    let apart: Vec<(&str, Vec<&str>)> = offered
+    let apart: Vec<(String, Vec<&str>)> = offered
         .never_synced
         .iter()
         .map(|row| {
             (
-                row.label.as_str(),
+                row.at.label(),
                 row.marked_in.iter().map(EnvironmentName::as_str).collect(),
             )
         })
@@ -241,9 +258,9 @@ fn a_setting_either_side_marks_never_sync_is_never_a_row_and_is_listed_apart() {
     assert_eq!(
         apart,
         [
-            ("web.env.APP_ENV", vec!["fix-web"]),
-            ("web.env.PLAIN", vec!["production"]),
-            ("web.startCommand", vec!["fix-web"]),
+            ("web.startCommand".to_owned(), vec!["fix-web"]),
+            ("web.env.APP_ENV".to_owned(), vec!["fix-web"]),
+            ("web.env.PLAIN".to_owned(), vec!["production"]),
         ]
     );
     let to_parent = store
@@ -257,27 +274,18 @@ fn a_setting_either_side_marks_never_sync_is_never_a_row_and_is_listed_apart() {
         .to_parent;
     assert_eq!(to_parent, 1);
 
-    // Picked by key, a marked setting is refused; synced by default, it stays put.
-    let refused = store
-        .write(
-            &who,
-            &SyncChanges {
-                from: at("fix-web"),
-                picks: Some(vec![offered.never_synced[0].key.clone()]),
-                ..SyncChanges::default()
-            },
-        )
-        .unwrap_err();
-    assert_eq!(refused.code, RpcErrorCode::NotFound);
-    store
-        .write(
-            &who,
-            &SyncChanges {
-                from: at("fix-web"),
-                ..SyncChanges::default()
-            },
-        )
-        .unwrap();
+    // Picked by row or by name, a marked setting is refused; synced by default, it
+    // stays put.
+    for pick in [
+        offered.never_synced[0].at.row.to_string(),
+        "web.env.PLAIN".to_owned(),
+    ] {
+        let refused = store
+            .write(&who, &sync(&offered, Some(vec![pick])))
+            .unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    }
+    store.write(&who, &sync(&offered, None)).unwrap();
     let production = values(&store, &who, "production");
     assert_eq!(production["image"], json!("web:2"));
     assert_eq!(production["env"], json!({"PLAIN": "1"}));
@@ -285,7 +293,7 @@ fn a_setting_either_side_marks_never_sync_is_never_a_row_and_is_listed_apart() {
 
     // Synced again, it is offered again.
     store
-        .write(&who, &never_sync("production", &["web.env.PLAIN"], true))
+        .write(&who, &never_sync("production", &["variables.PLAIN"], true))
         .unwrap();
     assert!(marked(&store, &who, "production").is_empty());
     assert_eq!(labels(&view(&store, &who)), ["web.env.PLAIN"]);
@@ -295,7 +303,7 @@ fn a_setting_either_side_marks_never_sync_is_never_a_row_and_is_listed_apart() {
 fn a_branch_follows_its_parents_value_for_a_setting_the_parent_marks() {
     let (store, who) = shop();
     store
-        .write(&who, &never_sync("production", &["web.env.PLAIN"], false))
+        .write(&who, &never_sync("production", &["variables.PLAIN"], false))
         .unwrap();
     set(&store, &who, "production", &[("web.env.PLAIN", json!("2"))]);
     deploy(&store, &who, "production", 2);
@@ -305,7 +313,7 @@ fn a_branch_follows_its_parents_value_for_a_setting_the_parent_marks() {
 
     // Marked in the Branch, production's change never arrives there.
     store
-        .write(&who, &never_sync("fix-web", &["web.env.PLAIN"], false))
+        .write(&who, &never_sync("fix-web", &["variables.PLAIN"], false))
         .unwrap();
     set(&store, &who, "production", &[("web.env.PLAIN", json!("3"))]);
     deploy(&store, &who, "production", 3);
@@ -319,18 +327,27 @@ fn a_branch_follows_its_parents_value_for_a_setting_the_parent_marks() {
     );
 }
 
+/// A mark names a row of a node the Environment has, even one it lacks so far:
+/// the receiver keeps a new row out.
 #[test]
-fn never_sync_names_a_setting_the_environment_has() {
+fn never_sync_names_a_row_of_a_node_the_environment_has() {
     let (store, who) = shop();
-    let whole = store
-        .write(&who, &never_sync("fix-web", &["web"], false))
-        .unwrap_err();
-    assert_eq!(whole.code, RpcErrorCode::InvalidArgument);
-    let missing = store
-        .write(&who, &never_sync("fix-web", &["api.env.KEY"], false))
-        .unwrap_err();
-    assert_eq!(missing.code, RpcErrorCode::NotFound);
+    let elsewhere = NeverSync {
+        rows: vec![format!("{}:startCommand", uuid(5)).parse().unwrap()],
+        ..never_sync("fix-web", &[], false)
+    };
+    let missing = store.write(&who, &elsewhere).unwrap_err();
+    assert_eq!(missing.code, RpcErrorCode::InvalidArgument);
+    assert!(missing.message.contains("has nothing at"), "{missing:?}");
     assert!(marked(&store, &who, "fix-web").is_empty());
+
+    store
+        .write(&who, &never_sync("production", &["variables.NEW"], false))
+        .unwrap();
+    set(&store, &who, "fix-web", &[("web.env.NEW", json!("1"))]);
+    let offered = view(&store, &who);
+    assert!(offered.rows.is_empty());
+    assert_eq!(offered.never_synced[0].at.label(), "web.env.NEW");
 }
 
 #[test]
@@ -340,7 +357,7 @@ fn marks_hold_between_any_two_environments_but_a_parents_own_toward_its_direct_b
     branch(&store, &who, 10, "fix-web", "deep");
     branch(&store, &who, 11, "production", "qa");
     store
-        .write(&who, &never_sync("production", &["web.env.PLAIN"], false))
+        .write(&who, &never_sync("production", &["variables.PLAIN"], false))
         .unwrap();
     set(&store, &who, "production", &[("web.env.PLAIN", json!("2"))]);
     set(
@@ -350,7 +367,7 @@ fn marks_hold_between_any_two_environments_but_a_parents_own_toward_its_direct_b
         &[("web.startCommand", json!("serve --debug"))],
     );
     store
-        .write(&who, &never_sync("fix-web", &["web.startCommand"], false))
+        .write(&who, &never_sync("fix-web", &["startCommand"], false))
         .unwrap();
     set(&store, &who, "deep", &[("web.env.PLAIN", json!("3"))]);
     let marked_in = |label: &str, side: &str| vec![(label.to_owned(), vec![side.to_owned()])];
@@ -373,4 +390,41 @@ fn marks_hold_between_any_two_environments_but_a_parents_own_toward_its_direct_b
     let (rows, apart) = between(&store, &who, ("deep", "production"));
     assert!(!rows.contains(&"web.env.PLAIN".to_owned()));
     assert_eq!(apart, marked_in("web.env.PLAIN", "production"));
+}
+
+/// production renames `web` to `frontend`: one row, however each side names it, is
+/// marked from either side and unmarked the same way.
+#[test]
+fn a_row_is_marked_from_either_side_whatever_each_names_it() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &RenameService {
+                environment: at("production"),
+                service: ServiceName::parse("web").unwrap(),
+                name: ServiceName::parse("frontend").unwrap(),
+            },
+        )
+        .unwrap();
+    set(&store, &who, "fix-web", &[("web.env.PLAIN", json!("2"))]);
+    assert_eq!(view(&store, &who).rows[0].at.row, row("variables.PLAIN"));
+    for (environment, label) in [
+        ("fix-web", "web.env.PLAIN"),
+        ("production", "frontend.env.PLAIN"),
+    ] {
+        let marked = store
+            .write(&who, &never_sync(environment, &["variables.PLAIN"], false))
+            .unwrap();
+        assert_eq!(labels_of(&marked.never_synced), [label]);
+    }
+    let apart = &view(&store, &who).never_synced;
+    assert_eq!(apart.len(), 1);
+    assert_eq!(apart[0].marked_in.len(), 2);
+    for environment in ["fix-web", "production"] {
+        store
+            .write(&who, &never_sync(environment, &["variables.PLAIN"], true))
+            .unwrap();
+    }
+    assert!(view(&store, &who).never_synced.is_empty());
 }

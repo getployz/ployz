@@ -3,25 +3,29 @@
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 //! Conditional Syncs through the Store's interface only, on SQLite and on Postgres
-//! (see `backend`): syncing a PR Environment's changes for its merge, withdrawing,
-//! the check, freezing at the merge, landing with the push that carries the merge
-//! commit (never one without it), taking a hint after PR teardown, a secret that
-//! waits for the Destination's value, syncing now where the merge doesn't reach, and
-//! a Follow that leaves it standing.
+//! (see `backend`): syncing a PR Environment's changes for its merge, withdrawing
+//! by Undo, the check, freezing at the merge, landing with the push that carries the
+//! merge commit (never one without it), taking a hint after PR teardown, a secret
+//! that waits for the Destination's value (more in `held`), syncing now where the
+//! merge doesn't reach, a Follow that leaves it standing, and Never sync at landing.
 
 use ployz_core::RpcErrorCode;
 use ployz_core::config::ServiceGitAccess;
+use ployz_store::RowId;
 use ployz_store::{
-    Actor, AuthorizedRepository, Automated, Batch, BatchCommand, BranchHead, BranchQuery, Change,
-    CheckSuite, Command, ConditionalSyncState, ConfigStore, CreateBranch, CreateGitService,
-    CreateProject, DiffQuery, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, HoldSecret,
-    Landed, OrganizationId, ProjectId, ProjectName, Publish, PullRequest, PullRequestQuery,
-    RunnerId, ServiceLineageId, SetPrPlan, SettingPath, SyncChanges, SyncQuery, SyncView,
-    SystemEvent, Take, Trusted, When, Written,
+    Actor, AuthorizedRepository, Automated, BranchHead, BranchQuery, Change, CheckSuite, Command,
+    ConditionalSyncState, ConfigStore, CreateBranch, CreateGitService, CreateProject, DiffQuery,
+    Edit, EnvironmentId, EnvironmentName, EnvironmentRef, HintSource, HoldSecret, Landed,
+    NeverSync, OrganizationId, ProjectId, ProjectName, Publish, PullRequest, PullRequestQuery,
+    RunnerId, SecretRow, ServiceLineageId, SetPrPlan, SettingPath, SyncChanges, SyncQuery,
+    SyncView, SystemEvent, Take, Trusted, UndoSync, When, Written,
 };
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 mod backend;
+#[path = "conditional_sync/held.rs"]
+mod held;
 
 /// Items as their text, to compare with literals.
 fn texts<T: ToString>(items: &[T]) -> Vec<String> {
@@ -220,7 +224,8 @@ fn push(store: &ConfigStore, who: &Actor, head: u8, merged: &[&str]) -> Automate
     )
 }
 
-/// What a Sync from `pr-5` into `into` (omitted: its only Destination) carries.
+/// What a Sync from `pr-5` carries: into `into` now, or omitted into its only
+/// Destination at the merge.
 fn offered(store: &ConfigStore, who: &Actor, into: Option<&str>) -> SyncView {
     store
         .read(
@@ -228,12 +233,17 @@ fn offered(store: &ConfigStore, who: &Actor, into: Option<&str>) -> SyncView {
             &SyncQuery {
                 from: at("pr-5"),
                 into: into.map(at),
+                when: match into {
+                    Some(_) => ployz_store::When::Now,
+                    None => ployz_store::When::AtMerge,
+                },
             },
         )
         .unwrap()
 }
 
-/// Sync `review`'s rows named by or under `labels` (omitted: those ticked) as reviewed.
+/// Sync `review`'s rows named by or under `labels` (omitted: those ticked) as
+/// reviewed, at the merge if `review` is.
 fn sync(review: &SyncView, labels: Option<&[&str]>) -> SyncChanges {
     let named = |label: &str| {
         labels.is_none_or(|labels| {
@@ -246,28 +256,36 @@ fn sync(review: &SyncView, labels: Option<&[&str]>) -> SyncChanges {
         })
     };
     SyncChanges {
-        from: at("pr-5"),
+        from: at(review.from.name.as_str()),
         into: Some(at(review.into.name.as_str())),
+        when: match review.at_merge {
+            Some(_) => When::AtMerge,
+            None => When::Now,
+        },
+        close_after: false,
+        version: review.version.clone(),
         picks: Some(
             review
                 .rows
                 .iter()
-                .filter(|row| named(&row.label))
-                .map(|row| row.key.clone())
+                .filter(|row| named(&row.at.label()))
+                .map(|row| row.at.row.to_string())
                 .collect(),
         ),
-        version: Some(review.version.clone()),
-        ..SyncChanges::default()
+        skip: Vec::new(),
+        values: BTreeMap::new(),
     }
 }
 
-/// Withdraw `pr-5`'s Conditional Sync, as the Sync button's Undo does.
-fn withdraw() -> SyncChanges {
-    SyncChanges {
-        from: at("pr-5"),
-        when: Some(When::Withdraw),
-        ..SyncChanges::default()
-    }
+/// The row of `web`'s variable `key`.
+fn row(key: &str) -> RowId {
+    format!("{}:variables.{key}", uuid(3)).parse().unwrap()
+}
+
+/// `label`'s secret row in `review`.
+fn secret(review: &SyncView, label: &str) -> Option<SecretRow> {
+    let row = review.rows.iter().find(|row| row.at.label() == label);
+    row.unwrap().secret.clone()
 }
 
 /// How many changes the pull request's page counts for `pr-5` into production.
@@ -313,14 +331,14 @@ fn env(store: &ConfigStore, who: &Actor, environment: &str) -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
-/// Hold production's value of `path` for PR #5's merge.
-fn hold(path: &str, value: &str) -> HoldSecret {
+/// Hold production's value of `web`'s `key` for PR #5's merge.
+fn hold(key: &str, value: &str) -> HoldSecret {
     HoldSecret {
         environment: at("production"),
         pull_request: backend::pr_number(5),
-        path: SettingPath::parse(path).unwrap(),
-        value: value.into(),
         repository: None,
+        row: row(key),
+        value: value.into(),
     }
 }
 
@@ -369,27 +387,35 @@ fn a_conditional_sync_goes_live_with_the_push_that_carries_its_merge() {
         (review.into.name.as_str(), review.at_merge),
         ("production", Some(backend::pr_number(5)))
     );
-    let rows: Vec<(&str, bool)> = review
+    let rows: Vec<(String, bool)> = review
         .rows
         .iter()
-        .map(|row| (row.label.as_str(), row.ticked))
+        .map(|row| (row.at.label(), row.ticked))
         .collect();
-    assert_eq!(rows, [("web.env.MODE", true), ("web.env.TOKEN", true)]);
+    assert_eq!(
+        rows,
+        [
+            ("web.env.MODE".into(), true),
+            ("web.env.TOKEN".into(), true)
+        ]
+    );
     // Its secret goes by name only: production has no value of it yet.
-    let secrets: Vec<(bool, bool)> = review
-        .rows
-        .iter()
-        .map(|row| (row.secret, row.value_set))
-        .collect();
-    assert_eq!(secrets, [(false, false), (true, false)]);
+    let lacks = |held| {
+        Some(SecretRow {
+            needs_value: true,
+            held,
+        })
+    };
+    assert_eq!(secret(&review, "web.env.MODE"), None);
+    assert_eq!(secret(&review, "web.env.TOKEN"), lacks(false));
     // Nothing to hold a value for before it syncs.
     let refused = store
-        .write(&who, &hold("web.env.TOKEN", "prod-secret"))
+        .write(&who, &hold("TOKEN", "prod-secret"))
         .unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
     assert_eq!(
         refused.details["next"],
-        json!("ployz env sync --to production --project shop --env pr-5")
+        json!("ployz env sync --to production --at-merge --project shop --env pr-5")
     );
     // The pull request's page and the Sync button count what it ticks.
     assert_eq!(destination_changes(&store, &who), 2);
@@ -421,7 +447,9 @@ fn a_conditional_sync_goes_live_with_the_push_that_carries_its_merge() {
     };
     let conditional = synced.conditional_sync.unwrap();
     assert_eq!(conditional.state, ConditionalSyncState::Standing);
-    assert_eq!(conditional.rows, ["web.env.MODE", "web.env.TOKEN"]);
+    let labels: Vec<String> = conditional.rows.iter().map(|row| row.label()).collect();
+    assert_eq!(labels, ["web.env.MODE", "web.env.TOKEN"]);
+    assert_eq!(synced.sync.as_str(), conditional.id.as_str());
     assert!(synced.staged.is_empty());
     // Nothing lands before the merge.
     assert!(env(&store, &who, "production").get("MODE").is_none());
@@ -432,7 +460,7 @@ fn a_conditional_sync_goes_live_with_the_push_that_carries_its_merge() {
     );
     assert_eq!(
         store
-            .write(&who, &hold("web.env.NOPE", "prod-secret"))
+            .write(&who, &hold("NOPE", "prod-secret"))
             .unwrap_err()
             .code,
         RpcErrorCode::NotFound
@@ -440,7 +468,7 @@ fn a_conditional_sync_goes_live_with_the_push_that_carries_its_merge() {
     let committed = store
         .commit(
             &who,
-            &Command::HoldSecret(hold("web.env.TOKEN", "prod-secret")),
+            &Command::HoldSecret(hold("TOKEN", "prod-secret")),
             &Trusted::default(),
         )
         .unwrap();
@@ -449,33 +477,38 @@ fn a_conditional_sync_goes_live_with_the_push_that_carries_its_merge() {
         check(&store, &who),
         (true, "2 changes go live with this PR".into())
     );
-    let token = |review: &SyncView| {
-        let row = review
-            .rows
-            .iter()
-            .find(|row| row.label == "web.env.TOKEN")
-            .unwrap();
-        (row.secret, row.value_set)
-    };
-    assert_eq!(token(&offered(&store, &who, None)), (true, true));
+    assert_eq!(
+        secret(&offered(&store, &who, None), "web.env.TOKEN"),
+        lacks(true)
+    );
     // Held values are never shown back.
     assert_eq!(env(&store, &who, "production").get("TOKEN"), None);
 
-    // A settings change in the PR Environment withdraws it; syncing again restores it.
+    // A settings change in the PR Environment stales it and the review it came from;
+    // Undo withdraws it, and syncing again restores it.
     set(&store, &who, "pr-5", &[("web.env.MODE", json!("slow"))]);
     assert_eq!(
         check(&store, &who),
         (false, "Changed since synced · sync again".into())
     );
-    let withdrawn = store.write(&who, &withdraw()).unwrap();
-    assert!(withdrawn.conditional_sync.is_none());
+    assert_eq!(
+        store.write(&who, &sync(&review, None)).unwrap_err().code,
+        RpcErrorCode::Conflict
+    );
+    let undo = UndoSync { sync: synced.sync };
+    let undone = store.write(&who, &undo).unwrap();
+    assert_eq!(undone.into.name.as_str(), "production");
+    assert_eq!(
+        store.write(&who, &undo).unwrap_err().code,
+        RpcErrorCode::NotFound
+    );
     assert_eq!(
         check(&store, &who),
         (false, "2 changes to sync in Ployz".into())
     );
     let review = offered(&store, &who, None);
     // The held value survives a withdraw and sync again.
-    assert_eq!(token(&review), (true, true));
+    assert_eq!(secret(&review, "web.env.TOKEN"), lacks(true));
     store.write(&who, &sync(&review, None)).unwrap();
     assert_eq!(
         check(&store, &who),
@@ -588,7 +621,7 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
     assert_eq!(closed.removed.len(), 1, "{closed:?}");
     assert_eq!(env(&store, &who, "production")["MODE"], json!("staged"));
 
-    let diff = |store: &ConfigStore| {
+    let diff = || {
         store
             .read(
                 &who,
@@ -597,48 +630,36 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
                 },
             )
             .unwrap()
-            .hints
     };
-    let hints = diff(&store);
+    let hints = diff().hints;
     assert_eq!(hints.len(), 1);
     let hint = &hints[0];
     assert_eq!(
+        (hint.at.label(), hint.landed, &hint.value, hint.pull_request),
         (
-            hint.row.as_str(),
-            hint.landed,
-            &hint.value,
-            hint.pull_request
-        ),
-        (
-            "web.env.MODE",
+            "web.env.MODE".into(),
             Landed::Hint,
             &json!("pr"),
             backend::pr_number(5)
         )
     );
-    let take = |row: Option<&str>| Take {
-        from: ployz_store::HintSource::ConditionalSync(hint.conditional_sync.clone()),
+    let take = |rows: Option<Vec<RowId>>| Take {
+        from: HintSource::ConditionalSync(hint.conditional_sync.clone()),
         into: None,
-        rows: row.map(|row| vec![row.to_owned()]),
-        version: store
-            .read(
-                &who,
-                &DiffQuery {
-                    environment: at("production"),
-                },
-            )
-            .unwrap()
-            .version,
+        rows,
+        version: diff().version,
     };
     assert_eq!(
         store
-            .write(&who, &take(Some("web.env.NOPE")))
+            .write(&who, &take(Some(vec![row("NOPE")])))
             .unwrap_err()
             .code,
         RpcErrorCode::NotFound
     );
     // The PR Environment is gone; its value still moves.
-    let taken = store.write(&who, &take(Some("web.env.MODE"))).unwrap();
+    let taken = store
+        .write(&who, &take(Some(vec![hint.at.row.clone()])))
+        .unwrap();
     assert_eq!(texts(&taken.staged), ["web"]);
     assert_eq!(taken.from.name.as_str(), "pr-5");
     assert_eq!(
@@ -646,14 +667,14 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
         ConditionalSyncState::Landed
     );
     assert_eq!(env(&store, &who, "production")["MODE"], json!("pr"));
-    assert_eq!(diff(&store)[0].landed, Landed::Staged);
+    assert_eq!(diff().hints[0].landed, Landed::Staged);
     // Nothing is left to take.
     assert_eq!(
         store.write(&who, &take(None)).unwrap_err().code,
         RpcErrorCode::Conflict
     );
     publish(&store, &who, "production");
-    assert!(diff(&store).is_empty());
+    assert!(diff().hints.is_empty());
     let pushed = push(&store, &who, 5, &[]);
     assert_eq!(
         resolved(&store, &pushed.admitted[0].deployment.id, "MODE"),
@@ -661,106 +682,39 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
     );
 }
 
-/// PR #5 syncs TOKEN and production's value is held for the merge, but production
-/// sets its own first: the check stops waiting, and the merge leaves production's
-/// own value, with no hint.
+/// production marks MODE Never sync after PR #5's Conditional Sync stood: it stays
+/// out at the merge.
 #[test]
-fn a_secret_the_destination_sets_itself_leaves_the_held_value_unused() {
+fn a_setting_the_destination_marks_never_sync_after_it_stood_stays_out_at_the_merge() {
     let (store, who) = shop();
     set(
         &store,
         &who,
-        "pr-5",
-        &[("web.env.TOKEN", json!({ "secret": "pr-secret" }))],
-    );
-    let review = offered(&store, &who, None);
-    store
-        .write(&who, &sync(&review, Some(&["web.env.TOKEN"])))
-        .unwrap();
-    assert_eq!(
-        check(&store, &who),
-        (false, "Waiting for production's value of TOKEN".into())
-    );
-    store.write(&who, &hold("web.env.TOKEN", "held")).unwrap();
-    set(
-        &store,
-        &who,
         "production",
-        &[("web.env.TOKEN", json!({ "secret": "own" }))],
-    );
-    assert_eq!(
-        check(&store, &who),
-        (true, "1 change goes live with this PR".into())
+        &[("web.env.MODE", json!("own"))],
     );
     publish(&store, &who, "production");
+    set(&store, &who, "pr-5", &[("web.env.MODE", json!("pr"))]);
+    store
+        .write(&who, &sync(&offered(&store, &who, None), None))
+        .unwrap();
+    store
+        .write(
+            &who,
+            &NeverSync {
+                environment: at("production"),
+                rows: vec![row("MODE")],
+                off: false,
+            },
+        )
+        .unwrap();
     assert_eq!(push(&store, &who, 4, &[]).admitted.len(), 1);
     observe(
         &store,
         &who,
         SystemEvent::PullRequest(facts(false, Some(MERGE), Some(commit(4)), 2)),
     );
-    let hints = store
-        .read(
-            &who,
-            &DiffQuery {
-                environment: at("production"),
-            },
-        )
-        .unwrap()
-        .hints;
-    assert!(hints.is_empty(), "{hints:?}");
-    set(&store, &who, "production", &[("web.env.MODE", json!("x"))]);
-    publish(&store, &who, "production");
-    let pushed = push(&store, &who, 5, &[]);
-    assert_eq!(
-        resolved(&store, &pushed.admitted[0].deployment.id, "TOKEN"),
-        json!("own")
-    );
-}
-
-/// A value held for a merge that never comes drops with the pull request: reopened
-/// and synced again, it waits for both secrets again.
-#[test]
-fn a_held_value_drops_when_the_pull_request_closes_unmerged() {
-    let (store, who) = shop();
-    let secrets = [
-        ("web.env.TOKEN", json!({ "secret": "pr-token" })),
-        ("web.env.KEY", json!({ "secret": "pr-key" })),
-    ];
-    set(&store, &who, "pr-5", &secrets);
-    store
-        .write(&who, &sync(&offered(&store, &who, None), None))
-        .unwrap();
-    assert_eq!(
-        check(&store, &who),
-        (false, "Waiting for production's value of 2 secrets".into())
-    );
-    store.write(&who, &hold("web.env.TOKEN", "held")).unwrap();
-    assert_eq!(
-        check(&store, &who),
-        (false, "Waiting for production's value of KEY".into())
-    );
-    let closed = observe(
-        &store,
-        &who,
-        SystemEvent::PullRequest(facts(false, None, None, 2)),
-    );
-    assert_eq!(closed.removed.len(), 1, "{closed:?}");
-    assert!(env(&store, &who, "production").get("TOKEN").is_none());
-
-    observe(
-        &store,
-        &who,
-        SystemEvent::PullRequest(facts(true, None, None, 3)),
-    );
-    set(&store, &who, "pr-5", &secrets);
-    store
-        .write(&who, &sync(&offered(&store, &who, None), None))
-        .unwrap();
-    assert_eq!(
-        check(&store, &who),
-        (false, "Waiting for production's value of 2 secrets".into())
-    );
+    assert_eq!(env(&store, &who, "production")["MODE"], json!("own"));
 }
 
 #[test]
@@ -849,208 +803,11 @@ fn a_pr_environment_syncs_into_its_parent_now_and_into_its_destination_at_the_me
 fn now_syncs_a_pr_environment_into_its_destination_at_once() {
     let (store, who) = shop();
     set(&store, &who, "pr-5", &[("web.env.MODE", json!("fast"))]);
-    let now = SyncChanges {
-        when: Some(When::Now),
-        ..sync(&offered(&store, &who, None), None)
-    };
+    let now = sync(&offered(&store, &who, Some("production")), None);
     let synced = store.write(&who, &now).unwrap();
     assert!(synced.conditional_sync.is_none());
     assert_eq!(texts(&synced.staged), ["web"]);
     assert_eq!(env(&store, &who, "production")["MODE"], json!("fast"));
-}
-
-/// Every `saved` document of a Conditional Sync in the Store at `url`.
-fn saved_documents(url: &str) -> Vec<String> {
-    let sql = "SELECT saved FROM config_conditional_sync";
-    match url.strip_prefix("sqlite:") {
-        Some(path) => {
-            let connection = rusqlite::Connection::open(path).unwrap();
-            let mut statement = connection.prepare(sql).unwrap();
-            statement
-                .query_map([], |row| row.get(0))
-                .unwrap()
-                .map(Result::unwrap)
-                .collect()
-        }
-        None => postgres::Client::connect(url, postgres::NoTls)
-            .unwrap()
-            .query(sql, &[])
-            .unwrap()
-            .iter()
-            .map(|row| row.get(0))
-            .collect(),
-    }
-}
-
-#[test]
-fn a_conditional_sync_keeps_no_secret_value() {
-    let dir = tempfile::tempdir().unwrap();
-    let url = backend::fresh_url(&dir);
-    let opened = ConfigStore::open(&url, backend::key()).unwrap();
-    let (store, who) = shop_in(opened, "production");
-    set(
-        &store,
-        &who,
-        "pr-5",
-        &[("web.env.TOKEN", json!({ "secret": "pr-secret" }))],
-    );
-    store
-        .write(&who, &sync(&offered(&store, &who, None), None))
-        .unwrap();
-    let saved = saved_documents(&url);
-    assert_eq!(saved.len(), 1);
-    assert!(!saved[0].contains("ciphertext"), "{}", saved[0]);
-}
-
-#[test]
-fn a_value_held_for_a_pull_request_number_two_repositories_share_names_the_repository() {
-    let (store, who) = shop();
-    // acme/docs deploys into production too, and its PR #5 copies web.
-    let evidence = Trusted {
-        repositories: vec![AuthorizedRepository {
-            repository: backend::repo_name("acme/docs"),
-            repository_id: backend::repo_id(12),
-            access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
-            default_branch: backend::git_branch("main"),
-            branches: Vec::new(),
-        }],
-        ..Trusted::default()
-    };
-    store
-        .write_trusted(
-            &who,
-            &CreateGitService {
-                id: ServiceLineageId::parse(uuid(5)).unwrap(),
-                environment: EnvironmentRef::default(),
-                name: ployz_core::ServiceName::parse("docs").unwrap(),
-                repository: backend::repo_name("acme/docs"),
-                branch: None,
-            },
-            &evidence,
-        )
-        .unwrap();
-    publish(&store, &who, "production");
-    store
-        .write(
-            &who,
-            &SetPrPlan {
-                project: None,
-                repository: backend::repo_name("acme/docs"),
-                enabled: Some(true),
-                start_from: Some(EnvironmentName::parse("production").unwrap()),
-                copy: Some(vec![ployz_store::NodeName::parse("web").unwrap()]),
-                setup: None,
-                remove_on_close: None,
-                include_bots: None,
-            },
-        )
-        .unwrap();
-    let docs = PullRequest {
-        repository_id: backend::repo_id(12),
-        ..facts(true, None, None, 1)
-    };
-    let opened = observe(&store, &who, SystemEvent::PullRequest(docs));
-    assert_eq!(opened.admitted.len(), 1);
-    let token = [("web.env.TOKEN", json!({ "secret": "pr-secret" }))];
-    for pr in ["pr-5", "pr-5-2"] {
-        set(&store, &who, pr, &token);
-        let review = store
-            .read(
-                &who,
-                &SyncQuery {
-                    from: at(pr),
-                    into: None,
-                },
-            )
-            .unwrap();
-        let synced = SyncChanges {
-            from: at(pr),
-            ..sync(&review, None)
-        };
-        store.write(&who, &synced).unwrap();
-    }
-
-    let refused = store
-        .write(&who, &hold("web.env.TOKEN", "prod-secret"))
-        .unwrap_err();
-    assert_eq!(
-        (refused.code, refused.message.as_str()),
-        (
-            RpcErrorCode::InvalidArgument,
-            "#5 of more than one repository brings web.env.TOKEN: name the repository"
-        )
-    );
-    let named = HoldSecret {
-        repository: Some(backend::repo_id(11)),
-        ..hold("web.env.TOKEN", "prod-secret")
-    };
-    store.write(&who, &named).unwrap();
-    assert_eq!(
-        check(&store, &who),
-        (true, "1 change goes live with this PR".into())
-    );
-}
-
-#[test]
-fn a_value_for_a_secret_lands_with_its_sync_or_neither_does() {
-    let (store, who) = shop();
-    set(
-        &store,
-        &who,
-        "pr-5",
-        &[("web.env.TOKEN", json!({ "secret": "pr-secret" }))],
-    );
-    let batch = |held: &str| Batch {
-        environment: at("production"),
-        commands: vec![
-            BatchCommand::Sync(sync(&offered(&store, &who, None), None)),
-            BatchCommand::HoldSecret(hold(held, "prod-secret")),
-        ],
-    };
-    // Nothing to hold the value for: the Sync doesn't stand either.
-    store.write(&who, &batch("web.env.NOPE")).unwrap_err();
-    assert_eq!(
-        check(&store, &who),
-        (false, "1 change to sync in Ployz".into())
-    );
-    store.write(&who, &batch("web.env.TOKEN")).unwrap();
-    assert_eq!(
-        check(&store, &who),
-        (true, "1 change goes live with this PR".into())
-    );
-
-    // A Sync now lands with the value set beside it.
-    set(
-        &store,
-        &who,
-        "pr-5",
-        &[("web.env.KEY", json!({ "secret": "pr-key" }))],
-    );
-    let review = offered(&store, &who, None);
-    let now = Batch {
-        environment: at("production"),
-        commands: vec![
-            BatchCommand::Sync(SyncChanges {
-                when: Some(When::Now),
-                ..sync(&review, Some(&["web.env.KEY"]))
-            }),
-            BatchCommand::Edit(Edit {
-                environment: at("production"),
-                expect: None,
-                changes: vec![Change::Set {
-                    path: SettingPath::parse("web.env.KEY").unwrap(),
-                    value: json!({ "secret": "prod-key" }),
-                }],
-            }),
-        ],
-    };
-    store.write(&who, &now).unwrap();
-    publish(&store, &who, "production");
-    let pushed = push(&store, &who, 4, &[]);
-    assert_eq!(
-        resolved(&store, &pushed.admitted[0].deployment.id, "KEY"),
-        json!("prod-key")
-    );
 }
 
 /// Run Deployment `id` to `applied`, touching `services`.

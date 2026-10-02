@@ -3,16 +3,20 @@
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 //! Sync through the Store's interface only, on SQLite and on Postgres (see
-//! `backend`): a Branch's changes into its Parent, picked by row, offered again
-//! when left out or discarded, never deleting, never carrying a secret's value, and
-//! closing the Branch after; and between any two Environments of a Project.
+//! `backend`): a Branch's changes into its Parent, picked by row or by name, offered
+//! again when left out, discarded or undone, never deleting, a secret the receiver
+//! lacks arriving with the value given or without one, and closing the Branch after;
+//! and between any two Environments of a Project.
+
+use std::collections::BTreeMap;
 
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Admit, BranchQuery, Change, ConfigStore, CreateBranch, CreateProject, CreateService,
     Deploy, DeploymentId, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentRef,
-    KeepBranch, OrganizationId, ProjectId, ProjectName, RemoveService, ServiceLineageId,
-    ServiceQuery, SettingPath, SyncChanges, SyncQuery, SyncView, Trusted,
+    KeepBranch, OrganizationId, ProjectId, ProjectName, RemoveService, RenameService, SecretRow,
+    ServiceLineageId, ServiceQuery, SettingPath, SyncChange, SyncChanges, SyncId, SyncQuery,
+    SyncRow, SyncView, Synced, Trusted, UndoSync,
 };
 use serde_json::{Value, json};
 
@@ -60,13 +64,19 @@ fn shop(deployed: bool) -> (ConfigStore, Actor) {
     if deployed {
         deploy(&store, &who, "production", 1);
     }
+    branch(&store, &who, 9, "production", "fix-web");
+    (store, who)
+}
+
+/// A Branch `name` of `from` with its own `web`.
+fn branch(store: &ConfigStore, who: &Actor, n: u8, from: &str, name: &str) {
     store
         .write(
-            &who,
+            who,
             &CreateBranch {
-                id: EnvironmentId::parse(uuid(9)).unwrap(),
-                from: at("production"),
-                name: EnvironmentName::parse("fix-web").unwrap(),
+                id: EnvironmentId::parse(uuid(n)).unwrap(),
+                from: at(from),
+                name: EnvironmentName::parse(name).unwrap(),
                 copy: vec![ployz_store::NodeName::parse("web").unwrap()],
                 live: Vec::new(),
                 setup: Vec::new(),
@@ -75,7 +85,6 @@ fn shop(deployed: bool) -> (ConfigStore, Actor) {
             },
         )
         .unwrap();
-    (store, who)
 }
 
 fn service(store: &ConfigStore, who: &Actor, environment: &str, n: u8, name: &str, image: &str) {
@@ -127,6 +136,36 @@ fn values(store: &ConfigStore, who: &Actor, environment: &str, service: &str) ->
     )
 }
 
+fn services(store: &ConfigStore, who: &Actor, environment: &str) -> Vec<String> {
+    store
+        .read(
+            who,
+            &ployz_store::ServicesQuery {
+                environment: at(environment),
+            },
+        )
+        .unwrap()
+        .services
+        .into_iter()
+        .map(|listing| listing.service.name.to_string())
+        .collect()
+}
+
+/// What a Sync from `from` into `into` would stage.
+fn offered(store: &ConfigStore, who: &Actor, from: &str, into: &str) -> SyncView {
+    store
+        .read(
+            who,
+            &SyncQuery {
+                from: at(from),
+                into: Some(at(into)),
+                when: ployz_store::When::Now,
+            },
+        )
+        .unwrap()
+}
+
+/// What a Sync from fix-web into its Parent would stage.
 fn view(store: &ConfigStore, who: &Actor) -> SyncView {
     store
         .read(
@@ -134,29 +173,64 @@ fn view(store: &ConfigStore, who: &Actor) -> SyncView {
             &SyncQuery {
                 from: at("fix-web"),
                 into: None,
+                when: ployz_store::When::Now,
             },
         )
         .unwrap()
 }
 
 /// The rows offered, by label, sorted.
-fn labels(view: &SyncView) -> Vec<&str> {
-    let mut labels: Vec<&str> = view.rows.iter().map(|row| row.label.as_str()).collect();
+fn labels(view: &SyncView) -> Vec<String> {
+    let mut labels: Vec<String> = view.rows.iter().map(|row| row.at.label()).collect();
     labels.sort_unstable();
     labels
 }
 
-fn row<'view>(view: &'view SyncView, label: &str) -> &'view ployz_store::SyncRow {
-    view.rows.iter().find(|row| row.label == label).unwrap()
+/// The rows offered, by label, sorted; one not ticked by default reads `-label`.
+fn ticks(view: &SyncView) -> Vec<String> {
+    let mut ticks: Vec<(String, bool)> = view
+        .rows
+        .iter()
+        .map(|row| (row.at.label(), row.ticked))
+        .collect();
+    ticks.sort_unstable();
+    ticks
+        .into_iter()
+        .map(|(label, ticked)| if ticked { label } else { format!("-{label}") })
+        .collect()
 }
 
-fn sync(picks: Option<Vec<String>>, version: Option<String>) -> SyncChanges {
+fn row<'view>(view: &'view SyncView, label: &str) -> &'view SyncRow {
+    view.rows
+        .iter()
+        .find(|row| row.at.label() == label)
+        .unwrap()
+}
+
+/// Sync what `view` offers now, at its version: `picks` by name, or else the rows
+/// ticked.
+fn sync(view: &SyncView, picks: Option<&[&str]>) -> SyncChanges {
     SyncChanges {
-        from: at("fix-web"),
-        picks,
-        version,
-        ..SyncChanges::default()
+        from: at(view.from.name.as_str()),
+        into: Some(at(view.into.name.as_str())),
+        when: ployz_store::When::Now,
+        close_after: false,
+        version: view.version.clone(),
+        picks: picks.map(|picks| picks.iter().map(ToString::to_string).collect()),
+        skip: Vec::new(),
+        values: BTreeMap::new(),
     }
+}
+
+/// Sync `from` into `into`, the rows named `picks` or else those ticked.
+fn sync_into(
+    store: &ConfigStore,
+    who: &Actor,
+    (from, into): (&str, &str),
+    picks: Option<&[&str]>,
+) -> Synced {
+    let view = offered(store, who, from, into);
+    store.write(who, &sync(&view, picks)).unwrap()
 }
 
 fn to_parent(store: &ConfigStore, who: &Actor) -> usize {
@@ -184,19 +258,33 @@ fn discard(store: &ConfigStore, who: &Actor, path: &str) {
         .unwrap();
 }
 
+fn undo(
+    store: &ConfigStore,
+    who: &Actor,
+    synced: &Synced,
+) -> Result<String, (RpcErrorCode, String)> {
+    store
+        .write(
+            who,
+            &UndoSync {
+                sync: synced.sync.clone(),
+            },
+        )
+        .map(|undone| undone.into.name.to_string())
+        .map_err(|error| (error.code, error.message))
+}
+
 #[test]
 fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_next_time() {
     let (store, who) = shop(false);
-    assert!(view(&store, &who).rows.is_empty());
-    let nothing = store.write(&who, &sync(None, None)).unwrap_err();
+    let empty = view(&store, &who);
+    assert!(empty.rows.is_empty());
+    let nothing = store.write(&who, &sync(&empty, None)).unwrap_err();
     assert_eq!(
         (nothing.code, nothing.message.as_str()),
         (RpcErrorCode::Conflict, "Nothing to sync into production")
     );
-    assert_eq!(
-        nothing.details["version"],
-        json!(view(&store, &who).version)
-    );
+    assert_eq!(nothing.details["version"], json!(empty.version));
 
     set(
         &store,
@@ -215,13 +303,10 @@ fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_nex
     assert_eq!(review.into.name.as_str(), "production");
     assert_eq!(labels(&review), ["web.env.NEW", "web.image"]);
     let [new, image] = [row(&review, "web.env.NEW"), row(&review, "web.image")];
-    assert_eq!(new.node.to_string(), "web");
-    assert_eq!((new.ticked, new.changed, new.new), (true, false, true));
+    assert_eq!(new.at.node.to_string(), "web");
+    assert_eq!((new.ticked, new.change), (true, SyncChange::New));
     assert_eq!((&new.from, &new.into), (&json!("1"), &Value::Null));
-    assert_eq!(
-        (image.ticked, image.changed, image.new),
-        (true, true, false)
-    );
+    assert_eq!((image.ticked, image.change), (true, SyncChange::Conflict));
     assert_eq!(
         (&image.from, &image.into),
         (&json!("web:2"), &json!("web:hot"))
@@ -229,23 +314,34 @@ fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_nex
     // The Branch's count to its Parent is the rows ticked by default.
     assert_eq!(to_parent(&store, &who), 2);
 
-    let stale = store
-        .write(&who, &sync(None, Some("0:0".into())))
-        .unwrap_err();
+    // A stale version is refused with the fresh one.
+    let stale = SyncChanges {
+        version: "0:0".into(),
+        ..sync(&review, None)
+    };
+    let stale = store.write(&who, &stale).unwrap_err();
     assert_eq!(stale.code, RpcErrorCode::Conflict);
     assert_eq!(stale.details["version"], json!(review.version));
+    // An unknown name is refused with the names there are; no picks, nothing to do.
     let unknown = store
-        .write(&who, &sync(Some(vec!["nope".into()]), None))
+        .write(&who, &sync(&review, Some(&["web.env.NOPE"])))
         .unwrap_err();
     assert_eq!(unknown.code, RpcErrorCode::NotFound);
+    assert_eq!(
+        unknown.details["valid_children"],
+        json!(["web.env.NEW", "web.image"])
+    );
+    assert_eq!(
+        store
+            .write(&who, &sync(&review, Some(&[])))
+            .unwrap_err()
+            .code,
+        RpcErrorCode::Conflict
+    );
 
-    // Only the image: the variable is left out, so it is offered again.
-    let image_key = row(&review, "web.image").key.clone();
+    // Only the image, by name: the variable is left out, so it is offered again.
     let synced = store
-        .write(
-            &who,
-            &sync(Some(vec![image_key]), Some(review.version.clone())),
-        )
+        .write(&who, &sync(&review, Some(&["web.image"])))
         .unwrap();
     assert_eq!(synced.into.name.as_str(), "production");
     assert_eq!(
@@ -273,13 +369,17 @@ fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_nex
     assert_eq!(labels(&view(&store, &who)), ["web.env.NEW"]);
     assert_eq!(to_parent(&store, &who), 1);
 
-    // A repeat Sync offers only what changed since the last one.
+    // A repeat Sync offers only what changed since the last one; one skipped stays.
     set(&store, &who, "fix-web", &[("web.env.OTHER", json!("2"))]);
-    assert_eq!(
-        labels(&view(&store, &who)),
-        ["web.env.NEW", "web.env.OTHER"]
-    );
-    store.write(&who, &sync(None, None)).unwrap();
+    let review = view(&store, &who);
+    assert_eq!(labels(&review), ["web.env.NEW", "web.env.OTHER"]);
+    let skipping = SyncChanges {
+        skip: vec!["web.env.OTHER".into()],
+        ..sync(&review, None)
+    };
+    store.write(&who, &skipping).unwrap();
+    assert_eq!(labels(&view(&store, &who)), ["web.env.OTHER"]);
+    store.write(&who, &sync(&view(&store, &who), None)).unwrap();
     let web = values(&store, &who, "production", "web");
     assert_eq!(
         (&web["env"]["NEW"], &web["env"]["OTHER"]),
@@ -300,19 +400,51 @@ fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_nex
         )
         .unwrap();
     assert!(view(&store, &who).rows.is_empty());
-    let services: Vec<String> = store
-        .read(
+    assert_eq!(services(&store, &who, "production"), ["db", "web"]);
+}
+
+#[test]
+fn a_name_two_rows_answer_to_is_refused_until_the_row_is_named() {
+    let (store, who) = shop(false);
+    // production renames web to site; fix-web makes a site of its own:
+    // `site.env.X` names web's X in production and the new site's in fix-web.
+    store
+        .write(
             &who,
-            &ployz_store::ServicesQuery {
+            &RenameService {
                 environment: at("production"),
+                service: ServiceName::parse("web").unwrap(),
+                name: ServiceName::parse("site").unwrap(),
             },
         )
-        .unwrap()
-        .services
-        .into_iter()
-        .map(|listing| listing.service.name.to_string())
-        .collect();
-    assert_eq!(services, ["db", "web"]);
+        .unwrap();
+    service(&store, &who, "fix-web", 5, "site", "site:1");
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.X", json!("web")), ("site.env.X", json!("site"))],
+    );
+    let review = view(&store, &who);
+    let web_x = row(&review, "web.env.X");
+    let ambiguous = store
+        .write(&who, &sync(&review, Some(&["site.env.X"])))
+        .unwrap_err();
+    assert_eq!(ambiguous.code, RpcErrorCode::NotFound);
+    let rows = ambiguous.details["valid_children"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.contains(&json!(web_x.at.row.to_string())));
+
+    // Named by its row, only web's X lands, in what production calls site.
+    let by_row = web_x.at.row.to_string();
+    store
+        .write(&who, &sync(&review, Some(&[by_row.as_str()])))
+        .unwrap();
+    assert_eq!(
+        values(&store, &who, "production", "site")["env"]["X"],
+        json!("web")
+    );
+    assert_eq!(services(&store, &who, "production"), ["db", "site"]);
 }
 
 #[test]
@@ -325,20 +457,20 @@ fn a_synced_change_discarded_before_it_deploys_is_offered_again() {
         labels(&view(&store, &who)),
         ["api", "api.env.MODE", "web.image"]
     );
-    store.write(&who, &sync(None, None)).unwrap();
+    store.write(&who, &sync(&view(&store, &who), None)).unwrap();
     assert!(view(&store, &who).rows.is_empty());
 
     discard(&store, &who, "web.image");
     let again = view(&store, &who);
     assert_eq!(labels(&again), ["web.image"]);
-    assert!(!row(&again, "web.image").changed);
+    assert_eq!(row(&again, "web.image").change, SyncChange::Changed);
     discard(&store, &who, "api");
     let again = view(&store, &who);
     assert_eq!(labels(&again), ["api", "api.env.MODE", "web.image"]);
-    assert!(row(&again, "api").new);
+    assert_eq!(row(&again, "api").change, SyncChange::New);
 
     // Once production deploys them, a Discard there no longer gives them back.
-    store.write(&who, &sync(None, None)).unwrap();
+    store.write(&who, &sync(&again, None)).unwrap();
     deploy(&store, &who, "production", 2);
     set(
         &store,
@@ -353,7 +485,123 @@ fn a_synced_change_discarded_before_it_deploys_is_offered_again() {
     );
     assert!(view(&store, &who).rows.is_empty());
     set(&store, &who, "fix-web", &[("web.image", json!("web:3"))]);
-    assert!(!row(&view(&store, &who), "web.image").changed);
+    assert_eq!(
+        row(&view(&store, &who), "web.image").change,
+        SyncChange::Changed
+    );
+}
+
+#[test]
+fn a_synced_setting_production_lacked_is_offered_again_once_discarded() {
+    let (store, who) = shop(true);
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[
+            ("web.startCommand", json!("serve")),
+            ("web.env.NEW", json!("1")),
+        ],
+    );
+    store.write(&who, &sync(&view(&store, &who), None)).unwrap();
+    assert!(view(&store, &who).rows.is_empty());
+
+    discard(&store, &who, "web.startCommand");
+    discard(&store, &who, "web.env.NEW");
+    let again = view(&store, &who);
+    assert_eq!(labels(&again), ["web.env.NEW", "web.startCommand"]);
+    assert_eq!(row(&again, "web.startCommand").change, SyncChange::New);
+}
+
+#[test]
+fn undoing_a_sync_puts_back_only_what_it_changed_and_offers_it_again() {
+    let (store, who) = shop(false);
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.image", json!("web:2")), ("web.env.NEW", json!("1"))],
+    );
+    service(&store, &who, "fix-web", 5, "api", "api:1");
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.image", json!("web:hot"))],
+    );
+    let review = view(&store, &who);
+    let synced = store.write(&who, &sync(&review, None)).unwrap();
+    assert_eq!(services(&store, &who, "production"), ["api", "db", "web"]);
+    // production's own change since stays.
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.PLAIN", json!("own"))],
+    );
+
+    assert_eq!(undo(&store, &who, &synced), Ok("production".into()));
+    let web = values(&store, &who, "production", "web");
+    assert_eq!(
+        (&web["image"], web["env"].get("NEW"), &web["env"]["PLAIN"]),
+        (&json!("web:hot"), None, &json!("own"))
+    );
+    assert_eq!(services(&store, &who, "production"), ["db", "web"]);
+    assert_eq!(labels(&view(&store, &who)), labels(&review));
+
+    // Undone once, it is gone; so is a Sync that never was.
+    let gone = Err((
+        RpcErrorCode::NotFound,
+        format!("No Sync {} to undo", synced.sync),
+    ));
+    assert_eq!(undo(&store, &who, &synced), gone);
+    let never = Synced {
+        sync: SyncId::parse(uuid(99)).unwrap(),
+        ..synced
+    };
+    assert_eq!(
+        undo(&store, &who, &never).unwrap_err().0,
+        RpcErrorCode::NotFound
+    );
+}
+
+#[test]
+fn a_sync_is_not_undone_once_a_row_it_landed_changed_or_deployed() {
+    let (store, who) = shop(false);
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.image", json!("web:2")), ("web.env.NEW", json!("1"))],
+    );
+    let new = sync_into(
+        &store,
+        &who,
+        ("fix-web", "production"),
+        Some(&["web.env.NEW"]),
+    );
+    set(&store, &who, "production", &[("web.env.NEW", json!("2"))]);
+    assert_eq!(
+        undo(&store, &who, &new),
+        Err((
+            RpcErrorCode::Conflict,
+            "web.env.NEW changed since it synced: change it back instead".into()
+        ))
+    );
+
+    let image = sync_into(&store, &who, ("fix-web", "production"), None);
+    deploy(&store, &who, "production", 1);
+    assert_eq!(
+        undo(&store, &who, &image),
+        Err((
+            RpcErrorCode::Conflict,
+            "web.image is deployed: change it back instead".into()
+        ))
+    );
+    assert_eq!(
+        values(&store, &who, "production", "web")["image"],
+        json!("web:2")
+    );
 }
 
 #[test]
@@ -366,7 +614,7 @@ fn a_sync_closes_a_branch_that_isnt_kept_when_asked() {
     };
     let closing = SyncChanges {
         close_after: true,
-        ..sync(None, None)
+        ..sync(&view(&store, &who), None)
     };
     store.write(&who, &keep(true)).unwrap();
     let refused = store.write(&who, &closing).unwrap_err();
@@ -395,13 +643,16 @@ fn a_sync_closes_a_branch_that_isnt_kept_when_asked() {
         .unwrap();
     let sideways = SyncChanges {
         into: Some(at("staging")),
-        close_after: true,
-        ..sync(None, None)
+        ..closing.clone()
     };
     assert_eq!(
         store.write(&who, &sideways).unwrap_err().code,
         RpcErrorCode::InvalidArgument
     );
+    let closing = SyncChanges {
+        version: view(&store, &who).version,
+        ..closing
+    };
     let synced = store.write(&who, &closing).unwrap();
     assert!(synced.closing);
     assert_eq!(
@@ -420,71 +671,6 @@ fn a_sync_closes_a_branch_that_isnt_kept_when_asked() {
     assert_eq!(gone.code, RpcErrorCode::NotFound);
 }
 
-/// What a Sync from `from` into `into` would stage.
-fn offered(store: &ConfigStore, who: &Actor, from: &str, into: &str) -> SyncView {
-    store
-        .read(
-            who,
-            &SyncQuery {
-                from: at(from),
-                into: Some(at(into)),
-            },
-        )
-        .unwrap()
-}
-
-/// Sync `from` into `into`, the rows labelled `picks` or else those ticked.
-fn sync_into(store: &ConfigStore, who: &Actor, (from, into): (&str, &str), picks: Option<&[&str]>) {
-    let view = offered(store, who, from, into);
-    let picks = picks.map(|labels| {
-        labels
-            .iter()
-            .map(|label| row(&view, label).key.clone())
-            .collect()
-    });
-    store
-        .write(
-            who,
-            &SyncChanges {
-                from: at(from),
-                into: Some(at(into)),
-                picks,
-                ..SyncChanges::default()
-            },
-        )
-        .unwrap();
-}
-
-/// Each row offered by label, with whether it is ticked by default.
-fn ticks(view: &SyncView) -> Vec<(&str, bool)> {
-    let mut ticks: Vec<(&str, bool)> = view
-        .rows
-        .iter()
-        .map(|row| (row.label.as_str(), row.ticked))
-        .collect();
-    ticks.sort_unstable();
-    ticks
-}
-
-/// A Branch `name` of `from` with its own `web`.
-fn branch(store: &ConfigStore, who: &Actor, n: u8, from: &str, name: &str) {
-    store
-        .write(
-            who,
-            &CreateBranch {
-                id: EnvironmentId::parse(uuid(n)).unwrap(),
-                from: at(from),
-                name: EnvironmentName::parse(name).unwrap(),
-                copy: vec![ployz_store::NodeName::parse("web").unwrap()],
-                live: Vec::new(),
-                setup: Vec::new(),
-                keep: false,
-                fix: None,
-            },
-        )
-        .unwrap();
-}
-
 #[test]
 fn a_branch_syncs_skipping_a_level_and_sideways_ticking_only_its_own_changes() {
     // production → fix-web → fix-a and fix-b.
@@ -494,17 +680,14 @@ fn a_branch_syncs_skipping_a_level_and_sideways_ticking_only_its_own_changes() {
     set(&store, &who, "production", &[("web.env.ROOT", json!("1"))]);
     // A root has no Parent: its every row is its own.
     let root = offered(&store, &who, "production", "fix-web");
-    assert_eq!(ticks(&root), [("web.env.ROOT", true)]);
+    assert_eq!(ticks(&root), ["web.env.ROOT"]);
     sync_into(&store, &who, ("production", "fix-web"), None);
 
     // Into its own Branch, fix-web ticks its own change and not what it got from
     // production.
     set(&store, &who, "fix-web", &[("web.env.MID", json!("1"))]);
     let down = offered(&store, &who, "fix-web", "fix-a");
-    assert_eq!(
-        ticks(&down),
-        [("web.env.MID", true), ("web.env.ROOT", false)]
-    );
+    assert_eq!(ticks(&down), ["web.env.MID", "-web.env.ROOT"]);
     sync_into(&store, &who, ("fix-web", "fix-a"), None);
     let web = values(&store, &who, "fix-a", "web");
     assert_eq!(
@@ -527,8 +710,8 @@ fn a_branch_syncs_skipping_a_level_and_sideways_ticking_only_its_own_changes() {
         &[("web.env.PLAIN", json!("hot"))],
     );
     let skip = offered(&store, &who, "fix-a", "production");
-    assert_eq!(ticks(&skip), [("web.env.MID", false), ("web.image", true)]);
-    assert!(row(&skip, "web.env.MID").new);
+    assert_eq!(ticks(&skip), ["-web.env.MID", "web.image"]);
+    assert_eq!(row(&skip, "web.env.MID").change, SyncChange::New);
     sync_into(&store, &who, ("fix-a", "production"), None);
     let web = values(&store, &who, "production", "web");
     assert_eq!(
@@ -538,18 +721,14 @@ fn a_branch_syncs_skipping_a_level_and_sideways_ticking_only_its_own_changes() {
     // The pair shares a base now: the change left out is offered again, alone.
     assert_eq!(
         ticks(&offered(&store, &who, "fix-a", "production")),
-        [("web.env.MID", false)]
+        ["-web.env.MID"]
     );
 
     // Sideways: fix-a into its sibling, over where fix-a was made.
     let sideways = offered(&store, &who, "fix-a", "fix-b");
     assert_eq!(
         ticks(&sideways),
-        [
-            ("web.env.MID", false),
-            ("web.env.ROOT", false),
-            ("web.image", true)
-        ]
+        ["-web.env.MID", "-web.env.ROOT", "web.image"]
     );
     sync_into(&store, &who, ("fix-a", "fix-b"), None);
     let web = values(&store, &who, "fix-b", "web");
@@ -561,7 +740,7 @@ fn a_branch_syncs_skipping_a_level_and_sideways_ticking_only_its_own_changes() {
     // Into its own Parent, every row is ticked.
     assert_eq!(
         ticks(&offered(&store, &who, "fix-a", "fix-web")),
-        [("web.image", true)]
+        ["web.image"]
     );
 
     // Once synced into its Parent, a change is no longer fix-a's own: unticked
@@ -572,14 +751,8 @@ fn a_branch_syncs_skipping_a_level_and_sideways_ticking_only_its_own_changes() {
     sync_into(&store, &who, ("fix-a", "fix-web"), Some(&["web.env.SIDE"]));
     let after = offered(&store, &who, "fix-a", "fix-b");
     assert!(!row(&after, "web.env.SIDE").ticked);
-    let stale = SyncChanges {
-        from: at("fix-a"),
-        into: Some(at("fix-b")),
-        version: Some(before.version),
-        ..SyncChanges::default()
-    };
     assert_eq!(
-        store.write(&who, &stale).unwrap_err().code,
+        store.write(&who, &sync(&before, None)).unwrap_err().code,
         RpcErrorCode::Conflict
     );
 }
@@ -593,7 +766,7 @@ fn roots_sync_into_a_branch_they_didnt_make_and_into_each_other() {
     // Into a Branch of its Branch: over where that Branch was made, so the
     // Branch's own image isn't offered back.
     let skip = offered(&store, &who, "production", "fix-a");
-    assert_eq!(ticks(&skip), [("web.env.ROOT", true)]);
+    assert_eq!(ticks(&skip), ["web.env.ROOT"]);
     sync_into(&store, &who, ("production", "fix-a"), None);
     let web = values(&store, &who, "fix-a", "web");
     assert_eq!(
@@ -617,11 +790,11 @@ fn roots_sync_into_a_branch_they_didnt_make_and_into_each_other() {
     assert_eq!(
         ticks(&first),
         [
-            ("db", true),
-            ("web", true),
-            ("web.env.DB_URL", true),
-            ("web.env.PLAIN", true),
-            ("web.env.ROOT", true)
+            "db",
+            "web",
+            "web.env.DB_URL",
+            "web.env.PLAIN",
+            "web.env.ROOT"
         ]
     );
     sync_into(&store, &who, ("production", "staging"), None);
@@ -634,7 +807,7 @@ fn roots_sync_into_a_branch_they_didnt_make_and_into_each_other() {
     set(&store, &who, "production", &[("web.env.PLAIN", json!("2"))]);
     assert_eq!(
         ticks(&offered(&store, &who, "production", "staging")),
-        [("web.env.PLAIN", true)]
+        ["web.env.PLAIN"]
     );
     sync_into(&store, &who, ("production", "staging"), None);
     let web = values(&store, &who, "staging", "web");
@@ -647,6 +820,7 @@ fn roots_sync_into_a_branch_they_didnt_make_and_into_each_other() {
 #[test]
 fn a_sync_stays_within_its_project() {
     let (store, who) = shop(false);
+    let review = view(&store, &who);
     store
         .write(
             &who,
@@ -664,6 +838,7 @@ fn a_sync_stays_within_its_project() {
     let across = SyncQuery {
         from: in_project("shop", "fix-web"),
         into: Some(in_project("blog", "production")),
+        when: ployz_store::When::Now,
     };
     let refused = store.read(&who, &across).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
@@ -677,7 +852,7 @@ fn a_sync_stays_within_its_project() {
             &SyncChanges {
                 from: across.from,
                 into: across.into,
-                ..SyncChanges::default()
+                ..sync(&review, None)
             },
         )
         .unwrap_err();
@@ -690,6 +865,7 @@ fn a_sync_stays_within_its_project() {
             &SyncQuery {
                 from: in_project("shop", "production"),
                 into: None,
+                when: ployz_store::When::Now,
             },
         )
         .unwrap_err();
@@ -700,7 +876,7 @@ fn a_sync_stays_within_its_project() {
 }
 
 #[test]
-fn a_secret_syncs_without_its_value_and_the_receiver_deploys_only_with_its_own() {
+fn a_secret_the_receiver_lacks_syncs_with_the_value_given_or_without_one() {
     let (store, who) = shop(false);
     set(
         &store,
@@ -728,36 +904,66 @@ fn a_secret_syncs_without_its_value_and_the_receiver_deploys_only_with_its_own()
     // production has TOKEN: it is never offered. The secrets it lacks are, flagged.
     let review = view(&store, &who);
     assert_eq!(labels(&review), ["api", "api.env.KEY", "web.env.API_KEY"]);
+    let lacking = Some(SecretRow {
+        needs_value: true,
+        held: false,
+    });
     for label in ["api.env.KEY", "web.env.API_KEY"] {
         let secret = row(&review, label);
         assert_eq!(
-            (secret.secret, secret.new, secret.ticked),
-            (true, true, true)
+            (&secret.secret, secret.change, secret.ticked),
+            (&lacking, SyncChange::New, true)
         );
         assert_eq!(secret.from, json!({ "secret": true }));
     }
-    assert!(!row(&review, "api").secret);
-    store.write(&who, &sync(None, None)).unwrap();
+    assert_eq!(row(&review, "api").secret, None);
+
+    // A value only fills a picked secret the receiver lacks; a pick needs its new node.
+    let with = |picks: Option<&[&str]>, row: &SyncRow| SyncChanges {
+        values: BTreeMap::from([(row.at.row.clone(), "given-key".into())]),
+        ..sync(&review, picks)
+    };
+    for refused in [
+        with(None, row(&review, "api")),
+        with(
+            Some(&["api", "api.env.KEY"]),
+            row(&review, "web.env.API_KEY"),
+        ),
+        sync(&review, Some(&["api.env.KEY"])),
+    ] {
+        assert_eq!(
+            store.write(&who, &refused).unwrap_err().code,
+            RpcErrorCode::InvalidArgument,
+            "{refused:?}"
+        );
+    }
+    store
+        .write(&who, &with(None, row(&review, "web.env.API_KEY")))
+        .unwrap();
     assert!(view(&store, &who).rows.is_empty());
-    // A secret without a value reads so, and sending that back keeps it.
+    // The value given is set, never shown; the other lands without one, and sending
+    // that back keeps it.
     assert_eq!(
         values(&store, &who, "production", "web")["env"]["API_KEY"],
+        json!({ "secret": true })
+    );
+    assert_eq!(
+        values(&store, &who, "production", "api")["env"]["KEY"],
         json!({ "secret": false })
     );
     set(
         &store,
         &who,
         "production",
-        &[("web.env.API_KEY", json!({ "secret": false }))],
+        &[("api.env.KEY", json!({ "secret": false }))],
     );
 
-    // They landed without a value: Deploy refuses, naming each, until production has its own.
-    let admit = |n: u8| {
-        store.write_trusted(
+    // Deploy refuses, naming it, until production has its own.
+    let refused = store
+        .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
-                id: DeploymentId::parse(format!("00000000-0000-4000-8000-0000000002{n:02}"))
-                    .unwrap(),
+                id: DeploymentId::parse(uuid(50)).unwrap(),
                 environment: at("production"),
                 services: Vec::new(),
                 version: None,
@@ -767,12 +973,11 @@ fn a_secret_syncs_without_its_value_and_the_receiver_deploys_only_with_its_own()
             }),
             &Trusted::default(),
         )
-    };
-    let refused = admit(1).unwrap_err();
+        .unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::Conflict);
     assert_eq!(
         refused.message,
-        "production has secrets without a value: set api.env.KEY, web.env.API_KEY before deploying"
+        "production has secrets without a value: set api.env.KEY before deploying"
     );
     assert_eq!(
         refused.details["next"],
@@ -784,45 +989,22 @@ fn a_secret_syncs_without_its_value_and_the_receiver_deploys_only_with_its_own()
         "production",
         &[("api.env.KEY", json!({ "secret": "prod-api-key" }))],
     );
-    assert_eq!(
-        admit(2).unwrap_err().details["secrets"],
-        json!(["web.env.API_KEY"])
-    );
-    set(
-        &store,
-        &who,
-        "production",
-        &[("web.env.API_KEY", json!({ "secret": "prod-key" }))],
-    );
     let input = deploy(&store, &who, "production", 3);
-    let env = |id: &str| {
+    // Each Service by its lineage: web's is 3, api's 5.
+    let env = |n: u8| {
+        let id = &input["lineages"][uuid(n)];
         input["snapshots"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|snapshot| snapshot["serviceId"] == id)
+            .find(|snapshot| snapshot["serviceId"] == *id)
             .unwrap()["resolvedEnv"]
             .clone()
     };
-    let web = env(&uuid(3));
+    let web = env(3);
     assert_eq!(
         (&web["TOKEN"], &web["API_KEY"]),
-        (&json!("prod-token"), &json!("prod-key"))
+        (&json!("prod-token"), &json!("given-key"))
     );
-    let api_id = store
-        .read(
-            &who,
-            &ployz_store::ServicesQuery {
-                environment: at("production"),
-            },
-        )
-        .unwrap()
-        .services
-        .into_iter()
-        .find(|listing| listing.service.name.as_str() == "api")
-        .unwrap()
-        .service
-        .id
-        .to_string();
-    assert_eq!(env(&api_id)["KEY"], json!("prod-api-key"));
+    assert_eq!(env(5)["KEY"], json!("prod-api-key"));
 }
