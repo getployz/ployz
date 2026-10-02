@@ -74,6 +74,23 @@ fn service_comparison_and_restore_preserve_authored_source_identity() {
 }
 
 #[test]
+fn an_emptied_source_falls_in_the_row_of_the_source_it_removes() {
+    let git = parse_service_config(config()).unwrap();
+    let mut image = config();
+    image["source"] = json!({"version": 1, "type": "image", "image": "api:latest",
+        "credentials": {"type": "none"}});
+    let image = parse_service_config(image).unwrap();
+    let mut empty = config();
+    empty["source"] = json!({"version": 1, "type": "empty", "rootDir": "/"});
+    let empty = parse_service_config(empty).unwrap();
+    for (removed, setting) in [(&git, Setting::Repository), (&image, Setting::Image)] {
+        let rows = compare_service_settings(&empty, Some(removed));
+        assert_eq!(rows[0].0.path, "source");
+        assert_eq!(rows[0].1, Some(At::Setting(setting)));
+    }
+}
+
+#[test]
 fn compound_settings_compare_and_restore_the_edited_field() {
     let mut input = config();
     input["build"] = json!({"buildMethod":"dockerfile", "dockerfilePath":"Dockerfile"});

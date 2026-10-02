@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
-use super::{At, ConfigError, ServiceConfig, Setting, parse_service_config};
+use super::{At, ConfigError, ServiceConfig, ServiceSource, Setting, parse_service_config};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Whether an owned setting appeared, changed, or disappeared.
@@ -62,19 +62,23 @@ pub fn compare_service_settings(
     current: &ServiceConfig,
     baseline: Option<&ServiceConfig>,
 ) -> Vec<(ServiceSettingChange, Option<At>)> {
+    // A switch falls in the row of the source it switches to, or, emptied, of the one it removes.
+    let switched = match (
+        &current.settings.source,
+        baseline.map(|b| &b.settings.source),
+    ) {
+        (ServiceSource::Git { .. }, _)
+        | (ServiceSource::Empty { .. }, Some(ServiceSource::Git { .. })) => Setting::Repository,
+        (ServiceSource::Image { .. } | ServiceSource::Empty { .. }, _) => Setting::Image,
+    };
     let current = json!(current);
     let baseline = baseline.map_or(Value::Null, |value| json!(value));
     let mut changes = Vec::new();
     let source_changed =
         !baseline.is_null() && at(&current, "source.type") != at(&baseline, "source.type");
     if source_changed {
-        // A switch falls in the row of the source it switches to.
-        let setting = match at(&current, "source.type").as_str() {
-            Some("git") => Setting::Repository,
-            _ => Setting::Image,
-        };
         changes.push(change(
-            ("source", Some(At::Setting(setting))),
+            ("source", Some(At::Setting(switched))),
             at(&baseline, "source").clone(),
             at(&current, "source").clone(),
             true,
