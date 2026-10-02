@@ -101,14 +101,7 @@ pub(super) async fn wait_direct_participating(
         ConnectError::is_setup_retryable,
         async |_| {
             let mut client = connect_direct(matches, connection).await?;
-            let details = client
-                .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
-                .await?;
-            if details.phase != LocalMachinePhase::Participating {
-                return Err(ConnectError::Attempt(
-                    format!("Server phase is {}", details.phase.as_str().escape_debug()).into(),
-                ));
-            }
+            check_listed(&mut client).await?;
             Ok(client)
         },
     )
@@ -119,6 +112,32 @@ pub(super) async fn wait_direct_participating(
             readiness_timeout_message(timeout_message)
         ))
     })
+}
+
+/// One readiness attempt: Participating and listed among its own Machines.
+///
+/// A founder turns Participating before its publisher writes its Machine row,
+/// so a Deploy right after Participating can see an empty Deploy Snapshot.
+pub(in crate::handlers) async fn check_listed(client: &mut Client) -> Result<(), ConnectError> {
+    let details = client
+        .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+        .await?;
+    if details.phase != LocalMachinePhase::Participating {
+        return Err(ConnectError::Attempt(
+            format!("Server phase is {}", details.phase.as_str().escape_debug()).into(),
+        ));
+    }
+    if !client
+        .machines()
+        .await?
+        .iter()
+        .any(|machine| machine.machine.id == details.id)
+    {
+        return Err(ConnectError::Attempt(
+            "Server is not yet published in the Cluster store".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Recover a lost Initialize reply without initializing or resetting twice.

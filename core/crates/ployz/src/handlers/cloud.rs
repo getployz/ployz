@@ -601,6 +601,10 @@ async fn wait_phase(
         ConnectError::is_setup_retryable,
         async |_| {
             let mut client = dial(matches).await?;
+            if participating {
+                crate::handlers::server::check_listed(&mut client).await?;
+                return Ok(client);
+            }
             let details = client
                 .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
                 .await?;
