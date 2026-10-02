@@ -224,13 +224,7 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
     let update = if parent.applied.services.is_empty() && parent.applied.volumes.is_empty() {
         Vec::new()
     } else {
-        let moving = Moving::update(
-            tx,
-            &parent.environment,
-            parent.applied.clone(),
-            branch,
-            row.base.clone(),
-        )?;
+        let moving = Moving::update(tx, &parent.environment, branch)?;
         moving
             .compare(&branch.working, None)?
             .rows

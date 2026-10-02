@@ -143,22 +143,10 @@ pub(crate) fn create_branch(
             choice: None,
         })
         .collect();
-    let creating = |from, picks| {
-        compare(Comparing {
-            base: None,
-            from,
-            into: &into,
-            parent: None,
-            provided: &live,
-            hostnames: &hostnames,
-            from_kept: false,
-            picks: Some(picks),
-        })
-    };
-    let changes = creating(&from, node_picks)?;
+    let changes = creating(&from, &into, &live, &hostnames, node_picks)?;
     // A fix's base is what the Parent runs, so the failed change shows as staged.
     let base = match create.fix {
-        Some(_) => creating(&applied, Vec::new())?.base,
+        Some(_) => creating(&applied, &into, &live, &hostnames, Vec::new())?.base,
         None => changes.base,
     }
     .ok_or_else(|| error::internal("Core returned no base for a new Branch"))?;
@@ -278,18 +266,7 @@ pub(crate) fn copy_node(
             }
         }
     }
-    let mut base = row.base;
-    base.services
-        .retain(|service| !copied.contains(&service.lineage_id));
-    base.volumes
-        .retain(|volume| !copied.contains(&volume.resource_lineage_id));
-    let provided = uses
-        .into_keys()
-        .filter(|lineage| !copied.contains(lineage))
-        .collect();
-    let mut moving = Moving::update(tx, &owner.environment, owner.applied, &branch, base)?;
-    moving.nothing = format!("Nothing to copy from {}", owner.environment.summary.name);
-    moving.provided = provided;
+    let moving = Moving::copy(tx, &owner.environment, &branch, &copied)?;
     // Every change of the copy, variables with the owner's values.
     let picks: Vec<BranchPick> = moving
         .compare(&branch.working, None)?

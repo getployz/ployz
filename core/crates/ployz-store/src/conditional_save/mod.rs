@@ -180,7 +180,6 @@ struct Sides {
     pr: Environment,
     into: Environment,
     facts: PullRequest,
-    row: branch::Row,
 }
 
 fn sides(
@@ -244,21 +243,12 @@ fn sides(
         ));
     }
     let (pr, into) = scope::load_pair(tx, who, (&pr.summary.id, &into), lock)?;
-    let row = branch::row(tx, &pr.summary.id)?.ok_or_else(|| error::corrupt("Branch"))?;
-    Ok(Sides {
-        pr,
-        into,
-        facts,
-        row,
-    })
+    Ok(Sides { pr, into, facts })
 }
 
-/// The PR Environment's Working State into the Destination's over its base, with
-/// its Parent's deployed values on offer, as the review shows it.
+/// The PR Environment's Working State into the Destination's, as the review shows it.
 fn moving(tx: &mut dyn Tx, sides: &Sides) -> Result<Moving, RpcError> {
-    let parent = scope::load_by_id(tx, &sides.row.parent)?;
-    let applied = deployment::head(tx, &parent)?.applied;
-    Moving::save(tx, &sides.pr, &sides.into, &sides.row, applied)
+    Moving::save(tx, &sides.pr, &sides.into)
 }
 
 pub(crate) fn view(

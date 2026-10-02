@@ -8,10 +8,12 @@
 mod create;
 mod live;
 mod moving;
+mod pair;
 mod setup;
 pub(crate) use create::*;
 pub(crate) use live::*;
 pub(crate) use moving::*;
+pub(crate) use pair::*;
 pub use setup::SetBranchSetup;
 pub(crate) use setup::{branch_setup, set_branch_setup};
 
