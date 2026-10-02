@@ -124,6 +124,12 @@ impl RowId {
         &self.lineage
     }
 
+    /// Where in the node: `node`, `variables.KEY`, `source.image`, …
+    #[must_use]
+    pub fn at(&self) -> String {
+        self.at.to_string()
+    }
+
     fn node(lineage: &str) -> Self {
         Self {
             lineage: lineage.to_owned(),
@@ -171,6 +177,28 @@ impl Serialize for RowId {
     }
 }
 
+/// Branded on the TypeScript side: a row is addressed only by the id a read gave.
+impl ts_rs::TS for RowId {
+    type WithoutGenerics = Self;
+    type OptionInnerType = Self;
+
+    fn name(_: &ts_rs::Config) -> String {
+        "RowId".to_owned()
+    }
+
+    fn inline(_: &ts_rs::Config) -> String {
+        "string & { readonly __brand: \"RowId\" }".to_owned()
+    }
+
+    fn decl(cfg: &ts_rs::Config) -> String {
+        format!("type RowId = {};", Self::inline(cfg))
+    }
+
+    fn output_path() -> Option<std::path::PathBuf> {
+        Some(std::path::PathBuf::from("RowId.ts"))
+    }
+}
+
 impl<'de> Deserialize<'de> for RowId {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         String::deserialize(deserializer)?
@@ -196,7 +224,8 @@ pub enum Cell {
 }
 
 impl Cell {
-    fn is_secret(&self) -> bool {
+    #[must_use]
+    pub fn is_secret(&self) -> bool {
         matches!(self, Self::Secret { .. } | Self::SecretWithoutValue)
     }
 
@@ -760,6 +789,12 @@ pub fn put(intent: &Intent, row: &RowId, cell: &Cell) -> Result<Intent, ConfigEr
     let mut intent = intent.clone();
     put_into(&mut intent, row, cell)?;
     Ok(intent)
+}
+
+/// What `intent` holds at `row`, redacted, as a plan's cells read it.
+#[must_use]
+pub fn cell_at(intent: &Intent, row: &RowId) -> Cell {
+    cell(intent, row, "", false)
 }
 
 /// The node at `row` and where in it, with a mount named by its Volume; display only.

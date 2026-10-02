@@ -22,61 +22,51 @@ SELECT
 FROM config_environment_branch;
 ALTER TABLE config_environment_branch RENAME COLUMN base TO made_with;
 
--- Rows a Sync or a Follow landed in `environment_id` from `other_id` that aren't
--- deployed yet: `prior` is the node (`lineage`) as their pair base held it before,
--- JSON `null` when it held none; `arrived` is how the latest came (`follow` or
--- `sync`). Discarding a row rewinds the pair base to it, so the row is offered
--- again; deploying the node forgets them.
-CREATE TABLE config_sync_pending (
+-- What landed in `environment_id` from `other_id`, by row (`lineage`, `at`): `how`
+-- it came (`follow` or `sync`), and its `state`: `pending` (staged, not deployed),
+-- `hint` (a Follow the receiver changed too, or discarded) or `settled` (deployed).
+-- `value` is the cell delivered, redacted; `prior` the pair base's cell before and
+-- `was` the receiver's own (sealed), kept while pending to rewind a discard and to
+-- undo the Sync (`sync_id`) that landed it.
+CREATE TABLE config_sync_arrival (
     environment_id TEXT NOT NULL REFERENCES config_environment (id) ON DELETE CASCADE,
     other_id TEXT NOT NULL REFERENCES config_environment (id) ON DELETE CASCADE,
     lineage TEXT NOT NULL,
-    path TEXT NOT NULL,
+    at TEXT NOT NULL,
     organization_id TEXT NOT NULL,
-    prior TEXT NOT NULL,
-    arrived TEXT NOT NULL,
-    PRIMARY KEY (environment_id, other_id, lineage, path)
+    how TEXT NOT NULL,
+    state TEXT NOT NULL,
+    value TEXT NOT NULL,
+    prior TEXT,
+    was TEXT,
+    sync_id TEXT,
+    PRIMARY KEY (environment_id, other_id, lineage, at)
 );
 
--- Settings an Environment marked Never sync, by the row key a comparison names
--- them by (`lineage`, `path`): a Sync never carries them from it nor into it, but
--- its Branches still get its value.
+-- Rows an Environment marked Never sync (`lineage`, `at`): a Sync never carries
+-- them from it nor into it, but its Branches still get its value.
 CREATE TABLE config_never_sync (
     environment_id TEXT NOT NULL REFERENCES config_environment (id) ON DELETE CASCADE,
     lineage TEXT NOT NULL,
-    path TEXT NOT NULL,
+    at TEXT NOT NULL,
     organization_id TEXT NOT NULL,
-    PRIMARY KEY (environment_id, lineage, path)
-);
-
--- Follow: the Parent's value each setting of a Branch (`environment_id`) was last
--- delivered at, as the comparison renders it (`value`, a secret by fingerprint). A
--- Parent's deploy stages a change only once: one the Branch changed too, or
--- discarded, stays a Use hint until the Parent changes that setting again.
-CREATE TABLE config_followed (
-    environment_id TEXT NOT NULL REFERENCES config_environment (id) ON DELETE CASCADE,
-    lineage TEXT NOT NULL,
-    path TEXT NOT NULL,
-    organization_id TEXT NOT NULL,
-    value TEXT NOT NULL,
-    PRIMARY KEY (environment_id, lineage, path)
+    PRIMARY KEY (environment_id, lineage, at)
 );
 
 -- Conditional Save is Conditional Sync now.
 ALTER TABLE config_conditional_save RENAME TO config_conditional_sync;
 
 -- A Destination's value for a secret a pull request's Conditional Syncs bring by
--- name only (`lineage`, `variable`), set ahead of the merge: `value` is the sealed
--- variable value as JSON. It lands with the Conditional Sync at the merge, survives
+-- name only (the row `lineage`, `at`), set ahead of the merge: `value` is the sealed
+-- cell as JSON. It lands with the Conditional Sync at the merge, survives
 -- a withdraw and sync again, and drops when the pull request closes unmerged.
 CREATE TABLE config_held_secret (
     environment_id TEXT NOT NULL REFERENCES config_environment (id) ON DELETE CASCADE,
     repository_id BIGINT NOT NULL,
     number BIGINT NOT NULL,
     lineage TEXT NOT NULL,
-    variable TEXT NOT NULL,
+    at TEXT NOT NULL,
     organization_id TEXT NOT NULL,
     value TEXT NOT NULL,
-    fingerprint TEXT NOT NULL,
-    PRIMARY KEY (environment_id, repository_id, number, lineage, variable)
+    PRIMARY KEY (environment_id, repository_id, number, lineage, at)
 );

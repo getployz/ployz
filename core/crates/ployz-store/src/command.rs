@@ -208,7 +208,10 @@ commands! {
         keyed [c.id.as_str()] => crate::branch::create_branch(tx, who, c);
     /// Sync one Environment's changes into another of its Project: staged there,
     /// never deleting or deploying.
-    Sync(crate::SyncChanges) -> Synced(crate::Synced) => crate::branch::sync(tx, who, c);
+    Sync(crate::SyncChanges) -> Synced(crate::Synced) => crate::branch::sync(tx, who, sealing, c);
+    /// Undo a Sync while what it staged is undeployed and unchanged, or withdraw the
+    /// Conditional Sync it made.
+    UndoSync(crate::UndoSync) -> Undone(crate::Undone) => crate::branch::undo(tx, who, c);
     /// Stage the hints a Conditional Sync or a Parent left in an Environment.
     Take(crate::Take) -> Taken(crate::Taken) => crate::branch::take(tx, who, c);
     /// Hold a Destination's value for a secret a pull request brings it by name.
@@ -216,7 +219,7 @@ commands! {
         => crate::conditional_sync::hold(tx, who, sealing, c);
     /// Turn a Branch's Live Node into an Own Copy.
     CopyNode(crate::CopyNode) -> Branch(crate::Branched) => crate::branch::copy_node(tx, who, c);
-    /// Mark settings of an Environment Never sync, or sync them again.
+    /// Mark rows of an Environment Never sync, or sync them again.
     NeverSync(crate::NeverSync) -> NeverSynced(crate::NeverSynced)
         => crate::branch::never_sync(tx, who, c);
     /// Keep a Branch, or stop keeping it.
@@ -245,6 +248,7 @@ commands! {
         => crate::pull_request::set_plan(tx, who, c);
     /// Writes of one Environment applied together, all or none.
     Batch(Batch) -> Batch(Batched) => {
+        crate::scope::lock(tx, who, &c.environment)?.expect(c.expect)?;
         let mut at = Call { tx, who, sealing, trusted };
         c.commands
             .iter()
@@ -254,10 +258,9 @@ commands! {
     };
 }
 
-/// Writes of one Environment in one transaction, in order: all apply or none do. A
-/// Sync in a Batch syncs into it, so a value for a secret it brings (an edit, or a
-/// value held for the merge) lands with it. Each create keeps its own caller-minted
-/// ID, so a retry replays it; the rest apply again. Cloud gathers no trusted evidence
+/// Writes of one Environment in one transaction, in order: all apply or none do.
+/// Each create keeps its own caller-minted ID, so a retry replays it; the rest apply
+/// again. Cloud gathers no trusted evidence
 /// inside a Batch, so an edit that needs some (a repository or branch) is refused.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -267,6 +270,11 @@ pub struct Batch {
     pub environment: EnvironmentRef,
     /// The commands, applied in order.
     pub commands: Vec<BatchCommand>,
+    /// Refuse with `conflict` unless Working State is at this revision before the
+    /// first command.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub expect: Option<crate::Revision>,
 }
 
 /// A command a [`Batch`] may hold.
@@ -279,12 +287,6 @@ pub enum BatchCommand {
     CreateVolume(CreateVolume),
     /// See [`Command::Edit`].
     Edit(Edit),
-    /// See [`Command::Sync`]: a Sync into the Batch's Environment.
-    Sync(crate::SyncChanges),
-    /// See [`Command::HoldSecret`].
-    HoldSecret(crate::HoldSecret),
-    /// See [`Command::NeverSync`].
-    NeverSync(crate::NeverSync),
     /// See [`Command::Discard`].
     Discard(Discard),
 }
@@ -297,9 +299,6 @@ impl BatchCommand {
             Self::CreateService(create) => &create.environment,
             Self::CreateVolume(create) => &create.environment,
             Self::Edit(edit) => &edit.environment,
-            Self::Sync(sync) => sync.into.as_ref().unwrap_or(&unnamed),
-            Self::HoldSecret(hold) => &hold.environment,
-            Self::NeverSync(mark) => &mark.environment,
             Self::Discard(discard) => &discard.environment,
         };
         if named != environment && *named != unnamed {
@@ -327,24 +326,6 @@ impl BatchCommand {
             }
             .apply(at)
             .map(Written::Edited),
-            Self::Sync(sync) => crate::SyncChanges {
-                into: Some(environment.clone()),
-                ..sync.clone()
-            }
-            .apply(at)
-            .map(Written::Synced),
-            Self::HoldSecret(hold) => crate::HoldSecret {
-                environment: environment.clone(),
-                ..hold.clone()
-            }
-            .apply(at)
-            .map(Written::SecretHeld),
-            Self::NeverSync(mark) => crate::NeverSync {
-                environment: environment.clone(),
-                ..mark.clone()
-            }
-            .apply(at)
-            .map(Written::NeverSynced),
             Self::Discard(discard) => Discard {
                 environment: environment.clone(),
                 ..discard.clone()
@@ -388,6 +369,7 @@ impl Written {
             Self::Taken(taken) => Some(&taken.into.id),
             Self::SecretHeld(held) => Some(&held.environment.id),
             Self::Synced(synced) => Some(&synced.into.id),
+            Self::Undone(undone) => Some(&undone.into.id),
             Self::NeverSynced(marked) => Some(&marked.environment.id),
             Self::Batch(batched) => batched.results.last().and_then(Self::environment),
             // A new Project or Branch has no pull request yet; the rest write no
@@ -454,6 +436,8 @@ pub enum Written {
     BuildOrder(crate::BuildOrderView),
     /// Changes synced into another Environment.
     Synced(crate::Synced),
+    /// A Sync was undone, or its Conditional Sync withdrawn.
+    Undone(crate::Undone),
     /// Hints were staged.
     Taken(crate::Taken),
     /// A secret's value was held for a pull request's merge.

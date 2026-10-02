@@ -702,21 +702,21 @@ pub(crate) mod tests {
         let query = crate::SyncQuery {
             from: feature.clone(),
             into: None,
+            when: crate::When::Now,
         };
         let view = store.read(&who, &query).unwrap();
         let sync = |labels: &[&str]| {
-            let picks = view
-                .rows
-                .iter()
-                .filter(|row| labels.contains(&row.label.as_str()))
-                .map(|row| row.key.clone())
-                .collect();
             store.write(
                 &who,
                 &crate::SyncChanges {
                     from: feature.clone(),
-                    picks: Some(picks),
-                    ..crate::SyncChanges::default()
+                    into: None,
+                    when: crate::When::Now,
+                    close_after: false,
+                    version: view.version.clone(),
+                    picks: Some(labels.iter().map(|label| (*label).to_owned()).collect()),
+                    skip: Vec::new(),
+                    values: std::collections::BTreeMap::new(),
                 },
             )
         };

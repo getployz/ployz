@@ -51,6 +51,8 @@ pub struct Published {
 }
 
 /// Undo staged changes: all of them, one node's, or one Setting, variable or mount's.
+/// It names a [`SettingPath`] rather than a `RowId`, as the diff it undoes does:
+/// it is a whole-setting action, not one of a Sync view's rows.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Discard {

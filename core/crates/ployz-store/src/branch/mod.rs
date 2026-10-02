@@ -2,8 +2,8 @@
 //! Copies of the Parent nodes it picked (fresh ids, the same lineage) and uses the
 //! rest live from the nearest Environment it comes from that runs them. Its base is
 //! what it and its Parent last shared, so Follow stages exactly the Parent's
-//! deployed changes since. Core plans the picks and moves the rows
-//! (`plan_branch`, `branch_changes`, `live_values`); this module stores and lands them.
+//! deployed changes since. Core plans the picks and compares the rows
+//! (`plan_branch`, `plan`, `live_values`); this module stores and lands them.
 
 mod create;
 mod follow;
@@ -16,24 +16,26 @@ pub(crate) use create::*;
 pub use follow::{FollowHint, IncomingChange};
 pub(crate) use follow::{follow, hints, incoming};
 pub(crate) use live::*;
-pub(crate) use never_sync::{Mark, marks, never_sync, never_synced};
 pub use never_sync::{NeverSync, NeverSynced};
+pub(crate) use never_sync::{marks, never_sync, never_synced};
 pub(crate) use pair::*;
 pub use setup::SetBranchSetup;
 pub(crate) use setup::{branch_setup, set_branch_setup};
-pub use sync::{NeverSyncedRow, SyncChanges, SyncQuery, SyncRow, SyncView, Synced};
-pub(crate) use sync::{SyncTarget, reviewed, shown_row, sync, sync_picks, sync_view, take};
+pub use sync::{
+    NeverSyncedRow, SecretRow, SyncChange, SyncChanges, SyncQuery, SyncRow, SyncView, Synced,
+    UndoSync, Undone,
+};
+pub(crate) use sync::{picks, sealed, sync, sync_view, take, undo};
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
-    BranchChanges, BranchChangesInput, BranchHostnames, BranchNodeReason, BranchNodeRole,
-    BranchPicks, BranchPlan, BranchPreset, BranchReason, BranchRole, BranchRow, BranchWay,
-    ConfigError, EnvironmentNodeType, LiveLineageUse, LiveValuesInput, LiveValuesOwner,
-    SavedEnvironmentIntent, SavedServiceIntent, SavedVariableProducer, SavedVolumeIntent,
-    ServiceImageCredentials, ServiceSource, ValuePart, ValuePartOwner, branch_changes,
-    canonicalize_environment_intent, compile_environment_intent, covers, live_values,
-    parse_service_setting, plan_branch, split_row_key,
+    Arrives, BranchNodeReason, BranchNodeRole, BranchPicks, BranchPlan, BranchPreset, Cell,
+    ConfigError, EnvironmentNodeType, Hostnames, LiveLineageUse, LiveValuesInput, LiveValuesOwner,
+    NodeRef, Plan, PlannedRow, Policy as Rules, RowId, SavedEnvironmentIntent, SavedServiceIntent,
+    SavedVariableProducer, ServiceImageCredentials, ServiceSource, Sides, ValuePart,
+    ValuePartOwner, Verdict, Way, Why, canonicalize_environment_intent, cell_at,
+    compile_environment_intent, live_values, parse_service_setting, plan, plan_branch, put,
 };
 use ployz_core::{Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -44,12 +46,12 @@ use crate::deployment::{self, DeploymentStatus};
 use crate::error;
 use crate::id::{
     ConditionalSyncId, DeploymentId, EnvironmentId, EnvironmentName, PullRequestNumber, Revision,
-    VolumeName,
+    SyncId, VolumeName,
 };
 use crate::policy::{self, Policy};
 use crate::project::insert_environment;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
-use crate::settings::{NodeName, SettingPath, shown};
+use crate::settings::{NodeName, SettingPath};
 use crate::storage::Tx;
 use crate::{Actor, registry, review};
 
@@ -98,9 +100,9 @@ pub struct SetupCommand {
 }
 
 /// Stage the hints left in an Environment: a merged pull request's values its
-/// landed Conditional Sync left, even once its PR
-/// Environment is gone; or a Parent's deployed values that followed into its
-/// Branch but aren't staged there. Each replaces the receiver's own edit.
+/// landed Conditional Sync left, even once its PR Environment is gone; or a
+/// Parent's deployed values that followed into its Branch but aren't staged there.
+/// Each replaces the receiver's own edit.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Take {
@@ -111,11 +113,10 @@ pub struct Take {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub into: Option<EnvironmentRef>,
-    /// The hints to take, by path or a prefix of paths (`web` takes `web.image`);
-    /// omitted, every one.
+    /// The hints to take, by the rows the diff gave; omitted, every one.
     #[serde(default)]
     #[ts(optional = nullable)]
-    pub rows: Option<Vec<String>>,
+    pub rows: Option<Vec<RowId>>,
     /// Refused with `conflict` unless the receiver's `diff` is still at this
     /// version: the one the hints were read at.
     pub version: String,
@@ -137,10 +138,31 @@ pub enum HintSource {
 pub enum When {
     /// Staged in the receiver now.
     Now,
-    /// With the pull request's merge.
+    /// With the pull request's merge: a Conditional Sync.
     AtMerge,
-    /// Withdraw the standing Conditional Sync: nothing goes live with the merge.
-    Withdraw,
+}
+
+/// A row, and its name where it is shown.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct NamedRow {
+    /// What commands name it by; stable across renames.
+    pub row: RowId,
+    /// Its Service or Volume.
+    pub node: NodeName,
+    /// Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+    /// node itself.
+    pub name: Option<String>,
+}
+
+impl NamedRow {
+    /// `NODE`, or `NODE.name`: as reads show it.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match &self.name {
+            Some(name) => format!("{}.{name}", self.node),
+            None => self.node.to_string(),
+        }
+    }
 }
 
 /// What a take staged.
@@ -389,7 +411,7 @@ pub(crate) fn suffix(tx: &mut dyn Tx, environment: &Environment) -> Result<Strin
     })
 }
 
-fn config(error: ConfigError) -> RpcError {
+pub(crate) fn config(error: ConfigError) -> RpcError {
     error::invalid(
         format!("{}: {}", error.path, error.message),
         json!({ "path": error.path }),

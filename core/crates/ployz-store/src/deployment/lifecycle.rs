@@ -503,6 +503,9 @@ pub(crate) fn record(
     runner: &RunnerId,
     evidence: RunEvidence,
 ) -> Result<DeploymentSummary, RpcError> {
+    // What it records may follow into its Branches.
+    let environment = super::load(tx, id)?.summary.environment_id;
+    scope::lock_project(tx, &environment)?;
     let mut stored = locked(tx, id)?;
     if stored.summary.runner.as_ref() != Some(runner) {
         return Err(owned_elsewhere(id));

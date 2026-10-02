@@ -22,10 +22,10 @@ pub(crate) fn create_branch(
             json!({ "environment": create.name }),
         ));
     }
-    let applied = deployment::head(tx, &parent)?.applied;
-    let deployed = lineages(&applied);
+    let applied_state = deployment::head(tx, &parent)?.applied;
+    let deployed = lineages(&applied_state);
     let failed = match &create.fix {
-        Some(id) => failed_services(tx, who, &parent, &applied, id)?,
+        Some(id) => failed_services(tx, who, &parent, &applied_state, id)?,
         None => Vec::new(),
     };
     let working = &parent.working;
@@ -42,9 +42,9 @@ pub(crate) fn create_branch(
             .collect();
     }
     let picks = BranchPicks::Own { own: copy.clone() };
-    let plan = plan_branch(working, &deployed, &copy, &picks).map_err(config)?;
+    let planned = plan_branch(working, &deployed, &copy, &picks).map_err(config)?;
     let (mut own, mut live) = (BTreeSet::new(), Vec::new());
-    for node in &plan.nodes {
+    for node in &planned.nodes {
         match node.role {
             BranchNodeRole::Own { .. } => {
                 own.insert(node.lineage_id.clone());
@@ -132,17 +132,48 @@ pub(crate) fn create_branch(
     }
 
     let into = crate::scope::empty(create.name.as_str());
-    let hostnames = BranchHostnames {
+    let hostnames = Hostnames {
         from: suffix(tx, &parent)?,
         into: format!("-{}", create.name),
     };
-    let changes = creating(&from, &into, &live, &hostnames, &own)?;
+    let live: BTreeSet<String> = live.into_iter().collect();
+    let creating = |from: &SavedEnvironmentIntent| {
+        let none = BTreeSet::new();
+        plan(
+            Sides {
+                base: None,
+                from,
+                into: &into,
+                hostnames: hostnames.clone(),
+            },
+            Rules {
+                way: Way::Copy,
+                from_marks: &none,
+                into_marks: &none,
+                live: &live,
+                own: None,
+            },
+        )
+    };
+    let picks: BTreeSet<RowId> = creating(&from)
+        .rows()
+        .iter()
+        .filter(|row| matches!(row.verdict, Verdict::Moves { .. }))
+        .filter(|row| own.contains(row.id.lineage()))
+        .map(|row| row.id.clone())
+        .collect();
+    let none = BTreeMap::new();
+    let applied = creating(&from).apply(&picks, &none).map_err(config)?;
     // A fix's base is what the Parent runs, so the failed change shows as staged.
     let base = match create.fix {
-        Some(_) => creating(&applied, &into, &live, &hostnames, &BTreeSet::new())?.base,
-        None => changes.base,
-    }
-    .ok_or_else(|| error::internal("Core returned no base for a new Branch"))?;
+        Some(_) => {
+            creating(&applied_state)
+                .apply(&BTreeSet::new(), &none)
+                .map_err(config)?
+                .base
+        }
+        None => applied.base,
+    };
 
     let summary = insert_environment(tx, who, &project, &create.id, create.name.clone())?;
     let mut branch = Environment {
@@ -170,7 +201,14 @@ pub(crate) fn create_branch(
     )?;
     share(tx, (&create.id, &parent.summary.id), &base)?;
     let carried = Carried::of(tx, &parent.summary.id, &from)?;
-    let staged = land(tx, who, &mut branch, (&from, &carried), changes.next, &[])?;
+    let staged = land(
+        tx,
+        who,
+        &mut branch,
+        (&from, &carried),
+        applied.next,
+        &picks,
+    )?;
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged,
@@ -183,7 +221,6 @@ pub(crate) fn copy_node(
     copy: &CopyNode,
 ) -> Result<Branched, RpcError> {
     let mut branch = scope::lock(tx, who, &copy.environment)?;
-    branch.expect(copy.expect)?;
     let row = branch_row(tx, &branch)?;
     if branch.service(&copy.node).is_ok() {
         return Err(error::conflict(
@@ -236,20 +273,18 @@ pub(crate) fn copy_node(
             }
         }
     }
-    let comparison = Comparison::copy(tx, &owner.environment, &branch, &copied)?;
-    // Every change of the copy, variables with the owner's values.
-    let picks: Vec<String> = comparison
-        .compare(&branch.working, None)?
-        .rows
+    let own = Move::copy(tx, &owner.environment, &branch, &copied)?;
+    let checked = own.check(tx, &branch, Guard::Revision(copy.expect))?;
+    // Every row of the copy, variables with the owner's values.
+    let picks: BTreeSet<RowId> = checked
+        .rows()
         .iter()
-        .filter(|row| matches!(row.role, BranchRole::Move { .. }))
-        .map(|row| row.key.to_string())
-        .filter(|key| copied.contains(ployz_core::config::split_row_key(key).0))
+        .filter(|row| matches!(row.verdict, Verdict::Moves { .. }))
+        .filter(|row| copied.contains(row.id.lineage()))
+        .map(|row| row.id.clone())
         .collect();
-    if picks.is_empty() {
-        return Err(error::conflict(comparison.nothing, json!({})));
-    }
-    let staged = comparison.apply(tx, who, &mut branch, picks)?;
+    let none = BTreeMap::new();
+    let staged = own.apply(tx, who, &mut branch, &checked, &picks, &none, None)?;
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged,

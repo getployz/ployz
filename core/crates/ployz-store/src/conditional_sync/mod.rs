@@ -1,11 +1,11 @@
 //! Conditional Syncs: a PR Environment's Sync into one of its Destinations that
 //! goes live with the pull request's merge.
 //!
-//! Syncing records the picked rows, core's picks and what landing needs (the PR
-//! Environment's side as synced), so landing and a later take never read the PR
-//! Environment, which may be gone by then. A secret the Destination lacks arrives
-//! by name only, with the value the Destination held for the merge, if any
-//! ([`HoldSecret`]); the pull request's check waits until it has one. A Conditional
+//! Syncing records the picked rows and what landing needs (the PR Environment's
+//! side as synced, its secrets' values sealed out), so landing and a later take
+//! never read the PR Environment, which may be gone by then. A secret the
+//! Destination lacks arrives with the value held for the merge, given with the Sync
+//! or by [`HoldSecret`]; the pull request's check waits until it has one. A Conditional
 //! Sync stands while the PR Environment's Working State, but for what it follows
 //! from its Parent, and the pull request's target branch are what they were; edits
 //! in the Destination never withdraw it. When the pull request closes it freezes
@@ -15,19 +15,11 @@
 //! admits in its Destination, with the deploy that push waits for CI with, or at
 //! once where the push deploys nothing. A Destination that doesn't deploy the
 //! branch on push gets it at the merge.
-//!
-//! Landing, per picked row: the Destination left it alone, or has an undeployed
-//! edit of it → saved, the edit on top; it changed it live (neither its Saved nor
-//! its Working State holds the value synced against) → not saved but staged,
-//! `staged`; both → not saved, the pull request's value only a `hint` a take
-//! stages. Landed rows stay marked until the Destination's next Saved revision.
 
 mod held;
-mod landing;
 mod syncing;
 pub use held::{HoldSecret, SecretHeld};
-pub(crate) use held::{held_rows, hold};
-use landing::{Planned, plan};
+pub(crate) use held::{held, hold};
 pub(crate) use syncing::*;
 
 use crate::id::{BranchName, CommitSha, PullRequestNumber, RepositoryId};
@@ -35,31 +27,28 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    BranchChanges, BranchHostnames, BranchRole, SavedEnvironmentIntent, SavedVariableIntent,
-    SavedVariableValue, covers, split_row_key,
+    Applied, Cell, Hostnames, Plan, PlannedRow, Policy as Rules, RowId, SavedEnvironmentIntent,
+    Sides, Verdict, Way, cell_at, plan,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
-use crate::branch::{
-    self, Carried, Comparison, SyncChanges, SyncTarget, Synced, Take, Taken, When,
-};
+use crate::branch::{self, Carried, NamedRow};
 use crate::id::{ConditionalSyncId, EnvironmentId, Revision};
 use crate::pull_request::{self, PullRequest};
-use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
-use crate::settings::SettingPath;
+use crate::scope::{self, Environment, EnvironmentSummary};
 use crate::storage::Tx;
-use crate::{Actor, deployment, error, policy, review, teardown};
+use crate::{Actor, error, policy, review};
 
 /// A Conditional Sync, as a Sync or a take answers it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConditionalSync {
-    /// Pass to [`Take::from`] to use a hint it left.
+    /// Pass to [`crate::Take::from`] to use a hint it left.
     pub id: ConditionalSyncId,
     pub pull_request: PullRequestNumber,
     /// The rows it holds.
-    pub rows: Vec<String>,
+    pub rows: Vec<NamedRow>,
     pub state: ConditionalSyncState,
 }
 
@@ -88,15 +77,13 @@ pub enum Landed {
 /// A pull request's value a landed Conditional Sync left in an Environment.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PullRequestHint {
-    /// The Conditional Sync: pass to [`Take::from`].
+    /// The Conditional Sync: pass to [`crate::Take::from`].
     pub conditional_sync: ConditionalSyncId,
     pub pull_request: PullRequestNumber,
-    /// `NODE.path`, as a Sync names it.
-    pub row: String,
-    /// The setting as the Environment addresses it: what [`Take::rows`] names.
-    pub path: SettingPath,
-    /// It is a whole Service or Volume, not one of its settings.
-    pub whole: bool,
+    /// What [`crate::Take::rows`] names.
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub at: NamedRow,
     /// The pull request's value; secrets read `{"secret": true}`.
     pub value: Value,
     pub landed: Landed,
@@ -113,56 +100,36 @@ pub struct PendingSyncs {
     pub merged: Vec<CommitSha>,
 }
 
-/// A Conditional Sync as stored.
+/// A Conditional Sync as stored: everything landing needs, so it never reads the
+/// PR Environment, which may be gone by then.
 #[derive(Serialize, Deserialize)]
 struct Stored {
-    rows: Vec<Row>,
-    /// Core's picks.
     picks: Vec<Pick>,
-    /// The PR Environment's side as synced.
-    landing: Landing,
+    /// The PR Environment's Working State as synced, its secrets' values sealed out.
+    from: SavedEnvironmentIntent,
+    /// What it and the Destination last shared then.
+    base: SavedEnvironmentIntent,
+    hostnames: Hostnames,
     /// What its Services carry: registry credentials and Deployment Policies.
     carried: Carried,
     /// The PR Environment.
-    from: EnvironmentSummary,
+    environment: EnvironmentSummary,
     /// The Destination's Saved revision landing published.
     #[serde(default)]
     landed: Option<Revision>,
 }
 
-/// A row core lands, by key. One stored before Sync may also hold a value choice,
-/// which landing ignores.
+/// A picked row.
 #[derive(Clone, Serialize, Deserialize)]
 struct Pick {
-    key: String,
-}
-
-/// What landing compares: the PR Environment's Working State over its base.
-#[derive(Serialize, Deserialize)]
-struct Landing {
-    from: SavedEnvironmentIntent,
-    base: SavedEnvironmentIntent,
-    hostnames: BranchHostnames,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct Row {
-    /// Core's row key.
-    key: String,
-    /// The Destination's value the Sync was reviewed against (core's, redacted).
-    into: Value,
-    shown: Shown,
+    row: RowId,
+    /// The Destination's cell the Sync was reviewed against.
+    reviewed: Cell,
+    at: NamedRow,
+    /// The pull request's value, as the Sync showed it.
+    from: Value,
     #[serde(default)]
     landed: Option<Landed>,
-}
-
-/// A row as the Sync showed it.
-#[derive(Clone, Serialize, Deserialize)]
-struct Shown {
-    /// `NODE`, or `NODE.path`.
-    row: String,
-    /// The pull request's value; secrets read `{"secret": true}`.
-    from: Value,
 }
 
 struct Found {
@@ -171,6 +138,84 @@ struct Found {
     repository: RepositoryId,
     number: PullRequestNumber,
     stored: Stored,
+}
+
+/// What a Conditional Sync lands in one State of its Destination.
+struct Admitted {
+    /// Its picks that still move there.
+    moves: BTreeSet<RowId>,
+    picks: BTreeSet<RowId>,
+    applied: Applied,
+}
+
+/// Land the picks of `stored` that still move into `into` and that `keep` keeps,
+/// with the secret values `held` for the merge. The only way a Conditional Sync's
+/// rows reach a Destination: its check, landing and a take.
+fn admit(
+    stored: &Stored,
+    into: &SavedEnvironmentIntent,
+    marks: &BTreeSet<RowId>,
+    held: &BTreeMap<RowId, Cell>,
+    keep: impl Fn(&PlannedRow) -> bool,
+) -> Result<Admitted, RpcError> {
+    let none = BTreeSet::new();
+    let live = branch::used_live(into).into_keys().collect();
+    let plan: Plan = plan(
+        Sides {
+            base: Some(&stored.base),
+            from: &stored.from,
+            into,
+            hostnames: stored.hostnames.clone(),
+        },
+        Rules {
+            way: Way::Sync,
+            from_marks: &none,
+            into_marks: marks,
+            live: &live,
+            own: None,
+        },
+    );
+    let moves: BTreeSet<RowId> = plan
+        .rows()
+        .iter()
+        .filter(|row| matches!(row.verdict, Verdict::Moves { .. }))
+        .filter(|row| stored.picks.iter().any(|pick| pick.row == row.id))
+        .map(|row| row.id.clone())
+        .collect();
+    let kept = plan
+        .rows()
+        .iter()
+        .filter(|row| moves.contains(&row.id) && keep(row))
+        .map(|row| row.id.clone())
+        .collect();
+    let picks = branch::whole(plan.rows(), kept);
+    let applied = plan.apply(&picks, held).map_err(branch::config)?;
+    Ok(Admitted {
+        moves,
+        picks,
+        applied,
+    })
+}
+
+/// What `stored` lands in `into` where it still holds what the Sync was reviewed
+/// against.
+fn admitted(
+    stored: &Stored,
+    into: &SavedEnvironmentIntent,
+    marks: &BTreeSet<RowId>,
+    held: &BTreeMap<RowId, Cell>,
+) -> Result<Admitted, RpcError> {
+    admit(stored, into, marks, held, |row| {
+        stored
+            .picks
+            .iter()
+            .any(|pick| pick.row == row.id && pick.reviewed == row.into)
+    })
+}
+
+/// The rows `into` marks Never sync.
+fn marked(tx: &mut dyn Tx, into: &EnvironmentId) -> Result<BTreeSet<RowId>, RpcError> {
+    Ok(branch::marks(tx, into, into)?.1)
 }
 
 /// The Environments the standing Conditional Syncs of `event`'s pull request
@@ -463,6 +508,14 @@ pub(crate) fn pending(
 }
 
 /// Land frozen Conditional Sync `id` in `destination`, whose lock the caller holds.
+///
+/// Per picked row: the Destination's Saved State still holds what was reviewed →
+/// saved, and staged too unless Working State has an edit of its own; it changed it
+/// live but Working State has no edit of it → staged, `staged`; both → neither, the
+/// pull request's value a `hint` a take stages. Landed rows stay marked until the
+/// Destination's next Saved revision.
+// ponytail: no Project lock and no arrivals: a landed Conditional Sync is the
+// Destination's own Saved change, rewound by nothing and undone by no Sync.
 pub(crate) fn land(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -476,43 +529,78 @@ pub(crate) fn land(
         return Ok(());
     }
     let mut stored = found.stored;
-    let into = &destination.summary.id;
-    let held = held::held(tx, into, found.repository, found.number)?;
-    held::forget(tx, into, found.repository, found.number)?;
-    let Some(latest) = review::latest_saved(tx, into)? else {
+    let into = destination.summary.id.clone();
+    let held = held::held(tx, &into, found.repository, found.number)?;
+    held::forget(tx, &into, found.repository, found.number)?;
+    let Some(latest) = review::latest_saved(tx, &into)? else {
         // Nothing saved there to land onto.
         return delete(tx, id);
     };
-    let Planned {
-        mut saved,
-        mut next,
-        picks,
-        left,
-    } = plan(&stored, &latest.intent, &destination.working)?;
-    held::fill(&mut saved, &held);
-    held::fill(&mut next, &held);
+    let marks = marked(tx, &into)?;
+    let saved = admitted(&stored, &latest.intent, &marks, &held)?;
 
-    // Publish, stage, then what's left of the Conditional Sync.
-    let (revision, _) = review::publish(tx, who, &destination.summary.id, saved, Some(&latest))?;
+    // Working: the nodes arriving as Saved has them, so their ids match; then each
+    // row Working State holds as Saved did, with the variables Saved gained under
+    // Saved's ids.
+    let introduced: BTreeSet<&str> = stored
+        .picks
+        .iter()
+        .filter(|pick| pick.row.at() == "node")
+        .map(|pick| pick.row.lineage())
+        .collect();
+    let arriving: BTreeSet<&str> = saved
+        .picks
+        .iter()
+        .filter(|pick| pick.at() == "node")
+        .map(RowId::lineage)
+        .collect();
+    let mut working = destination.working.clone();
+    let next = &saved.applied.next;
+    working.services.extend(
+        next.services
+            .iter()
+            .filter(|node| arriving.contains(node.lineage_id.as_str()))
+            .cloned(),
+    );
+    working.volumes.extend(
+        next.volumes
+            .iter()
+            .filter(|node| arriving.contains(node.resource_lineage_id.as_str()))
+            .cloned(),
+    );
+    let staged = admit(&stored, &working, &marks, &held, |row| {
+        !introduced.contains(row.id.lineage()) && row.into == cell_at(&latest.intent, &row.id)
+    })?;
+    let next = with_variable_ids_of(next, &working, staged.applied.next);
+
+    let (revision, _) = review::publish(tx, who, &into, saved.applied.next, Some(&latest))?;
     if next != destination.working {
         branch::land(
             tx,
             who,
             destination,
-            (&stored.landing.from, &stored.carried),
+            (&stored.from, &stored.carried),
             next,
-            &picks,
+            &staged.picks,
         )?;
     }
     tx.execute(
         "DELETE FROM config_conditional_sync \
          WHERE environment_id = ?1 AND state = 'landed' AND id <> ?2",
-        &[destination.summary.id.as_str().into(), id.as_str().into()],
+        &[into.as_str().into(), id.as_str().into()],
     )?;
-    if left.is_empty() {
+    stored.picks.retain_mut(|pick| {
+        let moves = saved.moves.contains(&pick.row) || staged.moves.contains(&pick.row);
+        let left = moves && !saved.picks.contains(&pick.row);
+        pick.landed = Some(match staged.picks.contains(&pick.row) {
+            true => Landed::Staged,
+            false => Landed::Hint,
+        });
+        left
+    });
+    if stored.picks.is_empty() {
         return delete(tx, id);
     }
-    stored.rows = left;
     stored.landed = Some(revision);
     tx.execute(
         "UPDATE config_conditional_sync SET state = 'landed', saved = ?2 WHERE id = ?1",
@@ -541,15 +629,13 @@ pub(crate) fn hints(
             continue;
         }
         let number = row.number(1, "Conditional Sync")?;
-        for held in stored.rows {
+        for pick in stored.picks {
             hints.push(PullRequestHint {
                 conditional_sync: row.parse(0, "Conditional Sync ID")?,
                 pull_request: number,
-                path: branch::path_of(&stored.landing.from, &environment.working, &held.key)?,
-                whole: split_row_key(&held.key).1 == "node",
-                row: held.shown.row,
-                value: held.shown.from,
-                landed: held.landed.unwrap_or(Landed::Hint),
+                at: pick.at,
+                value: pick.from,
+                landed: pick.landed.unwrap_or(Landed::Hint),
             });
         }
     }
@@ -586,27 +672,20 @@ pub(crate) fn standing_in(
         row.number(4, "Conditional Sync")?,
         row.number(5, "Conditional Sync")?,
     )?;
+    let marks = marked(tx, &into.summary.id)?;
+    let waiting = admitted(&stored, &into.working, &marks, &held)?
+        .applied
+        .waiting
+        .iter()
+        .filter_map(|row| stored.picks.iter().find(|pick| pick.row == *row))
+        .map(|pick| pick.at.label())
+        .collect();
     Ok(Some(pull_request::DestinationSync {
         id: row.parse(0, "Conditional Sync ID")?,
         standing,
-        changes: stored.rows.len(),
-        waiting: held::waiting(&stored, &into.working, &held),
+        changes: stored.picks.len(),
+        waiting,
     }))
-}
-
-/// Core's comparison of the synced side into `into`, with what `into` uses live.
-fn against(
-    stored: &Stored,
-    into: &SavedEnvironmentIntent,
-    picks: Option<Vec<String>>,
-) -> Result<BranchChanges, RpcError> {
-    let landing = &stored.landing;
-    branch::landing(
-        (&landing.from, &landing.base),
-        &landing.hostnames,
-        into,
-        picks,
-    )
 }
 
 /// `next` with each variable `before` lacked under the ID `saved` gave it (by

@@ -43,9 +43,12 @@ pub use automation::{
 pub use branch::{
     BranchPlanQuery, BranchPlanView, BranchQuery, BranchView, Branched, CopyNode, CreateBranch,
     KeepBranch, LiveNode, PlannedNode, PlannedRole, SetBranchSetup, SetupCommand, SyncChanges,
-    SyncQuery, SyncRow, SyncView, Synced, Take, Taken, When,
+    SyncQuery, SyncRow, SyncView, Synced, Take, Taken, UndoSync, Undone, When,
 };
-pub use branch::{FollowHint, HintSource, IncomingChange, NeverSync, NeverSynced, NeverSyncedRow};
+pub use branch::{
+    FollowHint, HintSource, IncomingChange, NamedRow, NeverSync, NeverSynced, NeverSyncedRow,
+    SecretRow, SyncChange,
+};
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
     GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubReport, GithubRun, RunEnd,
@@ -67,6 +70,8 @@ pub use domain::{
 };
 pub use git::{AuthorizedRepository, CreateGitService};
 pub use id::*;
+/// A Sync view row's id, as Sync, Take, Never sync and Hold name it.
+pub use ployz_core::config::RowId;
 pub use pull_request::{
     Destination, DestinationSync, OpenPullRequest, PrEnvironment, PrPlan, PrPlansQuery,
     PrPlansView, PullRequest, PullRequestQuery, PullRequestRef, PullRequestView, SetPrPlan, Sweep,

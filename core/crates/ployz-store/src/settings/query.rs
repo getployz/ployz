@@ -44,10 +44,10 @@ pub struct EnvironmentView {
     /// Settings without a value are left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub values: Option<Map<String, Value>>,
-    /// Every setting the Environment marks Never sync, whichever Settings were asked for.
+    /// Every row the Environment marks Never sync, whichever Settings were asked for.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[ts(as = "Option<Vec<SettingPath>>", optional)]
-    pub never_synced: Vec<SettingPath>,
+    #[ts(as = "Option<Vec<crate::branch::NamedRow>>", optional)]
+    pub never_synced: Vec<crate::branch::NamedRow>,
 }
 
 /// One Setting's current Working State value.

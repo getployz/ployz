@@ -1,15 +1,21 @@
-//! Syncing a PR Environment's changes conditionally, and taking a Conditional
-//! Sync's rows.
+//! Syncing a PR Environment's changes conditionally, withdrawing that, and taking
+//! a landed Conditional Sync's hints.
 
 use super::*;
+use crate::branch::{Guard, Move, SyncChanges, Synced, Take, Taken};
+use crate::id::SyncId;
+use crate::{SealingKey, deployment, teardown};
+use ployz_core::config::redact_environment_intent;
 
-/// Sync a PR Environment's picked changes (row keys) for one Destination at the
-/// merge, replacing its Conditional Sync there, or withdraw that one.
+/// Sync a PR Environment's picked rows into one of its Destinations at the merge,
+/// replacing its Conditional Sync there. The values given for its secrets are held
+/// for the merge.
 pub(crate) fn sync(
     tx: &mut dyn Tx,
     who: &Actor,
+    sealing: &SealingKey,
     request: &SyncChanges,
-    target: SyncTarget,
+    (from, into, pr): (Environment, Environment, PullRequest),
 ) -> Result<Synced, RpcError> {
     if request.close_after {
         return Err(error::invalid(
@@ -17,130 +23,45 @@ pub(crate) fn sync(
             json!({}),
         ));
     }
-    let conditional_sync = match request.when {
-        Some(When::Withdraw) => {
-            withdraw_from(tx, &target)?;
-            None
-        }
-        _ => {
-            ready(tx, &target)?;
-            let sync = Comparison::sync(tx, &target.from, &target.into)?;
-            let (changes, current) =
-                branch::reviewed(&sync, &target.into, request.version.as_deref())?;
-            let picks =
-                branch::sync_picks(&sync, (&changes.rows, &current), request.picks.as_deref())?;
-            Some(stand(tx, who, &target, sync, (&changes, picks))?)
-        }
-    };
-    Ok(Synced {
-        from: target.from.summary,
-        into: target.into.summary,
-        staged: Vec::new(),
-        closing: false,
-        conditional_sync,
-    })
-}
-
-/// The pull request a Conditional Sync target waits for.
-fn merge(target: &SyncTarget) -> Result<&PullRequest, RpcError> {
-    target
-        .merge
-        .as_ref()
-        .ok_or_else(|| error::internal("A Conditional Sync without its pull request"))
-}
-
-/// Withdraw the PR Environment's standing Conditional Sync into the Destination.
-fn withdraw_from(tx: &mut dyn Tx, target: &SyncTarget) -> Result<(), RpcError> {
-    tx.execute(
-        "DELETE FROM config_conditional_sync \
-         WHERE pr_environment_id = ?1 AND environment_id = ?2 AND state = 'standing'",
-        &[
-            target.from.summary.id.as_str().into(),
-            target.into.summary.id.as_str().into(),
-        ],
-    )?;
-    Ok(())
-}
-
-/// Refuse a Conditional Sync while the pull request is closed or its PR
-/// Environment is going.
-fn ready(tx: &mut dyn Tx, target: &SyncTarget) -> Result<(), RpcError> {
-    let facts = merge(target)?;
-    if !facts.open {
+    ready(tx, &from, &pr)?;
+    let sync = Move::sync(tx, &from, &into)?;
+    let checked = sync.check(tx, &into, Guard::Sync(&request.version))?;
+    let sides = [&from.working, &into.working];
+    let picks = branch::picks(checked.rows(), &sides, request)?;
+    if picks.is_empty() {
         return Err(error::conflict(
-            format!("PR #{} is closed", facts.number),
-            json!({}),
+            format!("Nothing to sync into {}", into.summary.name),
+            json!({ "version": checked.version() }),
         ));
     }
-    let pr = &target.from;
-    if pull_request::closing(tx, &pr.summary.id)? {
-        return Err(error::conflict(
-            format!("{} is closing", pr.summary.name),
-            json!({}),
-        ));
+    let values = branch::sealed(sealing, checked.rows(), &sides, &picks, &request.values)?;
+    // Refuse what couldn't land, such as a new Service's variable without it.
+    checked
+        .plan()
+        .apply(&picks, &values)
+        .map_err(branch::config)?;
+    let from_names = from.names();
+    let mut kept = Vec::new();
+    for row in checked.rows().iter().filter(|row| picks.contains(&row.id)) {
+        kept.push(Pick {
+            at: branch::named(&sides, &row.id).ok_or_else(|| error::corrupt("Sync row"))?,
+            row: row.id.clone(),
+            reviewed: row.into.clone(),
+            from: branch::shown(&from.working, &from_names, &row.id, &row.from),
+            landed: None,
+        });
     }
-    if let Some(removal) = teardown::removing(tx, &pr.summary.id)? {
-        return Err(teardown::being_removed(pr, &removal));
-    }
-    Ok(())
-}
-
-/// `intent` without its secrets' values: they never land, so the stored document
-/// keeps only their fingerprints, which comparisons read.
-fn sealed_out(mut intent: SavedEnvironmentIntent) -> SavedEnvironmentIntent {
-    for variable in intent
-        .services
-        .iter_mut()
-        .flat_map(|service| &mut service.variables)
-    {
-        if let SavedVariableValue::Secret { encrypted_value } = &mut variable.value {
-            *encrypted_value = None;
-        }
-    }
-    intent
-}
-
-/// Record `picks` of `changes` as the PR Environment's standing Conditional Sync
-/// into the Destination, replacing the one there.
-fn stand(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    target: &SyncTarget,
-    sync: Comparison,
-    (changes, picks): (&BranchChanges, Vec<String>),
-) -> Result<ConditionalSync, RpcError> {
-    let facts = merge(target)?;
-    // Core refuses picks it couldn't land, such as a new Service's variable without it.
-    sync.compare(&target.into.working, Some(picks.clone()))?;
-    let rows: Vec<Row> = changes
-        .rows
-        .iter()
-        .filter(|row| picks.contains(&row.key.to_string()))
-        .filter(|row| matches!(row.role, BranchRole::Move { .. }))
-        .map(|row| {
-            let (name, from, _) = branch::shown_row(&sync, &target.from, &target.into, row);
-            Row {
-                key: row.key.to_string(),
-                into: row.into.clone(),
-                shown: Shown { row: name, from },
-                landed: None,
-            }
-        })
-        .collect();
-    let names = rows.iter().map(|row| row.shown.row.clone()).collect();
+    let rows = kept.iter().map(|pick| pick.at.clone()).collect();
     let stored = Stored {
-        rows,
-        picks: picks.into_iter().map(|key| Pick { key }).collect(),
-        carried: Carried::of(tx, &target.from.summary.id, &sync.from)?,
-        landing: Landing {
-            from: sealed_out(sync.from),
-            base: sealed_out(sync.base),
-            hostnames: sync.hostnames,
-        },
-        from: target.from.summary.clone(),
+        picks: kept,
+        carried: Carried::of(tx, &from.summary.id, &sync.from)?,
+        from: redact_environment_intent(sync.from),
+        base: redact_environment_intent(sync.base),
+        hostnames: sync.hostnames,
+        environment: from.summary.clone(),
         landed: None,
     };
-    withdraw_from(tx, target)?;
+    withdraw_from(tx, &from.summary.id, &into.summary.id)?;
     let id = ConditionalSyncId::parse(uuid::Uuid::new_v4().to_string())?;
     tx.execute(
         "INSERT INTO config_conditional_sync (id, organization_id, environment_id, state, \
@@ -149,22 +70,95 @@ fn stand(
         &[
             id.as_str().into(),
             who.organization.as_str().into(),
-            target.into.summary.id.as_str().into(),
-            target.from.summary.id.as_str().into(),
-            facts.repository_id.into(),
-            facts.number.into(),
-            facts.target_branch.as_str().into(),
-            scope::revision_param(target.from.summary.revision)?.into(),
+            into.summary.id.as_str().into(),
+            from.summary.id.as_str().into(),
+            pr.repository_id.into(),
+            pr.number.into(),
+            pr.target_branch.as_str().into(),
+            scope::revision_param(from.summary.revision)?.into(),
             deployment::now().into(),
             document(&stored).as_str().into(),
         ],
     )?;
-    Ok(ConditionalSync {
-        id,
-        pull_request: facts.number,
-        rows: names,
-        state: ConditionalSyncState::Standing,
+    for (row, cell) in &values {
+        held::keep(
+            tx,
+            who,
+            &into.summary.id,
+            (pr.repository_id, pr.number),
+            row,
+            cell,
+        )?;
+    }
+    Ok(Synced {
+        sync: SyncId::parse(id.as_str())?,
+        from: from.summary,
+        into: into.summary,
+        staged: Vec::new(),
+        closing: false,
+        conditional_sync: Some(ConditionalSync {
+            id,
+            pull_request: pr.number,
+            rows,
+            state: ConditionalSyncState::Standing,
+        }),
     })
+}
+
+/// Withdraw the PR Environment's standing Conditional Sync into the Destination.
+fn withdraw_from(
+    tx: &mut dyn Tx,
+    pr: &EnvironmentId,
+    into: &EnvironmentId,
+) -> Result<(), RpcError> {
+    tx.execute(
+        "DELETE FROM config_conditional_sync \
+         WHERE pr_environment_id = ?1 AND environment_id = ?2 AND state = 'standing'",
+        &[pr.as_str().into(), into.as_str().into()],
+    )?;
+    Ok(())
+}
+
+/// Withdraw standing Conditional Sync `sync`, as Undo names it: its Destination, or
+/// none when nothing stands by that ID.
+pub(crate) fn withdraw_one(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    sync: &SyncId,
+) -> Result<Option<EnvironmentSummary>, RpcError> {
+    let id = ConditionalSyncId::parse(sync.as_str())?;
+    let rows = tx.query(
+        "SELECT environment_id FROM config_conditional_sync \
+         WHERE id = ?1 AND organization_id = ?2 AND state = 'standing'",
+        &[id.as_str().into(), who.organization.as_str().into()],
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    let into = scope::lock_id(tx, who, &row.parse::<EnvironmentId>(0, "Environment ID")?)?;
+    delete(tx, &id)?;
+    Ok(Some(into.summary))
+}
+
+/// Refuse a Conditional Sync while the pull request is closed or its PR
+/// Environment is going.
+fn ready(tx: &mut dyn Tx, from: &Environment, pr: &PullRequest) -> Result<(), RpcError> {
+    if !pr.open {
+        return Err(error::conflict(
+            format!("PR #{} is closed", pr.number),
+            json!({}),
+        ));
+    }
+    if pull_request::closing(tx, &from.summary.id)? {
+        return Err(error::conflict(
+            format!("{} is closing", from.summary.name),
+            json!({}),
+        ));
+    }
+    if let Some(removal) = teardown::removing(tx, &from.summary.id)? {
+        return Err(teardown::being_removed(from, &removal));
+    }
+    Ok(())
 }
 
 /// Stage the picked hints (omitted: every one) of a landed Conditional Sync in its
@@ -200,75 +194,53 @@ pub(crate) fn take(
     if found.state != ConditionalSyncState::Landed || stored.landed != latest {
         return Err(gone());
     }
-    let mut hints = Vec::new();
-    for row in stored
-        .rows
-        .iter()
-        .filter(|row| row.landed == Some(Landed::Hint))
-    {
-        let path = branch::path_of(&stored.landing.from, &into.working, &row.key)?;
-        hints.push((path.to_string(), row.key.clone()));
-    }
-    let mut chosen = BTreeSet::new();
-    match &take.rows {
-        None => chosen.extend(hints.iter().map(|(_, key)| key.clone())),
-        Some(asked) => {
-            for asked in asked {
-                let found: Vec<&String> = hints
-                    .iter()
-                    .filter(|(path, _)| covers(path, asked))
-                    .map(|(_, key)| key)
-                    .collect();
-                if found.is_empty() {
-                    return Err(error::choices(
-                        format!("No hint {asked} to take"),
-                        asked,
-                        hints.iter().map(|(path, _)| path.as_str()),
-                    ));
-                }
-                chosen.extend(found.into_iter().cloned());
-            }
-        }
-    }
-    if chosen.is_empty() {
-        return Err(gone());
-    }
-    let picks: Vec<String> = stored
+    let hints: BTreeSet<RowId> = stored
         .picks
         .iter()
-        .filter(|pick| chosen.contains(&pick.key))
-        .map(|pick| pick.key.clone())
+        .filter(|pick| pick.landed == Some(Landed::Hint))
+        .map(|pick| pick.row.clone())
         .collect();
-    let next = match picks.is_empty() {
-        true => into.working.clone(),
-        false => against(&stored, &into.working, Some(picks.clone()))?.next,
+    if let Some(unknown) = take.rows.iter().flatten().find(|row| !hints.contains(row)) {
+        let rows: Vec<String> = hints.iter().map(ToString::to_string).collect();
+        return Err(error::choices(
+            format!("No hint {unknown} to take"),
+            &unknown.to_string(),
+            rows.iter().map(String::as_str),
+        ));
+    }
+    let chosen: BTreeSet<RowId> = match &take.rows {
+        Some(rows) => rows.iter().cloned().collect(),
+        None => hints,
     };
+    let marks = marked(tx, &into.summary.id)?;
+    let admitted = admit(&stored, &into.working, &marks, &BTreeMap::new(), |row| {
+        chosen.contains(&row.id)
+    })?;
+    if admitted.picks.is_empty() {
+        return Err(gone());
+    }
     let staged = branch::land(
         tx,
         who,
         &mut into,
-        (&stored.landing.from, &stored.carried),
-        next,
-        &picks,
+        (&stored.from, &stored.carried),
+        admitted.applied.next,
+        &admitted.picks,
     )?;
-    for row in &mut stored.rows {
-        if chosen.contains(&row.key) {
-            row.landed = Some(Landed::Staged);
+    for pick in &mut stored.picks {
+        if admitted.picks.contains(&pick.row) {
+            pick.landed = Some(Landed::Staged);
         }
     }
     write(tx, id, &stored)?;
     Ok(Taken {
-        from: stored.from.clone(),
+        from: stored.environment.clone(),
         into: into.summary,
         staged,
         conditional_sync: Some(ConditionalSync {
             id: id.clone(),
             pull_request: found.number,
-            rows: stored
-                .rows
-                .iter()
-                .map(|row| row.shown.row.clone())
-                .collect(),
+            rows: stored.picks.iter().map(|pick| pick.at.clone()).collect(),
             state: ConditionalSyncState::Landed,
         }),
     })

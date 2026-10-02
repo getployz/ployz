@@ -339,6 +339,19 @@ pub(crate) fn lock_all(
     Ok(())
 }
 
+/// Lock the Project of Environment `id`: every write that touches more than one
+/// Environment takes it first.
+// ponytail: this serialises multi-Environment writes within a Project; go back to
+// ID-ordered lock_all if throughput matters.
+pub(crate) fn lock_project(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<(), RpcError> {
+    tx.execute(
+        "UPDATE config_project SET name = name \
+         WHERE id = (SELECT project_id FROM config_environment WHERE id = ?1)",
+        &[id.as_str().into()],
+    )?;
+    Ok(())
+}
+
 /// Lock and load Environment `id` of `who`'s Organization, as [`lock`] does.
 pub(crate) fn lock_id(
     tx: &mut dyn Tx,
