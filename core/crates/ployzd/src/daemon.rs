@@ -142,18 +142,10 @@ impl Daemon {
         let local_phase = local_record.phase();
         let local_machine = local_record.machine().cloned();
         let mut network = NetworkPlane::start(&local_record).await?;
-        let machine_api_listeners = if config.machine_api_address.is_none()
-            && let Some(network) = &network
+        let machine_api_listener = match config
+            .machine_api_address
+            .or_else(|| network.as_ref().map(NetworkPlane::machine_api_address))
         {
-            let [management, gateway] = network.machine_api_addresses()?;
-            Some((
-                TcpListener::bind(management).await?,
-                TcpListener::bind(gateway).await?,
-            ))
-        } else {
-            None
-        };
-        let explicit_machine_api_listener = match config.machine_api_address {
             Some(address) => Some(TcpListener::bind(address).await?),
             None => None,
         };
@@ -228,10 +220,6 @@ impl Daemon {
             running_builds,
             shutdown.clone(),
         );
-        let (management_listener, gateway_listener) = machine_api_listeners
-            .map_or((None, None), |(management, gateway)| {
-                (Some(management), Some(gateway))
-            });
         let management_endpoint =
             management::bind(local_record.management_secret(), &config.management)
                 .await
@@ -244,13 +232,7 @@ impl Daemon {
             let shutdown = shutdown_for_servers;
             let network_rpc = async {
                 tokio::try_join!(
-                    serve_machine_api(
-                        explicit_machine_api_listener,
-                        machine_api.clone(),
-                        shutdown.clone()
-                    ),
-                    serve_machine_api(management_listener, machine_api.clone(), shutdown.clone()),
-                    serve_machine_api(gateway_listener, machine_api.clone(), shutdown.clone()),
+                    serve_machine_api(machine_api_listener, machine_api.clone(), shutdown.clone()),
                     async {
                         management::serve(
                             management_endpoint,

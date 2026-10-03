@@ -7,8 +7,7 @@ use std::{
 use ployz_core::{MACHINE_API_PORT, ManagementAddress, UNREGISTRY_PORT};
 use ployzd::network::{NetworkError, apply_firewall_rules};
 
-const TEST_NAME: &str =
-    "mesh_routing_preserves_source_nat_and_restricts_direct_image_transfer_to_machines";
+const TEST_NAME: &str = "mesh_firewall_policy";
 const ERROR_TEST_NAME: &str = "firewall_surfaces_command_start_errors";
 const ERROR_TEST_CHILD: &str = "PLOYZ_FIREWALL_ERROR_TEST_CHILD";
 
@@ -35,7 +34,7 @@ fn firewall_surfaces_command_start_errors() {
 
 #[test]
 #[ignore = "requires passwordless sudo and Linux network namespaces"]
-fn mesh_routing_preserves_source_nat_and_restricts_direct_image_transfer_to_machines() {
+fn mesh_firewall_policy() {
     if let Ok(subnet) = env::var("PLOYZ_FIREWALL_SUBNET") {
         let management_address = env::var("PLOYZ_FIREWALL_MANAGEMENT_ADDRESS")
             .unwrap()
@@ -287,9 +286,8 @@ fn mesh_routing_preserves_source_nat_and_restricts_direct_image_transfer_to_mach
     send_datagram(&source, "10.210.1.2", "198.51.100.2", 40102);
     assert_eq!(external.peer(), "198.51.100.1");
 
-    let mut container_api = stream_server(&target, "10.210.2.1", MACHINE_API_PORT);
-    connect(&source, "10.210.1.2", "10.210.2.1", MACHINE_API_PORT);
-    assert_eq!(container_api.peer(), "10.210.1.2");
+    let _gateway_api = stream_server(&target, "10.210.2.1", MACHINE_API_PORT);
+    assert_connection_denied(&source, "10.210.1.2", "10.210.2.1", MACHINE_API_PORT);
 
     let mut management_api = stream_server(&target, "fdcc::2", MACHINE_API_PORT);
     connect(&source, "fdcc::1", "fdcc::2", MACHINE_API_PORT);
@@ -310,6 +308,9 @@ fn mesh_routing_preserves_source_nat_and_restricts_direct_image_transfer_to_mach
 
     let _ingest = stream_server(&target, "fdcc::2", UNREGISTRY_PORT);
     assert_connection_denied(&container, "fd00::2", "fdcc::2", UNREGISTRY_PORT);
+
+    let _management_api = stream_server(&target, "fdcc::2", MACHINE_API_PORT);
+    assert_connection_denied(&container, "fd00::2", "fdcc::2", MACHINE_API_PORT);
 }
 
 fn apply_in_namespace(namespace: &str, subnet: &str, management_address: &str) {
@@ -362,7 +363,7 @@ fn assert_connection_denied(namespace: &str, source: &str, target: &str, port: u
             namespace,
             "python3",
             "-c",
-            "import socket,sys; a,b,p=sys.argv[1:]; s=socket.socket(socket.AF_INET6); s.bind((a,0)); s.settimeout(1); s.connect((b,int(p)))",
+            "import socket,sys; a,b,p=sys.argv[1:]; s=socket.socket(socket.AF_INET6 if ':' in a else socket.AF_INET); s.bind((a,0)); s.settimeout(1); s.connect((b,int(p)))",
             source,
             target,
         ])
@@ -443,8 +444,17 @@ impl Namespaces {
 impl Drop for Namespaces {
     fn drop(&mut self) {
         for name in &self.0 {
+            // Server::drop kills sudo, not its root python child; a server whose
+            // connection was denied would outlive the test and hold its stdout.
             let _ = Command::new("sudo")
-                .args(["-n", "ip", "netns", "delete", name])
+                .args([
+                    "-n",
+                    "sh",
+                    "-c",
+                    "ip netns pids \"$1\" | xargs -r kill; ip netns delete \"$1\"",
+                    "sh",
+                    name,
+                ])
                 .status();
         }
     }
