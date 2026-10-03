@@ -503,6 +503,9 @@ pub(crate) fn record(
     runner: &RunnerId,
     evidence: RunEvidence,
 ) -> Result<DeploymentSummary, RpcError> {
+    // What it records may follow into its Branches.
+    let environment = super::load(tx, id)?.summary.environment_id;
+    scope::lock_project(tx, &environment)?;
     let mut stored = locked(tx, id)?;
     if stored.summary.runner.as_ref() != Some(runner) {
         return Err(owned_elsewhere(id));
@@ -928,7 +931,7 @@ fn end(
 /// Put each node `stored` confirmed (Deployed or Removed) into Applied State as
 /// its Saved revision has it; once it `succeeded`, every Unchanged node too: the
 /// Deploy covered it even when the runtime had nothing to do (a rename, a tag).
-/// Applying one again changes nothing.
+/// Applying one again changes nothing. The Environment's Branches then follow it.
 fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcError> {
     let advanced: Vec<&TargetNode> = stored
         .nodes
@@ -941,6 +944,7 @@ fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcE
         .collect();
     if !advanced.is_empty() {
         let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+        let mut deployed = std::collections::BTreeSet::new();
         for node in advanced {
             let applied = match node {
                 TargetNode::Service { .. } => saved
@@ -954,6 +958,13 @@ fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcE
                     .find(|volume| volume.resource_id == node.id())
                     .map(scope::Node::Volume),
             };
+            if let Some(applied) = applied {
+                let lineage = match applied {
+                    scope::Node::Service(service) => &service.lineage_id,
+                    scope::Node::Volume(volume) => &volume.resource_lineage_id,
+                };
+                deployed.insert(lineage.clone());
+            }
             match applied {
                 Some(applied) => tx.execute(
                     "INSERT INTO config_applied \
@@ -978,6 +989,9 @@ fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcE
                 )?,
             };
         }
+        crate::branch::deployed(tx, &stored.summary.environment_id, &saved, &deployed)?;
+        // Its Branches follow what it runs now.
+        crate::branch::follow(tx, &stored.summary.environment_id, &deployed)?;
     }
     Ok(())
 }

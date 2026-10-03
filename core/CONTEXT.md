@@ -253,7 +253,7 @@ _Avoid_: Working State, deployed configuration, draft
 
 **Publish**:
 Adding a revision to an Environment's Saved State from its Working State without deploying. A manual Deploy publishes first.
-_Avoid_: Save (a Branch Save), commit, promote
+_Avoid_: Save, commit, promote
 
 **Deployment**:
 The Config Store's record of one Deploy: its Attempt Target, who started it and from what source, its Node Outcomes and its events. It stays after the Deploy ends; its runner is recorded, so a Deployment whose runner is gone reads as outcome unknown, never as running.
@@ -298,12 +298,12 @@ Authoring and runtime both require 1–50 replicas; zero is refused by the Setti
 _Avoid_: Saved Service config, copied consumer snapshot, second source of truth
 
 **Branch**:
-An Environment made from another, its Parent, and deployed to its own Namespace. Its nodes keep their Parent's lineage. It runs Own Copies of the nodes picked, and uses what those need from its Parent's Namespace as Live Nodes. It closes when it is deleted after a Save, unless it is a Kept Branch. Branching rules are pure authored-configuration rules, the same for every client.
+An Environment made from another, its Parent, and deployed to its own Namespace. Its nodes keep their Parent's lineage. It runs Own Copies of the nodes picked, and uses what those need from its Parent's Namespace as Live Nodes. Unless it is a Kept Branch, it may close once it syncs into its Parent, and closes on its own a week after its latest Deployment. Branching rules are pure authored-configuration rules, the same for every client.
 _Avoid_: Fork, clone, preview; "branch" alone for a Git branch
 
-**Conditional Save**:
-A PR Environment's Save into one of its Destinations that goes live with its pull request's merge. It keeps what landing needs, sealed secrets and registry credentials included, so it lands even once the PR Environment is gone. Where the Destination changed a row too, the pull request's value lands only as a hint, which a take stages.
-_Avoid_: Approval, deferred save
+**Conditional Sync**:
+A PR Environment's Sync into one of its Destinations that goes live with its pull request's merge; a Sync from it into any other Environment stages now. It keeps what landing needs, sealed secrets and registry credentials included, so it lands even once the PR Environment is gone. Where the Destination changed a row too, the pull request's value lands only as a hint, which a take stages. The author's own edits to the PR Environment, or a new target Git branch, withdraw it; what the PR Environment follows from its Parent doesn't.
+_Avoid_: Approval, deferred sync, Conditional Save
 
 **Parent**:
 The Environment a Branch was made from, whose Namespace lends the Branch its Live Nodes. An Environment without one, such as production, is a root.
@@ -322,7 +322,7 @@ A command a Branch adds after one Own Copy's own pre-deploy command, in the same
 _Avoid_: Seed script, data hook, post-deploy hook
 
 **Kept Branch**:
-A Branch that stays after saving and never closes on its own, such as staging.
+A Branch that stays after syncing into its Parent and never closes on its own, such as staging.
 _Avoid_: Long-lived environment, permanent branch
 
 **Starting point**:
@@ -330,16 +330,20 @@ A Branch that was never deployed, kept as the recipe other Branches copy from. I
 _Avoid_: Template, draft branch
 
 **Destination**:
-Where a Branch saves its changes: its Parent, or for a PR Environment, each Environment that deploys the pull request's target Git branch with nothing in its Parent chain deploying that Git branch too. Environments below a Destination that deploy the same Git branch get the merged code but not the settings; they catch up by Update. A pull request whose target Git branch nothing deploys has no Destination.
-_Avoid_: Target, save target
+Where a Branch syncs its changes by default: its Parent, or for a PR Environment, each Environment that deploys the pull request's target Git branch with nothing in its Parent chain deploying that Git branch too. Environments below a Destination that deploy the same Git branch get the merged code but not the settings; they catch up by Follow. A pull request whose target Git branch nothing deploys has no Destination.
+_Avoid_: Target, sync target
 
-**Save**:
-Putting a Branch's changes, chosen change by change, into its Destination's Working State, where they become the Destination's changes to deploy. Save never waits for the Branch to deploy: it takes the Branch's Working State, whether or not it runs. The Branch is deleted after saving unless it is kept or the user opts out.
-_Avoid_: Merge (a GitHub merge only), promote, deploy to parent, Publish
+**Sync**:
+Putting one Environment's changes, chosen change by change, into another Environment of the same Project as the receiver's changes to deploy. It takes the sender's Working State, deployed or not, and never deletes or deploys anything. It compares over what the two last shared, so a change left out, or discarded by the receiver before it deploys, is offered again; a change the receiver also made since then is flagged and, if synced, overwritten. Sizing, custom domains, generated addresses, the Git branch and Volume data never sync. A secret's value never syncs either: a secret the receiver has stays as it is, and one it lacks arrives without a value, which the receiver's Deploy refuses until it is set. Any two Environments of a Project sync: a Branch into its Parent, sideways or skipping a level, a root into a Branch or into another root. A pair that never synced compares over where the sending Branch was made, else where the receiving Branch was made, else the receiver itself. Unless a Branch syncs into its own Parent, what it only got from its Parent is left out unless picked.
+_Avoid_: Save, push, promote, merge (a GitHub merge only), Publish
 
-**Update**:
-Staging the Parent's changes since the Branch was made or last updated in the Branch's Working State, to ship with the Branch's next Deploy.
-_Avoid_: Pull, sync, rebase
+**Follow**:
+A Branch receiving what its Parent deploys, as staged changes in its Working State. When a Deployment applies changes in an Environment, each of its Branches gets them, without waiting for its own undeployed changes, so they flow down one level per deploy. Where the Branch changed a setting too, its own value stays and the Parent's is a Use hint. Each of the Parent's changes is delivered once: one the Branch discards stays a Use hint until the Parent changes that setting again. Never-synced settings don't follow. A Parent's secret value follows into a Branch that never set its own.
+_Avoid_: Update, pull, rebase, inherit
+
+**Never sync**:
+A mark an Environment puts on one of its settings: Sync never carries it from that Environment and never changes it there. It joins sizing, custom domains, generated addresses, the Git branch and Volume data, none of which ever sync. A Branch of the Environment still gets the Environment's value; the mark doesn't carry into Branches.
+_Avoid_: Pin, lock, local override
 
 **Deploy Snapshot**:
 The observer-relative Machine, Service Container, and Docker Volume observations gathered for one Deploy, including target-specific Container and Docker Volume failures and omissions. Completeness is relative to the entry Machine's current visible required fan-out, not Cluster truth.

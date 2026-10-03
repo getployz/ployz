@@ -1,30 +1,42 @@
 //! Branches: an Environment made from a Parent in the same Project. It holds Own
 //! Copies of the Parent nodes it picked (fresh ids, the same lineage) and uses the
 //! rest live from the nearest Environment it comes from that runs them. Its base is
-//! what it and its Parent last shared, so Update stages exactly the Parent's
-//! deployed changes since. Core plans the picks and moves the rows
-//! (`plan_branch`, `branch_changes`, `live_values`); this module stores and lands them.
+//! what it and its Parent last shared, so Follow stages exactly the Parent's
+//! deployed changes since. Core plans the picks and compares the rows
+//! (`plan_branch`, `plan`, `live_values`); this module stores and lands them.
 
 mod create;
+mod follow;
 mod live;
-mod moving;
+mod never_sync;
+mod pair;
 mod setup;
+mod sync;
 pub(crate) use create::*;
+pub use follow::{FollowHint, IncomingChange};
+pub(crate) use follow::{follow, hints, incoming};
 pub(crate) use live::*;
-pub(crate) use moving::*;
+pub use never_sync::{NeverSync, NeverSynced};
+pub(crate) use never_sync::{marked, marks, never_sync};
+pub(crate) use pair::*;
 pub use setup::SetBranchSetup;
 pub(crate) use setup::{branch_setup, set_branch_setup};
+pub use sync::{
+    Mark, NeverSyncedRow, SecretRow, SyncChange, SyncChanges, SyncQuery, SyncRow, SyncView, Synced,
+    SyncedWhen, UndoSync, Undone,
+};
+pub(crate) use sync::{picks, seal_secret, sealed, sync, sync_view, take, undo};
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
-    BranchChanges, BranchChangesInput, BranchChoice, BranchHostnames, BranchNewValue,
-    BranchNodeReason, BranchNodeRole, BranchOption, BranchPick, BranchPickChoice, BranchPicks,
-    BranchPlan, BranchPreset, BranchReason, BranchRole, BranchRow, ConfigError,
-    EnvironmentNodeType, LiveLineageUse, LiveValuesInput, LiveValuesOwner, SavedEnvironmentIntent,
-    SavedServiceIntent, SavedVariableProducer, SavedVariableValue, ServiceImageCredentials,
-    ServiceSource, ValuePart, ValuePartOwner, branch_changes, canonicalize_environment_intent,
-    compile_environment_intent, live_values, parse_service_setting, plan_branch,
+    Arrives, At, BranchNodeReason, BranchNodeRole, BranchPicks, BranchPlan, BranchPreset, Cell,
+    Cells, ConfigError, EnvironmentNodeType, Hostnames, Landed, LiveLineageUse, LiveValuesInput,
+    LiveValuesOwner, NodeRef, Plan, PlannedRow, Policy as Rules, RowId, SavedEnvironmentIntent,
+    SavedServiceIntent, SavedVariableProducer, SealedCell, SealedSecret, ServiceImageCredentials,
+    ServiceSource, Setting, Sides, Unapplied, ValuePart, ValuePartOwner, Verdict, Way, Why,
+    canonicalize_environment_intent, compile_environment_intent, live_values, marks_on,
+    parse_service_setting, plan, plan_branch, put_back, unapply,
 };
 use ployz_core::{Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -34,14 +46,14 @@ use ts_rs::TS;
 use crate::deployment::{self, DeploymentStatus};
 use crate::error;
 use crate::id::{
-    ConditionalSaveId, DeploymentId, EnvironmentId, EnvironmentName, Revision, VolumeName,
+    ConditionalSyncId, DeploymentId, EnvironmentId, EnvironmentName, PullRequestNumber, Revision,
+    SyncId, VolumeName,
 };
 use crate::policy::{self, Policy};
 use crate::project::insert_environment;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
-use crate::sealing::SealingKey;
-use crate::settings::{NodeName, SettingPath, shown};
-use crate::storage::Tx;
+use crate::settings::NodeName;
+use crate::storage::{self, Tx};
 use crate::{Actor, registry, review};
 
 /// Make a Branch of an Environment: Own Copies of the nodes picked, and of what
@@ -67,7 +79,7 @@ pub struct CreateBranch {
     /// copy of a database.
     #[serde(default)]
     pub setup: Vec<SetupCommand>,
-    /// Keep it after a Save, and never close it for being idle.
+    /// Keep it after it syncs into its Parent, and never close it for being idle.
     #[serde(default)]
     pub keep: bool,
     /// Fix this failed Deployment of the Parent on the Branch: each copied Service
@@ -88,235 +100,258 @@ pub struct SetupCommand {
     pub command: String,
 }
 
-/// Move changes between a Branch and its Parent, staging them in the other's
-/// Working State; nothing is published or deployed. Or take a pull request's
-/// value a Conditional Save left.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "move", rename_all = "snake_case")]
-pub enum Move {
-    /// The Branch's Working State into its Parent's; nothing there is deleted. From
-    /// a PR Environment, a Conditional Save into one of its Destinations (the
-    /// Environments that deploy its target branch): it stages nothing now and goes
-    /// live with the pull request's merge.
-    Save(Save),
-    /// What the Branch's Parent deployed since the two last shared, into the
-    /// Branch; refused unless the Branch runs its Working State.
-    Update(Update),
-    /// Stage the pull request's values a landed Conditional Save left as hints,
-    /// sealed secrets included, even once its PR Environment is gone: each replaces
-    /// the Destination's own edit.
-    Take(Take),
-}
-
-/// A Save: see [`Move::Save`].
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct Save {
-    /// The Branch whose changes move.
-    #[serde(default)]
-    pub from: EnvironmentRef,
-    /// Its Parent; from a PR Environment, the Destination. Omitted: the Parent, or
-    /// the only Destination.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub into: Option<EnvironmentRef>,
-    /// The changes to move; omitted, every change, each variable its default way.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub picks: Option<Vec<MovePick>>,
-    /// Refuse with `conflict` unless the Move view is still at this version.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub version: Option<String>,
-    /// `now` stages the changes; `at_merge` saves them as a Conditional Save that
-    /// goes live with the pull request's merge, and `picks: []` withdraws it.
-    /// Omitted: `at_merge` from a PR Environment, else `now`.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub when: Option<When>,
-}
-
-/// An Update: see [`Move::Update`].
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct Update {
-    /// The Branch the changes move into.
-    #[serde(default)]
-    pub into: EnvironmentRef,
-    /// The changes to move; omitted, every change.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub picks: Option<Vec<MovePick>>,
-    /// Refuse with `conflict` unless the Move view is still at this version.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub version: Option<String>,
-}
-
-/// A take: see [`Move::Take`].
+/// Stage the hints left in an Environment: a merged pull request's values its
+/// landed Conditional Sync left, even once its PR Environment is gone; or a
+/// Parent's deployed values that followed into its Branch but aren't staged there.
+/// Each replaces the receiver's own edit.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Take {
-    /// The retained Conditional Save whose hints to take.
-    pub from: ConditionalSaveId,
-    /// Its Destination; refused unless it is.
+    /// The retained Conditional Sync whose hints to take, or the Parent whose Follow
+    /// hints to take.
+    pub from: HintSource,
+    /// Its Destination, or the Branch following the Parent; refused unless it is.
     #[serde(default)]
     #[ts(optional = nullable)]
     pub into: Option<EnvironmentRef>,
-    /// The hints to take, by row or a prefix of rows; omitted, every one.
+    /// The hints to take; omitted, every one.
     #[serde(default)]
     #[ts(optional = nullable)]
-    pub rows: Option<Vec<String>>,
-    /// Refuse with `conflict` unless the Destination's `diff` is still at this
-    /// version: its Working State and the Saved revision the hints landed on.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub version: Option<String>,
+    pub rows: Option<Vec<RowRef>>,
+    /// Refused with `conflict` unless the receiver's `diff` is still at this
+    /// version: the one the hints were read at.
+    pub version: String,
 }
 
-/// When a Move's changes land.
+/// Where the hints a [`Take`] takes come from.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(untagged)]
+pub enum HintSource {
+    /// A merged pull request's Conditional Sync: [`crate::PullRequestHint::conditional_sync`].
+    ConditionalSync(ConditionalSyncId),
+    /// The Branch's Parent: [`FollowHint::from`].
+    Parent(EnvironmentName),
+}
+
+/// When a Sync's changes land. Omitted: at the merge from a PR Environment into one
+/// of its Destinations, else now.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum When {
     /// Staged in the receiver now.
-    Now,
-    /// With the pull request's merge.
+    Now {
+        /// Close the Branch once its changes landed in its Parent: refused for a
+        /// kept Branch, and for a Sync into anything but its Parent.
+        #[serde(default)]
+        #[ts(as = "Option<bool>", optional)]
+        close_after: bool,
+    },
+    /// With the pull request's merge: a Conditional Sync, replacing the one
+    /// standing there.
     AtMerge,
 }
 
-/// Changes to move, by the name the Move view gives them.
+/// A row, and its name where it is shown. Only [`pair::named`] makes one, so `kind`
+/// is always `node`'s.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct MovePick {
-    /// A change (`web.source.image`), or a prefix of changes: `web` is every change
-    /// of web, `web.variables` every variable of it.
-    pub row: String,
-    /// How the variables picked land; omitted, each its default.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub choice: Option<PickChoice>,
+pub struct NamedRow {
+    /// What commands name it by; stable across renames.
+    pub(crate) row: RowId,
+    /// Its Service or Volume.
+    pub(crate) node: NodeName,
+    /// Whether `node` is a Service or a Volume.
+    pub(crate) kind: EnvironmentNodeType,
+    /// Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+    /// node itself.
+    pub(crate) name: Option<String>,
 }
 
-/// How a picked variable lands.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum PickChoice {
-    /// The moving value, sealed secrets included.
-    From,
-    /// The Parent's deployed value.
-    Parent,
-    /// Not at all.
-    LeaveOut,
-    /// Its own value in the receiver: text that may reference Services there by
-    /// name, or a secret's plaintext, sealed before it is stored.
-    New(String),
+impl NamedRow {
+    /// What commands name it by.
+    #[must_use]
+    pub const fn row(&self) -> &RowId {
+        &self.row
+    }
+
+    /// Its Service or Volume.
+    #[must_use]
+    pub const fn node(&self) -> &NodeName {
+        &self.node
+    }
 }
 
-impl PickChoice {
-    const fn option(&self) -> BranchOption {
-        match self {
-            Self::From => BranchOption::From,
-            Self::Parent => BranchOption::Parent,
-            Self::LeaveOut => BranchOption::LeaveOut,
-            Self::New(_) => BranchOption::New,
+/// `NODE`, or `NODE.name`: as reads show it.
+impl std::fmt::Display for NamedRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.name {
+            Some(name) => write!(f, "{}.{name}", self.node),
+            None => write!(f, "{}", self.node),
         }
     }
 }
 
-/// Read what a Save or Update would stage.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "move", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MoveQuery {
-    /// As [`Move::Save`].
-    Save {
-        #[serde(default)]
-        from: EnvironmentRef,
-        #[serde(default)]
-        #[ts(optional = nullable)]
-        into: Option<EnvironmentRef>,
-        #[serde(default)]
-        #[ts(optional = nullable)]
-        when: Option<When>,
-    },
-    /// As [`Move::Update`].
-    Update {
-        #[serde(default)]
-        into: EnvironmentRef,
-    },
+/// A row as a command names it: its [`RowId`], its name as reads show it
+/// (`web.image`, `web.env.KEY`), or a prefix of names (`web`, `web.env`) for every
+/// row under it. The Store resolves it against the rows the command acts on.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
+#[serde(from = "String", into = "String")]
+#[ts(as = "String")]
+pub enum RowRef {
+    /// A row by its RowId.
+    Row(RowId),
+    /// A row's name, or a prefix of names.
+    Name(String),
 }
 
-/// The changes a Move would stage, and the version that guards it.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct MoveView {
-    /// Where the changes come from.
-    pub from: EnvironmentSummary,
-    /// Where they land.
-    pub into: EnvironmentSummary,
-    /// Pass to [`Move::version`] to move exactly these changes.
-    pub version: String,
-    /// Each change that moves.
-    pub rows: Vec<MoveRow>,
-    /// Each setting that differs and stays: sizing, domains and the Git branch
-    /// belong to each Environment, so a Move never carries them.
-    pub differ: Vec<DifferRow>,
+impl From<String> for RowRef {
+    fn from(text: String) -> Self {
+        match text.parse() {
+            Ok(row) => Self::Row(row),
+            Err(_) => Self::Name(text),
+        }
+    }
 }
 
-/// A setting that differs between the two and stays as it is.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct DifferRow {
-    /// `NODE.path`.
-    pub row: String,
-    /// Why it stays.
-    pub why: BranchReason,
-    /// The value on the side changes come from.
-    pub from: Value,
-    /// The receiver's value.
-    pub into: Value,
+impl From<&str> for RowRef {
+    fn from(text: &str) -> Self {
+        text.to_owned().into()
+    }
 }
 
-/// One change a Move carries.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct MoveRow {
-    /// `NODE`, or `NODE.path` for one of its settings or variables.
-    pub row: String,
-    /// The receiver changed it too since the two last shared: moving it overwrites that.
-    pub conflict: bool,
-    /// How a variable can land.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub choice: Option<MoveChoice>,
-    /// The value that moves; secrets read `{"secret": true}`.
-    pub from: Value,
-    /// The receiver's value now.
-    pub into: Value,
+impl From<RowId> for RowRef {
+    fn from(row: RowId) -> Self {
+        Self::Row(row)
+    }
 }
 
-/// The ways a moving variable can land.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct MoveChoice {
-    /// How it lands when not picked otherwise. `new` means a secret needs a fresh
-    /// value: pick `leave_out` and set one, or `from` to move the Branch's own.
-    pub default: BranchOption,
-    /// Each way offered.
-    pub options: Vec<BranchOption>,
-    /// Whether it is a secret.
-    pub secret: bool,
+impl From<RowRef> for String {
+    fn from(asked: RowRef) -> Self {
+        asked.to_string()
+    }
 }
 
-/// What a Move staged.
+impl std::fmt::Display for RowRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Row(row) => write!(f, "{row}"),
+            Self::Name(name) => f.write_str(name),
+        }
+    }
+}
+
+/// The rows `asked` names among `rows`, each named as one Environment shows it. A
+/// RowId names itself, there or not: the command decides whether it acts on it.
+///
+/// # Errors
+/// Returns a `not_found` error with the names there are for a name that names
+/// none, and an `ambiguous` one with the rows it names for a name (not a prefix)
+/// that names more than one row: a different row in each Environment, say.
+pub(crate) fn resolve(asked: &RowRef, rows: &[NamedRow]) -> Result<BTreeSet<RowId>, RpcError> {
+    let name = match asked {
+        RowRef::Row(row) => return Ok(BTreeSet::from([row.clone()])),
+        RowRef::Name(name) => name,
+    };
+    let exact: BTreeSet<RowId> = rows
+        .iter()
+        .filter(|row| row.to_string() == *name)
+        .map(|row| row.row.clone())
+        .collect();
+    if exact.len() > 1 {
+        return Err(several(asked, &exact, rows));
+    }
+    let under = format!("{name}.");
+    let found: BTreeSet<RowId> = rows
+        .iter()
+        .filter(|row| row.to_string().starts_with(&under))
+        .map(|row| row.row.clone())
+        .chain(exact)
+        .collect();
+    if found.is_empty() {
+        let labels: BTreeSet<String> = rows.iter().map(NamedRow::to_string).collect();
+        return Err(error::choices(
+            format!("No row named {name} here"),
+            name,
+            labels.iter().map(String::as_str),
+        ));
+    }
+    Ok(found)
+}
+
+/// The one row `asked` names among `rows`, as [`resolve`] finds it; a prefix naming
+/// several is refused with their names.
+pub(crate) fn resolve_one(asked: &RowRef, rows: &[NamedRow]) -> Result<RowId, RpcError> {
+    let found = resolve(asked, rows)?;
+    let mut only = found.iter();
+    match (only.next(), only.next()) {
+        (Some(row), None) => Ok(row.clone()),
+        _ => Err(several(asked, &found, rows)),
+    }
+}
+
+/// `asked` names each of `found`, more than one row: refused with their names, or
+/// their RowIds where names repeat.
+fn several(asked: &RowRef, found: &BTreeSet<RowId>, rows: &[NamedRow]) -> RpcError {
+    let labels: BTreeSet<String> = rows
+        .iter()
+        .filter(|row| found.contains(&row.row))
+        .map(NamedRow::to_string)
+        .collect();
+    let choices: Vec<String> = match labels.len() == found.len() {
+        true => labels.into_iter().collect(),
+        false => found.iter().map(ToString::to_string).collect(),
+    };
+    error::ambiguous(
+        format!("{asked} names more than one row: name one"),
+        json!({ "valid_children": choices }),
+    )
+}
+
+/// The rows `asked` names among `named`, each one of `offered` (each a `what`, such
+/// as a hint); omitted, every one.
+pub(crate) fn chosen(
+    asked: Option<&[RowRef]>,
+    offered: BTreeSet<RowId>,
+    named: &[NamedRow],
+    what: &str,
+) -> Result<BTreeSet<RowId>, RpcError> {
+    let Some(asked) = asked else {
+        return Ok(offered);
+    };
+    let chosen = resolve_all(asked, named)?;
+    if let Some(unknown) = chosen.iter().find(|row| !offered.contains(row)) {
+        let rows: Vec<String> = offered.iter().map(ToString::to_string).collect();
+        return Err(error::choices(
+            format!("No {what} at {unknown}"),
+            &unknown.to_string(),
+            rows.iter().map(String::as_str),
+        ));
+    }
+    Ok(chosen)
+}
+
+/// `asked` resolved among `rows`, every one together.
+pub(crate) fn resolve_all<'asked>(
+    asked: impl IntoIterator<Item = &'asked RowRef>,
+    rows: &[NamedRow],
+) -> Result<BTreeSet<RowId>, RpcError> {
+    let mut found = BTreeSet::new();
+    for asked in asked {
+        found.extend(resolve(asked, rows)?);
+    }
+    Ok(found)
+}
+
+/// What a take staged.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct Moved {
-    /// Where the changes came from.
+pub struct Taken {
+    /// Where the values came from: the Parent, or the pull request's PR Environment.
     pub from: EnvironmentSummary,
     /// Where they landed.
     pub into: EnvironmentSummary,
     /// Nodes staged in `into`'s Working State.
     pub staged: Vec<NodeName>,
-    /// The Branch now; none for a take.
-    pub branch: Option<BranchView>,
-    /// The Conditional Save now: standing after a Save at merge, the one taken
-    /// from after a take; none once withdrawn and for a Move now.
-    pub conditional_save: Option<crate::ConditionalSave>,
+    /// The Conditional Sync taken from; none for a Parent's values.
+    pub conditional_sync: Option<crate::ConditionalSync>,
 }
 
 /// Turn a Live Node into an Own Copy, from the Environment that runs it; a Volume
@@ -334,7 +369,8 @@ pub struct CopyNode {
     pub expect: Option<Revision>,
 }
 
-/// Keep a Branch after a Save and from closing when idle, or stop keeping it.
+/// Keep a Branch after it syncs into its Parent and from closing when idle, or stop
+/// keeping it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct KeepBranch {
@@ -416,22 +452,30 @@ pub struct BranchQuery {
     pub environment: EnvironmentRef,
 }
 
-/// A Branch: its Parent, what it uses live and from where, and what Update would stage.
+/// A Branch: its Parent, what it uses live and from where, and what it would sync
+/// into its Parent.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct BranchView {
     /// The Branch.
     pub environment: EnvironmentSummary,
     /// The Environment it was made from, in the same Project.
     pub parent: EnvironmentName,
-    /// Whether it outlives a Save and never closes for being idle.
+    /// Whether it stays after syncing into its Parent and never closes for being idle.
     pub kept: bool,
     /// What runs in each Own Copy before it first deploys.
     pub setup: Vec<SetupCommand>,
     /// The nodes it uses live.
     pub live: Vec<LiveNode>,
-    /// The Parent's deployed changes Update would stage, as `NODE[.path]`.
-    pub update: Vec<String>,
-    /// The pull request it is the PR Environment of; its Save waits for the merge.
+    /// How many changes a Sync into its Parent carries: the Sync view's rows
+    /// ticked by default.
+    pub to_parent: usize,
+    /// When it closes for sitting idle, in seconds since the Unix epoch: a week
+    /// after its latest Deployment. None while kept, never deployed, a Parent or
+    /// closing already.
+    #[ts(type = "number | null")]
+    pub closes_at: Option<i64>,
+    /// The pull request it is the PR Environment of; its Sync into a Destination
+    /// waits for the merge.
     pub pull_request: Option<crate::PullRequestRef>,
 }
 
@@ -462,7 +506,6 @@ pub struct Branched {
 pub(crate) struct Row {
     pub(crate) parent: EnvironmentId,
     pub(crate) kept: bool,
-    pub(crate) base: SavedEnvironmentIntent,
     setup: Vec<Setup>,
 }
 
@@ -512,7 +555,7 @@ pub(crate) fn ancestors(
 
 pub(crate) fn row(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<Row>, RpcError> {
     let rows = tx.query(
-        "SELECT parent_id, kept, base, setup FROM config_environment_branch WHERE environment_id = ?1",
+        "SELECT parent_id, kept, setup FROM config_environment_branch WHERE environment_id = ?1",
         &[id.as_str().into()],
     )?;
     let Some(row) = rows.first() else {
@@ -521,8 +564,7 @@ pub(crate) fn row(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<Row>, Rp
     Ok(Some(Row {
         parent: row.parse::<EnvironmentId>(0, "Branch")?,
         kept: row.int(1)? != 0,
-        base: row.intent(2, "Branch")?,
-        setup: row.json(3, "Branch")?,
+        setup: row.json(2, "Branch")?,
     }))
 }
 
@@ -545,7 +587,7 @@ pub(crate) fn suffix(tx: &mut dyn Tx, environment: &Environment) -> Result<Strin
     })
 }
 
-fn config(error: ConfigError) -> RpcError {
+pub(crate) fn config(error: ConfigError) -> RpcError {
     error::invalid(
         format!("{}: {}", error.path, error.message),
         json!({ "path": error.path }),

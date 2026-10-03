@@ -3,18 +3,17 @@
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 //! Branches through the Store's interface only, on SQLite and on Postgres (see
-//! `backend`): Own Copies and Live Nodes, Setup Commands, Update, Own Copy of a
-//! Live Node, Keep and fixing a failed Deployment. None of it needs a Server until
+//! `backend`): Own Copies and Live Nodes, Setup Commands, Own Copy of a Live Node,
+//! Keep and fixing a failed Deployment. None of it needs a Server until
 //! something deploys.
 
 use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, AddDomain, Admit, Branched, Change, ConfigStore, CopyNode, CreateBranch, CreateProject,
     CreateService, CreateVolume, Deploy, DeploymentId, DiffQuery, DomainName, DomainsQuery, Edit,
-    EnvironmentId, EnvironmentName, EnvironmentRef, KeepBranch, LiveNode, Mount, Move, MoveQuery,
-    OrganizationId, PickChoice, ProjectId, ProjectName, Removal, RunEvidence, RunnerId, Save,
-    ServiceLineageId, ServiceQuery, SettingPath, SetupCommand, Trusted, Update, VolumeId,
-    VolumeName,
+    EnvironmentId, EnvironmentName, EnvironmentRef, KeepBranch, LiveNode, Mount, OrganizationId,
+    ProjectId, ProjectName, RunEvidence, RunnerId, ServiceLineageId, ServiceQuery, SettingPath,
+    SetupCommand, Trusted, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -318,7 +317,7 @@ fn a_branch_of_an_undeployed_parent_copies_what_it_uses_with_secrets_and_credent
             command: "pnpm db:seed".into()
         }]
     );
-    assert!(made.branch.kept && made.branch.live.is_empty() && made.branch.update.is_empty());
+    assert!(made.branch.kept && made.branch.live.is_empty());
     assert_eq!(made.branch.parent.as_str(), "production");
     // Each copy has its Node Introduction: all three are created by the next Deploy.
     let diff = store
@@ -463,111 +462,20 @@ fn a_branch_uses_what_its_parent_runs_live_down_the_tree() {
 }
 
 #[test]
-fn update_stages_the_parents_deployed_changes_once_the_branch_runs_its_working_state() {
-    let (store, who) = shop();
-    deploy(&store, &who, "production", 1, true);
-    store
-        .write(&who, &branch("fix-web", "production", &["web"]))
-        .unwrap();
-    let update = |version: Option<String>| {
-        Move::Update(Update {
-            into: at("fix-web"),
-            picks: None,
-            version,
-        })
-    };
-    // Never deployed: it doesn't run its Working State yet.
-    assert_eq!(
-        code(store.write(&who, &update(None))),
-        RpcErrorCode::Conflict
-    );
-    deploy(&store, &who, "fix-web", 2, true);
-    assert_eq!(
-        store.write(&who, &update(None)).unwrap_err().message,
-        "Nothing new in production"
-    );
-
-    set(
-        &store,
-        &who,
-        "production",
-        &[("web.image", json!("web:2")), ("web.env.NEW", json!("1"))],
-    );
-    // Staged in the Parent isn't deployed: nothing to take yet.
-    let view = |store: &ConfigStore| {
-        store
-            .read(
-                &who,
-                &ployz_store::BranchQuery {
-                    environment: at("fix-web"),
-                },
-            )
-            .unwrap()
-    };
-    assert!(view(&store).update.is_empty());
-    deploy(&store, &who, "production", 3, true);
-    let mut pending = view(&store).update;
-    pending.sort();
-    assert_eq!(pending, ["web.env.NEW", "web.image"]);
-
-    let review = store
-        .read(
-            &who,
-            &MoveQuery::Update {
-                into: at("fix-web"),
-            },
-        )
-        .unwrap();
-    assert_eq!(review.from.name.as_str(), "production");
-    let stale = update(Some("0:0".into()));
-    assert_eq!(code(store.write(&who, &stale)), RpcErrorCode::Conflict);
-    let reviewed = update(Some(review.version));
-    assert_eq!(
-        store.write(&who, &reviewed).unwrap().into.name.as_str(),
-        "fix-web"
-    );
-    let web = values(&store, &who, "fix-web", "web");
-    assert_eq!(
-        (web["image"].clone(), web["env"]["NEW"].clone()),
-        (json!("web:2"), json!("1"))
-    );
-    // The base advanced: nothing left, and the change waits for a Deploy.
-    assert!(view(&store).update.is_empty());
-    assert_eq!(
-        code(store.write(&who, &update(None))),
-        RpcErrorCode::Conflict
-    );
-    deploy(&store, &who, "fix-web", 4, true);
-    assert_eq!(
-        store.write(&who, &update(None)).unwrap_err().message,
-        "Nothing new in production"
-    );
-
-    // Refused while a Deployment runs, and after one failed.
-    set(&store, &who, "fix-web", &[("web.replicas", json!(3))]);
-    deploy(&store, &who, "fix-web", 5, false);
-    assert!(
-        store
-            .write(&who, &update(None))
-            .unwrap_err()
-            .message
-            .contains("aren't deployed")
-    );
-}
-
-#[test]
 fn an_own_copy_of_a_live_node_brings_an_empty_copy_of_its_volume() {
     let (store, who) = shop();
     deploy(&store, &who, "production", 1, true);
     store
         .write(&who, &branch("fix-web", "production", &["web"]))
         .unwrap();
-    deploy(&store, &who, "fix-web", 2, true);
     let copy = CopyNode {
         environment: at("fix-web"),
         node: ServiceName::parse("db").unwrap(),
         expect: None,
     };
+    // Never deployed, it doesn't run its Working State yet.
+    assert_eq!(code(store.write(&who, &copy)), RpcErrorCode::Conflict);
+    deploy(&store, &who, "fix-web", 2, true);
     let copied: Branched = store.write(&who, &copy).unwrap();
     assert_eq!(texts(&copied.staged), ["db", "volumes.data"]);
     assert!(copied.branch.live.is_empty());
@@ -592,18 +500,6 @@ fn an_own_copy_of_a_live_node_brings_an_empty_copy_of_its_volume() {
     let input = deploy(&store, &who, "fix-web", 3, true);
     let web = snapshot(&input, &id_of(&store, &who, "fix-web", "web"));
     assert_eq!(web["resolvedEnv"]["DB_URL"], "db.internal");
-    assert!(
-        store
-            .read(
-                &who,
-                &ployz_store::BranchQuery {
-                    environment: at("fix-web")
-                }
-            )
-            .unwrap()
-            .update
-            .is_empty()
-    );
 }
 
 #[test]
@@ -682,257 +578,6 @@ fn keep_applies_at_once_and_generated_domains_follow_the_branch_name() {
     assert!(kept.branch.kept);
     assert!(kept.staged.is_empty());
     assert!(!store.write(&who, &keep(false)).unwrap().branch.kept);
-}
-
-fn save(picks: &[(&str, Option<&str>)], version: Option<&str>) -> Move {
-    Move::Save(Save {
-        from: at("fix-web"),
-        picks: (!picks.is_empty()).then(|| {
-            picks
-                .iter()
-                .map(|(row, choice)| ployz_store::MovePick {
-                    row: (*row).to_owned(),
-                    choice: choice.map(|choice| serde_json::from_value(json!(choice)).unwrap()),
-                })
-                .collect()
-        }),
-        version: version.map(str::to_owned),
-        ..Save::default()
-    })
-}
-
-#[test]
-fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
-    let (store, who) = shop();
-    deploy(&store, &who, "production", 1, true);
-    store
-        .write(&who, &branch("fix-web", "production", &["web"]))
-        .unwrap();
-    set(
-        &store,
-        &who,
-        "fix-web",
-        &[
-            ("web.image", json!("web:2")),
-            ("web.env.NEW", json!("1")),
-            ("web.env.API_KEY", json!({ "secret": "branch-secret" })),
-        ],
-    );
-    // The Parent changed the image too: saving it overwrites that.
-    set(
-        &store,
-        &who,
-        "production",
-        &[("web.env.OWN", json!("mine"))],
-    );
-    set(
-        &store,
-        &who,
-        "production",
-        &[("web.image", json!("web:hot"))],
-    );
-    let query = MoveQuery::Save {
-        from: at("fix-web"),
-        into: None,
-        when: None,
-    };
-    let review = store.read(&who, &query).unwrap();
-    assert_eq!(review.into.name.as_str(), "production");
-    let rows: Vec<(&str, bool)> = review
-        .rows
-        .iter()
-        .map(|row| (row.row.as_str(), row.conflict))
-        .collect();
-    assert_eq!(
-        rows,
-        [
-            ("web.env.API_KEY", false),
-            ("web.env.NEW", false),
-            ("web.image", true)
-        ]
-    );
-    let image = &review.rows[2];
-    assert_eq!(
-        (&image.from, &image.into),
-        (&json!("web:2"), &json!("web:hot"))
-    );
-    // A Branch's own new secret never moves by default: it wants a fresh value.
-    let token = &review.rows[0];
-    assert_eq!(token.from, json!({ "secret": true }));
-    let choice = token.choice.as_ref().unwrap();
-    assert!(choice.secret);
-    assert_eq!(json!(choice.default), json!("new"));
-    let refused = store.write(&who, &save(&[], None)).unwrap_err();
-    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
-    assert_eq!(refused.details["rows"], json!(["web.env.API_KEY"]));
-    assert_eq!(
-        code(store.write(&who, &save(&[("nope", None)], None))),
-        RpcErrorCode::NotFound
-    );
-    assert_eq!(
-        code(store.write(&who, &save(&[("web.image", Some("from"))], None))),
-        RpcErrorCode::InvalidArgument
-    );
-    // Only a Branch saves, into its own Parent.
-    let root = Move::Save(Save {
-        from: at("production"),
-        ..Save::default()
-    });
-    assert_eq!(
-        code(store.write(&who, &root)),
-        RpcErrorCode::InvalidArgument
-    );
-
-    // A review goes stale when the Parent moves on; nothing lands.
-    set(&store, &who, "production", &[("web.replicas", json!(2))]);
-    let stale = save(&[("web.image", None)], Some(&review.version));
-    assert_eq!(code(store.write(&who, &stale)), RpcErrorCode::Conflict);
-    assert_eq!(
-        values(&store, &who, "production", "web")["image"],
-        json!("web:hot")
-    );
-
-    // Sizing differs and stays: the review lists it apart from what moves.
-    let review = store.read(&who, &query).unwrap();
-    let differ: Vec<(&str, Value)> = review
-        .differ
-        .iter()
-        .map(|row| (row.row.as_str(), json!(row.why)))
-        .collect();
-    assert_eq!(differ, [("web.replicas", json!("sizing"))]);
-    // A choice not offered is refused in the words a pick uses.
-    let refused = store
-        .write(&who, &save(&[("web.env.NEW", Some("parent"))], None))
-        .unwrap_err();
-    assert!(
-        refused.message.contains("from") && !refused.message.contains("From"),
-        "{}",
-        refused.message
-    );
-    let version = review.version;
-    let saved = store
-        .write(
-            &who,
-            &save(
-                &[("web.image", None), ("web.env.NEW", None)],
-                Some(&version),
-            ),
-        )
-        .unwrap();
-    assert_eq!(texts(&saved.staged), ["web"]);
-    assert_eq!(saved.branch.unwrap().environment.name.as_str(), "fix-web");
-    let web = values(&store, &who, "production", "web");
-    assert_eq!(
-        (
-            &web["image"],
-            &web["env"]["NEW"],
-            &web["env"]["OWN"],
-            web["replicas"].clone()
-        ),
-        (&json!("web:2"), &json!("1"), &json!("mine"), json!(2))
-    );
-    // The unpicked secret stays in the Branch and still moves later.
-    let rows = store.read(&who, &query).unwrap().rows;
-    assert_eq!(
-        rows.iter().map(|row| row.row.as_str()).collect::<Vec<_>>(),
-        ["web.env.API_KEY"]
-    );
-    let input = deploy(&store, &who, "production", 2, true);
-    assert!(
-        snapshot(&input, &uuid(3))["resolvedEnv"]
-            .get("API_KEY")
-            .is_none()
-    );
-    // Picked `from`, the Branch's sealed value lands as it is.
-    store
-        .write(&who, &save(&[("web.env", Some("from"))], None))
-        .unwrap();
-    let input = deploy(&store, &who, "production", 3, true);
-    assert_eq!(
-        snapshot(&input, &uuid(3))["resolvedEnv"]["API_KEY"],
-        "branch-secret"
-    );
-    assert_eq!(
-        store.write(&who, &save(&[], None)).unwrap_err().message,
-        "Nothing to save into production"
-    );
-
-    // Picked `new` with a value, each variable lands with the Parent's own: a secret sealed.
-    set(
-        &store,
-        &who,
-        "fix-web",
-        &[
-            ("web.env.SESSION_KEY", json!({ "secret": "branch-key" })),
-            ("web.env.HOST", json!("branch-host")),
-        ],
-    );
-    let fresh = |row: &str, value: &str| ployz_store::MovePick {
-        row: row.to_owned(),
-        choice: Some(PickChoice::New(value.to_owned())),
-    };
-    let picked = |picks: Vec<ployz_store::MovePick>| {
-        Move::Save(Save {
-            from: at("fix-web"),
-            picks: Some(picks),
-            ..Save::default()
-        })
-    };
-    // A value is one variable's own.
-    assert_eq!(
-        code(store.write(&who, &picked(vec![fresh("web.env", "x")]))),
-        RpcErrorCode::InvalidArgument
-    );
-    let parent_before = values(&store, &who, "production", "web");
-    let branch_before = values(&store, &who, "fix-web", "web");
-    for row in ["web.env.SESSION_KEY", "web.env.HOST"] {
-        let error = store
-            .write(&who, &picked(vec![fresh(row, "private\0value")]))
-            .unwrap_err();
-        assert_eq!(error.code, RpcErrorCode::InvalidArgument);
-        assert!(error.message.contains("null characters"));
-        assert!(!error.message.contains("private"));
-        assert_eq!(values(&store, &who, "production", "web"), parent_before);
-        assert_eq!(values(&store, &who, "fix-web", "web"), branch_before);
-    }
-    store
-        .write(
-            &who,
-            &picked(vec![
-                fresh("web.env.SESSION_KEY", "prod-key"),
-                fresh("web.env.HOST", "${{ web.NEW }}-prod"),
-            ]),
-        )
-        .unwrap();
-    let input = deploy(&store, &who, "production", 5, true);
-    let env = &snapshot(&input, &uuid(3))["resolvedEnv"];
-    assert_eq!(
-        (&env["SESSION_KEY"], &env["HOST"]),
-        (&json!("prod-key"), &json!("1-prod"))
-    );
-    let stored = values(&store, &who, "production", "web");
-    assert_eq!(stored["env"]["SESSION_KEY"], json!({ "secret": true }));
-
-    // No Save from a Branch on its way off the Servers.
-    set(&store, &who, "fix-web", &[("web.env.LATE", json!("1"))]);
-    deploy(&store, &who, "fix-web", 4, true);
-    store
-        .write_trusted(
-            &who,
-            &Admit::Remove(Removal {
-                id: DeploymentId::parse(uuid(90)).unwrap(),
-                environment: at("fix-web"),
-                version: None,
-                accept_volume_loss: Vec::new(),
-                close: false,
-            }),
-            &Trusted::default(),
-        )
-        .unwrap();
-    assert_eq!(
-        code(store.write(&who, &save(&[], None))),
-        RpcErrorCode::Conflict
-    );
 }
 
 #[test]

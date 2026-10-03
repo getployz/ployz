@@ -54,16 +54,17 @@ impl fmt::Display for VariableKey {
 /// What a new value asks for.
 enum Input {
     Text(String),
-    /// `{"secret": true}`: keep the stored secret.
+    /// `{"secret": true}` or `{"secret": false}`: keep the stored secret.
     Keep,
     Seal(String),
 }
 
-/// A variable's value as reads show it: text with references by Service name, or
-/// `{"secret": true}`.
+/// A variable's value as reads show it: text with references by Service name,
+/// `{"secret": true}`, or `{"secret": false}` for a secret still without a value.
 pub(crate) fn shown(variable: &SavedVariableIntent, names: &BTreeMap<String, String>) -> Value {
     match &variable.value {
         SavedVariableValue::Secret { .. } => json!({ "secret": true }),
+        SavedVariableValue::SecretWithoutValue => json!({ "secret": false }),
         SavedVariableValue::Literal { value } => json!(render_variable_parts(
             &[ValuePart::Text {
                 value: value.clone()
@@ -297,7 +298,10 @@ pub(crate) fn validate_text(key: &VariableKey, text: &str) -> Result<(), RpcErro
 }
 
 fn secret(variable: &SavedVariableIntent) -> bool {
-    matches!(variable.value, SavedVariableValue::Secret { .. })
+    matches!(
+        variable.value,
+        SavedVariableValue::Secret { .. } | SavedVariableValue::SecretWithoutValue
+    )
 }
 
 /// Mark variable `key` exported or not. Returns whether Working State changed.
@@ -344,7 +348,7 @@ fn input(key: &VariableKey, value: Value) -> Result<Input, RpcError> {
     match value {
         Value::String(text) => Ok(Input::Text(text)),
         Value::Object(fields) if fields.len() == 1 => match fields.get("secret") {
-            Some(Value::Bool(true)) => Ok(Input::Keep),
+            Some(Value::Bool(_)) => Ok(Input::Keep),
             Some(Value::String(plaintext)) if !plaintext.is_empty() => {
                 Ok(Input::Seal(plaintext.clone()))
             }
@@ -382,13 +386,13 @@ fn invalid(key: &VariableKey, message: &str) -> RpcError {
 pub(crate) fn schema() -> Value {
     let secret = json!({
         "type": "object",
-        "properties": { "secret": { "const": true } },
+        "properties": { "secret": { "type": "boolean" } },
         "required": ["secret"],
         "additionalProperties": false,
     });
     json!({
         "title": "Variable",
-        "description": "An environment variable. Text may reference variables: ${{ KEY }} for this Service's, ${{ service.KEY }} for another's; $${{ is a literal ${{. A secret reads as {\"secret\": true}, and sending that back keeps it; set a new one with --secret or --from-env-file. {\"value\": …, \"exported\": true} marks one other Services are meant to reference.",
+        "description": "An environment variable. Text may reference variables: ${{ KEY }} for this Service's, ${{ service.KEY }} for another's; $${{ is a literal ${{. A secret reads as {\"secret\": true}, or {\"secret\": false} until it has a value, and sending that back keeps it; set a new one with --secret or --from-env-file. {\"value\": …, \"exported\": true} marks one other Services are meant to reference.",
         "oneOf": [
             { "type": "string" },
             secret,
@@ -440,6 +444,10 @@ pub(crate) fn resolve(
             // Without the key a secret still marks what references it.
             SavedVariableValue::Secret { encrypted_value } => ResolverValue::Secret {
                 value: open(encrypted_value.as_ref())?.unwrap_or_default(),
+            },
+            // Deploy refuses it, so a claim never meets one.
+            SavedVariableValue::SecretWithoutValue => ResolverValue::Secret {
+                value: open(None)?.unwrap_or_default(),
             },
         };
         producers.push(VariableProducer {

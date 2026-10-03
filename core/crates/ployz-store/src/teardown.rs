@@ -394,7 +394,7 @@ fn teardown_order<'a>(members: &'a [Member], default: &EnvironmentId) -> Vec<&'a
 }
 
 /// Refuse to remove the Default Environment, or one that has Branches: they use
-/// it live and update from it.
+/// it live and follow it.
 pub(crate) fn guard(tx: &mut dyn Tx, environment: &Environment) -> Result<(), RpcError> {
     let summary = &environment.summary;
     let default = tx.query(

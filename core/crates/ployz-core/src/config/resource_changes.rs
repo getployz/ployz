@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 
-use super::service_changes::at;
+use super::service_changes::{at, change};
 use super::*;
 
 /// Decode a node configuration according to its owner family.
@@ -34,7 +34,7 @@ pub fn compare_resource_settings(
     node_type: EnvironmentNodeType,
     current: Value,
     baseline: Option<Value>,
-) -> Result<Vec<ServiceSettingChange>, ConfigError> {
+) -> Result<Vec<(ServiceSettingChange, Option<At>)>, ConfigError> {
     if node_type == EnvironmentNodeType::Service {
         let current = parse_service_config(current)?;
         let baseline = baseline.map(parse_service_config).transpose()?;
@@ -46,10 +46,10 @@ pub fn compare_resource_settings(
         .transpose()?;
     let mut changes = Vec::new();
     if let Some(baseline) = &baseline {
-        for path in ["name", "storage"] {
+        for (path, row) in [("name", At::Name), ("storage", At::Storage)] {
             if at(&current, path) != at(baseline, path) {
-                changes.push(resource_change(
-                    path.into(),
+                changes.push(change(
+                    (path, Some(row)),
                     at(baseline, path).clone(),
                     at(&current, path).clone(),
                     true,
@@ -57,33 +57,12 @@ pub fn compare_resource_settings(
             }
         }
     } else {
-        changes.push(resource_change(
-            "node".into(),
+        changes.push(change(
+            ("node", Some(At::Node)),
             Value::Null,
             at(&current, "name").clone(),
             true,
         ));
     }
     Ok(changes)
-}
-
-fn resource_change(
-    path: String,
-    before: Value,
-    after: Value,
-    can_restore: bool,
-) -> ServiceSettingChange {
-    ServiceSettingChange {
-        kind: if before.is_null() {
-            ChangeKind::Add
-        } else if after.is_null() {
-            ChangeKind::Remove
-        } else {
-            ChangeKind::Update
-        },
-        path,
-        before,
-        after,
-        can_restore,
-    }
 }

@@ -11,8 +11,6 @@ const NEW_BRANCH_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/new-branch";
 const LIVE_NODE_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/live/$lineageId";
-const BRANCH_REVIEW_ROUTE_ID =
-  "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/review";
 const PR_PLAN_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/pr-environments/$repositoryId";
 const ENVIRONMENT_RESOURCE_ROUTE_ID =
@@ -33,8 +31,6 @@ export type CanvasInspectorSelection = {
   deploymentList: boolean;
   /** The New branch panel is open over the Parent's canvas, opened on `focus` (a lineage) if anything. */
   newBranch: { focus: string | null } | null;
-  /** A Branch's review page is open over its canvas. */
-  branchReview: boolean;
   /** A repository's PR Environments plan page is open over its start-from Environment's canvas. */
   prPlan: { repositoryId: number } | null;
   isInspectorOpen: boolean;
@@ -72,10 +68,6 @@ export function useCanvasInspectorSelection(): CanvasInspectorSelection {
     from: LIVE_NODE_ROUTE_ID,
     shouldThrow: false,
   });
-  const branchReviewMatch = useMatch({
-    from: BRANCH_REVIEW_ROUTE_ID,
-    shouldThrow: false,
-  });
   const prPlanMatch = useMatch({
     from: PR_PLAN_ROUTE_ID,
     shouldThrow: false,
@@ -94,7 +86,6 @@ export function useCanvasInspectorSelection(): CanvasInspectorSelection {
     deploymentReturnTo: deploymentMatch?.search.returnTo ?? null,
     deploymentList: deploymentListMatch != null,
     newBranch: newBranchMatch ? { focus: newBranchMatch.search.focus ?? null } : null,
-    branchReview: branchReviewMatch != null,
     prPlan: prPlanMatch ? { repositoryId: Number(prPlanMatch.params.repositoryId) } : null,
     isInspectorOpen: selectedNodeId != null,
   };

@@ -1,9 +1,9 @@
-import type { DomainRow, ServiceListing } from "@ployz/sdk";
+import type { DomainRow, RowId, ServiceListing } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { RuntimeContainerRecord } from "#/modules/runtime/runtime.collection";
 import { deployChip, nodeIssues, publicDomain, runtimeLine, stagedSurface, type RuntimeLens } from "./node-status";
 
-const service: ServiceListing = { source: "image", change: null, template: null, id: "web", name: "web", private_dns: "web" };
+const service: ServiceListing = { source: "image", change: null, template: null, id: "web", row: "web:node" as RowId, name: "web", private_dns: "web" };
 const container = (state: string, health?: string): RuntimeContainerRecord =>
   ({ id: state, displayName: "web", machineId: "m", namespace: "n", kind: "service", runtime: health ? { state, health } : { state } });
 const runtime = (...containers: RuntimeContainerRecord[]) => ({ containers });

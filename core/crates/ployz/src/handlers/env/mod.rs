@@ -1,9 +1,10 @@
 //! `ployz env`: Environments in the Config Store, and Branches of them. `ls`,
 //! `default` and `rm` manage them; `rm` is the one teardown path. A Branch
 //! copies the Services and Volumes picked (and what they use that its Parent
-//! doesn't run) and uses the rest live; `save` stages its changes in its Parent,
-//! `update` stages what its Parent deployed since, `copy` turns a Live Node into
-//! its own copy, and `keep` keeps it after a Save.
+//! doesn't run) and uses the rest live; `sync` stages one Environment's changes in
+//! another, `copy` turns a Live Node into its own copy, and `keep` keeps it after
+//! syncing into its Parent.
+//! `never-sync` marks settings an Environment keeps as its own.
 
 mod branch;
 mod pr;
@@ -12,7 +13,7 @@ use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 use ployz_store::{
     CreateEnvironment, DeploymentSummary, EnvironmentId, EnvironmentName, EnvironmentRef,
-    EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView, RemoveEnvironment,
+    EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView, NeverSync, RemoveEnvironment,
     SetDefaultEnvironment,
 };
 use serde_json::json;
@@ -24,7 +25,6 @@ use super::teardown::{Inventory, confirmed, inventory, remove_all};
 use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, repeated, switch, value};
 use crate::output::say;
-use branch::moving;
 
 pub(crate) fn command() -> Command {
     Command::new("env")
@@ -110,45 +110,97 @@ pub(crate) fn command() -> Command {
                         .value_name("SERVICE=COMMAND")
                         .help("Run COMMAND in a copied Service before it first deploys"),
                 )
-                .arg(switch("keep", None).help("Keep it after a Save"))
+                .arg(switch("keep", None).help("Keep it after syncing into its Parent"))
                 .arg(value("fix", None).value_name("DEPLOYMENT").help(
                     "Fix this failed Deployment of the Parent: copies what it failed to apply",
                 )),
         )
         .subcommand(
-            moving(
-                Command::new("save")
-                    .about("Stage the Branch's changes in its Parent")
+            store::scoped(
+                Command::new("sync")
+                    .about("Stage one Environment's changes in another of the Project")
                     .long_about(
-                        "Stage the Branch's changes in its Parent's Working State; nothing is \
-                         published or deployed, and nothing in the Parent is deleted. --plan \
-                         lists them and the version to pass back. A secret the Branch added \
-                         moves only when picked `=from`. From a PR Environment it is a \
-                         Conditional Save instead: the changes go live in the Destination \
-                         with the pull request's merge; --withdraw withdraws it. --take ID \
-                         stages a merged pull request's value its Conditional Save left \
-                         beside the Environment's own edit (`ployz diff` lists them), even \
-                         once its PR Environment is gone.",
+                        "Stage the Environment's changes in another Environment of the \
+                         Project (--to), or another's in it (--from), as the receiver's \
+                         changes to deploy: the sender's Working State, deployed or not. \
+                         Nothing is deleted, published or deployed, and sizing, domains, \
+                         generated addresses, the Git branch and Volume data stay each \
+                         Environment's own. --plan lists the changes and the version to pass \
+                         back. A change left out is offered again next time, as is one the \
+                         receiver discards before it deploys. A change the receiver made too \
+                         since the two last shared is overwritten. Unless a Branch syncs into \
+                         its own Parent, what it only got from its Parent is left out unless \
+                         picked. A Branch follows its Parent on its own: what the Parent \
+                         deploys is staged in it, but where the Branch changed a setting \
+                         too, or discarded the Parent's change, the Parent's value is a \
+                         hint `ployz diff` lists; --take PARENT stages it. With --at-merge, \
+                         from a PR Environment into one of its Destinations, it is a \
+                         Conditional Sync: the changes go live there with the pull request's \
+                         merge. A secret the receiver lacks arrives without its value unless \
+                         --value gives it one. --undo SYNC undoes a Sync while what it staged \
+                         is undeployed and unchanged, or withdraws its Conditional Sync. A \
+                         merged pull request's value its Conditional Sync left beside the \
+                         Destination's own edit is a hint too; --take ID stages it, even \
+                         once its PR Environment is gone. Example: ployz env sync --to \
+                         --env fix-api --skip api.env.DEBUG --close",
                     ),
             )
-            .arg(value("into", None).value_name("ENV").help(
-                "From a PR Environment: the Destination, when several deploy its target branch",
-            ))
             .arg(
-                switch("withdraw", None)
-                    .help("From a PR Environment: withdraw its Conditional Save")
-                    .conflicts_with_all(["only", "plan", "version", "take"]),
+                value("to", None)
+                    .value_name("ENV")
+                    .num_args(0..=1)
+                    .required_unless_present_any(["from", "take", "undo"])
+                    .conflicts_with("from")
+                    .help("Sync into ENV; with no value, the Branch's Parent, or a PR Environment's only Destination"),
+            )
+            .arg(
+                value("from", None)
+                    .value_name("ENV")
+                    .help("Sync ENV's changes into this Environment"),
+            )
+            .arg(
+                repeated("only").value_name("ROW").help(
+                    "Sync only this row (web.image), or every row under a prefix (web, web.env); repeatable",
+                ),
+            )
+            .arg(
+                repeated("skip")
+                    .value_name("ROW")
+                    .help("Leave out this row, or every row under a prefix; repeatable"),
+            )
+            .arg(
+                repeated("value").value_name("ROW").help(
+                    "Give a secret the receiver lacks its value, read as one line of stdin per --value, in order; repeatable",
+                ),
+            )
+            .arg(
+                value("version", None)
+                    .help("Refuse unless this is still the version --plan showed"),
+            )
+            .arg(switch("plan", None).help("List the changes and the version; sync nothing"))
+            .arg(
+                switch("close", None)
+                    .help("Close the Branch once its changes landed in its Parent; refused for a kept Branch and for any other --to")
+                    .conflicts_with("plan"),
+            )
+            .arg(
+                switch("at-merge", None)
+                    .help("Go live in --to with the pull request's merge; the default from a PR Environment into a Destination")
+                    .conflicts_with("close"),
+            )
+            .arg(
+                value("undo", None)
+                    .value_name("SYNC")
+                    .help("Undo the Sync a sync printed, or withdraw its Conditional Sync")
+                    .conflicts_with_all(["from", "only", "skip", "value", "plan", "version", "close", "at-merge"]),
             )
             .arg(
                 value("take", None)
                     .value_name("ID")
-                    .help("Stage the hints (or --only ROW) of this Conditional Save in --env")
-                    .conflicts_with_all(["plan", "version", "into"]),
+                    .help("Stage the hints `ployz diff` lists from ID (the Parent, or a Conditional Sync) in --env; --only picks them")
+                    .conflicts_with_all(["to", "from", "skip", "value", "plan", "close", "undo", "at-merge"]),
             ),
         )
-        .subcommand(moving(Command::new("update").about(
-            "Stage what the Branch's Parent deployed since, in the Branch",
-        )))
         .subcommand(
             store::scoped(
                 Command::new("copy").about(
@@ -159,8 +211,32 @@ pub(crate) fn command() -> Command {
             .arg(expect()),
         )
         .subcommand(
-            store::scoped(Command::new("keep").about("Keep the Branch after a Save and when idle"))
-                .arg(switch("off", None).help("Stop keeping it")),
+            store::scoped(
+                Command::new("keep")
+                    .about("Keep the Branch after syncing into its Parent and when idle"),
+            )
+            .arg(switch("off", None).help("Stop keeping it")),
+        )
+        .subcommand(
+            store::scoped(
+                Command::new("never-sync")
+                    .about("Mark settings Never sync: Sync never carries them into or out of the Environment")
+                    .long_about(
+                        "Mark settings of the Environment Never sync: a Sync never carries \
+                         them from it and never changes them in it. A Branch of the \
+                         Environment still gets its value; the mark doesn't carry into \
+                         Branches. --off syncs them again. Example: ployz env never-sync \
+                         web.env.APP_ENV web.env.STRIPE_PUBLISHABLE_KEY --env staging",
+                    ),
+            )
+            .arg(
+                positional("path", true)
+                    .num_args(1..)
+                    .action(clap::ArgAction::Append)
+                    .value_name("ROW")
+                    .help("A row as this Environment names it (web.env.KEY), a prefix for every row under it (web.env), or its RowId"),
+            )
+            .arg(switch("off", None).help("Sync them again")),
         )
         .subcommand(deploy::following(
             base(
@@ -236,10 +312,10 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
         "setup" => setup,
         "rm" => rm,
         "branch" => branch::branch,
-        "save" => branch::save,
-        "update" => branch::update,
+        "sync" => branch::sync,
         "copy" => branch::copy,
         "keep" => branch::keep,
+        "never-sync" => never_sync,
         "shutdown" => pr::shutdown,
         "pr" => pr::pr,
         _ => return None,
@@ -422,4 +498,36 @@ fn node_names(names: &[String]) -> Result<Vec<ployz_store::NodeName>, Error> {
         .iter()
         .map(|name| ployz_store::NodeName::parse(name.as_str()))
         .collect::<Result<_, _>>()?)
+}
+
+/// `env never-sync`: mark rows Never sync, or with `--off` sync them again. The Store
+/// resolves the names in this Environment.
+fn never_sync(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let asked = super::string_values(matches, "path");
+    let environment = store::environment(matches)?;
+    let off = matches.get_flag("off");
+    let store = store(root)?;
+    let request = NeverSync {
+        environment,
+        rows: asked.iter().map(|asked| asked.as_str().into()).collect(),
+        off,
+    };
+    let marked = store.write(&request)?;
+    crate::output::finish(&marked, || {
+        let paths = super::joined(&asked);
+        let environment = &marked.environment;
+        match request.off {
+            true => say!(
+                "Syncing {paths} again in {}/{}.",
+                environment.project,
+                environment.name
+            ),
+            false => say!(
+                "Never syncing {paths} in {}/{}.",
+                environment.project,
+                environment.name
+            ),
+        }
+    })
 }

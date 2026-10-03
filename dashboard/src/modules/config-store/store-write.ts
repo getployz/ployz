@@ -20,7 +20,7 @@ export type StoreEdit = {
 type Carried = { views?: CommittedViews };
 
 /** Commands that read or write an Environment besides the one they name. */
-const SPANS: ReadonlySet<ConfigCommand["command"]> = new Set(["move", "create_branch", "copy_node"]);
+const SPANS: ReadonlySet<ConfigCommand["command"]> = new Set(["sync", "undo_sync", "take", "create_branch", "copy_node"]);
 
 /** The Environment revision a write produced; a Batch's is its last command's. */
 function writtenRevision(written: ConfigWritten): number | null {
@@ -93,7 +93,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
           toast.error(expects && error instanceof StoreRefused && error.code === "conflict" ? CONFLICT
             : error instanceof TypeError ? UNREACHABLE : error.message);
         }
-        // What the write was refused against shows: the rollback, or a Move's fresh review.
+        // What the write was refused against shows: the rollback, or a Sync's fresh review.
         await refresh();
       },
     });
@@ -115,7 +115,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
     /**
      * Any other command: shown at once in the cached views (`applyOptimistic`), saved in the background. One naming an
      * Environment runs after that Environment's pending edits; one that reads or writes another Environment too (a
-     * Move, a new Branch, a copied node: often the implied Parent) runs after every pending edit. It persists once the
+     * Sync, a new Branch, a copied node: often the implied Parent) runs after every pending edit. It persists once the
      * views it may move have refetched (its Environment's; every view for one spanning several or naming none),
      * which also replaces the guess. A refusal toasts here, unless its code
      * is one the caller `handles`, rolls the views back, and rejects with `StoreRefused`. UI that awaits it (a Deploy,
@@ -138,9 +138,10 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
       };
       // Only the edits made before it: an edit queued behind it in its own Environment must not be waited for.
       // ponytail: waits for edits in every Environment, not just the ones it touches; edits settle in a round trip.
-      const preceding = SPANS.has(command.command) ? [...unsettled] : [];
+      const spans = SPANS.has(command.command);
+      const preceding = spans ? [...unsettled] : [];
       const work = async () => { await Promise.all(preceding); return save(); };
-      const refreshed = environment === null || SPANS.has(command.command) ? null : key;
+      const refreshed = environment === null || spans ? null : key;
       const promise = queued(key, ["store-command", organizationSlug, key], [], work,
         () => refetchAfterWrite(queryClient, organizationSlug, refreshed, carried.views), expects, handles);
       if (edits) trackEdit(promise);

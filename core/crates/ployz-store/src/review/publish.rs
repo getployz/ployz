@@ -4,10 +4,12 @@
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent,
-    ServiceConfig, VolumeAttachment, canonicalize_environment_intent, compare_service_settings,
-    parse_environment_intent, restore_environment_node,
+    At, EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent,
+    ServiceConfig, Setting, VolumeAttachment, canonicalize_environment_intent,
+    compare_service_settings, parse_environment_intent, restore_environment_node,
 };
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -16,7 +18,7 @@ use crate::error;
 use crate::id::{Revision, VolumeName};
 use crate::review::{self, Review};
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
-use crate::settings::{NodeName, SettingPath, Target, VolumeField};
+use crate::settings::{NodeName, ServiceSetting, SettingPath, Target, VolumeField};
 use crate::storage::Tx;
 use crate::{Actor, Trusted, deployment};
 
@@ -51,6 +53,8 @@ pub struct Published {
 }
 
 /// Undo staged changes: all of them, one node's, or one Setting, variable or mount's.
+/// It names a [`SettingPath`] rather than a `RowId`, as the diff it undoes does:
+/// it is a whole-setting action, not one of a Sync view's rows.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Discard {
@@ -139,6 +143,11 @@ pub(crate) fn discard(
     if canonicalize_environment_intent(working.clone())
         != canonicalize_environment_intent(environment.working.clone())
     {
+        crate::branch::rewind(
+            tx,
+            &environment.summary.id,
+            (&environment.working, &working),
+        )?;
         environment.working = working;
         scope::save_working_from(tx, &mut environment, Some(&runs))?;
     }
@@ -179,7 +188,15 @@ fn restore(
             }),
     };
     let (node_type, id) = node?;
-    let part = path.target();
+    // A part of the source discards with it: the source is one change row.
+    let part = path.target().map(|part| {
+        if let Target::Setting(setting) = part {
+            Cow::Owned(setting.covering())
+        } else {
+            Cow::Borrowed(part)
+        }
+    });
+    let part = part.as_deref();
     let field = path.volume_field();
     let holds = |intent: &SavedEnvironmentIntent| match node_type {
         EnvironmentNodeType::Service => intent.services.iter().any(|service| service.id == id),
@@ -218,7 +235,7 @@ fn restore(
             };
             saved.is_some_and(|saved| value(saved) != value(&baseline))
         }),
-        (Some(Target::Setting(setting)), Some(saved)) => {
+        (Some(part @ (Target::Setting(_) | Target::Source)), Some(saved)) => {
             let config = |intent: &SavedEnvironmentIntent| {
                 intent
                     .services
@@ -231,7 +248,14 @@ fn restore(
                 .is_some_and(|(saved, head)| {
                     compare_service_settings(&saved, Some(&head))
                         .iter()
-                        .any(|row| row.path == setting.field() && row.can_restore)
+                        .any(|(row, at)| {
+                            row.can_restore
+                                && matches!(at, Some(At::Setting(changed))
+                                if match ServiceSetting::of(*changed) {
+                                    Some(setting) => Target::Setting(setting) == *part,
+                                    None => *changed == Setting::Source && *part == Target::Source,
+                                })
+                        })
                 })
         }
         (Some(part), Some(saved)) => part_of(saved, &id, part) != part_of(&baseline, &id, part),
@@ -278,6 +302,7 @@ fn restore_node(
     let field = match part {
         None => None,
         Some(Target::Setting(setting)) => Some(setting.field()),
+        Some(Target::Source) => Some("source"),
         Some(part) => {
             let mut restored = current.clone();
             let volume = mounted(current, baseline, part);
@@ -342,7 +367,7 @@ fn restore_part(
                 service.volume_attachments.push(mount.clone());
             }
         }
-        Target::Setting(_) => {}
+        Target::Setting(_) | Target::Source => {}
     }
     Ok(())
 }
@@ -375,7 +400,7 @@ fn part_of<'a>(intent: &'a SavedEnvironmentIntent, id: &str, part: &Target) -> O
                 .map(Part::Mount)
         }
         // A Setting compares through core's rows (see `setting_follows`).
-        Target::Setting(_) => None,
+        Target::Setting(_) | Target::Source => None,
     }
 }
 

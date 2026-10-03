@@ -1,7 +1,8 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type {
   BranchView, BuildOrderView, ConfigCommand, ConfigQuery, DeploymentView, DiffView, DomainsView, EnvironmentRef, EnvironmentsView,
-  EnvironmentView, NodeChange, PrPlansView, ProjectsView, ServiceListing, ServicesView, VolumeListing, VolumesView,
+  EnvironmentView, NodeChange, PrPlansView, ProjectsView, RowId, ServiceListing, ServicesView, SyncView,
+  VolumeListing, VolumesView,
 } from "@ployz/sdk";
 import type { StoreResult } from "./store.contract";
 import { environmentKey, queryOf, storeViewPrefix } from "./store-view.queries";
@@ -9,7 +10,7 @@ import { environmentKey, queryOf, storeViewPrefix } from "./store-view.queries";
 /**
  * Shows a Store command in the cached views at once, as the Store will answer once it commits: what the user sees while
  * it saves. The writer's refetch after the commit (or its refusal, which is the rollback) replaces the guess. It guesses
- * only what the command says outright; anything the Store derives (a rename's diff rows, a Move's changes) waits.
+ * only what the command says outright; anything the Store derives (a rename's diff rows, a Sync's changes) waits.
  */
 export async function applyOptimistic(queryClient: QueryClient, organizationSlug: string, command: ConfigCommand) {
   const cached = (kind: ConfigQuery["query"], environment: EnvironmentRef | null) =>
@@ -29,11 +30,11 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
   const stage = (environment: EnvironmentRef, service: string, row: NodeChange["settings"][number]) =>
     views<DiffView>("diff", environment, (view) => {
       const node = view.changes.find((change) => change.type === "service" && change.name === service);
-      const id = node?.id ?? listed(environment).find((listing) => listing.name === service)?.id;
-      if (id === undefined) return view;
-      const changes: NodeChange[] = node
+      const listing = node ? null : listed(environment).find((one) => one.name === service);
+      const changes: NodeChange[] | null = node
         ? view.changes.map((change) => change === node ? { ...change, settings: [...change.settings.filter((other) => other.path !== row.path), row] } : change)
-        : [...view.changes, { name: service, id, type: "service", lifecycle: "update", comparison: null, data: null, settings: [row] }];
+        : listing ? [...view.changes, { name: service, id: listing.id, row: listing.row, type: "service", lifecycle: "update", comparison: null, data: null, settings: [row] }] : null;
+      if (!changes) return view;
       // The count and whether it's published are the Store's to say: they come with the write's answer.
       return { ...view, changes };
     });
@@ -50,8 +51,9 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       return;
     case "create_service":
     case "create_git_service": {
+      // SAFETY: a new Service's id is its lineage, and a node's RowId is `{lineage}:node`.
       const service: ServiceListing = {
-        id: command.id, name: command.name, private_dns: command.name, change: "create",
+        id: command.id, row: `${command.id}:node` as RowId, name: command.name, private_dns: command.name, change: "create",
         source: command.command === "create_git_service" ? "git" : command.image === null ? "empty" : "image",
         template: command.command === "create_service" ? command.template ?? null : null,
       };
@@ -123,8 +125,43 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       });
       return;
     }
+    case "never_sync": {
+      // At once: a mark changes what Sync offers, not Working State.
+      const rows = new Set(command.rows);
+      await views<EnvironmentView>("environment", command.environment, (view) => {
+        const kept = view.never_synced?.filter((row) => !rows.has(row)) ?? [];
+        // SAFETY: the dashboard names a row only by the RowId a read gave.
+        return { ...view, never_synced: command.off ? kept : [...kept, ...command.rows as RowId[]] };
+      });
+      // A Sync from or into it offers a newly marked row no more; an unmarked row loses this Environment's mark, and
+      // with no mark left, waits for the Store to offer it again.
+      // ponytail: a Parent's mark doesn't keep a row from its own direct Branch; that Sync shows it marked until the Store answers.
+      const { project, environment: name } = command.environment;
+      if (!name) return;
+      const here = (side: SyncView["from"]) => side.project === project && side.name === name;
+      await views<SyncView>("sync", null, (view) => {
+        if (!here(view.from) && !here(view.into)) return view;
+        if (command.off) {
+          return { ...view, never_synced: view.never_synced.flatMap((entry) => {
+            const marks = entry.marks.filter((mark) => mark.environment !== name || !rows.has(mark.row));
+            return marks.length ? [{ ...entry, marks }] : [];
+          }) };
+        }
+        const marking = view.rows.filter((row) => rows.has(row.row));
+        return {
+          ...view,
+          rows: view.rows.filter((row) => !rows.has(row.row)),
+          never_synced: [
+            ...view.never_synced,
+            ...marking.map(({ row, node, kind, name: at }) => ({ row, node, kind, name: at, marks: [{ environment: name, row }] })),
+          ],
+        };
+      });
+      return;
+    }
     case "keep_branch":
-      await views<BranchView>("branch", command.environment, (view) => ({ ...view, kept: command.kept }));
+      // Kept, it never closes for sitting idle; when it would again is the Store's to say.
+      await views<BranchView>("branch", command.environment, (view) => ({ ...view, kept: command.kept, closes_at: command.kept ? null : view.closes_at }));
       return;
     case "set_branch_setup":
       await views<EnvironmentsView>("environments", null, (view) => view.project.name !== command.environment.project ? view : {
@@ -152,7 +189,7 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
         domain,
       ] }));
       const path = command.hostname === null ? `${service}.managedHostnames` : `${service}.routes.${command.hostname}`;
-      await stage(command.environment, service, { path, kind: "add", before: null, after: command.hostname === null ? service : { hostname: command.hostname }, canRestore: false });
+      await stage(command.environment, service, { path, kind: "add", before: null, after: command.hostname === null ? service : { hostname: command.hostname }, canRestore: false, row: null });
       return;
     }
     case "set_generated_domain": {
@@ -163,7 +200,7 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
           ...domain, prefix, port: port === undefined ? domain.port : port,
           hostname: domain.hostname === null ? null : `${prefix}${domain.hostname.slice(domain.prefix.length)}`,
         }) }));
-      await stage(command.environment, service, { path: `${service}.managedHostnames`, kind: "update", before: null, after: prefix, canRestore: false });
+      await stage(command.environment, service, { path: `${service}.managedHostnames`, kind: "update", before: null, after: prefix, canRestore: false, row: null });
       return;
     }
     case "rename_project":

@@ -522,6 +522,11 @@ fn wrong_paths_and_values_name_the_fix() {
             RpcErrorCode::InvalidArgument,
         ),
         (set("web.image", json!(7)), RpcErrorCode::InvalidArgument),
+        // The source is set by its image or repository; only Discard takes it whole.
+        (
+            set("web.source", json!({ "type": "image", "image": "nginx" })),
+            RpcErrorCode::InvalidArgument,
+        ),
         (
             set("web.privateDns", json!("Not a name")),
             RpcErrorCode::InvalidArgument,

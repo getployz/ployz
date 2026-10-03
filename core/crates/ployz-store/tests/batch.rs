@@ -69,6 +69,7 @@ fn database(env: Value) -> Batch {
                 }],
             }),
         ],
+        expect: None,
     }
 }
 
@@ -153,5 +154,15 @@ fn a_batch_writes_one_environment_and_refuses_a_command_naming_another() {
     }
     let error = store.write(&who, &batch).unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert!(services(&store, &who).is_empty());
+}
+
+#[test]
+fn a_batch_is_refused_whole_unless_working_state_is_where_it_expects() {
+    let (store, who) = shop();
+    let mut batch = database(json!({}));
+    batch.expect = Some(ployz_store::Revision(9));
+    let error = store.write(&who, &batch).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
     assert!(services(&store, &who).is_empty());
 }

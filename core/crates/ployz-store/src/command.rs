@@ -207,11 +207,22 @@ commands! {
     /// Make a Branch of an Environment.
     CreateBranch(crate::CreateBranch) -> Branch(crate::Branched)
         keyed [c.id.as_str()] => crate::branch::create_branch(tx, who, c);
-    /// Move changes between a Branch and its Parent: Save or Update.
-    Move(crate::Move) -> Moved(crate::Moved) as *
-        => crate::branch::move_changes(tx, who, sealing, c);
+    /// Sync one Environment's changes into another of its Project: staged there,
+    /// never deleting or deploying.
+    Sync(crate::SyncChanges) -> Synced(crate::Synced) => crate::branch::sync(tx, who, sealing, c);
+    /// Undo a Sync while what it staged is undeployed and unchanged, or withdraw the
+    /// Conditional Sync it made.
+    UndoSync(crate::UndoSync) -> Undone(crate::Undone) => crate::branch::undo(tx, who, c);
+    /// Stage the hints a Conditional Sync or a Parent left in an Environment.
+    Take(crate::Take) -> Taken(crate::Taken) => crate::branch::take(tx, who, c);
+    /// Hold a Destination's value for a secret a pull request brings it by name.
+    HoldSecret(crate::HoldSecret) -> SecretHeld(crate::SecretHeld)
+        => crate::conditional_sync::hold(tx, who, sealing, c);
     /// Turn a Branch's Live Node into an Own Copy.
     CopyNode(crate::CopyNode) -> Branch(crate::Branched) => crate::branch::copy_node(tx, who, c);
+    /// Mark rows of an Environment Never sync, or sync them again.
+    NeverSync(crate::NeverSync) -> NeverSynced(crate::NeverSynced)
+        => crate::branch::never_sync(tx, who, c);
     /// Keep a Branch, or stop keeping it.
     KeepBranch(crate::KeepBranch) -> Branch(crate::Branched)
         => crate::branch::keep_branch(tx, who, c);
@@ -236,8 +247,9 @@ commands! {
     /// Change a Project's PR plan for one repository.
     SetPrPlan(crate::SetPrPlan) -> PrPlans(crate::PrPlansView)
         => crate::pull_request::set_plan(tx, who, c);
-    /// Creates and edits applied together, all or none.
+    /// Writes of one Environment applied together, all or none.
     Batch(Batch) -> Batch(Batched) => {
+        crate::scope::lock(tx, who, &c.environment)?.expect(c.expect)?;
         let mut at = Call { tx, who, sealing, trusted };
         c.commands
             .iter()
@@ -247,10 +259,10 @@ commands! {
     };
 }
 
-/// Creates and edits of one Environment in one transaction, in order: all apply or
-/// none do. Each create keeps its own caller-minted ID, so a retry replays it; an
-/// edit applies again. Cloud gathers no trusted evidence inside a Batch, so an edit
-/// that needs some (a repository or branch) is refused.
+/// Writes of one Environment in one transaction, in order: all apply or none do.
+/// Each create keeps its own caller-minted ID, so a retry replays it; the rest apply
+/// again. Cloud gathers no trusted evidence
+/// inside a Batch, so an edit that needs some (a repository or branch) is refused.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Batch {
@@ -259,6 +271,11 @@ pub struct Batch {
     pub environment: EnvironmentRef,
     /// The commands, applied in order.
     pub commands: Vec<BatchCommand>,
+    /// Refuse with `conflict` unless Working State is at this revision before the
+    /// first command.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub expect: Option<crate::Revision>,
 }
 
 /// A command a [`Batch`] may hold.
@@ -271,17 +288,24 @@ pub enum BatchCommand {
     CreateVolume(CreateVolume),
     /// See [`Command::Edit`].
     Edit(Edit),
+    /// See [`Command::Discard`].
+    Discard(Discard),
+    /// See [`Command::NeverSync`].
+    NeverSync(crate::NeverSync),
 }
 
 impl BatchCommand {
     /// Apply this command to the Batch's `environment`.
     fn apply(&self, environment: &EnvironmentRef, at: &mut Call<'_>) -> Result<Written, RpcError> {
+        let unnamed = EnvironmentRef::default();
         let named = match self {
             Self::CreateService(create) => &create.environment,
             Self::CreateVolume(create) => &create.environment,
             Self::Edit(edit) => &edit.environment,
+            Self::Discard(discard) => &discard.environment,
+            Self::NeverSync(mark) => &mark.environment,
         };
-        if named != environment && *named != EnvironmentRef::default() {
+        if named != environment && *named != unnamed {
             return Err(error::invalid(
                 "Every command in a Batch writes the Batch's Environment",
                 json!({ "environment": named }),
@@ -306,6 +330,18 @@ impl BatchCommand {
             }
             .apply(at)
             .map(Written::Edited),
+            Self::Discard(discard) => Discard {
+                environment: environment.clone(),
+                ..discard.clone()
+            }
+            .apply(at)
+            .map(Written::Discarded),
+            Self::NeverSync(mark) => crate::NeverSync {
+                environment: environment.clone(),
+                ..mark.clone()
+            }
+            .apply(at)
+            .map(Written::NeverSynced),
         }
     }
 }
@@ -340,7 +376,11 @@ impl Written {
             Self::Discarded(discarded) => Some(&discarded.environment.id),
             Self::Deployment(deployment) => Some(&deployment.environment_id),
             Self::Domain(staged) => Some(&staged.environment.id),
-            Self::Moved(moved) => Some(&moved.into.id),
+            Self::Taken(taken) => Some(&taken.into.id),
+            Self::SecretHeld(held) => Some(&held.environment.id),
+            Self::Synced(synced) => Some(&synced.into.id),
+            Self::Undone(undone) => Some(&undone.into.id),
+            Self::NeverSynced(marked) => Some(&marked.environment.id),
             Self::Batch(batched) => batched.results.last().and_then(Self::environment),
             // A new Project or Branch has no pull request yet; the rest write no
             // Environment's config, or delete it.
@@ -404,8 +444,16 @@ pub enum Written {
     Branch(crate::Branched),
     /// The Build Order was set; it applies to the next build.
     BuildOrder(crate::BuildOrderView),
-    /// Changes moved between a Branch and its Parent.
-    Moved(Box<crate::Moved>),
+    /// Changes synced into another Environment.
+    Synced(crate::Synced),
+    /// A Sync was undone, or its Conditional Sync withdrawn.
+    Undone(crate::Undone),
+    /// Hints were staged.
+    Taken(crate::Taken),
+    /// A secret's value was held for a pull request's merge.
+    SecretHeld(crate::SecretHeld),
+    /// An Environment's settings marked Never sync changed.
+    NeverSynced(crate::NeverSynced),
     /// The Default Environment changed: the Project's Environments after it.
     DefaultEnvironment(crate::EnvironmentsView),
     /// A Branch setup changed: the Project's Environments after it.

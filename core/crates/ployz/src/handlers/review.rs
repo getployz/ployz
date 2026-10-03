@@ -44,18 +44,27 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
         if view.changes.is_empty() {
             say!("No staged changes in {where_}.");
         }
+        // Where a staged change came from, when another Environment sent it.
+        let from = |row: Option<&ployz_store::RowId>| {
+            view.incoming
+                .iter()
+                .find(|incoming| Some(incoming.at.row()) == row)
+                .map_or_else(String::new, |incoming| format!(" (from {})", incoming.from))
+        };
         for change in &view.changes {
             say!(
-                "{} ({})",
+                "{} ({}){}",
                 change.name,
-                super::store::word(&change.lifecycle)
+                super::store::word(&change.lifecycle),
+                from(Some(&change.row))
             );
             for row in &change.settings {
                 say!(
-                    "  {}: {} -> {}",
+                    "  {}: {} -> {}{}",
                     row.path,
                     super::store::shown(&row.before),
-                    super::store::shown(&row.after)
+                    super::store::shown(&row.after),
+                    from(row.row.as_ref())
                 );
             }
             match change.data {
@@ -73,17 +82,17 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 ployz_store::Landed::Hint => say!(
                     "PR #{} merged {} = {} beside your edit; use it: {}",
                     hint.pull_request,
-                    hint.row,
+                    hint.at.to_string(),
                     hint.value,
                     next(
                         matches,
                         &[
                             "env",
-                            "save",
+                            "sync",
                             "--take",
-                            hint.save.as_str(),
+                            hint.conditional_sync.as_str(),
                             "--only",
-                            &hint.row
+                            &hint.at.to_string()
                         ]
                     )
                 ),
@@ -91,11 +100,30 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                     say!(
                         "PR #{} staged {} = {}",
                         hint.pull_request,
-                        hint.row,
+                        hint.at.to_string(),
                         hint.value
                     );
                 }
             }
+        }
+        for hint in &view.follow_hints {
+            say!(
+                "{} deployed {} = {}, not staged here; use it: {}",
+                hint.from,
+                hint.at.to_string(),
+                hint.value,
+                next(
+                    matches,
+                    &[
+                        "env",
+                        "sync",
+                        "--take",
+                        hint.from.as_str(),
+                        "--only",
+                        &hint.at.to_string()
+                    ]
+                )
+            );
         }
         if view.published && !view.changes.is_empty() {
             say!(

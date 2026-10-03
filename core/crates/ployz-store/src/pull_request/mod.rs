@@ -68,11 +68,21 @@ pub struct PullRequest {
     pub merge_commit: Option<CommitSha>,
     /// Once merged: the target branch's head as the Store last saw it
     /// ([`crate::ConfigStore::branch_head`]), when Cloud found the merge commit in it
-    /// already. Its Conditional Saves then land with what that push deployed.
+    /// already. Its Conditional Syncs then land with what that push deployed.
     #[serde(default)]
     pub merge_reached: Option<CommitSha>,
     /// When GitHub last changed it.
     pub updated: crate::GithubTimestamp,
+}
+
+impl PullRequest {
+    /// Which pull request it is.
+    pub(crate) fn reference(&self) -> PullRequestRef {
+        PullRequestRef {
+            repository_id: self.repository_id,
+            number: self.number,
+        }
+    }
 }
 
 /// Close what is due: Branches idle for a week, and closing Branches whose removal
@@ -182,7 +192,7 @@ pub struct PullRequestView {
     pub pull_request: Option<PullRequest>,
     /// Its PR Environments, one per Project, not being closed.
     pub environments: Vec<PrEnvironment>,
-    /// Ready to merge: nothing waits to be saved into an Environment that deploys
+    /// Ready to merge: nothing waits to be synced into an Environment that deploys
     /// its target branch.
     pub passing: bool,
     /// Why, in a few words.
@@ -199,24 +209,28 @@ pub struct PrEnvironment {
     pub destinations: Vec<Destination>,
 }
 
-/// An Environment a PR Environment's changes would be saved into.
+/// An Environment a PR Environment's changes go live in at the merge.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Destination {
+    /// The Environment.
     pub name: EnvironmentName,
-    /// The PR Environment's changes a Save would move there.
+    /// The changes a Sync there would hold: the Sync view's ticked rows.
     pub changes: usize,
-    /// Its Conditional Save there, if any.
-    pub save: Option<DestinationSave>,
+    /// Its Conditional Sync there, if any.
+    pub conditional_sync: Option<DestinationSync>,
 }
 
-/// A PR Environment's Conditional Save into one Destination.
+/// A PR Environment's Conditional Sync into one Destination.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct DestinationSave {
-    pub id: crate::ConditionalSaveId,
-    /// False once the PR Environment or the target branch changed since: save again.
+pub struct DestinationSync {
+    pub id: crate::ConditionalSyncId,
+    /// False once the PR Environment or the target branch changed since: sync again.
     pub standing: bool,
     /// How many changes it holds.
     pub changes: usize,
+    /// The secrets it brings by name only that the Destination has no value of, as
+    /// `SERVICE.env.KEY`: the check waits for one, its own or held for the merge.
+    pub waiting: Vec<String>,
 }
 
 /// A plan as stored, by Environment ID and Service lineage.
@@ -392,9 +406,9 @@ pub(crate) fn pull_request(
     }
     let current = current(tx, who, event.repository_id, event.number)?;
     // Everything this event may touch, locked first and in ID order: its PR
-    // Environments, where their saves land, and where new ones start from.
+    // Environments, where their Conditional Syncs land, and where new ones start from.
     let mut touched: Vec<EnvironmentId> = current.iter().map(|(id, _)| id.clone()).collect();
-    touched.extend(crate::conditional_save::involved(tx, who, event)?);
+    touched.extend(crate::conditional_sync::involved(tx, who, event)?);
     touched.extend(start_froms(tx, who, event.repository_id)?);
     scope::lock_all(tx, touched)?;
     let renamed = before
@@ -405,16 +419,16 @@ pub(crate) fn pull_request(
             retrack(tx, who, environment, event)?;
         }
     }
-    // Saves were made for the old target branch's Destinations: a new target
+    // Conditional Syncs were made for the old target branch's Destinations: a new target
     // withdraws them, so retargeting back never revives an old approval.
     let retargeted = before
         .as_ref()
         .is_some_and(|before| before.target_branch != event.target_branch);
     if retargeted {
-        crate::conditional_save::withdraw(tx, who, event)?;
+        crate::conditional_sync::withdraw(tx, who, event)?;
     }
     if !event.open {
-        crate::conditional_save::settle(tx, who, event)?;
+        crate::conditional_sync::settle(tx, who, event)?;
         for (environment, project) in &current {
             let plan = load(tx, project, event.repository_id)?.unwrap_or_else(off);
             if plan.remove_on_close {
@@ -728,7 +742,7 @@ fn retrack(
 
 /// Start closing a Branch: stop what it is deploying, then remove it as far as
 /// nothing needs the Servers.
-fn close(
+pub(crate) fn close(
     tx: &mut dyn Tx,
     who: &Actor,
     id: &EnvironmentId,
@@ -805,13 +819,35 @@ fn settle(
     Ok(())
 }
 
+/// What the idle rule reads of each Branch: `environment_id`, kept, closing, its
+/// latest admission (-1 for none), its Branches and whether it is a Default.
+const IDLE_FACTS: &str = "SELECT b.environment_id, b.kept, b.closing, \
+     (SELECT COALESCE(MAX(d.admitted), -1) FROM config_deployment d WHERE d.environment_id = b.environment_id), \
+     (SELECT COUNT(*) FROM config_environment_branch c WHERE c.parent_id = b.environment_id), \
+     (SELECT COUNT(*) FROM config_project p WHERE p.default_environment_id = b.environment_id) \
+     FROM config_environment_branch b";
+
+/// When the sweep closes a Branch for sitting idle, from an [`IDLE_FACTS`] row: a
+/// week after its latest Deployment. Never when it is kept, closing already, never
+/// deployed, a Parent or the Default Environment.
+fn idle_close(row: &crate::storage::Row) -> Result<Option<i64>, RpcError> {
+    let (kept, closing, admitted) = (row.int(1)?, row.int(2)?, row.int(3)?);
+    let held = kept != 0 || closing != 0 || admitted < 0 || row.int(4)? != 0 || row.int(5)? != 0;
+    Ok((!held).then_some(admitted + IDLE))
+}
+
+/// When a Branch closes for sitting idle, in seconds since the Unix epoch.
+pub(crate) fn closes_at(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<i64>, RpcError> {
+    let rows = tx.query(
+        &format!("{IDLE_FACTS} WHERE b.environment_id = ?1"),
+        &[id.as_str().into()],
+    )?;
+    rows.first().map_or(Ok(None), idle_close)
+}
+
 pub(crate) fn sweep(tx: &mut dyn Tx, who: &Actor, sweep: &Sweep) -> Result<Automated, RpcError> {
     let rows = tx.query(
-        "SELECT b.environment_id, b.kept, b.closing, \
-         (SELECT COALESCE(MAX(d.admitted), -1) FROM config_deployment d WHERE d.environment_id = b.environment_id), \
-         (SELECT COUNT(*) FROM config_environment_branch c WHERE c.parent_id = b.environment_id), \
-         (SELECT COUNT(*) FROM config_project p WHERE p.default_environment_id = b.environment_id) \
-         FROM config_environment_branch b WHERE b.organization_id = ?1 ORDER BY b.environment_id",
+        &format!("{IDLE_FACTS} WHERE b.organization_id = ?1 ORDER BY b.environment_id"),
         &[who.organization.as_str().into()],
     )?;
     let mut automated = Automated::default();
@@ -821,14 +857,7 @@ pub(crate) fn sweep(tx: &mut dyn Tx, who: &Actor, sweep: &Sweep) -> Result<Autom
             settle(tx, who, &id, &mut automated)?;
             continue;
         }
-        // Idle: not kept, deployed at least once, a week ago; never the Default
-        // Environment or a Parent.
-        let idle = row.int(1)? == 0
-            && row.int(3)? >= 0
-            && sweep.now - row.int(3)? >= IDLE
-            && row.int(4)? == 0
-            && row.int(5)? == 0;
-        if idle {
+        if idle_close(&row)?.is_some_and(|at| sweep.now >= at) {
             close(tx, who, &id, &mut automated)?;
         }
     }

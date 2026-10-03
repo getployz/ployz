@@ -22,10 +22,10 @@ pub(crate) fn create_branch(
             json!({ "environment": create.name }),
         ));
     }
-    let applied = deployment::head(tx, &parent)?.applied;
-    let deployed = lineages(&applied);
+    let applied_state = deployment::head(tx, &parent)?.applied;
+    let deployed = lineages(&applied_state);
     let failed = match &create.fix {
-        Some(id) => failed_services(tx, who, &parent, &applied, id)?,
+        Some(id) => failed_services(tx, who, &parent, &applied_state, id)?,
         None => Vec::new(),
     };
     let working = &parent.working;
@@ -42,9 +42,9 @@ pub(crate) fn create_branch(
             .collect();
     }
     let picks = BranchPicks::Own { own: copy.clone() };
-    let plan = plan_branch(working, &deployed, &copy, &picks).map_err(config)?;
+    let planned = plan_branch(working, &deployed, &copy, &picks).map_err(config)?;
     let (mut own, mut live) = (BTreeSet::new(), Vec::new());
-    for node in &plan.nodes {
+    for node in &planned.nodes {
         match node.role {
             BranchNodeRole::Own { .. } => {
                 own.insert(node.lineage_id.clone());
@@ -132,36 +132,44 @@ pub(crate) fn create_branch(
     }
 
     let into = crate::scope::empty(create.name.as_str());
-    let hostnames = BranchHostnames {
+    let hostnames = Hostnames {
         from: suffix(tx, &parent)?,
         into: format!("-{}", create.name),
     };
-    let node_picks = own
-        .iter()
-        .map(|lineage| BranchPick {
-            key: format!("{lineage}:node"),
-            choice: None,
-        })
-        .collect();
-    let creating = |from, picks| {
-        compare(Comparing {
-            base: None,
-            from,
-            into: &into,
-            parent: None,
-            provided: &live,
-            hostnames: &hostnames,
-            from_kept: false,
-            picks: Some(picks),
-        })
+    let rules = Rules {
+        live: live.into_iter().collect(),
+        ..Rules::new(Way::Copy)
     };
-    let changes = creating(&from, node_picks)?;
+    let creating = |from: &SavedEnvironmentIntent| {
+        plan(
+            Sides {
+                base: None,
+                from,
+                into: &into,
+                hostnames: hostnames.clone(),
+            },
+            &rules,
+        )
+    };
+    let picks: BTreeSet<RowId> = creating(&from)
+        .rows()
+        .iter()
+        .filter(|row| matches!(row.verdict, Verdict::Moves { .. }))
+        .filter(|row| own.contains(row.id.lineage()))
+        .map(|row| row.id.clone())
+        .collect();
+    let none = BTreeMap::new();
+    let applied = creating(&from).apply(&picks, &none).map_err(config)?;
     // A fix's base is what the Parent runs, so the failed change shows as staged.
     let base = match create.fix {
-        Some(_) => creating(&applied, Vec::new())?.base,
-        None => changes.base,
-    }
-    .ok_or_else(|| error::internal("Core returned no base for a new Branch"))?;
+        Some(_) => {
+            creating(&applied_state)
+                .apply(&BTreeSet::new(), &none)
+                .map_err(config)?
+                .base
+        }
+        None => applied.base,
+    };
 
     let summary = insert_environment(tx, who, &project, &create.id, create.name.clone())?;
     let mut branch = Environment {
@@ -169,56 +177,37 @@ pub(crate) fn create_branch(
         working: into,
         live: BTreeMap::new(),
     };
-    // A Branch first, so what it lands uses its Parent's nodes live.
+    // A Branch first, so what it lands uses its Parent's nodes live. What it is made
+    // with is what it and its Parent share.
+    let made_with = document(&base);
     tx.execute(
-        "INSERT INTO config_environment_branch (environment_id, organization_id, parent_id, kept, base, setup) \
+        "INSERT INTO config_environment_branch (environment_id, organization_id, parent_id, kept, made_with, setup) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         &[
             create.id.as_str().into(),
             who.organization.as_str().into(),
             parent.summary.id.as_str().into(),
             i64::from(create.keep).into(),
-            document(&base).as_str().into(),
+            made_with.as_str().into(),
             serde_json::to_string(&setup)
                 .expect("Setup Commands are JSON")
                 .as_str()
                 .into(),
         ],
     )?;
+    share(tx, (&create.id, &parent.summary.id), &base)?;
     let carried = Carried::of(tx, &parent.summary.id, &from)?;
-    let staged = land(tx, who, &mut branch, (&from, &carried), changes.next, &[])?;
+    let staged = land(
+        tx,
+        who,
+        &mut branch,
+        (&from, &carried),
+        applied.next,
+        &picks,
+    )?;
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged,
-    })
-}
-
-/// Variable row `name`'s own value in the receiver: sealed for a secret, else text
-/// referencing the receiver's Services by `names`.
-pub(super) fn fresh_value(
-    name: &str,
-    secret: bool,
-    text: &str,
-    names: &BTreeMap<String, String>,
-    sealing: &SealingKey,
-) -> Result<BranchNewValue, RpcError> {
-    let key = crate::variables::VariableKey::parse(name.rsplit('.').next().unwrap_or(name))?;
-    crate::variables::validate_text(&key, text)?;
-    let (value, value_fingerprint) = match secret {
-        true => (
-            SavedVariableValue::Secret {
-                encrypted_value: Some(sealing.seal(text)),
-            },
-            sealing.fingerprint(text),
-        ),
-        false => {
-            let (parts, fingerprint) = crate::variables::text_parts(&key, text, names)?;
-            (crate::variables::stored(parts), fingerprint)
-        }
-    };
-    Ok(BranchNewValue {
-        value,
-        value_fingerprint,
     })
 }
 
@@ -228,7 +217,6 @@ pub(crate) fn copy_node(
     copy: &CopyNode,
 ) -> Result<Branched, RpcError> {
     let mut branch = scope::lock(tx, who, &copy.environment)?;
-    branch.expect(copy.expect)?;
     let row = branch_row(tx, &branch)?;
     if branch.service(&copy.node).is_ok() {
         return Err(error::conflict(
@@ -281,42 +269,44 @@ pub(crate) fn copy_node(
             }
         }
     }
-    let mut base = row.base;
-    base.services
-        .retain(|service| !copied.contains(&service.lineage_id));
-    base.volumes
-        .retain(|volume| !copied.contains(&volume.resource_lineage_id));
-    let provided = uses
-        .into_keys()
-        .filter(|lineage| !copied.contains(lineage))
-        .collect();
-    let mut moving = Moving::update(tx, &owner.environment, owner.applied, &branch, base)?;
-    moving.nothing = format!("Nothing to copy from {}", owner.environment.summary.name);
-    moving.provided = provided;
-    // Every change of the copy, variables with the owner's values.
-    let picks: Vec<BranchPick> = moving
-        .compare(&branch.working, None)?
-        .rows
+    let own = Move::copy(tx, &owner.environment, &branch, &copied)?;
+    let checked = own.check(tx, &branch, Guard::Revision(copy.expect))?;
+    // Every row of the copy, variables with the owner's values.
+    let picks: BTreeSet<RowId> = checked
+        .rows()
         .iter()
-        .filter_map(|row| {
-            let BranchRole::Move { choice, .. } = &row.role else {
-                return None;
-            };
-            let key = row.key.to_string();
-            copied.contains(split(&key).0).then(|| BranchPick {
-                choice: choice.as_ref().map(|_| BranchPickChoice::From),
-                key,
-            })
-        })
+        .filter(|row| matches!(row.verdict, Verdict::Moves { .. }))
+        .filter(|row| copied.contains(row.id.lineage()))
+        .map(|row| row.id.clone())
         .collect();
-    if picks.is_empty() {
-        return Err(error::conflict(moving.nothing, json!({})));
-    }
-    let staged = moving.apply(tx, who, &mut branch, picks)?;
+    let none = BTreeMap::new();
+    let staged = checked.apply(tx, who, &mut branch, &picks, &none, None)?;
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged,
     })
+}
+
+/// An Own Copy rewrites what a Branch runs, so it waits until the Branch runs its
+/// Working State: no Deployment in flight and nothing staged.
+fn settled(tx: &mut dyn Tx, branch: &Environment) -> Result<(), RpcError> {
+    let scope = format!(
+        "--project {} --env {}",
+        branch.summary.project, branch.summary.name
+    );
+    if deployment::in_flight(tx, &branch.summary.id)?.is_some() {
+        return Err(error::conflict(
+            "A Deployment of this Branch is still running: wait for it to finish",
+            json!({ "next": format!("ployz deployment ls {scope}") }),
+        ));
+    }
+    if !review::review(tx, branch)?.view.changes.is_empty() {
+        return Err(error::conflict(
+            "This Branch has changes that aren't deployed: deploy or discard them first",
+            json!({ "next": format!("ployz diff {scope}") }),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn keep_branch(

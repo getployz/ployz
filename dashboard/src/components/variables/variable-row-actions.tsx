@@ -3,6 +3,8 @@ import {
   LockIcon,
   MoreVerticalIcon,
   PencilIcon,
+  PinIcon,
+  PinOffIcon,
   Share2Icon,
   TrashIcon,
   XIcon,
@@ -21,6 +23,7 @@ export function VariableRowActions({
   editing,
   exported,
   isSealed,
+  needsValue,
   plainValue,
   showMetadata,
   onCancelEdit,
@@ -29,10 +32,14 @@ export function VariableRowActions({
   onOpenSealDialog,
   onSave,
   onUpdateMetadata,
+  neverSynced,
+  onToggleNeverSync,
 }: {
   editing: boolean;
   exported: boolean;
   isSealed: boolean;
+  /** A secret still without a value: offers Set value. */
+  needsValue: boolean;
   plainValue: string;
   showMetadata: boolean;
   onCancelEdit: () => void;
@@ -42,6 +49,9 @@ export function VariableRowActions({
   onOpenSealDialog: () => void;
   onSave: () => void;
   onUpdateMetadata: (patch: VariableMetadataPatch) => void;
+  /** Whether it is marked Never sync; null offers no Never sync item. */
+  neverSynced: boolean | null;
+  onToggleNeverSync: () => void;
 }) {
   if (editing) {
     return (
@@ -80,6 +90,12 @@ export function VariableRowActions({
       />
       <DropdownMenuContent align="end">
         <DropdownMenuGroup>
+          {needsValue ? (
+            <DropdownMenuItem onClick={() => onOpenEdit("")}>
+              <PencilIcon />
+              Set value
+            </DropdownMenuItem>
+          ) : null}
           {!isSealed ? (
             <DropdownMenuItem onClick={() => onOpenEdit(plainValue)}>
               <PencilIcon />
@@ -98,6 +114,12 @@ export function VariableRowActions({
             >
               <Share2Icon />
               {exported ? "Stop exporting" : "Export"}
+            </DropdownMenuItem>
+          ) : null}
+          {neverSynced !== null ? (
+            <DropdownMenuItem onClick={onToggleNeverSync}>
+              {neverSynced ? <PinOffIcon /> : <PinIcon />}
+              {neverSynced ? "Sync again" : "Never sync"}
             </DropdownMenuItem>
           ) : null}
           <DropdownMenuItem onClick={onDelete}>

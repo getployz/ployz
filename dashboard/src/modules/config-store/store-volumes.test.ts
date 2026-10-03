@@ -1,4 +1,4 @@
-import type { DiffView } from "@ployz/sdk";
+import type { DiffView, RowId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { detachedMounts, mountChange, mountPathError, gigabytes, volumeLoss, volumeStorage } from "./store-volumes";
 
@@ -42,14 +42,14 @@ describe("store volumes", () => {
   it("lists mounts the next Deploy detaches, keeping their data", () => {
     const diff: DiffView = {
       environment: { id: "e", project: "shop", name: "production", revision: 9 },
-      version: "9:1:0.1", saved: 1, published: false, total_count: 2, hints: [],
+      version: "9:1:0.1", saved: 1, published: false, total_count: 2, hints: [], incoming: [], follow_hints: [],
       changes: [
-        { type: "service", id: "s", name: "postgres", lifecycle: "update", comparison: "head", data: "kept", settings: [
-          { path: "postgres.mounts.pg-data", before: "/var/lib/postgresql/data", after: null, kind: "remove", canRestore: false },
-          { path: "postgres.replicas", before: 1, after: 2, kind: "update", canRestore: false },
+        { type: "service", id: "s", row: "s:node" as RowId, name: "postgres", lifecycle: "update", comparison: "head", data: "kept", settings: [
+          { path: "postgres.mounts.pg-data", before: "/var/lib/postgresql/data", after: null, kind: "remove", canRestore: false, row: null },
+          { path: "postgres.replicas", before: 1, after: 2, kind: "update", canRestore: false, row: null },
         ] },
-        { type: "service", id: "w", name: "web", lifecycle: "update", comparison: "head", data: null, settings: [
-          { path: "web.mounts.pg-data", before: null, after: "/srv", kind: "add", canRestore: false },
+        { type: "service", id: "w", row: "w:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, settings: [
+          { path: "web.mounts.pg-data", before: null, after: "/srv", kind: "add", canRestore: false, row: null },
         ] },
       ],
     };

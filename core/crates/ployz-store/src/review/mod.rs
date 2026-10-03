@@ -10,8 +10,8 @@ pub(crate) mod publish;
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,
-    ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, SavedEnvironmentIntent,
+    At, ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,
+    ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId, SavedEnvironmentIntent,
     ServiceSettingChange, canonicalize_environment_intent, compile_environment_intent,
     project_environment_changes,
 };
@@ -23,7 +23,7 @@ use crate::Actor;
 use crate::error;
 use crate::id::{EnvironmentId, Revision};
 use crate::scope::{Environment, EnvironmentSummary, revision_param};
-use crate::settings::{SettingPath, shown};
+use crate::settings::{ServiceSetting, SettingPath, shown};
 use crate::storage::Tx;
 
 /// An Environment's staged changes, grouped by node, and the version to act on them.
@@ -45,6 +45,14 @@ pub struct DiffView {
     /// until its next Saved revision.
     #[serde(default)]
     pub hints: Vec<crate::PullRequestHint>,
+    /// Staged changes that arrived from the Parent's deploy by Follow, still at the
+    /// value they arrived with, until they deploy.
+    #[serde(default)]
+    pub incoming: Vec<crate::IncomingChange>,
+    /// The Parent's deployed values that followed into this Branch beside its own
+    /// changes, or that it discarded: take one to stage it.
+    #[serde(default)]
+    pub follow_hints: Vec<crate::FollowHint>,
 }
 
 /// What happens to one node, and its changed Settings.
@@ -55,6 +63,8 @@ pub struct NodeChange {
     pub node: ReviewNodeIdentity,
     /// Its name.
     pub name: String,
+    /// Its own Sync row, which joins it to what moved it.
+    pub row: RowId,
     /// Whether it is created, changed or removed.
     pub lifecycle: ReviewLifecycleKind,
     /// What `settings` compare against; `None` when nothing exists to compare.
@@ -112,6 +122,28 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     })
     .map_err(|_| error::corrupt("Environment document"))?;
     let intents = [&environment.working, &head.intent];
+    let every = [
+        &environment.working,
+        &head.intent,
+        &head.applied,
+        saved
+            .as_ref()
+            .map_or(&environment.working, |saved| &saved.intent),
+    ];
+    let lineage = |node: &ReviewNodeIdentity| {
+        every.iter().find_map(|intent| match node.node_type {
+            EnvironmentNodeType::Service => intent
+                .services
+                .iter()
+                .find(|service| service.id == node.id)
+                .map(|service| service.lineage_id.clone()),
+            EnvironmentNodeType::Volume => intent
+                .volumes
+                .iter()
+                .find(|volume| volume.resource_id == node.id)
+                .map(|volume| volume.resource_lineage_id.clone()),
+        })
+    };
     let name = |node: &ReviewNodeIdentity| {
         let services = intents
             .into_iter()
@@ -136,15 +168,33 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
         }),
         total_count: changes.total_count,
         hints: Vec::new(),
+        incoming: Vec::new(),
+        follow_hints: Vec::new(),
         changes: changes
             .groups
             .into_iter()
             .map(|group| {
                 let name = name(&group.node);
+                let lineage =
+                    lineage(&group.node).ok_or_else(|| error::corrupt("Environment document"))?;
                 let settings: Vec<ServiceSettingChange> = group
                     .settings
                     .into_iter()
-                    .map(|mut row| {
+                    .map(|(mut row, at)| {
+                        let at = match row.path.strip_prefix("mounts.") {
+                            Some(id) => every
+                                .iter()
+                                .flat_map(|intent| &intent.volumes)
+                                .find(|volume| volume.resource_id == id)
+                                .map(|volume| At::Mount(volume.resource_lineage_id.clone())),
+                            None => at,
+                        };
+                        // A row's Setting is what Discard takes, whichever part of it changed.
+                        let setting = match &at {
+                            Some(At::Setting(setting)) => ServiceSetting::of(*setting),
+                            _ => None,
+                        };
+                        row.row = at.map(|at| RowId::of(&lineage, at));
                         if row.path.starts_with("mounts.") {
                             row.before = row.before.get("mountPath").cloned().unwrap_or_default();
                             row.after = row.after.get("mountPath").cloned().unwrap_or_default();
@@ -154,9 +204,12 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                         } else {
                             row.before = shown(&row.path, row.before);
                             row.after = shown(&row.path, row.after);
-                            row.path = SettingPath::from_core(&name, &row.path, |id| {
-                                volume_name(&intents, id).unwrap_or_default()
-                            });
+                            row.path = match setting {
+                                Some(setting) => format!("{name}.{}", setting.name()),
+                                None => SettingPath::from_core(&name, &row.path, |id| {
+                                    volume_name(&intents, id).unwrap_or_default()
+                                }),
+                            };
                         }
                         // `discard` takes exactly the paths that parse.
                         row.can_restore = SettingPath::parse(&row.path).is_ok();
@@ -164,16 +217,17 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                     })
                     .collect();
                 let data = data_effect(&group.node, group.lifecycle, &settings, &head.applied);
-                NodeChange {
+                Ok(NodeChange {
                     node: group.node,
                     name,
+                    row: RowId::node(&lineage),
                     lifecycle: group.lifecycle,
                     comparison: group.comparison,
                     settings,
                     data,
-                }
+                })
             })
-            .collect(),
+            .collect::<Result<_, RpcError>>()?,
     };
     renames(&mut view, &environment.working, &head.intent);
     Ok(Review { view, saved, head })
@@ -245,6 +299,7 @@ fn renames(view: &mut DiffView, working: &SavedEnvironmentIntent, head: &SavedEn
             after: json!(service.slug),
             // Renaming it back undoes it: `discard` takes no name path.
             can_restore: false,
+            row: None,
         };
         view.total_count += 1;
         match view
@@ -259,6 +314,7 @@ fn renames(view: &mut DiffView, working: &SavedEnvironmentIntent, head: &SavedEn
                     id: service.id.clone(),
                 },
                 name: service.slug.clone(),
+                row: RowId::node(&service.lineage_id),
                 lifecycle: ReviewLifecycleKind::Update,
                 comparison: Some(ReviewComparisonRole::Head),
                 settings: vec![row],

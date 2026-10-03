@@ -136,8 +136,12 @@ store_string!(
     VolumeName, "a Volume name: up to 63 lowercase letters, digits and -", is_name
 );
 store_string!(
-    /// A Conditional Save's identity, minted by the Store when a PR Environment saves.
-    ConditionalSaveId, "a Conditional Save ID (a UUID)", is_uuid
+    /// A Conditional Sync's identity, minted by the Store when a PR Environment syncs.
+    ConditionalSyncId, "a Conditional Sync ID (a UUID)", is_uuid
+);
+store_string!(
+    /// A Sync's identity, minted by the Store when it lands: what Undo names.
+    SyncId, "a Sync ID (a UUID)", is_uuid
 );
 store_string!(
     /// A Deployment's durable identity, minted by the caller that admits it.

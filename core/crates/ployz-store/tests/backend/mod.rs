@@ -46,6 +46,22 @@ pub fn git_branch(name: &str) -> ployz_store::BranchName {
     ployz_store::BranchName::parse(name).unwrap()
 }
 
+/// Cloud's evidence for the repositories `acme/web` (11) and `acme/docs` (12), each on
+/// `main` with a `dev` branch.
+pub fn acme_repositories() -> ployz_store::Trusted {
+    let repository = |name: &str, n| ployz_store::AuthorizedRepository {
+        repository: repo_name(name),
+        repository_id: repo_id(n),
+        access: ployz_core::config::ServiceGitAccess::Public,
+        default_branch: git_branch("main"),
+        branches: vec![git_branch("dev")],
+    };
+    ployz_store::Trusted {
+        repositories: vec![repository("acme/web", 11), repository("acme/docs", 12)],
+        ..ployz_store::Trusted::default()
+    }
+}
+
 /// A full Git commit.
 pub fn sha(commit: &str) -> ployz_store::CommitSha {
     ployz_store::CommitSha::parse(commit).unwrap()
@@ -54,4 +70,92 @@ pub fn sha(commit: &str) -> ployz_store::CommitSha {
 /// Pull request number `n`.
 pub fn pr_number(n: u64) -> ployz_store::PullRequestNumber {
     ployz_store::PullRequestNumber::parse(n).unwrap()
+}
+
+/// Deploy `environment` in full as Deployment `n` and record every Service applied;
+/// what the runner was handed.
+pub fn deploy(
+    store: &ConfigStore,
+    who: &ployz_store::Actor,
+    environment: &str,
+    n: u8,
+) -> serde_json::Value {
+    let id = admit(store, who, environment, n);
+    run(store, &id)
+}
+
+/// Admit Deployment `n` of `environment`, publishing its Working State; [`run`] runs it.
+pub fn admit(
+    store: &ConfigStore,
+    who: &ployz_store::Actor,
+    environment: &str,
+    n: u8,
+) -> ployz_store::DeploymentId {
+    let id = ployz_store::DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}"))
+        .unwrap();
+    store
+        .write_trusted(
+            who,
+            &ployz_store::Admit::Deploy(ployz_store::Deploy {
+                id: id.clone(),
+                environment: ployz_store::EnvironmentRef {
+                    project: None,
+                    environment: Some(ployz_store::EnvironmentName::parse(environment).unwrap()),
+                },
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &ployz_store::Trusted::default(),
+        )
+        .unwrap();
+    id
+}
+
+/// Run admitted Deployment `id` to success; what the runner was handed.
+pub fn run(store: &ConfigStore, id: &ployz_store::DeploymentId) -> serde_json::Value {
+    use serde_json::json;
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(id, &runner).unwrap();
+    let names: Vec<String> = claimed
+        .intent
+        .target
+        .iter()
+        .map(|service| service.name.to_string())
+        .collect();
+    let operation = |index: usize| {
+        json!({"type": "remove_container", "machine_id": "a".repeat(32),
+               "container_id": format!("{index:x}").repeat(64)})
+    };
+    let preview: ployz_core::DeployPreview = serde_json::from_value(json!({
+        "namespace": claimed.intent.namespace,
+        "operations": names.iter().enumerate().map(|(index, name)| json!({
+            "index": index, "machine_id": "a".repeat(32), "service_name": name,
+            "operation": operation(index), "status": {"type": "pending"}
+        })).collect::<Vec<_>>(),
+        "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store
+        .record(id, &runner, ployz_store::RunEvidence::Prepared(preview))
+        .unwrap();
+    let outcome: ployz_core::DeployOutcome<ployz_core::ExecutionError> =
+        serde_json::from_value(json!({
+            "type": "success",
+            "completed": (0..names.len()).map(operation).collect::<Vec<_>>()
+        }))
+        .unwrap();
+    store
+        .record(
+            id,
+            &runner,
+            ployz_store::RunEvidence::Executed {
+                outcome: Box::new(outcome),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    claimed.input
 }

@@ -10,7 +10,7 @@ mod build;
 mod builders;
 pub mod catalog;
 mod command;
-mod conditional_save;
+mod conditional_sync;
 mod deployment;
 mod domain;
 mod error;
@@ -43,9 +43,12 @@ pub use automation::{
 };
 pub use branch::{
     BranchPlanQuery, BranchPlanView, BranchQuery, BranchView, Branched, CopyNode, CreateBranch,
-    DifferRow, KeepBranch, LiveNode, Move, MoveChoice, MovePick, MoveQuery, MoveRow, MoveView,
-    Moved, PickChoice, PlannedNode, PlannedRole, Save, SetBranchSetup, SetupCommand, Take, Update,
-    When,
+    KeepBranch, LiveNode, PlannedNode, PlannedRole, SetBranchSetup, SetupCommand, SyncChanges,
+    SyncQuery, SyncRow, SyncView, Synced, SyncedWhen, Take, Taken, UndoSync, Undone, When,
+};
+pub use branch::{
+    FollowHint, HintSource, IncomingChange, Mark, NamedRow, NeverSync, NeverSynced, NeverSyncedRow,
+    RowRef, SecretRow, SyncChange,
 };
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
@@ -53,7 +56,10 @@ pub use build::{
 };
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use command::*;
-pub use conditional_save::{ConditionalSave, Landed, PendingSaves, PullRequestHint, SaveState};
+pub use conditional_sync::{
+    ConditionalSync, ConditionalSyncState, HoldSecret, Landed, PendingSyncs, PullRequestHint,
+    SecretHeld,
+};
 pub use deployment::{
     Claimed, DeploymentStatus, DeploymentSummary, DeploymentView, NodeOutcome, NodeStatus, Outcome,
     RunEvidence, Unclaimed, UploadBase, UploadedSource,
@@ -65,8 +71,10 @@ pub use domain::{
 };
 pub use git::{AuthorizedRepository, CreateGitService};
 pub use id::*;
+/// A Sync view row's id, as Sync, Take, Never sync and Hold name it.
+pub use ployz_core::config::RowId;
 pub use pull_request::{
-    Destination, DestinationSave, OpenPullRequest, PrEnvironment, PrPlan, PrPlansQuery,
+    Destination, DestinationSync, OpenPullRequest, PrEnvironment, PrPlan, PrPlansQuery,
     PrPlansView, PullRequest, PullRequestQuery, PullRequestRef, PullRequestView, SetPrPlan, Sweep,
 };
 pub use query::*;
@@ -324,20 +332,20 @@ impl ConfigStore {
             .read(|tx| automation::head(tx, organization, repository_id, branch))
     }
 
-    /// The Conditional Saves a push to `branch` may freeze or carry: Cloud reports
+    /// The Conditional Syncs a push to `branch` may freeze or carry: Cloud reports
     /// the pull requests that merged, then which merge commits the head contains.
     ///
     /// # Errors
     /// Returns a storage error.
-    pub fn pending_saves(
+    pub fn pending_syncs(
         &self,
         organization: &OrganizationId,
         repository_id: RepositoryId,
         branch: &BranchName,
-    ) -> Result<PendingSaves, RpcError> {
+    ) -> Result<PendingSyncs, RpcError> {
         let who = Actor::system(organization.clone());
         self.storage
-            .read(|tx| conditional_save::pending(tx, &who, repository_id, branch))
+            .read(|tx| conditional_sync::pending(tx, &who, repository_id, branch))
     }
 
     /// Forget an Organization's configuration once it has no Project: what it

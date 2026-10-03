@@ -1,72 +1,51 @@
-import type { BranchOption, JsonValue, LiveNode, MoveChoice, MovePick, MoveRow } from "@ployz/sdk";
+import type { JsonValue, LiveNode, NamedRow } from "@ployz/sdk";
+import { Option, Schema } from "effect";
 import { asRecord } from "#/lib/json";
 import { settingTitle } from "./catalog";
 
-/** One changed setting of one node as a sheet or news row words it: `before` is the receiver's, `after` what would land. */
-export type PresentedRow = { key: string; lineageId: string; node: string; label: string; before: string; after: string };
-
-/** How many parts of a row name its node: a Volume's is `volumes.NAME`, a Service's its name. */
-const nodeParts = (row: string) => row.startsWith("volumes.") ? 2 : 1;
-/**
- * A Move row's node: `web` of `web`, `web.image` and `web.env.KEY`; `volumes.data` of `volumes.data.size`. A row that
- * is only a node adds it.
- */
-export const moveRowNode = (row: string) => row.split(".").slice(0, nodeParts(row)).join(".");
-export const isNodeRow = (row: string) => row.split(".").length === nodeParts(row);
 /** A node as the user names it: `data`, not `volumes.data`. */
-export const nodeName = (node: string) => node.startsWith("volumes.") ? node.slice("volumes.".length) : node;
+export const nodeName = (node: string) => node.replace(/^volumes\./, "");
 
-/** A value as a sheet shows it: a secret is hidden, a node row names only the node. */
-function moveText(value: JsonValue): string {
+/** A Setting `name`'s value as the Sync dialog and hints show it: a secret is hidden, a source in its own words. */
+export function rowText(value: JsonValue, name: string | null): string {
+  if (name === "source") return sourceText(value);
   if (value === null) return "";
-  if (Array.isArray(value)) return value.map(moveText).join(", ");
+  if (Array.isArray(value)) return value.map((one) => rowText(one, null)).join(", ");
   const record = asRecord(value);
   if (record) return "secret" in record ? "hidden" : JSON.stringify(record);
   return String(value);
 }
 
-/** A Move row in words: which setting of which node, the receiver's value (`before`) and the one that lands. */
-export function presentMoveRow(row: MoveRow): PresentedRow {
-  const node = moveRowNode(row.row);
-  const path = row.row.slice(node.length + 1);
-  const label = isNodeRow(row.row) ? "New"
-    : path.startsWith("env.") ? path.slice("env.".length)
-    : path.startsWith("mounts.") ? `Mount of ${path.slice("mounts.".length)}`
-    : path === "name" ? "Name" : settingTitle(path) ?? path;
-  return {
-    key: row.row, lineageId: node, node: nodeName(node), label,
-    before: isNodeRow(row.row) ? "" : moveText(row.into),
-    after: isNodeRow(row.row) ? "" : moveText(row.from),
-  };
+/** A Setting by its name within its node (`image`, `env.KEY`): a variable's key (`variable`, in monospace) or its title. */
+export function settingName(name: string) {
+  const title = name.startsWith("env.") ? name.slice("env.".length)
+    : name.startsWith("mounts.") ? `Mount of ${name.slice("mounts.".length)}`
+    : name === "name" ? "Name" : name === "source" ? "Source" : settingTitle(name) ?? name;
+  return { name: title, variable: name.startsWith("env.") };
 }
 
-/** One row of a Save sheet as the user left it. */
-export type SheetPick = { key: string; ticked: boolean; choice?: MoveChoice | null; option?: BranchOption; value: string };
+/** Each field a Service's `source` row holds, by the Setting that sets it: the source changes as one row. */
+export const SOURCE_FIELDS = [["image", "image"], ["repository", "repository"], ["rootDir", "rootDir"], ["registryCredential", "credentials"]] as const;
 
-/**
- * The Move picks for what the user ticked. A new node moves whole (`web` picks every change of web), so its variables
- * say only how they land: unticked, `leave_out`. Settings of a node the receiver has move one by one.
- */
-export function movePicks(entries: readonly SheetPick[]): MovePick[] {
-  const nodes = entries.filter((entry) => isNodeRow(entry.key));
-  const whole = new Set(nodes.filter((entry) => entry.ticked).map((entry) => entry.key));
-  const leftOut = new Set(nodes.filter((entry) => !entry.ticked).map((entry) => entry.key));
-  const picks: MovePick[] = [...whole].map((row) => ({ row }));
-  for (const entry of entries) {
-    const node = moveRowNode(entry.key);
-    if (isNodeRow(entry.key) || leftOut.has(node)) continue;
-    const option = entry.choice ? entry.option ?? entry.choice.default : null;
-    if (whole.has(node)) {
-      if (option) picks.push(choicePick(entry.key, entry.ticked ? option : "leave_out", entry.value));
-    } else if (entry.ticked) {
-      picks.push(option ? choicePick(entry.key, option, entry.value) : { row: entry.key });
-    }
-  }
-  return picks;
+const decodeSource = Schema.decodeUnknownOption(Schema.Struct({
+  image: Schema.optional(Schema.String), repository: Schema.optional(Schema.String),
+  rootDir: Schema.optional(Schema.String), credentials: Schema.optional(Schema.Boolean),
+}));
+
+/** The `source` row's value in words: what it runs from, then a root directory and credentials where it has them. */
+export function sourceText(value: JsonValue): string {
+  return Option.match(decodeSource(value), {
+    onNone: () => value === null ? "" : JSON.stringify(value),
+    onSome: ({ image, repository, rootDir, credentials }) =>
+      [image ?? repository ?? "None", rootDir && rootDir !== "/" ? `in ${rootDir}` : "", credentials ? "with credentials" : ""]
+        .filter(Boolean).join(" "),
+  });
 }
 
-const choicePick = (row: string, choice: BranchOption, value: string): MovePick =>
-  choice === "new" ? { row, choice: { new: value } } : { row, choice };
+/** A row and the value it offers in words: which setting of which node ("New" for the node itself). */
+export function presentRow(row: NamedRow & { value: JsonValue }) {
+  return { node: nodeName(row.node), label: row.name === null ? "New" : settingName(row.name).name, after: row.name === null ? "" : rowText(row.value, row.name) };
+}
 
 /** A Branch's Live Nodes as the canvas draws them, each with the ids of the Services here the Store says read it. */
 export function liveNodes(live: readonly LiveNode[], services: ReadonlyArray<{ id: string; name: string }>) {

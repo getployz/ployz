@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import type { Change, EnvironmentRef, EnvironmentView, ServiceListing, SettingRow } from "@ployz/sdk";
+import type { Change, EnvironmentRef, EnvironmentView, RowId, ServiceListing, SettingRow } from "@ployz/sdk";
 import { getManagedServiceExports } from "#/modules/variables/managed-service-exports";
 import { buildReferenceTargets } from "#/modules/variables/variable-autocomplete";
 import type { VariableWriter } from "#/modules/variables/variables";
@@ -9,14 +9,18 @@ import type { useStoreWriter } from "./store-write";
 
 const VARIABLE = /^env\.([^.]+)$/u;
 const isText = Schema.is(Schema.String);
+const isValueless = Schema.is(Schema.Struct({ secret: Schema.Literal(false) }));
 
 /**
  * One Service's variables from its Setting rows (`serviceSettingRows`), sorted by key. A secret reads as
- * `{"secret": true}` and shows sealed; an unset one (null, pending removal) is gone.
+ * `{"secret": true}`, or `{"secret": false}` until it has a value, and shows sealed; an unset one (null, pending
+ * removal) is gone.
  */
 export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceId: string,
   /** What the next Deploy changes, by Setting (`env.KEY`): those rows are pink. */
-  changes: ReadonlyMap<string, unknown> = new Map()): VariableRecord[] {
+  changes: ReadonlyMap<string, unknown> = new Map(),
+  /** What its Environment marks Never sync (`EnvironmentView.never_synced`). */
+  neverSynced: ReadonlySet<RowId> = new Set()): VariableRecord[] {
   return [...rows].flatMap(([name, row]) => {
     const key = VARIABLE.exec(name)?.[1];
     if (key === undefined || row.value === null) return [];
@@ -24,8 +28,9 @@ export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceI
     return [{
       id: key, serviceId, key, description: null,
       exported: rows.get(`${name}.exported`)?.value === true,
-      value: isText(value) ? { type: "plain" as const, value } : { type: "sealed" as const },
+      value: isText(value) ? { type: "plain" as const, value } : { type: "sealed" as const, needsValue: isValueless(value) },
       changed: changes.has(name) || changes.has(`${name}.exported`),
+      neverSynced: row.row !== undefined && neverSynced.has(row.row),
     }];
   }).sort((a, b) => a.key.localeCompare(b.key));
 }
@@ -36,6 +41,8 @@ export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceI
  */
 export function storeVariableWriter(
   writer: ReturnType<typeof useStoreWriter>, environment: EnvironmentRef, service: string, variables: readonly VariableRecord[],
+  /** The Service's Setting rows (`serviceSettingRows`): each variable's row, which Never sync names. */
+  settings: ReadonlyMap<string, SettingRow>,
 ) {
   const path = (key: string) => `${service}.env.${key}`;
   const edit = (...changes: Change[]) => writer.edit({ environment, changes });
@@ -62,6 +69,12 @@ export function storeVariableWriter(
     ),
     seal: (key: string, value: string) => edit({ op: "set", path: path(key), value: { secret: value } }),
     export: (key: string, exported: boolean) => edit({ op: "set", path: `${path(key)}.exported`, value: exported }),
+    /** Marks the variable Never sync, or with `marked` false syncs it again: at once, nothing to deploy. */
+    neverSync: (key: string, marked: boolean) => {
+      const row = settings.get(`env.${key}`)?.row;
+      if (!row) throw new Error("Variable is not loaded.");
+      return writer.commit({ command: "never_sync", environment, rows: [row], off: !marked });
+    },
     /** The raw editor's changes: sets and removals in one edit. */
     replace: (sets: readonly { key: string; value: string }[], removed: readonly string[]) => edit(
       ...sets.map(({ key, value }): Change => ({ op: "set", path: path(key), value })),

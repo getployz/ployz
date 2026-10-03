@@ -13,9 +13,10 @@ import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
 import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field";
-import { Item, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
+import { Switch } from "#/components/ui/switch";
+import { Item, ItemContent, ItemTitle } from "#/components/ui/item";
 import { cn } from "#/lib/utils";
-import { shownValue } from "#/modules/config-store/store-deployments";
+import { sourceText } from "#/modules/config-store/store-branches";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
@@ -32,7 +33,6 @@ import { RegistryCredentialsField } from "./ServiceRegistryCredentialsSection";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 import { ServiceCommandField } from "./ServiceCommandField";
 import { StoreBranchField, StoreDockerfileField, StorePreferredBuilderField, useRepositoryRef } from "./StoreGitFields";
-import { SwitchField } from "../../../-components/branch-review/SaveSheet";
 import { RowWarning, SettingsSection, SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
 import { SERVICE_SETTINGS_SECTIONS, type ServiceSettingsSectionId } from "./service-settings-sections";
@@ -40,7 +40,6 @@ import { useRemoveStoreService } from "./useDeleteService";
 import { StoreServiceVariablesTab } from "./ServiceVariablesTab";
 import { StoreNetworkingSection } from "./StoreNetworkingSection";
 import { ServiceSummary } from "./ServiceSummary";
-import { StagedNote } from "./StagedNote";
 import { ContainerLogs } from "#/components/container-logs";
 import { Skeleton } from "#/components/ui/skeleton";
 import { ItemGroup } from "#/components/ui/item";
@@ -64,8 +63,6 @@ export type StoreService = {
   edit: (change: Change) => Persistable;
   /** Sets Setting `name`, or unsets it (null). */
   set: (name: string, value: JsonValue | null) => Persistable;
-  /** Drops Setting `name`'s staged change: the row goes back to what's deployed. */
-  discard: (name: string) => void;
 };
 
 /** A Service's source as its Settings say, pending edits included; an upload only while it has none of its own. */
@@ -131,7 +128,6 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
     path,
     edit,
     set: (name, value) => edit(value === null ? { op: "unset", path: path(name) } : { op: "set", path: path(name), value }),
-    discard: (name) => void writer.commit({ command: "discard", environment: store, path: path(name), version: diff.version }),
   };
   // A service made from a database template is reached privately and keeps its data in a volume: its panel leads with
   // that, where a web service leads with its public domain.
@@ -273,13 +269,6 @@ const OPTION_HELP = new Map([
   ["no", "Never restart."],
 ]);
 
-/** A deployed value as a staged row says it: its option label, else its text, else what unset means. */
-function shownSetting(value: JsonValue, setting: SettingSchema) {
-  const text = settingText(value);
-  if (text === "") return setting.default != null ? `${settingText(setting.default)} (default)` : "none";
-  return OPTION_LABELS.get(text) ?? text;
-}
-
 /** A Deployment Policy value as text; null when unset. */
 const policyText = (value: JsonValue | undefined) => value === null || value === undefined ? null : String(value);
 
@@ -316,7 +305,6 @@ function StoreSettingField({ state, name, warning }: { state: StoreService; name
       <ServiceCommandField label={setting.title} addLabel={command.addLabel} description={hint(name, setting)} placeholder={command.placeholder}
         compact={command.compact} value={row.value === null || settingText(row.value) === command.unset ? null : settingText(row.value)}
         {...changedProps(change)}
-        note={change ? <StagedNote before={shownSetting(change.before, setting)} onUndo={() => state.discard(name)} /> : null}
         validate={(raw) => settingError(setting, raw)} onCommit={(value) => edit(value === null || value === command.unset ? "" : value)} />
     );
   }
@@ -326,7 +314,6 @@ function StoreSettingField({ state, name, warning }: { state: StoreService; name
       <FieldContent>
         <FieldLabel>{setting.title}</FieldLabel>
         <FieldDescription>{hint(name, setting)}</FieldDescription>
-        {change ? <StagedNote before={shownSetting(change.before, setting)} onUndo={() => state.discard(name)} /> : null}
         {warning}
         {refusal ? <FieldError>{refusal}</FieldError> : null}
       </FieldContent>
@@ -387,14 +374,14 @@ function StoreHealthcheckField({ state }: { state: StoreService }) {
   const setting = serviceSetting("healthcheck");
   const { path: pathSchema, timeoutSeconds } = setting.properties;
   const on = Schema.is(Healthcheck)(row.value) ? row.value : null;
-  const pathChange = changeOf(state.changes, "healthcheck.path", "healthcheck");
-  const timeoutChange = changeOf(state.changes, "healthcheck.timeoutSeconds", "healthcheck");
+  // One change, whichever part of it changed: it is one Setting.
+  const change = state.changes.get("healthcheck");
   const shown = (value: JsonValue | undefined) => Schema.is(Healthcheck)(value) ? `${value.path}, ${value.timeoutSeconds}s`
     : value === null || value === undefined ? "off" : settingText(value);
   return (
     <>
       <ServiceCommandField label={setting.title} addLabel="Healthcheck path" description={undefined} placeholder="Off"
-        value={on?.path ?? null} {...changedProps(pathChange, shown)}
+        value={on?.path ?? null} {...changedProps(change, shown)}
         validate={(raw) => settingError({ ...pathSchema, title: "path", description: "", type: "string" }, raw)
           ?? (raw.startsWith("/") ? null : "Start the path with /.")}
         onCommit={(next) => state.set("healthcheck", next)} />
@@ -403,7 +390,7 @@ function StoreHealthcheckField({ state }: { state: StoreService }) {
           <FieldLabel>Healthcheck timeout</FieldLabel>
           <FieldDescription>How long a new replica may take to pass it.</FieldDescription>
           <ServiceSettingInput ariaLabel="Healthcheck timeout" inputMode="numeric" suffix="seconds" placeholder={String(timeoutSeconds.default)}
-            value={String(on.timeoutSeconds)} {...changedProps(timeoutChange, shown)}
+            value={String(on.timeoutSeconds)} {...changedProps(change, shown)}
             validate={(raw) => settingError({ ...timeoutSeconds, title: "timeout", description: "", type: "integer" }, raw)}
             onCommit={(raw) => state.set("healthcheck", { path: on.path, timeoutSeconds: raw === "" ? timeoutSeconds.default : Number(raw) })} />
         </Field>
@@ -473,6 +460,8 @@ function StoreSourceSection({ state }: { state: StoreService }) {
   const setting = serviceSetting(kind);
   const value = settingText(state.rows.get(kind)?.value);
   const change = state.changes.get(kind);
+  // Its parts change as one row, so what was deployed is the whole source.
+  const deployed = `Deployed: ${sourceText(state.changes.get("source")?.before ?? null) || "none"}`;
   const gitRef = useRepositoryRef(state.organizationSlug, state.environment, value);
 
   if (state.source === "uploaded") {
@@ -490,14 +479,13 @@ function StoreSourceSection({ state }: { state: StoreService }) {
   </>;
 
   if (state.source === "empty") {
-    const change = changeOf(state.changes, "source", "image", "repository");
+    const change = changeOf(state.changes, "image", "repository");
     return (
       <FieldGroup>
         {change ? (
-          <Item variant="muted" size="sm" data-changed>
+          <Item variant="muted" size="sm" data-changed title={deployed}>
             <ItemContent>
               <ItemTitle>No source after your next deploy</ItemTitle>
-              <ItemDescription>Deployed: {shownValue(change.before) || "none"}</ItemDescription>
             </ItemContent>
           </Item>
         ) : null}
@@ -523,7 +511,7 @@ function StoreSourceSection({ state }: { state: StoreService }) {
         </FieldContent>
         <div className="flex min-w-0 shrink-0 items-center gap-1">
           <span className={cn("flex min-w-0 items-center gap-2 rounded-lg border border-transparent text-sm", change && "border-changed-border bg-changed-soft px-2 py-1")}
-            title={change ? `Deployed: ${settingText(change.before) || "none"}` : undefined}>
+            title={change ? deployed : undefined}>
             {kind === "repository" ? <GitHubMarkIcon className="size-4 shrink-0" /> : <PackageIcon className="size-4 shrink-0 text-muted-foreground" />}
             {kind === "repository"
               ? <a className="truncate hover:underline" href={`https://github.com/${value}`} target="_blank" rel="noreferrer">{value}</a>
@@ -660,5 +648,18 @@ function StoreReplicasCapped({ params, volume }: {
         <Input id="replicas-capped" value="1" disabled />
       </div>
     </Field>
+  );
+}
+
+function SwitchField({ id, label, description, checked, onChange }: {
+  id: string; label: string; description?: string; checked: boolean; onChange: (checked: boolean) => void;
+}) {
+  return (
+    <FieldLabel htmlFor={id}>
+      <Field orientation="horizontal">
+        <FieldContent>{label}{description ? <FieldDescription>{description}</FieldDescription> : null}</FieldContent>
+        <Switch id={id} checked={checked} onCheckedChange={onChange} />
+      </Field>
+    </FieldLabel>
   );
 }

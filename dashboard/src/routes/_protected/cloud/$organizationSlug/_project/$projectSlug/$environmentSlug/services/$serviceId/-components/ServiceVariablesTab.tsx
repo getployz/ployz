@@ -36,8 +36,9 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
   changes: ReadonlyMap<string, unknown>;
 }) {
   const store = useStoreWriter(organizationSlug);
-  const variables = serviceVariables(serviceSettingRows(settings, service.name), service.id, changes);
-  const writer = storeVariableWriter(store, environment, service.name, variables);
+  const rows = serviceSettingRows(settings, service.name);
+  const variables = serviceVariables(rows, service.id, changes, new Set(settings.never_synced));
+  const writer = storeVariableWriter(store, environment, service.name, variables, rows);
 
   return (
     <ServiceVariablesView
@@ -51,13 +52,14 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
       onSealVariable={(variable) => writer.seal(variable.key, variable.value.value)}
       onUpdateMetadata={(variable, patch) => writer.export(variable.key, patch.exported ?? variable.exported)}
       onApplyRaw={({ creates, updates, deletes }) => writer.replace([...creates, ...updates], deletes)}
+      onNeverSync={(variable, marked) => writer.neverSync(variable.key, marked)}
     />
   );
 }
 
 /** A Service's variables tab: its variables, the raw editor and the variables Ployz adds. */
 function ServiceVariablesView({
-  variables, writer, managed, valueTargets, serviceNames, onCreateVariable, onSealVariable, onUpdateMetadata, onApplyRaw, allowSealOnCreate = false,
+  variables, writer, managed, valueTargets, serviceNames, onCreateVariable, onSealVariable, onUpdateMetadata, onApplyRaw, onNeverSync, allowSealOnCreate = false,
 }: {
   variables: VariableRecord[];
   writer: VariableWriter;
@@ -69,6 +71,7 @@ function ServiceVariablesView({
   onSealVariable: (variable: PlainVariableRecord) => void;
   onUpdateMetadata: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
   onApplyRaw: (diff: RawEditorDiff) => Persistable;
+  onNeverSync: (variable: VariableRecord, marked: boolean) => void;
   allowSealOnCreate?: boolean;
 }) {
   const [rawEditorOpen, setRawEditorOpen] = useState(false);
@@ -82,6 +85,7 @@ function ServiceVariablesView({
         onCreateVariable={onCreateVariable}
         onSealVariable={onSealVariable}
         onUpdateMetadata={onUpdateMetadata}
+        onNeverSync={onNeverSync}
         valueTargets={valueTargets}
         serviceNames={serviceNames}
         headerActions={

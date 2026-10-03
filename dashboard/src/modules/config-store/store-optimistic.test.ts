@@ -1,9 +1,9 @@
 import { QueryClient } from "@tanstack/react-query";
-import type { DeploymentView, DiffView, DomainsView, EnvironmentView, ServiceId, ServicesView } from "@ployz/sdk";
+import type { DeploymentView, DiffView, DomainsView, EnvironmentView, RowId, ServiceId, ServiceListing, ServicesView, SyncView } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import { expect, it } from "vitest";
 import { applyOptimistic } from "./store-optimistic";
-import { diffQuery, environmentSettingsQuery, servicesQuery, storeViewOptions } from "./store-view.queries";
+import { diffQuery, environmentSettingsQuery, servicesQuery, storeViewOptions, syncQuery } from "./store-view.queries";
 
 const ref = { project: "shop", environment: "production" };
 // SAFETY: test ids stand in for the Store's UUIDs.
@@ -17,12 +17,12 @@ function cached() {
   const put = (query: Parameters<typeof storeViewOptions>[2], value: DiffView | EnvironmentView | ServicesView) =>
     queryClient.setQueryData<unknown>(key(query), { ok: true, value });
   put(diffQuery(ref), {
-    environment, version: "3:1:1", saved: 1, published: false, hints: [], total_count: 3, changes: [
-      { type: "service", id: "w", name: "web", lifecycle: "update", comparison: null, data: null, settings: [
-        { path: "web.replicas", kind: "update", before: 1, after: 3, canRestore: true },
-        { path: "web.startCommand", kind: "update", before: null, after: "serve", canRestore: true },
+    environment, version: "3:1:1", saved: 1, published: false, hints: [], incoming: [], follow_hints: [], total_count: 3, changes: [
+      { type: "service", id: "w", row: "w:node" as RowId, name: "web", lifecycle: "update", comparison: null, data: null, settings: [
+        { path: "web.replicas", kind: "update", before: 1, after: 3, canRestore: true, row: null },
+        { path: "web.startCommand", kind: "update", before: null, after: "serve", canRestore: true, row: null },
       ] },
-      { type: "service", id: "c", name: "cache", lifecycle: "create", comparison: null, data: null, settings: [] },
+      { type: "service", id: "c", row: "c:node" as RowId, name: "cache", lifecycle: "create", comparison: null, data: null, settings: [] },
     ],
   } satisfies DiffView);
   put(environmentSettingsQuery(ref), { environment, settings: [
@@ -30,8 +30,8 @@ function cached() {
     { path: "web.startCommand", value: "serve", default: null, apply: "staged" },
   ] } satisfies EnvironmentView);
   put(servicesQuery(ref), { environment, services: [
-    { id: id("w"), name: "web", private_dns: "web", source: "image", change: "update", template: null },
-    { id: id("c"), name: "cache", private_dns: "cache", source: "image", change: "create", template: null },
+    { id: id("w"), row: "w:node" as RowId, name: "web", private_dns: "web", source: "image", change: "update", template: null },
+    { id: id("c"), row: "c:node" as RowId, name: "cache", private_dns: "cache", source: "image", change: "create", template: null },
   ] } satisfies ServicesView);
   const read = <V,>(query: Parameters<typeof storeViewOptions>[2]) => (queryClient.getQueryData<{ value: V }>(key(query)))?.value;
   return { queryClient, read };
@@ -116,4 +116,63 @@ it("shows each command of a Batch at once, as it would alone", async () => {
   ] });
   expect(read<ServicesView>(servicesQuery(ref))?.services.map((service) => [service.name, service.change]))
     .toEqual([["web", "update"], ["cache", "create"], ["postgres", "create"]]);
+});
+
+it("shows a mark and an unmark at once, by the rows they name", async () => {
+  const { queryClient, read } = cached();
+  const row = (name: string) => `w:variables.${name}` as RowId;
+  queryClient.setQueryData<{ ok: true; value: EnvironmentView }>(
+    storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, environmentSettingsQuery(ref)).queryKey,
+    (cached) => cached && { ok: true, value: { ...cached.value, never_synced: [row("A"), row("B")] } },
+  );
+  const marks = () => read<EnvironmentView>(environmentSettingsQuery(ref))?.never_synced;
+  await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: ref, rows: [row("C")] });
+  expect(marks()).toEqual([row("A"), row("B"), row("C")]);
+  await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: ref, rows: [row("A")], off: true });
+  expect(marks()).toEqual([row("B"), row("C")]);
+});
+
+it("stages an edit of a Service the review lacks under its listing's row", async () => {
+  const { queryClient, read } = cached();
+  // A Branch's copy: its own id, its lineage's row.
+  const db: ServiceListing = { id: id("d2"), row: "d:node" as RowId, name: "db", private_dns: "db", source: "image", change: null, template: null };
+  queryClient.setQueryData<{ ok: true; value: ServicesView }>(
+    storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, servicesQuery(ref)).queryKey,
+    (cached) => cached && { ok: true, value: { ...cached.value, services: [...cached.value.services, db] } },
+  );
+  await applyOptimistic(queryClient, "acme", { command: "add_domain", environment: ref, service: "db", port: 5432, hostname: "db.example.com" });
+  expect(read<DiffView>(diffQuery(ref))?.changes.at(-1)).toMatchObject({ name: "db", id: "d2", row: "d:node" });
+});
+
+it("takes a newly marked row out of a Sync from the marking Environment at once, marked by it", async () => {
+  const { queryClient, read } = cached();
+  const fix = { project: "shop", environment: "fix-api" };
+  const query = syncQuery(fix, "production");
+  const offer = (name: string) => ({
+    row: `a:variables.${name}` as RowId, node: "api", kind: "service" as const, name: `env.${name}`,
+    change: "changed" as const, from: "x", into: "y", ticked: true, requires: null, secret: null,
+  });
+  queryClient.setQueryData<unknown>(storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, query).queryKey, { ok: true, value: {
+    from: { ...environment, name: "fix-api" }, into: environment, at_merge: null, version: "1", rows: [offer("A"), offer("B")], never_synced: [],
+  } satisfies SyncView });
+  await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: fix, rows: [offer("A").row] });
+  const view = read<SyncView>(query);
+  expect(view?.rows.map((row) => row.name)).toEqual(["env.B"]);
+  expect(view?.never_synced).toEqual([{ row: "a:variables.A", node: "api", kind: "service", name: "env.A", marks: [{ environment: "fix-api", row: "a:variables.A" }] }]);
+});
+
+it("takes an unmarked row's mark out of a Sync at once, dropping a row left with none", async () => {
+  const { queryClient, read } = cached();
+  const fix = { project: "shop", environment: "fix-api" };
+  const query = syncQuery(fix, "production");
+  const marked = (name: string, environments: string[]) => ({
+    row: `a:variables.${name}` as RowId, node: "api", kind: "service" as const, name: `env.${name}`,
+    marks: environments.map((environment) => ({ environment, row: `a:variables.${name}` as RowId })),
+  });
+  queryClient.setQueryData<unknown>(storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, query).queryKey, { ok: true, value: {
+    from: { ...environment, name: "fix-api" }, into: environment, at_merge: null, version: "1", rows: [],
+    never_synced: [marked("A", ["fix-api"]), marked("B", ["fix-api", "production"]), marked("C", ["fix-api"])],
+  } satisfies SyncView });
+  await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: fix, rows: [marked("A", []).row, marked("B", []).row], off: true });
+  expect(read<SyncView>(query)?.never_synced).toEqual([marked("B", ["production"]), marked("C", ["fix-api"])]);
 });

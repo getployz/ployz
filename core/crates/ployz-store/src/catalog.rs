@@ -153,6 +153,10 @@ fn target(target: &Target) -> Value {
     match target {
         Target::Mount(_) => mount(),
         Target::Setting(one) => setting(*one),
+        Target::Source => json!({
+            "title": "Source",
+            "description": "Where the Service runs from, as one change: its image, or its repository and root directory. Discard takes it back whole; set image or repository to change it.",
+        }),
         Target::Variable(_) => variables::schema(),
         Target::Exported(_) => json!({
             "title": "Exported",

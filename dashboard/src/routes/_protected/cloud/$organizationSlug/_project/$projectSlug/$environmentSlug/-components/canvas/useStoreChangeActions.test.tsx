@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { JsonValue } from "@ployz/sdk";
+import type { JsonValue, RowId } from "@ployz/sdk";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
 import { afterEach, expect, it, vi } from "vitest";
@@ -26,10 +26,11 @@ const admitted = { ok: true, value: { written: "deployment", id: "d" } } as neve
 const admittedIds: string[] = [];
 
 function Deploy() {
-  const { deploy, discard, dialog } = useStoreChangeActions("acme", ref, "2:1:0", (id) => admittedIds.push(id));
+  const { deploy, discard, neverSync, dialog } = useStoreChangeActions("acme", ref, "2:1:0", (id) => admittedIds.push(id));
   return <>
     <button type="button" onClick={() => deploy("  Ship the api  ")}>Deploy now</button>
     <button type="button" onClick={() => discard("web.replicas")}>Discard replicas</button>
+    <button type="button" onClick={() => neverSync("api.env.CACHE_TTL", "a:variables.CACHE_TTL" as RowId)}>Never sync CACHE_TTL</button>
     {dialog}
   </>;
 }
@@ -81,6 +82,18 @@ it("discards a Setting by its Store path, through the Environment's queue", asyn
   expect(test.admits()).toEqual([{ command: "discard", environment: ref, path: "web.replicas", version: "2:1:0" }]);
 });
 
+it("marks an arrived change's row Never sync here and discards it in one Batch, so it goes and nothing follows into it again", async () => {
+  const test = setup();
+  test.write.mockResolvedValueOnce({ ok: true, value: { written: "batch", results: [] } } as never);
+
+  act(() => { fireEvent.click(screen.getByText("Never sync CACHE_TTL")); });
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
+  expect(test.admits()).toEqual([{ command: "batch", environment: ref, commands: [
+    { command: "never_sync", environment: ref, rows: ["a:variables.CACHE_TTL"] },
+    { command: "discard", environment: ref, path: "api.env.CACHE_TTL", version: "2:1:0" },
+  ] }]);
+});
+
 it("fails closed when the Servers can't be checked: nothing to accept, and the Store's reason shows", async () => {
   const test = setup();
   test.write.mockResolvedValueOnce(refusal("unavailable", { volumes: ["pg-data"] }));
@@ -89,6 +102,16 @@ it("fails closed when the Servers can't be checked: nothing to accept, and the S
   await waitFor(() => expect(toast.error).toHaveBeenCalledWith("refused: unavailable"));
   expect(screen.queryByPlaceholderText("shop/production")).toBeNull();
   expect(test.write).toHaveBeenCalledTimes(1);
+  expect(admittedIds).toEqual([]);
+});
+
+it("shows the Store's reason a Deploy waits, naming each secret without a value", async () => {
+  const test = setup();
+  const message = "production has secrets without a value: set api.env.KEY, web.env.API_KEY before deploying";
+  test.write.mockResolvedValueOnce({ ok: false, refusal: { code: "conflict", message, details: { secrets: ["api.env.KEY", "web.env.API_KEY"] } } });
+
+  act(() => { fireEvent.click(screen.getByText("Deploy now")); });
+  await waitFor(() => expect(toast.error).toHaveBeenCalledWith(message));
   expect(admittedIds).toEqual([]);
 });
 

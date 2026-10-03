@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { EnvironmentRef } from "@ployz/sdk";
+import type { EnvironmentRef, RowId } from "@ployz/sdk";
 import { DeletionDialog, type DeletionCheck } from "#/components/deletion-dialog";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
@@ -9,8 +9,8 @@ type Action = "deploy" | "publish";
 type Message = string | null;
 
 /**
- * The bottom bar's actions over the Config Store: Deploy, Save without deploying (publish) and Discard, each in the
- * Environment's write queue after its pending edits, so the CLI and this tab share one queue of Deployments.
+ * The bottom bar's actions over the Config Store: Deploy, Save without deploying (publish), Discard and Never sync,
+ * each in the Environment's write queue after its pending edits, so the CLI and this tab share one queue of Deployments.
  *
  * When a Deploy or Publish would delete Volume data the Servers hold, the Store refuses with `confirmation_required`;
  * the user reads every Volume that goes, types where, and it runs again accepting exactly those. Any other refusal
@@ -60,11 +60,20 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     writer.commit({ command: "discard", environment, path, version });
   }
 
+  /** Marks `row` Never sync here and discards `path`, all or none: what arrived goes, and nothing follows into it again. */
+  function neverSync(path: string, row: RowId) {
+    writer.commit({ command: "batch", environment, commands: [
+      { command: "never_sync", environment, rows: [row] },
+      { command: "discard", environment, path, version },
+    ] });
+  }
+
   return {
     deploy,
     admitting,
     publish: () => void run("publish", { accept: [], version }).then(setLoss),
     discard,
+    neverSync,
     dialog: (
       <DeletionDialog
         open={loss !== null}

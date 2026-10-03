@@ -1,5 +1,5 @@
 import { Fragment, useState, type ReactNode } from "react";
-import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
+import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { ChevronsUpDownIcon, GitBranchIcon, GitBranchPlusIcon, LayoutGridIcon, MoreHorizontalIcon, Settings2Icon } from "lucide-react";
 import {
@@ -183,10 +183,6 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
               </CommandGroup>
               <CommandSeparator />
               <CommandGroup>
-                {current?.parent && <CommandItem value="review" onSelect={() => go(() => navigate({ to: ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO,
-                  params: { organizationSlug, projectSlug, environmentSlug } }))}>
-                  <GitBranchIcon />Manage {current.name}
-                </CommandItem>}
                 {current && <CommandItem value="new-branch" onSelect={() => go(() => navigate({ to: ENVIRONMENT_NEW_BRANCH_ROUTE_TO,
                   params: { organizationSlug, projectSlug, environmentSlug } }))}>
                   <GitBranchPlusIcon />New branch of {current.name}

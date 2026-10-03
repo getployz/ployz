@@ -15,10 +15,15 @@ export const storeChangeSources = {
   config_registry_credential: { key: ["environment_id"] },
   config_service_policy: { key: ["environment_id"] },
   config_environment_branch: { key: ["environment_id"] },
+  config_sync_base: { key: ["environment_id"] },
+  config_never_sync: { key: ["environment_id"] },
+  // ponytail: logs the receiver only; another tab on the sender sees what it synced once the sender changes too.
+  config_sync_arrival: { key: ["environment_id"] },
   config_build_order: { key: ["organization_id"] },
   config_pr_plan: { key: ["project_id"] },
   config_pr_environment: { key: ["environment_id"] },
-  config_conditional_save: { key: ["environment_id"] },
+  config_conditional_sync: { key: ["environment_id"] },
+  config_held_secret: { key: ["environment_id"] },
   config_pull_request: { key: ["repository_id", "number"] },
 } satisfies Record<string, { key: readonly string[] }>;
 

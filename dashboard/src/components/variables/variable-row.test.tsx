@@ -159,4 +159,43 @@ describe("VariableRow", () => {
     expect(screen.queryByText("Seal")).toBeNull();
     expect(screen.queryByText("Edit")).toBeNull();
   });
+
+  it("says a secret needs a value, and Set value seals the one typed", async () => {
+    const onSealVariable = vi.fn();
+    render(<VariableRow variable={{ ...sealedVariable(), value: { type: "sealed", needsValue: true } }} collection={collection}
+      onSealVariable={onSealVariable} />);
+    expect(screen.getByText("needs a value")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(await screen.findByText("Set value"));
+    const input = screen.getByLabelText("Secret value");
+    expect(input.getAttribute("type")).toBe("password");
+    fireEvent.change(input, { target: { value: "prod-key" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onSealVariable).toHaveBeenCalledWith(expect.objectContaining({ key: "API_KEY", value: { type: "plain", value: "prod-key" } }));
+    expect(collection.update).not.toHaveBeenCalled();
+  });
+
+  it("pins a variable marked Never sync, and its menu syncs it again", async () => {
+    const onNeverSync = vi.fn();
+    const variable = plainVariable({ neverSynced: true });
+    render(<VariableRow variable={variable} collection={collection} onSealVariable={vi.fn()} onNeverSync={onNeverSync} />);
+    expect(screen.getByText("Never synced")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(await screen.findByText("Sync again"));
+    expect(onNeverSync).toHaveBeenCalledWith(variable, false);
+  });
+
+  it("offers Never sync for a variable that syncs, without a pin", async () => {
+    const onNeverSync = vi.fn();
+    const variable = plainVariable();
+    render(<VariableRow variable={variable} collection={collection} onSealVariable={vi.fn()} onNeverSync={onNeverSync} />);
+    expect(screen.queryByText("Never synced")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(await screen.findByText("Never sync"));
+    expect(onNeverSync).toHaveBeenCalledWith(variable, true);
+  });
 });

@@ -143,34 +143,34 @@ it("shows pending sets and unsets as their values, in order, knowing no edit rul
   expect(shown.settings.map((row) => row.value)).toEqual([6, null]);
 });
 
-it("runs a Move after pending edits in every Environment", async () => {
+it("runs a Sync after pending edits in every Environment", async () => {
   const test = setup(view(2, 1));
   const edit = deferred<StoreResult<ConfigWritten>>();
-  test.write.mockImplementationOnce(() => edit.promise).mockResolvedValueOnce({ ok: true, value: { written: "moved" } as never });
+  test.write.mockImplementationOnce(() => edit.promise).mockResolvedValueOnce({ ok: true, value: { written: "synced" } as never });
   act(() => { void test.edit({ environment: { project: "shop", environment: "staging" }, changes: replicas(3) }).isPersisted.promise.catch(() => {}); });
-  const moved = test.writer.commit({ command: "move", move: "save", from: ref, into: null, picks: null });
+  const synced = test.writer.commit({ command: "sync", from: ref, into: null, version: "1", picks: null });
   await new Promise((resolve) => setTimeout(resolve, 10));
   expect(test.write).toHaveBeenCalledTimes(1);
   edit.resolve(edited(3));
-  await moved.isPersisted.promise;
-  expect(test.write.mock.calls[1]?.[0]).toMatchObject({ data: { command: { command: "move" } } });
+  await synced.isPersisted.promise;
+  expect(test.write.mock.calls[1]?.[0]).toMatchObject({ data: { command: { command: "sync" } } });
 });
 
-it("runs a Move after a pending Batch that edits, as after an edit", async () => {
+it("runs a Sync after a pending Batch that edits, as after an edit", async () => {
   const test = setup(view(2, 1));
   const batch = deferred<StoreResult<ConfigWritten>>();
-  test.write.mockImplementationOnce(() => batch.promise).mockResolvedValueOnce({ ok: true, value: { written: "moved" } as never });
+  test.write.mockImplementationOnce(() => batch.promise).mockResolvedValueOnce({ ok: true, value: { written: "synced" } as never });
   const staging = { project: "shop", environment: "staging" };
   act(() => {
     void test.writer.commit({ command: "batch", environment: staging, commands: [{ command: "edit", environment: staging, expect: null, changes: replicas(3) }] })
       .isPersisted.promise.catch(() => {});
   });
-  const moved = test.writer.commit({ command: "move", move: "save", from: ref, into: null, picks: null });
+  const synced = test.writer.commit({ command: "sync", from: ref, into: null, version: "1", picks: null });
   await new Promise((resolve) => setTimeout(resolve, 10));
   expect(test.write).toHaveBeenCalledTimes(1);
   batch.resolve({ ok: true, value: { written: "batch", results: [] } as never });
-  await moved.isPersisted.promise;
-  expect(test.write.mock.calls[1]?.[0]).toMatchObject({ data: { command: { command: "move" } } });
+  await synced.isPersisted.promise;
+  expect(test.write.mock.calls[1]?.[0]).toMatchObject({ data: { command: { command: "sync" } } });
 });
 
 it("runs a copied node after the edits made before it, not the ones queued behind it", async () => {
@@ -191,7 +191,7 @@ it("runs a copied node after the edits made before it, not the ones queued behin
 
 it("puts the write's committed review in the cache as it answers, before any refetch", async () => {
   const test = setup(view(2, 1));
-  const diff = { environment: view(3, 1).environment, version: "3:1:1", saved: 1, published: false, hints: [], total_count: 1, changes: [] };
+  const diff = { environment: view(3, 1).environment, version: "3:1:1", saved: 1, published: false, hints: [], incoming: [], follow_hints: [], total_count: 1, changes: [] };
   const key = storeViewOptions("acme", test.scope, diffQuery(ref)).queryKey;
   test.scope.queryClient.setQueryData<unknown>(key, { ok: true, value: { ...diff, total_count: 0 } });
   test.write.mockResolvedValueOnce({ ok: true, value: { written: "published" } as never, views: { diff } } as never);

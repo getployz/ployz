@@ -129,13 +129,17 @@ fn diff_groups_new_services_and_compares_edits_with_their_introduction() {
         json!([
             {
                 "type": "service", "id": "00000000-0000-4000-8000-000000000003", "name": "web",
+                "row": "00000000-0000-4000-8000-000000000003:node",
                 "lifecycle": "create", "comparison": "introduction",
-                "settings": [{ "path": "web.replicas", "kind": "update", "before": 1, "after": 3, "canRestore": true }],
+                "settings": [{
+                    "path": "web.replicas", "kind": "update", "before": 1, "after": 3, "canRestore": true,
+                    "row": "00000000-0000-4000-8000-000000000003:replicas",
+                }],
                 "data": null,
             },
             {
                 "type": "service", "id": "00000000-0000-4000-8000-000000000004", "name": "api",
-                "lifecycle": "create", "comparison": "introduction", "settings": [], "data": null,
+                "row": "00000000-0000-4000-8000-000000000004:node", "lifecycle": "create", "comparison": "introduction", "settings": [], "data": null,
             },
         ])
     );
@@ -205,7 +209,7 @@ fn resetting_a_new_nodes_setting_uses_its_introduction_and_publishes_nothing() {
             .iter()
             .map(|row| row.path.as_str())
             .collect::<Vec<_>>(),
-        ["web.image"]
+        ["web.source"]
     );
 }
 
@@ -374,10 +378,56 @@ fn discard_keeps_mounts_it_does_not_name() {
         )
         .unwrap();
     publish(&store, &who, None).unwrap();
+    // The mount falls in web's row for the Volume's lineage, as a Sync moves it.
+    let mount = diff(&store, &who)
+        .changes
+        .into_iter()
+        .flat_map(|change| change.settings)
+        .find(|row| row.path == "web.mounts.data")
+        .unwrap();
+    assert_eq!(
+        mount.row.unwrap().to_string(),
+        "00000000-0000-4000-8000-000000000003:mounts.00000000-0000-4000-8000-000000000005"
+    );
     set(&store, &who, "web.replicas", json!(3));
     discard(&store, &who, Some("web.replicas"), None).unwrap();
     assert_eq!(value(&store, &who, "web.mounts.data"), Some(json!("/data")));
     // web was introduced before it mounted data: discarding the mount takes it out.
     discard(&store, &who, Some("web.mounts.data"), None).unwrap();
     assert_eq!(value(&store, &who, "web.mounts.data"), None);
+}
+
+/// A row of a compound Setting discards that Setting: a healthcheck's path edit
+/// discards `web.healthcheck`, and a source emptied the Setting it removed.
+#[test]
+fn a_compound_settings_row_discards_that_setting() {
+    let (store, who) = shop();
+    set(&store, &who, "web.healthcheck", json!("/old"));
+    backend::deploy(&store, &who, "production", 1);
+    set(&store, &who, "web.healthcheck", json!("/new"));
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("api.image").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    let view = diff(&store, &who);
+    let rows: Vec<_> = view
+        .changes
+        .iter()
+        .flat_map(|node| &node.settings)
+        .map(|row| (row.path.as_str(), row.can_restore))
+        .collect();
+    assert_eq!(rows, [("web.healthcheck", true), ("api.source", true)]);
+    for (path, _) in rows {
+        discard(&store, &who, Some(path), None).unwrap();
+    }
+    assert!(diff(&store, &who).changes.is_empty());
+    assert_eq!(value(&store, &who, "api.image"), Some(json!("caddy:2")));
 }

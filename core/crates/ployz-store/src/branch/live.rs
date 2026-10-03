@@ -191,7 +191,8 @@ pub(crate) fn live_names(
     Ok(names)
 }
 
-/// A Branch's view: its Parent, its Live Nodes and their owners, what Update would stage.
+/// A Branch's view: its Parent, its Live Nodes and their owners, and how many
+/// changes it would sync into its Parent.
 pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, RpcError> {
     let row = branch_row(tx, branch)?;
     let chain = chain(tx, &row.parent)?;
@@ -221,24 +222,7 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
             }
         })
         .collect();
-    let update = if parent.applied.services.is_empty() && parent.applied.volumes.is_empty() {
-        Vec::new()
-    } else {
-        let moving = Moving::update(
-            tx,
-            &parent.environment,
-            parent.applied.clone(),
-            branch,
-            row.base.clone(),
-        )?;
-        moving
-            .compare(&branch.working, None)?
-            .rows
-            .iter()
-            .filter(|row| matches!(row.role, BranchRole::Move { .. }))
-            .map(|row| moving.name(&branch.working, &row.key.to_string()))
-            .collect()
-    };
+    let to_parent = changes_into(tx, branch, &parent.environment)?;
     let setup = row
         .setup
         .iter()
@@ -260,7 +244,8 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
         kept: row.kept,
         setup,
         live,
-        update,
+        to_parent,
+        closes_at: crate::pull_request::closes_at(tx, &branch.summary.id)?,
         pull_request: crate::pull_request::of(tx, &branch.summary.id)?,
     })
 }

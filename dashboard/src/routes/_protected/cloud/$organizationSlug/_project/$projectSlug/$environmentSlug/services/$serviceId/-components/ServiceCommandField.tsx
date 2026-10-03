@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { PlusIcon } from "lucide-react";
 import { ConfirmableInput } from "#/components/stageable/confirmable-input";
 import { Button } from "#/components/ui/button";
@@ -10,7 +10,7 @@ import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/
  * confirming blank closes it again. A staged change shows pink, titled with what's deployed.
  */
 export function ServiceCommandField({
-  label, addLabel = label, description, placeholder, value, baselineValue, isChanged, compact = false, note, validate, onCommit,
+  label, addLabel = label, description, placeholder, value, baselineValue, isChanged, compact = false, validate, onCommit,
 }: {
   label: string;
   /** The compact link's words; the label by default. */
@@ -23,7 +23,6 @@ export function ServiceCommandField({
   /** Collapsed, only a small link-styled button (a command most Services never need). */
   compact?: boolean;
   /** Under the hint: what the next Deploy changes here, with Undo. */
-  note?: ReactNode;
   validate: (raw: string) => string | null;
   onCommit: (value: string | null) => void;
 }) {
@@ -60,7 +59,6 @@ export function ServiceCommandField({
       <FieldContent>
         <FieldLabel>{label}</FieldLabel>
         {description ? <FieldDescription>{description}</FieldDescription> : null}
-        {note}
       </FieldContent>
       <div className="@md/field-group:shrink-0 @md/field-group:basis-56">
         <ConfirmableInput aria-label={label} aria-invalid={current.error ? true : undefined} error={current.error}

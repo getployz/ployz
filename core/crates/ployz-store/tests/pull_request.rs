@@ -8,11 +8,12 @@
 use ployz_core::config::ServiceGitAccess;
 use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, Admit, AuthorizedRepository, Automated, BranchHead, CreateBranch, CreateGitService,
-    CreateProject, Deploy, DeploymentId, DeploymentStatus, EnvironmentId, EnvironmentName,
-    EnvironmentRef, EnvironmentsQuery, OrganizationId, PrPlansQuery, ProjectId, ProjectName,
-    PullRequest, PullRequestQuery, Removal, RunEvidence, RunnerId, ServiceLineageId, SetPrPlan,
-    SetupCommand, Sweep, SystemEvent, Trusted, Written,
+    Actor, Admit, AuthorizedRepository, Automated, BranchHead, Change, CreateBranch,
+    CreateGitService, CreateProject, CreateService, Deploy, DeploymentId, DeploymentStatus, Edit,
+    EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentsQuery, OrganizationId,
+    PrPlansQuery, ProjectId, ProjectName, PullRequest, PullRequestQuery, Removal, RunEvidence,
+    RunnerId, ServiceLineageId, SetPrPlan, SettingPath, SetupCommand, Sweep, SystemEvent, Trusted,
+    Written,
 };
 use serde_json::json;
 
@@ -402,7 +403,7 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
         )
         .unwrap();
     assert!(!view.passing);
-    assert_eq!(view.reason, "1 change to save in Ployz");
+    assert_eq!(view.reason, "1 change to sync in Ployz");
 }
 
 #[test]
@@ -579,6 +580,21 @@ fn idle_branches_close_after_a_week_unless_kept() {
             .unwrap();
         run(&store, &id, &["web"]);
     }
+    // The Branch view says when: a week after its Deploy, and never for the others.
+    let closes_at = |name: &str| {
+        store
+            .read(
+                &who,
+                &ployz_store::BranchQuery {
+                    environment: at(name),
+                },
+            )
+            .unwrap()
+            .closes_at
+    };
+    let idle = closes_at("idle").unwrap();
+    assert!((now() + 7 * DAY - idle).abs() < 60);
+    assert_eq!((closes_at("kept"), closes_at("fresh")), (None, None));
     // Six days on, nothing; eight days on, the idle one closes. `fresh` never deployed.
     let early = sweep(&store, &who, now() + 6 * DAY);
     assert!(early.closing.is_empty() && early.removed.is_empty());
@@ -600,4 +616,184 @@ fn idle_branches_close_after_a_week_unless_kept() {
         listed(&store, &who),
         ["fresh<production", "kept<production", "production"]
     );
+}
+
+/// Admit a Deploy of `services` of `environment` and run it.
+fn deploy(store: &ConfigStore, who: &Actor, environment: &str, services: &[&str]) {
+    let id = DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
+    store
+        .write_trusted(
+            who,
+            &Admit::Deploy(Deploy {
+                id: id.clone(),
+                environment: at(environment),
+                services: services
+                    .iter()
+                    .map(|name| ServiceName::parse(*name).unwrap())
+                    .collect(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    run(store, &id, services);
+}
+
+/// Cloud vouching that `acme/web` has `main` and `release`.
+fn vouched() -> Trusted {
+    Trusted {
+        repositories: vec![AuthorizedRepository {
+            repository: backend::repo_name("acme/web"),
+            repository_id: backend::repo_id(11),
+            access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
+            default_branch: backend::git_branch("main"),
+            branches: vec![backend::git_branch("release")],
+        }],
+        ..Trusted::default()
+    }
+}
+
+fn set(store: &ConfigStore, who: &Actor, environment: &str, path: &str, value: serde_json::Value) {
+    store
+        .write_trusted(
+            who,
+            &Edit {
+                environment: at(environment),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse(path).unwrap(),
+                    value,
+                }],
+            },
+            &vouched(),
+        )
+        .unwrap();
+}
+
+fn image_service(store: &ConfigStore, who: &Actor, environment: &str, n: u8, name: &str) {
+    store
+        .write(
+            who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(n)).unwrap(),
+                environment: at(environment),
+                name: ServiceName::parse(name).unwrap(),
+                image: Some(format!("{name}:1")),
+                template: None,
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_destinations_count_is_the_rows_its_sync_offers_where_nodes_are_used_live() {
+    let store = backend::open();
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse(uuid(1)).unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+            },
+        )
+        .unwrap();
+    // production deploys `release`, and runs `cache`, which `site` uses.
+    store
+        .write_trusted(
+            &who,
+            &CreateGitService {
+                id: ServiceLineageId::parse(uuid(3)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("site").unwrap(),
+                repository: backend::repo_name("acme/web"),
+                branch: Some(backend::git_branch("release")),
+            },
+            &vouched(),
+        )
+        .unwrap();
+    image_service(&store, &who, "production", 4, "cache");
+    set(
+        &store,
+        &who,
+        "production",
+        "site.env.CACHE_URL",
+        json!("${{ cache.PLOYZ_PRIVATE_DOMAIN }}"),
+    );
+    deploy(&store, &who, "production", &["cache"]);
+
+    // pr-5 copies `site` and uses `cache` live; then it adds and runs its own `db`.
+    plan(&store, &who, on());
+    let opened = pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    run(&store, &opened.admitted[0].deployment.id, &["site"]);
+    image_service(&store, &who, "pr-5", 5, "db");
+    set(
+        &store,
+        &who,
+        "pr-5",
+        "site.env.DB_URL",
+        json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}"),
+    );
+    deploy(&store, &who, "pr-5", &["db"]);
+    // Its Branch `qa` deploys `main`, so it is the Destination; it uses `db` live.
+    store
+        .write(
+            &who,
+            &CreateBranch {
+                id: EnvironmentId::parse(uuid(6)).unwrap(),
+                from: at("pr-5"),
+                name: EnvironmentName::parse("qa").unwrap(),
+                copy: vec![node("site")],
+                live: Vec::new(),
+                setup: Vec::new(),
+                keep: true,
+                fix: None,
+            },
+        )
+        .unwrap();
+    set(&store, &who, "qa", "site.branch", json!("main"));
+    store
+        .write(
+            &who,
+            &ployz_store::Command::Publish(ployz_store::Publish {
+                environment: at("qa"),
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+        )
+        .unwrap();
+    set(&store, &who, "pr-5", "site.env.MODE", json!("fast"));
+
+    // `db` stays where qa uses it live: the page counts what the review offers.
+    let review = store
+        .read(
+            &who,
+            &ployz_store::SyncQuery {
+                from: at("pr-5"),
+                into: None,
+                when: Some(ployz_store::When::AtMerge),
+            },
+        )
+        .unwrap();
+    assert_eq!(review.into.name.as_str(), "qa");
+    let rows: Vec<String> = review.rows.iter().map(|row| row.at.to_string()).collect();
+    assert_eq!(rows, ["site.env.MODE"]);
+    let view = store
+        .read(
+            &who,
+            &PullRequestQuery {
+                repository_id: backend::repo_id(11),
+                number: backend::pr_number(5),
+            },
+        )
+        .unwrap();
+    let destinations = &view.environments[0].destinations;
+    assert_eq!(destinations.len(), 1);
+    assert_eq!(destinations[0].name.as_str(), "qa");
+    assert_eq!(destinations[0].changes, review.rows.len());
+    assert_eq!(view.reason, "1 change to sync in Ployz");
 }

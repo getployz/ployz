@@ -256,11 +256,8 @@ fn a_git_service_round_trips_get_edit_publish() {
 
     let diff = store.read(&who, &DiffQuery::default()).unwrap();
     let rows = &diff.changes[0].settings;
-    let repository = rows
-        .iter()
-        .find(|row| row.path == "web.repository")
-        .unwrap();
-    assert_eq!(repository.after, json!("acme/docs"));
+    let source = rows.iter().find(|row| row.path == "web.source").unwrap();
+    assert_eq!(source.after["repository"], json!("acme/docs"));
     let published = store
         .write_trusted(
             &who,

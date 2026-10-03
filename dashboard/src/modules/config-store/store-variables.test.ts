@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import type { EnvironmentView } from "@ployz/sdk";
+import type { EnvironmentView, RowId } from "@ployz/sdk";
 import { serviceSettingRows } from "./store-services";
 import { serviceVariables } from "./store-variables";
 import { withPendingChanges } from "./store-view.queries";
@@ -42,4 +42,28 @@ it("shows pending variable writes at once, and a new secret only as sealed", () 
   ]);
   expect(JSON.stringify(shown)).not.toMatch(/hunter2|s3cret|ghp_rotated/u);
   expect(shown.settings.find((row) => row.path === "web.registryCredential")?.value).toEqual({ secret: true });
+});
+
+it("says which secret needs a value, and keeping it keeps it so", () => {
+  const valueless = { ...view, settings: [{ path: "web.env.TOKEN", value: { secret: false }, default: null, apply: "staged" as const }] };
+  const needs = (shown: EnvironmentView) => serviceVariables(serviceSettingRows(shown, "web"), "web-id")
+    .map(({ key, value }) => ({ key, needsValue: value.type === "sealed" && value.needsValue }));
+  expect(needs(valueless)).toEqual([{ key: "TOKEN", needsValue: true }]);
+  expect(needs(withPendingChanges(valueless, [{ op: "set", path: "web.env.TOKEN", value: { secret: true } }])))
+    .toEqual([{ key: "TOKEN", needsValue: true }]);
+  expect(needs(withPendingChanges(valueless, [{ op: "set", path: "web.env.TOKEN", value: { secret: "s3cret" } }])))
+    .toEqual([{ key: "TOKEN", needsValue: false }]);
+});
+
+it("marks the variables their Environment never syncs, by their rows", () => {
+  const row = (at: string) => `w:variables.${at}` as RowId;
+  const marked = { ...view, settings: view.settings.map((setting) => {
+    const key = /^web\.env\.([^.]+)$/u.exec(setting.path)?.[1];
+    return key ? { ...setting, row: row(key) } : setting;
+  }), never_synced: [row("LOG_LEVEL"), "a:variables.API_KEY" as RowId] };
+  expect(serviceVariables(serviceSettingRows(marked, "web"), "web-id", new Map(), new Set(marked.never_synced))
+    .map(({ key, neverSynced }) => ({ key, neverSynced }))).toEqual([
+    { key: "API_KEY", neverSynced: false },
+    { key: "LOG_LEVEL", neverSynced: true },
+  ]);
 });

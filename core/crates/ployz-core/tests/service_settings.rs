@@ -4,7 +4,8 @@
 )]
 
 use ployz_core::config::{
-    compare_service_settings, parse_service_config, parse_service_setting, restore_service_setting,
+    At, Setting, compare_service_settings, parse_service_config, parse_service_setting,
+    restore_service_setting,
 };
 use serde_json::{Value, json};
 
@@ -29,18 +30,24 @@ fn service_comparison_and_restore_preserve_authored_source_identity() {
     let current = parse_service_config(edited).unwrap();
     let rows = compare_service_settings(&current, Some(&baseline));
     assert_eq!(
-        rows.iter().map(|row| row.path.as_str()).collect::<Vec<_>>(),
-        ["source.repository", "source.branch", "startCommand"]
+        rows.iter()
+            .map(|(row, _)| row.path.as_str())
+            .collect::<Vec<_>>(),
+        ["source", "source.branch", "startCommand"]
     );
-    let restored =
-        restore_service_setting(current.clone(), &baseline, "source.repository").unwrap();
+    assert_eq!(
+        rows.iter().map(|(_, at)| at.clone()).collect::<Vec<_>>(),
+        [Setting::Source, Setting::Branch, Setting::StartCommand].map(|s| Some(At::Setting(s)))
+    );
+    let restored = restore_service_setting(current.clone(), &baseline, "source").unwrap();
     assert_eq!(
         serde_json::to_value(&restored).unwrap()["source"]["access"]["installationId"],
         7
     );
     assert_eq!(
         serde_json::to_value(&restored).unwrap()["source"]["branch"]["type"],
-        "disconnected"
+        "disconnected",
+        "the git branch is the Service's own"
     );
     assert_eq!(
         serde_json::to_value(restored).unwrap()["startCommand"],
@@ -51,16 +58,38 @@ fn service_comparison_and_restore_preserve_authored_source_identity() {
     image["source"] = json!({"version": 1, "type": "image", "image": "api:latest",
         "credentials": {"type": "configured", "credentialId": "00000000-0000-4000-8000-000000000002"}});
     let image = parse_service_config(image).unwrap();
+    let rows = compare_service_settings(&image, Some(&baseline));
+    assert_eq!(rows.len(), 1, "the branch goes with its source");
+    let (switched, at) = &rows[0];
+    assert_eq!(switched.path, "source");
+    assert_eq!(*at, Some(At::Setting(Setting::Source)));
     assert_eq!(
-        compare_service_settings(&image, Some(&baseline))[0].path,
-        "source"
+        switched.after["credentials"],
+        json!(true),
+        "never the credential"
     );
     assert_eq!(
-        restore_service_setting(image.clone(), &baseline, "source.branch").unwrap(),
-        baseline
+        restore_service_setting(image.clone(), &baseline, "source").unwrap(),
+        baseline,
+        "a Service without a git branch takes the baseline's"
     );
     assert!(compare_service_settings(&image, Some(&image)).is_empty());
     assert!(restore_service_setting(current, &baseline, "unrecognized.setting").is_err());
+}
+
+#[test]
+fn an_emptied_source_is_the_source_row_and_discard_brings_it_back() {
+    let git = parse_service_config(config()).unwrap();
+    let mut empty = config();
+    empty["source"] = json!({"version": 1, "type": "empty", "rootDir": "/"});
+    let empty = parse_service_config(empty).unwrap();
+    let rows = compare_service_settings(&empty, Some(&git));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (rows[0].0.path.as_str(), &rows[0].0.after, &rows[0].1),
+        ("source", &Value::Null, &Some(At::Setting(Setting::Source)))
+    );
+    assert_eq!(restore_service_setting(empty, &git, "source").unwrap(), git);
 }
 
 #[test]
@@ -74,8 +103,14 @@ fn compound_settings_compare_and_restore_the_edited_field() {
     let current = parse_service_config(input).unwrap();
     let rows = compare_service_settings(&current, Some(&baseline));
     assert_eq!(
-        rows.iter().map(|row| row.path.as_str()).collect::<Vec<_>>(),
-        ["healthcheck.timeoutSeconds", "build.dockerfilePath"]
+        rows.iter()
+            .map(|(row, _)| row.path.as_str())
+            .collect::<Vec<_>>(),
+        ["healthcheck", "build.dockerfilePath"]
+    );
+    assert_eq!(
+        rows.iter().map(|(_, at)| at.clone()).collect::<Vec<_>>(),
+        [Setting::Healthcheck, Setting::DockerfilePath].map(|s| Some(At::Setting(s)))
     );
     let restored =
         restore_service_setting(current.clone(), &baseline, "build.dockerfilePath").unwrap();
@@ -164,8 +199,18 @@ fn related_settings_preserve_ownership_redact_secrets_and_restore_stable_routes(
     let current = parse_service_config(after).unwrap();
     let rows = compare_service_settings(&current, Some(&baseline));
     assert_eq!(rows.len(), 2, "volume rename is not a mount edit");
-    let secret = rows.iter().find(|row| row.path == "env.TOKEN").unwrap();
+    let (secret, at) = rows
+        .iter()
+        .find(|(row, _)| row.path == "env.TOKEN")
+        .unwrap();
     assert!(!secret.can_restore);
+    assert_eq!(*at, Some(At::Variable("TOKEN".into())));
+    let (_, at) = rows
+        .iter()
+        .find(|(row, _)| row.path.starts_with("routes."))
+        .unwrap();
+    assert_eq!(*at, Some(At::Setting(Setting::Routes)));
+    let rows: Vec<_> = rows.into_iter().map(|(row, _)| row).collect();
     let output = serde_json::to_string(&rows).unwrap();
     assert!(!output.contains("private-"));
     let restored = restore_service_setting(
@@ -194,7 +239,9 @@ fn canonical_references_survive_renames_and_mount_changes_keep_one_owner() {
     );
     after["env"]["URL"]["parts"][0]["owner"]["lineageId"] = json!("other-owner");
     assert_eq!(
-        compare_service_settings(&parse_service_config(after).unwrap(), Some(&baseline))[0].path,
+        compare_service_settings(&parse_service_config(after).unwrap(), Some(&baseline))[0]
+            .0
+            .path,
         "env.URL"
     );
     for value in [
@@ -205,7 +252,9 @@ fn canonical_references_survive_renames_and_mount_changes_keep_one_owner() {
         edited["managedHostnames"] = value;
         let current = parse_service_config(edited).unwrap();
         assert_eq!(
-            compare_service_settings(&current, Some(&baseline))[0].path,
+            compare_service_settings(&current, Some(&baseline))[0]
+                .0
+                .path,
             "managedHostnames"
         );
     }
@@ -214,14 +263,18 @@ fn canonical_references_survive_renames_and_mount_changes_keep_one_owner() {
     let mounted = parse_service_config(before.clone()).unwrap();
     let added = compare_service_settings(&mounted, Some(&baseline));
     assert_eq!(added.len(), 1);
-    assert_eq!(added[0].kind, ployz_core::config::ChangeKind::Add);
+    assert_eq!(added[0].0.kind, ployz_core::config::ChangeKind::Add);
+    assert_eq!(
+        added[0].1, None,
+        "a mount's Volume lineage is the Store's to find"
+    );
     before["mounts"][0]["mountPath"] = json!("/other");
     let moved = compare_service_settings(&parse_service_config(before).unwrap(), Some(&mounted));
     assert_eq!(moved.len(), 1);
-    assert_eq!(moved[0].kind, ployz_core::config::ChangeKind::Update);
+    assert_eq!(moved[0].0.kind, ployz_core::config::ChangeKind::Update);
     let removed = compare_service_settings(&baseline, Some(&mounted));
     assert_eq!(removed.len(), 1);
-    assert_eq!(removed[0].kind, ployz_core::config::ChangeKind::Remove);
+    assert_eq!(removed[0].0.kind, ployz_core::config::ChangeKind::Remove);
 }
 
 #[test]
@@ -247,7 +300,7 @@ fn build_command_is_validated_compared_and_restored() {
     );
     let rows = compare_service_settings(&current, Some(&baseline));
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].path, "build.command");
+    assert_eq!(rows[0].0.path, "build.command");
     assert_eq!(
         restore_service_setting(current, &baseline, "build.command").unwrap(),
         baseline

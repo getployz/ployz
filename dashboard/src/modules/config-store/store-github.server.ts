@@ -53,13 +53,13 @@ export const descendsFrom = (installationId: number, repository: GithubResolvedR
 
 /**
  * Pull requests into the pushed branch that merged before their closed delivery arrived: the Store hears it now, so
- * their Conditional Saves freeze and a push with the merge commit carries them. Asks GitHub only when one stands.
+ * their Conditional Syncs freeze and a push with the merge commit carries them. Asks GitHub only when one stands.
  * ponytail: a PR Environment this closes leaves the Servers at the next sweep.
  */
 const freezeMerged = Effect.fn("StoreGithub.freezeMerged")(function* (
   store: ConfigStore, organizationId: string, payload: GithubPushReceivedEventData,
 ) {
-  const { standing } = yield* storeTry(() => store.pendingSaves(organizationId, payload.repositoryId, payload.branch));
+  const { standing } = yield* storeTry(() => store.pendingSyncs(organizationId, payload.repositoryId, payload.branch));
   for (const number of standing) {
     const live = yield* fetchInstallationPullRequest(payload.installationId, payload.repositoryId, number).pipe(
       Effect.catchIf(isGithubObservationNotFound, () => Effect.succeed(null)),
@@ -70,11 +70,11 @@ const freezeMerged = Effect.fn("StoreGithub.freezeMerged")(function* (
   }
 });
 
-/** The merge commits of frozen Conditional Saves on the branch that `head` contains: the push carries those. */
+/** The merge commits of frozen Conditional Syncs on the branch that `head` contains: the push carries those. */
 const mergedInto = Effect.fn("StoreGithub.mergedInto")(function* (
   store: ConfigStore, organizationId: string, payload: GithubPushReceivedEventData, repository: GithubResolvedRepository, head: string,
 ) {
-  const { merged } = yield* storeTry(() => store.pendingSaves(organizationId, payload.repositoryId, payload.branch));
+  const { merged } = yield* storeTry(() => store.pendingSyncs(organizationId, payload.repositoryId, payload.branch));
   const carried: string[] = [];
   for (const commit of merged) {
     if (yield* descendsFrom(payload.installationId, repository, commit, head)) carried.push(commit);

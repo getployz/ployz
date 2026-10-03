@@ -4,7 +4,7 @@
 //! Setting lists itself. Variables list as `SERVICE.env.KEY`, secrets as
 //! `{"secret": true}`: no read shows a secret.
 
-use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent};
+use ployz_core::config::{RowId, SavedEnvironmentIntent, SavedServiceIntent};
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -44,6 +44,10 @@ pub struct EnvironmentView {
     /// Settings without a value are left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub values: Option<Map<String, Value>>,
+    /// Every row the Environment marks Never sync, whichever Settings were asked for.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<RowId>>", optional)]
+    pub never_synced: Vec<RowId>,
 }
 
 /// One Setting's current Working State value.
@@ -57,6 +61,11 @@ pub struct SettingRow {
     pub default: Value,
     /// Whether a change to it waits for a Deploy.
     pub apply: Apply,
+    /// A variable's row, which [`crate::NeverSync`] names it by.
+    // ponytail: only variables, the one Setting the dashboard marks from here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub row: Option<crate::RowId>,
 }
 
 pub(crate) fn environment(
@@ -87,13 +96,25 @@ pub(crate) fn environment(
             .map_err(|_| crate::error::corrupt("Service name"))?;
         let mut row = |target: Target, value: Value, default: Value, apply: Apply| {
             if only.is_none_or(|only| *only == target) && !(whole && value == default) {
+                let row = match &target {
+                    Target::Variable(key) => Some(crate::branch::row_id(
+                        &service.lineage_id,
+                        &format!("variables.{key}"),
+                    )?),
+                    Target::Setting(_)
+                    | Target::Source
+                    | Target::Exported(_)
+                    | Target::Mount(_) => None,
+                };
                 settings.push(SettingRow {
                     path: SettingPath::at(&name, target),
                     value,
                     default,
                     apply,
+                    row,
                 });
             }
+            Ok::<_, RpcError>(())
         };
         let policy = policy::load(tx, &environment.summary.id, &service.id)?;
         for setting in ServiceSetting::ALL {
@@ -111,7 +132,7 @@ pub(crate) fn environment(
                 setting.value(&service.config, &policy),
                 default,
                 setting.apply(),
-            );
+            )?;
         }
         if let Some(Target::Variable(key) | Target::Exported(key)) = only {
             variables::find(service, key)?;
@@ -124,13 +145,13 @@ pub(crate) fn environment(
                 variables::shown(variable, &environment.names()),
                 Value::Null,
                 Apply::Staged,
-            );
+            )?;
             row(
                 Target::Exported(key),
                 Value::Bool(variable.exported),
                 Value::Bool(false),
                 Apply::Staged,
-            );
+            )?;
         }
         if let Some(Target::Mount(volume)) = only {
             environment.volume(volume)?;
@@ -142,10 +163,13 @@ pub(crate) fn environment(
                 Value::String(path),
                 Value::Null,
                 Apply::Staged,
-            );
+            )?;
         }
     }
     Ok(EnvironmentView {
+        never_synced: crate::branch::marked(tx, &environment.summary.id)?
+            .into_iter()
+            .collect(),
         environment: environment.summary,
         settings,
         values,

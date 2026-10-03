@@ -1,18 +1,24 @@
 import type {
-  ChangeKind, DeploymentStatus, DeploymentSummary, DeploymentView, DiffView, JsonValue, NodeChange, NodeOutcome, NodeStatus, Outcome, ServiceListing,
-  UploadedSource,
+  ChangeKind, DeploymentStatus, DeploymentSummary, DeploymentView, DiffView, JsonValue, NodeChange, NodeOutcome, NodeStatus, Outcome, RowId,
+  ServiceListing, UploadedSource,
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { settingTitle } from "./catalog";
+import { sourceText } from "./store-branches";
 import { volumeStorageText } from "./store-volumes";
 
 /** One changed Setting in Details. */
 export type ChangeRow = {
   changeKey: string;
   label: string;
+  /** Its name beside its node's: a variable's key, else `label`. */
+  name: string;
+  variable: boolean;
   kind: ChangeKind;
   /** Its Store path, which Discard takes. */
   path: string;
+  /** The Sync row it falls in: what hints, arrivals and Never sync join it by. */
+  row: RowId | null;
   currentValue: string;
   newValue: string;
   canDiscard: boolean;
@@ -25,6 +31,8 @@ export type ChangeGroup = {
   nodeName: string;
   /** What Discard names to put the whole node back: `SERVICE`, or `volumes.VOLUME`. */
   discardPath: string;
+  /** The node's own Sync row. */
+  row: RowId;
   lifecycle: NodeChange["lifecycle"];
   rows: ChangeRow[];
   changeCount: number;
@@ -53,6 +61,7 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
     nodeId: node.id,
     nodeName: node.name,
     discardPath: node.type === "volume" ? `volumes.${node.name}` : node.name,
+    row: node.row,
     lifecycle: node.lifecycle,
     changeCount: Math.max(node.settings.length, 1),
     canDiscard: true,
@@ -61,13 +70,19 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
       // `SERVICE.SETTING`, or `volumes.VOLUME.SETTING`.
       const setting = node.type === "volume" ? row.path.split(".").slice(2).join(".") : row.path.slice(row.path.indexOf(".") + 1);
       const title = settingTitle(setting);
+      const label = setting === "name" ? "Name" : title ?? untitledLabel(node.type, setting);
+      const variable = node.type === "service" && setting.startsWith("env.");
+      const shown = setting === "source" ? sourceText : shownValue;
       return {
         changeKey: `${node.id}:${row.path}`,
         path: row.path,
+        row: row.row,
         kind: row.kind,
-        label: setting === "name" ? "Name" : title ?? untitledLabel(node.type, setting),
-        currentValue: shownValue(row.before),
-        newValue: shownValue(row.after),
+        label,
+        name: variable ? setting.slice("env.".length) : label,
+        variable,
+        currentValue: shown(row.before),
+        newValue: shown(row.after),
         // Whether Discard takes this path alone is the Store's to say.
         canDiscard: row.canRestore,
       };
@@ -82,8 +97,6 @@ const decodeShown = Schema.decodeUnknownOption(Schema.Union([
   Schema.Array(Schema.Struct({ prefix: Schema.String, targetPort: Schema.NullOr(Schema.Number) })),
   // A Volume's storage.
   Schema.Struct({ kind: Schema.Literal("provisioned"), maximumBytes: Schema.Number }), Schema.Struct({ kind: Schema.Literal("docker") }),
-  // A whole source, when a Service connects or disconnects one.
-  Schema.Struct({ type: Schema.Literals(["image", "git", "empty"]), image: Schema.optional(Schema.String), repository: Schema.optional(Schema.String) }),
 ]));
 
 /**
@@ -99,7 +112,6 @@ export function shownValue(value: JsonValue): string {
       if ("hostname" in shown) return shown.hostname;
       if ("secret" in shown) return "Sealed";
       if ("path" in shown) return `${shown.path} within ${shown.timeoutSeconds}s`;
-      if ("type" in shown) return shown.image ?? shown.repository ?? "None";
       if ("kind" in shown) return volumeStorageText(shown);
       return shown.map(({ prefix, targetPort }) => targetPort === null ? prefix : `${prefix} → port ${targetPort}`).join(", ");
     },

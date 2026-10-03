@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { DiffView, DomainRow, ServiceListing } from "@ployz/sdk";
+import type { DiffView, DomainRow, RowId, ServiceListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import { serviceSetting, settingChange, settingError } from "./catalog";
-import { domainChanged, newServiceName, serviceChanges } from "./store-services";
+import { domainChanged, newServiceName, serviceChangeCount, serviceChanges } from "./store-services";
 
 const listed = (name: string, privateDns = name): ServiceListing =>
-  ({ id: `${name}-id`, name, private_dns: privateDns, source: "image", change: null, template: null });
+  ({ id: `${name}-id`, row: `${name}:node` as RowId, name, private_dns: privateDns, source: "image", change: null, template: null });
 
 describe("newServiceName", () => {
   it("names a Service from its image or repository, with a random suffix past names and Private DNS already taken", () => {
@@ -60,6 +60,22 @@ it("reads one Service's pink trail from the Environment's diff, a rename under `
   expect(serviceChanges(diff, "b").size).toBe(0);
 });
 
+it("reads a source change as a change to each field of it that differs", () => {
+  const diff = asTestDouble<DiffView>()({
+    changes: [{ type: "service", id: "a", name: "web", lifecycle: "update", comparison: "head", settings: [
+      { path: "web.source", kind: "update", before: { type: "git", repository: "acme/web", rootDir: "/" },
+        after: { type: "image", image: "web:2", credentials: true }, canRestore: true },
+    ] }],
+  });
+  const changes = serviceChanges(diff, "a");
+  expect([...changes.keys()]).toEqual(["source", "image", "repository", "rootDir", "registryCredential"]);
+  expect(changes.get("image")).toMatchObject({ path: "web.source", before: null, after: "web:2" });
+  expect(changes.get("repository")).toMatchObject({ before: "acme/web", after: null });
+  expect(changes.get("registryCredential")).toMatchObject({ before: null, after: { secret: true } });
+  // One source row is one change on the card, whichever of its fields it moves.
+  expect(serviceChangeCount(diff, "a")).toBe(1);
+});
+
 it("marks the domains the next Deploy changes: the generated one by its list, a custom one by its route's hostname", () => {
   const route = (hostname: string, targetPort: number | null) => ({ id: `${hostname}-id`, hostname, targetPort });
   const diff = asTestDouble<DiffView>()({
@@ -75,6 +91,6 @@ it("marks the domains the next Deploy changes: the generated one by its list, a 
   expect(domainChanged(changes, domain({ kind: "custom", hostname: "old.acme.com" }))).toBe(true);
   expect(domainChanged(changes, domain({ kind: "custom", hostname: "www.acme.com" }))).toBe(false);
   expect(domainChanged(changes, domain({ kind: "generated", prefix: "web", hostname: null }))).toBe(false);
-  const listChanged = { path: "web.managedHostnames", kind: "update" as const, before: [], after: [{ prefix: "web", targetPort: null }], canRestore: true };
+  const listChanged = { path: "web.managedHostnames", kind: "update" as const, before: [], after: [{ prefix: "web", targetPort: null }], canRestore: true, row: null };
   expect(domainChanged(new Map([["managedHostnames", listChanged]]), domain({ kind: "generated", prefix: "web", hostname: null }))).toBe(true);
 });

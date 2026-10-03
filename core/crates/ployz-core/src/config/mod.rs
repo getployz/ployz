@@ -1,7 +1,5 @@
 //! Pure authored configuration rules used by native clients and Cloud's canvas.
 
-mod branch_changes;
-mod branch_changes_types;
 mod branch_plan;
 mod change_set;
 mod change_set_types;
@@ -15,11 +13,10 @@ mod resource_changes;
 mod runtime_outcome;
 mod service;
 mod service_changes;
+mod sync;
 mod validation;
 mod variables;
 
-pub use branch_changes::*;
-pub use branch_changes_types::*;
 pub use branch_plan::*;
 pub use change_set::*;
 pub use change_set_types::*;
@@ -33,6 +30,7 @@ pub use resource_changes::*;
 pub use runtime_outcome::*;
 pub use service::*;
 pub use service_changes::*;
+pub use sync::*;
 pub use validation::*;
 pub use variables::*;
 

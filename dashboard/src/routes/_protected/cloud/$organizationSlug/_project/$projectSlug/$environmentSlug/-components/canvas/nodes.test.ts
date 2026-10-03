@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { DiffView, ServiceListing, VolumeListing } from "@ployz/sdk";
+import type { DiffView, RowId, ServiceListing, VolumeListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import type { CanvasPosition } from "#/modules/canvas/canvas-positions";
 import { buildStoreEdges, buildStoreNodes, canvasNodeOf, shownNodeIds, volumeTrays } from "./nodes";
@@ -21,7 +21,7 @@ function createCanvasPosition(overrides?: Partial<CanvasPosition>): CanvasPositi
 
 describe("Config Store nodes", () => {
   // SAFETY: test ids stand in for the Store's minted Service ids.
-  const listing = (id: string, name: string): ServiceListing => ({ id: id, name, private_dns: name, source: "image", change: null, template: null });
+  const listing = (id: string, name: string): ServiceListing => ({ id: id, row: `${id}:node` as RowId, name, private_dns: name, source: "image", change: null, template: null });
   const volume = (id: string, mounts: { service: string; path: string }[]): VolumeListing =>
     ({ id, name: id, mounts, deployed: false, storage: { kind: "docker" }, storage_locked: false, shared_writes: false, change: "create" });
   const listings = [listing("s1", "postgres"), listing("s2", "web")];

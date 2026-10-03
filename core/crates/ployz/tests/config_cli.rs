@@ -792,98 +792,351 @@ fn an_agent_branches_an_environment_without_servers() {
             json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}")
         );
 
-        // Update and Own Copy wait until the Branch runs its Working State.
-        let unsettled = error(store, &["env", "update", "--env", "fix-web"]);
-        assert_eq!(unsettled["code"], json!("conflict"));
-        assert_eq!(
-            unsettled["details"]["next"],
-            json!("ployz diff --project shop --env fix-web")
-        );
+        // An Own Copy of a node it owns already is refused.
         assert_eq!(
             error(store, &["env", "copy", "db", "--env", "fix-web"])["code"],
             json!("conflict")
-        );
-        assert_eq!(
-            error(store, &["env", "update"])["code"],
-            json!("invalid_argument")
         );
         let unkept = ok(store, &["env", "keep", "--env", "fix-web", "--off"]);
         assert_eq!(unkept["branch"]["kept"], json!(false));
         assert!(unkept.get("next").is_none());
 
-        // Save: review, then move the picked change into production with its version.
-        ok(store, &["set", "web.image=web:2", "--env", "fix-web"]);
-        let plan = ok(store, &["env", "save", "--plan", "--env", "fix-web"]);
-        assert_eq!(plan["into"]["name"], json!("production"));
-        assert_eq!(
-            plan["rows"],
-            json!([{ "row": "web.image", "conflict": false, "choice": null, "from": "web:2", "into": "web:1" }])
-        );
-        let version = plan["version"].as_str().unwrap();
-        assert_eq!(
-            plan["next"],
-            json!(format!("ployz env save --version {version} --env fix-web"))
-        );
-        let stale = error(
+        // Conditional Syncs are a PR Environment's; a take names a retained one.
+        let at_merge = error(
             store,
-            &["env", "save", "--env", "fix-web", "--version", "0:0"],
+            &["env", "sync", "--to", "--env", "fix-web", "--at-merge"],
         );
-        assert_eq!(
-            stale["details"]["next"],
-            json!("ployz env save --plan --env fix-web")
-        );
+        assert_eq!(at_merge["code"], json!("invalid_argument"));
         failed(
             store,
-            &[
-                "env",
-                "save",
-                "--env",
-                "fix-web",
-                "--only",
-                "web.image=maybe",
-            ],
-            2,
-        );
-        let saved = ok(
-            store,
-            &[
-                "env",
-                "save",
-                "--env",
-                "fix-web",
-                "--only",
-                "web.image",
-                "--version",
-                version,
-            ],
-        );
-        assert_eq!(saved["staged"], json!(["web"]));
-        assert_eq!(saved["next"], json!("ployz deploy --env production"));
-        // Conditional Saves are a PR Environment's; a take names a retained one.
-        let withdraw = error(store, &["env", "save", "--env", "fix-web", "--withdraw"]);
-        assert_eq!(withdraw["code"], json!("invalid_argument"));
-        failed(
-            store,
-            &["env", "save", "--withdraw", "--only", "web.image"],
+            &["env", "sync", "--undo", "sync", "--only", "web.image"],
             2,
         );
         let take = error(
             store,
             &[
                 "env",
-                "save",
+                "sync",
                 "--take",
                 "00000000-0000-4000-8000-000000000099",
+                "--env",
+                "fix-web",
             ],
         );
         assert_eq!(take["code"], json!("not_found"));
-        assert_eq!(
-            saved["close"],
-            json!("ployz env rm fix-web --confirm shop/fix-web")
+    }
+}
+
+#[test]
+fn an_agent_marks_settings_never_sync_without_servers() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["env", "branch", "fix-web", "--copy", "web"]);
+        ok(
+            store,
+            &[
+                "set",
+                "--env",
+                "fix-web",
+                "web.image=web:2",
+                "web.env.APP_ENV=fix",
+            ],
         );
+        let marked = ok(
+            store,
+            &[
+                "env",
+                "never-sync",
+                "web.env.APP_ENV",
+                "web.source",
+                "--env",
+                "fix-web",
+            ],
+        );
+        assert_eq!(marked["environment"]["name"], json!("fix-web"));
+        assert_eq!(
+            labels(&marked["never_synced"]),
+            ["web.env.APP_ENV", "web.source"]
+        );
+        // `get` lists them by RowId, in RowId order.
+        let mut rows: Vec<&str> = marked["never_synced"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["row"].as_str().unwrap())
+            .collect();
+        rows.sort_unstable();
+        assert_eq!(
+            ok(store, &["get", "--env", "fix-web"])["never_synced"],
+            json!(rows)
+        );
+
+        // The plan lists them apart, so there is nothing to sync.
+        let plan = ok(
+            store,
+            &["env", "sync", "--to", "--plan", "--env", "fix-web"],
+        );
+        assert_eq!(plan["rows"], json!([]));
+        assert_eq!(
+            labels(&plan["never_synced"]),
+            ["web.source", "web.env.APP_ENV"]
+        );
+        assert_eq!(
+            plan["never_synced"][0]["marks"][0]["environment"],
+            json!("fix-web")
+        );
+        let nothing = error(store, &["env", "sync", "--to", "--env", "fix-web"]);
+        assert_eq!(nothing["code"], json!("conflict"));
+
+        let again = ok(
+            store,
+            &[
+                "env",
+                "never-sync",
+                "web.source",
+                "--off",
+                "--env",
+                "fix-web",
+            ],
+        );
+        assert_eq!(labels(&again["never_synced"]), ["web.env.APP_ENV"]);
+        let plan = ok(
+            store,
+            &["env", "sync", "--to", "--plan", "--env", "fix-web"],
+        );
+        assert_eq!(label(&plan["rows"][0]), "web.source");
+
+        failed(store, &["env", "never-sync", "--env", "fix-web"], 2);
+        // A node's name marks it and each of its rows, changed, unchanged or at its default.
+        let whole = ok(store, &["env", "never-sync", "web", "--env", "fix-web"]);
+        let whole = labels(&whole["never_synced"]);
+        assert_eq!(whole.len(), 18);
+        for row in ["web", "web.env.APP_ENV", "web.source", "web.startCommand"] {
+            assert!(whole.contains(&row.to_owned()), "{row} in {whole:?}");
+        }
+        let missing = error(
+            store,
+            &["env", "never-sync", "api.env.KEY", "--env", "fix-web"],
+        );
+        assert_eq!(missing["code"], json!("not_found"));
+    }
+}
+
+#[test]
+fn an_agent_syncs_a_branch_into_its_parent_without_servers() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["env", "branch", "fix-web", "--copy", "web"]);
+        let plan_next = json!("ployz env sync --to --plan --env fix-web");
+        let nothing = error(store, &["env", "sync", "--to", "--env", "fix-web"]);
+        assert_eq!(nothing["code"], json!("conflict"));
+        assert_eq!(nothing["details"]["next"], plan_next);
+        failed(store, &["env", "sync", "--env", "fix-web"], 2);
+        failed(store, &["env", "sync", "--to", "--plan", "--close"], 2);
+
+        ok(
+            store,
+            &[
+                "set",
+                "--env",
+                "fix-web",
+                "web.image=web:2",
+                "web.env.DEBUG=1",
+                "web.env.NEW=1",
+            ],
+        );
+        let plan = ok(
+            store,
+            &["env", "sync", "--to", "--plan", "--env", "fix-web"],
+        );
+        assert_eq!(plan["into"]["name"], json!("production"));
+        let rows = plan["rows"].as_array().unwrap();
+        assert_eq!(
+            labels(&plan["rows"]),
+            ["web.source", "web.env.DEBUG", "web.env.NEW"]
+        );
+        let image = &rows[0];
+        assert_eq!(
+            (
+                &image["node"],
+                &image["from"]["image"],
+                &image["into"]["image"]
+            ),
+            (&json!("web"), &json!("web:2"), &json!("web:1"))
+        );
+        assert_eq!(
+            (&image["ticked"], &image["change"]),
+            (&json!(true), &json!("changed"))
+        );
+        assert!(image["row"].as_str().unwrap().ends_with(":source"));
+        let version = plan["version"].as_str().unwrap();
+        assert_eq!(
+            plan["next"],
+            json!(format!(
+                "ployz env sync --to --version {version} --env fix-web"
+            ))
+        );
+
+        let stale = error(
+            store,
+            &[
+                "env",
+                "sync",
+                "--to",
+                "--env",
+                "fix-web",
+                "--version",
+                "0:0",
+            ],
+        );
+        assert_eq!(stale["code"], json!("conflict"));
+        assert_eq!(stale["details"]["next"], plan_next);
+        let unknown = error(
+            store,
+            &["env", "sync", "--to", "--env", "fix-web", "--only", "api"],
+        );
+        assert_eq!(unknown["code"], json!("not_found"));
+        assert_eq!(unknown["details"]["next"], plan_next);
+        let sideways = error(
+            store,
+            &["env", "sync", "--to", "fix-web", "--env", "fix-web"],
+        );
+        assert_eq!(sideways["code"], json!("invalid_argument"));
+
+        // Everything under web but its DEBUG variable, which is offered again.
+        let synced = ok(
+            store,
+            &[
+                "env",
+                "sync",
+                "--to",
+                "production",
+                "--env",
+                "fix-web",
+                "--only",
+                "web",
+                "--skip",
+                "web.env.DEBUG",
+                "--version",
+                version,
+            ],
+        );
+        assert_eq!(
+            synced["when"],
+            json!({ "kind": "now", "staged": ["web"], "closing": false })
+        );
+        assert_eq!(synced["next"], json!("ployz deploy --env production"));
         assert_eq!(
             ok(store, &["get", "web.image"])["settings"][0]["value"],
             json!("web:2")
+        );
+        let plan = ok(
+            store,
+            &["env", "sync", "--to", "--plan", "--env", "fix-web"],
+        );
+        assert_eq!(labels(&plan["rows"]), ["web.env.DEBUG"]);
+
+        // --close closes the Branch once it synced; it never ran, so it is gone.
+        let closed = ok(
+            store,
+            &["env", "sync", "--to", "--env", "fix-web", "--close"],
+        );
+        assert_eq!(closed["when"]["closing"], json!(true));
+        let listed = ok(store, &["env", "ls"]);
+        assert_eq!(listed["environments"].as_array().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn an_agent_syncs_between_any_two_environments_of_a_project() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["env", "new", "staging"]);
+        ok(store, &["env", "branch", "fix-a", "--copy", "web"]);
+        ok(store, &["env", "branch", "fix-b", "--copy", "web"]);
+        failed(
+            store,
+            &["env", "sync", "--to", "fix-b", "--from", "fix-a"],
+            2,
+        );
+
+        // Sideways, into a sibling.
+        ok(store, &["set", "--env", "fix-a", "web.image=web:2"]);
+        let synced = ok(store, &["env", "sync", "--to", "fix-b", "--env", "fix-a"]);
+        assert_eq!(synced["into"]["name"], json!("fix-b"));
+        assert_eq!(synced["next"], json!("ployz deploy --env fix-b"));
+        assert_eq!(
+            ok(store, &["get", "web.image", "--env", "fix-b"])["settings"][0]["value"],
+            json!("web:2")
+        );
+
+        // Between two roots, from where the command runs.
+        let plan_next = json!("ployz env sync --from production --plan --env staging");
+        let plan = ok(
+            store,
+            &[
+                "env",
+                "sync",
+                "--from",
+                "production",
+                "--plan",
+                "--env",
+                "staging",
+            ],
+        );
+        assert_eq!(
+            (&plan["from"]["name"], &plan["into"]["name"]),
+            (&json!("production"), &json!("staging"))
+        );
+        assert_eq!(label(&plan["rows"][0]), "web");
+        let version = plan["version"].as_str().unwrap();
+        assert_eq!(
+            plan["next"],
+            json!(format!(
+                "ployz env sync --from production --version {version} --env staging"
+            ))
+        );
+        let stale = error(
+            store,
+            &[
+                "env",
+                "sync",
+                "--from",
+                "production",
+                "--env",
+                "staging",
+                "--version",
+                "0:0",
+            ],
+        );
+        assert_eq!(stale["details"]["next"], plan_next);
+        let synced = ok(
+            store,
+            &[
+                "env",
+                "sync",
+                "--from",
+                "production",
+                "--env",
+                "staging",
+                "--version",
+                version,
+            ],
+        );
+        assert_eq!(synced["when"]["staged"], json!(["web"]));
+        assert_eq!(
+            ok(store, &["get", "web.image", "--env", "staging"])["settings"][0]["value"],
+            json!("web:1")
+        );
+
+        // A root names where it syncs.
+        let rootless = error(store, &["env", "sync", "--to"]);
+        assert_eq!(
+            rootless["details"]["next"],
+            json!("ployz env sync --to ENV --project shop --env production")
         );
     }
 }
@@ -1984,7 +2237,7 @@ fn a_repository_service_is_checked_by_cloud() {
 
         ok(store, &["set", "web.branch=main", "web.rootDir=/apps/web"]);
         let diff = ok(store, &["diff"]);
-        assert!(diff.to_string().contains("web.rootDir"), "{diff}");
+        assert!(diff.to_string().contains("web.source"), "{diff}");
 
         // An empty Service connects a repository by setting it; unset disconnects it.
         ok(store, &["service", "add", "blank"]);
@@ -2023,6 +2276,18 @@ fn github_lists_branches_and_disconnects_in_cloud() {
 }
 
 /// Run `ployz --json ARGS` against `store` with `input` on stdin; returns (exit code, stdout).
+/// `NODE`, or `NODE.name`: a row as reads name it.
+fn label(row: &Value) -> String {
+    match row["name"].as_str() {
+        Some(name) => format!("{}.{name}", row["node"].as_str().unwrap()),
+        None => row["node"].as_str().unwrap().to_owned(),
+    }
+}
+
+fn labels(rows: &Value) -> Vec<String> {
+    rows.as_array().unwrap().iter().map(label).collect()
+}
+
 fn piped(store: &Target, args: &[&str], input: &str) -> (Option<i32>, String) {
     let home = tempfile::tempdir().unwrap();
     let mut command = store.command(home.path());
@@ -2187,6 +2452,75 @@ fn secrets_arrive_on_stdin_or_an_env_file_and_never_print() {
 }
 
 #[test]
+fn a_synced_secret_arrives_without_its_value_and_deploy_says_which_to_set() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["env", "branch", "fix-web", "--copy", "web"]);
+        let secret = ["set", "web.env.API_KEY", "--secret"];
+        let (code, set) = piped(
+            store,
+            &[&secret[..], &["--env", "fix-web"]].concat(),
+            "test-key\n",
+        );
+        assert_eq!(code, Some(0), "{set}");
+        let plan = ok(
+            store,
+            &["env", "sync", "--to", "--plan", "--env", "fix-web"],
+        );
+        let row = &plan["rows"][0];
+        assert_eq!(
+            (label(row), &row["from"], &row["secret"]),
+            (
+                "web.env.API_KEY".to_owned(),
+                &json!({ "secret": true }),
+                &json!({ "held": false })
+            )
+        );
+        ok(store, &["env", "sync", "--to", "--env", "fix-web"]);
+
+        let refused = error(store, &["deploy"]);
+        assert_eq!(refused["code"], json!("conflict"), "{refused}");
+        assert_eq!(refused["details"]["secrets"], json!(["web.env.API_KEY"]));
+        assert_eq!(
+            refused["details"]["next"],
+            json!("ployz set web.env.API_KEY --secret --project shop --env production")
+        );
+        let (code, set) = piped(store, &secret, "prod-key\n");
+        assert_eq!(code, Some(0), "{set}");
+        // With its own value, production's Deploy is admitted.
+        let (_, deployed) = ployz(Some(store), &["deploy"]);
+        assert_eq!(deployed["number"], json!(1), "{deployed}");
+
+        // A sync can give the receiver its value, a line of stdin per --value.
+        ok(store, &["env", "branch", "fix-key", "--copy", "web"]);
+        let other = ["set", "web.env.OTHER_KEY", "--secret", "--env", "fix-key"];
+        let (code, set) = piped(store, &other, "branch-key\n");
+        assert_eq!(code, Some(0), "{set}");
+        let to = ["env", "sync", "--to", "--env", "fix-key"];
+        let (code, short) = piped(
+            store,
+            &[
+                &to[..],
+                &["--value", "web.env.OTHER_KEY", "--value", "web.image"],
+            ]
+            .concat(),
+            "given-key\n",
+        );
+        assert_eq!(code, Some(2), "{short}");
+        let (code, synced) = piped(
+            store,
+            &[&to[..], &["--value", "web.env.OTHER_KEY"]].concat(),
+            "given-key\n",
+        );
+        assert_eq!(code, Some(0), "{synced}");
+        assert!(!synced.contains("given-key"), "{synced}");
+        let (_, deployed) = ployz(Some(store), &["deploy"]);
+        assert_eq!(deployed["number"], json!(2), "{deployed}");
+    }
+}
+
+#[test]
 fn a_private_image_credential_arrives_on_stdin_and_rotates_at_once() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
@@ -2276,4 +2610,279 @@ fn an_agent_reads_and_sets_the_build_order_at_once() {
         let (code, _) = ployz(Some(store), &["org", "build-order", "gitlab-first"]);
         assert_eq!(code, Some(2));
     }
+}
+
+/// Run Deployment `id` to success, as a runner that reached the Servers would.
+fn succeed(store: &ConfigStore, id: &ployz_store::DeploymentId) {
+    let runner = RunnerId::parse("successful-worker").unwrap();
+    let claimed = store.claim(id, &runner).unwrap();
+    let preview = serde_json::from_value(json!({
+        "namespace": claimed.intent.namespace, "operations": [],
+        "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store
+        .record(id, &runner, ployz_store::RunEvidence::Prepared(preview))
+        .unwrap();
+    let outcome = serde_json::from_value(json!({"type": "success", "completed": []})).unwrap();
+    store
+        .record(
+            id,
+            &runner,
+            ployz_store::RunEvidence::Executed {
+                outcome: Box::new(outcome),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+}
+
+/// Deploy `environment` of Project shop and have it applied: Cloud's worker runs it;
+/// locally the test runs it as the runner would.
+fn applied(store: &Target, environment: &str) {
+    match store {
+        Target::Cloud { .. } => {
+            ok(store, &["deploy", "--env", environment]);
+        }
+        Target::Local(dir) => {
+            let path = dir.path().join("store.db");
+            let key = SealingKey::from_file(&dir.path().join("store.db.key")).unwrap();
+            let local = ConfigStore::open(&format!("sqlite:{}", path.display()), key).unwrap();
+            let who = Actor::system(OrganizationId::parse("local").unwrap());
+            let id = ployz_store::DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
+            let deploy = ployz_store::Admit::Deploy(ployz_store::Deploy {
+                id: id.clone(),
+                environment: ployz_store::EnvironmentRef {
+                    project: Some(ployz_store::ProjectName::parse("shop").unwrap()),
+                    environment: Some(ployz_store::EnvironmentName::parse(environment).unwrap()),
+                },
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            });
+            local
+                .write_trusted(&who, &deploy, &Trusted::default())
+                .unwrap();
+            succeed(&local, &id);
+        }
+    }
+}
+
+#[test]
+fn a_branch_follows_its_parent_and_diff_shows_where_changes_came_from_and_the_hints() {
+    fn succeeding(store: &std::sync::Arc<ConfigStore>, written: &Written) {
+        if let Written::Deployment(admitted) = written {
+            succeed(store, &admitted.id);
+        }
+    }
+    let targets = [
+        Target::Local(tempfile::tempdir().unwrap()),
+        Target::Cloud {
+            url: fake_cloud_with_dispatch(succeeding),
+            token: "ployz_alice",
+        },
+    ];
+    for store in &targets {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        applied(store, "production");
+        ok(store, &["env", "branch", "fix-web", "--copy", "web"]);
+        // fix-web's own, undeployed change; production changes it too, and adds one.
+        ok(store, &["set", "web.image=web:mine", "--env", "fix-web"]);
+        ok(store, &["set", "web.image=web:2"]);
+        ok(store, &["set", "web.env.NEW=1"]);
+        applied(store, "production");
+
+        let diff = ok(store, &["diff", "--env", "fix-web"]);
+        assert_eq!(labels(&diff["incoming"]), ["web.env.NEW"], "{diff}");
+        assert_eq!(diff["incoming"][0]["from"], json!("production"));
+        assert_eq!(labels(&diff["follow_hints"]), ["web.source"]);
+        assert_eq!(
+            (
+                &diff["follow_hints"][0]["from"],
+                &diff["follow_hints"][0]["value"]["image"]
+            ),
+            (&json!("production"), &json!("web:2"))
+        );
+        let took = ok(
+            store,
+            &[
+                "env",
+                "sync",
+                "--take",
+                "production",
+                "--only",
+                "web.source",
+                "--env",
+                "fix-web",
+            ],
+        );
+        assert_eq!(took["into"]["name"], json!("fix-web"));
+        assert_eq!(took["next"], json!("ployz deploy --env fix-web"));
+        assert_eq!(
+            ok(store, &["diff", "--env", "fix-web"])["follow_hints"],
+            json!([])
+        );
+        let gone = error(
+            store,
+            &["env", "sync", "--take", "production", "--env", "fix-web"],
+        );
+        assert_eq!(gone["code"], json!("conflict"));
+        assert_eq!(gone["details"]["next"], json!("ployz diff --env fix-web"));
+    }
+}
+
+/// Only the in-process Store: Cloud reports the pull request, which the test does
+/// here through the Store itself.
+#[test]
+fn an_agent_syncs_a_pr_environment_at_its_merge_and_withdraws_it() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    let Target::Local(dir) = &store else {
+        unreachable!("a local Store")
+    };
+    ok(&store, &["project", "new", "shop"]);
+    let local = ConfigStore::open(
+        &format!("sqlite:{}", dir.path().join("store.db").display()),
+        SealingKey::from_file(&dir.path().join("store.db.key")).unwrap(),
+    )
+    .unwrap();
+    let who = Actor::system(OrganizationId::parse("local").unwrap());
+    let shop = Some(ployz_store::ProjectName::parse("shop").unwrap());
+    local
+        .write_trusted(
+            &who,
+            &ployz_store::CreateGitService {
+                id: ployz_store::ServiceLineageId::parse("00000000-0000-4000-8000-000000000003")
+                    .unwrap(),
+                environment: ployz_store::EnvironmentRef {
+                    project: shop.clone(),
+                    environment: None,
+                },
+                name: ployz_core::ServiceName::parse("web").unwrap(),
+                repository: ployz_store::RepositoryName::parse("acme/web").unwrap(),
+                branch: None,
+            },
+            &github(),
+        )
+        .unwrap();
+    ok(&store, &["publish"]);
+    local
+        .write(
+            &who,
+            &ployz_store::SetPrPlan {
+                project: shop,
+                repository: ployz_store::RepositoryName::parse("acme/web").unwrap(),
+                enabled: Some(true),
+                start_from: Some(ployz_store::EnvironmentName::parse("production").unwrap()),
+                copy: None,
+                setup: None,
+                remove_on_close: None,
+                include_bots: None,
+            },
+        )
+        .unwrap();
+    let opened = ployz_store::PullRequest {
+        repository_id: ployz_store::RepositoryId::parse(11).unwrap(),
+        number: ployz_store::PullRequestNumber::parse(5).unwrap(),
+        title: "Add search".into(),
+        author: "ada".into(),
+        bot: false,
+        head_branch: ployz_store::BranchName::parse("search").unwrap(),
+        head: ployz_store::CommitSha::parse("1".repeat(40)).unwrap(),
+        target_branch: ployz_store::BranchName::parse("main").unwrap(),
+        commits: 1,
+        open: true,
+        merge_commit: None,
+        merge_reached: None,
+        updated: ployz_store::GithubTimestamp::parse("2026-09-29T10:00:01Z").unwrap(),
+    };
+    local
+        .system(
+            &who.organization,
+            &ployz_store::SystemEvent::PullRequest(opened),
+            &Trusted::default(),
+        )
+        .unwrap();
+    drop(local);
+
+    ok(&store, &["set", "--env", "pr-5", "web.env.MODE=fast"]);
+    let (code, set) = piped(
+        &store,
+        &["set", "web.env.TOKEN", "--secret", "--env", "pr-5"],
+        "pr-token\n",
+    );
+    assert_eq!(code, Some(0), "{set}");
+    // From a PR Environment, --to with no value is its only Destination, at the merge.
+    let plan = ok(&store, &["env", "sync", "--to", "--plan", "--env", "pr-5"]);
+    assert_eq!(
+        (&plan["into"]["name"], &plan["at_merge"]),
+        (&json!("production"), &json!(5))
+    );
+    assert_eq!(labels(&plan["rows"]), ["web.env.MODE", "web.env.TOKEN"]);
+    // Asked for, --at-merge stays in the command the plan offers next.
+    let plan = ok(
+        &store,
+        &[
+            "env",
+            "sync",
+            "--to",
+            "--at-merge",
+            "--plan",
+            "--env",
+            "pr-5",
+        ],
+    );
+    assert!(
+        plan["next"].as_str().unwrap().contains(" --at-merge "),
+        "{plan}"
+    );
+    let synced = ok(&store, &["env", "sync", "--to", "--env", "pr-5"]);
+    let conditional_sync = &synced["when"]["conditional_sync"];
+    assert_eq!(
+        (&synced["when"]["kind"], &conditional_sync["state"]),
+        (&json!("at_merge"), &json!("standing"))
+    );
+    assert_eq!(
+        labels(&conditional_sync["rows"]),
+        ["web.env.MODE", "web.env.TOKEN"]
+    );
+    assert!(synced.get("next").is_none());
+
+    // Production holds its own value for the secret, named as the plan names it.
+    let (code, held) = piped(
+        &store,
+        &["set", "web.env.TOKEN", "--secret", "--at-merge", "5"],
+        "prod-token\n",
+    );
+    assert_eq!(code, Some(0), "{held}");
+    assert!(!held.contains("-token"), "{held}");
+    let (code, unheld) = piped(
+        &store,
+        &["set", "web.env.MODE", "--secret", "--at-merge", "5"],
+        "prod-token\n",
+    );
+    assert_eq!(code, Some(1), "{unheld}");
+
+    let sync = synced["sync"].as_str().unwrap();
+    let undone = ok(&store, &["env", "sync", "--undo", sync]);
+    assert_eq!(undone["into"]["name"], json!("production"));
+    let plan = ok(
+        &store,
+        &[
+            "env",
+            "sync",
+            "--to",
+            "--at-merge",
+            "--plan",
+            "--env",
+            "pr-5",
+        ],
+    );
+    assert_eq!(labels(&plan["rows"]), ["web.env.MODE", "web.env.TOKEN"]);
+    failed(&store, &["env", "sync", "--undo", sync, "--only", "web"], 2);
+    // Only a PR Environment syncs at a merge.
+    let refused = error(&store, &["env", "sync", "--to", "pr-5", "--at-merge"]);
+    assert_eq!(refused["code"], json!("invalid_argument"));
 }

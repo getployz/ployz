@@ -173,11 +173,14 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
         .changes
         .iter()
         .flat_map(|change| &change.settings)
-        .find(|row| row.path == PATH)
+        .find(|row| row.path == "web.source")
         .unwrap();
     assert_eq!(
         (row.before.clone(), row.after.clone()),
-        (Value::Null, json!({ "secret": true }))
+        (
+            json!({ "type": "image", "image": "ghcr.io/acme/web:1", "credentials": false }),
+            json!({ "type": "image", "image": "ghcr.io/acme/web:1", "credentials": true })
+        )
     );
     let plan = store.read(&who(), &PlanQuery::default()).unwrap();
     let one = admit(&store, 1);

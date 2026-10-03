@@ -88,9 +88,14 @@ environment: EnvironmentRef,
 /**
  * The commands, applied in order.
  */
-commands: Array<BatchCommand>, };
+commands: Array<BatchCommand>,
+/**
+ * Refuse with `conflict` unless Working State is at this revision before the
+ * first command.
+ */
+expect?: Revision | null, };
 
-export type BatchCommand = { "command": "create_service" } & CreateService | { "command": "create_volume" } & CreateVolume | { "command": "edit" } & Edit;
+export type BatchCommand = { "command": "create_service" } & CreateService | { "command": "create_volume" } & CreateVolume | { "command": "edit" } & Edit | { "command": "discard" } & Discard | { "command": "never_sync" } & NeverSync;
 
 export type Batched = {
 /**
@@ -101,32 +106,6 @@ results: Array<ConfigWritten>, };
 export type BindPropagation = "private" | "rprivate" | "shared" | "rshared" | "slave" | "rslave";
 
 export type BindRecursive = "disabled" | "writable" | "readonly";
-
-export type BranchChanges = { rows: Array<BranchRow>, next: SavedEnvironmentIntent, base: SavedEnvironmentIntent | null,
-/**
- * Canonical, id-free rendering of the rows and picks; callers hash it.
- */
-review: string, };
-
-export type BranchChangesInput = {
-/**
- * Null when creating: nothing is shared yet.
- */
-base: SavedEnvironmentIntent | null, from: SavedEnvironmentIntent, into: SavedEnvironmentIntent,
-/**
- * The Parent, when the caller can offer its values as a variable choice.
- */
-parent?: SavedEnvironmentIntent,
-/**
- * Lineages `into` may use live.
- */
-provided: Array<string>, hostnames: BranchHostnames, fromKept: boolean,
-/**
- * Absent compares only; present moves the picked rows.
- */
-picks?: Array<BranchPick>, };
-
-export type BranchChoice = { default: BranchOption, options: Array<BranchOption>, secret: boolean, };
 
 export type BranchHead = { repository_id: RepositoryId, branch: BranchName,
 /**
@@ -145,24 +124,14 @@ head: CommitSha | null,
  */
 changed: Array<string> | null,
 /**
- * The merge commits of frozen Conditional Saves ([`crate::PendingSaves::merged`])
- * Cloud found `head` is or descends from: this push carries those saves.
+ * The merge commits of frozen Conditional Syncs ([`crate::PendingSyncs::merged`])
+ * Cloud found `head` is or descends from: this push carries those.
  */
 merged: Array<CommitSha>, };
 
-export type BranchHostnames = { from: string, into: string, };
-
 export type BranchName = string;
 
-export type BranchNewValue = { value: SavedVariableValue, valueFingerprint: string, };
-
 export type BranchNodeReason = "picked" | "used" | "parent_not_deployed";
-
-export type BranchOption = "from" | "parent" | "new" | "leave_out";
-
-export type BranchPick = { key: string, choice?: BranchPickChoice, };
-
-export type BranchPickChoice = { "option": "from" } | { "option": "parent" } | { "option": "new", value?: BranchNewValue, } | { "option": "leave_out" };
 
 export type BranchPicks = { preset: BranchPreset, } | { own: Array<string>, };
 
@@ -214,22 +183,6 @@ export type BranchQuery = {
  */
 environment: EnvironmentRef, };
 
-export type BranchReason = "live" | "left_out" | "sizing" | "custom_domain" | "generated_address" | "git_branch" | "data";
-
-export type BranchRow = {
-/**
- * `<lineageId>:<path>`.
- */
-key: string, base: JsonValue, from: JsonValue, into: JsonValue, } & ({ "role": "move",
-/**
- * `into` also changed since `base`; shown into → from.
- */
-conflict: boolean,
-/**
- * Present only on variable rows.
- */
-choice?: BranchChoice, } | { "role": "differ", why: BranchReason, });
-
 export type BranchView = {
 /**
  * The Branch.
@@ -240,7 +193,7 @@ environment: EnvironmentSummary,
  */
 parent: EnvironmentName,
 /**
- * Whether it outlives a Save and never closes for being idle.
+ * Whether it stays after syncing into its Parent and never closes for being idle.
  */
 kept: boolean,
 /**
@@ -252,11 +205,19 @@ setup: Array<SetupCommand>,
  */
 live: Array<LiveNode>,
 /**
- * The Parent's deployed changes Update would stage, as `NODE[.path]`.
+ * How many changes a Sync into its Parent carries: the Sync view's rows
+ * ticked by default.
  */
-update: Array<string>,
+to_parent: number,
 /**
- * The pull request it is the PR Environment of; its Save waits for the merge.
+ * When it closes for sitting idle, in seconds since the Unix epoch: a week
+ * after its latest Deployment. None while kept, never deployed, a Parent or
+ * closing already.
+ */
+closes_at: number | null,
+/**
+ * The pull request it is the PR Environment of; its Sync into a Destination
+ * waits for the merge.
  */
 pull_request: PullRequestRef | null, };
 
@@ -433,26 +394,36 @@ export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, n
 
 export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
 
-export type ConditionalSave = {
+export type ConditionalSync = {
 /**
- * Pass to [`Take::from`] to use a hint it left.
+ * Pass to [`crate::Take::from`] to use a hint it left.
  */
-id: ConditionalSaveId, pull_request: PullRequestNumber,
+id: ConditionalSyncId,
+/**
+ * The pull request whose merge lands it.
+ */
+pull_request: PullRequestNumber,
 /**
  * The rows it holds.
  */
-rows: Array<string>, state: SaveState, };
+rows: Array<NamedRow>,
+/**
+ * Where it is.
+ */
+state: ConditionalSyncState, };
 
-export type ConditionalSaveId = string;
+export type ConditionalSyncId = string;
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "rename_project" } & RenameProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "set_volume_storage" } & SetVolumeStorage | { "command": "set_volume_shared_writes" } & SetVolumeSharedWrites | { "command": "remove_volume" } & RemoveVolume | { "command": "rename_volume" } & RenameVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "set_generated_domain" } & SetGeneratedDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "move" } & Move | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "set_branch_setup" } & SetBranchSetup | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "set_pr_plan" } & SetPrPlan | { "command": "batch" } & Batch;
+export type ConditionalSyncState = "standing" | "frozen" | "landed";
+
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "rename_project" } & RenameProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "set_volume_storage" } & SetVolumeStorage | { "command": "set_volume_shared_writes" } & SetVolumeSharedWrites | { "command": "remove_volume" } & RemoveVolume | { "command": "rename_volume" } & RenameVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "set_generated_domain" } & SetGeneratedDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "sync" } & SyncChanges | { "command": "undo_sync" } & UndoSync | { "command": "take" } & Take | { "command": "hold_secret" } & HoldSecret | { "command": "copy_node" } & CopyNode | { "command": "never_sync" } & NeverSync | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "set_branch_setup" } & SetBranchSetup | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "set_pr_plan" } & SetPrPlan | { "command": "batch" } & Batch;
 
 export type ConfigCommitted = {
 /**
  * The open PR Environments' pull requests in the Project of the Environment it
  * wrote; none when it wrote none.
  */
-checks: Array<PullRequestRef>, } & ({ "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "moved" } & Moved | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "environment_removed" } & Teardown<EnvironmentRemoved> | { "written": "project_removed" } & Teardown<ProjectRemoved> | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched);
+checks: Array<PullRequestRef>, } & ({ "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "synced" } & Synced | { "written": "undone" } & Undone | { "written": "taken" } & Taken | { "written": "secret_held" } & SecretHeld | { "written": "never_synced" } & NeverSynced | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "environment_removed" } & Teardown<EnvironmentRemoved> | { "written": "project_removed" } & Teardown<ProjectRemoved> | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched);
 
 export type ConfigDomainEvidence = {
 /**
@@ -488,7 +459,7 @@ export type ConfigMount = { config_name: string,
  */
 target: ContainerPath | null, uid: number | null, gid: number | null, mode: number | null, };
 
-export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "numbered_deployment" } & NumberedDeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "namespaces" } & NamespacesQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "branch" } & BranchQuery | { "query": "branch_plan" } & BranchPlanQuery | { "query": "build_order" } & BuildOrderQuery | { "query": "move" } & MoveQuery | { "query": "environments" } & EnvironmentsQuery | { "query": "projects" } & ProjectsQuery | { "query": "pr_plans" } & PrPlansQuery | { "query": "pull_request" } & PullRequestQuery;
+export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "numbered_deployment" } & NumberedDeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "namespaces" } & NamespacesQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "branch" } & BranchQuery | { "query": "branch_plan" } & BranchPlanQuery | { "query": "build_order" } & BuildOrderQuery | { "query": "sync" } & SyncQuery | { "query": "environments" } & EnvironmentsQuery | { "query": "projects" } & ProjectsQuery | { "query": "pr_plans" } & PrPlansQuery | { "query": "pull_request" } & PullRequestQuery;
 
 export type ConfigSpec = { name: string, content: Array<number>, };
 
@@ -512,9 +483,9 @@ volumes?: VolumeObservation,
  */
 servers?: number, };
 
-export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "numbered_deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "namespaces" } & NamespacesView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "branch" } & BranchView | { "view": "branch_plan" } & BranchPlanView | { "view": "build_order" } & BuildOrderView | { "view": "move" } & MoveView | { "view": "environments" } & EnvironmentsView | { "view": "projects" } & ProjectsView | { "view": "pr_plans" } & PrPlansView | { "view": "pull_request" } & PullRequestView;
+export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "numbered_deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "namespaces" } & NamespacesView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "branch" } & BranchView | { "view": "branch_plan" } & BranchPlanView | { "view": "build_order" } & BuildOrderView | { "view": "sync" } & SyncView | { "view": "environments" } & EnvironmentsView | { "view": "projects" } & ProjectsView | { "view": "pr_plans" } & PrPlansView | { "view": "pull_request" } & PullRequestView;
 
-export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "moved" } & Moved | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "environment_removed" } & Teardown<EnvironmentRemoved> | { "written": "project_removed" } & Teardown<ProjectRemoved> | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched;
+export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "synced" } & Synced | { "written": "undone" } & Undone | { "written": "taken" } & Taken | { "written": "secret_held" } & SecretHeld | { "written": "never_synced" } & NeverSynced | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "environment_removed" } & Teardown<EnvironmentRemoved> | { "written": "project_removed" } & Teardown<ProjectRemoved> | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched;
 
 export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null, };
 
@@ -604,7 +575,7 @@ live: Array<NodeName>,
  */
 setup: Array<SetupCommand>,
 /**
- * Keep it after a Save, and never close it for being idle.
+ * Keep it after it syncs into its Parent, and never close it for being idle.
  */
 keep: boolean,
 /**
@@ -998,25 +969,34 @@ export type DeploymentsView = { environment: EnvironmentSummary, deployments: Ar
  */
 next_cursor: string | null, };
 
-export type Destination = { name: EnvironmentName,
+export type Destination = {
 /**
- * The PR Environment's changes a Save would move there.
+ * The Environment.
+ */
+name: EnvironmentName,
+/**
+ * The changes a Sync there would hold: the Sync view's ticked rows.
  */
 changes: number,
 /**
- * Its Conditional Save there, if any.
+ * Its Conditional Sync there, if any.
  */
-save: DestinationSave | null, };
+conditional_sync: DestinationSync | null, };
 
-export type DestinationSave = { id: ConditionalSaveId,
+export type DestinationSync = { id: ConditionalSyncId,
 /**
- * False once the PR Environment or the target branch changed since: save again.
+ * False once the PR Environment or the target branch changed since: sync again.
  */
 standing: boolean,
 /**
  * How many changes it holds.
  */
-changes: number, };
+changes: number,
+/**
+ * The secrets it brings by name only that the Destination has no value of, as
+ * `SERVICE.env.KEY`: the check waits for one, its own or held for the merge.
+ */
+waiting: Array<string>, };
 
 export type DeviceMapping = { machine_path: MachinePath, container_path: ContainerPath, cgroup_permissions: string, };
 
@@ -1057,25 +1037,17 @@ total_count: number,
  * Merged pull requests' values landed beside this Environment's own changes,
  * until its next Saved revision.
  */
-hints: Array<PullRequestHint>, };
-
-export type DifferRow = {
+hints: Array<PullRequestHint>,
 /**
- * `NODE.path`.
+ * Staged changes that arrived from the Parent's deploy by Follow, still at the
+ * value they arrived with, until they deploy.
  */
-row: string,
+incoming: Array<IncomingChange>,
 /**
- * Why it stays.
+ * The Parent's deployed values that followed into this Branch beside its own
+ * changes, or that it discarded: take one to stage it.
  */
-why: BranchReason,
-/**
- * The value on the side changes come from.
- */
-from: JsonValue,
-/**
- * The receiver's value.
- */
-into: JsonValue, };
+follow_hints: Array<FollowHint>, };
 
 export type Discard = {
 /**
@@ -1336,7 +1308,11 @@ settings: Array<SettingRow>,
  * For one Service: its Settings as one object, the shape `set --patch` takes.
  * Settings without a value are left out.
  */
-values?: { [key in string]: JsonValue } | null, };
+values?: { [key in string]: JsonValue } | null,
+/**
+ * Every row the Environment marks Never sync, whichever Settings were asked for.
+ */
+never_synced?: Array<RowId>, };
 
 export type EnvironmentsQuery = {
 /**
@@ -1351,6 +1327,33 @@ export type ExecutionError = { "type": "machine", action: MachineAction, error: 
 export type ExtraHost = string;
 
 export type FailedOperation<E> = { "type": "operation", operation: DeployOperation, error: E, } | { "type": "replacement", operation: ReplacementOperation, error: E, compensation: ReplacementCompensation<E>, };
+
+export type FollowHint = {
+/**
+ * The Parent it comes from: pass to [`Take::from`] to use it.
+ */
+from: EnvironmentName,
+/**
+ * The Parent's value; secrets read `{"secret": true}`.
+ */
+value: JsonValue,
+/**
+ * What commands name it by; stable across renames.
+ */
+row: RowId,
+/**
+ * Its Service or Volume.
+ */
+node: NodeName,
+/**
+ * Whether `node` is a Service or a Volume.
+ */
+kind: EnvironmentNodeType,
+/**
+ * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+ * node itself.
+ */
+name: string | null, };
 
 export type GitSource = {
 /**
@@ -1459,6 +1462,26 @@ export type HealthcheckCommand = [string, ...string[]];
 
 export type HealthcheckSpec = { "state": "disabled" } | { "state": "configured" } & ConfiguredHealthcheck | { "state": "http" } & HttpHealthcheck;
 
+export type HintSource = ConditionalSyncId | EnvironmentName;
+
+export type HoldSecret = {
+/**
+ * The Destination.
+ */
+environment: EnvironmentRef,
+/**
+ * The pull request whose merge brings the secret.
+ */
+pull_request: PullRequestNumber,
+/**
+ * The secret's row.
+ */
+row: RowRef,
+/**
+ * The value, sealed at once and never shown back.
+ */
+value: string, };
+
 export type HookContainer = ContainerObservation;
 
 export type HookFailure = { "type": "cancelled", stop_error: RpcError | null, } | { "type": "timed_out", stop_error: RpcError | null, } | { "type": "exit", code: number, };
@@ -1478,6 +1501,29 @@ export type ImageDigest = string;
 export type ImageRemoval = { reference: string, outcome: ImageRemovalOutcome, };
 
 export type ImageRemovalOutcome = { "status": "removed" } | { "status": "in_use" } | { "status": "not_found" } | { "status": "failed", message: string, } | { "status": "unrecognized" };
+
+export type IncomingChange = {
+/**
+ * Where it came from.
+ */
+from: EnvironmentName,
+/**
+ * What commands name it by; stable across renames.
+ */
+row: RowId,
+/**
+ * Its Service or Volume.
+ */
+node: NodeName,
+/**
+ * Whether `node` is a Service or a Volume.
+ */
+kind: EnvironmentNodeType,
+/**
+ * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+ * node itself.
+ */
+name: string | null, };
 
 export type IngressHost = string;
 
@@ -1738,6 +1784,16 @@ export type MachineUpdated = { machine: Machine, };
 
 export type ManagementClientLabel = string;
 
+export type Mark = {
+/**
+ * The Environment that marked it.
+ */
+environment: EnvironmentName,
+/**
+ * The marked row, as that Environment holds it.
+ */
+row: RowId, };
+
 export type MembershipObservation = "unknown" | "up" | "suspect" | "down" | string;
 
 export type MintBuildGrantRequest = {
@@ -1758,103 +1814,24 @@ service: ServiceName,
  */
 path: string, };
 
-export type Move = { "move": "save" } & Save | { "move": "update" } & Update | { "move": "take" } & Take;
-
-export type MoveChoice = {
+export type NamedRow = {
 /**
- * How it lands when not picked otherwise. `new` means a secret needs a fresh
- * value: pick `leave_out` and set one, or `from` to move the Branch's own.
+ * What commands name it by; stable across renames.
  */
-default: BranchOption,
+row: RowId,
 /**
- * Each way offered.
+ * Its Service or Volume.
  */
-options: Array<BranchOption>,
+node: NodeName,
 /**
- * Whether it is a secret.
+ * Whether `node` is a Service or a Volume.
  */
-secret: boolean, };
-
-export type MovePick = {
+kind: EnvironmentNodeType,
 /**
- * A change (`web.source.image`), or a prefix of changes: `web` is every change
- * of web, `web.variables` every variable of it.
+ * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+ * node itself.
  */
-row: string,
-/**
- * How the variables picked land; omitted, each its default.
- */
-choice?: PickChoice | null, };
-
-export type MoveQuery = { "move": "save", from: EnvironmentRef, into?: EnvironmentRef | null, when?: When | null, } | { "move": "update", into: EnvironmentRef, };
-
-export type MoveRow = {
-/**
- * `NODE`, or `NODE.path` for one of its settings or variables.
- */
-row: string,
-/**
- * The receiver changed it too since the two last shared: moving it overwrites that.
- */
-conflict: boolean,
-/**
- * How a variable can land.
- */
-choice?: MoveChoice | null,
-/**
- * The value that moves; secrets read `{"secret": true}`.
- */
-from: JsonValue,
-/**
- * The receiver's value now.
- */
-into: JsonValue, };
-
-export type MoveView = {
-/**
- * Where the changes come from.
- */
-from: EnvironmentSummary,
-/**
- * Where they land.
- */
-into: EnvironmentSummary,
-/**
- * Pass to [`Move::version`] to move exactly these changes.
- */
-version: string,
-/**
- * Each change that moves.
- */
-rows: Array<MoveRow>,
-/**
- * Each setting that differs and stays: sizing, domains and the Git branch
- * belong to each Environment, so a Move never carries them.
- */
-differ: Array<DifferRow>, };
-
-export type Moved = {
-/**
- * Where the changes came from.
- */
-from: EnvironmentSummary,
-/**
- * Where they landed.
- */
-into: EnvironmentSummary,
-/**
- * Nodes staged in `into`'s Working State.
- */
-staged: Array<NodeName>,
-/**
- * The Branch now; none for a take.
- */
-branch: BranchView | null,
-/**
- * The Conditional Save now: standing after a Save at merge, the one taken
- * from after a take; none once withdrawn and for a Move now.
- */
-conditional_save: ConditionalSave | null, };
+name: string | null, };
 
 export type Namespace = string;
 
@@ -1872,11 +1849,66 @@ export type NamespacesQuery = Record<symbol, never>;
 
 export type NamespacesView = { namespaces: Array<OwnedNamespace>, };
 
+export type NeverSync = {
+/**
+ * The Environment.
+ */
+environment: EnvironmentRef,
+/**
+ * Its rows, by name in its own configuration (with `off`, among its marks), or
+ * by RowId. Each names a node the Environment has, but not necessarily a
+ * variable it has yet: marking a sender's new variable keeps it out of the
+ * receiver.
+ */
+rows: Array<RowRef>,
+/**
+ * Sync them again.
+ */
+off?: boolean, };
+
+export type NeverSynced = {
+/**
+ * The Environment.
+ */
+environment: EnvironmentSummary,
+/**
+ * Every row it marks Never sync.
+ */
+never_synced: Array<NamedRow>, };
+
+export type NeverSyncedRow = {
+/**
+ * The marks keeping it from syncing: unmark them to sync it. A new node's row
+ * counts those on what it can't arrive without.
+ */
+marks: Array<Mark>,
+/**
+ * What commands name it by; stable across renames.
+ */
+row: RowId,
+/**
+ * Its Service or Volume.
+ */
+node: NodeName,
+/**
+ * Whether `node` is a Service or a Volume.
+ */
+kind: EnvironmentNodeType,
+/**
+ * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+ * node itself.
+ */
+name: string | null, };
+
 export type NodeChange = {
 /**
  * Its name.
  */
 name: string,
+/**
+ * Its own Sync row, which joins it to what moved it.
+ */
+row: RowId,
 /**
  * Whether it is created, changed or removed.
  */
@@ -1960,8 +1992,6 @@ export type PartialResult<T, E> = { successes: Array<MachineSuccess<T>>, failure
  * Targets selected by the entry Machine that produced no terminal response.
  */
 omissions: Array<MachineId>, };
-
-export type PickChoice = "from" | "parent" | "leave_out" | { "new": string };
 
 export type PidMode = string;
 
@@ -2212,7 +2242,7 @@ merge_commit: CommitSha | null,
 /**
  * Once merged: the target branch's head as the Store last saw it
  * ([`crate::ConfigStore::branch_head`]), when Cloud found the merge commit in it
- * already. Its Conditional Saves then land with what that push deployed.
+ * already. Its Conditional Syncs then land with what that push deployed.
  */
 merge_reached: CommitSha | null,
 /**
@@ -2222,17 +2252,38 @@ updated: GithubTimestamp, };
 
 export type PullRequestHint = {
 /**
- * The Conditional Save: pass to [`Take::from`].
+ * The Conditional Sync: pass to [`crate::Take::from`].
  */
-save: ConditionalSaveId, pull_request: PullRequestNumber,
+conditional_sync: ConditionalSyncId,
 /**
- * `NODE.path`, as a Move names it.
+ * The pull request it merged with.
  */
-row: string,
+pull_request: PullRequestNumber,
 /**
  * The pull request's value; secrets read `{"secret": true}`.
  */
-value: JsonValue, landed: Landed, };
+value: JsonValue,
+/**
+ * How it stands there.
+ */
+landed: Landed,
+/**
+ * What commands name it by; stable across renames.
+ */
+row: RowId,
+/**
+ * Its Service or Volume.
+ */
+node: NodeName,
+/**
+ * Whether `node` is a Service or a Volume.
+ */
+kind: EnvironmentNodeType,
+/**
+ * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+ * node itself.
+ */
+name: string | null, };
 
 export type PullRequestNumber = number;
 
@@ -2250,7 +2301,7 @@ pull_request: PullRequest | null,
  */
 environments: Array<PrEnvironment>,
 /**
- * Ready to merge: nothing waits to be saved into an Environment that deploys
+ * Ready to merge: nothing waits to be synced into an Environment that deploys
  * its target branch.
  */
 passing: boolean,
@@ -2451,21 +2502,9 @@ export type Retry = { id: DeploymentId,
  */
 deployment: DeploymentId, };
 
-export type ReviewChangeSet = { groups: Array<ReviewNodeChange>, totalCount: number,
-/**
- * Token of the Head this set was computed against; discard must present it back.
- */
-headToken: string, };
-
 export type ReviewComparisonRole = "head" | "introduction";
 
 export type ReviewLifecycleKind = "create" | "update" | "delete";
-
-export type ReviewNodeChange = { node: ReviewNodeIdentity, lifecycle: ReviewLifecycleKind,
-/**
- * What `settings` and discard compare against; `None` only when nothing exists to compare.
- */
-comparison: ReviewComparisonRole | null, settings: Array<ServiceSettingChange>, };
 
 export type ReviewNodeIdentity = { type: EnvironmentNodeType, id: string, };
 
@@ -2474,6 +2513,10 @@ export type ReviewNodeProjection = { node: ReviewNodeIdentity, config: CompiledN
 export type ReviewStateProjection = { token: string, nodes: Array<ReviewNodeProjection>, };
 
 export type Revision = number;
+
+export type RowId = string & { readonly __brand: "RowId" };
+
+export type RowRef = string;
 
 export type RpcError = { code: RpcErrorCode, message: string, details: JsonValue, };
 
@@ -2535,38 +2578,17 @@ export type RuntimeWatchView = { services: Array<ServiceObservation>, effective_
  */
 observed_at: string, };
 
-export type Save = {
-/**
- * The Branch whose changes move.
- */
-from: EnvironmentRef,
-/**
- * Its Parent; from a PR Environment, the Destination. Omitted: the Parent, or
- * the only Destination.
- */
-into?: EnvironmentRef | null,
-/**
- * The changes to move; omitted, every change, each variable its default way.
- */
-picks?: Array<MovePick> | null,
-/**
- * Refuse with `conflict` unless the Move view is still at this version.
- */
-version?: string | null,
-/**
- * `now` stages the changes; `at_merge` saves them as a Conditional Save that
- * goes live with the pull request's merge, and `picks: []` withdraws it.
- * Omitted: `at_merge` from a PR Environment, else `now`.
- */
-when?: When | null, };
-
-export type SaveState = "standing" | "frozen" | "landed";
-
 export type SavedEnvironmentIntent = { version: 1, environmentSlug: string, services: Array<SavedServiceIntent>, volumes: Array<SavedVolumeIntent>, };
 
 export type SavedServiceIntent = { id: string, lineageId: string, slug: string, config: AuthoredServiceConfig, variables: Array<SavedVariableIntent>, volumeAttachments: Array<VolumeAttachment>, };
 
-export type SavedVariableIntent = { id: string, key: string, description: string | null, exported: boolean, valueFingerprint: string, value: SavedVariableValue, };
+export type SavedVariableIntent = { id: string, key: string, description: string | null, exported: boolean,
+/**
+ * Empty exactly for a [`SavedVariableValue::SecretWithoutValue`], checked by
+ * `validate_variables`. It stays beside `value`, not in each valued variant:
+ * moving it would reshape every stored Working State and Applied State.
+ */
+valueFingerprint: string, value: SavedVariableValue, };
 
 export type SavedVariableProducer = { ownerScope: 'service', ownerId: string, ownerLineageId: string, key: string, value: SavedVariableValue, };
 
@@ -2575,7 +2597,7 @@ export type SavedVariableValue = { "kind": "literal", value: string, } | { "kind
  * Absent in the browser-readable authored document. Cloud keeps the
  * ciphertext privately and captures it into each immutable publication.
  */
-encryptedValue: EncryptedSecretValue | null, };
+encryptedValue: EncryptedSecretValue | null, } | { "kind": "secret_without_value" };
 
 export type SavedVolumeIntent = { resourceId: string, resourceLineageId: string, name: string, storage: VolumeKind,
 /**
@@ -2586,6 +2608,26 @@ export type SavedVolumeIntent = { resourceId: string, resourceLineageId: string,
 sharedWrites?: boolean, };
 
 export type ScopedVolumeSource = { namespace: Namespace, logical_name: DockerVolumeName, };
+
+export type SecretHeld = {
+/**
+ * The Destination.
+ */
+environment: EnvironmentSummary,
+/**
+ * The pull request it waits for.
+ */
+pull_request: PullRequestNumber,
+/**
+ * The secret's row.
+ */
+row: RowId, };
+
+export type SecretRow = {
+/**
+ * A value is held for it to land with at the merge.
+ */
+held: boolean, };
 
 export type SelectedEndpoint = string;
 
@@ -2650,6 +2692,10 @@ export type ServiceImageCredentials = { "type": "none" } | { "type": "configured
 export type ServiceLineageId = string;
 
 export type ServiceListing = {
+/**
+ * Its node's row: what a Sync or Never sync names the whole Service by.
+ */
+row: RowId,
 /**
  * Where its image comes from.
  */
@@ -2719,7 +2765,12 @@ export type ServiceRestartPolicy = 'unless-stopped' | 'always' | 'on-failure' | 
 
 export type ServiceRoute = { id: string, hostname: string, targetPort: number | null, };
 
-export type ServiceSettingChange = { path: string, kind: ChangeKind, before: JsonValue, after: JsonValue, canRestore: boolean, };
+export type ServiceSettingChange = { path: string, kind: ChangeKind, before: JsonValue, after: JsonValue, canRestore: boolean,
+/**
+ * The Sync row it falls in, which joins it to what moved it; the Store's to fill
+ * from the `At` its comparison hands alongside and the node's lineage.
+ */
+row: RowId | null, };
 
 export type ServiceSettingInput = { "field": "name", "value": string } | { "field": "source", "value": ServiceSource } | { "field": "rootDir", "value": string } | { "field": "command", "value": string } | { "field": "preDeployCommand", "value": string | null } | { "field": "startCommand", "value": string | null } | { "field": "healthcheck", "value": ServiceHealthcheck } | { "field": "healthcheckPath", "value": string } | { "field": "healthcheckTimeoutSeconds", "value": number } | { "field": "restartPolicy", "value": ServiceRestartPolicy } | { "field": "maxRetries", "value": number } | { "field": "replicas", "value": number } | { "field": "cpuLimit", "value": number | null } | { "field": "memLimit", "value": number | null } | { "field": "privateDns", "value": ServiceName } | { "field": "routes", "value": Array<ServiceRoute> } | { "field": "managedHostnames", "value": Array<ServiceManagedHostname> } | { "field": "managedHostnameValue", "value": ServiceManagedHostname } | { "field": "managedHostnamePrefix", "value": string } | { "field": "imageReference", "value": string } | { "field": "build", "value": ServiceBuildConfig } | { "field": "template", "value": ServiceTemplate | null };
 
@@ -2782,6 +2833,10 @@ values: { [key in string]: JsonValue },
  * Its Settings the next Deploy changes.
  */
 changes: Array<ServiceSettingChange>,
+/**
+ * Its node's row: what a Sync or Never sync names the whole Service by.
+ */
+row: RowId,
 /**
  * Where its image comes from.
  */
@@ -2927,7 +2982,11 @@ default: JsonValue,
 /**
  * Whether a change to it waits for a Deploy.
  */
-apply: Apply, };
+apply: Apply,
+/**
+ * A variable's row, which [`crate::NeverSync`] names it by.
+ */
+row?: RowId, };
 
 export type SetupCommand = {
 /**
@@ -3014,26 +3073,201 @@ export type Sweep = {
  */
 now: number, };
 
+export type SyncChange = "new" | "changed" | "conflict";
+
+export type SyncChanges = {
+/**
+ * The Environment whose changes sync.
+ */
+from: EnvironmentRef,
+/**
+ * Where they land, in the same Project; omitted, a PR Environment's only
+ * Destination at the merge, else the sender's Parent.
+ */
+into?: EnvironmentRef | null,
+/**
+ * When they land; omitted, at the merge from a PR Environment into one of its
+ * Destinations, else now.
+ */
+when?: When | null,
+/**
+ * Refused with `conflict` unless the Sync view is still at this version.
+ */
+version: string,
+/**
+ * The rows to sync; omitted, every row ticked. One left out is offered again
+ * next time.
+ */
+picks?: Array<RowRef> | null,
+/**
+ * Rows left out of the picks, by RowId or by name in either side; a new node
+ * skipped takes its rows with it.
+ */
+skip?: Array<RowRef>,
+/**
+ * A value for each picked secret the receiver lacks: sealed at once, never
+ * shown back. At the merge it is held until then.
+ */
+values?: { [key in RowRef]: string }, };
+
+export type SyncId = string;
+
+export type SyncQuery = {
+/**
+ * As [`SyncChanges::from`].
+ */
+from: EnvironmentRef,
+/**
+ * As [`SyncChanges::into`].
+ */
+into?: EnvironmentRef | null,
+/**
+ * As [`SyncChanges::when`]; `close_after` reads nothing different.
+ */
+when?: When | null, };
+
+export type SyncRow = {
+/**
+ * What syncing it does there.
+ */
+change: SyncChange,
+/**
+ * The value that syncs; secrets read `{"secret": true}`.
+ */
+from: JsonValue,
+/**
+ * The receiver's value now.
+ */
+into: JsonValue,
+/**
+ * Synced unless left out: every row but one the sender only inherited from a
+ * Parent it isn't syncing into.
+ */
+ticked: boolean,
+/**
+ * The row of the new node it is in, which syncs with it.
+ */
+requires: RowId | null,
+/**
+ * A secret's row.
+ */
+secret: SecretRow | null,
+/**
+ * What commands name it by; stable across renames.
+ */
+row: RowId,
+/**
+ * Its Service or Volume.
+ */
+node: NodeName,
+/**
+ * Whether `node` is a Service or a Volume.
+ */
+kind: EnvironmentNodeType,
+/**
+ * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+ * node itself.
+ */
+name: string | null, };
+
+export type SyncView = {
+/**
+ * Where the changes come from.
+ */
+from: EnvironmentSummary,
+/**
+ * Where they land.
+ */
+into: EnvironmentSummary,
+/**
+ * The pull request whose merge they go live with; none when staged now.
+ */
+at_merge: PullRequestNumber | null,
+/**
+ * Pass to [`SyncChanges::version`] to sync exactly these rows.
+ */
+version: string,
+/**
+ * Each row a Sync can carry. Settings each Environment keeps as its own
+ * (sizing, domains, generated addresses, the Git branch, Volume data) never are.
+ */
+rows: Array<SyncRow>,
+/**
+ * The rows it would carry but that either side marked Never sync.
+ */
+never_synced: Array<NeverSyncedRow>, };
+
+export type Synced = {
+/**
+ * Pass to [`UndoSync::sync`] to undo it.
+ */
+sync: SyncId,
+/**
+ * Where the changes came from.
+ */
+from: EnvironmentSummary,
+/**
+ * Where they landed.
+ */
+into: EnvironmentSummary,
+/**
+ * When they land.
+ */
+when: SyncedWhen, };
+
+export type SyncedWhen = { "kind": "now",
+/**
+ * Nodes staged in `into`'s Working State.
+ */
+staged: Array<NodeName>,
+/**
+ * The Branch is closing, as [`When::Now`] asked.
+ */
+closing: boolean, } | { "kind": "at_merge",
+/**
+ * The Conditional Sync standing now.
+ */
+conditional_sync: ConditionalSync, };
+
 export type SystemEvent = { "event": "branch_head" } & BranchHead | { "event": "check_suite" } & CheckSuite | { "event": "pull_request" } & PullRequest | { "event": "sweep" } & Sweep | { "event": "cluster_forgotten" };
 
 export type Take = {
 /**
- * The retained Conditional Save whose hints to take.
+ * The retained Conditional Sync whose hints to take, or the Parent whose Follow
+ * hints to take.
  */
-from: ConditionalSaveId,
+from: HintSource,
 /**
- * Its Destination; refused unless it is.
+ * Its Destination, or the Branch following the Parent; refused unless it is.
  */
 into?: EnvironmentRef | null,
 /**
- * The hints to take, by row or a prefix of rows; omitted, every one.
+ * The hints to take; omitted, every one.
  */
-rows?: Array<string> | null,
+rows?: Array<RowRef> | null,
 /**
- * Refuse with `conflict` unless the Destination's `diff` is still at this
- * version: its Working State and the Saved revision the hints landed on.
+ * Refused with `conflict` unless the receiver's `diff` is still at this
+ * version: the one the hints were read at.
  */
-version?: string | null, };
+version: string, };
+
+export type Taken = {
+/**
+ * Where the values came from: the Parent, or the pull request's PR Environment.
+ */
+from: EnvironmentSummary,
+/**
+ * Where they landed.
+ */
+into: EnvironmentSummary,
+/**
+ * Nodes staged in `into`'s Working State.
+ */
+staged: Array<NodeName>,
+/**
+ * The Conditional Sync taken from; none for a Parent's values.
+ */
+conditional_sync: ConditionalSync | null, };
 
 export type Teardown<T> = { "teardown": "removed" } & T | { "teardown": "waiting", environment: EnvironmentName, deployment: DeploymentId, } | { "teardown": "needs_removal", environment: EnvironmentName, deployment: DeploymentId, };
 
@@ -3077,19 +3311,17 @@ export type Unclaimed = { organization: OrganizationId, environment: Environment
  */
 admitted_at: number, };
 
-export type Update = {
+export type UndoSync = {
 /**
- * The Branch the changes move into.
+ * As [`Synced::sync`].
  */
-into: EnvironmentRef,
+sync: SyncId, };
+
+export type Undone = {
 /**
- * The changes to move; omitted, every change.
+ * The receiver now.
  */
-picks?: Array<MovePick> | null,
-/**
- * Refuse with `conflict` unless the Move view is still at this version.
- */
-version?: string | null, };
+into: EnvironmentSummary, };
 
 export type UpdateConfig = {
 /**
@@ -3322,7 +3554,12 @@ environment: EnvironmentSummary,
  */
 volumes: Array<VolumeListing>, };
 
-export type When = "now" | "at_merge";
+export type When = { "kind": "now",
+/**
+ * Close the Branch once its changes landed in its Parent: refused for a
+ * kept Branch, and for a Sync into anything but its Parent.
+ */
+close_after?: boolean, } | { "kind": "at_merge" };
 
 export type WireGuardPublicKey = Array<number>;
 

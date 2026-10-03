@@ -1,19 +1,19 @@
 ---
 title: Environments and branches
-description: Run staging next to production with its own data, and save what works back to production.
+description: Run staging next to production with its own data, and sync what works back to production.
 ---
 
 An environment is a full set of your app's services, variables and volumes, running apart
 from the others. Every project starts with one, `production`.
 
 To get another, branch one you have. A branch is a copy of another environment, called its
-parent, that you can change without touching the parent. When a change works there, you save it
-back to the parent.
+parent, that you can change without touching the parent. When a change works there, you sync it
+back to the parent. What the parent deploys follows into the branch on its own.
 
 ```mermaid
 flowchart LR
-  prod["production"] -- "Update: what production deployed since" --> staging["staging, a branch of production"]
-  staging -- "Save: your changes, ready to deploy" --> prod
+  prod["production"] -- "Follow: what production deploys" --> staging["staging, a branch of production"]
+  staging -- "Sync: your changes, ready to deploy" --> prod
 ```
 
 The steps below make `staging` for a project `my-app` with a `web` service and a `postgres`
@@ -27,8 +27,8 @@ database, so staging gets its own copy of both and its own data. Use your own se
    `postgres-data`, the database's volume, shows **New, empty**.
 3. Optional: if your app has a command that fills a database with test data, click **Add a
    command** under **Setup command**, enter it, like `pnpm db:seed`, and pick `web` to run it in.
-4. Turn on **Keep it after saving**, so staging stays after you save from it. Click **Create and
-   deploy**, or **Just create** to deploy it later.
+4. Turn on **Keep it after syncing into production**, so staging stays after you sync from it.
+   Click **Create and deploy**, or **Just create** to deploy it later.
 
 ![The New branch panel set to Everything: each service is Separate](../images/new-branch-panel.png)
 
@@ -59,24 +59,30 @@ Try a change in staging first, like a new variable that turns on a feature:
    **Sealed** (it isn't a secret), and click **Add**.
 3. Click **Deploy**.
 
-![A branch's canvas, with the branch button at the top right. Here it reads Up to date](../images/branch-canvas.png)
+![A branch's canvas, with the Sync button at the top right](../images/branch-canvas.png)
 
-Production doesn't change. The branch button at the top right of staging's canvas now reads
-**1 to save**.
+Production doesn't change. The Sync button at the top right of staging's canvas now reads
+**Sync to production · 1**.
 
-## Save the change to production
+## Sync the change to production
 
-Saving stages staging's changes in production, like a draft. It never deploys them.
+Syncing stages staging's changes in production, like a draft. It never deploys them.
 
-1. On staging's canvas, click the branch button, then **Save to production**.
-2. Check each change, **Current** against **New**. Click × to leave one out.
-3. Click **Save to production**. Production's canvas opens with the change staged.
+1. On staging's canvas, click **Sync to production**.
+2. Check each change, production's value against staging's. Untick one to leave it out; it's
+   offered again next time.
+3. Click **Sync 1 change**. A toast offers **Undo**; production's canvas opens with the change
+   staged.
 4. Click **Deploy**.
 
-Save never moves data or deletes anything in production. Replicas, CPU and memory limits, domains
-and the Git branch stay as each environment has them. A setting marked **Changed in production
-too** replaces production's value when you save it. A secret staging added stays out of
-production unless you click its **New** value and enter production's own.
+Sync never moves data or deletes anything in production. Replicas, CPU and memory limits, domains
+and the Git branch stay as each environment has them. A change marked **Changed in production**
+replaces production's value when you sync it. A secret's value never syncs: one staging added
+arrives in production marked **Secret**, without a value, and production's deploy asks you to set
+it first. To set it as you sync, type production's value in the secret's row of the dialog.
+
+To keep a setting out of every sync, like a variable each environment sets its own way, click
+**Never sync** beside it in the dialog, or in the variable's ⋮ menu.
 
 ## Other choices
 
@@ -113,20 +119,26 @@ It starts with no services or variables, so you add them yourself.
 ### Keep a branch, or let it close
 
 A branch that isn't kept closes after 7 days without a deploy: it comes off your servers, and its
-copies and their data are deleted. It can also be deleted once its changes are saved.
+copies and their data are deleted. It can also close as you sync it: tick **Close staging after
+syncing** in the Sync dialog.
 
-- **Keep it:** turn on **Keep it after saving** when you create it. Later, click the branch
-  button, then ⋮, and check **Keep this branch**.
+- **Keep it:** turn on **Keep it after syncing into production** when you create it. Later, open
+  the Sync button's ▾ menu and check **Keep staging**.
 - **Close it now:** closing a branch removes it from your servers, like deleting an environment.
-  Click the branch button, then ⋮, then **Close staging…**. Ployz lists what
-  goes, including changes you haven't saved. Type `my-app/staging` and click **Close branch**.
+  Open the Sync button's ▾ menu, then **Close staging…**. Ployz lists what goes, including changes
+  you haven't synced. Type `my-app/staging` and click **Close branch**.
 
-### Bring in production's changes
+### Production's changes follow into staging
 
-When production deploys something new, click staging's branch button. The panel lists what's
-new, like **2 updates from production**. Click **Update**, and the changes arrive in staging as
-staged changes. If staging changed the same settings, the panel warns you in amber, and Update
-replaces staging's values.
+When production deploys something new, the change arrives in staging as a staged change, marked
+**From production's deploy** in **Details**. Deploy staging to run it. If staging changed the same
+setting, staging's value stays, and Details offers production's beside it: click **Use theirs**
+to take it.
+
+### Sync to another environment
+
+The Sync button's ▾ menu also syncs into any other environment of the project, like a branch next
+to staging. What staging only got from production is left out unless you tick it.
 
 ### Change the default environment
 

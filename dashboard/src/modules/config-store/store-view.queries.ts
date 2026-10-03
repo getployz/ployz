@@ -1,8 +1,8 @@
 import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useMutationState, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQueries, type Query, type QueryClient } from "@tanstack/react-query";
 import type {
   BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, Change, ConfigQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
-  DeploymentsView, DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, EnvironmentView, MoveQuery, NamespaceQuery,
-  ProjectsQuery, RemovalsQuery, ServicesQuery, VolumesQuery,
+  DeploymentsView, DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, EnvironmentView, NamespaceQuery,
+  ProjectsQuery, RemovalsQuery, ServicesQuery, SyncQuery, VolumesQuery,
 } from "@ployz/sdk";
 import { Schema } from "effect";
 import type { CollectionScope } from "#/collections/scope";
@@ -38,13 +38,15 @@ const refreshedBy = {
   volumes: ["store_environment", "store_deployment"],
   volume: ["store_environment", "store_deployment"],
   removals: ["store_environment", "store_deployment"],
-  // A Branch's Live Nodes and pending Update follow what its Parent and ancestors run.
-  branch: ["store_environment", "store_deployment"],
+  // A Branch's Live Nodes follow what its Parent and ancestors run; a PR Environment counts toward its pull
+  // request's Destination.
+  branch: ["store_environment", "store_deployment", "store_pull_request"],
   // A plan reads the Environment's Working State and what it and its ancestors run.
   branch_plan: ["store_environment", "store_deployment"],
   build_order: ["store_organization"],
-  // A Move compares a Branch with its Parent's Working and Applied State; a PR's Conditional Save reads its facts.
-  move: ["store_environment", "store_deployment", "store_pull_request"],
+  // A Sync compares two Environments over what they last shared; from a PR Environment into a Destination it is a
+  // Conditional Sync, which reads the pull request.
+  sync: ["store_environment", "store_deployment", "store_pull_request"],
   // The Project names its Default Environment; a removal is a Deployment.
   environments: ["store_project", "store_environment", "store_deployment"],
   projects: ["store_project", "store_environment"],
@@ -106,8 +108,10 @@ export function environmentKey(ref: EnvironmentRef) {
   return `${ref.project ?? ""}/${ref.environment ?? ""}`;
 }
 
+/** Whether a cached view reads the Environment: its own views, and a Sync's from either side. */
 function isOfEnvironment(query: Query, key: string) {
   const config = queryOf(query);
+  if (config?.query === "sync") return [config.from, config.into].some((side) => side && environmentKey(side) === key);
   return config !== null && "environment" in config && environmentKey(config.environment) === key;
 }
 
@@ -167,7 +171,7 @@ const isSecret = Schema.is(Schema.Struct({ secret: Schema.Unknown }));
  * Shows edits not yet committed over an Environment view, in order: what the user sees while saves run. It knows no
  * edit rules: the dashboard only sends `set PATH VALUE` and `unset PATH` for rows the view lists (a new variable adds
  * its row), so a pending edit shows as its value, or the row's default once unset. A secret shows as reads show it,
- * `{"secret": true}`. What the Store makes of an edit arrives with the committed view.
+ * `{"secret": true}`, or `{"secret": false}` while kept without a value. What the Store makes of an edit arrives with the committed view.
  */
 export function withPendingChanges(view: EnvironmentView, changes: readonly Change[]): EnvironmentView {
   if (changes.length === 0) return view;
@@ -178,7 +182,8 @@ export function withPendingChanges(view: EnvironmentView, changes: readonly Chan
     if (!row && change.op === "set") settings.push(row = { path: change.path, value: null, default: null, apply: "staged" });
     if (!row) continue;
     const value = change.op === "set" ? change.value : row.default;
-    row.value = isSecret(value) ? { secret: true } : value;
+    // Keeping a secret (`{"secret": true}`) keeps what it shows, a value or none.
+    row.value = !isSecret(value) ? value : value.secret === true && isSecret(row.value) ? row.value : { secret: true };
   }
   return { ...view, settings };
 }
@@ -238,19 +243,14 @@ export function buildLogQuery(deployment: string, service: string): { query: "bu
   return { query: "build_log", deployment, service };
 }
 
-/** A Branch: its Parent, what it uses live and what Update would stage. Anything else is refused: not a Branch. */
+/** A Branch: its Parent, what it uses live, how much it has to sync and when it closes. Anything else is refused: not a Branch. */
 export function branchQuery(environment: EnvironmentRef): { query: "branch" } & BranchQuery {
   return { query: "branch", environment };
 }
 
-/** What Save would put in a Branch's Parent. */
-export function saveQuery(branch: EnvironmentRef): { query: "move" } & MoveQuery {
-  return { query: "move", move: "save", from: branch };
-}
-
-/** What Update would bring into a Branch from what its Parent runs. */
-export function updateQuery(branch: EnvironmentRef): { query: "move" } & MoveQuery {
-  return { query: "move", move: "update", into: branch };
+/** What a Sync from `from` into `into` (by name) would carry, when the Store lands it: the Sync dialog's rows. */
+export function syncQuery(from: EnvironmentRef, into: string): { query: "sync" } & SyncQuery {
+  return { query: "sync", from, into: { project: from.project, environment: into } };
 }
 
 /** What a Branch of `from` would copy and use live, for the picks so far (by name), or for a preset around `focus`. */
@@ -342,11 +342,11 @@ export function useStoreView<Q extends ConfigQuery>(organizationSlug: string, qu
 }
 
 /**
- * Changes open pull requests saved into `environment` for their merge (standing Conditional Saves), by pull request:
+ * Changes open pull requests synced into `environment` for their merge (standing Conditional Syncs), by pull request:
  * the bottom bar's "goes live when #N merges". Chrome, so nothing waits on it; the Project's plans name the open ones.
  */
-// ponytail: one pull request view per open PR of the Project; a Store view of saves into an Environment when PRs pile up.
-export function useSavesInto(organizationSlug: string, project: string, environment: string) {
+// ponytail: one pull request view per open PR of the Project; a Store view of Conditional Syncs into an Environment when PRs pile up.
+export function useConditionalSyncsInto(organizationSlug: string, project: string, environment: string) {
   const scope = useCollectionScope();
   const plans = useCachedStoreView(organizationSlug, prPlansQuery(project));
   const open = plans?.ok ? plans.value.plans.flatMap((plan) => plan.open.map((pr) => ({ repository_id: plan.repository_id, number: pr.number }))) : [];
@@ -355,8 +355,8 @@ export function useSavesInto(organizationSlug: string, project: string, environm
     if (!data?.ok || !data.value.pull_request) return [];
     const { number } = data.value.pull_request;
     return data.value.environments.flatMap((pr) => pr.destinations.flatMap((destination) =>
-      destination.name === environment && destination.save?.standing
-        ? [{ number, changes: destination.save.changes, environment: pr.environment.name }] : []));
+      destination.name === environment && destination.conditional_sync?.standing
+        ? [{ number, changes: destination.conditional_sync.changes, environment: pr.environment.name }] : []));
   });
 }
 
