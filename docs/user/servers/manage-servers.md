@@ -44,8 +44,11 @@ An entry marked **Not in any Project** is left over from a deleted project or en
 
 Every server runs builds, runs services and takes web traffic. To turn one off, see
 [Give servers different jobs](../services/scaling.md#give-servers-different-jobs): services move
-off on your next deploy. Web traffic is the exception: the server stops taking traffic at once,
-and your generated addresses stop pointing at it within the hour.
+off on your next deploy. Turning web traffic off stops advertising the server, not serving from
+it: your generated addresses stop pointing at it within the hour, or when you click **Check
+again** under **Domain** in **Organization → General**. Until then, visitors still sent to it are
+served from wherever your services run. [Removing the server](#remove-a-server) is what stops it
+taking traffic.
 
 ## Upgrade Ployz on a server
 
