@@ -10,15 +10,13 @@
 
 use std::collections::BTreeMap;
 
-use ployz_core::config::ServiceGitAccess;
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, Admit, AuthorizedRepository, BranchQuery, Change, ConfigStore, CreateBranch,
-    CreateProject, CreateService, Deploy, DeploymentId, Discard, Edit, EnvironmentId,
-    EnvironmentName, EnvironmentRef, KeepBranch, OrganizationId, ProjectId, ProjectName,
-    RemoveService, RenameService, SecretRow, ServiceLineageId, ServiceQuery, SettingPath,
-    SyncChange, SyncChanges, SyncId, SyncQuery, SyncRow, SyncView, Synced, SyncedWhen, Trusted,
-    UndoSync, When,
+    Actor, Admit, BranchQuery, Change, ConfigStore, CreateBranch, CreateProject, CreateService,
+    Deploy, DeploymentId, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentRef,
+    KeepBranch, OrganizationId, ProjectId, ProjectName, RemoveService, RenameService, SecretRow,
+    ServiceLineageId, ServiceQuery, SettingPath, SyncChange, SyncChanges, SyncId, SyncQuery,
+    SyncRow, SyncView, Synced, SyncedWhen, Trusted, UndoSync, When,
 };
 use serde_json::{Value, json};
 
@@ -650,23 +648,14 @@ fn undoing_a_sync_puts_back_only_what_it_changed_and_offers_it_again() {
 /// Edit `environment` with Cloud's evidence for the repositories `acme/web` and
 /// `acme/docs`.
 fn edit_git(store: &ConfigStore, who: &Actor, environment: &str, changes: Vec<Change>) {
-    let repository = |name: &str, n| AuthorizedRepository {
-        repository: backend::repo_name(name),
-        repository_id: backend::repo_id(n),
-        access: ServiceGitAccess::Public,
-        default_branch: backend::git_branch("main"),
-        branches: Vec::new(),
-    };
-    let evidence = Trusted {
-        repositories: vec![repository("acme/web", 11), repository("acme/docs", 12)],
-        ..Trusted::default()
-    };
     let edit = Edit {
         environment: at(environment),
         expect: None,
         changes,
     };
-    store.write_trusted(who, &edit, &evidence).unwrap();
+    store
+        .write_trusted(who, &edit, &backend::acme_repositories())
+        .unwrap();
 }
 
 /// `web` in `environment` switched from its source to `to`, one setting of the other kind.

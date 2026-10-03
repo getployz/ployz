@@ -8,15 +8,14 @@
 //! value is a Use hint, as is one the Branch discards; it cascades one level per
 //! deploy; and a secret follows only into a Branch that never set its own.
 
-use ployz_core::config::{At, ServiceGitAccess, Setting};
+use ployz_core::config::{At, Setting};
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::RowId;
 use ployz_store::{
-    Actor, AuthorizedRepository, Batch, BatchCommand, Change, ConfigStore, CreateBranch,
-    CreateProject, CreateService, DiffQuery, DiffView, Discard, Edit, EnvironmentId,
-    EnvironmentName, EnvironmentQuery, EnvironmentRef, HintSource, NeverSync, OrganizationId,
-    ProjectId, ProjectName, Publish, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath,
-    Take, Trusted,
+    Actor, Batch, BatchCommand, Change, ConfigStore, CreateBranch, CreateProject, CreateService,
+    DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentQuery,
+    EnvironmentRef, HintSource, NeverSync, OrganizationId, ProjectId, ProjectName, Publish,
+    ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, Take, Trusted,
 };
 use serde_json::{Value, json};
 
@@ -640,17 +639,6 @@ fn edit_git(
     environment: &str,
     changes: &[(&str, Option<Value>)],
 ) {
-    let repository = |name: &str, n| AuthorizedRepository {
-        repository: backend::repo_name(name),
-        repository_id: backend::repo_id(n),
-        access: ServiceGitAccess::Public,
-        default_branch: backend::git_branch("main"),
-        branches: Vec::new(),
-    };
-    let evidence = Trusted {
-        repositories: vec![repository("acme/web", 11), repository("acme/docs", 12)],
-        ..Trusted::default()
-    };
     let changes = changes
         .iter()
         .map(|(path, value)| {
@@ -669,7 +657,9 @@ fn edit_git(
         expect: None,
         changes,
     };
-    store.write_trusted(who, &edit, &evidence).unwrap();
+    store
+        .write_trusted(who, &edit, &backend::acme_repositories())
+        .unwrap();
 }
 
 #[test]

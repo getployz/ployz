@@ -46,6 +46,22 @@ pub fn git_branch(name: &str) -> ployz_store::BranchName {
     ployz_store::BranchName::parse(name).unwrap()
 }
 
+/// Cloud's evidence for the repositories `acme/web` (11) and `acme/docs` (12), each on
+/// `main` with a `dev` branch.
+pub fn acme_repositories() -> ployz_store::Trusted {
+    let repository = |name: &str, n| ployz_store::AuthorizedRepository {
+        repository: repo_name(name),
+        repository_id: repo_id(n),
+        access: ployz_core::config::ServiceGitAccess::Public,
+        default_branch: git_branch("main"),
+        branches: vec![git_branch("dev")],
+    };
+    ployz_store::Trusted {
+        repositories: vec![repository("acme/web", 11), repository("acme/docs", 12)],
+        ..ployz_store::Trusted::default()
+    }
+}
+
 /// A full Git commit.
 pub fn sha(commit: &str) -> ployz_store::CommitSha {
     ployz_store::CommitSha::parse(commit).unwrap()
