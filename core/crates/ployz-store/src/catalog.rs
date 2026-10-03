@@ -91,10 +91,8 @@ fn versioned(mut schema: Value) -> Value {
 }
 
 fn service() -> Value {
-    // The source isn't set whole: `image` and `repository` are its fields here.
     let mut properties = ServiceSetting::ALL
         .into_iter()
-        .filter(|one| *one != ServiceSetting::Source)
         .map(|one| (one.name().to_owned(), setting(one)))
         .collect::<Map<_, _>>();
     properties.insert(
@@ -155,6 +153,10 @@ fn target(target: &Target) -> Value {
     match target {
         Target::Mount(_) => mount(),
         Target::Setting(one) => setting(*one),
+        Target::Source => json!({
+            "title": "Source",
+            "description": "Where the Service runs from, as one change: its image, or its repository and root directory. Discard takes it back whole; set image or repository to change it.",
+        }),
         Target::Variable(_) => variables::schema(),
         Target::Exported(_) => json!({
             "title": "Exported",

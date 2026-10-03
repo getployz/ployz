@@ -101,7 +101,10 @@ pub(crate) fn environment(
                         &service.lineage_id,
                         &format!("variables.{key}"),
                     )?),
-                    Target::Setting(_) | Target::Exported(_) | Target::Mount(_) => None,
+                    Target::Setting(_)
+                    | Target::Source
+                    | Target::Exported(_)
+                    | Target::Mount(_) => None,
                 };
                 settings.push(SettingRow {
                     path: SettingPath::at(&name, target),

@@ -5,9 +5,11 @@
 use ployz_core::RpcError;
 use ployz_core::config::{
     At, EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent,
-    ServiceConfig, VolumeAttachment, canonicalize_environment_intent, compare_service_settings,
-    parse_environment_intent, restore_environment_node,
+    ServiceConfig, Setting, VolumeAttachment, canonicalize_environment_intent,
+    compare_service_settings, parse_environment_intent, restore_environment_node,
 };
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -189,12 +191,12 @@ fn restore(
     // A part of the source discards with it: the source is one change row.
     let part = path.target().map(|part| {
         if let Target::Setting(setting) = part {
-            Target::Setting(setting.row())
+            Cow::Owned(setting.covering())
         } else {
-            part.clone()
+            Cow::Borrowed(part)
         }
     });
-    let part = part.as_ref();
+    let part = part.as_deref();
     let field = path.volume_field();
     let holds = |intent: &SavedEnvironmentIntent| match node_type {
         EnvironmentNodeType::Service => intent.services.iter().any(|service| service.id == id),
@@ -233,7 +235,7 @@ fn restore(
             };
             saved.is_some_and(|saved| value(saved) != value(&baseline))
         }),
-        (Some(Target::Setting(setting)), Some(saved)) => {
+        (Some(part @ (Target::Setting(_) | Target::Source)), Some(saved)) => {
             let config = |intent: &SavedEnvironmentIntent| {
                 intent
                     .services
@@ -249,7 +251,10 @@ fn restore(
                         .any(|(row, at)| {
                             row.can_restore
                                 && matches!(at, Some(At::Setting(changed))
-                                    if ServiceSetting::of(*changed) == Some(*setting))
+                                if match ServiceSetting::of(*changed) {
+                                    Some(setting) => Target::Setting(setting) == *part,
+                                    None => *changed == Setting::Source && *part == Target::Source,
+                                })
                         })
                 })
         }
@@ -297,6 +302,7 @@ fn restore_node(
     let field = match part {
         None => None,
         Some(Target::Setting(setting)) => Some(setting.field()),
+        Some(Target::Source) => Some("source"),
         Some(part) => {
             let mut restored = current.clone();
             let volume = mounted(current, baseline, part);
@@ -361,7 +367,7 @@ fn restore_part(
                 service.volume_attachments.push(mount.clone());
             }
         }
-        Target::Setting(_) => {}
+        Target::Setting(_) | Target::Source => {}
     }
     Ok(())
 }
@@ -394,7 +400,7 @@ fn part_of<'a>(intent: &'a SavedEnvironmentIntent, id: &str, part: &Target) -> O
                 .map(Part::Mount)
         }
         // A Setting compares through core's rows (see `setting_follows`).
-        Target::Setting(_) => None,
+        Target::Setting(_) | Target::Source => None,
     }
 }
 

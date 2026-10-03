@@ -55,9 +55,6 @@ pub(crate) enum ServiceSetting {
     Replicas,
     RestartPolicy,
     StartCommand,
-    /// Where it runs from, whole: an image, a repository or nothing. One change row, so
-    /// only discard and Never sync name it; `image` and `repository` set it.
-    Source,
     /// The Service Template it was created from.
     Template,
     /// A Git-backed Service's source and build.
@@ -68,7 +65,7 @@ pub(crate) enum ServiceSetting {
 
 impl ServiceSetting {
     /// Every Setting, in the order `get` lists them.
-    pub(crate) const ALL: [Self; 23] = [
+    pub(crate) const ALL: [Self; 22] = [
         Self::CpuLimit,
         Self::Healthcheck,
         Self::Image,
@@ -80,7 +77,6 @@ impl ServiceSetting {
         Self::Replicas,
         Self::RestartPolicy,
         Self::StartCommand,
-        Self::Source,
         Self::Template,
         Self::Git(GitSetting::Repository),
         Self::Git(GitSetting::Branch),
@@ -98,7 +94,6 @@ impl ServiceSetting {
     pub(crate) const fn of(setting: ployz_core::config::Setting) -> Option<Self> {
         use ployz_core::config::Setting as Core;
         Some(match setting {
-            Core::Source => Self::Source,
             Core::Branch => Self::Git(GitSetting::Branch),
             Core::PrivateDns => Self::PrivateDns,
             Core::PreDeployCommand => Self::PreDeployCommand,
@@ -112,21 +107,21 @@ impl ServiceSetting {
             Core::BuildMethod => Self::Git(GitSetting::BuildMethod),
             Core::DockerfilePath => Self::Git(GitSetting::DockerfilePath),
             Core::BuildCommand => Self::Git(GitSetting::BuildCommand),
-            Core::ManagedHostnames | Core::Routes => return None,
+            Core::Source | Core::ManagedHostnames | Core::Routes => return None,
         })
     }
 
-    /// The Setting whose change row holds it: the source holds each of its parts.
-    pub(crate) const fn row(self) -> Self {
+    /// What discards it: the source holds each of its parts as one change row.
+    pub(crate) const fn covering(self) -> Target {
         if matches!(
             self,
             Self::Image
                 | Self::RegistryCredential
                 | Self::Git(GitSetting::Repository | GitSetting::RootDir)
         ) {
-            Self::Source
+            Target::Source
         } else {
-            self
+            Target::Setting(self)
         }
     }
 
@@ -150,7 +145,6 @@ impl ServiceSetting {
             Self::Replicas => "replicas",
             Self::RestartPolicy => "restartPolicy",
             Self::StartCommand => "startCommand",
-            Self::Source => "source",
             Self::Template => "template",
             Self::Git(git) => git.name(),
             Self::Policy(policy) => policy.name(),
@@ -171,7 +165,6 @@ impl ServiceSetting {
             Self::Replicas => "Replicas",
             Self::RestartPolicy => "Restart policy",
             Self::StartCommand => "Start command",
-            Self::Source => "Source",
             Self::Template => "Template",
             Self::Git(git) => git.label(),
             Self::Policy(policy) => policy.label(),
@@ -199,9 +192,6 @@ impl ServiceSetting {
             Self::Replicas => "How many copies of the Service run.",
             Self::RestartPolicy => "When a stopped replica restarts.",
             Self::StartCommand => "Overrides the image's command. Unset runs the image's own.",
-            Self::Source => {
-                "Where the Service runs from, as one change: its image, or its repository and root directory. Discard takes it back whole; set image or repository to change it."
-            }
             Self::Template => {
                 "The Service Template it was created from, and its version. It changes nothing that runs. Unset forgets it."
             }
@@ -226,7 +216,6 @@ impl ServiceSetting {
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand
-            | Self::Source
             | Self::Template => self.name(),
         }
     }
@@ -243,7 +232,6 @@ impl ServiceSetting {
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand
-            | Self::Source
             | Self::Git(_) => Apply::Staged,
             // ponytail: a tag, not runtime config; nothing lowers it, so a Deploy never ships it.
             Self::Template | Self::RegistryCredential | Self::Policy(_) => Apply::Immediate,
@@ -261,7 +249,6 @@ impl ServiceSetting {
             | Self::PrivateDns
             | Self::RegistryCredential
             | Self::StartCommand
-            | Self::Source
             | Self::Template => Value::Null,
             Self::MaxRetries => json!(default_max_retries()),
             Self::Replicas => json!(default_replicas()),
@@ -331,17 +318,6 @@ impl ServiceSetting {
                 "required": ["secret"],
                 "additionalProperties": false,
             }),
-            Self::Source => json!({
-                "type": "object",
-                "properties": {
-                    "type": { "enum": ["empty", "git", "image"] },
-                    "image": { "type": "string" },
-                    "repository": { "type": "string" },
-                    "rootDir": { "type": "string" },
-                    "credentials": { "type": "boolean" },
-                },
-                "required": ["type"],
-            }),
             Self::Git(git) => git.expected(),
             Self::Policy(policy) => policy.expected(),
         }
@@ -361,7 +337,6 @@ impl ServiceSetting {
             Self::Replicas => json!([3]),
             Self::RestartPolicy => json!(["on-failure"]),
             Self::StartCommand => json!(["npm start"]),
-            Self::Source => json!([{ "type": "image", "image": "nginx:1.27" }]),
             Self::Template => json!([{ "id": "postgres", "version": 1 }]),
             Self::Git(git) => git.examples(),
             Self::Policy(policy) => policy.examples(),
@@ -381,8 +356,6 @@ impl ServiceSetting {
             ) => !matches!(config.source, ServiceSource::Image { .. }),
             Self::Git(_) => matches!(config.source, ServiceSource::Git { .. }),
             Self::Policy(_) => PolicySetting::applies(config),
-            // ponytail: discard-only; `get` and the patch shape show its image or repository.
-            Self::Source => false,
             Self::CpuLimit
             | Self::Healthcheck
             | Self::MaxRetries
@@ -431,16 +404,6 @@ impl ServiceSetting {
                 _ if value == Value::Bool(true) => json!({ "secret": true }),
                 _ => Value::Null,
             },
-            // Never the repository's ID or authority, nor the stored version.
-            Self::Source => {
-                let mut value = value;
-                if let Some(fields) = value.as_object_mut() {
-                    for hidden in ["repositoryId", "access", "version"] {
-                        fields.remove(hidden);
-                    }
-                }
-                value
-            }
             // Off reads as none; on, its path and timeout.
             Self::Healthcheck => match value.get("type").and_then(Value::as_str) {
                 Some("http") => json!({
@@ -480,9 +443,6 @@ impl ServiceSetting {
         }
         if let Self::Policy(_) = self {
             return Err(self.invalid("the Deployment Policy is not in the config"));
-        }
-        if self == Self::Source {
-            return Err(self.invalid("set image or repository instead"));
         }
         if self == Self::Image {
             // An empty Service takes an image as its source.
@@ -569,7 +529,6 @@ impl ServiceSetting {
                 Ok(())
             }
             (Self::RegistryCredential, _) => Err(self.invalid("only an image Service has one")),
-            (Self::Source, _) => Err(self.invalid("unset image or repository instead")),
             (Self::Healthcheck, _) => {
                 config.healthcheck = ServiceHealthcheck::None;
                 Ok(())
@@ -674,6 +633,16 @@ pub(crate) fn shown(field: &str, value: Value) -> Value {
             Some(_) => value.get("value").cloned().unwrap_or_default(),
             None => value,
         };
+    }
+    // The source: never its repository's ID or authority, nor its stored version.
+    if field == "source" {
+        let mut value = value;
+        if let Some(fields) = value.as_object_mut() {
+            for hidden in ["repositoryId", "access", "version"] {
+                fields.remove(hidden);
+            }
+        }
+        return value;
     }
     ServiceSetting::of_field(field).map_or(value.clone(), |setting| setting.shown(value))
 }
@@ -805,6 +774,9 @@ impl VolumeField {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Target {
     Setting(ServiceSetting),
+    /// Where it runs from, whole: an image, a repository or nothing. One change row, so
+    /// only discard and Never sync name it; `image` and `repository` set it.
+    Source,
     /// A variable's value.
     Variable(VariableKey),
     /// Whether a variable is exported.
@@ -868,6 +840,7 @@ impl SettingPath {
                 let volume = rest.strip_prefix("mounts.").unwrap_or_default();
                 Some(Target::Mount(VolumeName::parse(volume)?))
             }
+            Some("source") => Some(Target::Source),
             Some(rest) => Some(match rest.strip_prefix("env.") {
                 None => Target::Setting(ServiceSetting::parse(rest)?),
                 Some(variable) => match variable.split_once('.') {
@@ -975,6 +948,7 @@ impl fmt::Display for SettingPath {
         };
         match target {
             Some(Target::Setting(setting)) => write!(formatter, "{service}.{}", setting.name()),
+            Some(Target::Source) => write!(formatter, "{service}.source"),
             Some(Target::Variable(key)) => write!(formatter, "{service}.env.{key}"),
             Some(Target::Exported(key)) => write!(formatter, "{service}.env.{key}.exported"),
             Some(Target::Mount(volume)) => write!(formatter, "{service}.mounts.{volume}"),

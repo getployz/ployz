@@ -156,6 +156,12 @@ pub(crate) fn edit(
                     setting.apply(),
                 )
             }
+            (Some(Target::Source), _) => {
+                return Err(error::invalid(
+                    format!("{path}: set image or repository instead"),
+                    json!({ "example": { "image": "nginx:1.27" } }),
+                ));
+            }
             (Some(Target::Variable(key)), Some(value)) => (
                 variables::set(&mut environment, service, key, value, sealing)?,
                 Apply::Staged,
