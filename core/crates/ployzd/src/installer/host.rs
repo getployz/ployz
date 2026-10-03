@@ -413,7 +413,7 @@ pub(super) fn verify_docker() -> Result<(), Error> {
     {
         return Err(refuse(
             STAGE,
-            r#"Docker isn't using the containerd image store, which Ployz Builds need. Enable it in /etc/docker/daemon.json ("features": {"containerd-snapshotter": true}) and restart Docker, or uninstall Docker and run this again."#,
+            r#"Docker isn't using the containerd image store, which Ployz needs to build and move images between Servers. Enable it in /etc/docker/daemon.json ("features": {"containerd-snapshotter": true}) and restart Docker, or uninstall Docker and run this again."#,
         ));
     }
     Ok(())
@@ -670,7 +670,7 @@ mod tests {
             buildx: "v0.18.0",
             driver_status: "[[Backing Filesystem extfs]]",
             refusal: Some(
-                r#"Docker isn't using the containerd image store, which Ployz Builds need. Enable it in /etc/docker/daemon.json ("features": {"containerd-snapshotter": true}) and restart Docker, or uninstall Docker and run this again."#,
+                r#"Docker isn't using the containerd image store, which Ployz needs to build and move images between Servers. Enable it in /etc/docker/daemon.json ("features": {"containerd-snapshotter": true}) and restart Docker, or uninstall Docker and run this again."#,
             ),
         },
     ];

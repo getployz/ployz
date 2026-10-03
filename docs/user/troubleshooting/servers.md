@@ -101,7 +101,7 @@ fix Docker and run the command again. Or uninstall Docker, and Ployz installs a 
 
   Upgrade the buildx plugin along with Docker, or uninstall Docker.
 
-- `Docker isn't using the containerd image store, which Ployz Builds need. Enable it in /etc/docker/daemon.json ("features": {"containerd-snapshotter": true}) and restart Docker, or uninstall Docker and run this again.`
+- `Docker isn't using the containerd image store, which Ployz needs to build and move images between Servers. Enable it in /etc/docker/daemon.json ("features": {"containerd-snapshotter": true}) and restart Docker, or uninstall Docker and run this again.`
 
   Add `"features": {"containerd-snapshotter": true}` to `/etc/docker/daemon.json` and run
   `sudo systemctl restart docker`. Images you pulled before switching don't carry over, so pull
