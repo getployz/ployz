@@ -147,8 +147,8 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
 }
 
 /// The os-release fields that pick a [`ZfsRoute`] and name the OS in a refusal.
-struct OsRelease {
-    id: String,
+pub(super) struct OsRelease {
+    pub(super) id: String,
     name: String,
     version_id: Option<String>,
 }
@@ -157,7 +157,7 @@ impl OsRelease {
     /// # Errors
     ///
     /// Fails when `path` can't be read or names no distribution `ID`.
-    fn read(path: &Path) -> Result<Self, Error> {
+    pub(super) fn read(path: &Path) -> Result<Self, Error> {
         let value = fs::read_to_string(path).map_err(|source| Error::Io {
             stage: "identify Linux distribution for ZFS storage preparation",
             source,
