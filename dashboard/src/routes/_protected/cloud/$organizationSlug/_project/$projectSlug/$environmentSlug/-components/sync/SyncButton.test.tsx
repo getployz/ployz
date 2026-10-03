@@ -250,6 +250,9 @@ it("reads Goes live with #N once a Conditional Sync stands, with the GitHub chec
   expect(items.getByText("Ready to merge on GitHub")).toBeTruthy();
   expect(items.getByText("3 changes go live with this PR")).toBeTruthy();
   expect(items.getByRole("menuitem", { name: "Shut down until the next push" })).toBeTruthy();
+  // Production already holds its changes for the merge: no Sync into it, but still one into staging.
+  expect(items.queryByRole("menuitem", { name: /^Sync to production/u })).toBeNull();
+  expect(items.getByRole("menuitem", { name: "Sync to staging" })).toBeTruthy();
   fireEvent.click(items.getByRole("menuitem", { name: "Undo sync to production" }));
   // The standing Conditional Sync's id names it.
   await waitFor(() => expect(app.commands()).toEqual([{ command: "undo_sync", sync: "cs" }]));

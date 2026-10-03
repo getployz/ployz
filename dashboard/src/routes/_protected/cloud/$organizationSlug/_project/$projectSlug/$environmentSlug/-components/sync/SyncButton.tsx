@@ -100,10 +100,13 @@ function BranchSync({ params, store, branch, environments }: {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-auto min-w-56">
             <DropdownMenuGroup>
-              <DropdownMenuItem onClick={() => setInto(state.into)}>
-                Sync to {state.into}
-                {state.changes ? <span className="ml-auto pl-4 text-muted-foreground">{plural(state.changes, "change")}</span> : null}
-              </DropdownMenuItem>
+              {/* A standing Conditional Sync already holds these changes for the merge; Undo below changes it. */}
+              {standing ? null : (
+                <DropdownMenuItem onClick={() => setInto(state.into)}>
+                  Sync to {state.into}
+                  {state.changes ? <span className="ml-auto pl-4 text-muted-foreground">{plural(state.changes, "change")}</span> : null}
+                </DropdownMenuItem>
+              )}
               {others.map((other) => <DropdownMenuItem key={other} onClick={() => setInto(other)}>Sync to {other}</DropdownMenuItem>)}
             </DropdownMenuGroup>
             {check || standing ? <>
