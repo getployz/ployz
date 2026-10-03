@@ -874,18 +874,13 @@ pub(crate) fn land(
         .filter(|pick| *pick.at() == At::Setting(Setting::Source))
     {
         let lineage = pick.lineage();
-        let of = |intent: &SavedEnvironmentIntent| {
-            intent
-                .services
-                .iter()
-                .find(|service| service.lineage_id == lineage)
-                .filter(|service| credentialed(service))
-                .map(|service| service.id.clone())
-        };
-        let turned_on = of(&branch.working).filter(|_| of(&before).is_none());
+        let on =
+            |service: &&SavedServiceIntent| service.lineage_id == lineage && credentialed(service);
+        let receiver = branch.working.services.iter().find(on);
+        let was_on = before.services.iter().any(|service| on(&service));
         let sealed = source_of(lineage).and_then(|source| carried.credentials.get(&source));
-        if let (Some(receiver), Some(sealed)) = (turned_on, sealed) {
-            registry::store(tx, who, &id, &receiver, sealed)?;
+        if let (Some(receiver), false, Some(sealed)) = (receiver, was_on, sealed) {
+            registry::store(tx, who, &id, &receiver.id, sealed)?;
         }
     }
     for volume in &branch.working.volumes {
