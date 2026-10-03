@@ -37,27 +37,32 @@ fn refuse(message: impl Into<String>) -> Error {
 
 /// How the ZFS kernel module becomes loadable on the Machine's distro.
 #[derive(Clone, Copy)]
-enum ZfsRoute<'os> {
+enum ZfsRoute {
     /// Canonical's prebuilt module package for the running kernel.
     Ubuntu,
-    /// Debian's `zfs-dkms` from `contrib` for this codename, built on the Machine and rebuilt by
-    /// DKMS for new kernels.
-    Debian { codename: &'os str },
+    /// Debian's `zfs-dkms` from `contrib`, built on the Machine and rebuilt by DKMS for new
+    /// kernels. `keyring` is the path the release's own images name: apt refuses a source whose
+    /// Signed-By differs from another entry for the same suite.
+    Debian {
+        codename: &'static str,
+        keyring: &'static str,
+    },
     /// The pinned [`OPENZFS_VERSION`] built on the Machine into DKMS and userspace RPMs.
     AmazonLinux,
 }
 
-impl<'os> ZfsRoute<'os> {
-    fn for_os(os: &'os OsRelease) -> Result<Self, Error> {
+impl ZfsRoute {
+    fn for_os(os: &OsRelease) -> Result<Self, Error> {
         match (os.id.as_str(), os.version_id.as_deref()) {
             ("ubuntu", _) => Ok(Self::Ubuntu),
-            ("debian", Some("12" | "13")) => match os.codename.as_deref() {
-                Some(codename) => Ok(Self::Debian { codename }),
-                None => Err(refuse(format!(
-                    "{} names no VERSION_CODENAME in /etc/os-release, so Ployz can't add Debian's contrib packages for ZFS. Add `--storage none` to start without managed volumes.",
-                    os.display()
-                ))),
-            },
+            ("debian", Some("12")) => Ok(Self::Debian {
+                codename: "bookworm",
+                keyring: "debian-archive-keyring.gpg",
+            }),
+            ("debian", Some("13")) => Ok(Self::Debian {
+                codename: "trixie",
+                keyring: "debian-archive-keyring.pgp",
+            }),
             ("amzn", Some("2023")) => Ok(Self::AmazonLinux),
             _ => Err(refuse(format!(
                 "Managed volumes need Ubuntu LTS, Debian 12–13 or Amazon Linux 2023; this Server runs {}. Use one of those, or add `--storage none`.",
@@ -78,18 +83,12 @@ impl<'os> ZfsRoute<'os> {
         }
     }
 
-    /// Refuses before anything is installed when the route can't work on this Machine.
-    fn preflight(self, os: &OsRelease, kernel: &str) -> Result<(), Error> {
-        match self {
-            Self::Ubuntu | Self::Debian { .. } => Ok(()),
-            Self::AmazonLinux => require_kernel_devel(os, kernel),
-        }
-    }
-
     fn install(self, paths: &InstallPaths, os: &OsRelease, kernel: &str) -> Result<(), Error> {
         match self {
             Self::Ubuntu => install_zfs_packages(kernel),
-            Self::Debian { codename } => prepare_debian_zfs(&paths.apt_dir, os, codename, kernel),
+            Self::Debian { codename, keyring } => {
+                prepare_debian_zfs(&paths.apt_dir, os, codename, keyring, kernel)
+            }
             Self::AmazonLinux => prepare_amazon_zfs(os, kernel, OPENZFS_SHA256),
         }
     }
@@ -127,8 +126,9 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
     let kernel = uname("-r", "read running kernel")?;
     // A module this Machine built earlier stays; Ubuntu's install checks its own package.
     let install = !(route.builds_module() && zfs_installed(&kernel));
-    if install {
-        route.preflight(&os, &kernel)?;
+    // Before the host-root reserve, which reads the real disk, so tests can reach this refusal.
+    if install && matches!(route, ZfsRoute::AmazonLinux) {
+        require_kernel_devel(&os, &kernel)?;
     }
     require_host_root_reserve(ZFS_SMOKE_BYTES)?;
     let cap = zfs_arc_max()?;
@@ -149,8 +149,6 @@ struct OsRelease {
     id: String,
     name: String,
     version_id: Option<String>,
-    /// Debian's release name, e.g. `trixie`; it names the suites apt reads.
-    codename: Option<String>,
 }
 
 impl OsRelease {
@@ -177,7 +175,6 @@ impl OsRelease {
         Ok(Self {
             name: field("NAME").unwrap_or_else(|| id.clone()),
             version_id: field("VERSION_ID"),
-            codename: field("VERSION_CODENAME"),
             id,
         })
     }
@@ -271,15 +268,9 @@ fn prepare_debian_zfs(
     apt_dir: &Path,
     os: &OsRelease,
     codename: &str,
+    keyring: &str,
     kernel: &str,
 ) -> Result<(), Error> {
-    // apt refuses a source whose Signed-By differs from another entry for the same suite, so
-    // use the keyring path each release's own images name.
-    let keyring = if os.version_id.as_deref() == Some("12") {
-        "debian-archive-keyring.gpg"
-    } else {
-        "debian-archive-keyring.pgp"
-    };
     build_zfs_module(os, kernel, || {
         let flavour = debian_kernel_flavour(kernel).ok_or_else(|| {
             failed("reading the kernel flavour")(Error::Verification(format!(
@@ -289,7 +280,7 @@ fn prepare_debian_zfs(
         write_file_atomically(
             &apt_dir.join("sources.list.d/ployz-contrib.sources"),
             &format!(
-                "Types: deb\nURIs: http://deb.debian.org/debian\nSuites: {codename} {codename}-updates\nComponents: contrib\nSigned-By: /usr/share/keyrings/{keyring}\n"
+                "Types: deb\nURIs: http://deb.debian.org/debian\nSuites: {codename} {codename}-updates\nComponents: contrib\nSigned-By: /usr/share/keyrings/{keyring}\n\nTypes: deb\nURIs: http://security.debian.org/debian-security\nSuites: {codename}-security\nComponents: contrib\nSigned-By: /usr/share/keyrings/{keyring}\n"
             ),
             "turning on contrib",
         )

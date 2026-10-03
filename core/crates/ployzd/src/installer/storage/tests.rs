@@ -107,8 +107,7 @@ fi
 }
 
 const ROOT: &str = "PLOYZ_INSTALLER_CONTRACT_ROOT";
-const DEBIAN_13: &str =
-    "NAME=\"Debian GNU/Linux\"\nVERSION_ID=\"13\"\nVERSION_CODENAME=trixie\nID=debian\n";
+const DEBIAN_13: &str = "NAME=\"Debian GNU/Linux\"\nVERSION_ID=\"13\"\nID=debian\n";
 const AMAZON_LINUX_2023: &str = "NAME=\"Amazon Linux\"\nVERSION=\"2023\"\nID=\"amzn\"\nID_LIKE=\"fedora\"\nVERSION_ID=\"2023\"\n";
 
 fn contract_root() -> PathBuf {
@@ -146,7 +145,7 @@ struct RefusalCase {
     expected: &'static str,
 }
 
-const REFUSALS: [RefusalCase; 7] = [
+const REFUSALS: [RefusalCase; 6] = [
     RefusalCase {
         name: "unsupported-distro",
         os_release: "NAME=\"Fedora Linux\"\nID=fedora\nVERSION_ID=42\n",
@@ -154,7 +153,7 @@ const REFUSALS: [RefusalCase; 7] = [
     },
     RefusalCase {
         name: "unsupported-version",
-        os_release: "PRETTY_NAME=\"Debian GNU/Linux 11 (bullseye)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"11\"\nVERSION_CODENAME=bullseye\nID=debian\n",
+        os_release: "PRETTY_NAME=\"Debian GNU/Linux 11 (bullseye)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"11\"\nID=debian\n",
         expected: "Managed volumes need Ubuntu LTS, Debian 12–13 or Amazon Linux 2023; this Server runs Debian GNU/Linux 11. Use one of those, or add `--storage none`.",
     },
     RefusalCase {
@@ -166,11 +165,6 @@ const REFUSALS: [RefusalCase; 7] = [
         name: "amazon-linux-2",
         os_release: "NAME=\"Amazon Linux\"\nVERSION=\"2\"\nID=\"amzn\"\nID_LIKE=\"centos rhel fedora\"\nVERSION_ID=\"2\"\n",
         expected: "Managed volumes need Ubuntu LTS, Debian 12–13 or Amazon Linux 2023; this Server runs Amazon Linux 2. Use one of those, or add `--storage none`.",
-    },
-    RefusalCase {
-        name: "debian-no-codename",
-        os_release: "NAME=\"Debian GNU/Linux\"\nVERSION_ID=\"13\"\nID=debian\n",
-        expected: "Debian GNU/Linux 13 names no VERSION_CODENAME in /etc/os-release, so Ployz can't add Debian's contrib packages for ZFS. Add `--storage none` to start without managed volumes.",
     },
     RefusalCase {
         name: "debian-secure-boot",
@@ -243,17 +237,19 @@ struct DebianCase {
     name: &'static str,
     version: &'static str,
     codename: &'static str,
+    keyring: &'static str,
     kernel: &'static str,
     flavour: &'static str,
     /// The step the refusal names, when the build fails.
     failed_step: Option<&'static str>,
 }
 
-const DEBIAN_CASES: [DebianCase; 5] = [
+const DEBIAN_CASES: [DebianCase; 4] = [
     DebianCase {
         name: "debian-12",
         version: "12",
         codename: "bookworm",
+        keyring: "debian-archive-keyring.gpg",
         kernel: "6.1.0-28-amd64",
         flavour: "amd64",
         failed_step: None,
@@ -262,22 +258,16 @@ const DEBIAN_CASES: [DebianCase; 5] = [
         name: "debian-13-cloud",
         version: "13",
         codename: "trixie",
+        keyring: "debian-archive-keyring.pgp",
         kernel: "6.12.43+deb13-cloud-amd64",
         flavour: "cloud-amd64",
-        failed_step: None,
-    },
-    DebianCase {
-        name: "debian-13-cloud-arm64",
-        version: "13",
-        codename: "trixie",
-        kernel: "6.12.43+deb13-cloud-arm64",
-        flavour: "cloud-arm64",
         failed_step: None,
     },
     DebianCase {
         name: "build-failed",
         version: "13",
         codename: "trixie",
+        keyring: "debian-archive-keyring.pgp",
         kernel: "6.12.43+deb13-cloud-amd64",
         flavour: "cloud-amd64",
         failed_step: Some("installing zfs-dkms"),
@@ -286,6 +276,7 @@ const DEBIAN_CASES: [DebianCase; 5] = [
         name: "no-module",
         version: "13",
         codename: "trixie",
+        keyring: "debian-archive-keyring.pgp",
         kernel: "6.12.43+deb13-cloud-amd64",
         flavour: "cloud-amd64",
         failed_step: Some("the ZFS module check"),
@@ -295,17 +286,16 @@ const DEBIAN_CASES: [DebianCase; 5] = [
 #[test]
 fn zfs_debian_contract() {
     const CASE: &str = "PLOYZ_ZFS_DEBIAN_CONTRACT";
-    const DEBIAN_SOURCES: &str = "Types: deb\nURIs: http://deb.debian.org/debian\nSuites: trixie trixie-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.pgp\n";
-    const DEBIAN_LIST: &str = "deb http://deb.debian.org/debian bookworm main\ndeb http://security.debian.org/debian-security bookworm-security main\n";
-    const THIRD_PARTY: &str =
-        "Types: deb\nURIs: https://packages.sury.org/php/\nSuites: trixie\nComponents: main\n";
 
     if let Ok(name) = env::var(CASE) {
         let case = DEBIAN_CASES.iter().find(|case| case.name == name).unwrap();
         let root = contract_root();
         let paths = InstallPaths::at(&root);
         let os = OsRelease::read(&paths.os_release).unwrap();
-        let result = prepare_debian_zfs(&paths.apt_dir, &os, case.codename, case.kernel);
+        let ZfsRoute::Debian { codename, keyring } = ZfsRoute::for_os(&os).unwrap() else {
+            panic!("{name} is not on the Debian route");
+        };
+        let result = prepare_debian_zfs(&paths.apt_dir, &os, codename, keyring, case.kernel);
         match case.failed_step {
             Some(step) => assert_refused(
                 result,
@@ -330,18 +320,11 @@ fn zfs_debian_contract() {
         fs::write(
             root.join("os-release"),
             format!(
-                "NAME=\"Debian GNU/Linux\"\nVERSION_ID=\"{}\"\nVERSION_CODENAME={}\nID=debian\n",
-                case.version, case.codename
+                "NAME=\"Debian GNU/Linux\"\nVERSION_ID=\"{}\"\nID=debian\n",
+                case.version
             ),
         )
         .unwrap();
-        let (existing, existing_text) = if case.version == "12" {
-            (root.join("apt/sources.list"), DEBIAN_LIST)
-        } else {
-            (sources.join("debian.sources"), DEBIAN_SOURCES)
-        };
-        fs::write(&existing, existing_text).unwrap();
-        fs::write(sources.join("sury.sources"), THIRD_PARTY).unwrap();
         write_script(
             &commands.join("apt-get"),
             r#"echo "$DEBIAN_FRONTEND $*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/apt.log"
@@ -362,19 +345,14 @@ esac"#,
         );
 
         let name = case.name;
-        assert_eq!(
-            fs::read_to_string(&existing).unwrap(),
-            existing_text,
-            "{name}"
-        );
-        assert_eq!(
-            fs::read_to_string(sources.join("sury.sources")).unwrap(),
-            THIRD_PARTY,
-            "{name}"
-        );
         let contrib = fs::read_to_string(sources.join("ployz-contrib.sources")).unwrap();
         assert!(
             contrib.contains(&format!("Suites: {0} {0}-updates\n", case.codename))
+                && contrib.contains(&format!("Suites: {}-security\n", case.codename))
+                && contrib.contains(&format!(
+                    "Signed-By: /usr/share/keyrings/{}\n",
+                    case.keyring
+                ))
                 && contrib.contains("Components: contrib\n"),
             "{name}: {contrib}"
         );
@@ -615,4 +593,13 @@ fn secure_boot_reading_follows_test_root() {
         fs::write(&paths.secure_boot, variable).unwrap();
         assert_eq!(secure_boot_enabled(&paths).unwrap(), enabled);
     }
+}
+
+#[test]
+fn debian_kernel_flavour_names_header_packages() {
+    assert_eq!(debian_kernel_flavour("6.1.0-28-amd64"), Some("amd64"));
+    assert_eq!(
+        debian_kernel_flavour("6.12.43+deb13-cloud-arm64"),
+        Some("cloud-arm64")
+    );
 }

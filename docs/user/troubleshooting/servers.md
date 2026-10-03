@@ -43,11 +43,6 @@ only**; see [Start without ZFS](../servers/add-a-server.md#start-without-zfs) fo
   Turn Secure Boot off in your provider's settings for the server, or reinstall it with Ubuntu.
   Then run the command again.
 
-- ``Debian GNU/Linux ... names no VERSION_CODENAME in /etc/os-release, so Ployz can't add Debian's contrib packages for ZFS. Add `--storage none` to start without managed volumes.``
-
-  The server's `/etc/os-release` was edited or comes from a modified image. Reinstall it with
-  your provider's stock Debian image, then run the command again.
-
 - ``Amazon Linux 2023 has no kernel-devel package for the running kernel ..., so ZFS can't be built for it. Update the kernel, reboot, and retry, or add `--storage none`.``
 
   The server runs an older kernel than its package repositories offer. Update it, reboot, then
