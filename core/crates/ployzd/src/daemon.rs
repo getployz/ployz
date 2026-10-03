@@ -142,14 +142,10 @@ impl Daemon {
         let local_phase = local_record.phase();
         let local_machine = local_record.machine().cloned();
         let mut network = NetworkPlane::start(&local_record).await?;
-        let machine_api_listeners = if config.machine_api_address.is_none()
+        let management_listener = if config.machine_api_address.is_none()
             && let Some(network) = &network
         {
-            let [management, gateway] = network.machine_api_addresses()?;
-            Some((
-                TcpListener::bind(management).await?,
-                TcpListener::bind(gateway).await?,
-            ))
+            Some(TcpListener::bind(network.machine_api_address()).await?)
         } else {
             None
         };
@@ -228,10 +224,6 @@ impl Daemon {
             running_builds,
             shutdown.clone(),
         );
-        let (management_listener, gateway_listener) = machine_api_listeners
-            .map_or((None, None), |(management, gateway)| {
-                (Some(management), Some(gateway))
-            });
         let management_endpoint =
             management::bind(local_record.management_secret(), &config.management)
                 .await
@@ -250,7 +242,6 @@ impl Daemon {
                         shutdown.clone()
                     ),
                     serve_machine_api(management_listener, machine_api.clone(), shutdown.clone()),
-                    serve_machine_api(gateway_listener, machine_api.clone(), shutdown.clone()),
                     async {
                         management::serve(
                             management_endpoint,

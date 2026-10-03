@@ -52,23 +52,6 @@ pub fn apply_firewall_rules(
             ],
         )?;
     }
-    ensure_rule(
-        "iptables",
-        "filter",
-        INPUT_CHAIN,
-        &[
-            "-i",
-            WIREGUARD_INTERFACE_NAME,
-            "-d",
-            &subnet.gateway().0.to_string(),
-            "-p",
-            "tcp",
-            "--dport",
-            &MACHINE_API_PORT.to_string(),
-            "-j",
-            "ACCEPT",
-        ],
-    )?;
     for protocol in ["udp", "tcp"] {
         ensure_rule(
             "iptables",
@@ -85,6 +68,26 @@ pub fn apply_firewall_rules(
                 &dns::PORT.to_string(),
                 "-j",
                 "ACCEPT",
+            ],
+        )?;
+    }
+    // Rules are inserted at the top, so these drops sit below the WireGuard
+    // and loopback accepts added after them.
+    let management_destination = format!("{}/128", management_address.0);
+    for port in [MACHINE_API_PORT, UNREGISTRY_PORT] {
+        ensure_rule(
+            "ip6tables",
+            "filter",
+            INPUT_CHAIN,
+            &[
+                "-d",
+                &management_destination,
+                "-p",
+                "tcp",
+                "--dport",
+                &port.to_string(),
+                "-j",
+                "DROP",
             ],
         )?;
     }
@@ -107,23 +110,7 @@ pub fn apply_firewall_rules(
             ],
         )?;
     }
-    let management_destination = format!("{}/128", management_address.0);
     let ingest_port = UNREGISTRY_PORT.to_string();
-    ensure_rule(
-        "ip6tables",
-        "filter",
-        INPUT_CHAIN,
-        &[
-            "-d",
-            &management_destination,
-            "-p",
-            "tcp",
-            "--dport",
-            &ingest_port,
-            "-j",
-            "DROP",
-        ],
-    )?;
     ensure_rule(
         "ip6tables",
         "filter",

@@ -214,17 +214,12 @@ impl NetworkPlane {
         }
     }
 
-    pub fn machine_api_addresses(&self) -> Result<[SocketAddr; 2], NetworkError> {
-        Ok([
-            SocketAddr::new(
-                IpAddr::V6(self.machine.management_address().0),
-                MACHINE_API_PORT,
-            ),
-            SocketAddr::new(
-                IpAddr::V4(self.machine.subnet.gateway().0),
-                MACHINE_API_PORT,
-            ),
-        ])
+    #[must_use]
+    pub fn machine_api_address(&self) -> SocketAddr {
+        SocketAddr::new(
+            IpAddr::V6(self.machine.management_address().0),
+            MACHINE_API_PORT,
+        )
     }
 
     async fn rebuild(
