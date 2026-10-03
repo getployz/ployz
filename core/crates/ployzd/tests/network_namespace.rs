@@ -445,7 +445,14 @@ impl Drop for Namespaces {
     fn drop(&mut self) {
         for name in &self.0 {
             let _ = Command::new("sudo")
-                .args(["-n", "ip", "netns", "delete", name])
+                .args([
+                    "-n",
+                    "sh",
+                    "-c",
+                    "ip netns pids \"$1\" | xargs -r kill; ip netns delete \"$1\"",
+                    "sh",
+                    name,
+                ])
                 .status();
         }
     }
