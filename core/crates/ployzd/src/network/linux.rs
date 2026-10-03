@@ -214,6 +214,8 @@ impl NetworkPlane {
         }
     }
 
+    /// Socket address the Machine API listens on: the Machine's management
+    /// address, reachable only by other Machines over WireGuard.
     #[must_use]
     pub fn machine_api_address(&self) -> SocketAddr {
         SocketAddr::new(

@@ -12,7 +12,7 @@ use super::{
 const INPUT_CHAIN: &str = "PLOYZ-INPUT";
 
 /// Apply the Machine's ingress and forwarding policy, including the private
-/// Direct Image Transfer endpoint on `management_address`.
+/// Machine API and Direct Image Transfer endpoints on `management_address`.
 ///
 /// # Errors
 ///

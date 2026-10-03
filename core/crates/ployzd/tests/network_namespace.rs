@@ -7,8 +7,7 @@ use std::{
 use ployz_core::{MACHINE_API_PORT, ManagementAddress, UNREGISTRY_PORT};
 use ployzd::network::{NetworkError, apply_firewall_rules};
 
-const TEST_NAME: &str =
-    "mesh_routing_preserves_source_nat_and_restricts_machine_api_and_direct_image_transfer_to_machines";
+const TEST_NAME: &str = "mesh_firewall_policy";
 const ERROR_TEST_NAME: &str = "firewall_surfaces_command_start_errors";
 const ERROR_TEST_CHILD: &str = "PLOYZ_FIREWALL_ERROR_TEST_CHILD";
 
@@ -35,7 +34,7 @@ fn firewall_surfaces_command_start_errors() {
 
 #[test]
 #[ignore = "requires passwordless sudo and Linux network namespaces"]
-fn mesh_routing_preserves_source_nat_and_restricts_machine_api_and_direct_image_transfer_to_machines() {
+fn mesh_firewall_policy() {
     if let Ok(subnet) = env::var("PLOYZ_FIREWALL_SUBNET") {
         let management_address = env::var("PLOYZ_FIREWALL_MANAGEMENT_ADDRESS")
             .unwrap()
@@ -310,7 +309,7 @@ fn mesh_routing_preserves_source_nat_and_restricts_machine_api_and_direct_image_
     let _ingest = stream_server(&target, "fdcc::2", UNREGISTRY_PORT);
     assert_connection_denied(&container, "fd00::2", "fdcc::2", UNREGISTRY_PORT);
 
-    let _api = stream_server(&target, "fdcc::2", MACHINE_API_PORT);
+    let _management_api = stream_server(&target, "fdcc::2", MACHINE_API_PORT);
     assert_connection_denied(&container, "fd00::2", "fdcc::2", MACHINE_API_PORT);
 }
 
