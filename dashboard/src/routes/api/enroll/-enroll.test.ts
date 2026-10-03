@@ -1,11 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { JsonValue } from "#/db/schema";
-import { Validation, Unauthorized } from "#/server/public-error";
+import { NotFound, Validation, Unauthorized } from "#/server/public-error";
 import { Effect } from "effect";
 import {
   handleMachineEnrollmentCallback,
   handleMachineEnrollmentJoin,
+  handleMachineSetupReport,
 } from "#/routes/api/enroll/-handlers";
+import type { SetupReport } from "#/modules/machines/enrollment";
 
 const mocks = {
   enroll: vi.fn(),
@@ -377,5 +379,64 @@ describe("machine enrollment routes", () => {
     expect(callbackResponse.status).toBe(422);
     expect(joinBody).not.toContain(token);
     expect(callbackBody).not.toContain(token);
+  });
+});
+
+describe("setup report route", () => {
+  const succeeded = {
+    outcome: "succeeded",
+    profile: { arch: "x86_64" },
+    steps: [{ name: "install", seconds: 3.5 }],
+    totalSeconds: 3.5,
+  };
+
+  type RecordReport = (input: { readonly token: string; readonly report: SetupReport }) => Effect.Effect<undefined, NotFound>;
+
+  function report(body: JsonValue, record: Mock<RecordReport> = vi.fn<RecordReport>(() => Effect.succeed(undefined))) {
+    const handled = handleMachineSetupReport(
+      new Request("https://cloud.example/api/enroll/pmet_secret/report", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      token,
+      record,
+    );
+    return Effect.runPromise(handled).then((response) => ({ response, record }));
+  }
+
+  it("records a valid report and answers no content", async () => {
+    const { response, record } = await report(succeeded);
+
+    expect(response.status).toBe(204);
+    expect(record).toHaveBeenCalledWith({ token, report: succeeded });
+  });
+
+  it("answers not found when the token doesn't fit the outcome", async () => {
+    const { response } = await report(
+      succeeded,
+      vi.fn<RecordReport>(() => Effect.fail(new NotFound({ message: "Enrollment not found." }))),
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).not.toContain(token);
+  });
+
+  it("rejects invalid bodies without recording them", async () => {
+    const invalidBodies: JsonValue[] = [
+      {},
+      { ...succeeded, outcome: "maybe" },
+      { ...succeeded, steps: [{ name: "reboot", seconds: 1 }] },
+      { ...succeeded, steps: [{ name: "install", seconds: -1 }] },
+      { ...succeeded, totalSeconds: "10" },
+      { ...succeeded, profile: { cpuCount: 1.5 } },
+      { ...succeeded, outcome: "failed" },
+      { ...succeeded, outcome: "failed", failedStep: "reboot", failedStepSeconds: 1, error: "x" },
+    ];
+    for (const body of invalidBodies) {
+      const { response, record } = await report(body);
+      expect(response.status, JSON.stringify(body)).toBe(422);
+      expect(record).not.toHaveBeenCalled();
+    }
   });
 });

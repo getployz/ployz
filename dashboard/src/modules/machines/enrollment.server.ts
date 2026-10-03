@@ -24,6 +24,9 @@ import {
   mintedEnrollment,
   registerRequestFromEnrollmentIdentity,
   rustMachineIdSchema,
+  setupReportAccepted,
+  setupReportProperties,
+  type SetupReport,
   waitForFounder,
   type EnrollmentIdentity,
   type EnrollmentCallback,
@@ -163,6 +166,35 @@ const recordJoined = Effect.fn("MachineEnrollment.recordJoined")(
     for (const { userId, organizationId } of joined) {
       yield* (yield* PostHog).capture({ userId, organizationId, event: "server_enrolled", properties: { founder } });
     }
+  },
+);
+
+/**
+ * One setup report becomes one event for whoever made the token, as `server_enrolled` is.
+ * Enrollment itself is never touched.
+ */
+export const recordMachineSetupReport = Effect.fn("MachineEnrollment.recordSetupReport")(
+  function* (input: { readonly token: string; readonly report: SetupReport }) {
+    const { drizzle } = yield* Database;
+    const [row] = yield* drizzle
+      .select({
+        userId: schemaMachineEnrollmentToken.createdByUserId,
+        organizationId: schemaMachineEnrollmentToken.organizationId,
+        joinedMachineId: schemaMachineEnrollmentToken.joinedMachineId,
+        expiresAt: schemaMachineEnrollmentToken.expiresAt,
+      })
+      .from(schemaMachineEnrollmentToken)
+      .where(eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(input.token)))
+      .limit(1);
+    if (!setupReportAccepted(row, input.report.outcome, new Date())) {
+      return yield* new NotFound({ message: "Enrollment not found." });
+    }
+    yield* (yield* PostHog).capture({
+      userId: row.userId,
+      organizationId: row.organizationId,
+      event: `server_setup_${input.report.outcome}`,
+      properties: setupReportProperties(input.report),
+    });
   },
 );
 

@@ -96,5 +96,7 @@ except (OSError, BrokenPipeError):
         ))
         .collect::<Vec<_>>();
     command.env("PATH", std::env::join_paths(paths).unwrap());
+    // Setup reports are part of what these tests observe.
+    command.env_remove("DO_NOT_TRACK");
     command
 }

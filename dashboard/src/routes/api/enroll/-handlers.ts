@@ -10,11 +10,13 @@ import {
   ENROLLMENT_PROTOCOL_VERSION,
   enrollmentCallbackBodySchema,
   enrollmentIdentitySchema,
+  setupReportSchema,
   type EnrollResponse,
 } from "#/modules/machines/enrollment";
 import {
   completeMachineEnrollment,
   enrollMachine,
+  recordMachineSetupReport,
 } from "#/modules/machines/enrollment.server";
 
 type EnrollmentResponseBody =
@@ -167,5 +169,49 @@ export function handleMachineEnrollmentCallback<R>(
       : yield* Effect.result(completeMachineEnrollment(input));
     if (Result.isFailure(stored)) return errorResponse(stored.failure);
     return response({ machineId: stored.success.machineId }, 200);
+  });
+}
+
+type RecordReportEffect = ReturnType<typeof recordMachineSetupReport>;
+type RecordReportRequirements = RecordReportEffect extends Effect.Effect<unknown, unknown, infer R> ? R : never;
+
+type RecordReportOperation<R> = (
+  request: Parameters<typeof recordMachineSetupReport>[0],
+) => Effect.Effect<Effect.Success<RecordReportEffect>, Effect.Error<RecordReportEffect>, R>;
+
+export function handleMachineSetupReport(
+  request: Request,
+  token: string,
+): Effect.Effect<Response, never, RecordReportRequirements>;
+export function handleMachineSetupReport<R>(
+  request: Request,
+  token: string,
+  recordOperation: RecordReportOperation<R>,
+): Effect.Effect<Response, never, R>;
+export function handleMachineSetupReport<R>(
+  request: Request,
+  token: string,
+  recordOperation?: RecordReportOperation<R>,
+) {
+  return Effect.gen(function* () {
+    if (!token) return invalidTokenResponse();
+
+    const json = yield* Effect.option(
+      Effect.tryPromise({
+        try: () => request.json(),
+        catch: () => new Validation({ message: "Invalid JSON body." }),
+      }),
+    );
+    const parsed = Schema.decodeUnknownOption(setupReportSchema)(Option.getOrNull(json));
+    if (Option.isNone(parsed)) {
+      return errorResponse(new Validation({ message: "Invalid setup report." }));
+    }
+
+    const input = { token, report: parsed.value };
+    const recorded = recordOperation
+      ? yield* Effect.result(recordOperation(input))
+      : yield* Effect.result(recordMachineSetupReport(input));
+    if (Result.isFailure(recorded)) return errorResponse(recorded.failure);
+    return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
   });
 }

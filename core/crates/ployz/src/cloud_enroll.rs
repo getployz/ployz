@@ -236,6 +236,12 @@ pub(crate) fn callback_url(cloud_url: &str, token: &CloudEnrollToken) -> String 
     format!("{}/callback", enroll_url(cloud_url, token))
 }
 
+/// Best-effort setup report: `POST /api/enroll/<token>/report`.
+#[must_use]
+pub(crate) fn report_url(cloud_url: &str, token: &CloudEnrollToken) -> String {
+    format!("{}/report", enroll_url(cloud_url, token))
+}
+
 /// `https://` + a bare host, or the URL as given; no trailing slash.
 pub(crate) fn cloud_origin(cloud_url: &str) -> String {
     let host = cloud_url.trim().trim_end_matches('/');
