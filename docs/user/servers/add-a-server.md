@@ -88,5 +88,29 @@ these there:
   [The install stops while checking Docker](../troubleshooting/servers.md#the-install-stops-while-checking-docker).
   Docker's default never rotates container logs, so they can fill the disk; see
   [The server's disk is filling up](../troubleshooting/servers.md#the-servers-disk-is-filling-up).
+- **Ployz Cloud learns a little about the server**, so we can see which setups work and which
+  fail; see [What Ployz Cloud records about your servers](#what-ployz-cloud-records-about-your-servers).
+
+## What Ployz Cloud records about your servers
+
+When `ployz server add` finishes or fails, it sends Ployz Cloud one short report about the
+server:
+
+- The provider and instance type, read from the server's hardware info, such as Amazon EC2 `t3.small`.
+- The operating system and its version, the kernel, the CPU architecture, and the kind of
+  virtualization, if any.
+- The number of CPUs, the memory and the size of the main disk.
+- Whether you chose ZFS, the Ployz version, and whether this server started your cluster.
+- How long each setup step took.
+- If setup failed, the step that failed and the error you saw.
+
+It never sends the server's hostname or name, its IP addresses, labels, tokens or secrets. A
+self-hosted Ployz Cloud keeps the report to itself.
+
+To send nothing, set `DO_NOT_TRACK=1` when you run the command:
+
+```sh
+curl -fsSL https://ployz.sh/ | sh && sudo DO_NOT_TRACK=1 ployz server add --token '...'
+```
 
 Next: [manage your servers](manage-servers.md).

@@ -17,6 +17,7 @@ use super::{Error, config_path, leaf_matches, required, runtime};
 use crate::cloud_enroll::{self, CloudPairing, EnrollIdentity, InitializeMode, Join, Outcome};
 use crate::connect::{Client, ConnectError};
 use crate::context::{Connection, ContextError, Transport};
+use crate::setup_report::{SetupReport, Step};
 
 /// Enroll with `token`: over SSH to `DESTINATION`, or on the host this runs on.
 pub(super) fn enroll(
@@ -27,15 +28,12 @@ pub(super) fn enroll(
     let matches = leaf_matches(root);
     if matches.get_one::<String>("destination").is_some() {
         // A remote host is provisioned once, up front, with this CLI's release.
-        if !matches.get_flag("no-install") {
-            runtime()?.block_on(crate::provisioning::provision(
-                matches,
-                super::server::requested_storage(matches),
-            ))?;
-        }
-        return enroll_token(root, token, cloud_url, &|_| async { Ok(()) });
+        let provision_remote = !matches.get_flag("no-install");
+        return enroll_token(root, token, cloud_url, provision_remote, &|_| async {
+            Ok(())
+        });
     }
-    enroll_token(root, token, cloud_url, &|storage| async move {
+    enroll_token(root, token, cloud_url, false, &|storage| async move {
         if storage == StorageChoice::Zfs {
             crate::provisioning::provision_local(env!("CARGO_PKG_VERSION"), storage).await?;
         } else {
@@ -67,14 +65,46 @@ where
     let cloud_url = matches
         .get_one::<String>("cloud-url")
         .map_or("ployz.dev", String::as_str);
-    enroll_token(root, token, cloud_url, install)
+    enroll_token(root, token, cloud_url, false, install)
 }
 
+/// Enroll, then send Cloud the best-effort setup report for the outcome.
 fn enroll_token<Install, InstallFuture>(
     root: &ArgMatches,
     token: CloudEnrollToken,
     cloud_url: &str,
+    provision_remote: bool,
     install: &Install,
+) -> Result<(), Error>
+where
+    Install: Fn(StorageChoice) -> InstallFuture,
+    InstallFuture: Future<Output = Result<(), Error>>,
+{
+    let mut report = SetupReport::start();
+    runtime()?.block_on(async {
+        let result = enroll_steps(
+            root,
+            &token,
+            cloud_url,
+            provision_remote,
+            install,
+            &mut report,
+        )
+        .await;
+        report
+            .send(&cloud_enroll::report_url(cloud_url, &token), &result)
+            .await;
+        result
+    })
+}
+
+async fn enroll_steps<Install, InstallFuture>(
+    root: &ArgMatches,
+    token: &CloudEnrollToken,
+    cloud_url: &str,
+    provision_remote: bool,
+    install: &Install,
+    report: &mut SetupReport,
 ) -> Result<(), Error>
 where
     Install: Fn(StorageChoice) -> InstallFuture,
@@ -82,7 +112,7 @@ where
 {
     let matches = leaf_matches(root);
     let initial_policy = super::server::enrollment_policy(matches)?;
-    let url = cloud_enroll::enroll_url(cloud_url, &token);
+    let url = cloud_enroll::enroll_url(cloud_url, token);
     let requested_name = matches
         .get_one::<String>("name")
         .map(MachineName::parse)
@@ -92,57 +122,70 @@ where
         .get_one::<Ipv4Net>("network")
         .expect("Cluster network has a default");
 
-    runtime()?.block_on(async {
-        let mut client = connect_machine(matches).await?;
-        client = synchronize_daemon(matches, client, install).await?;
-        if matches.get_flag("reset") {
-            client = ensure_uninitialized(matches, matches.get_flag("yes"), true, client).await?;
+    if provision_remote {
+        crate::provisioning::provision(matches, requested_storage).await?;
+    }
+    let mut client = connect_machine(matches).await?;
+    if matches.get_one::<String>("destination").is_none()
+        && matches!(client.connection().transport(), Transport::Unix(_))
+    {
+        report.read_host();
+    }
+    client = synchronize_daemon(matches, client, install).await?;
+    if matches.get_flag("reset") {
+        client = ensure_uninitialized(matches, matches.get_flag("yes"), true, client).await?;
+    }
+    report.step(Step::Enroll);
+    let (details, machine_token, name, outcome) = enroll_current_identity(
+        &mut client,
+        requested_name,
+        requested_storage,
+        &initial_policy,
+        &url,
+    )
+    .await?;
+    report.machine(&machine_token);
+    report.step(Step::Storage);
+    match outcome {
+        Outcome::Join(join) => {
+            report.enrolled(join.storage, false);
+            enroll_join(
+                matches,
+                client,
+                details,
+                *join,
+                &initial_policy,
+                &cloud_enroll::callback_url(cloud_url, token),
+                install,
+                report,
+            )
+            .await
         }
-        let (details, machine_token, name, outcome) = enroll_current_identity(
-            &mut client,
-            requested_name,
-            requested_storage,
-            &initial_policy,
-            &url,
-        )
-        .await?;
-        match outcome {
-            Outcome::Join(join) => {
-                enroll_join(
-                    matches,
-                    client,
-                    details,
-                    *join,
-                    &initial_policy,
-                    &cloud_enroll::callback_url(cloud_url, &token),
-                    install,
-                )
-                .await
-            }
-            Outcome::Initialize {
+        Outcome::Initialize {
+            mode,
+            pairing,
+            storage,
+        } => {
+            report.enrolled(storage, true);
+            enroll_founder(
+                matches,
+                client,
+                details,
+                machine_token,
+                name,
+                initial_policy,
+                cluster_network,
                 mode,
                 pairing,
                 storage,
-            } => {
-                enroll_founder(
-                    matches,
-                    client,
-                    details,
-                    machine_token,
-                    name,
-                    initial_policy,
-                    cluster_network,
-                    mode,
-                    pairing,
-                    storage,
-                    cloud_url,
-                    &token,
-                    install,
-                )
-                .await
-            }
+                cloud_url,
+                token,
+                install,
+                report,
+            )
+            .await
         }
-    })
+    }
 }
 
 fn already_assigned(details: &MachineDetails, assigned: &Machine) -> bool {
@@ -177,6 +220,10 @@ async fn enroll_current_identity(
     Ok((details, machine_token, name, outcome))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the join tail consumes the existing cloud-enroll command interface"
+)]
 async fn enroll_join<Install, InstallFuture>(
     matches: &ArgMatches,
     mut client: Client,
@@ -185,6 +232,7 @@ async fn enroll_join<Install, InstallFuture>(
     initial_policy: &ployz_core::InitialMachinePolicy,
     callback_url: &str,
     install: &Install,
+    report: &mut SetupReport,
 ) -> Result<(), Error>
 where
     Install: Fn(StorageChoice) -> InstallFuture,
@@ -216,6 +264,7 @@ where
         )
         .await?;
         client = provision_storage(matches, client, join.storage, install).await?;
+        report.step(Step::Join);
         crate::handlers::server::join(
             &mut client,
             JoinRequest {
@@ -231,6 +280,7 @@ where
         )
         .await?
     };
+    report.step(Step::Join);
     // Mint a fresh capability; Cloud verifies replacements when enrollment resumes.
     let capability = set_cloud_management_client(matches, &mut ready).await?;
     let catch_up = crate::global_catch_up::catch_up_globals(&mut ready, &assigned).await;
@@ -238,6 +288,7 @@ where
     // A committed join remains enrolled even when Global catch-up needs a separate retry.
     cloud_enroll::publish(callback_url, assigned.id, &pairing.secret, &capability).await?;
     cloud_enroll::callback(callback_url, assigned.id, &pairing.secret).await?;
+    report.succeeded();
     crate::output::say!("Joined Server {} ({})", assigned.name, assigned.id);
     // The join is committed; a catch-up failure makes it partial.
     crate::output::emit_committed(
@@ -274,6 +325,7 @@ async fn enroll_founder<Install, InstallFuture>(
     cloud_url: &str,
     token: &CloudEnrollToken,
     install: &Install,
+    report: &mut SetupReport,
 ) -> Result<(), Error>
 where
     Install: Fn(StorageChoice) -> InstallFuture,
@@ -332,6 +384,7 @@ where
             )
             .await?;
             client = provision_storage(matches, client, storage, install).await?;
+            report.step(Step::Join);
             let initialized = crate::handlers::server::initialize(
                 &mut client,
                 InitializeRequest {
@@ -354,6 +407,7 @@ where
         }
     };
 
+    report.step(Step::Join);
     if machine.accepts_ingress
         && let Some(requested) = ingress
     {
@@ -379,6 +433,7 @@ where
         &pairing.secret,
     )
     .await?;
+    report.succeeded();
     crate::output::emit(&founder_result(&machine, founding))
 }
 

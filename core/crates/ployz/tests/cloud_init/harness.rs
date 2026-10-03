@@ -32,7 +32,7 @@ mod inspect_telemetry_fixture;
 #[path = "servers.rs"]
 mod servers;
 
-pub use enroll_http::{EnrollListen, EventLog};
+pub use enroll_http::{EnrollListen, EventLog, ReportReply};
 pub use servers::{cli, serve_local_machine, serve_machine};
 
 pub const TOKEN: &str = "pmet_test";
