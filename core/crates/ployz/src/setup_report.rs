@@ -2,8 +2,9 @@
 //!
 //! One POST to `<cloud>/api/enroll/<token>/report` once setup succeeds or fails. It never
 //! changes what the user sees: one attempt, a short timeout, every error swallowed.
-//! `DO_NOT_TRACK` turns it off. It never carries hostnames, IPs, the Server name, labels,
-//! Machine ids or secrets.
+//! `DO_NOT_TRACK` turns it off. Its profile never carries hostnames, IPs, the Server name,
+//! labels, Machine ids or secrets. On failure, `error` is the message the user saw; Cloud
+//! removes IP addresses from it, but hostnames may remain.
 
 use std::{
     path::Path,

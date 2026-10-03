@@ -164,18 +164,21 @@ export type EnrollmentCallback = typeof enrollmentCallbackBodySchema.Type;
 /** The phases of `server add --token`; each name is a PostHog property, so renaming one breaks analytics. */
 const SetupStep = Schema.Literals(["install", "enroll", "storage", "join"]);
 const Seconds = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
-/** Text cut to `maxLength` rather than rejected, so a long field never loses the report. */
-const truncated = (schema: Schema.String, maxLength: number, clean = (value: string) => value) =>
+/** `schema`, with `clean` applied on decode; encoding leaves the text as is. */
+const cleaned = (schema: Schema.String, clean: (value: string) => string) =>
   schema.pipe(Schema.decodeTo(Schema.String, {
-    decode: SchemaGetter.transform((value) => clean(value).slice(0, maxLength)),
+    decode: SchemaGetter.transform(clean),
     encode: SchemaGetter.transform((value) => value),
   }));
-const ProfileText = truncated(NonEmptyString, 256);
+/** Text cut to `maxLength` rather than rejected, so a long field never loses the report. */
+const truncated = (value: string, maxLength: number) => value.slice(0, maxLength);
+const ProfileText = cleaned(NonEmptyString, (value) => truncated(value, 256));
 
-const IPV4 = /\b(?:\d{1,3}\.){3}\d{1,3}\b/gu;
+// Not part of a longer dotted number, but a sentence's closing period still ends it.
+const IPV4 = /(?<!\d\.?)(?:\d{1,3}\.){3}\d{1,3}(?!\.?\d)/gu;
 // Eight full groups, or any groups around `::`, with an optional zone. Needing `::` or eight groups
 // spares times (12:34:56), MAC addresses and Rust paths (`std::io` is not hex).
-const IPV6 = /(?<![\w:])(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:)*[0-9a-f]{0,4}::(?:[0-9a-f]{1,4}:)*[0-9a-f]{0,4})(?:%[\w.-]+)?(?![\w:])/giu;
+const IPV6 = /(?<!\w)(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:)*[0-9a-f]{0,4}::(?:[0-9a-f]{1,4}:)*[0-9a-f]{0,4})(?:%[\w.-]+)?(?![\w:])/giu;
 
 /** An error the user saw, with every IP address replaced by `<ip>`; hostnames stay. */
 export function redactIpAddresses(text: string) {
@@ -211,7 +214,7 @@ export const setupReportSchema = Schema.Union([
     ...setupReportFields,
     failedStep: SetupStep,
     failedStepSeconds: Seconds,
-    error: truncated(Schema.String, 1_000, redactIpAddresses),
+    error: cleaned(Schema.String, (value) => truncated(redactIpAddresses(value), 1_000)),
   }),
 ]);
 

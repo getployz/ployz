@@ -261,8 +261,12 @@ describe("setup report error", () => {
     expect(redactIpAddresses("failed to connect to root@203.0.113.10:22")).toBe("failed to connect to root@<ip>:22");
     expect(redactIpAddresses("no route to 2001:db8::1")).toBe("no route to <ip>");
     expect(redactIpAddresses("dial [fe80::1%eth0]:22 refused")).toBe("dial [<ip>]:22 refused");
+    expect(redactIpAddresses("addr:2001:db8::1 refused")).toBe("addr:<ip> refused");
+    expect(redactIpAddresses("tcp6:fe80::1")).toBe("tcp6:<ip>");
+    expect(redactIpAddresses("x_10.0.0.1 down")).toBe("x_<ip> down");
+    expect(redactIpAddresses("could not reach 10.0.0.1.")).toBe("could not reach <ip>.");
     expect(redactIpAddresses("2001:0db8:0000:0000:0000:ff00:0042:8329 down")).toBe("<ip> down");
-    const kept = "ployz 0.2.1 on kernel 6.12.43 at db.example.com, 12:34:56, std::io::Error";
+    const kept = "ployz 0.2.1 on kernel 6.12.43 at db.example.com, 12:34:56, std::io::Error, aa:bb:cc:dd:ee:ff, 1.2.3.4.5";
     expect(redactIpAddresses(kept)).toBe(kept);
   });
 
