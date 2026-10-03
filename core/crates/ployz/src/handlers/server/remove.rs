@@ -131,7 +131,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         }
         if !replicated_services.is_empty() {
             eprintln!(
-                "WARNING: Replicated Services may now be under-replicated: {}. Drain a Server before removing it to move its replicas first: ployz server drain <server>",
+                "WARNING: Replicated Services may now be under-replicated: {}. Their replicas were not moved.",
                 replicated_services
                     .iter()
                     .map(ToString::to_string)

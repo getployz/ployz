@@ -164,7 +164,9 @@ async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
             "{stderr}"
         );
         assert!(
-            stderr.contains("Drain a Server before removing it to move its replicas first: ployz server drain <server>"),
+            stderr.contains(
+                "WARNING: Server machine-2 is running Services: workflow/replicated. Move them off first: ployz server drain machine-2"
+            ),
             "{stderr}"
         );
     }
