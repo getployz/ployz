@@ -101,6 +101,46 @@ async fn do_not_track_sends_no_report() {
     assert!(enroll.reports().is_empty(), "{:?}", enroll.reports());
 }
 
+#[tokio::test]
+async fn a_run_dialing_another_host_reports_no_host_profile() {
+    let enroll = EnrollListen::start(json!({ "kind": "join" })).await;
+    // Nothing listens on port 1: dialing fails at once, before any step finishes.
+    let output = harness::cli()
+        .args([
+            "--connect",
+            "tcp://127.0.0.1:1",
+            "server",
+            "add",
+            "--token",
+            TOKEN,
+            "--cloud-url",
+            &enroll.url,
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+
+    assert!(!output.status.success());
+    let reports = enroll.reports();
+    let [(_, report)] = reports.as_slice() else {
+        panic!("expected one report: {reports:?}");
+    };
+    assert_eq!(at(report, "/outcome"), "failed");
+    assert_eq!(at(report, "/failedStep"), "install");
+    let profile = at(report, "/profile");
+    for host in [
+        "provider",
+        "osId",
+        "kernel",
+        "arch",
+        "virtualization",
+        "cpuCount",
+    ] {
+        assert!(profile.get(host).is_none(), "{host} sent: {profile}");
+    }
+}
+
 /// Enroll in-process with a storage step that refuses ZFS, against `reply`.
 async fn refuse_zfs(reply: ReportReply) -> (String, Vec<(usize, Value)>, Duration) {
     let mut registration = registration();

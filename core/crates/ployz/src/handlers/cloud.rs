@@ -16,7 +16,7 @@ use ployz_core::{
 use super::{Error, config_path, leaf_matches, required, runtime};
 use crate::cloud_enroll::{self, CloudPairing, EnrollIdentity, InitializeMode, Join, Outcome};
 use crate::connect::{Client, ConnectError};
-use crate::context::{Connection, ContextError, Transport};
+use crate::context::{Connection, ContextError, SelectedConnections, Transport};
 use crate::setup_report::{SetupReport, Step};
 
 /// Enroll with `token`: over SSH to `DESTINATION`, or on the host this runs on.
@@ -108,8 +108,8 @@ where
 {
     let matches = leaf_matches(root);
     let remote = matches.get_one::<String>("destination").is_some();
-    if !remote {
-        // First, so a failed first install still reports what it ran on.
+    // First, so a failed first install still reports what it ran on.
+    if !remote && dials_this_host(matches) {
         report.read_host();
     }
     let initial_policy = super::server::enrollment_policy(matches)?;
@@ -562,18 +562,41 @@ async fn dial(matches: &ArgMatches) -> Result<Client, ConnectError> {
         }
         return super::server::connect_direct(matches, &connection).await;
     }
+    crate::connect::connect_selected_with(
+        local_selection(matches)?,
+        std::sync::Arc::new(
+            crate::connect::SystemConnector::default()
+                .with_ssh_timeout(crate::cli::ssh_timeout(matches)),
+        ),
+    )
+    .await
+}
+
+/// What a run with no destination dials: `--connect`, the current context or the local socket.
+fn local_selection(matches: &ArgMatches) -> Result<SelectedConnections, ConnectError> {
     let config = crate::context::expand_home(std::path::Path::new(
         matches
             .get_one::<String>("ployz-config")
             .expect("ployz-config has a default"),
     ));
-    crate::connect::connect_with_ssh_timeout(
+    crate::connect::resolve_connections(
         &config,
         matches.get_one::<String>("connect").map(String::as_str),
         None,
-        crate::cli::ssh_timeout(matches),
+        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
     )
-    .await
+}
+
+/// Whether a run with no destination enrolls this host: it dials only the local socket, or
+/// finds nothing to dial and so installs the daemon here (see `connect_machine`).
+fn dials_this_host(matches: &ArgMatches) -> bool {
+    match local_selection(matches) {
+        Ok(selected) => selected
+            .connections
+            .iter()
+            .all(|connection| matches!(connection.transport(), Transport::Unix(_))),
+        Err(error) => matches!(error, ConnectError::Context(ContextError::NoConfig)),
+    }
 }
 
 async fn connect_machine(matches: &ArgMatches) -> Result<Client, Error> {

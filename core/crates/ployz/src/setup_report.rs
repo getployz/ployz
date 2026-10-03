@@ -14,8 +14,6 @@ use ployz_core::{MachineToken, StorageChoice};
 use serde::Serialize;
 
 const TIMEOUT: Duration = Duration::from_secs(2);
-/// Cloud truncates longer profile strings too; capping here keeps the body small.
-const PROFILE_STRING_LIMIT: usize = 256;
 /// DMI vendor substring, short provider name, and whether the product name is the instance type.
 const PROVIDERS: &[(&str, &str, bool)] = &[
     ("hetzner", "hetzner", true),
@@ -133,14 +131,21 @@ impl SetupReport {
 
     /// Finish the running step and start `step`.
     pub(crate) fn step(&mut self, step: Step) {
-        let (name, since) = std::mem::replace(&mut self.current, (step, Instant::now()));
+        self.finish();
+        self.current = (step, Instant::now());
+    }
+
+    /// Record the running step as finished.
+    fn finish(&mut self) {
+        let (name, since) = self.current;
         self.finished.push(StepTime {
             name,
             seconds: since.elapsed().as_secs_f64(),
         });
     }
 
-    /// Read this host's profile; only when the CLI runs on the Server it enrolls.
+    /// Read this host's profile. The caller calls it only when this CLI runs on the Server it
+    /// enrolls, so a run that dials elsewhere reports no host profile.
     pub(crate) fn read_host(&mut self) {
         let dmi = |file: &str| read_trimmed(&Path::new("/sys/class/dmi/id").join(file));
         let (provider, instance_type) =
@@ -186,7 +191,7 @@ impl SetupReport {
         let (step, since) = self.current;
         let outcome = match error {
             None => {
-                self.step(step);
+                self.finish();
                 Outcome::Succeeded
             }
             Some(error) => Outcome::Failed {
@@ -216,10 +221,10 @@ fn read_trimmed(path: &Path) -> Option<String> {
     trimmed(std::fs::read_to_string(path).ok()?)
 }
 
-/// A non-empty profile string, trimmed and capped to what Cloud accepts.
+/// A non-empty profile string, trimmed.
 fn trimmed(value: String) -> Option<String> {
     let value = value.trim();
-    (!value.is_empty()).then(|| value.chars().take(PROFILE_STRING_LIMIT).collect())
+    (!value.is_empty()).then(|| value.to_owned())
 }
 
 fn os_release_value(os_release: &str, key: &str) -> Option<String> {
@@ -293,15 +298,6 @@ mod tests {
                 "{vendor:?} {product:?}"
             );
         }
-    }
-
-    #[test]
-    fn profile_strings_fit_what_cloud_accepts() {
-        let long = "v".repeat(1_000);
-        let (vendor, _) = provider(Some(&long), None);
-        assert_eq!(vendor.chars().count(), PROFILE_STRING_LIMIT);
-        let (_, instance_type) = provider(Some("Hetzner"), Some(&long));
-        assert_eq!(instance_type.unwrap().chars().count(), PROFILE_STRING_LIMIT);
     }
 
     #[test]

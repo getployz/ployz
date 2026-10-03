@@ -28,8 +28,11 @@ import {
   CLUSTER_UNREACHABLE,
   mintMachineEnrollment,
   readMachineEnrollment,
+  recordMachineSetupReport,
   resetPendingOrganizationEnrollment,
 } from "#/modules/machines/enrollment.server";
+import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
+import type { SetupReport } from "#/modules/machines/enrollment";
 import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { asTestDouble } from "#/lib/test-double";
 import { readCollection } from "#/collections/read.server";
@@ -507,6 +510,53 @@ describe("organization enrollment coordinator", () => {
     await harness.pool.query("update machine_enrollment_token set joined_machine_id = null, expires_at = now() - interval '1 second' where id = $1", [minted.id]);
     expect(await fake.coordinator.read(minted.id)).toMatchObject({ success: { status: "expired" } });
     expect(await fake.coordinator.read("00000000-0000-4000-8000-000000000498")).toMatchObject({ failure: { _tag: "NotFound" } });
+  });
+
+  it("captures a setup report for the token's creator only when the token fits the outcome", async () => {
+    const [pending = "", joined = ""] = tokens;
+    await harness.pool.query("update machine_enrollment_token set joined_machine_id = $1 where token_hash = $2", [
+      founderMachineId,
+      hashEnrollmentToken(joined),
+    ]);
+    const steps = [{ name: "install", seconds: 1 }] as const;
+    const succeeded: SetupReport = { outcome: "succeeded", profile: { arch: "x86_64" }, steps, totalSeconds: 2 };
+    const failed: SetupReport = {
+      outcome: "failed", profile: { arch: "x86_64" }, steps, totalSeconds: 2,
+      failedStep: "enroll", failedStepSeconds: 1, error: "refused",
+    };
+    const record = async (token: string, report: SetupReport) => {
+      const captured: Parameters<PostHogService["capture"]>[0][] = [];
+      const recorder: PostHogService = {
+        capture: (input) => Effect.sync(() => void captured.push(input)),
+        identify: () => Effect.void,
+        identifyOrganization: () => Effect.void,
+      };
+      const result = await Effect.runPromise(recordMachineSetupReport({ token, report }).pipe(
+        Effect.result,
+        Effect.provideService(Database, harness.database),
+        Effect.provideService(PostHog, recorder),
+      ));
+      return { ok: Result.isSuccess(result), captured };
+    };
+
+    expect(await record(joined, succeeded)).toEqual({ ok: true, captured: [{
+      userId,
+      organizationId,
+      event: "server_setup_succeeded",
+      properties: { arch: "x86_64", step_install_seconds: 1, total_seconds: 2 },
+    }] });
+    expect(await record(pending, failed)).toEqual({ ok: true, captured: [{
+      userId,
+      organizationId,
+      event: "server_setup_failed",
+      properties: {
+        arch: "x86_64", step_install_seconds: 1, total_seconds: 2,
+        failed_step: "enroll", failed_step_seconds: 1, error: "refused",
+      },
+    }] });
+    for (const [token, report] of [[pending, succeeded], [joined, failed], ["pmet_unknown", succeeded]] as const) {
+      expect(await record(token, report), `${token} ${report.outcome}`).toEqual({ ok: false, captured: [] });
+    }
   });
 
   it("encrypts the authenticated candidate before completion and preserves it on exact retry", async () => {
