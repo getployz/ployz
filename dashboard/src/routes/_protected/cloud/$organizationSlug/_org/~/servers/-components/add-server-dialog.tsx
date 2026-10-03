@@ -84,11 +84,11 @@ export function AddServerDialog({
             </DialogDescription>
           </DialogHeader>
           <ol className="flex flex-col gap-4">
-            <Step number={1} title={withoutZfs ? "Get a Linux server" : "Get an Ubuntu server"}>
+            <Step number={1} title="Get a Linux server">
               <p className="text-muted-foreground">
                 {withoutZfs
                   ? "Any systemd Linux, amd64 or arm64."
-                  : "Ubuntu LTS on a VM or bare metal, amd64 or arm64. Any provider works."}
+                  : "Ubuntu LTS, Debian 12–13 or Amazon Linux 2023 on a VM or bare metal, amd64 or arm64. Any provider works."}
               </p>
             </Step>
             <Step number={2} title="Run this as root">
@@ -144,7 +144,7 @@ export function AddServerDialog({
               </div>
             ) : (
               <p>
-                Not on Ubuntu, or can’t run ZFS?{" "}
+                Other Linux, or can’t run ZFS?{" "}
                 <InlineLink onClick={() => setWithoutZfs(true)}>
                   Start without it
                 </InlineLink>

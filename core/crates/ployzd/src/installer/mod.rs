@@ -1,8 +1,11 @@
 //! Bounded local installation of a Ployz Machine release.
 
 mod host;
+mod os_release;
 mod release;
 mod storage;
+#[cfg(test)]
+mod test_support;
 pub mod upgrade;
 
 use std::{
@@ -20,7 +23,7 @@ use crate::mutation;
 use self::{
     host::{
         create_user_and_directories, install_docker, install_prerequisites, install_systemd,
-        verify_running_daemon, verify_software_prerequisites,
+        verify_docker, verify_running_daemon, verify_software_prerequisites,
     },
     release::{ReleaseSource, install_binaries, installed_release, resolve_release},
     storage::prepare_storage,
@@ -114,6 +117,11 @@ pub(super) struct InstallPaths {
     pub(super) run_dir: PathBuf,
     pub(super) docker_config: PathBuf,
     pub(super) modprobe_dir: PathBuf,
+    pub(super) modules_load_dir: PathBuf,
+    pub(super) yum_repos_dir: PathBuf,
+    pub(super) os_release: PathBuf,
+    pub(super) secure_boot: PathBuf,
+    pub(super) apt_dir: PathBuf,
 }
 
 impl InstallPaths {
@@ -125,6 +133,13 @@ impl InstallPaths {
             run_dir: run_dir.into(),
             docker_config: PathBuf::from("/etc/docker/daemon.json"),
             modprobe_dir: PathBuf::from("/etc/modprobe.d"),
+            modules_load_dir: PathBuf::from("/etc/modules-load.d"),
+            yum_repos_dir: PathBuf::from("/etc/yum.repos.d"),
+            os_release: PathBuf::from("/etc/os-release"),
+            secure_boot: PathBuf::from(
+                "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            ),
+            apt_dir: PathBuf::from("/etc/apt"),
         }
     }
 
@@ -142,6 +157,11 @@ impl InstallPaths {
             run_dir: root.join("run"),
             docker_config: root.join("docker/daemon.json"),
             modprobe_dir: root.join("modprobe"),
+            modules_load_dir: root.join("modules-load"),
+            yum_repos_dir: root.join("yum.repos.d"),
+            os_release: root.join("os-release"),
+            secure_boot: root.join("efivars/SecureBoot"),
+            apt_dir: root.join("apt"),
         }
     }
 }
@@ -216,6 +236,8 @@ async fn install_locked(
             storage,
             group_user,
         } => {
+            // Before the ZFS build or any change: Ployz can't use every Docker it would retain.
+            verify_docker()?;
             prepare_storage(*storage, &paths)?;
             install_prerequisites()?;
             let inherited_group = sudo_user();
@@ -327,6 +349,14 @@ fn sudo_user() -> Option<String> {
         .filter(|user| !user.is_empty())
 }
 
+/// A refusal at `stage`, worded for the user.
+pub(super) fn refuse(stage: &str, message: impl Into<String>) -> Error {
+    Error::Command {
+        stage: stage.into(),
+        message: message.into(),
+    }
+}
+
 pub(super) fn command_exists(name: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|path| {
         std::env::split_paths(&path).any(|directory| {
@@ -407,8 +437,8 @@ mod tests {
     };
 
     use ployz_core::MachineVersion;
-    use tempfile::TempDir;
 
+    use super::test_support::{fixture, run_contract_child_with_environment, write_script};
     use super::*;
 
     #[tokio::test]
@@ -454,7 +484,11 @@ mod tests {
         ] {
             let fixture = fixture(case);
             create_installation_fixture(fixture.path(), case);
-            run_contract_child("installation_interface_contract", fixture.path(), case);
+            run_contract_child(
+                "installer::tests::installation_interface_contract",
+                fixture.path(),
+                case,
+            );
         }
     }
 
@@ -477,7 +511,7 @@ mod tests {
         let fixture = fixture("software-prerequisite");
         fs::create_dir_all(fixture.path().join("commands")).unwrap();
         run_contract_child_with_environment(
-            "software_only_prerequisite_contract",
+            "installer::tests::software_only_prerequisite_contract",
             fixture.path(),
             OsString::from("PLOYZ_SOFTWARE_PREREQUISITE_CONTRACT"),
             OsString::from("1"),
@@ -516,7 +550,7 @@ mod tests {
             "echo /lib/modules/test-kernel/kernel/zfs.ko",
         );
         run_contract_child_with_environment(
-            "zfs_candidate_download_contract",
+            "installer::tests::zfs_candidate_download_contract",
             fixture.path(),
             OsString::from("PLOYZ_ZFS_CANDIDATE_CONTRACT"),
             OsString::from("1"),
@@ -733,49 +767,5 @@ mod tests {
         } else {
             run_contract_child_with_environment(test, root, key, value, &completion, []);
         }
-    }
-
-    fn run_contract_child_with_environment<const N: usize>(
-        test: &str,
-        root: &Path,
-        key: OsString,
-        value: OsString,
-        completion: &str,
-        extra: [(OsString, OsString); N],
-    ) {
-        let test = format!("installer::tests::{test}");
-        let mut command = Command::new(env::current_exe().unwrap());
-        command
-            .args(["--exact", &test, "--nocapture"])
-            .env("PLOYZ_INSTALLER_CONTRACT_ROOT", root)
-            .env("PATH", root.join("commands"))
-            .env(key, value);
-        for (key, value) in extra {
-            command.env(key, value);
-        }
-        let output = command.output().unwrap();
-        assert!(
-            output.status.success(),
-            "contract child {test} failed:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-        assert_eq!(
-            fs::read_to_string(root.join("child-completed")).unwrap(),
-            completion,
-            "contract child {test} did not complete its fixture",
-        );
-    }
-
-    fn write_script(path: &Path, body: &str) {
-        fs::write(path, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    fn fixture(name: &str) -> TempDir {
-        tempfile::Builder::new()
-            .prefix(&format!("ployzd-installer-{name}-"))
-            .tempdir()
-            .unwrap()
     }
 }

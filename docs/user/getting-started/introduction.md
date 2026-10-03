@@ -40,8 +40,8 @@ your data yet, and if a server goes down, what ran only there stops until it's b
 ## What you need
 
 - **A Linux server you can run commands on as root.** Any provider, a VM or bare metal, amd64
-  or arm64. Ubuntu LTS is best: there, your volumes get size limits. Other Linux distributions
-  with systemd work without them. Ployz installs Docker if the server doesn't have it. See
+  or arm64. Ubuntu LTS, Debian 12–13 or Amazon Linux 2023 is best: there, your volumes get size
+  limits. Other Linux distributions with systemd work without them. Ployz installs Docker if the server doesn't have it. See
   [Add a server](../servers/add-a-server.md).
 - **A GitHub account.** You sign in with GitHub, and Ployz deploys your GitHub repositories.
 
