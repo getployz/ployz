@@ -16,6 +16,7 @@ import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLab
 import { Switch } from "#/components/ui/switch";
 import { Item, ItemContent, ItemTitle } from "#/components/ui/item";
 import { cn } from "#/lib/utils";
+import { sourceText } from "#/modules/config-store/store-branches";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
@@ -459,6 +460,8 @@ function StoreSourceSection({ state }: { state: StoreService }) {
   const setting = serviceSetting(kind);
   const value = settingText(state.rows.get(kind)?.value);
   const change = state.changes.get(kind);
+  // Its parts change as one row, so what was deployed is the whole source.
+  const deployed = `Deployed: ${sourceText(state.changes.get("source")?.before ?? null) || "none"}`;
   const gitRef = useRepositoryRef(state.organizationSlug, state.environment, value);
 
   if (state.source === "uploaded") {
@@ -480,7 +483,7 @@ function StoreSourceSection({ state }: { state: StoreService }) {
     return (
       <FieldGroup>
         {change ? (
-          <Item variant="muted" size="sm" data-changed>
+          <Item variant="muted" size="sm" data-changed title={deployed}>
             <ItemContent>
               <ItemTitle>No source after your next deploy</ItemTitle>
             </ItemContent>
@@ -507,7 +510,8 @@ function StoreSourceSection({ state }: { state: StoreService }) {
           {state.service.template ? <FieldDescription>From the {templateLabel(state.service.template)} template.</FieldDescription> : null}
         </FieldContent>
         <div className="flex min-w-0 shrink-0 items-center gap-1">
-          <span className={cn("flex min-w-0 items-center gap-2 rounded-lg border border-transparent text-sm", change && "border-changed-border bg-changed-soft px-2 py-1")}>
+          <span className={cn("flex min-w-0 items-center gap-2 rounded-lg border border-transparent text-sm", change && "border-changed-border bg-changed-soft px-2 py-1")}
+            title={change ? deployed : undefined}>
             {kind === "repository" ? <GitHubMarkIcon className="size-4 shrink-0" /> : <PackageIcon className="size-4 shrink-0 text-muted-foreground" />}
             {kind === "repository"
               ? <a className="truncate hover:underline" href={`https://github.com/${value}`} target="_blank" rel="noreferrer">{value}</a>
