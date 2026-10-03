@@ -14,10 +14,8 @@ import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
 import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Switch } from "#/components/ui/switch";
-import { Item, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
+import { Item, ItemContent, ItemTitle } from "#/components/ui/item";
 import { cn } from "#/lib/utils";
-import { shownValue } from "#/modules/config-store/store-deployments";
-import { sourceText } from "#/modules/config-store/store-branches";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
@@ -41,7 +39,6 @@ import { useRemoveStoreService } from "./useDeleteService";
 import { StoreServiceVariablesTab } from "./ServiceVariablesTab";
 import { StoreNetworkingSection } from "./StoreNetworkingSection";
 import { ServiceSummary } from "./ServiceSummary";
-import { StagedNote } from "./StagedNote";
 import { ContainerLogs } from "#/components/container-logs";
 import { Skeleton } from "#/components/ui/skeleton";
 import { ItemGroup } from "#/components/ui/item";
@@ -271,13 +268,6 @@ const OPTION_HELP = new Map([
   ["no", "Never restart."],
 ]);
 
-/** A deployed value as a staged row says it: its option label, else its text, else what unset means. */
-function shownSetting(value: JsonValue, setting: SettingSchema) {
-  const text = settingText(value);
-  if (text === "") return setting.default != null ? `${settingText(setting.default)} (default)` : "none";
-  return OPTION_LABELS.get(text) ?? text;
-}
-
 /** A Deployment Policy value as text; null when unset. */
 const policyText = (value: JsonValue | undefined) => value === null || value === undefined ? null : String(value);
 
@@ -314,7 +304,6 @@ function StoreSettingField({ state, name, warning }: { state: StoreService; name
       <ServiceCommandField label={setting.title} addLabel={command.addLabel} description={hint(name, setting)} placeholder={command.placeholder}
         compact={command.compact} value={row.value === null || settingText(row.value) === command.unset ? null : settingText(row.value)}
         {...changedProps(change)}
-        note={change ? <StagedNote before={shownSetting(change.before, setting)} /> : null}
         validate={(raw) => settingError(setting, raw)} onCommit={(value) => edit(value === null || value === command.unset ? "" : value)} />
     );
   }
@@ -324,7 +313,6 @@ function StoreSettingField({ state, name, warning }: { state: StoreService; name
       <FieldContent>
         <FieldLabel>{setting.title}</FieldLabel>
         <FieldDescription>{hint(name, setting)}</FieldDescription>
-        {change ? <StagedNote before={shownSetting(change.before, setting)} /> : null}
         {warning}
         {refusal ? <FieldError>{refusal}</FieldError> : null}
       </FieldContent>
@@ -461,7 +449,7 @@ function StoreListField({ state, name, setting, row }: { state: StoreService; na
 }
 
 /** Where the image comes from: a container image, or a repository with its branch and root directory. */
-export function StoreSourceSection({ state }: { state: StoreService }) {
+function StoreSourceSection({ state }: { state: StoreService }) {
   const [picking, setPicking] = useState<"image" | "repository" | null>(null);
   const set = (name: "image" | "repository" | "branch", value: string) => state.set(name, value);
   const close = (open: boolean) => { if (!open) setPicking(null); };
@@ -495,7 +483,6 @@ export function StoreSourceSection({ state }: { state: StoreService }) {
           <Item variant="muted" size="sm" data-changed>
             <ItemContent>
               <ItemTitle>No source after your next deploy</ItemTitle>
-              <ItemDescription>Deployed: {shownValue(change.before) || "none"}</ItemDescription>
             </ItemContent>
           </Item>
         ) : null}
@@ -518,8 +505,6 @@ export function StoreSourceSection({ state }: { state: StoreService }) {
         <FieldContent>
           <FieldLabel>{kind === "repository" ? "Repository" : "Image"}</FieldLabel>
           {state.service.template ? <FieldDescription>From the {templateLabel(state.service.template)} template.</FieldDescription> : null}
-          {/* Its parts change as one row, so it was the whole source. */}
-          {change ? <StagedNote before={sourceText(state.changes.get("source")?.before ?? null) || "none"} /> : null}
         </FieldContent>
         <div className="flex min-w-0 shrink-0 items-center gap-1">
           <span className={cn("flex min-w-0 items-center gap-2 rounded-lg border border-transparent text-sm", change && "border-changed-border bg-changed-soft px-2 py-1")}>
