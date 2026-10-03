@@ -258,6 +258,136 @@ async fn drain_keeps_the_running_image_when_its_tag_moved() {
     );
 }
 
+/// With web-1 taking no Services, draining web-2 retires its Global and leaves every
+/// replicated Service running there, each reported with why, and exits partial.
+#[tokio::test]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
+async fn drain_leaves_what_it_cannot_move_and_retires_globals() {
+    let plan = ClusterPlan::new(&format!("l3-drain-stays-{}", process::id()), 2).unwrap();
+    let cluster = Cluster::create(plan).unwrap();
+    let [web1, web2] = cluster.initialize_two().await.unwrap();
+    let direct = cluster.api_address(0).unwrap();
+    let mut client = connect(&direct).await;
+    cli(
+        &direct,
+        &[
+            "server",
+            "set",
+            web1.id.as_str(),
+            "--accepts-services=false",
+        ],
+    );
+    wait_accepts_services(&mut client, &web1.id, false).await;
+    cluster
+        .machine_shell(1, "docker volume create drain_data")
+        .unwrap();
+
+    let spec = |name: &str, extra: serde_json::Value| {
+        let mut spec = serde_json::json!({
+            "service_id": ServiceId::random(),
+            "name": name,
+            "mode": { "mode": "replicated", "replicas": 1 },
+            "container": { "image": "alpine:3.23.3", "command": ["sleep", "infinity"], "pull_policy": "missing" }
+        });
+        spec.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value::<ResolvedServiceSpec>(spec).unwrap()
+    };
+    let mount = |source: serde_json::Value| {
+        serde_json::json!({
+            "volumes": [{ "reference": "data", "source": source }],
+            "mounts": [{ "volume": "data", "target": "/data" }]
+        })
+    };
+    let volume = spec(
+        "volume",
+        mount(serde_json::json!({ "kind": "external", "name": "drain_data" })),
+    );
+    let bind = spec(
+        "bind",
+        mount(serde_json::json!({ "kind": "bind", "machine_path": "/tmp" })),
+    );
+    let free = spec("free", serde_json::json!({}));
+    let mixed = spec("mixed", serde_json::json!({}));
+    let mut newer = mixed.clone();
+    newer.container.command = vec!["sleep".into(), "999999".into()];
+    let global = spec(
+        "metrics",
+        serde_json::json!({ "mode": { "mode": "global" } }),
+    );
+    let ids = [
+        volume.service_id,
+        bind.service_id,
+        free.service_id,
+        mixed.service_id,
+    ];
+    let global_id = global.service_id;
+    for spec in [volume, bind, free, mixed, newer, global] {
+        create_and_start(&mut client, &web2, spec).await;
+    }
+    let before = running(&mut client, &ids, 5).await;
+    running(&mut client, &[global_id], 1).await;
+
+    let (code, report) = cli_status(&direct, &["--json", "server", "drain", web2.name.as_str()]);
+    assert_eq!(
+        code,
+        Some(3),
+        "a drain that leaves Services behind is partial"
+    );
+    let report: serde_json::Value = serde_json::from_str(&report).unwrap();
+    let field = |value: &serde_json::Value, key: &str| value.get(key).cloned().unwrap_or_default();
+    let result = |service: &str| {
+        field(&report, "services")
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| field(entry, "service") == format!("app/{service}"))
+            .unwrap_or_else(|| panic!("{service} is reported: {report}"))
+            .clone()
+    };
+    assert_eq!(
+        result("metrics"),
+        serde_json::json!({ "service": "app/metrics", "result": "retired" })
+    );
+    for (service, reason) in [
+        ("volume", format!("Volume data is on {}", web2.name)),
+        ("bind", format!("Bind Mount on {}", web2.name)),
+        ("mixed", "mid-rollout: deploy it first".to_owned()),
+    ] {
+        assert_eq!(
+            result(service),
+            serde_json::json!({ "service": format!("app/{service}"), "result": "stays", "reason": reason })
+        );
+    }
+    let free = result("free");
+    assert_eq!(field(&free, "result"), "stays");
+    assert!(
+        field(&free, "reason")
+            .as_str()
+            .unwrap()
+            .starts_with("no eligible Server"),
+        "{free}"
+    );
+    let remaining = field(&report, "remaining");
+    let remaining = remaining.as_array().unwrap();
+    for service in ["volume", "bind", "free", "mixed"] {
+        assert!(
+            remaining.contains(&serde_json::json!(format!("app/{service}"))),
+            "{report}"
+        );
+    }
+    assert!(!remaining.contains(&serde_json::json!("app/metrics")));
+
+    running(&mut client, &[global_id], 0).await;
+    let after = running(&mut client, &ids, 5).await;
+    assert_eq!(on(&after, &web2.id), 5, "nothing moved or was removed");
+    assert_eq!(
+        after.into_keys().collect::<BTreeSet<_>>(),
+        before.into_keys().collect::<BTreeSet<_>>()
+    );
+}
+
 async fn connect(direct: &str) -> ployz::connect::Client {
     ployz::connect::connect(
         std::path::Path::new("/missing-ployz-test-config"),
@@ -269,6 +399,13 @@ async fn connect(direct: &str) -> ployz::connect::Client {
 }
 
 fn cli(direct: &str, args: &[&str]) -> String {
+    let (code, stdout) = cli_status(direct, args);
+    assert_eq!(code, Some(0), "ployz {} failed: {stdout}", args.join(" "));
+    stdout
+}
+
+/// Exit code and stdout; stderr goes to the test output.
+fn cli_status(direct: &str, args: &[&str]) -> (Option<i32>, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args([
             "--connect",
@@ -277,16 +414,13 @@ fn cli(direct: &str, args: &[&str]) -> String {
             "/missing-ployz-test-config",
         ])
         .args(args)
+        .stderr(std::process::Stdio::inherit())
         .output()
         .unwrap();
-    assert!(
-        output.status.success(),
-        "ployz {} failed: stdout={} stderr={}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap()
+    (
+        output.status.code(),
+        String::from_utf8(output.stdout).unwrap(),
+    )
 }
 
 fn docker(args: &[&str]) {
