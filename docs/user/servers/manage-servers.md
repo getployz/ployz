@@ -52,7 +52,7 @@ ployz server drain web-2
 
 Draining turns services off for the server and stops its global services there. Then it moves
 each replicated service's containers to your other servers one at a time. Each new container runs
-the same image and starts serving before the old one stops, so the service keeps answering.
+the same image, and each one starts and is healthy before the old container is removed.
 Pre-deploy commands don't run again, and nothing is deployed.
 
 A service stays running where it is, and is reported with the reason, when:
@@ -95,7 +95,8 @@ Your apps keep running. Ployz stops at the first server that fails.
 
 <!-- screenshot: the Remove web-2? dialog listing one volume, with the name typed -->
 
-[Drain the server](#change-what-a-server-does) first to move its services off without a gap.
+[Drain the server](#change-what-a-server-does) first to move its services off. `ployz server rm`
+warns about services still running there and prints the drain command.
 Otherwise services that ran only on that server stop. Your next deploy replaces its replicas on your other
 servers, except for services whose volume was on it (see
 [When a server goes down](../services/scaling.md#when-a-server-goes-down)). Removing your last
