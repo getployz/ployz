@@ -14,9 +14,21 @@ use ployz_core::{MachineToken, StorageChoice};
 use serde::Serialize;
 
 const TIMEOUT: Duration = Duration::from_secs(2);
-const ERROR_LIMIT: usize = 1_000;
-/// Cloud rejects the whole report when a profile string is longer.
+/// Cloud truncates longer profile strings too; capping here keeps the body small.
 const PROFILE_STRING_LIMIT: usize = 256;
+/// DMI vendor substring, short provider name, and whether the product name is the instance type.
+const PROVIDERS: &[(&str, &str, bool)] = &[
+    ("hetzner", "hetzner", true),
+    ("amazon ec2", "aws", true),
+    ("digitalocean", "digitalocean", false),
+    ("google", "google", false),
+    ("microsoft", "azure", false),
+    ("vultr", "vultr", false),
+    ("linode", "linode", false),
+    ("akamai", "linode", false),
+    ("ovh", "ovh", false),
+    ("oracle", "oracle", false),
+];
 
 /// The steps of `server add --token`, in order.
 ///
@@ -99,8 +111,8 @@ struct Body<'report> {
 pub(crate) struct SetupReport {
     started: Instant,
     finished: Vec<StepTime>,
-    /// The running step; `None` once the final callback succeeded.
-    current: Option<(Step, Instant)>,
+    /// The running step and when it started.
+    current: (Step, Instant),
     profile: Profile,
 }
 
@@ -111,7 +123,7 @@ impl SetupReport {
         Self {
             started: now,
             finished: Vec::new(),
-            current: Some((Step::Install, now)),
+            current: (Step::Install, now),
             profile: Profile {
                 ployz_version: env!("CARGO_PKG_VERSION"),
                 ..Profile::default()
@@ -119,27 +131,13 @@ impl SetupReport {
         }
     }
 
-    /// Finish the running step and start `step`; a no-op when `step` is already running.
+    /// Finish the running step and start `step`.
     pub(crate) fn step(&mut self, step: Step) {
-        if self.current.is_some_and(|(running, _)| running == step) {
-            return;
-        }
-        self.finish_current();
-        self.current = Some((step, Instant::now()));
-    }
-
-    /// The final callback succeeded: setup is done, whatever follows.
-    pub(crate) fn succeeded(&mut self) {
-        self.finish_current();
-    }
-
-    fn finish_current(&mut self) {
-        if let Some((name, since)) = self.current.take() {
-            self.finished.push(StepTime {
-                name,
-                seconds: since.elapsed().as_secs_f64(),
-            });
-        }
+        let (name, since) = std::mem::replace(&mut self.current, (step, Instant::now()));
+        self.finished.push(StepTime {
+            name,
+            seconds: since.elapsed().as_secs_f64(),
+        });
     }
 
     /// Read this host's profile; only when the CLI runs on the Server it enrolls.
@@ -166,7 +164,7 @@ impl SetupReport {
     }
 
     /// Size as the daemon measured it, so it holds for a Server reached over SSH too.
-    pub(crate) fn machine(&mut self, token: &MachineToken) {
+    pub(crate) fn sizes_from(&mut self, token: &MachineToken) {
         self.profile.memory_total_bytes = token.memory_total_bytes;
         self.profile.disk_total_bytes = token.disk_total_bytes;
     }
@@ -177,20 +175,25 @@ impl SetupReport {
         self.profile.founder = Some(founder);
     }
 
-    /// POST the report for `result` to `url`, once, and ignore how that goes.
-    pub(crate) async fn send<E: std::fmt::Display>(&self, url: &str, result: &Result<(), E>) {
+    /// POST the report to `url`, once, and ignore how that goes.
+    ///
+    /// `error` is what failed the running step; `None` means the final callback succeeded,
+    /// which finishes the running step.
+    pub(crate) async fn send<E: std::fmt::Display>(mut self, url: &str, error: Option<&E>) {
         if do_not_track() {
             return;
         }
-        let outcome = match (self.current, result) {
-            (None, _) => Outcome::Succeeded,
-            (Some((failed_step, since)), Err(error)) => Outcome::Failed {
-                failed_step,
+        let (step, since) = self.current;
+        let outcome = match error {
+            None => {
+                self.step(step);
+                Outcome::Succeeded
+            }
+            Some(error) => Outcome::Failed {
+                failed_step: step,
                 failed_step_seconds: since.elapsed().as_secs_f64(),
-                error: error.to_string().chars().take(ERROR_LIMIT).collect(),
+                error: error.to_string(),
             },
-            // Not reached: success always passes the final callback.
-            (Some(_), Ok(())) => return,
         };
         let body = Body {
             outcome,
@@ -235,25 +238,10 @@ fn provider(vendor: Option<&str>, product: Option<&str>) -> (String, Option<Stri
         return ("unknown".to_owned(), None);
     };
     let lower = vendor.to_ascii_lowercase();
-    let (name, has_instance_type) = if lower.contains("hetzner") {
-        ("hetzner", true)
-    } else if lower.contains("amazon ec2") {
-        ("aws", true)
-    } else if lower.contains("digitalocean") {
-        ("digitalocean", false)
-    } else if lower.contains("google") {
-        ("google", false)
-    } else if lower.contains("microsoft") {
-        ("azure", false)
-    } else if lower.contains("vultr") {
-        ("vultr", false)
-    } else if lower.contains("linode") || lower.contains("akamai") {
-        ("linode", false)
-    } else if lower.contains("ovh") {
-        ("ovh", false)
-    } else if lower.contains("oracle") {
-        ("oracle", false)
-    } else {
+    let Some(&(_, name, has_instance_type)) = PROVIDERS
+        .iter()
+        .find(|(needle, _, _)| lower.contains(needle))
+    else {
         return (vendor, None);
     };
     let instance_type = product

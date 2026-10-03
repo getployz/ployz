@@ -24,6 +24,7 @@ import {
   mintedEnrollment,
   registerRequestFromEnrollmentIdentity,
   rustMachineIdSchema,
+  setupReportAccepted,
   setupReportProperties,
   type SetupReport,
   waitForFounder,
@@ -168,15 +169,12 @@ const recordJoined = Effect.fn("MachineEnrollment.recordJoined")(
   },
 );
 
-export type SetupReportToken = {
-  readonly userId: string;
-  readonly organizationId: string;
-  readonly joinedMachineId: string | null;
-  readonly expiresAt: Date;
-};
-
-export const loadSetupReportToken = Effect.fn("MachineEnrollment.loadSetupReportToken")(
-  function* (token: string) {
+/**
+ * One setup report becomes one event for whoever made the token, as `server_enrolled` is.
+ * Enrollment itself is never touched.
+ */
+export const recordMachineSetupReport = Effect.fn("MachineEnrollment.recordSetupReport")(
+  function* (input: { readonly token: string; readonly report: SetupReport }) {
     const { drizzle } = yield* Database;
     const [row] = yield* drizzle
       .select({
@@ -186,28 +184,16 @@ export const loadSetupReportToken = Effect.fn("MachineEnrollment.loadSetupReport
         expiresAt: schemaMachineEnrollmentToken.expiresAt,
       })
       .from(schemaMachineEnrollmentToken)
-      .where(eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(token)))
+      .where(eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(input.token)))
       .limit(1);
-    return row;
-  },
-);
-
-/**
- * One setup report becomes one event for whoever made the token, as `server_enrolled` is.
- * Success counts only once the token joined a Machine; failure only while it is still pending,
- * so a token can't be used to inject events after the fact. Enrollment itself is never touched.
- */
-export const recordSetupReport = Effect.fn("MachineEnrollment.recordSetupReport")(
-  function* (token: SetupReportToken | undefined, report: SetupReport) {
-    const accepted = token !== undefined && (report.outcome === "succeeded"
-      ? token.joinedMachineId !== null
-      : token.joinedMachineId === null && token.expiresAt.getTime() > Date.now());
-    if (!accepted) return yield* new NotFound({ message: "Enrollment not found." });
+    if (!setupReportAccepted(row, input.report.outcome, new Date())) {
+      return yield* new NotFound({ message: "Enrollment not found." });
+    }
     yield* (yield* PostHog).capture({
-      userId: token.userId,
-      organizationId: token.organizationId,
-      event: `server_setup_${report.outcome}`,
-      properties: setupReportProperties(report),
+      userId: row.userId,
+      organizationId: row.organizationId,
+      event: `server_setup_${input.report.outcome}`,
+      properties: setupReportProperties(input.report),
     });
   },
 );

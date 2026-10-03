@@ -93,16 +93,28 @@ these there:
 
 ## What Ployz Cloud records about your servers
 
-When `ployz server add` finishes or fails, it sends Ployz Cloud one short report about the
-server:
+Only `ployz server add --token` sends a report. When it finishes or fails, it sends Ployz Cloud
+one short report about the server, which Ployz Cloud records as `server_setup_succeeded` or
+`server_setup_failed`:
 
-- The provider and instance type, read from the server's hardware info, such as Amazon EC2 `t3.small`.
-- The operating system and its version, the kernel, the CPU architecture, and the kind of
-  virtualization, if any.
-- The number of CPUs, the memory and the size of the main disk.
-- Whether you chose ZFS, the Ployz version, and whether this server started your cluster.
-- How long each setup step took.
-- If setup failed, the step that failed and the error you saw.
+- `provider` and `instance_type`: read from the server's hardware info, such as `aws` and
+  `t3.small`.
+- `os_id`, `os_version`, `kernel`, `arch` and `virtualization`: the operating system and its
+  version, the kernel, the CPU architecture, and the kind of virtualization, if any.
+- `cpu_count`, `memory_total_bytes` and `disk_total_bytes`: the number of CPUs, the memory and
+  the size of the main disk.
+- `storage`, `ployz_version` and `founder`: whether you chose ZFS, the Ployz version, and
+  whether this server started your cluster.
+- `step_install_seconds`, `step_enroll_seconds`, `step_storage_seconds`, `step_join_seconds`
+  and `total_seconds`: how long each setup step took (install, enroll, storage and join), and
+  the whole setup.
+- `failed_step`, `failed_step_seconds` and `error`: if setup failed, the step that failed, how
+  long it ran, and the error you saw.
+
+When you run it from your laptop over SSH, as in
+`ployz server add root@203.0.113.10 --token '...'`, the report has no host profile: no
+`provider`, `instance_type`, `os_id`, `os_version`, `kernel`, `arch`, `virtualization` or
+`cpu_count`, since those describe the machine the command runs on.
 
 It never sends the server's hostname or name, its IP addresses, labels, tokens or secrets. A
 self-hosted Ployz Cloud keeps the report to itself.

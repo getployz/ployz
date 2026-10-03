@@ -25,15 +25,14 @@ pub(super) fn enroll(
     token: CloudEnrollToken,
     cloud_url: &str,
 ) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    if matches.get_one::<String>("destination").is_some() {
-        // A remote host is provisioned once, up front, with this CLI's release.
-        let provision_remote = !matches.get_flag("no-install");
-        return enroll_token(root, token, cloud_url, provision_remote, &|_| async {
-            Ok(())
-        });
+    if leaf_matches(root)
+        .get_one::<String>("destination")
+        .is_some()
+    {
+        // A remote host is provisioned up front, in `enroll_steps`.
+        return enroll_token(root, token, cloud_url, &|_| async { Ok(()) });
     }
-    enroll_token(root, token, cloud_url, false, &|storage| async move {
+    enroll_token(root, token, cloud_url, &|storage| async move {
         if storage == StorageChoice::Zfs {
             crate::provisioning::provision_local(env!("CARGO_PKG_VERSION"), storage).await?;
         } else {
@@ -65,15 +64,18 @@ where
     let cloud_url = matches
         .get_one::<String>("cloud-url")
         .map_or("ployz.dev", String::as_str);
-    enroll_token(root, token, cloud_url, false, install)
+    enroll_token(root, token, cloud_url, install)
 }
+
+/// Setup's outcome: `Ok` once the final callback succeeded, holding what printing the
+/// committed result returned.
+type Setup = Result<Result<(), Error>, Error>;
 
 /// Enroll, then send Cloud the best-effort setup report for the outcome.
 fn enroll_token<Install, InstallFuture>(
     root: &ArgMatches,
     token: CloudEnrollToken,
     cloud_url: &str,
-    provision_remote: bool,
     install: &Install,
 ) -> Result<(), Error>
 where
@@ -82,19 +84,14 @@ where
 {
     let mut report = SetupReport::start();
     runtime()?.block_on(async {
-        let result = enroll_steps(
-            root,
-            &token,
-            cloud_url,
-            provision_remote,
-            install,
-            &mut report,
-        )
-        .await;
+        let setup = enroll_steps(root, &token, cloud_url, install, &mut report).await;
         report
-            .send(&cloud_enroll::report_url(cloud_url, &token), &result)
+            .send(
+                &cloud_enroll::report_url(cloud_url, &token),
+                setup.as_ref().err(),
+            )
             .await;
-        result
+        setup.and_then(|printed| printed)
     })
 }
 
@@ -102,15 +99,19 @@ async fn enroll_steps<Install, InstallFuture>(
     root: &ArgMatches,
     token: &CloudEnrollToken,
     cloud_url: &str,
-    provision_remote: bool,
     install: &Install,
     report: &mut SetupReport,
-) -> Result<(), Error>
+) -> Setup
 where
     Install: Fn(StorageChoice) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     let matches = leaf_matches(root);
+    let remote = matches.get_one::<String>("destination").is_some();
+    if !remote {
+        // First, so a failed first install still reports what it ran on.
+        report.read_host();
+    }
     let initial_policy = super::server::enrollment_policy(matches)?;
     let url = cloud_enroll::enroll_url(cloud_url, token);
     let requested_name = matches
@@ -122,15 +123,11 @@ where
         .get_one::<Ipv4Net>("network")
         .expect("Cluster network has a default");
 
-    if provision_remote {
+    if remote && !matches.get_flag("no-install") {
+        // A remote host is provisioned once, up front, with this CLI's release.
         crate::provisioning::provision(matches, requested_storage).await?;
     }
     let mut client = connect_machine(matches).await?;
-    if matches.get_one::<String>("destination").is_none()
-        && matches!(client.connection().transport(), Transport::Unix(_))
-    {
-        report.read_host();
-    }
     client = synchronize_daemon(matches, client, install).await?;
     if matches.get_flag("reset") {
         client = ensure_uninitialized(matches, matches.get_flag("yes"), true, client).await?;
@@ -144,7 +141,7 @@ where
         &url,
     )
     .await?;
-    report.machine(&machine_token);
+    report.sizes_from(&machine_token);
     report.step(Step::Storage);
     match outcome {
         Outcome::Join(join) => {
@@ -233,7 +230,7 @@ async fn enroll_join<Install, InstallFuture>(
     callback_url: &str,
     install: &Install,
     report: &mut SetupReport,
-) -> Result<(), Error>
+) -> Setup
 where
     Install: Fn(StorageChoice) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
@@ -254,6 +251,7 @@ where
     }
     let pairing = join.pairing;
     let mut ready = if already_assigned(&details, &assigned) {
+        report.step(Step::Join);
         client
     } else {
         client = ensure_uninitialized(
@@ -280,7 +278,6 @@ where
         )
         .await?
     };
-    report.step(Step::Join);
     // Mint a fresh capability; Cloud verifies replacements when enrollment resumes.
     let capability = set_cloud_management_client(matches, &mut ready).await?;
     let catch_up = crate::global_catch_up::catch_up_globals(&mut ready, &assigned).await;
@@ -288,10 +285,9 @@ where
     // A committed join remains enrolled even when Global catch-up needs a separate retry.
     cloud_enroll::publish(callback_url, assigned.id, &pairing.secret, &capability).await?;
     cloud_enroll::callback(callback_url, assigned.id, &pairing.secret).await?;
-    report.succeeded();
     crate::output::say!("Joined Server {} ({})", assigned.name, assigned.id);
     // The join is committed; a catch-up failure makes it partial.
-    crate::output::emit_committed(
+    Ok(crate::output::emit_committed(
         serde_json::json!({ "server": super::server::server_json(&assigned), "founded": false }),
         catch_up.map_err(|error| {
             Error::coded(
@@ -299,7 +295,7 @@ where
                 crate::global_catch_up::joined_catch_up_error(error, &assigned),
             )
         }),
-    )
+    ))
 }
 
 enum FounderLocalState {
@@ -326,7 +322,7 @@ async fn enroll_founder<Install, InstallFuture>(
     token: &CloudEnrollToken,
     install: &Install,
     report: &mut SetupReport,
-) -> Result<(), Error>
+) -> Setup
 where
     Install: Fn(StorageChoice) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
@@ -374,7 +370,10 @@ where
     // A rerun on the founded Server finishes or repeats the enrollment; it founds nothing.
     let founding = matches!(state, FounderLocalState::Initialize);
     let (machine, mut ready) = match state {
-        FounderLocalState::Resume { machine } => (*machine, client),
+        FounderLocalState::Resume { machine } => {
+            report.step(Step::Join);
+            (*machine, client)
+        }
         FounderLocalState::Initialize => {
             client = ensure_uninitialized(
                 matches,
@@ -407,7 +406,6 @@ where
         }
     };
 
-    report.step(Step::Join);
     if machine.accepts_ingress
         && let Some(requested) = ingress
     {
@@ -433,8 +431,7 @@ where
         &pairing.secret,
     )
     .await?;
-    report.succeeded();
-    crate::output::emit(&founder_result(&machine, founding))
+    Ok(crate::output::emit(&founder_result(&machine, founding)))
 }
 
 /// The first Server's result. Founding it, Cloud deploys the Organization's saved

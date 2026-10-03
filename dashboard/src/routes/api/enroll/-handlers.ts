@@ -16,8 +16,7 @@ import {
 import {
   completeMachineEnrollment,
   enrollMachine,
-  loadSetupReportToken,
-  recordSetupReport,
+  recordMachineSetupReport,
 } from "#/modules/machines/enrollment.server";
 
 type EnrollmentResponseBody =
@@ -173,26 +172,26 @@ export function handleMachineEnrollmentCallback<R>(
   });
 }
 
-type LoadReportTokenEffect = ReturnType<typeof loadSetupReportToken>;
-type LoadReportTokenRequirements = LoadReportTokenEffect extends Effect.Effect<unknown, unknown, infer R> ? R : never;
+type RecordReportEffect = ReturnType<typeof recordMachineSetupReport>;
+type RecordReportRequirements = RecordReportEffect extends Effect.Effect<unknown, unknown, infer R> ? R : never;
 
-type LoadReportTokenOperation<R> = (
-  token: string,
-) => Effect.Effect<Effect.Success<LoadReportTokenEffect>, Effect.Error<LoadReportTokenEffect>, R>;
+type RecordReportOperation<R> = (
+  request: Parameters<typeof recordMachineSetupReport>[0],
+) => Effect.Effect<Effect.Success<RecordReportEffect>, Effect.Error<RecordReportEffect>, R>;
 
 export function handleMachineSetupReport(
   request: Request,
   token: string,
-): Effect.Effect<Response, never, LoadReportTokenRequirements>;
+): Effect.Effect<Response, never, RecordReportRequirements>;
 export function handleMachineSetupReport<R>(
   request: Request,
   token: string,
-  loadOperation: LoadReportTokenOperation<R>,
+  recordOperation: RecordReportOperation<R>,
 ): Effect.Effect<Response, never, R>;
 export function handleMachineSetupReport<R>(
   request: Request,
   token: string,
-  loadOperation?: LoadReportTokenOperation<R>,
+  recordOperation?: RecordReportOperation<R>,
 ) {
   return Effect.gen(function* () {
     if (!token) return invalidTokenResponse();
@@ -208,10 +207,10 @@ export function handleMachineSetupReport<R>(
       return errorResponse(new Validation({ message: "Invalid setup report." }));
     }
 
-    const recorded = yield* Effect.result(Effect.gen(function* () {
-      const row = loadOperation ? yield* loadOperation(token) : yield* loadSetupReportToken(token);
-      yield* recordSetupReport(row, parsed.value);
-    }));
+    const input = { token, report: parsed.value };
+    const recorded = recordOperation
+      ? yield* Effect.result(recordOperation(input))
+      : yield* Effect.result(recordMachineSetupReport(input));
     if (Result.isFailure(recorded)) return errorResponse(recorded.failure);
     return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
   });
