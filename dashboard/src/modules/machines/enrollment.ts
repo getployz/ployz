@@ -164,15 +164,14 @@ export type EnrollmentCallback = typeof enrollmentCallbackBodySchema.Type;
 /** The phases of `server add --token`; each name is a PostHog property, so renaming one breaks analytics. */
 const SetupStep = Schema.Literals(["install", "enroll", "storage", "join"]);
 const Seconds = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
-/** `schema`, with `clean` applied on decode; encoding leaves the text as is. */
+/** `schema`, with `clean` applied on decode; encoding leaves the text as is.
+ * Long text is cut rather than rejected, so a long field never loses the report. */
 const cleaned = (schema: Schema.String, clean: (value: string) => string) =>
   schema.pipe(Schema.decodeTo(Schema.String, {
     decode: SchemaGetter.transform(clean),
     encode: SchemaGetter.transform((value) => value),
   }));
-/** Text cut to `maxLength` rather than rejected, so a long field never loses the report. */
-const truncated = (value: string, maxLength: number) => value.slice(0, maxLength);
-const ProfileText = cleaned(NonEmptyString, (value) => truncated(value, 256));
+const ProfileText = cleaned(NonEmptyString, (value) => value.slice(0, 256));
 
 // Not part of a longer dotted number, but a sentence's closing period still ends it.
 const IPV4 = /(?<!\d\.?)(?:\d{1,3}\.){3}\d{1,3}(?!\.?\d)/gu;
@@ -214,7 +213,7 @@ export const setupReportSchema = Schema.Union([
     ...setupReportFields,
     failedStep: SetupStep,
     failedStepSeconds: Seconds,
-    error: cleaned(Schema.String, (value) => truncated(redactIpAddresses(value), 1_000)),
+    error: cleaned(Schema.String, (value) => redactIpAddresses(value).slice(0, 1_000)),
   }),
 ]);
 
