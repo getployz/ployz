@@ -89,7 +89,9 @@ impl ZfsRoute {
             Self::Debian { codename, keyring } => {
                 prepare_debian_zfs(&paths.apt_dir, os, codename, keyring, kernel)
             }
-            Self::AmazonLinux => prepare_amazon_zfs(os, kernel, OPENZFS_SHA256),
+            Self::AmazonLinux => {
+                prepare_amazon_zfs(&paths.modules_load_dir, os, kernel, OPENZFS_SHA256)
+            }
         }
     }
 }
@@ -173,7 +175,11 @@ impl OsRelease {
             ));
         };
         Ok(Self {
-            name: field("NAME").unwrap_or_else(|| id.clone()),
+            // Debian's NAME is "Debian GNU/Linux"; messages say "Debian 13".
+            name: field("NAME").map_or_else(
+                || id.clone(),
+                |name| name.trim_end_matches(" GNU/Linux").to_owned(),
+            ),
             version_id: field("VERSION_ID"),
             id,
         })
@@ -387,7 +393,12 @@ fn require_kernel_devel(os: &OsRelease, kernel: &str) -> Result<(), Error> {
 
 /// Builds the pinned OpenZFS into DKMS and userspace RPMs and installs them; DKMS builds the
 /// module. `sha256` is the tarball's expected checksum.
-fn prepare_amazon_zfs(os: &OsRelease, kernel: &str, sha256: &str) -> Result<(), Error> {
+fn prepare_amazon_zfs(
+    modules_load_dir: &Path,
+    os: &OsRelease,
+    kernel: &str,
+    sha256: &str,
+) -> Result<(), Error> {
     build_zfs_module(os, kernel, || {
         let version = OPENZFS_VERSION;
         let scratch = staging_directory(Path::new("/var/tmp"))
@@ -439,7 +450,20 @@ fn prepare_amazon_zfs(os: &OsRelease, kernel: &str, sha256: &str) -> Result<(), 
         // zfs-dkms's install builds and installs the module for the running kernel.
         let mut install = Command::new("dnf");
         install.args(["install", "-y"]).args(rpms);
-        run_step("installing the ZFS RPMs", &mut install)
+        run_step("installing the ZFS RPMs", &mut install)?;
+        // The RPMs enable zfs-import-cache, zfs-mount and zfs.target, but those skip unless the
+        // module is loaded, and upstream leaves loading it at boot commented out. Debian's
+        // zfs-load-module.service does this there.
+        let step = "loading ZFS at boot";
+        fs::create_dir_all(modules_load_dir)
+            .map_err(|source| Error::Io {
+                stage: step,
+                source,
+            })
+            .and_then(|()| {
+                write_file_atomically(&modules_load_dir.join("ployz-zfs.conf"), "zfs\n", step)
+            })
+            .map_err(failed(step))
     })
 }
 

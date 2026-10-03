@@ -56,8 +56,8 @@ storage limit. ZFS needs:
 - Free space on the main disk for your volumes.
 
 On Ubuntu, ZFS comes ready-made. On Debian and Amazon Linux, the server builds it, so the command
-takes a few more minutes: a few on Debian, and around 15 on a 2-vCPU Amazon Linux server. The
-build tools stay installed, so ZFS can be rebuilt when the kernel updates.
+takes longer: 15–20 minutes on a 2-vCPU Amazon Linux Server, a few minutes on Debian. The build
+tools stay installed, so ZFS can be rebuilt when the kernel updates.
 
 If your server can't run ZFS, click **Start without it** under "Other Linux, or can't run ZFS?"
 in the dialog. The command then ends in `--storage none`, and **Use ZFS instead** switches

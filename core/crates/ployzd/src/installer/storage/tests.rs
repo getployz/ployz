@@ -154,7 +154,7 @@ const REFUSALS: [RefusalCase; 6] = [
     RefusalCase {
         name: "unsupported-version",
         os_release: "PRETTY_NAME=\"Debian GNU/Linux 11 (bullseye)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"11\"\nID=debian\n",
-        expected: "Managed volumes need Ubuntu LTS, Debian 12–13 or Amazon Linux 2023; this Server runs Debian GNU/Linux 11. Use one of those, or add `--storage none`.",
+        expected: "Managed volumes need Ubuntu LTS, Debian 12–13 or Amazon Linux 2023; this Server runs Debian 11. Use one of those, or add `--storage none`.",
     },
     RefusalCase {
         name: "no-version",
@@ -169,7 +169,7 @@ const REFUSALS: [RefusalCase; 6] = [
     RefusalCase {
         name: "debian-secure-boot",
         os_release: DEBIAN_13,
-        expected: "Secure Boot is on, so this Server can't load the ZFS module Ployz builds for Debian GNU/Linux. Turn Secure Boot off, use Ubuntu, or add `--storage none`.",
+        expected: "Secure Boot is on, so this Server can't load the ZFS module Ployz builds for Debian. Turn Secure Boot off, use Ubuntu, or add `--storage none`.",
     },
     RefusalCase {
         name: "amazon-secure-boot",
@@ -300,7 +300,7 @@ fn zfs_debian_contract() {
             Some(step) => assert_refused(
                 result,
                 &format!(
-                    "Couldn't build ZFS for kernel {} on Debian GNU/Linux {}: {step} failed. Add `--storage none` to start without managed volumes.",
+                    "Couldn't build ZFS for kernel {} on Debian {}: {step} failed. Add `--storage none` to start without managed volumes.",
                     case.kernel, case.version
                 ),
             ),
@@ -434,7 +434,12 @@ fn zfs_amazon_linux_contract() {
             } else {
                 fs::read(root.join("tarball")).unwrap()
             };
-            prepare_amazon_zfs(&os, AMAZON_KERNEL, &hex::encode(Sha256::digest(tarball)))
+            prepare_amazon_zfs(
+                &paths.modules_load_dir,
+                &os,
+                AMAZON_KERNEL,
+                &hex::encode(Sha256::digest(tarball)),
+            )
         };
         match case.expected {
             Some(expected) => assert_refused(result, expected),
@@ -499,6 +504,7 @@ done"#,
         );
 
         let name = case.name;
+        let boot_load = fs::read_to_string(root.join("modules-load/ployz-zfs.conf")).ok();
         let dnf = read_log(root, "dnf.log");
         let installs: Vec<&str> = dnf
             .lines()
@@ -506,8 +512,10 @@ done"#,
             .collect();
         if name != "success" {
             assert!(installs.is_empty(), "{name} installed packages:\n{dnf}");
+            assert_eq!(boot_load, None, "{name}");
             continue;
         }
+        assert_eq!(boot_load.as_deref(), Some("zfs\n"));
         let [dependencies, packages] = installs.as_slice() else {
             panic!("unexpected dnf installs:\n{dnf}");
         };

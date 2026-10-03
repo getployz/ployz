@@ -116,6 +116,7 @@ pub(super) struct InstallPaths {
     pub(super) run_dir: PathBuf,
     pub(super) docker_config: PathBuf,
     pub(super) modprobe_dir: PathBuf,
+    pub(super) modules_load_dir: PathBuf,
     pub(super) os_release: PathBuf,
     pub(super) secure_boot: PathBuf,
     pub(super) apt_dir: PathBuf,
@@ -130,6 +131,7 @@ impl InstallPaths {
             run_dir: run_dir.into(),
             docker_config: PathBuf::from("/etc/docker/daemon.json"),
             modprobe_dir: PathBuf::from("/etc/modprobe.d"),
+            modules_load_dir: PathBuf::from("/etc/modules-load.d"),
             os_release: PathBuf::from("/etc/os-release"),
             secure_boot: PathBuf::from(
                 "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c",
@@ -152,6 +154,7 @@ impl InstallPaths {
             run_dir: root.join("run"),
             docker_config: root.join("docker/daemon.json"),
             modprobe_dir: root.join("modprobe"),
+            modules_load_dir: root.join("modules-load"),
             os_release: root.join("os-release"),
             secure_boot: root.join("efivars/SecureBoot"),
             apt_dir: root.join("apt"),
