@@ -42,6 +42,20 @@ use thiserror::Error;
 
 use builder::Builder;
 
+/// The oldest Docker Ployz talks to: bollard sends Engine API 1.53 without negotiating, and
+/// `image inspect` reports the content `Descriptor` a Build is bound to.
+pub const MINIMUM_DOCKER: MinimumDocker = MinimumDocker {
+    release: "29.2",
+    api: (1, 53),
+};
+/// The oldest buildx with `prune --max-used-space`, which Build cache retention uses.
+pub const MINIMUM_BUILDX: (u32, u32) = (0, 18);
+
+/// A Docker release and the Engine API version it serves.
+pub struct MinimumDocker {
+    pub release: &'static str,
+    pub api: (u32, u32),
+}
 /// Pinned BuildKit release. Every Ployz Build runs this version.
 pub const BUILDKIT_IMAGE: &str = "moby/buildkit:v0.26.2";
 
@@ -663,7 +677,8 @@ fn verify(
     // image is identified by its configuration and cannot be bound to a build.
     let Some(descriptor) = image.descriptor else {
         return Err(BuildError::Result(format!(
-            "the local image store reports no content descriptor for {reference}; Ployz Builds require Docker's containerd image store"
+            "the local image store reports no content descriptor for {reference}; Ployz Builds require Docker {} or newer with the containerd image store",
+            MINIMUM_DOCKER.release
         )));
     };
     if descriptor.digest != reference {

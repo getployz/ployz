@@ -22,7 +22,7 @@ use crate::mutation;
 use self::{
     host::{
         create_user_and_directories, install_docker, install_prerequisites, install_systemd,
-        verify_running_daemon, verify_software_prerequisites,
+        verify_docker, verify_running_daemon, verify_software_prerequisites,
     },
     release::{ReleaseSource, install_binaries, installed_release, resolve_release},
     storage::prepare_storage,
@@ -117,7 +117,7 @@ pub(super) struct InstallPaths {
     pub(super) docker_config: PathBuf,
     pub(super) modprobe_dir: PathBuf,
     pub(super) modules_load_dir: PathBuf,
-    pub(super) docker_plugins_dir: PathBuf,
+    pub(super) yum_repos_dir: PathBuf,
     pub(super) os_release: PathBuf,
     pub(super) secure_boot: PathBuf,
     pub(super) apt_dir: PathBuf,
@@ -133,8 +133,7 @@ impl InstallPaths {
             docker_config: PathBuf::from("/etc/docker/daemon.json"),
             modprobe_dir: PathBuf::from("/etc/modprobe.d"),
             modules_load_dir: PathBuf::from("/etc/modules-load.d"),
-            // Docker searches this before /usr/libexec, which Amazon Linux's package owns.
-            docker_plugins_dir: PathBuf::from("/usr/local/lib/docker/cli-plugins"),
+            yum_repos_dir: PathBuf::from("/etc/yum.repos.d"),
             os_release: PathBuf::from("/etc/os-release"),
             secure_boot: PathBuf::from(
                 "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c",
@@ -158,7 +157,7 @@ impl InstallPaths {
             docker_config: root.join("docker/daemon.json"),
             modprobe_dir: root.join("modprobe"),
             modules_load_dir: root.join("modules-load"),
-            docker_plugins_dir: root.join("cli-plugins"),
+            yum_repos_dir: root.join("yum.repos.d"),
             os_release: root.join("os-release"),
             secure_boot: root.join("efivars/SecureBoot"),
             apt_dir: root.join("apt"),
@@ -236,6 +235,8 @@ async fn install_locked(
             storage,
             group_user,
         } => {
+            // Before the ZFS build or any change: Ployz can't use every Docker it would retain.
+            verify_docker()?;
             prepare_storage(*storage, &paths)?;
             install_prerequisites()?;
             let inherited_group = sudo_user();

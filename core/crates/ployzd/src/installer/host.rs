@@ -13,11 +13,10 @@ use tonic::transport::Endpoint;
 use crate::filesystem::{MACHINE_API_SOCKET_MODE, PLOYZ_DIR_MODE, atomic_write};
 use ployz_core::{DescribeContractRequest, MachineRpcClient, MachineVersion, op};
 
-use super::release::{fetch, installed_release, verify_checksum};
+use super::release::{fetch, installed_release};
 use super::storage::OsRelease;
-use super::{
-    Error, InstallPaths, PLOYZ_USER, command_exists, run_apt, run_command, run_host, systemctl,
-};
+use super::{Error, InstallPaths, PLOYZ_USER, command_exists, run_apt, run_host, systemctl};
+use ployz_build::{MINIMUM_BUILDX, MINIMUM_DOCKER};
 
 const DOCKER_DAEMON_CONFIG: &str = r#"{
   "features": { "containerd-snapshotter": true },
@@ -26,22 +25,15 @@ const DOCKER_DAEMON_CONFIG: &str = r#"{
   "log-opts": { "max-size": "10m", "max-file": "3" }
 }"#;
 
-/// The buildx Amazon Linux gets in place of the 0.12 its `docker` package bundles, which lacks
-/// options Server builds use. The version get.docker.com installs; bumping it is deliberate.
-const BUILDX_VERSION: &str = "0.37.1";
-/// Per `std::env::consts::ARCH`: the release's platform and its binary's SHA-256.
-const BUILDX_BINARIES: [(&str, &str, &str); 2] = [
-    (
-        "x86_64",
-        "amd64",
-        "9447199cdb435f25880548343c128a4b6650e8891ee598905d8d29d39a8e359b",
-    ),
-    (
-        "aarch64",
-        "arm64",
-        "e5cc9fe3bbff5cbc91230981f7860e06076110730a2db997082652199042a1f2",
-    ),
-];
+/// Docker's RHEL 9 repository, for Amazon Linux: get.docker.com refuses it and its own Docker
+/// is too old. `$releasever` is pinned because Amazon Linux's is 2023.
+const DOCKER_CE_REPO: &str = "[docker-ce-stable]
+name=Docker CE Stable - $basearch
+baseurl=https://download.docker.com/linux/rhel/9/$basearch/stable
+enabled=1
+gpgcheck=1
+gpgkey=https://download.docker.com/linux/rhel/gpg
+";
 
 pub(super) fn install_prerequisites() -> Result<(), Error> {
     if command_exists("curl") {
@@ -329,37 +321,28 @@ pub(super) fn write_file_atomically(
 }
 
 pub(super) async fn install_docker(paths: &InstallPaths) -> Result<(), Error> {
-    let amazon = OsRelease::read(&paths.os_release).is_ok_and(|os| os.id == "amzn");
-    install_docker_engine(paths, amazon).await?;
-    if amazon {
-        let arch = std::env::consts::ARCH;
-        let Some((_, platform, sha256)) = BUILDX_BINARIES.iter().find(|(name, ..)| *name == arch)
-        else {
-            return Err(Error::UnsupportedArchitecture(arch.into()));
-        };
-        install_buildx(&paths.docker_plugins_dir, platform, sha256)?;
-    }
-    Ok(())
-}
-
-async fn install_docker_engine(paths: &InstallPaths, amazon: bool) -> Result<(), Error> {
+    // A retained Docker passed `verify_docker` before the install changed anything.
     if command_exists("dockerd") {
-        let mut command = Command::new("docker");
-        command.args(["info", "-f", "{{ .DriverStatus }}"]);
-        let snapshotter = command.output().ok().is_some_and(|output| {
-            output.status.success()
-                && String::from_utf8_lossy(&output.stdout).contains("io.containerd.snapshotter")
-        });
-        if !snapshotter {
-            eprintln!(
-                "WARNING: Docker is retained unchanged; enable its containerd image store for best results"
-            );
-        }
         return Ok(());
     }
-    if amazon {
-        // get.docker.com refuses Amazon Linux; its own package is Docker 25.
-        run_host("install Docker", "dnf", ["install", "-y", "docker"])?;
+    if OsRelease::read(&paths.os_release).is_ok_and(|os| os.id == "amzn") {
+        write_file_atomically(
+            &paths.yum_repos_dir.join("ployz-docker-ce.repo"),
+            DOCKER_CE_REPO,
+            "add Docker's repository",
+        )?;
+        run_host(
+            "install Docker",
+            "dnf",
+            [
+                "install",
+                "-y",
+                "docker-ce",
+                "docker-ce-cli",
+                "containerd.io",
+                "docker-buildx-plugin",
+            ],
+        )?;
         systemctl("enable Docker", ["enable", "docker"])?;
     } else {
         run_docker_script().await?;
@@ -380,34 +363,64 @@ async fn install_docker_engine(paths: &InstallPaths, amazon: bool) -> Result<(),
         "write Docker configuration",
     )?;
     systemctl("restart Docker", ["restart", "docker"])?;
+    verify_docker()
+}
+
+/// Refuses a Docker Ployz can't use: too old an Engine API or buildx, or no containerd image
+/// store. A Machine without Docker passes.
+pub(super) fn verify_docker() -> Result<(), Error> {
+    if !command_exists("dockerd") {
+        return Ok(());
+    }
+    let refuse = |message: String| Error::Command {
+        stage: "checking Docker".into(),
+        message,
+    };
+    let output = docker_output([
+        "version",
+        "--format",
+        "{{.Server.Version}} {{.Server.APIVersion}}",
+    ])?;
+    let (version, api) = output.split_once(' ').unwrap_or((&output, ""));
+    if !at_least(api, MINIMUM_DOCKER.api) {
+        return Err(refuse(format!(
+            "Docker {version} is too old: Ployz needs Docker {} or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one.",
+            MINIMUM_DOCKER.release
+        )));
+    }
+    // e.g. `github.com/docker/buildx v0.37.1 c8d4ec2`
+    let output = docker_output(["buildx", "version"])?;
+    let buildx = output.split_whitespace().nth(1).unwrap_or(&output);
+    if !at_least(buildx.trim_start_matches('v'), MINIMUM_BUILDX) {
+        let (major, minor) = MINIMUM_BUILDX;
+        return Err(refuse(format!(
+            "Docker Buildx {buildx} is too old: Ployz needs Buildx {major}.{minor} or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one."
+        )));
+    }
+    if !docker_output(["info", "-f", "{{.DriverStatus}}"])?.contains("io.containerd.snapshotter.v1")
+    {
+        return Err(refuse(
+            r#"Docker isn't using the containerd image store, which Ployz Builds need. Enable it in /etc/docker/daemon.json ("features": {"containerd-snapshotter": true}) and restart Docker, or uninstall Docker and run this again."#
+                .into(),
+        ));
+    }
     Ok(())
 }
 
-/// Installs [`BUILDX_VERSION`] for `platform` where Docker finds it first, checked against
-/// `sha256`; a copy that already matches is kept.
-fn install_buildx(plugins_dir: &Path, platform: &str, sha256: &str) -> Result<(), Error> {
-    let plugin = plugins_dir.join("docker-buildx");
-    if fs::read(&plugin).is_ok_and(|bytes| verify_checksum(&bytes, "docker-buildx", sha256).is_ok())
-    {
-        return Ok(());
+fn docker_output<const N: usize>(args: [&str; N]) -> Result<String, Error> {
+    let output = run_host("checking Docker", "docker", args)?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// Whether `version`'s first two numbers (`1.53`, `0.18.0+ds1`) are at least `minimum`.
+fn at_least(version: &str, minimum: (u32, u32)) -> bool {
+    let mut parts = version
+        .split(|c: char| !c.is_ascii_digit())
+        .map(str::parse::<u32>);
+    match (parts.next(), parts.next()) {
+        (Some(Ok(major)), Some(Ok(minor))) => (major, minor) >= minimum,
+        _ => false,
     }
-    let release = format!("buildx-v{BUILDX_VERSION}.linux-{platform}");
-    let mut download = Command::new("curl");
-    download
-        .args(["--proto", "=https", "--tlsv1.2", "-fsSL", "--retry", "3"])
-        .arg(format!(
-            "https://github.com/docker/buildx/releases/download/v{BUILDX_VERSION}/{release}"
-        ));
-    let bytes = run_command("download buildx", &mut download)?.stdout;
-    verify_checksum(&bytes, &release, sha256)?;
-    fs::create_dir_all(plugins_dir).map_err(|source| Error::Io {
-        stage: "create Docker CLI plugin directory",
-        source,
-    })?;
-    atomic_write(&plugin, &bytes, 0o755).map_err(|source| Error::Io {
-        stage: "install buildx",
-        source,
-    })
 }
 
 async fn run_docker_script() -> Result<(), Error> {
@@ -560,140 +573,179 @@ mod tests {
         ));
     }
 
-    struct DockerCase {
-        name: &'static str,
-        os_release: &'static str,
-        /// Whether `dockerd` is already on the Machine.
-        docker_present: bool,
+    #[test]
+    fn docker_and_buildx_must_be_at_least_the_minimum() {
+        for (version, minimum, supported) in [
+            ("1.44", MINIMUM_DOCKER.api, false),
+            ("1.52", MINIMUM_DOCKER.api, false),
+            ("1.53", MINIMUM_DOCKER.api, true),
+            ("1.54", MINIMUM_DOCKER.api, true),
+            ("", MINIMUM_DOCKER.api, false),
+            ("0.17.1", MINIMUM_BUILDX, false),
+            ("0.18.0", MINIMUM_BUILDX, true),
+            ("0.37.1+ds1", MINIMUM_BUILDX, true),
+        ] {
+            assert_eq!(at_least(version, minimum), supported, "{version}");
+        }
     }
 
-    const AMAZON: &str = "NAME=\"Amazon Linux\"\nID=\"amzn\"\nVERSION_ID=\"2023\"\n";
-    const FAKE_BUILDX: &str = "fake buildx";
+    struct DockerCase {
+        name: &'static str,
+        /// Whether `dockerd` is already there.
+        retained: bool,
+        /// `docker version`'s server version and API.
+        server: &'static str,
+        buildx: &'static str,
+        driver_status: &'static str,
+        refusal: Option<&'static str>,
+    }
 
-    const DOCKER_CASES: [DockerCase; 3] = [
+    const STORE: &str = "[[driver-type io.containerd.snapshotter.v1]]";
+
+    const DOCKER_CASES: [DockerCase; 5] = [
         DockerCase {
             name: "amazon-fresh",
-            os_release: AMAZON,
-            docker_present: false,
+            retained: false,
+            server: "29.4.0 1.54",
+            buildx: "v0.37.1",
+            driver_status: STORE,
+            refusal: None,
         },
         DockerCase {
-            name: "amazon-retained",
-            os_release: AMAZON,
-            docker_present: true,
+            name: "amazon-fresh-too-old",
+            retained: false,
+            server: "29.1.3 1.52",
+            buildx: "v0.37.1",
+            driver_status: STORE,
+            refusal: Some(
+                "Docker 29.1.3 is too old: Ployz needs Docker 29.2 or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one.",
+            ),
         },
         DockerCase {
-            name: "debian-retained",
-            os_release: "NAME=\"Debian GNU/Linux\"\nID=debian\nVERSION_ID=\"13\"\n",
-            docker_present: true,
+            name: "retained-too-old",
+            retained: true,
+            server: "25.0.16 1.44",
+            buildx: "v0.12.1",
+            driver_status: "[[Backing Filesystem extfs]]",
+            refusal: Some(
+                "Docker 25.0.16 is too old: Ployz needs Docker 29.2 or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one.",
+            ),
+        },
+        DockerCase {
+            name: "retained-old-buildx",
+            retained: true,
+            server: "29.2.0 1.53",
+            buildx: "v0.17.1",
+            driver_status: STORE,
+            refusal: Some(
+                "Docker Buildx v0.17.1 is too old: Ployz needs Buildx 0.18 or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one.",
+            ),
+        },
+        DockerCase {
+            name: "retained-without-store",
+            retained: true,
+            server: "29.2.0 1.53",
+            buildx: "v0.18.0",
+            driver_status: "[[Backing Filesystem extfs]]",
+            refusal: Some(
+                r#"Docker isn't using the containerd image store, which Ployz Builds need. Enable it in /etc/docker/daemon.json ("features": {"containerd-snapshotter": true}) and restart Docker, or uninstall Docker and run this again."#,
+            ),
         },
     ];
 
-    /// The Docker plan for `case`. On Amazon Linux the fake buildx fails the pinned checksum,
-    /// so the child then installs it against its own checksum, twice, to show the rerun skips it.
+    /// A retained Docker meets only the preflight; a fresh one is installed and then checked.
     #[tokio::test]
-    async fn amazon_linux_docker_contract() {
+    async fn docker_contract() {
         use super::super::test_support::{
             fixture, run_contract_child_with_environment, write_script,
         };
-        use sha2::{Digest, Sha256};
-        use std::{env, ffi::OsString, os::unix::fs::PermissionsExt};
+        use std::{env, ffi::OsString};
 
         const CASE: &str = "PLOYZ_DOCKER_CONTRACT";
         if let Ok(name) = env::var(CASE) {
-            let case = DOCKER_CASES.iter().find(|case| case.name == name).unwrap();
             let root =
                 std::path::PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
-            let paths = InstallPaths::at(&root);
-            let result = install_docker(&paths).await;
-            if case.os_release == AMAZON {
-                assert!(
-                    matches!(&result, Err(Error::Verification(message)) if message.contains("checksum")),
-                    "{result:?}"
-                );
-                assert!(!paths.docker_plugins_dir.join("docker-buildx").exists());
-                let sha256 = hex::encode(Sha256::digest(FAKE_BUILDX));
-                install_buildx(&paths.docker_plugins_dir, "amd64", &sha256).unwrap();
-                install_buildx(&paths.docker_plugins_dir, "amd64", &sha256).unwrap();
+            let case = DOCKER_CASES.iter().find(|case| case.name == name).unwrap();
+            let result = if case.retained {
+                verify_docker()
             } else {
-                result.unwrap();
+                install_docker(&InstallPaths::at(&root)).await
+            };
+            match case.refusal {
+                None => result.unwrap(),
+                Some(refusal) => assert!(
+                    matches!(&result, Err(Error::Command { stage, message })
+                        if stage == "checking Docker" && message == refusal),
+                    "{result:?}"
+                ),
             }
             fs::write(root.join("child-completed"), name).unwrap();
             return;
         }
 
         for case in &DOCKER_CASES {
-            let fixture = fixture(case.name);
+            let name = case.name;
+            let fixture = fixture(name);
             let root = fixture.path();
             let commands = root.join("commands");
             fs::create_dir_all(&commands).unwrap();
-            fs::write(root.join("os-release"), case.os_release).unwrap();
-            for command in ["dnf", "systemctl", "docker"] {
-                write_script(
-                    &commands.join(command),
-                    &format!(r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/{command}.log""#),
-                );
-            }
-            write_script(
-                &commands.join("curl"),
-                &format!(
-                    r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/curl.log"; printf '{FAKE_BUILDX}'"#
-                ),
-            );
-            if case.docker_present {
+            fs::create_dir_all(root.join("yum.repos.d")).unwrap();
+            fs::write(
+                root.join("os-release"),
+                "NAME=\"Amazon Linux\"\nID=\"amzn\"\nVERSION_ID=\"2023\"\n",
+            )
+            .unwrap();
+            if case.retained {
                 write_script(&commands.join("dockerd"), "exit 0");
             }
-            let plugin = root.join("cli-plugins/docker-buildx");
+            write_script(
+                &commands.join("docker"),
+                &format!(
+                    "case \"$1\" in\nversion) echo '{}' ;;\nbuildx) echo 'github.com/docker/buildx {} 0000000' ;;\ninfo) echo '{}' ;;\nesac",
+                    case.server, case.buildx, case.driver_status
+                ),
+            );
+            // Installing Docker puts `dockerd` on the PATH.
+            write_script(
+                &commands.join("dnf"),
+                "echo \"$*\" >> \"$PLOYZ_INSTALLER_CONTRACT_ROOT/dnf.log\"\nprintf '#!/bin/sh\\n' > \"$PLOYZ_INSTALLER_CONTRACT_ROOT/commands/dockerd\"\n/bin/chmod 755 \"$PLOYZ_INSTALLER_CONTRACT_ROOT/commands/dockerd\"",
+            );
+            write_script(
+                &commands.join("systemctl"),
+                "echo \"$*\" >> \"$PLOYZ_INSTALLER_CONTRACT_ROOT/systemctl.log\"",
+            );
             run_contract_child_with_environment(
-                "installer::host::tests::amazon_linux_docker_contract",
+                "installer::host::tests::docker_contract",
                 root,
                 OsString::from(CASE),
-                OsString::from(case.name),
-                case.name,
+                OsString::from(name),
+                name,
                 [],
             );
 
-            let name = case.name;
             let log = |command: &str| {
                 fs::read_to_string(root.join(format!("{command}.log"))).unwrap_or_default()
             };
-            if case.docker_present {
+            let repo = fs::read_to_string(root.join("yum.repos.d/ployz-docker-ce.repo"));
+            let daemon_config = fs::read_to_string(root.join("docker/daemon.json"));
+            if case.retained {
                 assert_eq!(log("dnf"), "", "{name}");
                 assert_eq!(log("systemctl"), "", "{name}");
-                assert!(!root.join("docker/daemon.json").exists(), "{name}");
+                assert!(repo.is_err() && daemon_config.is_err(), "{name}");
             } else {
-                assert_eq!(log("dnf"), "install -y docker\n", "{name}");
+                assert_eq!(repo.unwrap(), DOCKER_CE_REPO, "{name}");
+                assert_eq!(
+                    log("dnf"),
+                    "install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin\n",
+                    "{name}"
+                );
                 assert_eq!(
                     log("systemctl"),
                     "enable docker\nrestart docker\n",
                     "{name}"
                 );
-                assert_eq!(
-                    fs::read_to_string(root.join("docker/daemon.json")).unwrap(),
-                    DOCKER_DAEMON_CONFIG
-                );
+                assert_eq!(daemon_config.unwrap(), DOCKER_DAEMON_CONFIG, "{name}");
             }
-            if case.os_release != AMAZON {
-                assert_eq!(log("curl"), "", "{name}");
-                assert!(!plugin.exists(), "{name}");
-                continue;
-            }
-            assert_eq!(fs::read_to_string(&plugin).unwrap(), FAKE_BUILDX, "{name}");
-            assert_eq!(
-                fs::metadata(&plugin).unwrap().permissions().mode() & 0o777,
-                0o755,
-                "{name}"
-            );
-            let arch = BUILDX_BINARIES
-                .iter()
-                .find(|(arch, ..)| *arch == std::env::consts::ARCH)
-                .unwrap()
-                .1;
-            let url = |platform: &str| {
-                format!(
-                    "--proto =https --tlsv1.2 -fsSL --retry 3 https://github.com/docker/buildx/releases/download/v0.37.1/buildx-v0.37.1.linux-{platform}\n"
-                )
-            };
-            assert_eq!(log("curl"), url(arch) + &url("amd64"), "{name}");
         }
     }
 }
