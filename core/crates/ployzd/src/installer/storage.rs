@@ -5,7 +5,7 @@ use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
     os::unix::fs::MetadataExt,
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
 };
 
@@ -14,7 +14,7 @@ use ployz_core::StorageChoice;
 use super::{Error, InstallPaths, command_exists, run_apt, run_command, run_host};
 use super::{
     host::write_file_atomically,
-    release::{staging_directory, write_private},
+    release::{staging_directory, verify_checksum, write_private},
 };
 
 const ZFS_SMOKE_BYTES: u64 = 128 * 1024 * 1024;
@@ -28,7 +28,7 @@ pub(super) fn prepare_storage(storage: StorageChoice, paths: &InstallPaths) -> R
 }
 
 /// Distros named in the refusal; each has a [`ZfsRoute`].
-const SUPPORTED_DISTROS: &str = "Ubuntu LTS or Debian 12–13";
+const SUPPORTED_DISTROS: &str = "Ubuntu LTS, Debian 12–13 or Amazon Linux 2023";
 
 /// How the ZFS kernel module becomes loadable on the Machine's distro.
 #[derive(Clone, Copy)]
@@ -37,6 +37,8 @@ enum ZfsRoute {
     Ubuntu,
     /// Debian's `zfs-dkms` from `contrib`, built on the Machine and rebuilt by DKMS for new kernels.
     Debian,
+    /// The pinned [`OPENZFS`] release built on the Machine into DKMS and userspace RPMs.
+    AmazonLinux,
 }
 
 impl ZfsRoute {
@@ -44,6 +46,7 @@ impl ZfsRoute {
         match (os.id.as_str(), os.version_id.as_str()) {
             ("ubuntu", _) => Ok(Self::Ubuntu),
             ("debian", "12" | "13") => Ok(Self::Debian),
+            ("amzn", "2023") => Ok(Self::AmazonLinux),
             _ => Err(Error::Command {
                 stage: "prepare ZFS storage".into(),
                 message: format!(
@@ -59,7 +62,7 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
     let os = OsRelease::read(&paths.os_release)?;
     let route = ZfsRoute::for_os(&os)?;
     // Unsigned modules this Machine builds can't load under Secure Boot; refuse before installing.
-    if matches!(route, ZfsRoute::Debian) && secure_boot_enabled(paths)? {
+    if matches!(route, ZfsRoute::Debian | ZfsRoute::AmazonLinux) && secure_boot_enabled(paths)? {
         return Err(Error::Command {
             stage: "prepare ZFS storage".into(),
             message: format!(
@@ -84,17 +87,18 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
                     .into(),
         });
     }
-    match route {
-        ZfsRoute::Ubuntu | ZfsRoute::Debian if !command_exists("apt-get") => {
-            return Err(Error::Command {
-                stage: "prepare ZFS storage".into(),
-                message: format!(
-                    "{} apt-get is required for ZFS storage preparation",
-                    os.name
-                ),
-            });
-        }
-        ZfsRoute::Ubuntu | ZfsRoute::Debian => {}
+    let package_manager = match route {
+        ZfsRoute::Ubuntu | ZfsRoute::Debian => "apt-get",
+        ZfsRoute::AmazonLinux => "dnf",
+    };
+    if !command_exists(package_manager) {
+        return Err(Error::Command {
+            stage: "prepare ZFS storage".into(),
+            message: format!(
+                "{} {package_manager} is required for ZFS storage preparation",
+                os.name
+            ),
+        });
     }
     let kernel = uname("-r", "read running kernel")?;
     require_host_root_reserve(ZFS_SMOKE_BYTES)?;
@@ -103,6 +107,7 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
     match route {
         ZfsRoute::Ubuntu => install_zfs_packages(&kernel)?,
         ZfsRoute::Debian => prepare_debian_zfs(paths, &os, &kernel)?,
+        ZfsRoute::AmazonLinux => prepare_amazon_zfs(&os, &kernel, &OPENZFS)?,
     }
     run_host("load ZFS kernel module", "modprobe", ["zfs"])?;
     set_and_verify_zfs_arc_max(cap)?;
@@ -263,6 +268,173 @@ pub(super) fn prepare_debian_zfs(
         .map_err(|error| ("installing zfs-dkms", error))?;
         Ok(())
     })
+}
+
+/// The OpenZFS release Amazon Linux builds. Its kernel range (4.18–7.2) covers AL2023's 6.1
+/// and 6.12; bumping it is a deliberate change, checksum and library packages included.
+pub(super) const OPENZFS: OpenZfsRelease<'static> = OpenZfsRelease {
+    version: "2.4.4",
+    sha256: "2a3c70d55a37cc71618a95a60e81ad66530201eb118d37741dc92efcf848c8b1",
+    packages: &[
+        "zfs-dkms",
+        "zfs",
+        "libzfs7",
+        "libzpool7",
+        "libnvpair3",
+        "libuutil3",
+    ],
+};
+
+/// A pinned OpenZFS source release and the RPMs of it a Machine installs.
+pub(super) struct OpenZfsRelease<'pin> {
+    pub(super) version: &'pin str,
+    /// SHA-256 of the release tarball, lowercase hex.
+    pub(super) sha256: &'pin str,
+    /// The DKMS module, the userspace tools and the libraries they link.
+    pub(super) packages: &'pin [&'pin str],
+}
+
+/// Build dependencies of the OpenZFS RPMs, besides the running kernel's `kernel-devel`.
+const OPENZFS_BUILD_DEPENDENCIES: [&str; 20] = [
+    "dkms",
+    "gcc",
+    "make",
+    "rpm-build",
+    "tar",
+    "elfutils-libelf-devel",
+    "libaio-devel",
+    "libattr-devel",
+    "libblkid-devel",
+    "libffi-devel",
+    "libtirpc-devel",
+    "libudev-devel",
+    "libuuid-devel",
+    "ncompress",
+    "openssl-devel",
+    "python3-cffi",
+    "python3-devel",
+    "python3-packaging",
+    "python3-setuptools",
+    "zlib-devel",
+];
+
+/// Builds `release` into DKMS and userspace RPMs and installs them; DKMS builds the module.
+pub(super) fn prepare_amazon_zfs(
+    os: &OsRelease,
+    kernel: &str,
+    release: &OpenZfsRelease,
+) -> Result<(), Error> {
+    // AL2023 names it kernel-devel or kernel6.12-devel; both provide this for their kernel.
+    let kernel_devel = format!("kernel-devel-uname-r = {kernel}");
+    if !zfs_installed(kernel) {
+        let providers = command_stdout(
+            "find kernel-devel for the running kernel",
+            "dnf",
+            ["-q", "repoquery", "--whatprovides", &kernel_devel],
+        )?;
+        if providers.trim().is_empty() {
+            return Err(Error::Command {
+                stage: "prepare ZFS storage".into(),
+                message: format!(
+                    "{} has no kernel-devel package for the running kernel {kernel}, so ZFS can't be built for it. Update the kernel, reboot, and retry, or add `--storage none`.",
+                    os.display()
+                ),
+            });
+        }
+    }
+    build_zfs_module(os, kernel, || {
+        let version = release.version;
+        let scratch = staging_directory(Path::new("/var/tmp"))
+            .map_err(|error| ("staging the OpenZFS build", error))?;
+        let tarball = scratch.path().join(format!("zfs-{version}.tar.gz"));
+        let mut download = Command::new("curl");
+        download
+            .args(["--proto", "=https", "--tlsv1.2", "-fsSL", "--retry", "3", "-o"])
+            .arg(&tarball)
+            .arg(format!(
+                "https://github.com/openzfs/zfs/releases/download/zfs-{version}/zfs-{version}.tar.gz"
+            ));
+        run_command("download OpenZFS", &mut download)
+            .map_err(|error| ("downloading OpenZFS", error))?;
+        let bytes = fs::read(&tarball).map_err(|source| {
+            (
+                "downloading OpenZFS",
+                Error::Io {
+                    stage: "read OpenZFS download",
+                    source,
+                },
+            )
+        })?;
+        // Checked before anything is installed, so a bad download leaves the Machine untouched.
+        verify_checksum(&bytes, &format!("zfs-{version}.tar.gz"), release.sha256)
+            .map_err(|error| ("the OpenZFS checksum check", error))?;
+        let mut dependencies = Command::new("dnf");
+        dependencies
+            .args(["install", "-y", &kernel_devel])
+            .args(OPENZFS_BUILD_DEPENDENCIES);
+        run_command("install ZFS build dependencies", &mut dependencies)
+            .map_err(|error| ("installing build dependencies", error))?;
+        let mut unpack = Command::new("tar");
+        unpack
+            .args(["--no-same-owner", "-xzf"])
+            .arg(&tarball)
+            .arg("-C")
+            .arg(scratch.path());
+        run_command("unpack OpenZFS", &mut unpack).map_err(|error| ("unpacking OpenZFS", error))?;
+        let source = scratch.path().join(format!("zfs-{version}"));
+        // The RPM specs configure their own builds; this only prepares `make dist`.
+        let mut configure = Command::new("./configure");
+        configure.arg("--with-config=user").current_dir(&source);
+        run_command("configure OpenZFS", &mut configure)
+            .map_err(|error| ("configuring OpenZFS", error))?;
+        // AL2023's kernel-devel carries Epoch 1, so zfs-dkms's Fedora-only kernel range pins
+        // conflict with every AL2023 kernel. Building it as non-Fedora drops them.
+        let mut make = Command::new("make");
+        make.args(["rpm-utils", "rpm-dkms", "RPM_DEFINE_DKMS=--undefine=fedora"])
+            .current_dir(&source);
+        run_command("build ZFS RPMs", &mut make)
+            .map_err(|error| ("building the ZFS RPMs", error))?;
+        let rpms =
+            built_rpms(&source, release).map_err(|error| ("building the ZFS RPMs", error))?;
+        // zfs-dkms's install builds and installs the module for the running kernel.
+        let mut install = Command::new("dnf");
+        install.args(["install", "-y"]).args(rpms);
+        run_command("install ZFS RPMs", &mut install)
+            .map_err(|error| ("installing the ZFS RPMs", error))?;
+        Ok(())
+    })
+}
+
+/// The binary RPMs of `release.packages` that `make` left in `source`.
+fn built_rpms(source: &Path, release: &OpenZfsRelease) -> Result<Vec<PathBuf>, Error> {
+    let files: Vec<PathBuf> = fs::read_dir(source)
+        .map_err(|source| Error::Io {
+            stage: "find built ZFS RPMs",
+            source,
+        })?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect();
+    release
+        .packages
+        .iter()
+        .map(|package| {
+            let prefix = format!("{package}-{}-", release.version);
+            files
+                .iter()
+                .find(|path| {
+                    path.file_name()
+                        .and_then(OsStr::to_str)
+                        .is_some_and(|name| {
+                            name.starts_with(&prefix)
+                                && name.ends_with(".rpm")
+                                && !name.ends_with(".src.rpm")
+                        })
+                })
+                .cloned()
+                .ok_or_else(|| Error::Verification(format!("no {package} RPM was built")))
+        })
+        .collect()
 }
 
 /// The flavour Debian names header packages after: `6.1.0-28-cloud-amd64` → `cloud-amd64`.
