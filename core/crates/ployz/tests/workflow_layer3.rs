@@ -107,8 +107,8 @@ async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
         assert_success(ployz(
             address,
             [
-                "machine",
-                "update",
+                "server",
+                "set",
                 "machine-2",
                 "--label-add",
                 "fixture=machine-2",
@@ -164,7 +164,7 @@ async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
             "{stderr}"
         );
         assert!(
-            stderr.contains("Replicas are not re-placed automatically."),
+            stderr.contains("Drain a Server before removing it to move its replicas first: ployz server drain <server>"),
             "{stderr}"
         );
     }

@@ -680,6 +680,65 @@ async fn execute_operation<C: MachineOperations>(
     }
 }
 
+/// Placement convergence's one move: start `spec` on `to`, wait until it serves, then
+/// remove `old` from `from`. A new Container that never serves is removed again, so
+/// `old` keeps serving and the Container count holds. No hooks run.
+pub(super) async fn move_container(
+    client: &Client,
+    namespace: &Namespace,
+    spec: &ResolvedServiceSpec,
+    to: &MachineId,
+    (from, old): (&MachineId, &ContainerId),
+    cancellation: &CancellationToken,
+) -> Result<ContainerId, ExecutionError> {
+    let client = RestartTolerant {
+        inner: client,
+        cancellation,
+    };
+    let mut progress = Progress::new(Vec::new(), None);
+    let created = create_and_start(
+        &client,
+        0,
+        &mut progress,
+        to,
+        ContainerKind::ServiceContainer,
+        namespace,
+        spec,
+        None,
+        cancellation,
+    )
+    .await?;
+    let new = created.container_id;
+    if let Err(error) = serve(
+        &client,
+        0,
+        &mut progress,
+        to,
+        &new,
+        spec,
+        false,
+        cancellation,
+    )
+    .await
+    {
+        let _ = client.stop_container(to, &new, None).await;
+        let _ = client.remove_container(to, &new).await;
+        return Err(error);
+    }
+    let removal = DeployOperation::RemoveContainer {
+        machine_id: *from,
+        container_id: *old,
+    };
+    execute_operation(&removal, 0, &mut progress, &client, cancellation, namespace)
+        .await
+        .map_err(|failure| match failure {
+            OperationFailure::Ordinary(error) | OperationFailure::Replacement { error, .. } => {
+                error
+            }
+        })?;
+    Ok(new)
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "progress row plus Namespace label travel together through execute"

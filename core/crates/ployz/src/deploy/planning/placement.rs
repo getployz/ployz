@@ -184,6 +184,23 @@ impl HostSockets {
     }
 }
 
+/// Whether `machine` has room for one new Container of `requested`: a free bridge
+/// endpoint and none of its host ports taken.
+pub(super) fn fits_one_more(
+    snapshot: &super::DeploySnapshot,
+    machine: MachineId,
+    requested: &RequestedServiceSpec,
+) -> bool {
+    CapacityBudget::from_snapshot(snapshot).fits(&machine, 1)
+        && HostSockets::from_snapshot(snapshot).fits(
+            machine,
+            requested,
+            None,
+            EndpointOperation::Create,
+            &[],
+        )
+}
+
 fn socket_error(requested: &RequestedServiceSpec) -> PlanError {
     PlanError::HostPortConflict {
         service: requested.name.clone(),
