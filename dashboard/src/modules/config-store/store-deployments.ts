@@ -4,6 +4,7 @@ import type {
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { settingTitle } from "./catalog";
+import { sourceText } from "./store-branches";
 import { volumeStorageText } from "./store-volumes";
 
 /** One changed Setting in Details. */
@@ -71,6 +72,7 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
       const title = settingTitle(setting);
       const label = setting === "name" ? "Name" : title ?? untitledLabel(node.type, setting);
       const variable = node.type === "service" && setting.startsWith("env.");
+      const shown = setting === "source" ? sourceText : shownValue;
       return {
         changeKey: `${node.id}:${row.path}`,
         path: row.path,
@@ -79,8 +81,8 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
         label,
         name: variable ? setting.slice("env.".length) : label,
         variable,
-        currentValue: shownValue(row.before),
-        newValue: shownValue(row.after),
+        currentValue: shown(row.before),
+        newValue: shown(row.after),
         // Whether Discard takes this path alone is the Store's to say.
         canDiscard: row.canRestore,
       };
@@ -95,8 +97,6 @@ const decodeShown = Schema.decodeUnknownOption(Schema.Union([
   Schema.Array(Schema.Struct({ prefix: Schema.String, targetPort: Schema.NullOr(Schema.Number) })),
   // A Volume's storage.
   Schema.Struct({ kind: Schema.Literal("provisioned"), maximumBytes: Schema.Number }), Schema.Struct({ kind: Schema.Literal("docker") }),
-  // A whole source, when a Service connects or disconnects one.
-  Schema.Struct({ type: Schema.Literals(["image", "git", "empty"]), image: Schema.optional(Schema.String), repository: Schema.optional(Schema.String) }),
 ]));
 
 /**
@@ -112,7 +112,6 @@ export function shownValue(value: JsonValue): string {
       if ("hostname" in shown) return shown.hostname;
       if ("secret" in shown) return "Sealed";
       if ("path" in shown) return `${shown.path} within ${shown.timeoutSeconds}s`;
-      if ("type" in shown) return shown.image ?? shown.repository ?? "None";
       if ("kind" in shown) return volumeStorageText(shown);
       return shown.map(({ prefix, targetPort }) => targetPort === null ? prefix : `${prefix} → port ${targetPort}`).join(", ");
     },

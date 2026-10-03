@@ -19,8 +19,8 @@ export function syncLine(row: SyncRow, into: string): SyncLine {
     ...row.name === null ? { name: row.kind === "volume" ? "Volume" : "Service", variable: false } : settingName(row.name),
     // A secret's value never syncs, whatever else holds.
     badge: row.secret ? "Secret" : row.change === "conflict" ? `Changed in ${into}` : row.change === "new" ? "New" : null,
-    before: whole || row.secret ? "" : rowText(row.into),
-    after: whole || row.secret ? "" : rowText(row.from),
+    before: whole || row.secret ? "" : rowText(row.into, row.name),
+    after: whole || row.secret ? "" : rowText(row.from, row.name),
   };
 }
 

@@ -3,6 +3,7 @@ import { Option, Schema } from "effect";
 import { adjectives, animals, uniqueNamesGenerator } from "unique-names-generator";
 import { asRecord } from "#/lib/json";
 import { slugifySegment } from "#/utils/slug";
+import { SOURCE_FIELDS } from "./store-branches";
 
 /** Where a new Service's image comes from. */
 export type NewServiceSource =
@@ -84,7 +85,7 @@ export function serviceChanges(diff: DiffView, id: string): Map<string, ServiceS
   // The source is one change; each field it holds reads as changed where it differs.
   const source = changes.get("source");
   if (source) {
-    for (const [name, key] of [["image", "image"], ["repository", "repository"], ["rootDir", "rootDir"], ["registryCredential", "credentials"]] as const) {
+    for (const [name, key] of SOURCE_FIELDS) {
       const part = (value: JsonValue) => {
         const held = asRecord(value)?.[key] ?? null;
         return key === "credentials" ? (held === true ? { secret: true } : null) : held;

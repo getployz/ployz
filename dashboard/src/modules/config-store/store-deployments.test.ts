@@ -1,4 +1,4 @@
-import type { DeploymentView, DiffView, RowId, ServiceListing } from "@ployz/sdk";
+import type { DeploymentView, DiffView, JsonValue, RowId, ServiceListing } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
@@ -41,6 +41,18 @@ it("lets a deployed Volume's row discard alone when the Store can restore it", (
     { path: "volumes.store.storage", kind: "update", before: null, after: { kind: "docker" }, canRestore: false, row: null },
   ] }] }, services);
   expect(volume?.rows.map((row) => [row.path, row.canDiscard])).toEqual([["volumes.store.name", true], ["volumes.store.storage", false]]);
+});
+
+it("words a source change that moves only its root directory or its credentials", () => {
+  const source = (before: JsonValue, after: JsonValue) => ({ path: "web.source", kind: "update" as const, before, after, canRestore: true, row: null });
+  const [web] = changeGroups({ ...diff, changes: [{ type: "service", id: "s1", row: "s1:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, settings: [
+    source({ type: "git", repository: "acme/web", rootDir: "/" }, { type: "git", repository: "acme/web", rootDir: "apps/web" }),
+    source({ type: "image", image: "web:2", credentials: false }, { type: "image", image: "web:2", credentials: true }),
+  ] }] }, services);
+  expect(web?.rows.map((row) => [row.label, row.currentValue, row.newValue])).toEqual([
+    ["Source", "acme/web", "acme/web in apps/web"],
+    ["Source", "web:2", "web:2 with credentials"],
+  ]);
 });
 
 it("words a Volume's storage by its limit", () => {
