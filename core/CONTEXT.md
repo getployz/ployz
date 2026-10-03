@@ -182,6 +182,14 @@ _Avoid_: scheduler, Cluster-wide Deploy
 A bounded client attempt for a dispatched Global slot: establish it when eligible, retire it when definitely ineligible, or hold it unchanged when eligibility is unknown. Its observations and lifecycle actions are separate operations, not one atomic decision.
 _Avoid_: Background maintenance, Cluster-wide reconciler, scheduler
 
+**Drain**:
+A bounded command that turns a Machine's services role off and moves its Service Containers onto other eligible Machines. Services it cannot move, such as those mounting a Volume or Bind Mount on that Machine, keep running and are reported; it neither withdraws ingress nor removes the Machine.
+_Avoid_: Eviction, replica relocation, rebalance
+
+**Placement convergence**:
+A bounded client attempt for one replicated Service: replace each of its Service Containers on a definitely ineligible Machine with one started from the shared observed Resolved Service Spec on an eligible Machine, healthy before the old one is removed, holding unchanged when eligibility is unknown. It keeps the Container count, runs no hooks, and is not a Deploy.
+_Avoid_: Rebalance, reschedule, replica relocation
+
 **Observed Global Slot Spec**:
 The Resolved Service Spec carried by the newest observer-visible Service Container and used for Global catch-up or slot convergence. It retains that Container's provenance and is not canonical Service intent.
 _Avoid_: Current service spec, canonical service spec, desired Global state

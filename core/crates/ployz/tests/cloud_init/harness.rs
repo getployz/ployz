@@ -679,6 +679,7 @@ impl MachineRpc for JoinDaemon {
         rpc_ok(ContainerDetails {
             container,
             environment: None,
+            image_id: None,
         })
     }
     async fn get_container_observations(

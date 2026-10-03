@@ -313,6 +313,7 @@ impl ContainerRuntime {
         Ok(ployz_core::ContainerDetails {
             container,
             environment,
+            image_id: inspected.image,
         })
     }
 }
@@ -410,6 +411,7 @@ fn display_name(name: Option<&str>) -> String {
 struct RawContainerInspect {
     name: Option<String>,
     created: Option<String>,
+    image: Option<String>,
     config: Option<RawContainerConfig>,
     state: Option<serde_json::Value>,
     network_settings: Option<RawNetworkSettings>,

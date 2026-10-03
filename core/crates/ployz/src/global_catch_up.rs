@@ -28,6 +28,12 @@ impl CatchUpError {
     }
 }
 
+impl std::fmt::Display for CatchUpError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.cause.fmt(formatter)
+    }
+}
+
 pub(crate) trait CatchUpClient {
     async fn live_services(&mut self) -> Result<LiveServices<RpcError>, Failure>;
     async fn bridge_capacity(

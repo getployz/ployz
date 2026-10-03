@@ -63,6 +63,10 @@ SUITE_TIMEOUT=10m run_suite ingress_cluster cargo test --locked --no-fail-fast -
     --test ingress_cluster \
     -- --ignored --test-threads=1
 
+run_suite drain_cluster cargo test --locked --no-fail-fast --package ployz \
+    --test drain_cluster \
+    -- --ignored --test-threads=1
+
 run_suite operator_cluster cargo test --locked --no-fail-fast --package ployz \
     --test operator_cluster \
     -- --ignored --test-threads=1

@@ -229,6 +229,72 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
     .unwrap();
 }
 
+#[tokio::test]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
+async fn turning_ingress_off_keeps_the_proxy_serving() {
+    let plan = ClusterPlan::new(&format!("l3-ingress-off-{}", process::id()), 2).unwrap();
+    let cluster = Cluster::create(plan).unwrap();
+    let [web1, web2] = cluster.initialize_two().await.unwrap();
+    let direct = cluster.api_address(0).unwrap();
+    let mut client = ployz::connect::connect(
+        std::path::Path::new("/missing-ployz-test-config"),
+        Some(&direct),
+        None,
+    )
+    .await
+    .unwrap();
+    cli(&direct, &ingress_role(&web1));
+    wait_service(&mut client, "ingress", 2).await;
+
+    let api: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
+        "service_id": ServiceId::random(),
+        "name": "api",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": {
+            "image": "alpine:3.23.3",
+            "command": ["sh", "-c", "while true; do printf 'HTTP/1.1 200 OK\\r\\nContent-Length: 3\\r\\n\\r\\nok\\n' | nc -l -p 8080; done"],
+            "pull_policy": "missing"
+        },
+        "ports": [{
+            "mode": "ingress",
+            "hostname": "example.test",
+            "load_balancer_port": 80,
+            "container_port": 8080,
+            "http_protocol": "http"
+        }]
+    }))
+    .unwrap();
+    let service_id = api.service_id;
+    create_and_start(&mut client, &web1, api).await;
+    let address = wait_running(&mut client, &service_id, 1)
+        .await
+        .into_iter()
+        .next()
+        .unwrap()
+        .address
+        .unwrap();
+    wait_config(&mut client, &web2, |config| {
+        config.contains(&format!("{}:8080", address.0))
+    })
+    .await;
+
+    cli(
+        &direct,
+        &["server", "set", web2.id.as_str(), "--accepts-ingress=false"],
+    );
+    let web2_ip = cluster.endpoint(1).unwrap().0.ip();
+    assert_eq!(
+        cluster
+            .machine_shell(
+                0,
+                &format!("curl -fsS -H 'Host: example.test' http://{web2_ip}")
+            )
+            .unwrap()
+            .trim(),
+        "ok"
+    );
+}
+
 async fn assert_health_transition(
     client: &mut ployz::connect::Client,
     machines: &[Machine; 3],

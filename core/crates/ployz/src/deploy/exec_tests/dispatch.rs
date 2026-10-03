@@ -630,6 +630,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                 let response = match rpc.into_inner().decode_request().unwrap().body {
                     RpcRequestBody::InspectContainer(inspect) => {
                         RpcResponse::from(ContainerDetails {
+                            image_id: None,
                             container: remote
                                 .iter()
                                 .find(|c| c.container_id == inspect.container_id)

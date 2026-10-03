@@ -237,7 +237,7 @@ evidence and ensures mounted Volume readiness, including Provisioned Volumes.
 New creation and storage preparation are refused when eligibility is ineligible
 or unknown. Machine Labels and acceptance flags gate admission; editing them does
 not evict existing Containers or withdraw traffic. Starting, restarting, stopping,
-and removing existing Containers remain available. The next explicit Deploy applies
+and removing existing Containers remain available. The next explicit Deploy or Drain applies
 current eligibility before replacement, including Machine-local Volume locality.
 Build admission checks Build acceptance again after queue wait; already-admitted
 Builds may finish.

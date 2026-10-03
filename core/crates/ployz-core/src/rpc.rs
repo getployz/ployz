@@ -779,6 +779,9 @@ pub struct ContainerDetails {
     pub container: ContainerObservation,
     /// Fresh Docker Config.Env; never copied into replicated observations.
     pub environment: Option<BTreeMap<String, String>>,
+    /// Local image ID (`sha256:…`) the Container runs; `None` from older daemons.
+    #[serde(default)]
+    pub image_id: Option<String>,
 }
 
 /// Complete replicated observation map; `None` means the row is absent.

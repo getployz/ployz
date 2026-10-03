@@ -562,6 +562,7 @@ impl MachineRpc for DeployService {
             )
             .expect("volume graph is scoped");
         encoded(RpcResponse::from(ContainerDetails {
+            image_id: None,
             environment: Some(BTreeMap::from([
                 ("TOKEN".into(), "live-only-sentinel".into()),
                 ("PLAIN".into(), "from-docker".into()),

@@ -101,7 +101,6 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         let mut cloud_released = None;
 
         // TODO: do not reroute away from the current entry before removal.
-        // TODO: there is no drain or unschedulable phase before cleanup.
         if let Some(credential) = &cloud {
             let reset = (!no_reset).then_some(&confirmation);
             let removed = cloud_account::remove_server(credential, &selected.id, reset).await?;
@@ -132,7 +131,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         }
         if !replicated_services.is_empty() {
             eprintln!(
-                "WARNING: Replicated Services may now be under-replicated: {}. Replicas are not re-placed automatically.",
+                "WARNING: Replicated Services may now be under-replicated: {}. Drain a Server before removing it to move its replicas first: ployz server drain <server>",
                 replicated_services
                     .iter()
                     .map(ToString::to_string)
@@ -385,7 +384,10 @@ fn machine_removal_refusal(error: RpcError) -> Error {
 }
 
 #[must_use]
-fn services_on(machine_id: &MachineId, live: &LiveServices<RpcError>) -> Vec<QualifiedService> {
+pub(super) fn services_on(
+    machine_id: &MachineId,
+    live: &LiveServices<RpcError>,
+) -> Vec<QualifiedService> {
     live.services()
         .into_iter()
         .filter(|service| {
@@ -404,7 +406,7 @@ fn service_warnings(machine: &MachineName, services: &[QualifiedService]) -> Vec
         return Vec::new();
     }
     vec![format!(
-        "WARNING: Server {machine} is running Services: {}",
+        "WARNING: Server {machine} is running Services: {}. Move them off first: ployz server drain {machine}",
         services
             .iter()
             .map(ToString::to_string)
@@ -414,7 +416,7 @@ fn service_warnings(machine: &MachineName, services: &[QualifiedService]) -> Vec
 }
 
 #[must_use]
-fn replicated_services_on(
+pub(super) fn replicated_services_on(
     machine_id: &MachineId,
     live: &LiveServices<RpcError>,
 ) -> Vec<QualifiedService> {
@@ -495,7 +497,7 @@ mod tests {
                     QualifiedService::parse("app/web").unwrap(),
                 ],
             ),
-            vec!["WARNING: Server ams1 is running Services: app/api, app/web".to_owned()]
+            vec!["WARNING: Server ams1 is running Services: app/api, app/web. Move them off first: ployz server drain ams1".to_owned()]
         );
     }
 
