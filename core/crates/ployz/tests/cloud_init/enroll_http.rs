@@ -44,7 +44,16 @@ pub struct EnrollListen {
     publications: Arc<Mutex<Vec<serde_json::Value>>>,
     publication_status: Arc<AtomicU16>,
     cli: Arc<Mutex<CliReplies>>,
+    reports: Arc<Mutex<Vec<(usize, serde_json::Value)>>>,
+    report_reply: Arc<Mutex<ReportReply>>,
     _server: tokio::task::JoinHandle<()>,
+}
+
+/// How the fake Cloud answers a setup report.
+#[derive(Clone, Copy)]
+pub enum ReportReply {
+    Status(u16),
+    Hang,
 }
 
 /// Replies to signed-in CLI calls by path; the last reply repeats.
@@ -108,6 +117,10 @@ impl EnrollListen {
         let replies = Arc::new(Mutex::new(replies));
         let cli = Arc::new(Mutex::new(CliReplies::default()));
         let cli_replies = Arc::clone(&cli);
+        let reports = Arc::new(Mutex::new(Vec::new()));
+        let recorded_reports = Arc::clone(&reports);
+        let report_reply = Arc::new(Mutex::new(ReportReply::Status(200)));
+        let reply_report = Arc::clone(&report_reply);
         let server = tokio::spawn(async move {
             loop {
                 let Ok((mut stream, _)) = listener.accept().await else {
@@ -125,6 +138,27 @@ impl EnrollListen {
                     .nth(1)
                     .unwrap()
                     .to_owned();
+                // Reports stay out of `paths`: they follow every outcome.
+                if path.ends_with("/report") {
+                    let completions = recorded_callbacks.lock().unwrap().len();
+                    recorded_reports
+                        .lock()
+                        .unwrap()
+                        .push((completions, enroll_json_body(raw)));
+                    let reply = *reply_report.lock().unwrap();
+                    match reply {
+                        ReportReply::Status(status) => {
+                            write_http(&mut stream, status, "Response", &[]).await;
+                        }
+                        ReportReply::Hang => {
+                            tokio::spawn(async move {
+                                let _held = stream;
+                                std::future::pending::<()>().await;
+                            });
+                        }
+                    }
+                    continue;
+                }
                 recorded_paths.lock().unwrap().push(path.clone());
                 if path.starts_with("/api/cli/") {
                     let bearer = request
@@ -195,6 +229,8 @@ impl EnrollListen {
             publications,
             publication_status,
             cli,
+            reports,
+            report_reply,
             _server: server,
         }
     }
@@ -211,6 +247,15 @@ impl EnrollListen {
     /// Signed-in CLI calls as `(path, lowercased bearer, body)`.
     pub fn cli_calls(&self) -> Vec<(String, String, serde_json::Value)> {
         self.cli.lock().unwrap().calls.clone()
+    }
+
+    /// Setup reports in arrival order, each with the completion callbacks seen before it.
+    pub fn reports(&self) -> Vec<(usize, serde_json::Value)> {
+        self.reports.lock().unwrap().clone()
+    }
+
+    pub fn set_report_reply(&self, reply: ReportReply) {
+        *self.report_reply.lock().unwrap() = reply;
     }
 
     pub fn paths(&self) -> Vec<String> {

@@ -39,6 +39,7 @@ import {
 } from "#/modules/organization/organization-state.server";
 import { Actor } from "#/modules/identity/actor";
 import { Polar } from "#/modules/billing/polar-provider.server";
+import { recordSignUp } from "#/modules/analytics/posthog.server";
 import { makePolarCore } from "#/modules/billing/polar-api";
 import { asString } from "#/lib/json";
 import { AppConfig } from "#/server/config.server";
@@ -212,7 +213,10 @@ const makeAuth = Effect.gen(function* () {
     advanced: { database: { generateId: "uuid" }, ipAddress: { ipAddressHeaders: config.auth.clientIpHeaders } },
     databaseHooks: {
       user: {
-        create: { after: (createdUser) => runHook(handleUserCreated(createdUser)) },
+        create: {
+          after: (createdUser) =>
+            runHook(handleUserCreated(createdUser).pipe(Effect.andThen(recordSignUp(createdUser)))),
+        },
       },
       session: {
         create: {

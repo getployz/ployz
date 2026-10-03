@@ -166,6 +166,115 @@ fn null_environment_values_are_refused_before_any_setting_changes() {
 }
 
 #[test]
+fn a_typed_private_address_answers_with_its_reference() {
+    let store = backend::open();
+    shop(&store);
+    let reference = |value: &str| json!({ "kind": "reference", "value": value });
+    let edited = set(
+        &store,
+        &[
+            ("web.env.API_URL", json!("http://api.internal:8080/v1")),
+            // A bare name where only a host can stand: a URL's host, a host key's value.
+            ("web.env.API_DB", json!("postgres://app:pw@API:5432/app")),
+            ("web.env.API_HOST", json!("api")),
+            ("web.env.API_ADDR", json!("api:8080")),
+            // A reference in the user info leaves the host a URL's host, not the user.
+            ("web.env.DB_PASSWORD", json!({ "secret": SECRET })),
+            (
+                "web.env.API_LOGIN",
+                json!("postgres://api:${{ DB_PASSWORD }}@api:5432/app"),
+            ),
+            // Elsewhere a bare name is just a word, or an image.
+            ("web.env.PROCESS_TYPE", json!("api")),
+            ("web.env.IMAGE", json!("api:16")),
+            (
+                "web.env.API_SECRET",
+                json!({ "secret": format!("postgres://app:{SECRET}@api.internal:5432/app") }),
+            ),
+        ],
+    )
+    .unwrap();
+    let answered = serde_json::to_string(&edited.typed_addresses).unwrap();
+    assert!(!answered.contains(SECRET));
+    assert_eq!(
+        serde_json::to_value(&edited.typed_addresses).unwrap(),
+        json!([
+            {
+                "path": "web.env.API_URL",
+                "services": ["api"],
+                "instead": reference("http://${{ api.PLOYZ_PRIVATE_DOMAIN }}:8080/v1"),
+            },
+            {
+                "path": "web.env.API_DB",
+                "services": ["api"],
+                "instead": reference("postgres://app:pw@${{ api.PLOYZ_PRIVATE_DOMAIN }}:5432/app"),
+            },
+            {
+                "path": "web.env.API_HOST",
+                "services": ["api"],
+                "instead": reference("${{ api.PLOYZ_PRIVATE_DOMAIN }}"),
+            },
+            {
+                "path": "web.env.API_ADDR",
+                "services": ["api"],
+                "instead": reference("${{ api.PLOYZ_PRIVATE_DOMAIN }}:8080"),
+            },
+            {
+                "path": "web.env.API_LOGIN",
+                "services": ["api"],
+                "instead": reference(
+                    "postgres://api:${{ DB_PASSWORD }}@${{ api.PLOYZ_PRIVATE_DOMAIN }}:5432/app"
+                ),
+            },
+            // A secret can't hold a reference: nothing to show.
+            {
+                "path": "web.env.API_SECRET",
+                "services": ["api"],
+                "instead": { "kind": "sealed" },
+            },
+        ])
+    );
+    // Never rewritten: the value stays as typed.
+    assert_eq!(
+        value(&store, "web.env.API_URL"),
+        "http://api.internal:8080/v1"
+    );
+
+    let quiet = set(
+        &store,
+        &[
+            (
+                "web.env.REFERENCED",
+                json!("http://${{ api.PLOYZ_PRIVATE_DOMAIN }}:8080"),
+            ),
+            (
+                "web.env.PINNED",
+                json!("http://api.shop-production.internal"),
+            ),
+            (
+                "web.env.EXTERNAL",
+                json!("https://api.internal.example.com"),
+            ),
+            ("web.env.SELF", json!("http://web.internal:8080")),
+            // Only the last value set to a variable is answered.
+            ("web.env.API_DB", json!("http://api.internal")),
+            (
+                "web.env.API_DB",
+                json!("http://${{ api.PLOYZ_PRIVATE_DOMAIN }}"),
+            ),
+        ],
+    )
+    .unwrap();
+    assert!(quiet.typed_addresses.is_empty());
+
+    // Setting what it answered stores the reference, which types nothing.
+    let suggestion = "http://${{ api.PLOYZ_PRIVATE_DOMAIN }}:8080/v1";
+    let fixed = set(&store, &[("web.env.API_URL", json!(suggestion))]).unwrap();
+    assert!(fixed.typed_addresses.is_empty());
+    assert_eq!(value(&store, "web.env.API_URL"), suggestion);
+}
+
+#[test]
 fn secrets_never_leave_reads_and_only_claim_unseals_them() {
     let dir = tempfile::tempdir().unwrap();
     let url = backend::fresh_url(&dir);

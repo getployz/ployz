@@ -13,8 +13,12 @@ use tonic::transport::Endpoint;
 use crate::filesystem::{MACHINE_API_SOCKET_MODE, PLOYZ_DIR_MODE, atomic_write};
 use ployz_core::{DescribeContractRequest, MachineRpcClient, MachineVersion, op};
 
+use super::os_release::OsRelease;
 use super::release::{fetch, installed_release};
-use super::{Error, InstallPaths, PLOYZ_USER, command_exists, run_apt, run_host, systemctl};
+use super::{
+    Error, InstallPaths, PLOYZ_USER, command_exists, refuse, run_apt, run_host, systemctl,
+};
+use ployz_build::{MINIMUM_BUILDX, MINIMUM_DOCKER_API, MINIMUM_DOCKER_RELEASE};
 
 const DOCKER_DAEMON_CONFIG: &str = r#"{
   "features": { "containerd-snapshotter": true },
@@ -22,6 +26,16 @@ const DOCKER_DAEMON_CONFIG: &str = r#"{
   "log-driver": "json-file",
   "log-opts": { "max-size": "10m", "max-file": "3" }
 }"#;
+
+/// Docker's RHEL 9 repository, for Amazon Linux: get.docker.com refuses it and its own Docker
+/// is too old. `$releasever` is pinned because Amazon Linux's is 2023.
+const DOCKER_CE_REPO: &str = "[docker-ce-stable]
+name=Docker CE Stable - $basearch
+baseurl=https://download.docker.com/linux/rhel/9/$basearch/stable
+enabled=1
+gpgcheck=1
+gpgkey=https://download.docker.com/linux/rhel/gpg
+";
 
 pub(super) fn install_prerequisites() -> Result<(), Error> {
     if command_exists("curl") {
@@ -309,20 +323,119 @@ pub(super) fn write_file_atomically(
 }
 
 pub(super) async fn install_docker(paths: &InstallPaths) -> Result<(), Error> {
+    // A retained Docker passed `verify_docker` before the install changed anything.
     if command_exists("dockerd") {
-        let mut command = Command::new("docker");
-        command.args(["info", "-f", "{{ .DriverStatus }}"]);
-        let snapshotter = command.output().ok().is_some_and(|output| {
-            output.status.success()
-                && String::from_utf8_lossy(&output.stdout).contains("io.containerd.snapshotter")
-        });
-        if !snapshotter {
-            eprintln!(
-                "WARNING: Docker is retained unchanged; enable its containerd image store for best results"
-            );
-        }
         return Ok(());
     }
+    if OsRelease::read(&paths.os_release)?.is_amazon_linux() {
+        write_file_atomically(
+            &paths.yum_repos_dir.join("ployz-docker-ce.repo"),
+            DOCKER_CE_REPO,
+            "add Docker's repository",
+        )?;
+        run_host(
+            "install Docker",
+            "dnf",
+            [
+                "install",
+                "-y",
+                "docker-ce",
+                "docker-ce-cli",
+                "containerd.io",
+                "docker-buildx-plugin",
+            ],
+        )?;
+        systemctl("enable Docker", ["enable", "docker"])?;
+    } else {
+        run_docker_script().await?;
+    }
+    let parent = paths.docker_config.parent().ok_or_else(|| {
+        Error::Verification(format!(
+            "Docker config path {} has no parent",
+            paths.docker_config.display()
+        ))
+    })?;
+    fs::create_dir_all(parent).map_err(|source| Error::Io {
+        stage: "create Docker configuration directory",
+        source,
+    })?;
+    write_file_atomically(
+        &paths.docker_config,
+        DOCKER_DAEMON_CONFIG,
+        "write Docker configuration",
+    )?;
+    systemctl("restart Docker", ["restart", "docker"])?;
+    verify_docker()
+}
+
+const STAGE: &str = "checking Docker";
+
+/// Refuses a Docker Ployz can't use: too old an Engine API or buildx, or no containerd image
+/// store. A Machine without Docker passes.
+pub(super) fn verify_docker() -> Result<(), Error> {
+    if !command_exists("dockerd") {
+        return Ok(());
+    }
+    // The CLI can't read the server's version only when it can't reach the daemon.
+    let output = docker_output([
+        "version",
+        "--format",
+        "{{.Server.Version}} {{.Server.APIVersion}}",
+    ])
+    .map_err(|_| {
+        refuse(
+            STAGE,
+            "Docker is installed but not running. Start it (systemctl start docker) and run this again.",
+        )
+    })?;
+    let (version, api) = output.split_once(' ').unwrap_or((&output, ""));
+    if !at_least(api, MINIMUM_DOCKER_API) {
+        return Err(refuse(
+            STAGE,
+            format!(
+                "Docker {version} is too old: Ployz needs Docker {MINIMUM_DOCKER_RELEASE} or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one."
+            ),
+        ));
+    }
+    // e.g. `github.com/docker/buildx v0.37.1 c8d4ec2`
+    let output = docker_output(["buildx", "version"])?;
+    let buildx = output.split_whitespace().nth(1).unwrap_or(&output);
+    if !at_least(buildx.trim_start_matches('v'), MINIMUM_BUILDX) {
+        let (major, minor) = MINIMUM_BUILDX;
+        return Err(refuse(
+            STAGE,
+            format!(
+                "Docker Buildx {buildx} is too old: Ployz needs Buildx {major}.{minor} or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one."
+            ),
+        ));
+    }
+    if !docker_output(["info", "-f", "{{.DriverStatus}}"])?.contains("io.containerd.snapshotter.v1")
+    {
+        return Err(refuse(
+            STAGE,
+            r#"Docker isn't using the containerd image store, which Ployz needs to build and move images between Servers. Enable it in /etc/docker/daemon.json ("features": {"containerd-snapshotter": true}) and restart Docker, or uninstall Docker and run this again."#,
+        ));
+    }
+    Ok(())
+}
+
+fn docker_output<const N: usize>(args: [&str; N]) -> Result<String, Error> {
+    let output = run_host(STAGE, "docker", args)?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// Whether `version`'s first two numbers (`1.53`, `0.18.0+ds1`) are at least `minimum`.
+fn at_least(version: &str, minimum: (u32, u32)) -> bool {
+    let mut parts = version
+        .split(|c: char| !c.is_ascii_digit())
+        .map(str::parse::<u32>);
+    match (parts.next(), parts.next()) {
+        (Some(Ok(major)), Some(Ok(minor))) => (major, minor) >= minimum,
+        _ => false,
+    }
+}
+
+async fn run_docker_script() -> Result<(), Error> {
     let script = fetch("https://get.docker.com", "download Docker installer").await?;
     let mut command = Command::new("bash");
     command.args(["-o", "pipefail"]);
@@ -352,22 +465,6 @@ pub(super) async fn install_docker(paths: &InstallPaths) -> Result<(), Error> {
             message: format!("exited with {status}"),
         });
     }
-    let parent = paths.docker_config.parent().ok_or_else(|| {
-        Error::Verification(format!(
-            "Docker config path {} has no parent",
-            paths.docker_config.display()
-        ))
-    })?;
-    fs::create_dir_all(parent).map_err(|source| Error::Io {
-        stage: "create Docker configuration directory",
-        source,
-    })?;
-    write_file_atomically(
-        &paths.docker_config,
-        DOCKER_DAEMON_CONFIG,
-        "write Docker configuration",
-    )?;
-    systemctl("restart Docker", ["restart", "docker"])?;
     Ok(())
 }
 
@@ -486,5 +583,210 @@ mod tests {
                 if message
                     == "running Machine API reported invalid daemon version \"not-a-version\""
         ));
+    }
+
+    #[test]
+    fn docker_and_buildx_must_be_at_least_the_minimum() {
+        for (version, minimum, supported) in [
+            ("1.44", MINIMUM_DOCKER_API, false),
+            ("1.52", MINIMUM_DOCKER_API, false),
+            ("1.53", MINIMUM_DOCKER_API, true),
+            ("1.54", MINIMUM_DOCKER_API, true),
+            ("", MINIMUM_DOCKER_API, false),
+            ("0.17.1", MINIMUM_BUILDX, false),
+            ("0.18.0", MINIMUM_BUILDX, true),
+            ("0.37.1+ds1", MINIMUM_BUILDX, true),
+        ] {
+            assert_eq!(at_least(version, minimum), supported, "{version}");
+        }
+    }
+
+    struct DockerCase {
+        name: &'static str,
+        /// Whether `dockerd` is already there.
+        retained: bool,
+        /// `docker version`'s server version and API.
+        server: &'static str,
+        buildx: &'static str,
+        driver_status: &'static str,
+        refusal: Option<&'static str>,
+    }
+
+    const STORE: &str = "[[driver-type io.containerd.snapshotter.v1]]";
+
+    const DOCKER_CASES: [DockerCase; 6] = [
+        DockerCase {
+            name: "amazon-fresh",
+            retained: false,
+            server: "29.4.0 1.54",
+            buildx: "v0.37.1",
+            driver_status: STORE,
+            refusal: None,
+        },
+        DockerCase {
+            name: "amazon-fresh-too-old",
+            retained: false,
+            server: "29.1.3 1.52",
+            buildx: "v0.37.1",
+            driver_status: STORE,
+            refusal: Some(
+                "Docker 29.1.3 is too old: Ployz needs Docker 29.2 or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one.",
+            ),
+        },
+        DockerCase {
+            name: "retained-too-old",
+            retained: true,
+            server: "25.0.16 1.44",
+            buildx: "v0.12.1",
+            driver_status: "[[Backing Filesystem extfs]]",
+            refusal: Some(
+                "Docker 25.0.16 is too old: Ployz needs Docker 29.2 or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one.",
+            ),
+        },
+        DockerCase {
+            name: "retained-old-buildx",
+            retained: true,
+            server: "29.2.0 1.53",
+            buildx: "v0.17.1",
+            driver_status: STORE,
+            refusal: Some(
+                "Docker Buildx v0.17.1 is too old: Ployz needs Buildx 0.18 or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one.",
+            ),
+        },
+        DockerCase {
+            name: "retained-stopped",
+            retained: true,
+            server: "",
+            buildx: "v0.37.1",
+            driver_status: STORE,
+            refusal: Some(
+                "Docker is installed but not running. Start it (systemctl start docker) and run this again.",
+            ),
+        },
+        DockerCase {
+            name: "retained-without-store",
+            retained: true,
+            server: "29.2.0 1.53",
+            buildx: "v0.18.0",
+            driver_status: "[[Backing Filesystem extfs]]",
+            refusal: Some(
+                r#"Docker isn't using the containerd image store, which Ployz needs to build and move images between Servers. Enable it in /etc/docker/daemon.json ("features": {"containerd-snapshotter": true}) and restart Docker, or uninstall Docker and run this again."#,
+            ),
+        },
+    ];
+
+    /// A retained Docker meets only the preflight; a fresh one is installed and then checked.
+    #[tokio::test]
+    async fn docker_contract() {
+        use super::super::test_support::{
+            fixture, run_contract_child_with_environment, write_script,
+        };
+        use std::{env, ffi::OsString};
+
+        const CASE: &str = "PLOYZ_DOCKER_CONTRACT";
+        if let Ok(name) = env::var(CASE) {
+            let root =
+                std::path::PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
+            let case = DOCKER_CASES.iter().find(|case| case.name == name).unwrap();
+            let result = if case.retained {
+                verify_docker()
+            } else {
+                install_docker(&InstallPaths::at(&root)).await
+            };
+            match case.refusal {
+                None => result.unwrap(),
+                Some(refusal) => assert!(
+                    matches!(&result, Err(Error::Command { stage, message })
+                        if stage == "checking Docker" && message == refusal),
+                    "{result:?}"
+                ),
+            }
+            fs::write(root.join("child-completed"), name).unwrap();
+            return;
+        }
+
+        for case in &DOCKER_CASES {
+            let name = case.name;
+            let fixture = fixture(name);
+            let root = fixture.path();
+            let commands = root.join("commands");
+            fs::create_dir_all(&commands).unwrap();
+            fs::create_dir_all(root.join("yum.repos.d")).unwrap();
+            fs::write(
+                root.join("os-release"),
+                "NAME=\"Amazon Linux\"\nID=\"amzn\"\nVERSION_ID=\"2023\"\n",
+            )
+            .unwrap();
+            if case.retained {
+                write_script(&commands.join("dockerd"), "exit 0");
+            }
+            write_script(
+                &commands.join("docker"),
+                &format!(
+                    "case \"$1\" in\nversion) [ -n '{0}' ] || exit 1; echo '{0}' ;;\nbuildx) echo 'github.com/docker/buildx {1} 0000000' ;;\ninfo) echo '{2}' ;;\nesac",
+                    case.server, case.buildx, case.driver_status
+                ),
+            );
+            // Installing Docker puts `dockerd` on the PATH.
+            write_script(
+                &commands.join("dnf"),
+                "echo \"$*\" >> \"$PLOYZ_INSTALLER_CONTRACT_ROOT/dnf.log\"\nprintf '#!/bin/sh\\n' > \"$PLOYZ_INSTALLER_CONTRACT_ROOT/commands/dockerd\"\n/bin/chmod 755 \"$PLOYZ_INSTALLER_CONTRACT_ROOT/commands/dockerd\"",
+            );
+            write_script(
+                &commands.join("systemctl"),
+                "echo \"$*\" >> \"$PLOYZ_INSTALLER_CONTRACT_ROOT/systemctl.log\"",
+            );
+            run_contract_child_with_environment(
+                "installer::host::tests::docker_contract",
+                root,
+                OsString::from(CASE),
+                OsString::from(name),
+                name,
+                [],
+            );
+
+            let log = |command: &str| {
+                fs::read_to_string(root.join(format!("{command}.log"))).unwrap_or_default()
+            };
+            let repo = fs::read_to_string(root.join("yum.repos.d/ployz-docker-ce.repo"));
+            let daemon_config = fs::read_to_string(root.join("docker/daemon.json"));
+            if case.retained {
+                assert_eq!(log("dnf"), "", "{name}");
+                assert_eq!(log("systemctl"), "", "{name}");
+                assert!(repo.is_err() && daemon_config.is_err(), "{name}");
+            } else {
+                // Docker's RHEL 9 repository, whatever Amazon Linux's own release is.
+                assert!(
+                    repo.unwrap()
+                        .lines()
+                        .any(|line| line.starts_with("baseurl=") && line.contains("/rhel/9/")),
+                    "{name}"
+                );
+                let dnf = log("dnf");
+                let mut words = dnf.split_whitespace();
+                assert_eq!(words.next(), Some("install"), "{name}");
+                let packages: Vec<_> = words.filter(|word| !word.starts_with('-')).collect();
+                for package in [
+                    "docker-ce",
+                    "docker-ce-cli",
+                    "containerd.io",
+                    "docker-buildx-plugin",
+                ] {
+                    assert!(packages.contains(&package), "{name}: {package}");
+                }
+                assert_eq!(
+                    log("systemctl"),
+                    "enable docker\nrestart docker\n",
+                    "{name}"
+                );
+                let daemon_config: serde_json::Value =
+                    serde_json::from_str(&daemon_config.unwrap()).unwrap();
+                assert_eq!(
+                    daemon_config.pointer("/features/containerd-snapshotter"),
+                    Some(&serde_json::Value::Bool(true)),
+                    "{name}"
+                );
+            }
+        }
     }
 }

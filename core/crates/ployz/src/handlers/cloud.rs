@@ -16,7 +16,8 @@ use ployz_core::{
 use super::{Error, config_path, leaf_matches, required, runtime};
 use crate::cloud_enroll::{self, CloudPairing, EnrollIdentity, InitializeMode, Join, Outcome};
 use crate::connect::{Client, ConnectError};
-use crate::context::{Connection, ContextError, Transport};
+use crate::context::{Connection, ContextError, SelectedConnections, Transport};
+use crate::setup_report::{SetupReport, Step};
 
 /// Enroll with `token`: over SSH to `DESTINATION`, or on the host this runs on.
 pub(super) fn enroll(
@@ -24,15 +25,11 @@ pub(super) fn enroll(
     token: CloudEnrollToken,
     cloud_url: &str,
 ) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    if matches.get_one::<String>("destination").is_some() {
-        // A remote host is provisioned once, up front, with this CLI's release.
-        if !matches.get_flag("no-install") {
-            runtime()?.block_on(crate::provisioning::provision(
-                matches,
-                super::server::requested_storage(matches),
-            ))?;
-        }
+    if leaf_matches(root)
+        .get_one::<String>("destination")
+        .is_some()
+    {
+        // A remote host is provisioned up front, in `enroll_steps`.
         return enroll_token(root, token, cloud_url, &|_| async { Ok(()) });
     }
     enroll_token(root, token, cloud_url, &|storage| async move {
@@ -70,6 +67,11 @@ where
     enroll_token(root, token, cloud_url, install)
 }
 
+/// Setup's outcome: `Ok` once the final callback succeeded, holding what printing the
+/// committed result returned.
+type Setup = Result<Result<(), Error>, Error>;
+
+/// Enroll, then send Cloud the best-effort setup report for the outcome.
 fn enroll_token<Install, InstallFuture>(
     root: &ArgMatches,
     token: CloudEnrollToken,
@@ -80,9 +82,38 @@ where
     Install: Fn(StorageChoice) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
 {
+    let mut report = SetupReport::start();
+    runtime()?.block_on(async {
+        let setup = enroll_steps(root, &token, cloud_url, install, &mut report).await;
+        report
+            .send(
+                &cloud_enroll::report_url(cloud_url, &token),
+                setup.as_ref().err(),
+            )
+            .await;
+        setup.and_then(|printed| printed)
+    })
+}
+
+async fn enroll_steps<Install, InstallFuture>(
+    root: &ArgMatches,
+    token: &CloudEnrollToken,
+    cloud_url: &str,
+    install: &Install,
+    report: &mut SetupReport,
+) -> Setup
+where
+    Install: Fn(StorageChoice) -> InstallFuture,
+    InstallFuture: Future<Output = Result<(), Error>>,
+{
     let matches = leaf_matches(root);
+    let remote = matches.get_one::<String>("destination").is_some();
+    // First, so a failed first install still reports what it ran on.
+    if !remote && dials_this_host(matches) {
+        report.read_host();
+    }
     let initial_policy = super::server::enrollment_policy(matches)?;
-    let url = cloud_enroll::enroll_url(cloud_url, &token);
+    let url = cloud_enroll::enroll_url(cloud_url, token);
     let requested_name = matches
         .get_one::<String>("name")
         .map(MachineName::parse)
@@ -92,57 +123,66 @@ where
         .get_one::<Ipv4Net>("network")
         .expect("Cluster network has a default");
 
-    runtime()?.block_on(async {
-        let mut client = connect_machine(matches).await?;
-        client = synchronize_daemon(matches, client, install).await?;
-        if matches.get_flag("reset") {
-            client = ensure_uninitialized(matches, matches.get_flag("yes"), true, client).await?;
+    if remote && !matches.get_flag("no-install") {
+        // A remote host is provisioned once, up front, with this CLI's release.
+        crate::provisioning::provision(matches, requested_storage).await?;
+    }
+    let mut client = connect_machine(matches).await?;
+    client = synchronize_daemon(matches, client, install).await?;
+    if matches.get_flag("reset") {
+        client = ensure_uninitialized(matches, matches.get_flag("yes"), true, client).await?;
+    }
+    report.step(Step::Enroll);
+    let (details, machine_token, name, outcome) = enroll_current_identity(
+        &mut client,
+        requested_name,
+        requested_storage,
+        &initial_policy,
+        &url,
+    )
+    .await?;
+    report.sizes_from(&machine_token);
+    report.step(Step::Storage);
+    match outcome {
+        Outcome::Join(join) => {
+            report.enrolled(join.storage, false);
+            enroll_join(
+                matches,
+                client,
+                details,
+                *join,
+                &initial_policy,
+                &cloud_enroll::callback_url(cloud_url, token),
+                install,
+                report,
+            )
+            .await
         }
-        let (details, machine_token, name, outcome) = enroll_current_identity(
-            &mut client,
-            requested_name,
-            requested_storage,
-            &initial_policy,
-            &url,
-        )
-        .await?;
-        match outcome {
-            Outcome::Join(join) => {
-                enroll_join(
-                    matches,
-                    client,
-                    details,
-                    *join,
-                    &initial_policy,
-                    &cloud_enroll::callback_url(cloud_url, &token),
-                    install,
-                )
-                .await
-            }
-            Outcome::Initialize {
+        Outcome::Initialize {
+            mode,
+            pairing,
+            storage,
+        } => {
+            report.enrolled(storage, true);
+            enroll_founder(
+                matches,
+                client,
+                details,
+                machine_token,
+                name,
+                initial_policy,
+                cluster_network,
                 mode,
                 pairing,
                 storage,
-            } => {
-                enroll_founder(
-                    matches,
-                    client,
-                    details,
-                    machine_token,
-                    name,
-                    initial_policy,
-                    cluster_network,
-                    mode,
-                    pairing,
-                    storage,
-                    cloud_url,
-                    &token,
-                    install,
-                )
-                .await
-            }
+                cloud_url,
+                token,
+                install,
+                report,
+            )
+            .await
         }
-    })
+    }
 }
 
 fn already_assigned(details: &MachineDetails, assigned: &Machine) -> bool {
@@ -177,6 +217,10 @@ async fn enroll_current_identity(
     Ok((details, machine_token, name, outcome))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the join tail consumes the existing cloud-enroll command interface"
+)]
 async fn enroll_join<Install, InstallFuture>(
     matches: &ArgMatches,
     mut client: Client,
@@ -185,7 +229,8 @@ async fn enroll_join<Install, InstallFuture>(
     initial_policy: &ployz_core::InitialMachinePolicy,
     callback_url: &str,
     install: &Install,
-) -> Result<(), Error>
+    report: &mut SetupReport,
+) -> Setup
 where
     Install: Fn(StorageChoice) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
@@ -206,6 +251,7 @@ where
     }
     let pairing = join.pairing;
     let mut ready = if already_assigned(&details, &assigned) {
+        report.step(Step::Join);
         client
     } else {
         client = ensure_uninitialized(
@@ -216,6 +262,7 @@ where
         )
         .await?;
         client = provision_storage(matches, client, join.storage, install).await?;
+        report.step(Step::Join);
         crate::handlers::server::join(
             &mut client,
             JoinRequest {
@@ -240,7 +287,7 @@ where
     cloud_enroll::callback(callback_url, assigned.id, &pairing.secret).await?;
     crate::output::say!("Joined Server {} ({})", assigned.name, assigned.id);
     // The join is committed; a catch-up failure makes it partial.
-    crate::output::emit_committed(
+    Ok(crate::output::emit_committed(
         serde_json::json!({ "server": super::server::server_json(&assigned), "founded": false }),
         catch_up.map_err(|error| {
             Error::coded(
@@ -248,7 +295,7 @@ where
                 crate::global_catch_up::joined_catch_up_error(error, &assigned),
             )
         }),
-    )
+    ))
 }
 
 enum FounderLocalState {
@@ -274,7 +321,8 @@ async fn enroll_founder<Install, InstallFuture>(
     cloud_url: &str,
     token: &CloudEnrollToken,
     install: &Install,
-) -> Result<(), Error>
+    report: &mut SetupReport,
+) -> Setup
 where
     Install: Fn(StorageChoice) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
@@ -322,7 +370,10 @@ where
     // A rerun on the founded Server finishes or repeats the enrollment; it founds nothing.
     let founding = matches!(state, FounderLocalState::Initialize);
     let (machine, mut ready) = match state {
-        FounderLocalState::Resume { machine } => (*machine, client),
+        FounderLocalState::Resume { machine } => {
+            report.step(Step::Join);
+            (*machine, client)
+        }
         FounderLocalState::Initialize => {
             client = ensure_uninitialized(
                 matches,
@@ -332,6 +383,7 @@ where
             )
             .await?;
             client = provision_storage(matches, client, storage, install).await?;
+            report.step(Step::Join);
             let initialized = crate::handlers::server::initialize(
                 &mut client,
                 InitializeRequest {
@@ -379,7 +431,7 @@ where
         &pairing.secret,
     )
     .await?;
-    crate::output::emit(&founder_result(&machine, founding))
+    Ok(crate::output::emit(&founder_result(&machine, founding)))
 }
 
 /// The first Server's result. Founding it, Cloud deploys the Organization's saved
@@ -510,18 +562,41 @@ async fn dial(matches: &ArgMatches) -> Result<Client, ConnectError> {
         }
         return super::server::connect_direct(matches, &connection).await;
     }
+    crate::connect::connect_selected_with(
+        local_selection(matches)?,
+        std::sync::Arc::new(
+            crate::connect::SystemConnector::default()
+                .with_ssh_timeout(crate::cli::ssh_timeout(matches)),
+        ),
+    )
+    .await
+}
+
+/// What a run with no destination dials: `--connect`, the current context or the local socket.
+fn local_selection(matches: &ArgMatches) -> Result<SelectedConnections, ConnectError> {
     let config = crate::context::expand_home(std::path::Path::new(
         matches
             .get_one::<String>("ployz-config")
             .expect("ployz-config has a default"),
     ));
-    crate::connect::connect_with_ssh_timeout(
+    crate::connect::resolve_connections(
         &config,
         matches.get_one::<String>("connect").map(String::as_str),
         None,
-        crate::cli::ssh_timeout(matches),
+        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
     )
-    .await
+}
+
+/// Whether a run with no destination enrolls this host: it dials only the local socket, or
+/// finds nothing to dial and so installs the daemon here (see `connect_machine`).
+fn dials_this_host(matches: &ArgMatches) -> bool {
+    match local_selection(matches) {
+        Ok(selected) => selected
+            .connections
+            .iter()
+            .all(|connection| matches!(connection.transport(), Transport::Unix(_))),
+        Err(error) => matches!(error, ConnectError::Context(ContextError::NoConfig)),
+    }
 }
 
 async fn connect_machine(matches: &ArgMatches) -> Result<Client, Error> {
@@ -601,6 +676,10 @@ async fn wait_phase(
         ConnectError::is_setup_retryable,
         async |_| {
             let mut client = dial(matches).await?;
+            if participating {
+                crate::handlers::server::check_listed(&mut client).await?;
+                return Ok(client);
+            }
             let details = client
                 .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
                 .await?;

@@ -19,6 +19,7 @@ use serde_json::{Map, Value, json};
 use crate::error;
 use crate::scope::Environment;
 use crate::sealing::{SealingKey, plain_fingerprint};
+use crate::typed_address::{self, Typed};
 
 /// A variable's name: letters, digits and `_`, not starting with a digit, at most
 /// 128 characters. Stored uppercase, as the dashboard stores it.
@@ -126,14 +127,15 @@ pub(crate) fn find<'intent>(
 
 /// Set variable `key` of `service` from `value`: text, `{"secret": true}` to keep
 /// a secret, `{"secret": "…"}` to seal a new one, or `{"value": …, "exported": …}`
-/// with either field. Returns whether Working State changed.
+/// with either field. Returns whether Working State changed, and the Typed
+/// Addresses in a new value.
 pub(crate) fn set(
     environment: &mut Environment,
     service: &ServiceName,
     key: &VariableKey,
     value: Value,
     sealing: &SealingKey,
-) -> Result<bool, RpcError> {
+) -> Result<(bool, Option<Typed>), RpcError> {
     // Ployz provides these; a Service's own value would lie about its name and address. PORT is meant to be set.
     // Only setting is refused, so an Environment that already holds one can still unset it.
     if key.as_str() != "PORT" && ployz_core::config::BUILT_IN_VARIABLES.contains(&key.as_str()) {
@@ -164,17 +166,29 @@ pub(crate) fn set(
         | Value::Object(_)) => (Some(input(key, value)?), None),
     };
     let names = environment.names();
+    let others: Vec<_> = environment
+        .working
+        .services
+        .iter()
+        .filter(|other| other.slug != service.as_str())
+        .collect();
     let current = environment
         .service(service)?
         .variables
         .iter()
         .find(|variable| variable.key == key.as_str());
-    let (value, fingerprint) = match (input, current) {
+    let (value, fingerprint, typed) = match (input, current) {
         (None, None) => return Err(invalid(key, "a new variable needs a value")),
-        (None, Some(current)) => (current.value.clone(), current.value_fingerprint.clone()),
-        (Some(Input::Keep), Some(current)) if secret(current) => {
-            (current.value.clone(), current.value_fingerprint.clone())
-        }
+        (None, Some(current)) => (
+            current.value.clone(),
+            current.value_fingerprint.clone(),
+            None,
+        ),
+        (Some(Input::Keep), Some(current)) if secret(current) => (
+            current.value.clone(),
+            current.value_fingerprint.clone(),
+            None,
+        ),
         (Some(Input::Keep), _) => return Err(invalid(key, "it holds no secret to keep")),
         (Some(Input::Text(_)), Some(current)) if secret(current) => {
             return Err(invalid(
@@ -182,22 +196,25 @@ pub(crate) fn set(
                 "it is secret, and a secret never becomes plain text: set it with --secret",
             ));
         }
-        (Some(Input::Text(text)), _) => text_value(key, &text, &names)?,
+        (Some(Input::Text(text)), _) => {
+            let (parts, fingerprint) = text_parts(key, &text, &names)?;
+            let typed = typed_address::in_plain(&parts, key, &others, &names)?;
+            (stored(parts), fingerprint, typed)
+        }
         (Some(Input::Seal(plaintext)), current) => {
             validate_text(key, &plaintext)?;
+            let typed = typed_address::in_sealed(&plaintext, key, &others)?;
             let fingerprint = sealing.fingerprint(&plaintext);
-            match current {
+            let value = match current {
                 // Sealing the same secret again changes nothing.
                 Some(current) if secret(current) && current.value_fingerprint == fingerprint => {
-                    (current.value.clone(), fingerprint)
+                    current.value.clone()
                 }
-                Some(_) | None => (
-                    SavedVariableValue::Secret {
-                        encrypted_value: Some(sealing.seal(&plaintext)),
-                    },
-                    fingerprint,
-                ),
-            }
+                Some(_) | None => SavedVariableValue::Secret {
+                    encrypted_value: Some(sealing.seal(&plaintext)),
+                },
+            };
+            (value, fingerprint, typed)
         }
     };
     let next = SavedVariableIntent {
@@ -212,7 +229,7 @@ pub(crate) fn set(
         value,
     };
     if current == Some(&next) {
-        return Ok(false);
+        return Ok((false, typed));
     }
     let variables = &mut environment.service_mut(service)?.variables;
     match variables
@@ -222,16 +239,16 @@ pub(crate) fn set(
         Some(variable) => *variable = next,
         None => variables.push(next),
     }
-    Ok(true)
+    Ok((true, typed))
 }
 
-/// Text as a variable's value, referencing Services by their names in `names`
+/// Text as a variable's parts, referencing Services by their names in `names`
 /// (lineage → name), with its fingerprint.
-pub(crate) fn text_value(
+pub(crate) fn text_parts(
     key: &VariableKey,
     text: &str,
     names: &BTreeMap<String, String>,
-) -> Result<(SavedVariableValue, String), RpcError> {
+) -> Result<(Vec<ValuePart>, String), RpcError> {
     validate_text(key, text)?;
     let template = parse_variable_template(text, |name| {
         names
@@ -253,18 +270,20 @@ pub(crate) fn text_value(
         ));
     }
     let fingerprint = plain_fingerprint(&template.parts);
-    let value = match template.parts.as_slice() {
+    Ok((template.parts, fingerprint))
+}
+
+/// Text parts as a stored value: a literal unless they reference something.
+pub(crate) fn stored(mut parts: Vec<ValuePart>) -> SavedVariableValue {
+    match parts.as_mut_slice() {
         [] => SavedVariableValue::Literal {
             value: String::new(),
         },
         [ValuePart::Text { value }] => SavedVariableValue::Literal {
-            value: value.clone(),
+            value: std::mem::take(value),
         },
-        _ => SavedVariableValue::Template {
-            parts: template.parts,
-        },
-    };
-    Ok((value, fingerprint))
+        _ => SavedVariableValue::Template { parts },
+    }
 }
 
 /// Plain and secret values must survive the container's environment unchanged.
@@ -358,7 +377,7 @@ fn invalid(key: &VariableKey, message: &str) -> RpcError {
         format!("{key}: {message}"),
         json!({
             "variable": key.as_str(),
-            "example": "postgres://${{ db.USER }}@db:5432/app",
+            "example": "postgres://${{ db.USER }}@${{ db.PLOYZ_PRIVATE_DOMAIN }}:5432/app",
         }),
     )
 }
@@ -387,7 +406,7 @@ pub(crate) fn schema() -> Value {
             },
         ],
         "examples": [
-            "postgres://${{ db.USER }}@db:5432/app",
+            "postgres://${{ db.USER }}@${{ db.PLOYZ_PRIVATE_DOMAIN }}:5432/app",
             { "secret": true },
             { "value": "info", "exported": true },
         ],

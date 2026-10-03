@@ -17,3 +17,4 @@ todos.json
 browser-artifacts
 out
 .impeccable/critique/
+.verify

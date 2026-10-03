@@ -30,11 +30,6 @@ export default {
         ],
         rules: ["deslop/unused-export"],
       },
-      // Tailwind v4 loads this module by string from src/styles.css via @plugin.
-      {
-        files: ["src/tailwind-typography.js"],
-        rules: ["deslop/unused-export"],
-      },
     ],
   },
 };

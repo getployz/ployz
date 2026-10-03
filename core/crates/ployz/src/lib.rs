@@ -25,6 +25,7 @@ pub mod output;
 mod provisioning;
 pub mod sdk;
 pub mod service;
+mod setup_report;
 mod setup_retry;
 // Shared Machine transport fixtures also exercise the in-process CLI handlers.
 #[cfg(test)]

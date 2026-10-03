@@ -19,7 +19,8 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     return yield* new NotFound({ message: "Not found." });
   }
   // Telemetry only: the CLI names a detected coding agent; nothing else reads it.
-  yield* Effect.annotateCurrentSpan("ployz.agent", request.headers.get("x-ployz-agent") ?? "none");
+  const agent = request.headers.get("x-ployz-agent");
+  yield* Effect.annotateCurrentSpan("ployz.agent", agent ?? "none");
   const caller = yield* resolveCaller(request.headers);
   if (upload !== undefined) {
     const refused = yield* receiveUpload(yield* cloudStore, caller.organization.id, decodeURIComponent(upload), request.body);
@@ -38,7 +39,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   if (call === undefined) {
     return refusal({ code: "invalid_argument", message: `Expected a ${operation === "read" ? "query" : "command"}.`, details: null });
   }
-  const result = yield* callStore(caller.organization.id, caller.userId, call);
+  const result = yield* callStore(caller.organization.id, caller.userId, call, { source: "cli", agent });
   return result.ok ? Response.json(result.value, { headers: { "cache-control": "no-store" } }) : refusal(result.refusal);
 });
 

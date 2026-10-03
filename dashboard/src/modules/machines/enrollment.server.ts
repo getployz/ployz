@@ -17,12 +17,16 @@ import type { Actor } from "#/modules/identity/actor";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { Ployz, PloyzProviderError, ployzVersion, rpcErrorCode } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { PostHog } from "#/modules/analytics/posthog.server";
 import {
   enrollmentExpiry,
   MANAGEMENT_CAPABILITY_LENGTH,
   mintedEnrollment,
   registerRequestFromEnrollmentIdentity,
   rustMachineIdSchema,
+  setupReportAccepted,
+  setupReportProperties,
+  type SetupReport,
   waitForFounder,
   type EnrollmentIdentity,
   type EnrollmentCallback,
@@ -73,7 +77,7 @@ const authorizeEnrollmentOrganization = Effect.fn(
 });
 
 const issueEnrollmentToken = Effect.fn("MachineEnrollment.issue")(
-  function* (actor: Actor, organizationSlug: string) {
+  function* (actor: Actor, organizationSlug: string, source: "dashboard" | "cli") {
     const { drizzle } = yield* Database;
     const authorization = yield* authorizeEnrollmentOrganization(
       actor,
@@ -91,6 +95,12 @@ const issueEnrollmentToken = Effect.fn("MachineEnrollment.issue")(
       expiresAt,
     }).returning({ id: schemaMachineEnrollmentToken.id });
     if (!issued) return yield* Effect.die("Enrollment token insert returned no row");
+    yield* (yield* PostHog).capture({
+      userId: authorization.userId,
+      organizationId: authorization.organization.id,
+      event: "server_enrollment_started",
+      properties: { source },
+    });
     return { id: issued.id, token, expiresAt };
   },
 );
@@ -98,7 +108,7 @@ const issueEnrollmentToken = Effect.fn("MachineEnrollment.issue")(
 export const mintMachineEnrollment = Effect.fn("MachineEnrollment.mint")(
   function* (actor: Actor, input: MintMachineEnrollmentInput) {
     const config = yield* AppConfig;
-    const { token, expiresAt } = yield* issueEnrollmentToken(actor, input.organizationSlug);
+    const { token, expiresAt } = yield* issueEnrollmentToken(actor, input.organizationSlug, "dashboard");
     return mintedEnrollment({
       origin: config.app.url.origin,
       token,
@@ -111,7 +121,7 @@ export const mintMachineEnrollment = Effect.fn("MachineEnrollment.mint")(
 /** The CLI builds its own pasted command, pinned to its own release. */
 export const mintCliMachineEnrollment = Effect.fn("MachineEnrollment.mintForCli")(
   function* (actor: Actor, input: MintMachineEnrollmentInput) {
-    const { id, token, expiresAt } = yield* issueEnrollmentToken(actor, input.organizationSlug);
+    const { id, token, expiresAt } = yield* issueEnrollmentToken(actor, input.organizationSlug, "cli");
     return { id, token, expiresAt: expiresAt.toISOString() };
   },
 );
@@ -140,14 +150,51 @@ export const readMachineEnrollment = Effect.fn("MachineEnrollment.read")(
 
 /** The first Server to complete enrollment with a token is the one that joined through it. */
 const recordJoined = Effect.fn("MachineEnrollment.recordJoined")(
-  function* (token: string, machineId: MachineId) {
+  function* (token: string, machineId: MachineId, { founder }: { readonly founder: boolean }) {
     const { drizzle } = yield* Database;
-    yield* drizzle.update(schemaMachineEnrollmentToken)
+    const joined = yield* drizzle.update(schemaMachineEnrollmentToken)
       .set({ joinedMachineId: machineId, updatedAt: new Date() })
       .where(and(
         eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(token)),
         isNull(schemaMachineEnrollmentToken.joinedMachineId),
-      ));
+      ))
+      .returning({
+        userId: schemaMachineEnrollmentToken.createdByUserId,
+        organizationId: schemaMachineEnrollmentToken.organizationId,
+      });
+    // Credited once, to whoever made the token: a retried completion joins nothing new.
+    for (const { userId, organizationId } of joined) {
+      yield* (yield* PostHog).capture({ userId, organizationId, event: "server_enrolled", properties: { founder } });
+    }
+  },
+);
+
+/**
+ * One setup report becomes one event for whoever made the token, as `server_enrolled` is.
+ * Enrollment itself is never touched.
+ */
+export const recordMachineSetupReport = Effect.fn("MachineEnrollment.recordSetupReport")(
+  function* (input: { readonly token: string; readonly report: SetupReport }) {
+    const { drizzle } = yield* Database;
+    const [row] = yield* drizzle
+      .select({
+        userId: schemaMachineEnrollmentToken.createdByUserId,
+        organizationId: schemaMachineEnrollmentToken.organizationId,
+        joinedMachineId: schemaMachineEnrollmentToken.joinedMachineId,
+        expiresAt: schemaMachineEnrollmentToken.expiresAt,
+      })
+      .from(schemaMachineEnrollmentToken)
+      .where(eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(input.token)))
+      .limit(1);
+    if (!setupReportAccepted(row, input.report.outcome, new Date())) {
+      return yield* new NotFound({ message: "Enrollment not found." });
+    }
+    yield* (yield* PostHog).capture({
+      userId: row.userId,
+      organizationId: row.organizationId,
+      event: `server_setup_${input.report.outcome}`,
+      properties: setupReportProperties(input.report),
+    });
   },
 );
 
@@ -507,7 +554,7 @@ export const completeMachineEnrollment = Effect.fn(
         }
         yield* requireEnrollmentMachine(token.organizationId, current, pairing.secret, machineId);
       }));
-      yield* recordJoined(input.token, machineId);
+      yield* recordJoined(input.token, machineId, { founder: false });
       return { machineId };
     }
     // Past this, `machineId` is the founder (a retried completion may have founded it already).
@@ -517,7 +564,7 @@ export const completeMachineEnrollment = Effect.fn(
     yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId: token.organizationId })).pipe(
       Effect.catch((error) => Effect.logWarning("Cluster Domain sync request failed; enrollment continues.", error)),
     );
-    yield* recordJoined(input.token, machineId);
+    yield* recordJoined(input.token, machineId, { founder: true });
     // Its published Environments deploy to it, durably: a retried completion sends this again, and Inngest runs it once.
     yield* sendInngestEvent(createConfigFirstServerJoinedEvent({ organizationId: token.organizationId, machineId })).pipe(
       Effect.catch((error) => Effect.logWarning("Deploying to the first Server was not requested; its Deploy button does it.", error)),

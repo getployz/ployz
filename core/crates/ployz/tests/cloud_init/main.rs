@@ -5,6 +5,7 @@ mod daemon_sync;
 mod founder_resumption;
 mod harness;
 mod policy;
+mod setup_report;
 mod signed_in;
 
 use harness::{

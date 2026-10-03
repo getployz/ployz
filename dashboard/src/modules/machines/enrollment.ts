@@ -1,5 +1,5 @@
 import type { MachineId, MachineRuntime, RegisterRequest } from "@ployz/sdk";
-import { Effect, Schema } from "effect";
+import { Effect, Schema, SchemaGetter } from "effect";
 import type { JsonValue } from "#/db/tables";
 
 export const MACHINE_ID_PATTERN = /^[0-9a-f]{32}$/u;
@@ -160,6 +160,104 @@ export const enrollmentCallbackBodySchema = Schema.Union([
 ]);
 
 export type EnrollmentCallback = typeof enrollmentCallbackBodySchema.Type;
+
+/** The phases of `server add --token`; each name is a PostHog property, so renaming one breaks analytics. */
+const SetupStep = Schema.Literals(["install", "enroll", "storage", "join"]);
+const Seconds = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
+/** `schema`, with `clean` applied on decode; encoding leaves the text as is.
+ * Long text is cut rather than rejected, so a long field never loses the report. */
+const cleaned = (schema: Schema.String, clean: (value: string) => string) =>
+  schema.pipe(Schema.decodeTo(Schema.String, {
+    decode: SchemaGetter.transform(clean),
+    encode: SchemaGetter.transform((value) => value),
+  }));
+const ProfileText = cleaned(NonEmptyString, (value) => value.slice(0, 256));
+
+// Not part of a longer dotted number, but a sentence's closing period still ends it.
+const IPV4 = /(?<!\d\.?)(?:\d{1,3}\.){3}\d{1,3}(?!\.?\d)/gu;
+// Eight full groups, or any groups around `::`, with an optional zone. Needing `::` or eight groups
+// spares times (12:34:56), MAC addresses and Rust paths (`std::io` is not hex).
+const IPV6 = /(?<!\w)(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:)*[0-9a-f]{0,4}::(?:[0-9a-f]{1,4}:)*[0-9a-f]{0,4})(?:%[\w.-]+)?(?![\w:])/giu;
+
+/** An error the user saw, with every IP address replaced by `<ip>`; hostnames stay. */
+export function redactIpAddresses(text: string) {
+  return text.replace(IPV4, "<ip>").replace(IPV6, "<ip>");
+}
+
+/** Fields both outcomes carry; unknown fields from newer CLIs are dropped. */
+const setupReportFields = {
+  profile: Schema.Struct({
+    provider: Schema.optionalKey(ProfileText),
+    instanceType: Schema.optionalKey(ProfileText),
+    osId: Schema.optionalKey(ProfileText),
+    osVersion: Schema.optionalKey(ProfileText),
+    kernel: Schema.optionalKey(ProfileText),
+    arch: Schema.optionalKey(ProfileText),
+    virtualization: Schema.optionalKey(ProfileText),
+    cpuCount: Schema.optionalKey(NonnegativeSafeInteger),
+    memoryTotalBytes: Schema.optionalKey(NonnegativeSafeInteger),
+    diskTotalBytes: Schema.optionalKey(NonnegativeSafeInteger),
+    storage: Schema.optionalKey(ProfileText),
+    ployzVersion: Schema.optionalKey(ProfileText),
+    founder: Schema.optionalKey(Schema.Boolean),
+  }),
+  steps: Schema.Array(Schema.Struct({ name: SetupStep, seconds: Seconds })),
+  totalSeconds: Seconds,
+};
+
+/** What `server add --token` reports about its Server and how setup went. */
+export const setupReportSchema = Schema.Union([
+  Schema.Struct({ outcome: Schema.Literal("succeeded"), ...setupReportFields }),
+  Schema.Struct({
+    outcome: Schema.Literal("failed"),
+    ...setupReportFields,
+    failedStep: SetupStep,
+    failedStepSeconds: Seconds,
+    error: cleaned(Schema.String, (value) => redactIpAddresses(value).slice(0, 1_000)),
+  }),
+]);
+
+export type SetupReport = typeof setupReportSchema.Type;
+
+/** The Cloud Enroll Token a setup report is for: who made it, and whether it joined or expired. */
+export type EnrollmentTokenRow = {
+  readonly userId: string;
+  readonly organizationId: string;
+  readonly joinedMachineId: string | null;
+  readonly expiresAt: Date;
+};
+
+/**
+ * Success counts only once the token joined a Machine; failure only while it is still pending,
+ * so a token can't be used to inject events after the fact.
+ */
+export function setupReportAccepted(
+  row: EnrollmentTokenRow | undefined,
+  outcome: SetupReport["outcome"],
+  now: Date,
+): row is EnrollmentTokenRow {
+  if (row === undefined) return false;
+  if (outcome === "succeeded") return row.joinedMachineId !== null;
+  return row.joinedMachineId === null && row.expiresAt.getTime() > now.getTime();
+}
+
+const snakeCase = (key: string) => key.replace(/[A-Z]/gu, (letter) => `_${letter.toLowerCase()}`);
+
+/** The report as flat snake_case PostHog properties, so each one charts and breaks down directly. */
+export function setupReportProperties(report: SetupReport) {
+  const properties: Record<string, string | number | boolean> = {};
+  for (const [key, value] of Object.entries(report.profile)) {
+    properties[snakeCase(key)] = value;
+  }
+  for (const step of report.steps) properties[`step_${step.name}_seconds`] = step.seconds;
+  properties["total_seconds"] = report.totalSeconds;
+  if (report.outcome === "failed") {
+    properties["failed_step"] = report.failedStep;
+    properties["failed_step_seconds"] = report.failedStepSeconds;
+    properties["error"] = report.error;
+  }
+  return properties;
+}
 
 export type CloudPairing = {
   secret: string;

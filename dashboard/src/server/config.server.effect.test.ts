@@ -44,6 +44,7 @@ describe("AppConfig", () => {
       assert.strictEqual(Redacted.value(config.auth.secret), "better-auth-secret");
       assert.strictEqual(config.github.appSlug, "ployz-test");
       assert.deepStrictEqual(config.polar, { mode: "self_hosted" });
+      assert.strictEqual(config.posthog, null);
     }),
   );
 
@@ -85,6 +86,20 @@ describe("AppConfig", () => {
         const failure = yield* Effect.flip(load({ ...requiredEnvironment, ...polar }));
         assert.instanceOf(failure, InvalidConfiguration);
       }
+    }),
+  );
+
+  it.effect("loads PostHog from its key, on US Cloud unless a host is set", () =>
+    Effect.gen(function* () {
+      const cloud = yield* load({ ...requiredEnvironment, POSTHOG_KEY: "phc_test" });
+      assert.deepStrictEqual(cloud.posthog, { key: "phc_test", host: "https://us.i.posthog.com" });
+
+      const proxied = yield* load({
+        ...requiredEnvironment,
+        POSTHOG_KEY: "phc_test",
+        POSTHOG_HOST: "https://e.example.com/",
+      });
+      assert.deepStrictEqual(proxied.posthog, { key: "phc_test", host: "https://e.example.com" });
     }),
   );
 

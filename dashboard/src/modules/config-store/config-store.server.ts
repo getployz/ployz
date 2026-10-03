@@ -19,6 +19,7 @@ import {
   type ConfigDeploymentAdmittedEventData,
 } from "#/modules/inngest/events";
 import { Database } from "#/server/database.server";
+import { PostHog } from "#/modules/analytics/posthog.server";
 import { NotFound } from "#/server/public-error";
 import { cancelGithubRun } from "#/modules/github/github-build.server";
 import { countOrganizationMachines, loadOrganizationConnections } from "#/modules/machines/connections.server";
@@ -188,12 +189,20 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
   yield* requestChecks(organizationId, written.checks);
 });
 
+/** Where a member's Store write came from, for product analytics: the dashboard, or the CLI and the coding agent it detected. */
+export type StoreSource = { readonly source: "dashboard" } | { readonly source: "cli"; readonly agent: string | null };
+
 /**
  * One Store read or write by user `userId` (null: Cloud itself) as `organizationId`: the answer, or the Store's refusal verbatim. It first
  * gathers the trusted evidence the call needs (`gatherTrusted`). Anything else (the Store failing to open, a broken
  * binding) is a defect.
  */
-export const callStore = <C extends StoreCall>(organizationId: string, userId: string | null, call: C) => Effect.gen(function* () {
+export const callStore = <C extends StoreCall>(
+  organizationId: string,
+  userId: string | null,
+  call: C,
+  source: StoreSource = { source: "dashboard" },
+) => Effect.gen(function* () {
   const store = yield* cloudStore;
   const read: StoreRead = (query) => store.read(organizationId, query);
   return yield* Effect.gen(function* () {
@@ -205,6 +214,15 @@ export const callStore = <C extends StoreCall>(organizationId: string, userId: s
     yield* afterWrite(organizationId, call.command, written).pipe(
       Effect.catchCause((cause) => Effect.logWarning("Cloud's follow-up to a committed Store write failed.", cause)),
     );
+    // One event for every command, so dashboards follow the domain, not the UI. Cloud's own writes aren't a user's.
+    if (userId !== null) {
+      yield* (yield* PostHog).capture({
+        userId,
+        organizationId,
+        event: "config_command",
+        properties: { command: call.command.command, ...source },
+      });
+    }
     return { ok: true, value: written };
   }).pipe(
     // SAFETY: a read answers its query's view, a write what it wrote.

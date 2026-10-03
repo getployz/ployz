@@ -9,7 +9,6 @@
     "**/routeTree.gen.ts",
     "drizzle/**",
     "scripts/**",
-    "src/tailwind-typography.js",
     ".agent/**",
     ".agents/**",
     ".claude/**",

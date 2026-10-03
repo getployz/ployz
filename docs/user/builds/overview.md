@@ -8,9 +8,9 @@ deploys from GitHub is built this way, with [Railpack](railpack-and-dockerfiles.
 don't need a Dockerfile. Services that run a [Docker image](../deploy/docker-image.md) skip
 the build.
 
-Each deploy builds your commit on one of your servers or on GitHub Actions, then sends the
-image straight to the servers that run the service. You don't need a container registry. To
-choose where builds run, see [Where builds run](where-builds-run.md).
+Each deploy builds your commit on one of your servers or on GitHub Actions. The image lands on
+one of your servers, which sends it to every server that runs the service. You don't need a
+container registry. To choose where builds run, see [Where builds run](where-builds-run.md).
 
 ## When Ployz builds
 

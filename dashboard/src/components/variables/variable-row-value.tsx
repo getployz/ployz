@@ -74,7 +74,7 @@ export function VariableRowValue({
       {needsValue ? (
         <span className="min-w-0 flex-1 truncate text-xs text-warning">needs a value</span>
       ) : (
-        <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
+        <span className="ph-no-capture min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
           {isSealed || !revealed ? MASK : plainValue}
         </span>
       )}

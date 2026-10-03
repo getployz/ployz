@@ -1,3 +1,7 @@
+## Running it
+
+- `scripts/verify/up.sh` runs a seeded, signed-in dashboard for this checkout, even a fresh worktree: it installs `node_modules` and builds the native SDK. To verify UI changes in a browser, use the `verify-dashboard` skill.
+
 <!-- intent-skills:start -->
 ## Skill Loading
 

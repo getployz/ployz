@@ -4,7 +4,7 @@
 //! Environment's lock, so edits to different Settings never overwrite each other.
 //! A caller may pass the revision it read; the edit then refuses if Working State moved.
 
-use ployz_core::RpcError;
+use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
@@ -17,6 +17,7 @@ use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::sealing::SealingKey;
 use crate::settings::{Apply, ServiceSetting, SettingPath, Target};
 use crate::storage::Tx;
+use crate::typed_address::{Instead, Typed};
 use crate::variables::{self, VariableKey};
 use crate::{Actor, Trusted};
 
@@ -72,6 +73,23 @@ pub struct Edited {
     pub staged: Vec<SettingPath>,
     /// Settings that took effect at once.
     pub immediate: Vec<SettingPath>,
+    /// Variables this edit set to a value with Typed Addresses, each with what to set
+    /// instead.
+    // An older Cloud doesn't send it.
+    #[serde(default)]
+    pub typed_addresses: Vec<TypedAddresses>,
+}
+
+/// The Typed Addresses in one variable an edit set: whose they are, and what to set
+/// instead.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct TypedAddresses {
+    /// The variable, as SERVICE.env.KEY.
+    pub path: SettingPath,
+    /// The Services whose private addresses it types.
+    pub services: Vec<ServiceName>,
+    /// What to set instead.
+    pub instead: Instead,
 }
 
 pub(crate) fn edit(
@@ -91,7 +109,10 @@ pub(crate) fn edit(
     environment.expect(edit.expect)?;
     let before = environment.working.clone();
     let (mut staged, mut immediate) = (Vec::new(), Vec::new());
+    let mut typed_addresses: Vec<TypedAddresses> = Vec::new();
     for (path, value) in expand(&edit.changes)? {
+        // Only the last change to a variable decides what it types.
+        typed_addresses.retain(|typed| typed.path != path);
         let service = path.settings_of()?;
         // A new credential applies at once; turning one on or off is staged.
         if let Some(Target::Setting(setting @ ServiceSetting::RegistryCredential)) = path.target() {
@@ -162,10 +183,16 @@ pub(crate) fn edit(
                     json!({ "example": { "image": "nginx:1.27" } }),
                 ));
             }
-            (Some(Target::Variable(key)), Some(value)) => (
-                variables::set(&mut environment, service, key, value, sealing)?,
-                Apply::Staged,
-            ),
+            (Some(Target::Variable(key)), Some(value)) => {
+                let (changed, typed) =
+                    variables::set(&mut environment, service, key, value, sealing)?;
+                typed_addresses.extend(typed.map(|Typed { services, instead }| TypedAddresses {
+                    path: path.clone(),
+                    services,
+                    instead,
+                }));
+                (changed, Apply::Staged)
+            }
             (Some(Target::Exported(key)), Some(value)) => (
                 variables::set_exported(&mut environment, service, key, value)?,
                 Apply::Staged,
@@ -215,6 +242,7 @@ pub(crate) fn edit(
         environment: environment.summary,
         staged,
         immediate,
+        typed_addresses,
     })
 }
 

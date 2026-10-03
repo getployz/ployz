@@ -235,7 +235,7 @@ fn valid_checksum(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn verify_checksum(bytes: &[u8], archive: &str, expected: &str) -> Result<(), Error> {
+pub(super) fn verify_checksum(bytes: &[u8], archive: &str, expected: &str) -> Result<(), Error> {
     let actual = hex::encode(Sha256::digest(bytes));
     if actual == expected {
         Ok(())

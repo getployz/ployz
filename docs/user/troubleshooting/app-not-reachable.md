@@ -117,8 +117,9 @@ ployz server set web-1 --public-ip 203.0.113.10
 
 You'll see errors like `ECONNREFUSED 127.0.0.1:5432` or `getaddrinfo ENOTFOUND api.internal`.
 
-- Use the other service's private name, like `postgres.internal`, never `localhost`. It's in
-  that service's **Settings → Networking**, under **Private Networking**.
+- Reference the other service's address, like `${{ postgres.PLOYZ_PRIVATE_DOMAIN }}`, never
+  `localhost`. Its private name is in that service's **Settings → Networking**, under
+  **Private Networking**.
 - Use the port it listens on inside its container, like `5432`.
 - For a web service, use `http://`, not `https://`: traffic between services stays on your
   private network.

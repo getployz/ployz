@@ -64,7 +64,7 @@ export function storeHintNotes(diff: DiffView, groups: readonly ChangeGroup[], n
             <Item key={key} variant="outline" size="sm">
               <ItemContent className="min-w-0">
                 <ItemTitle>{shown.node} · {shown.label}</ItemTitle>
-                {staged ? <ItemDescription className="font-mono">{shown.after || "—"}</ItemDescription> : null}
+                {staged ? <ItemDescription className="ph-no-capture font-mono">{shown.after || "—"}</ItemDescription> : null}
               </ItemContent>
               <ItemActions>{note}</ItemActions>
             </Item>
@@ -82,7 +82,7 @@ function HintNote({ hint, version }: { hint: PullRequestHint; version: string })
   const shown = presentRow(hint);
   return (
     <span className="flex min-w-0 items-center gap-1 text-muted-foreground">
-      PR #{hint.pull_request}: <span className="truncate font-mono text-foreground">{shown.after || "—"}</span>
+      PR #{hint.pull_request}: <span className="ph-no-capture truncate font-mono text-foreground">{shown.after || "—"}</span>
       <Button variant="link" size="xs" aria-label={`Use PR #${hint.pull_request}'s ${shown.node} ${shown.label}`}
         onClick={() => take(hint.conditional_sync, hint.row, version)}>
         Use
@@ -97,7 +97,7 @@ function FollowNote({ hint, version }: { hint: FollowHint; version: string }) {
   const shown = presentRow(hint);
   return (
     <span className="flex min-w-0 items-center gap-1 text-muted-foreground">
-      {hint.from} has since set <span className="truncate font-mono text-foreground">{shown.after || "—"}</span>
+      {hint.from} has since set <span className="ph-no-capture truncate font-mono text-foreground">{shown.after || "—"}</span>
       <Button variant="link" size="xs" aria-label={`Use theirs: ${hint.from}'s ${shown.node} ${shown.label}`} onClick={() => take(hint.from, hint.row, version)}>
         Use theirs
       </Button>

@@ -31,7 +31,8 @@ export function VariableValueTextarea({
   });
 
   return (
-    <div className="relative">
+    // Variable values are secrets: replays hide the field and its suggestions.
+    <div className="relative ph-no-capture">
       <Textarea
         ref={autocomplete.ref}
         value={value}

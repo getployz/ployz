@@ -28,7 +28,8 @@ export function VariableValueInput({
   });
 
   return (
-    <div className="relative">
+    // Variable values are secrets: replays hide the field and its suggestions.
+    <div className="relative ph-no-capture">
       <Input
         ref={autocomplete.ref}
         value={value}

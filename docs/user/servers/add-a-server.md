@@ -10,8 +10,10 @@ your other servers on a private network.
 
 - **A Linux server with systemd**, amd64 or arm64, from any provider: a Hetzner Cloud server, a
   DigitalOcean Droplet, a bare-metal box.
-- **Ubuntu LTS on a VM or bare metal** for managed volumes. Anything else works
-  [without them](#start-without-zfs).
+- **Ubuntu LTS, Debian 12–13 or Amazon Linux 2023 on a VM or bare metal** for managed volumes.
+  Anything else works [without them](#start-without-zfs).
+- **A main disk of 30 GB or more.** Ployz keeps a quarter of the disk, at least 10 GB, free for
+  the system. On EC2, raise the root volume from its 8 GB default when you launch the instance.
 - **Root**, or a user that can run `sudo`.
 - **Outbound internet access**, and a **public IP address** on at least one server so visitors
   can reach your apps.
@@ -22,7 +24,7 @@ You don't need Docker: Ployz installs it if it's missing.
 
 1. Go to **Servers** and click **Add server**. While you have no server, the bottom bar of your
    environment offers **Add a server** too.
-2. Not on Ubuntu LTS, or can't run ZFS? Click **Start without it** in the dialog first; see
+2. Not on Ubuntu, Debian or Amazon Linux, or can't run ZFS? Click **Start without it** in the dialog first; see
    [Start without ZFS](#start-without-zfs).
 3. Click **Copy** next to the command under **Run this as root**.
 4. Open a shell on the server, as root or as a user with `sudo`, and paste the command. The
@@ -48,12 +50,17 @@ you deploy; see [Scaling](../services/scaling.md#add-a-server).
 The command sets up managed volumes with ZFS, so every [volume](../services/volumes.md) gets a
 storage limit. ZFS needs:
 
-- Ubuntu LTS with its stock kernel.
+- Ubuntu LTS with its stock kernel, Debian 12 or 13, or Amazon Linux 2023.
+- Secure Boot off, on Debian and Amazon Linux.
 - A VM or bare metal, not an OpenVZ or unprivileged LXC container.
 - Free space on the main disk for your volumes.
 
-If your server can't run ZFS, click **Start without it** under "Not on Ubuntu, or can't run
-ZFS?" in the dialog. The command then ends in `--storage none`, and **Use ZFS instead** switches
+On Ubuntu, ZFS comes ready-made. On Debian and Amazon Linux, the server builds it, so the command
+takes longer: 15–20 minutes on a 2-vCPU Amazon Linux Server, a few minutes on Debian. The build
+tools stay installed, so ZFS can be rebuilt when the kernel updates.
+
+If your server can't run ZFS, click **Start without it** under "Other Linux, or can't run ZFS?"
+in the dialog. The command then ends in `--storage none`, and **Use ZFS instead** switches
 back.
 
 The server then shows **Docker only**. If none of your servers has managed volumes, every new volume,
@@ -75,8 +82,11 @@ these there:
 ## Good to know
 
 - **Operating system updates stay with you.** Ployz doesn't install them.
-- **Already running Docker?** Ployz keeps it and its settings. Docker's default never rotates
-  container logs, so they can fill the disk; see
+- **Already running Docker?** Ployz keeps it and its settings, if it's Docker 29.2 or newer
+  with buildx 0.18 or newer and the containerd image store turned on. Otherwise setup stops
+  before changing anything; see
+  [The install stops while checking Docker](../troubleshooting/servers.md#the-install-stops-while-checking-docker).
+  Docker's default never rotates container logs, so they can fill the disk; see
   [The server's disk is filling up](../troubleshooting/servers.md#the-servers-disk-is-filling-up).
 
 Next: [manage your servers](manage-servers.md).

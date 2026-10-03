@@ -186,7 +186,7 @@ function ChangeLine({ kind, label, value, onDiscard, discardNode, onNeverSync, c
 function Value({ kind, before, after }: { kind: ChangeKind; before: string; after: string }) {
   const shown = kind === "remove" ? before : after;
   return (
-    <span className="flex max-w-60 min-w-0 items-center justify-end gap-1.5 font-mono text-xs" title={shown}>
+    <span className="ph-no-capture flex max-w-60 min-w-0 items-center justify-end gap-1.5 font-mono text-xs" title={shown}>
       {kind === "update" && before ? (
         <><span className="truncate text-muted-foreground">{before}</span><ArrowRightIcon className="size-3 shrink-0 text-muted-foreground" /></>
       ) : null}

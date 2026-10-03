@@ -170,9 +170,9 @@ function SyncRowItem({ row, into, ticked, left, onFlip, onNeverSync, value, onVa
       ) : row.secret ? (
         <Input type="password" autoComplete="off" aria-label={`Set ${into}'s value of ${line.name}`}
           placeholder={row.secret.held ? "Value held" : `Set ${into}'s value`} value={value}
-          onChange={(event) => onValue(event.target.value)} className="w-48" />
+          onChange={(event) => onValue(event.target.value)} className="ph-no-capture w-48" />
       ) : (
-        <span className="flex max-w-60 min-w-0 items-center justify-end gap-1.5 font-mono text-xs">
+        <span className="ph-no-capture flex max-w-60 min-w-0 items-center justify-end gap-1.5 font-mono text-xs">
           {line.before ? <><span className="truncate text-muted-foreground">{line.before}</span><ArrowRightIcon className="size-3 shrink-0 text-muted-foreground" /></> : null}
           <span className="truncate">{line.after}</span>
         </span>
