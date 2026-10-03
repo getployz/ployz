@@ -65,8 +65,6 @@ export type StoreService = {
   edit: (change: Change) => Persistable;
   /** Sets Setting `name`, or unsets it (null). */
   set: (name: string, value: JsonValue | null) => Persistable;
-  /** Drops Setting `name`'s staged change: the row goes back to what's deployed. */
-  discard: (name: string) => void;
 };
 
 /** A Service's source as its Settings say, pending edits included; an upload only while it has none of its own. */
@@ -132,7 +130,6 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
     path,
     edit,
     set: (name, value) => edit(value === null ? { op: "unset", path: path(name) } : { op: "set", path: path(name), value }),
-    discard: (name) => void writer.commit({ command: "discard", environment: store, path: path(name), version: diff.version }),
   };
   // A service made from a database template is reached privately and keeps its data in a volume: its panel leads with
   // that, where a web service leads with its public domain.
@@ -317,7 +314,7 @@ function StoreSettingField({ state, name, warning }: { state: StoreService; name
       <ServiceCommandField label={setting.title} addLabel={command.addLabel} description={hint(name, setting)} placeholder={command.placeholder}
         compact={command.compact} value={row.value === null || settingText(row.value) === command.unset ? null : settingText(row.value)}
         {...changedProps(change)}
-        note={change ? <StagedNote before={shownSetting(change.before, setting)} onUndo={() => state.discard(name)} /> : null}
+        note={change ? <StagedNote before={shownSetting(change.before, setting)} /> : null}
         validate={(raw) => settingError(setting, raw)} onCommit={(value) => edit(value === null || value === command.unset ? "" : value)} />
     );
   }
@@ -327,7 +324,7 @@ function StoreSettingField({ state, name, warning }: { state: StoreService; name
       <FieldContent>
         <FieldLabel>{setting.title}</FieldLabel>
         <FieldDescription>{hint(name, setting)}</FieldDescription>
-        {change ? <StagedNote before={shownSetting(change.before, setting)} onUndo={() => state.discard(name)} /> : null}
+        {change ? <StagedNote before={shownSetting(change.before, setting)} /> : null}
         {warning}
         {refusal ? <FieldError>{refusal}</FieldError> : null}
       </FieldContent>
@@ -521,8 +518,8 @@ export function StoreSourceSection({ state }: { state: StoreService }) {
         <FieldContent>
           <FieldLabel>{kind === "repository" ? "Repository" : "Image"}</FieldLabel>
           {state.service.template ? <FieldDescription>From the {templateLabel(state.service.template)} template.</FieldDescription> : null}
-          {/* Undo takes the whole source back: its parts change as one row. */}
-          {change ? <StagedNote before={sourceText(state.changes.get("source")?.before ?? null) || "none"} onUndo={() => state.discard(kind)} /> : null}
+          {/* Its parts change as one row, so it was the whole source. */}
+          {change ? <StagedNote before={sourceText(state.changes.get("source")?.before ?? null) || "none"} /> : null}
         </FieldContent>
         <div className="flex min-w-0 shrink-0 items-center gap-1">
           <span className={cn("flex min-w-0 items-center gap-2 rounded-lg border border-transparent text-sm", change && "border-changed-border bg-changed-soft px-2 py-1")}>
