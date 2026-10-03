@@ -25,7 +25,7 @@ import { buildStoreEdges, buildStoreNodes, volumeTrays } from "./canvas/nodes";
 import type { StoreCanvas } from "./canvas/types";
 import { branchQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { liveNodes } from "#/modules/config-store/store-branches";
-import { serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
+import { serviceChangeCount, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { StorePickingProvider } from "./new-branch/StoreNewBranchPanel";
 import { StorePrPickingProvider } from "./pr-environments/StorePrPlanPanel";
@@ -102,7 +102,7 @@ function CanvasWithData() {
       return {
         service,
         domains: domains.filter((domain) => domain.service === service.name),
-        changeCount: changes.size,
+        changeCount: serviceChangeCount(diff, service.id),
         runtimeIdentity: namespace.ok ? `${namespace.value.namespace}/${privateDns}` : null,
         desiredReplicas: isReplicaCount(replicas) ? replicas : null,
         trays: trays.get(service.id) ?? [],

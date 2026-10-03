@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { DiffView, DomainRow, RowId, ServiceListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import { serviceSetting, settingChange, settingError } from "./catalog";
-import { domainChanged, newServiceName, serviceChanges } from "./store-services";
+import { domainChanged, newServiceName, serviceChangeCount, serviceChanges } from "./store-services";
 
 const listed = (name: string, privateDns = name): ServiceListing =>
   ({ id: `${name}-id`, row: `${name}:node` as RowId, name, private_dns: privateDns, source: "image", change: null, template: null });
@@ -72,6 +72,8 @@ it("reads a source change as a change to each field of it that differs", () => {
   expect(changes.get("image")).toMatchObject({ path: "web.source", before: null, after: "web:2" });
   expect(changes.get("repository")).toMatchObject({ before: "acme/web", after: null });
   expect(changes.get("registryCredential")).toMatchObject({ before: null, after: { secret: true } });
+  // One source row is one change on the card, whichever of its fields it moves.
+  expect(serviceChangeCount(diff, "a")).toBe(1);
 });
 
 it("marks the domains the next Deploy changes: the generated one by its list, a custom one by its route's hostname", () => {

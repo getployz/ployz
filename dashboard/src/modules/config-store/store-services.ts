@@ -78,9 +78,14 @@ export function serviceSettingRows(view: EnvironmentView, service: string) {
   return new Map(view.settings.flatMap((row) => row.path.startsWith(prefix) ? [[row.path.slice(prefix.length), row] as const] : []));
 }
 
+const serviceNode = (diff: DiffView, id: string) => diff.changes.find((change) => change.type === "service" && change.id === id);
+
+/** How many changes the next Deploy makes to one Service: its rows, as Details lists them, a source change being one. */
+export const serviceChangeCount = (diff: DiffView, id: string) => serviceNode(diff, id)?.settings.length ?? 0;
+
 /** What the next Deploy changes in one Service, by Setting name (`name` for a rename). */
 export function serviceChanges(diff: DiffView, id: string): Map<string, ServiceSettingChange> {
-  const node = diff.changes.find((change) => change.type === "service" && change.id === id);
+  const node = serviceNode(diff, id);
   const changes = new Map(node?.settings.map((row) => [row.path.slice(row.path.indexOf(".") + 1), row]) ?? []);
   // The source is one change; each field it holds reads as changed where it differs.
   const source = changes.get("source");
