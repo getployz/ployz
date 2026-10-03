@@ -64,6 +64,11 @@ pub fn compare_service_settings(
         Some(source_cell(&config.settings.source)).filter(|cell| *cell != default_value("source"))
     };
     let (before, after) = (baseline.and_then(source), source(current));
+    // A git branch that comes or goes with its source is the source's change.
+    let switched = baseline.is_some_and(|baseline| {
+        std::mem::discriminant(&baseline.settings.source)
+            != std::mem::discriminant(&current.settings.source)
+    });
     let mut changes = Vec::new();
     if before != after {
         changes.push(change(
@@ -89,11 +94,7 @@ pub fn compare_service_settings(
     for &(path, setting) in FIELDS {
         let before = at(&baseline, path);
         let after = at(&current, path);
-        // A git branch that comes or goes with its source is the source's change.
-        let switched = path == "source.branch"
-            && !baseline.is_null()
-            && at(&baseline, "source.type") != at(&current, "source.type");
-        if before == after || switched {
+        if before == after || (switched && path == "source.branch") {
             continue;
         }
         if baseline.is_null() && *after == default_value(path) {
