@@ -28,19 +28,22 @@ pub(super) fn prepare_storage(storage: StorageChoice, paths: &InstallPaths) -> R
 }
 
 /// Distros named in the refusal; each has a [`ZfsRoute`].
-const SUPPORTED_DISTROS: &str = "Ubuntu LTS";
+const SUPPORTED_DISTROS: &str = "Ubuntu LTS or Debian 12–13";
 
 /// How the ZFS kernel module becomes loadable on the Machine's distro.
 #[derive(Clone, Copy)]
 enum ZfsRoute {
     /// Canonical's prebuilt module package for the running kernel.
     Ubuntu,
+    /// Debian's `zfs-dkms` from `contrib`, built on the Machine and rebuilt by DKMS for new kernels.
+    Debian,
 }
 
 impl ZfsRoute {
     fn for_os(os: &OsRelease) -> Result<Self, Error> {
-        match os.id.as_str() {
-            "ubuntu" => Ok(Self::Ubuntu),
+        match (os.id.as_str(), os.version_id.as_str()) {
+            ("ubuntu", _) => Ok(Self::Ubuntu),
+            ("debian", "12" | "13") => Ok(Self::Debian),
             _ => Err(Error::Command {
                 stage: "prepare ZFS storage".into(),
                 message: format!(
@@ -53,7 +56,18 @@ impl ZfsRoute {
 }
 
 fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
-    let route = ZfsRoute::for_os(&OsRelease::read(&paths.os_release)?)?;
+    let os = OsRelease::read(&paths.os_release)?;
+    let route = ZfsRoute::for_os(&os)?;
+    // Unsigned modules this Machine builds can't load under Secure Boot; refuse before installing.
+    if matches!(route, ZfsRoute::Debian) && secure_boot_enabled(paths)? {
+        return Err(Error::Command {
+            stage: "prepare ZFS storage".into(),
+            message: format!(
+                "Secure Boot is on, so this Server can't load the ZFS module Ployz builds for {}. Turn Secure Boot off, use Ubuntu, or add `--storage none`.",
+                os.name
+            ),
+        });
+    }
     let container = container_virtualization();
     if container == "openvz" || (Path::new("/proc/vz").is_dir() && !Path::new("/proc/bc").is_dir())
     {
@@ -71,13 +85,16 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
         });
     }
     match route {
-        ZfsRoute::Ubuntu if !command_exists("apt-get") => {
+        ZfsRoute::Ubuntu | ZfsRoute::Debian if !command_exists("apt-get") => {
             return Err(Error::Command {
                 stage: "prepare ZFS storage".into(),
-                message: "Ubuntu apt-get is required for ZFS storage preparation".into(),
+                message: format!(
+                    "{} apt-get is required for ZFS storage preparation",
+                    os.name
+                ),
             });
         }
-        ZfsRoute::Ubuntu => {}
+        ZfsRoute::Ubuntu | ZfsRoute::Debian => {}
     }
     let kernel = uname("-r", "read running kernel")?;
     require_host_root_reserve(ZFS_SMOKE_BYTES)?;
@@ -85,6 +102,7 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
     persist_zfs_arc_max(paths, cap)?;
     match route {
         ZfsRoute::Ubuntu => install_zfs_packages(&kernel)?,
+        ZfsRoute::Debian => prepare_debian_zfs(paths, &os, &kernel)?,
     }
     run_host("load ZFS kernel module", "modprobe", ["zfs"])?;
     set_and_verify_zfs_arc_max(cap)?;
@@ -94,14 +112,14 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
 }
 
 /// The os-release fields that pick a [`ZfsRoute`] and name the OS in a refusal.
-struct OsRelease {
+pub(super) struct OsRelease {
     id: String,
     name: String,
     version_id: String,
 }
 
 impl OsRelease {
-    fn read(path: &Path) -> Result<Self, Error> {
+    pub(super) fn read(path: &Path) -> Result<Self, Error> {
         let value = fs::read_to_string(path).map_err(|source| Error::Io {
             stage: "identify Linux distribution for ZFS storage preparation",
             source,
@@ -136,13 +154,6 @@ impl OsRelease {
 }
 
 /// Firmware Secure Boot state; a Machine without EFI variables boots with it off.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "TODO(#1349): routes that build the ZFS module refuse when it is on"
-    )
-)]
 pub(super) fn secure_boot_enabled(paths: &InstallPaths) -> Result<bool, Error> {
     match fs::read(&paths.secure_boot) {
         // The variable is 4 attribute bytes followed by one data byte; 1 means on.
@@ -153,6 +164,231 @@ pub(super) fn secure_boot_enabled(paths: &InstallPaths) -> Result<bool, Error> {
             source,
         }),
     }
+}
+
+/// A failed step of a route that builds ZFS, named for the user, and its cause.
+type BuildFailure = (&'static str, Error);
+
+/// Runs `build` unless `kernel` already has ZFS, then checks the module exists.
+///
+/// # Errors
+///
+/// Names the OS, kernel and failing step, and points at `--storage none`.
+fn build_zfs_module(
+    os: &OsRelease,
+    kernel: &str,
+    build: impl FnOnce() -> Result<(), BuildFailure>,
+) -> Result<(), Error> {
+    if zfs_installed(kernel) {
+        return Ok(());
+    }
+    println!("Building ZFS for kernel {kernel}. This takes a few minutes.");
+    build()
+        .and_then(|()| {
+            if zfs_installed(kernel) {
+                Ok(())
+            } else {
+                Err((
+                    "the ZFS module check",
+                    Error::Verification(format!("no ZFS module or tools for kernel {kernel}")),
+                ))
+            }
+        })
+        .map_err(|(step, cause)| {
+            // The drafted message has no room for the cause; keep it in the install log.
+            eprintln!("{cause}");
+            Error::Command {
+                stage: "prepare ZFS storage".into(),
+                message: format!(
+                    "Couldn't build ZFS for kernel {kernel} on {}: {step} failed. Add `--storage none` to start without managed volumes.",
+                    os.display()
+                ),
+            }
+        })
+}
+
+/// Whether `kernel` has a ZFS module and the userspace tools that drive it.
+fn zfs_installed(kernel: &str) -> bool {
+    command_exists("zpool")
+        && command_exists("zfs")
+        && Command::new("modinfo")
+            .args(["-k", kernel, "zfs"])
+            .output()
+            .is_ok_and(|output| output.status.success())
+}
+
+/// Installs Debian's `zfs-dkms`, whose install builds the module for every kernel with headers.
+pub(super) fn prepare_debian_zfs(
+    paths: &InstallPaths,
+    os: &OsRelease,
+    kernel: &str,
+) -> Result<(), Error> {
+    build_zfs_module(os, kernel, || {
+        let Some(flavour) = debian_kernel_flavour(kernel) else {
+            return Err((
+                "reading the kernel flavour",
+                Error::Verification(format!("kernel {kernel} names no Debian flavour")),
+            ));
+        };
+        enable_debian_contrib(&paths.apt_dir).map_err(|error| ("turning on contrib", error))?;
+        run_apt("refresh Debian packages for ZFS", ["update", "-qq"], None)
+            .map_err(|error| ("apt-get update", error))?;
+        // The flavour's meta package pulls headers for future kernels, so DKMS can rebuild.
+        run_apt(
+            "install kernel headers",
+            [
+                "install",
+                "-y",
+                "-qq",
+                "--no-install-recommends",
+                &format!("linux-headers-{kernel}"),
+                &format!("linux-headers-{flavour}"),
+            ],
+            None,
+        )
+        .map_err(|error| ("installing kernel headers", error))?;
+        // run_apt's noninteractive frontend and closed stdin keep the CDDL debconf note from blocking.
+        run_apt(
+            "install ZFS packages",
+            [
+                "install",
+                "-y",
+                "-qq",
+                "--no-install-recommends",
+                "zfs-dkms",
+                "zfsutils-linux",
+            ],
+            None,
+        )
+        .map_err(|error| ("installing zfs-dkms", error))?;
+        Ok(())
+    })
+}
+
+/// The flavour Debian names header packages after: `6.1.0-28-cloud-amd64` → `cloud-amd64`.
+fn debian_kernel_flavour(kernel: &str) -> Option<&str> {
+    kernel
+        .match_indices('-')
+        .map(|(index, _)| &kernel[index + 1..])
+        .find(|rest| !rest.starts_with(|c: char| c.is_ascii_digit()))
+        .filter(|flavour| !flavour.is_empty())
+}
+
+/// Turns on `contrib` for Debian-origin apt entries in both source formats, leaving the rest alone.
+fn enable_debian_contrib(apt_dir: &Path) -> Result<(), Error> {
+    let mut files = vec![apt_dir.join("sources.list")];
+    if let Ok(entries) = fs::read_dir(apt_dir.join("sources.list.d")) {
+        files.extend(entries.filter_map(Result::ok).map(|entry| entry.path()));
+    }
+    for file in files {
+        let edit = match file.extension().and_then(OsStr::to_str) {
+            Some("list") => enable_contrib_one_line,
+            Some("sources") => enable_contrib_deb822,
+            _ => continue,
+        };
+        let text = match fs::read_to_string(&file) {
+            Ok(text) => text,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(source) => {
+                return Err(Error::Io {
+                    stage: "read apt sources",
+                    source,
+                });
+            }
+        };
+        let edited = edit(&text);
+        if edited != text {
+            write_file_atomically(&file, &edited, "turn on Debian contrib")?;
+        }
+    }
+    Ok(())
+}
+
+/// A Debian entry that lacks `contrib`: `main` from a `/debian` or `/debian-security` archive.
+/// That covers deb.debian.org, provider mirrors and Debian cloud images' `mirror+file` lists.
+// ponytail: a path heuristic, not the Release file's Origin; a third-party `/debian … main` repo also gets contrib.
+fn lacks_debian_contrib<'src>(
+    mut uris: impl Iterator<Item = &'src str>,
+    components: &[&str],
+) -> bool {
+    components.contains(&"main")
+        && !components.contains(&"contrib")
+        && uris.any(|uri| {
+            uri.split('/').any(|segment| {
+                matches!(
+                    segment.trim_end_matches(".list"),
+                    "debian" | "debian-security"
+                )
+            })
+        })
+}
+
+/// One-line `deb [options] uri suite component…` entries.
+fn enable_contrib_one_line(text: &str) -> String {
+    text.split('\n')
+        .map(|line| {
+            let (entry, comment) = line.split_once('#').unwrap_or((line, ""));
+            let words: Vec<&str> = entry.split_whitespace().collect();
+            let fields = match words.as_slice() {
+                [kind, rest @ ..] if matches!(*kind, "deb" | "deb-src") => rest,
+                _ => return line.to_owned(),
+            };
+            let fields = match fields.first() {
+                Some(options) if options.starts_with('[') => fields
+                    .iter()
+                    .position(|word| word.ends_with(']'))
+                    .and_then(|end| fields.get(end + 1..))
+                    .unwrap_or_default(),
+                _ => fields,
+            };
+            match fields {
+                [uri, _suite, components @ ..]
+                    if lacks_debian_contrib(std::iter::once(*uri), components) =>
+                {
+                    let comment = if line.contains('#') {
+                        format!(" #{comment}")
+                    } else {
+                        String::new()
+                    };
+                    format!("{} contrib{comment}", entry.trim_end())
+                }
+                _ => line.to_owned(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// deb822 paragraphs, each with its own `URIs:` and `Components:` fields.
+fn enable_contrib_deb822(text: &str) -> String {
+    text.split("\n\n")
+        .map(|paragraph| {
+            let field = |name: &str| {
+                paragraph.lines().find_map(|line| {
+                    let (key, value) = line.split_once(':')?;
+                    key.eq_ignore_ascii_case(name).then_some(value)
+                })
+            };
+            let (Some(uris), Some(components)) = (field("URIs"), field("Components")) else {
+                return paragraph.to_owned();
+            };
+            let components: Vec<&str> = components.split_whitespace().collect();
+            if !lacks_debian_contrib(uris.split_whitespace(), &components) {
+                return paragraph.to_owned();
+            }
+            paragraph
+                .split('\n')
+                .map(|line| match line.split_once(':') {
+                    Some((key, _)) if key.eq_ignore_ascii_case("Components") => {
+                        format!("{} contrib", line.trim_end())
+                    }
+                    _ => line.to_owned(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 fn container_virtualization() -> String {

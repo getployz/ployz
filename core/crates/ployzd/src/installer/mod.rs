@@ -116,6 +116,7 @@ pub(super) struct InstallPaths {
     pub(super) modprobe_dir: PathBuf,
     pub(super) os_release: PathBuf,
     pub(super) secure_boot: PathBuf,
+    pub(super) apt_dir: PathBuf,
 }
 
 impl InstallPaths {
@@ -131,6 +132,7 @@ impl InstallPaths {
             secure_boot: PathBuf::from(
                 "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c",
             ),
+            apt_dir: PathBuf::from("/etc/apt"),
         }
     }
 
@@ -150,6 +152,7 @@ impl InstallPaths {
             modprobe_dir: root.join("modprobe"),
             os_release: root.join("os-release"),
             secure_boot: root.join("efivars/SecureBoot"),
+            apt_dir: root.join("apt"),
         }
     }
 }
@@ -542,19 +545,22 @@ mod tests {
         if let Ok(case) = env::var("PLOYZ_ZFS_UNSUPPORTED_OS_CONTRACT") {
             let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
             let paths = InstallPaths::at(&root);
-            let os = match case.as_str() {
-                "unsupported-distro" => "Fedora Linux 42",
-                "unsupported-version" => "Debian GNU/Linux 11",
-                "no-version" => "Arch Linux",
+            let unsupported = |os: &str| {
+                format!(
+                    "Managed volumes need Ubuntu LTS or Debian 12–13; this Server runs {os}. Use one of those, or add `--storage none`."
+                )
+            };
+            let expected = match case.as_str() {
+                "unsupported-distro" => unsupported("Fedora Linux 42"),
+                "unsupported-version" => unsupported("Debian GNU/Linux 11"),
+                "no-version" => unsupported("Arch Linux"),
+                "secure-boot" => "Secure Boot is on, so this Server can't load the ZFS module Ployz builds for Debian GNU/Linux. Turn Secure Boot off, use Ubuntu, or add `--storage none`.".to_owned(),
                 other => panic!("unknown contract case {other}"),
             };
             assert!(matches!(
                 prepare_storage(StorageChoice::Zfs, &paths),
                 Err(Error::Command { stage, message })
-                    if stage == "prepare ZFS storage"
-                        && message == format!(
-                            "Managed volumes need Ubuntu LTS; this Server runs {os}. Use one of those, or add `--storage none`."
-                        )
+                    if stage == "prepare ZFS storage" && message == expected
             ));
             assert!(!paths.modprobe_dir.exists());
             fs::write(
@@ -575,11 +581,17 @@ mod tests {
                 "PRETTY_NAME=\"Debian GNU/Linux 11 (bullseye)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"11\"\nID=debian\n",
             ),
             ("no-version", "NAME=\"Arch Linux\"\nID=arch\n"),
+            (
+                "secure-boot",
+                "NAME=\"Debian GNU/Linux\"\nVERSION_ID=\"13\"\nID=debian\n",
+            ),
         ] {
             let fixture = fixture(case);
             let commands = fixture.path().join("commands");
             fs::create_dir_all(&commands).unwrap();
             fs::write(fixture.path().join("os-release"), os_release).unwrap();
+            fs::create_dir_all(fixture.path().join("efivars")).unwrap();
+            fs::write(fixture.path().join("efivars/SecureBoot"), [6, 0, 0, 0, 1]).unwrap();
             for command in [
                 "apt-get",
                 "apt-cache",
@@ -611,6 +623,147 @@ mod tests {
                 )],
             );
             assert!(!forbidden.exists(), "{case} ran a host command");
+        }
+    }
+
+    #[test]
+    fn zfs_debian_contract() {
+        const DEBIAN_13_SOURCES: &str = "Types: deb\n# http://snapshot.debian.org/archive/debian/20260918T000000Z\nURIs: http://deb.debian.org/debian\nSuites: trixie trixie-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.pgp\n\nTypes: deb\nURIs: http://deb.debian.org/debian-security\nSuites: trixie-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.pgp\n";
+        const THIRD_PARTY_SOURCES: &str =
+            "Types: deb\nURIs: https://packages.sury.org/php/\nSuites: trixie\nComponents: main\n";
+        const DEBIAN_12_LIST: &str = "deb http://deb.debian.org/debian bookworm main non-free-firmware\ndeb-src http://deb.debian.org/debian bookworm main\ndeb http://security.debian.org/debian-security bookworm-security main # security\n# deb http://deb.debian.org/debian bookworm-backports main\ndeb http://deb.debian.org/debian bookworm-updates main contrib\ndeb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable\ndeb https://packages.sury.org/php/ bookworm main\n";
+
+        let kernel = |case: &str| {
+            if case == "debian-12" {
+                "6.1.0-28-amd64"
+            } else {
+                "6.12.43+deb13-cloud-amd64"
+            }
+        };
+        if let Ok(case) = env::var("PLOYZ_ZFS_DEBIAN_CONTRACT") {
+            let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
+            let paths = InstallPaths::at(&root);
+            let os = super::storage::OsRelease::read(&paths.os_release).unwrap();
+            let result = super::storage::prepare_debian_zfs(&paths, &os, kernel(&case));
+            let failed_step = match case.as_str() {
+                "build-failed" => Some("installing zfs-dkms"),
+                "no-module" => Some("the ZFS module check"),
+                _ => None,
+            };
+            match failed_step {
+                Some(step) => assert!(matches!(
+                    result,
+                    Err(Error::Command { stage, message })
+                        if stage == "prepare ZFS storage"
+                            && message == format!(
+                                "Couldn't build ZFS for kernel 6.12.43+deb13-cloud-amd64 on Debian GNU/Linux 13: {step} failed. Add `--storage none` to start without managed volumes."
+                            )
+                )),
+                None => result.unwrap(),
+            }
+            fs::write(root.join("child-completed"), format!("zfs-debian:{case}")).unwrap();
+            return;
+        }
+
+        for case in [
+            "debian-12",
+            "debian-13",
+            "already-prepared",
+            "build-failed",
+            "no-module",
+        ] {
+            let fixture = fixture(case);
+            let root = fixture.path();
+            let commands = root.join("commands");
+            let sources = root.join("apt/sources.list.d");
+            fs::create_dir_all(&commands).unwrap();
+            fs::create_dir_all(&sources).unwrap();
+            let version = if case == "debian-12" { "12" } else { "13" };
+            fs::write(
+                root.join("os-release"),
+                format!("NAME=\"Debian GNU/Linux\"\nVERSION_ID=\"{version}\"\nID=debian\n"),
+            )
+            .unwrap();
+            if case == "debian-12" {
+                fs::write(root.join("apt/sources.list"), DEBIAN_12_LIST).unwrap();
+            } else {
+                fs::write(sources.join("debian.sources"), DEBIAN_13_SOURCES).unwrap();
+            }
+            fs::write(sources.join("sury.sources"), THIRD_PARTY_SOURCES).unwrap();
+            if case == "already-prepared" {
+                fs::write(root.join("module"), "").unwrap();
+            }
+            write_script(
+                &commands.join("apt-get"),
+                r#"echo "$DEBIAN_FRONTEND $*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/apt.log"
+case "$*" in
+  *zfs-dkms*)
+    if [ "$PLOYZ_ZFS_DEBIAN_CONTRACT" = build-failed ]; then echo "dkms build failed" >&2; exit 100; fi
+    if [ "$PLOYZ_ZFS_DEBIAN_CONTRACT" != no-module ]; then : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module"; fi ;;
+esac"#,
+            );
+            write_script(
+                &commands.join("modinfo"),
+                r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/modinfo.log"; [ -f "$PLOYZ_INSTALLER_CONTRACT_ROOT/module" ]"#,
+            );
+            write_script(&commands.join("zpool"), "exit 0");
+            write_script(&commands.join("zfs"), "exit 0");
+            run_contract_child_with_environment(
+                "zfs_debian_contract",
+                root,
+                OsString::from("PLOYZ_ZFS_DEBIAN_CONTRACT"),
+                OsString::from(case),
+                &format!("zfs-debian:{case}"),
+                [],
+            );
+
+            let kernel = kernel(case);
+            assert!(
+                fs::read_to_string(root.join("modinfo.log"))
+                    .unwrap()
+                    .lines()
+                    .all(|line| line == format!("-k {kernel} zfs")),
+                "{case}"
+            );
+            assert_eq!(
+                fs::read_to_string(sources.join("sury.sources")).unwrap(),
+                THIRD_PARTY_SOURCES,
+                "{case}"
+            );
+            if case == "already-prepared" {
+                assert!(!root.join("apt.log").exists());
+                assert_eq!(
+                    fs::read_to_string(sources.join("debian.sources")).unwrap(),
+                    DEBIAN_13_SOURCES
+                );
+                continue;
+            }
+            if case == "debian-12" {
+                assert_eq!(
+                    fs::read_to_string(root.join("apt/sources.list")).unwrap(),
+                    "deb http://deb.debian.org/debian bookworm main non-free-firmware contrib\ndeb-src http://deb.debian.org/debian bookworm main contrib\ndeb http://security.debian.org/debian-security bookworm-security main contrib # security\n# deb http://deb.debian.org/debian bookworm-backports main\ndeb http://deb.debian.org/debian bookworm-updates main contrib\ndeb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable\ndeb https://packages.sury.org/php/ bookworm main\n"
+                );
+            } else {
+                assert_eq!(
+                    fs::read_to_string(sources.join("debian.sources")).unwrap(),
+                    DEBIAN_13_SOURCES.replace("Components: main", "Components: main contrib"),
+                    "{case}"
+                );
+            }
+            let flavour = if case == "debian-12" {
+                "amd64"
+            } else {
+                "cloud-amd64"
+            };
+            let apt = "noninteractive -o DPkg::Lock::Timeout=300";
+            let expected = format!(
+                "{apt} update -qq\n{apt} install -y -qq --no-install-recommends linux-headers-{kernel} linux-headers-{flavour}\n{apt} install -y -qq --no-install-recommends zfs-dkms zfsutils-linux\n"
+            );
+            assert_eq!(
+                fs::read_to_string(root.join("apt.log")).unwrap(),
+                expected,
+                "{case}"
+            );
         }
     }
 
