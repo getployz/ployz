@@ -161,7 +161,7 @@ pub struct Landed {
     pub row: RowId,
     /// What the base held before; redacted.
     pub prior: Cell,
-    /// `into`'s cell before.
+    /// `into`'s cell before; a source with its git branch.
     pub was: SealedCell,
     /// What arrived; redacted.
     pub value: Cell,
@@ -492,7 +492,15 @@ impl Plan {
                     }
                 },
             };
-            let was = sealed_cell(&self.into, &into_cells, id);
+            let mut was = sealed_cell(&self.into, &into_cells, id);
+            // Undo puts the receiver's git branch back with its source; a Sync never moves one.
+            if let (At::Setting(Setting::Source), SealedCell::Cell(Cell::Value(source))) =
+                (&id.at, &mut was)
+                && let Cell::Value(branch) =
+                    into_cells.at(&RowId::of(&id.lineage, At::Setting(Setting::Branch)))
+            {
+                source["branch"] = branch.clone();
+            }
             if id.at == At::Node {
                 self.introduce(&mut next, base.as_mut(), &id.lineage)?;
             } else {

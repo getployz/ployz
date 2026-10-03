@@ -694,9 +694,10 @@ fn undoing_a_source_switch_rewinds_the_base_to_its_source() {
         json!("web:2")
     );
     assert_eq!(undo(&store, &who, &synced), Ok("production".into()));
+    let web = values(&store, &who, "production", "web");
     assert_eq!(
-        values(&store, &who, "production", "web")["repository"],
-        json!("acme/web")
+        (&web["repository"], &web["branch"]),
+        (&json!("acme/web"), &json!("main"))
     );
 
     // The base holds production's repository again, so only fix-git changed it.
@@ -717,6 +718,37 @@ fn undoing_a_source_switch_rewinds_the_base_to_its_source() {
         ticks(&offered)
     );
     assert_eq!(row(&offered, "web.source").change, SyncChange::Changed);
+}
+
+/// Undo puts a repository back and leaves the git branch the receiver chose since.
+#[test]
+fn undoing_a_repository_sync_keeps_a_branch_chosen_since() {
+    let (store, who) = shop(false);
+    switch(
+        &store,
+        &who,
+        "production",
+        "web.image",
+        ("web.repository", json!("acme/web")),
+    );
+    branch(&store, &who, 10, "production", "fix-git");
+    let docs = Change::Set {
+        path: SettingPath::parse("web.repository").unwrap(),
+        value: json!("acme/docs"),
+    };
+    edit_git(&store, &who, "fix-git", vec![docs]);
+    let synced = sync_into(&store, &who, ("fix-git", "production"), None);
+    let dev = Change::Set {
+        path: SettingPath::parse("web.branch").unwrap(),
+        value: json!("dev"),
+    };
+    edit_git(&store, &who, "production", vec![dev]);
+    assert_eq!(undo(&store, &who, &synced), Ok("production".into()));
+    let web = values(&store, &who, "production", "web");
+    assert_eq!(
+        (&web["repository"], &web["branch"]),
+        (&json!("acme/web"), &json!("dev"))
+    );
 }
 
 #[test]

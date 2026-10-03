@@ -3,7 +3,7 @@
 use serde_json::{Value, json};
 
 use super::*;
-use crate::config::service_changes::default_value;
+use crate::config::service_changes::{default_value, keep_branch};
 use crate::config::{
     ConfigError, SavedEnvironmentIntent as Intent, SavedServiceIntent, SavedVariableIntent,
     SavedVariableValue, ServiceGitBranch, ServiceImageCredentials, ServiceSource, VolumeAttachment,
@@ -195,17 +195,13 @@ pub(super) fn put_setting(
             let fields = value
                 .as_object_mut()
                 .ok_or_else(|| serde::de::Error::custom("not a source"))?;
-            // The git branch is the Service's own: it keeps it, or starts disconnected.
+            // A git source parses with the branch it carries, else none yet.
             if fields.get("type") == Some(&json!("git")) {
-                let branch = match &config.source {
-                    ServiceSource::Git { branch, .. } => branch.clone(),
-                    ServiceSource::Empty { .. } | ServiceSource::Image { .. } => {
-                        ServiceGitBranch::Disconnected {
-                            previous_name: None,
-                        }
-                    }
-                };
-                fields.insert("branch".into(), json!(branch));
+                fields.entry("branch").or_insert_with(|| {
+                    json!(ServiceGitBranch::Disconnected {
+                        previous_name: None
+                    })
+                });
             }
             // Each Service's credential is its own: it is bound to the Service's id.
             if let Some(credentials) = fields.get_mut("credentials") {
@@ -214,7 +210,7 @@ pub(super) fn put_setting(
                     false => json!(ServiceImageCredentials::None),
                 };
             }
-            config.source = parse(value)?;
+            config.source = keep_branch(&config.source, parse(value)?);
         }
         (Setting::Branch, value) => {
             if let ServiceSource::Git { branch, .. } = &mut config.source

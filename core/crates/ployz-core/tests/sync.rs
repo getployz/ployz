@@ -1548,7 +1548,11 @@ fn undoing_a_source_switch_puts_the_source_back() {
     assert_eq!(moves(&plan), std::slice::from_ref(&row));
     let applied = land(&plan, std::slice::from_ref(&row)).unwrap();
     let mut undone = json_of(&unapply(&applied.next, "", &applied.landed).unwrap());
-    assert_eq!(source_of(&mut undone, WEB), source_of(&mut parent(), WEB));
+    // Its git branch too, which the Sync never moved.
+    assert_eq!(
+        svc(&mut undone, WEB)["config"]["source"],
+        svc(&mut parent(), WEB)["config"]["source"]
+    );
 
     let mut next = json_of(&applied.next);
     svc(&mut next, WEB)["config"]["source"]["credentials"] =

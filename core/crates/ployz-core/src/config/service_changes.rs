@@ -155,6 +155,12 @@ pub fn restore_service_setting(
             "Setting has no authored restore operation",
         ));
     }
+    if path == "source" {
+        let mut current = current;
+        current.settings.source =
+            keep_branch(&current.settings.source, baseline.settings.source.clone());
+        return parse_service_config(json!(current));
+    }
     let mut current = json!(current);
     let baseline = json!(baseline);
     if path == "healthcheck" {
@@ -162,20 +168,6 @@ pub fn restore_service_setting(
             .as_object_mut()
             .expect("serialized service")
             .insert("healthcheck".into(), at(&baseline, "healthcheck").clone());
-    } else if path == "source" {
-        // All of it but the git branch, which stays the Service's own where it has one.
-        let mut source = at(&baseline, "source").clone();
-        let branch = at(&current, "source.branch");
-        if let Some(fields) = source.as_object_mut()
-            && fields.contains_key("branch")
-            && !branch.is_null()
-        {
-            fields.insert("branch".into(), branch.clone());
-        }
-        current
-            .as_object_mut()
-            .expect("serialized service")
-            .insert("source".into(), source);
     } else if let Some((parent, field)) = path.split_once('.') {
         let Some(value) = baseline.get(parent).and_then(|v| v.get(field)) else {
             return parse_service_config(current);
@@ -210,6 +202,17 @@ pub(super) fn source_cell(source: &ServiceSource) -> Value {
         fields.insert("credentials".into(), json!(configured));
     }
     cell
+}
+
+/// `source` as a Service on `current` takes it: the git branch is the Service's own, so
+/// it keeps the one it has, else the one `source` carries.
+pub(super) fn keep_branch(current: &ServiceSource, mut source: ServiceSource) -> ServiceSource {
+    if let (ServiceSource::Git { branch: own, .. }, ServiceSource::Git { branch, .. }) =
+        (current, &mut source)
+    {
+        branch.clone_from(own);
+    }
+    source
 }
 
 pub(super) fn default_value(path: &str) -> Value {
