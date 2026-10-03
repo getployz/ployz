@@ -50,12 +50,21 @@ off on your next deploy. To move them off now, drain the server. This is CLI-onl
 ployz server drain web-2
 ```
 
-Draining turns services off for the server, then moves each replicated service's containers to
-your other servers one at a time. Each new container runs the same image and starts serving
-before the old one stops, so the service keeps answering. Pre-deploy commands don't run again,
-and nothing is deployed. Ployz reports what moved where, then what still runs on the server,
-such as a service whose volume is on it. Run it again to retry what failed. Turning services back
-on doesn't move anything back.
+Draining turns services off for the server and stops its global services there. Then it moves
+each replicated service's containers to your other servers one at a time. Each new container runs
+the same image and starts serving before the old one stops, so the service keeps answering.
+Pre-deploy commands don't run again, and nothing is deployed.
+
+A service stays running where it is, and is reported with the reason, when:
+
+- it mounts a volume or a bind mount on the server (tmpfs mounts don't count);
+- its containers run different versions, because a deploy hasn't finished: deploy it first;
+- a server it involves can't be checked right now;
+- no other server can take it.
+
+Ployz reports what moved where, then what still runs on the server. If anything stayed or failed,
+the command exits non-zero. Run it again to retry. Turning services back on doesn't move anything
+back.
 
 Turning web traffic off stops advertising the server, not serving from
 it: your generated addresses stop pointing at it within the hour, or when you click **Check

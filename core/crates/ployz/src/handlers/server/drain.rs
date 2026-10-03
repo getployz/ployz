@@ -1,5 +1,5 @@
-//! `ployz server drain`: turn a Server's services role off, then converge every
-//! replicated user Service with a Container on it.
+//! `ployz server drain`: turn a Server's services role off, retire its user Globals, then
+//! converge every replicated user Service with a Container on it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -16,6 +16,7 @@ use super::remove::{replicated_services_on, select_machine, services_on};
 use super::{server_json, target, wait_for_role};
 use crate::connect::{Client, TARGET_RPC_TIMEOUT};
 use crate::deploy::{Convergence, converge};
+use crate::global_catch_up::catch_up_globals;
 use crate::handlers::{Error, leaf_matches, store, with_client};
 use crate::output::{self, say};
 
@@ -25,7 +26,33 @@ const NOTHING_MOVES_BACK: &str = "Turning the services role back on does not mov
 struct ServiceReport {
     service: QualifiedService,
     #[serde(flatten)]
-    convergence: Convergence,
+    outcome: Outcome,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum Outcome {
+    Replicated(Convergence),
+    Global(Retirement),
+}
+
+/// What Global slot convergence did for a Global on the drained Server.
+#[derive(Serialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+enum Retirement {
+    Retired,
+    Failed { error: String },
+}
+
+impl Outcome {
+    /// Everything this Service had on the Server is gone from it.
+    fn complete(&self) -> bool {
+        matches!(
+            self,
+            Self::Replicated(Convergence::Moved { failed: None, .. })
+                | Self::Global(Retirement::Retired)
+        )
+    }
 }
 
 pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
@@ -43,16 +70,30 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
             } else {
                 say!("Server {} already accepts no Services.", selected.name);
             }
-            let services = movable(client, &selected, owned.as_ref()).await?;
-            let cancellation = crate::cancellation::on_ctrl_c();
+            let (services, globals) = movable(client, &selected, owned.as_ref()).await?;
             let mut reports = Vec::new();
+            if !globals.is_empty() {
+                let retired = catch_up_globals(client, &selected).await;
+                let still = remaining(client, &selected).await?;
+                for service in globals {
+                    let outcome = Outcome::Global(match (&retired, still.contains(&service)) {
+                        (_, false) => Retirement::Retired,
+                        (Err(error), true) => Retirement::Failed {
+                            error: error.to_string(),
+                        },
+                        (Ok(()), true) => Retirement::Failed {
+                            error: format!("still running on {}", selected.name),
+                        },
+                    });
+                    say!("{}", line(&service, &outcome, &selected.name));
+                    reports.push(ServiceReport { service, outcome });
+                }
+            }
+            let cancellation = crate::cancellation::on_ctrl_c();
             for service in services {
-                let convergence = converge(client, &service, &cancellation).await?;
-                say!("{}", line(&service, &convergence));
-                reports.push(ServiceReport {
-                    service,
-                    convergence,
-                });
+                let outcome = Outcome::Replicated(converge(client, &service, &cancellation).await?);
+                say!("{}", line(&service, &outcome, &selected.name));
+                reports.push(ServiceReport { service, outcome });
             }
             let remaining = remaining(client, &selected).await?;
             say!("{}", remaining_line(&selected.name, &remaining));
@@ -63,15 +104,7 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
                 "remaining": remaining,
                 "note": NOTHING_MOVES_BACK,
             }))?;
-            if reports.iter().any(|report| {
-                matches!(
-                    report.convergence,
-                    Convergence::Moved {
-                        failed: Some(_),
-                        ..
-                    }
-                )
-            }) {
+            if !reports.iter().all(|report| report.outcome.complete()) {
                 return Err(Error::partial());
             }
             Ok(())
@@ -120,24 +153,25 @@ async fn cordon(client: &mut Client, id: &ployz_core::MachineId) -> Result<(), E
     wait_for_role(client, id, "services", |machine| !machine.accepts_services).await
 }
 
-/// Replicated user Services with a Container on the Server.
+/// Replicated, then Global, user Services with a Container on the Server.
 async fn movable(
     client: &mut Client,
     selected: &ployz_core::Machine,
     owned: Option<&BTreeSet<Namespace>>,
-) -> Result<Vec<QualifiedService>, Error> {
+) -> Result<(Vec<QualifiedService>, Vec<QualifiedService>), Error> {
     let machines = client.machines().await?;
     let live = client
         .live_services_from(&machines, EnvironmentValues::Redacted)
         .await?;
     observed(&live, selected)?;
-    Ok(replicated_services_on(&selected.id, &live)
+    let replicated = replicated_services_on(&selected.id, &live);
+    Ok(services_on(&selected.id, &live)
         .into_iter()
         .filter(|service| {
             !service.namespace.is_reserved()
                 && owned.is_none_or(|owned| owned.contains(&service.namespace))
         })
-        .collect())
+        .partition(|service| replicated.contains(service)))
 }
 
 async fn remaining(
@@ -176,7 +210,16 @@ fn observed(
     Ok(())
 }
 
-fn line(service: &QualifiedService, convergence: &Convergence) -> String {
+fn line(service: &QualifiedService, outcome: &Outcome, server: &MachineName) -> String {
+    let convergence = match outcome {
+        Outcome::Global(Retirement::Retired) => {
+            return format!("{service}: global, retired on {server}");
+        }
+        Outcome::Global(Retirement::Failed { error }) => {
+            return format!("{service}: global, failed to retire on {server}: {error}");
+        }
+        Outcome::Replicated(convergence) => convergence,
+    };
     match convergence {
         Convergence::Stays { reason } => format!("{service}: stays: {reason}"),
         Convergence::Moved {
@@ -222,30 +265,46 @@ fn remaining_line(server: &MachineName, remaining: &[QualifiedService]) -> Strin
 mod tests {
     use ployz_core::{MachineName, QualifiedService};
 
-    use super::{Convergence, line, remaining_line};
+    use super::{Convergence, Outcome, Retirement, line, remaining_line};
     use crate::deploy::Move;
 
     #[test]
     fn the_report_counts_moves_by_route_then_names_what_remains() {
         let name = |value: &str| MachineName::parse(value).unwrap();
+        let web2 = name("web-2");
         let service = QualifiedService::parse("app/web").unwrap();
         let step = |to: &str| Move {
             from: name("web-2"),
             to: name(to),
         };
-        let moved = Convergence::Moved {
+        let moved = Outcome::Replicated(Convergence::Moved {
             moved: vec![step("web-1"), step("web-3"), step("web-1")],
             failed: Some("boom".into()),
-        };
+        });
         assert_eq!(
-            line(&service, &moved),
+            line(&service, &moved, &web2),
             "app/web: moved 2 from web-2 to web-1, 1 from web-2 to web-3; failed: boom"
         );
-        let idle = Convergence::Moved {
+        let idle = Outcome::Replicated(Convergence::Moved {
             moved: Vec::new(),
             failed: None,
-        };
-        assert_eq!(line(&service, &idle), "app/web: nothing to move");
+        });
+        assert_eq!(line(&service, &idle, &web2), "app/web: nothing to move");
+        let stays = Outcome::Replicated(Convergence::Stays {
+            reason: "mid-rollout: deploy it first".into(),
+        });
+        assert_eq!(
+            line(&service, &stays, &web2),
+            "app/web: stays: mid-rollout: deploy it first"
+        );
+        let retired = Outcome::Global(Retirement::Retired);
+        assert_eq!(
+            line(&service, &retired, &web2),
+            "app/web: global, retired on web-2"
+        );
+        // Anything left on the Server makes the drain partial.
+        assert!(idle.complete() && retired.complete());
+        assert!(!moved.complete() && !stays.complete());
         assert_eq!(
             remaining_line(&name("web-2"), &[service]),
             "Still on web-2: app/web"
