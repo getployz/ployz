@@ -3,7 +3,7 @@
 use std::{
     ffi::OsStr,
     fs::{self, OpenOptions},
-    io::Write,
+    io::{self, Write},
     os::unix::fs::MetadataExt,
     path::Path,
     process::Command,
@@ -27,16 +27,33 @@ pub(super) fn prepare_storage(storage: StorageChoice, paths: &InstallPaths) -> R
     }
 }
 
-fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
-    let os = operating_system_id()?;
-    if os != "ubuntu" {
-        return Err(Error::Command {
-            stage: "prepare ZFS storage".into(),
-            message: format!(
-                "ZFS storage preparation is not supported on {os} yet; use a supported Ubuntu release"
-            ),
-        });
+/// Distros named in the refusal; each has a [`ZfsRoute`].
+const SUPPORTED_DISTROS: &str = "Ubuntu LTS";
+
+/// How the ZFS kernel module becomes loadable on the Machine's distro.
+#[derive(Clone, Copy)]
+enum ZfsRoute {
+    /// Canonical's prebuilt module package for the running kernel.
+    Ubuntu,
+}
+
+impl ZfsRoute {
+    fn for_os(os: &OsRelease) -> Result<Self, Error> {
+        match os.id.as_str() {
+            "ubuntu" => Ok(Self::Ubuntu),
+            _ => Err(Error::Command {
+                stage: "prepare ZFS storage".into(),
+                message: format!(
+                    "Managed volumes need {SUPPORTED_DISTROS}; this Server runs {}. Use one of those, or add `--storage none`.",
+                    os.display()
+                ),
+            }),
+        }
     }
+}
+
+fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
+    let route = ZfsRoute::for_os(&OsRelease::read(&paths.os_release)?)?;
     let container = container_virtualization();
     if container == "openvz" || (Path::new("/proc/vz").is_dir() && !Path::new("/proc/bc").is_dir())
     {
@@ -53,17 +70,22 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
                     .into(),
         });
     }
-    if !command_exists("apt-get") {
-        return Err(Error::Command {
-            stage: "prepare ZFS storage".into(),
-            message: "Ubuntu apt-get is required for ZFS storage preparation".into(),
-        });
+    match route {
+        ZfsRoute::Ubuntu if !command_exists("apt-get") => {
+            return Err(Error::Command {
+                stage: "prepare ZFS storage".into(),
+                message: "Ubuntu apt-get is required for ZFS storage preparation".into(),
+            });
+        }
+        ZfsRoute::Ubuntu => {}
     }
     let kernel = uname("-r", "read running kernel")?;
     require_host_root_reserve(ZFS_SMOKE_BYTES)?;
     let cap = zfs_arc_max()?;
     persist_zfs_arc_max(paths, cap)?;
-    install_zfs_packages(&kernel)?;
+    match route {
+        ZfsRoute::Ubuntu => install_zfs_packages(&kernel)?,
+    }
     run_host("load ZFS kernel module", "modprobe", ["zfs"])?;
     set_and_verify_zfs_arc_max(cap)?;
     validate_zfs()?;
@@ -71,20 +93,66 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
     Ok(())
 }
 
-fn operating_system_id() -> Result<String, Error> {
-    let value = fs::read_to_string("/etc/os-release").map_err(|source| Error::Io {
-        stage: "identify Linux distribution for ZFS storage preparation",
-        source,
-    })?;
-    value
-        .lines()
-        .find_map(|line| line.strip_prefix("ID="))
-        .map(|id| id.trim_matches('"').to_owned())
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| Error::Command {
-            stage: "prepare ZFS storage".into(),
-            message: "Could not identify the Linux distribution for ZFS storage preparation".into(),
+/// The os-release fields that pick a [`ZfsRoute`] and name the OS in a refusal.
+struct OsRelease {
+    id: String,
+    name: String,
+    version_id: String,
+}
+
+impl OsRelease {
+    fn read(path: &Path) -> Result<Self, Error> {
+        let value = fs::read_to_string(path).map_err(|source| Error::Io {
+            stage: "identify Linux distribution for ZFS storage preparation",
+            source,
+        })?;
+        let field = |key: &str| {
+            value
+                .lines()
+                .find_map(|line| line.strip_prefix(key)?.strip_prefix('='))
+                .map(|field| field.trim().trim_matches(['"', '\'']).to_owned())
+                .filter(|field| !field.is_empty())
+        };
+        let Some(id) = field("ID") else {
+            return Err(Error::Command {
+                stage: "prepare ZFS storage".into(),
+                message: "Could not identify the Linux distribution for ZFS storage preparation"
+                    .into(),
+            });
+        };
+        Ok(Self {
+            name: field("NAME").unwrap_or_else(|| id.clone()),
+            version_id: field("VERSION_ID").unwrap_or_default(),
+            id,
         })
+    }
+
+    /// `NAME VERSION_ID`, e.g. "Amazon Linux 2023"; rolling releases have no version.
+    fn display(&self) -> String {
+        format!("{} {}", self.name, self.version_id)
+            .trim_end()
+            .to_owned()
+    }
+}
+
+/// Firmware Secure Boot state; a Machine without EFI variables boots with it off.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "TODO(#1349): routes that build the ZFS module refuse when it is on"
+    )
+)]
+pub(super) fn secure_boot_enabled(paths: &InstallPaths) -> Result<bool, Error> {
+    match fs::read(&paths.secure_boot) {
+        // The variable is 4 attribute bytes followed by one data byte; 1 means on.
+        Ok(variable) => Ok(variable.last() == Some(&1)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(Error::Io {
+            stage: "read Secure Boot state",
+            source,
+        }),
+    }
 }
 
 fn container_virtualization() -> String {

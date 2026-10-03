@@ -114,6 +114,8 @@ pub(super) struct InstallPaths {
     pub(super) run_dir: PathBuf,
     pub(super) docker_config: PathBuf,
     pub(super) modprobe_dir: PathBuf,
+    pub(super) os_release: PathBuf,
+    pub(super) secure_boot: PathBuf,
 }
 
 impl InstallPaths {
@@ -125,6 +127,10 @@ impl InstallPaths {
             run_dir: run_dir.into(),
             docker_config: PathBuf::from("/etc/docker/daemon.json"),
             modprobe_dir: PathBuf::from("/etc/modprobe.d"),
+            os_release: PathBuf::from("/etc/os-release"),
+            secure_boot: PathBuf::from(
+                "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            ),
         }
     }
 
@@ -142,6 +148,8 @@ impl InstallPaths {
             run_dir: root.join("run"),
             docker_config: root.join("docker/daemon.json"),
             modprobe_dir: root.join("modprobe"),
+            os_release: root.join("os-release"),
+            secure_boot: root.join("efivars/SecureBoot"),
         }
     }
 }
@@ -527,6 +535,98 @@ mod tests {
             )],
         );
         assert!(fixture.path().join("installed").is_file());
+    }
+
+    #[test]
+    fn zfs_unsupported_os_contract() {
+        if let Ok(case) = env::var("PLOYZ_ZFS_UNSUPPORTED_OS_CONTRACT") {
+            let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
+            let paths = InstallPaths::at(&root);
+            let os = match case.as_str() {
+                "unsupported-distro" => "Fedora Linux 42",
+                "unsupported-version" => "Debian GNU/Linux 11",
+                "no-version" => "Arch Linux",
+                other => panic!("unknown contract case {other}"),
+            };
+            assert!(matches!(
+                prepare_storage(StorageChoice::Zfs, &paths),
+                Err(Error::Command { stage, message })
+                    if stage == "prepare ZFS storage"
+                        && message == format!(
+                            "Managed volumes need Ubuntu LTS; this Server runs {os}. Use one of those, or add `--storage none`."
+                        )
+            ));
+            assert!(!paths.modprobe_dir.exists());
+            fs::write(
+                root.join("child-completed"),
+                format!("zfs-unsupported-os:{case}"),
+            )
+            .unwrap();
+            return;
+        }
+
+        for (case, os_release) in [
+            (
+                "unsupported-distro",
+                "NAME=\"Fedora Linux\"\nID=fedora\nVERSION_ID=42\n",
+            ),
+            (
+                "unsupported-version",
+                "PRETTY_NAME=\"Debian GNU/Linux 11 (bullseye)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"11\"\nID=debian\n",
+            ),
+            ("no-version", "NAME=\"Arch Linux\"\nID=arch\n"),
+        ] {
+            let fixture = fixture(case);
+            let commands = fixture.path().join("commands");
+            fs::create_dir_all(&commands).unwrap();
+            fs::write(fixture.path().join("os-release"), os_release).unwrap();
+            for command in [
+                "apt-get",
+                "apt-cache",
+                "dpkg-query",
+                "dpkg-deb",
+                "dnf",
+                "systemd-detect-virt",
+                "uname",
+                "modprobe",
+                "fallocate",
+                "zpool",
+                "zfs",
+            ] {
+                write_script(
+                    &commands.join(command),
+                    "echo \"$0\" >> \"$PLOYZ_INSTALLER_FORBIDDEN\"; exit 97",
+                );
+            }
+            let forbidden = fixture.path().join("forbidden-invocation");
+            run_contract_child_with_environment(
+                "zfs_unsupported_os_contract",
+                fixture.path(),
+                OsString::from("PLOYZ_ZFS_UNSUPPORTED_OS_CONTRACT"),
+                OsString::from(case),
+                &format!("zfs-unsupported-os:{case}"),
+                [(
+                    OsString::from("PLOYZ_INSTALLER_FORBIDDEN"),
+                    forbidden.clone().into_os_string(),
+                )],
+            );
+            assert!(!forbidden.exists(), "{case} ran a host command");
+        }
+    }
+
+    #[test]
+    fn secure_boot_reading_follows_test_root() {
+        let fixture = fixture("secure-boot");
+        let paths = InstallPaths::at(fixture.path());
+        assert!(!super::storage::secure_boot_enabled(&paths).unwrap());
+        fs::create_dir_all(paths.secure_boot.parent().unwrap()).unwrap();
+        for (variable, enabled) in [([6, 0, 0, 0, 1], true), ([6, 0, 0, 0, 0], false)] {
+            fs::write(&paths.secure_boot, variable).unwrap();
+            assert_eq!(
+                super::storage::secure_boot_enabled(&paths).unwrap(),
+                enabled
+            );
+        }
     }
 
     async fn run_installation_case(case: &str) {
