@@ -3,6 +3,8 @@
 mod host;
 mod release;
 mod storage;
+#[cfg(test)]
+mod test_support;
 pub mod upgrade;
 
 use std::{
@@ -418,8 +420,8 @@ mod tests {
     };
 
     use ployz_core::MachineVersion;
-    use tempfile::TempDir;
 
+    use super::test_support::{fixture, run_contract_child_with_environment, write_script};
     use super::*;
 
     #[tokio::test]
@@ -465,7 +467,11 @@ mod tests {
         ] {
             let fixture = fixture(case);
             create_installation_fixture(fixture.path(), case);
-            run_contract_child("installation_interface_contract", fixture.path(), case);
+            run_contract_child(
+                "installer::tests::installation_interface_contract",
+                fixture.path(),
+                case,
+            );
         }
     }
 
@@ -488,7 +494,7 @@ mod tests {
         let fixture = fixture("software-prerequisite");
         fs::create_dir_all(fixture.path().join("commands")).unwrap();
         run_contract_child_with_environment(
-            "software_only_prerequisite_contract",
+            "installer::tests::software_only_prerequisite_contract",
             fixture.path(),
             OsString::from("PLOYZ_SOFTWARE_PREREQUISITE_CONTRACT"),
             OsString::from("1"),
@@ -527,7 +533,7 @@ mod tests {
             "echo /lib/modules/test-kernel/kernel/zfs.ko",
         );
         run_contract_child_with_environment(
-            "zfs_candidate_download_contract",
+            "installer::tests::zfs_candidate_download_contract",
             fixture.path(),
             OsString::from("PLOYZ_ZFS_CANDIDATE_CONTRACT"),
             OsString::from("1"),
@@ -538,440 +544,6 @@ mod tests {
             )],
         );
         assert!(fixture.path().join("installed").is_file());
-    }
-
-    #[test]
-    fn zfs_unsupported_os_contract() {
-        if let Ok(case) = env::var("PLOYZ_ZFS_UNSUPPORTED_OS_CONTRACT") {
-            let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
-            let paths = InstallPaths::at(&root);
-            let unsupported = |os: &str| {
-                format!(
-                    "Managed volumes need Ubuntu LTS, Debian 12–13 or Amazon Linux 2023; this Server runs {os}. Use one of those, or add `--storage none`."
-                )
-            };
-            let expected = match case.as_str() {
-                "unsupported-distro" => unsupported("Fedora Linux 42"),
-                "unsupported-version" => unsupported("Debian GNU/Linux 11"),
-                "no-version" => unsupported("Arch Linux"),
-                "amazon-linux-2" => unsupported("Amazon Linux 2"),
-                "secure-boot" => "Secure Boot is on, so this Server can't load the ZFS module Ployz builds for Debian GNU/Linux. Turn Secure Boot off, use Ubuntu, or add `--storage none`.".to_owned(),
-                "amazon-secure-boot" => "Secure Boot is on, so this Server can't load the ZFS module Ployz builds for Amazon Linux. Turn Secure Boot off, use Ubuntu, or add `--storage none`.".to_owned(),
-                other => panic!("unknown contract case {other}"),
-            };
-            assert!(matches!(
-                prepare_storage(StorageChoice::Zfs, &paths),
-                Err(Error::Command { stage, message })
-                    if stage == "prepare ZFS storage" && message == expected
-            ));
-            assert!(!paths.modprobe_dir.exists());
-            fs::write(
-                root.join("child-completed"),
-                format!("zfs-unsupported-os:{case}"),
-            )
-            .unwrap();
-            return;
-        }
-
-        for (case, os_release) in [
-            (
-                "unsupported-distro",
-                "NAME=\"Fedora Linux\"\nID=fedora\nVERSION_ID=42\n",
-            ),
-            (
-                "unsupported-version",
-                "PRETTY_NAME=\"Debian GNU/Linux 11 (bullseye)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"11\"\nID=debian\n",
-            ),
-            ("no-version", "NAME=\"Arch Linux\"\nID=arch\n"),
-            (
-                "amazon-linux-2",
-                "NAME=\"Amazon Linux\"\nVERSION=\"2\"\nID=\"amzn\"\nID_LIKE=\"centos rhel fedora\"\nVERSION_ID=\"2\"\n",
-            ),
-            (
-                "secure-boot",
-                "NAME=\"Debian GNU/Linux\"\nVERSION_ID=\"13\"\nID=debian\n",
-            ),
-            (
-                "amazon-secure-boot",
-                "NAME=\"Amazon Linux\"\nVERSION=\"2023\"\nID=\"amzn\"\nVERSION_ID=\"2023\"\n",
-            ),
-        ] {
-            let fixture = fixture(case);
-            let commands = fixture.path().join("commands");
-            fs::create_dir_all(&commands).unwrap();
-            fs::write(fixture.path().join("os-release"), os_release).unwrap();
-            fs::create_dir_all(fixture.path().join("efivars")).unwrap();
-            fs::write(fixture.path().join("efivars/SecureBoot"), [6, 0, 0, 0, 1]).unwrap();
-            for command in [
-                "apt-get",
-                "apt-cache",
-                "dpkg-query",
-                "dpkg-deb",
-                "dnf",
-                "curl",
-                "systemd-detect-virt",
-                "uname",
-                "modprobe",
-                "fallocate",
-                "zpool",
-                "zfs",
-            ] {
-                write_script(
-                    &commands.join(command),
-                    "echo \"$0\" >> \"$PLOYZ_INSTALLER_FORBIDDEN\"; exit 97",
-                );
-            }
-            let forbidden = fixture.path().join("forbidden-invocation");
-            run_contract_child_with_environment(
-                "zfs_unsupported_os_contract",
-                fixture.path(),
-                OsString::from("PLOYZ_ZFS_UNSUPPORTED_OS_CONTRACT"),
-                OsString::from(case),
-                &format!("zfs-unsupported-os:{case}"),
-                [(
-                    OsString::from("PLOYZ_INSTALLER_FORBIDDEN"),
-                    forbidden.clone().into_os_string(),
-                )],
-            );
-            assert!(!forbidden.exists(), "{case} ran a host command");
-        }
-    }
-
-    #[test]
-    fn zfs_debian_contract() {
-        const DEBIAN_13_SOURCES: &str = "Types: deb\n# http://snapshot.debian.org/archive/debian/20260918T000000Z\nURIs: http://deb.debian.org/debian\nSuites: trixie trixie-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.pgp\n\nTypes: deb\nURIs: http://deb.debian.org/debian-security\nSuites: trixie-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.pgp\n";
-        const THIRD_PARTY_SOURCES: &str =
-            "Types: deb\nURIs: https://packages.sury.org/php/\nSuites: trixie\nComponents: main\n";
-        const DEBIAN_12_LIST: &str = "deb http://deb.debian.org/debian bookworm main non-free-firmware\ndeb-src http://deb.debian.org/debian bookworm main\ndeb http://security.debian.org/debian-security bookworm-security main # security\n# deb http://deb.debian.org/debian bookworm-backports main\ndeb http://deb.debian.org/debian bookworm-updates main contrib\ndeb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable\ndeb https://packages.sury.org/php/ bookworm main\n";
-
-        let kernel = |case: &str| {
-            if case == "debian-12" {
-                "6.1.0-28-amd64"
-            } else {
-                "6.12.43+deb13-cloud-amd64"
-            }
-        };
-        if let Ok(case) = env::var("PLOYZ_ZFS_DEBIAN_CONTRACT") {
-            let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
-            let paths = InstallPaths::at(&root);
-            let os = super::storage::OsRelease::read(&paths.os_release).unwrap();
-            let result = super::storage::prepare_debian_zfs(&paths, &os, kernel(&case));
-            let failed_step = match case.as_str() {
-                "build-failed" => Some("installing zfs-dkms"),
-                "no-module" => Some("the ZFS module check"),
-                _ => None,
-            };
-            match failed_step {
-                Some(step) => assert!(matches!(
-                    result,
-                    Err(Error::Command { stage, message })
-                        if stage == "prepare ZFS storage"
-                            && message == format!(
-                                "Couldn't build ZFS for kernel 6.12.43+deb13-cloud-amd64 on Debian GNU/Linux 13: {step} failed. Add `--storage none` to start without managed volumes."
-                            )
-                )),
-                None => result.unwrap(),
-            }
-            fs::write(root.join("child-completed"), format!("zfs-debian:{case}")).unwrap();
-            return;
-        }
-
-        for case in [
-            "debian-12",
-            "debian-13",
-            "already-prepared",
-            "build-failed",
-            "no-module",
-        ] {
-            let fixture = fixture(case);
-            let root = fixture.path();
-            let commands = root.join("commands");
-            let sources = root.join("apt/sources.list.d");
-            fs::create_dir_all(&commands).unwrap();
-            fs::create_dir_all(&sources).unwrap();
-            let version = if case == "debian-12" { "12" } else { "13" };
-            fs::write(
-                root.join("os-release"),
-                format!("NAME=\"Debian GNU/Linux\"\nVERSION_ID=\"{version}\"\nID=debian\n"),
-            )
-            .unwrap();
-            if case == "debian-12" {
-                fs::write(root.join("apt/sources.list"), DEBIAN_12_LIST).unwrap();
-            } else {
-                fs::write(sources.join("debian.sources"), DEBIAN_13_SOURCES).unwrap();
-            }
-            fs::write(sources.join("sury.sources"), THIRD_PARTY_SOURCES).unwrap();
-            if case == "already-prepared" {
-                fs::write(root.join("module"), "").unwrap();
-            }
-            write_script(
-                &commands.join("apt-get"),
-                r#"echo "$DEBIAN_FRONTEND $*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/apt.log"
-case "$*" in
-  *zfs-dkms*)
-    if [ "$PLOYZ_ZFS_DEBIAN_CONTRACT" = build-failed ]; then echo "dkms build failed" >&2; exit 100; fi
-    if [ "$PLOYZ_ZFS_DEBIAN_CONTRACT" != no-module ]; then : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module"; fi ;;
-esac"#,
-            );
-            write_script(
-                &commands.join("modinfo"),
-                r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/modinfo.log"; [ -f "$PLOYZ_INSTALLER_CONTRACT_ROOT/module" ]"#,
-            );
-            write_script(&commands.join("zpool"), "exit 0");
-            write_script(&commands.join("zfs"), "exit 0");
-            run_contract_child_with_environment(
-                "zfs_debian_contract",
-                root,
-                OsString::from("PLOYZ_ZFS_DEBIAN_CONTRACT"),
-                OsString::from(case),
-                &format!("zfs-debian:{case}"),
-                [],
-            );
-
-            let kernel = kernel(case);
-            assert!(
-                fs::read_to_string(root.join("modinfo.log"))
-                    .unwrap()
-                    .lines()
-                    .all(|line| line == format!("-k {kernel} zfs")),
-                "{case}"
-            );
-            assert_eq!(
-                fs::read_to_string(sources.join("sury.sources")).unwrap(),
-                THIRD_PARTY_SOURCES,
-                "{case}"
-            );
-            if case == "already-prepared" {
-                assert!(!root.join("apt.log").exists());
-                assert_eq!(
-                    fs::read_to_string(sources.join("debian.sources")).unwrap(),
-                    DEBIAN_13_SOURCES
-                );
-                continue;
-            }
-            if case == "debian-12" {
-                assert_eq!(
-                    fs::read_to_string(root.join("apt/sources.list")).unwrap(),
-                    "deb http://deb.debian.org/debian bookworm main non-free-firmware contrib\ndeb-src http://deb.debian.org/debian bookworm main contrib\ndeb http://security.debian.org/debian-security bookworm-security main contrib # security\n# deb http://deb.debian.org/debian bookworm-backports main\ndeb http://deb.debian.org/debian bookworm-updates main contrib\ndeb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable\ndeb https://packages.sury.org/php/ bookworm main\n"
-                );
-            } else {
-                assert_eq!(
-                    fs::read_to_string(sources.join("debian.sources")).unwrap(),
-                    DEBIAN_13_SOURCES.replace("Components: main", "Components: main contrib"),
-                    "{case}"
-                );
-            }
-            let flavour = if case == "debian-12" {
-                "amd64"
-            } else {
-                "cloud-amd64"
-            };
-            let apt = "noninteractive -o DPkg::Lock::Timeout=300";
-            let expected = format!(
-                "{apt} update -qq\n{apt} install -y -qq --no-install-recommends linux-headers-{kernel} linux-headers-{flavour}\n{apt} install -y -qq --no-install-recommends zfs-dkms zfsutils-linux\n"
-            );
-            assert_eq!(
-                fs::read_to_string(root.join("apt.log")).unwrap(),
-                expected,
-                "{case}"
-            );
-        }
-    }
-
-    #[test]
-    fn zfs_amazon_linux_contract() {
-        use sha2::{Digest, Sha256};
-
-        const KERNEL: &str = "6.1.186-228.376.amzn2023.x86_64";
-        if let Ok(case) = env::var("PLOYZ_ZFS_AMAZON_CONTRACT") {
-            let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
-            let paths = InstallPaths::at(&root);
-            let os = super::storage::OsRelease::read(&paths.os_release).unwrap();
-            let sha256 = if case == "checksum-mismatch" {
-                hex::encode(Sha256::digest(b"a different tarball"))
-            } else {
-                hex::encode(Sha256::digest(fs::read(root.join("tarball")).unwrap()))
-            };
-            let release = super::storage::OpenZfsRelease {
-                sha256: &sha256,
-                ..super::storage::OPENZFS
-            };
-            let result = super::storage::prepare_amazon_zfs(&os, KERNEL, &release);
-            let expected = match case.as_str() {
-                "no-kernel-devel" => Some(format!(
-                    "Amazon Linux 2023 has no kernel-devel package for the running kernel {KERNEL}, so ZFS can't be built for it. Update the kernel, reboot, and retry, or add `--storage none`."
-                )),
-                "checksum-mismatch" => Some(format!(
-                    "Couldn't build ZFS for kernel {KERNEL} on Amazon Linux 2023: the OpenZFS checksum check failed. Add `--storage none` to start without managed volumes."
-                )),
-                _ => None,
-            };
-            match expected {
-                Some(expected) => assert!(matches!(
-                    result,
-                    Err(Error::Command { stage, message })
-                        if stage == "prepare ZFS storage" && message == expected
-                )),
-                None => result.unwrap(),
-            }
-            fs::write(root.join("child-completed"), format!("zfs-amazon:{case}")).unwrap();
-            return;
-        }
-
-        for case in [
-            "success",
-            "already-prepared",
-            "checksum-mismatch",
-            "no-kernel-devel",
-        ] {
-            let fixture = fixture(case);
-            let root = fixture.path();
-            let commands = root.join("commands");
-            fs::create_dir_all(&commands).unwrap();
-            fs::write(
-                root.join("os-release"),
-                "NAME=\"Amazon Linux\"\nVERSION=\"2023\"\nID=\"amzn\"\nID_LIKE=\"fedora\"\nVERSION_ID=\"2023\"\n",
-            )
-            .unwrap();
-            let release = root.join("release/zfs-2.4.4");
-            fs::create_dir_all(&release).unwrap();
-            write_script(
-                &release.join("configure"),
-                r#"echo "configure $* in ${PWD##*/}" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/build.log""#,
-            );
-            let status = Command::new("tar")
-                .arg("-czf")
-                .arg(root.join("tarball"))
-                .arg("-C")
-                .arg(root.join("release"))
-                .arg("zfs-2.4.4")
-                .status()
-                .unwrap();
-            assert!(status.success());
-            if case == "already-prepared" {
-                fs::write(root.join("module"), "").unwrap();
-            }
-            write_script(
-                &commands.join("dnf"),
-                r#"log="$PLOYZ_INSTALLER_CONTRACT_ROOT/dnf.log"
-if [ "$1" = install ]; then
-  printf install >> "$log"
-  for arg; do [ "$arg" = install ] || printf ' %s' "${arg##*/}" >> "$log"; done
-  echo >> "$log"
-  case "$*" in *zfs-dkms-*) : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module" ;; esac
-else
-  echo "$*" >> "$log"
-  [ "$PLOYZ_ZFS_AMAZON_CONTRACT" = no-kernel-devel ] || echo kernel-devel-1:6.1.186-228.376.amzn2023.x86_64
-fi"#,
-            );
-            write_script(
-                &commands.join("curl"),
-                r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/curl.log"
-while [ "$1" != -o ]; do shift; done
-cat < "$PLOYZ_INSTALLER_CONTRACT_ROOT/tarball" > "$2""#,
-            );
-            // make leaves every package the real rpmbuild does, including ones not to install.
-            write_script(
-                &commands.join("make"),
-                r#"echo "make $*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/build.log"
-for package in zfs-2.4.4-1.amzn2023.src zfs-dkms-2.4.4-1.amzn2023.src zfs-dkms-2.4.4-1.amzn2023.noarch zfs-2.4.4-1.amzn2023.x86_64 zfs-debuginfo-2.4.4-1.amzn2023.x86_64 zfs-test-2.4.4-1.amzn2023.x86_64 zfs-dracut-2.4.4-1.amzn2023.noarch libzfs7-2.4.4-1.amzn2023.x86_64 libzfs7-devel-2.4.4-1.amzn2023.x86_64 libzpool7-2.4.4-1.amzn2023.x86_64 libnvpair3-2.4.4-1.amzn2023.x86_64 libuutil3-2.4.4-1.amzn2023.x86_64 python3-pyzfs-2.4.4-1.amzn2023.noarch; do
-  : > "$package.rpm"
-done"#,
-            );
-            symlink("/usr/bin/tar", commands.join("tar")).unwrap();
-            symlink("/usr/bin/gzip", commands.join("gzip")).unwrap();
-            symlink("/usr/bin/cat", commands.join("cat")).unwrap();
-            write_script(
-                &commands.join("modinfo"),
-                r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/modinfo.log"; [ -f "$PLOYZ_INSTALLER_CONTRACT_ROOT/module" ]"#,
-            );
-            write_script(&commands.join("zpool"), "exit 0");
-            write_script(&commands.join("zfs"), "exit 0");
-            run_contract_child_with_environment(
-                "zfs_amazon_linux_contract",
-                root,
-                OsString::from("PLOYZ_ZFS_AMAZON_CONTRACT"),
-                OsString::from(case),
-                &format!("zfs-amazon:{case}"),
-                [],
-            );
-
-            let log = |name: &str| fs::read_to_string(root.join(name)).unwrap_or_default();
-            let repoquery =
-                format!("-q repoquery --whatprovides kernel-devel-uname-r = {KERNEL}\n");
-            match case {
-                "already-prepared" => {
-                    assert_eq!(log("dnf.log"), "");
-                    assert_eq!(log("curl.log"), "");
-                }
-                "no-kernel-devel" => {
-                    assert_eq!(log("dnf.log"), repoquery);
-                    assert_eq!(log("curl.log"), "");
-                }
-                "checksum-mismatch" => {
-                    assert_eq!(log("dnf.log"), repoquery);
-                    assert!(log("curl.log").ends_with(
-                        "https://github.com/openzfs/zfs/releases/download/zfs-2.4.4/zfs-2.4.4.tar.gz\n"
-                    ));
-                }
-                _ => {
-                    let dnf = log("dnf.log");
-                    let lines: Vec<&str> = dnf.lines().collect();
-                    let [query, dependencies, packages] = lines.as_slice() else {
-                        panic!("unexpected dnf calls:\n{dnf}");
-                    };
-                    assert_eq!(format!("{query}\n"), repoquery);
-                    assert!(
-                        dependencies
-                            .starts_with(&format!("install -y kernel-devel-uname-r = {KERNEL} "))
-                            && dependencies.split(' ').any(|package| package == "dkms"),
-                        "{dependencies}"
-                    );
-                    let mut packages: Vec<&str> = packages.split(' ').collect();
-                    packages.sort_unstable();
-                    assert_eq!(
-                        packages,
-                        [
-                            "-y",
-                            "install",
-                            "libnvpair3-2.4.4-1.amzn2023.x86_64.rpm",
-                            "libuutil3-2.4.4-1.amzn2023.x86_64.rpm",
-                            "libzfs7-2.4.4-1.amzn2023.x86_64.rpm",
-                            "libzpool7-2.4.4-1.amzn2023.x86_64.rpm",
-                            "zfs-2.4.4-1.amzn2023.x86_64.rpm",
-                            "zfs-dkms-2.4.4-1.amzn2023.noarch.rpm",
-                        ]
-                    );
-                    assert_eq!(
-                        log("build.log"),
-                        "configure --with-config=user in zfs-2.4.4\nmake rpm-utils rpm-dkms RPM_DEFINE_DKMS=--undefine=fedora\n"
-                    );
-                    assert!(
-                        log("modinfo.log")
-                            .lines()
-                            .all(|line| line == format!("-k {KERNEL} zfs"))
-                    );
-                }
-            }
-            if case != "success" {
-                assert_eq!(log("build.log"), "", "{case}");
-            }
-        }
-    }
-
-    #[test]
-    fn secure_boot_reading_follows_test_root() {
-        let fixture = fixture("secure-boot");
-        let paths = InstallPaths::at(fixture.path());
-        assert!(!super::storage::secure_boot_enabled(&paths).unwrap());
-        fs::create_dir_all(paths.secure_boot.parent().unwrap()).unwrap();
-        for (variable, enabled) in [([6, 0, 0, 0, 1], true), ([6, 0, 0, 0, 0], false)] {
-            fs::write(&paths.secure_boot, variable).unwrap();
-            assert_eq!(
-                super::storage::secure_boot_enabled(&paths).unwrap(),
-                enabled
-            );
-        }
     }
 
     async fn run_installation_case(case: &str) {
@@ -1178,49 +750,5 @@ done"#,
         } else {
             run_contract_child_with_environment(test, root, key, value, &completion, []);
         }
-    }
-
-    fn run_contract_child_with_environment<const N: usize>(
-        test: &str,
-        root: &Path,
-        key: OsString,
-        value: OsString,
-        completion: &str,
-        extra: [(OsString, OsString); N],
-    ) {
-        let test = format!("installer::tests::{test}");
-        let mut command = Command::new(env::current_exe().unwrap());
-        command
-            .args(["--exact", &test, "--nocapture"])
-            .env("PLOYZ_INSTALLER_CONTRACT_ROOT", root)
-            .env("PATH", root.join("commands"))
-            .env(key, value);
-        for (key, value) in extra {
-            command.env(key, value);
-        }
-        let output = command.output().unwrap();
-        assert!(
-            output.status.success(),
-            "contract child {test} failed:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-        assert_eq!(
-            fs::read_to_string(root.join("child-completed")).unwrap(),
-            completion,
-            "contract child {test} did not complete its fixture",
-        );
-    }
-
-    fn write_script(path: &Path, body: &str) {
-        fs::write(path, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    fn fixture(name: &str) -> TempDir {
-        tempfile::Builder::new()
-            .prefix(&format!("ployzd-installer-{name}-"))
-            .tempdir()
-            .unwrap()
     }
 }
