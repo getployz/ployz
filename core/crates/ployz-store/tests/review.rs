@@ -209,7 +209,7 @@ fn resetting_a_new_nodes_setting_uses_its_introduction_and_publishes_nothing() {
             .iter()
             .map(|row| row.path.as_str())
             .collect::<Vec<_>>(),
-        ["web.image"]
+        ["web.source"]
     );
 }
 
@@ -424,7 +424,7 @@ fn a_compound_settings_row_discards_that_setting() {
         .flat_map(|node| &node.settings)
         .map(|row| (row.path.as_str(), row.can_restore))
         .collect();
-    assert_eq!(rows, [("web.healthcheck", true), ("api.image", true)]);
+    assert_eq!(rows, [("web.healthcheck", true), ("api.source", true)]);
     for (path, _) in rows {
         discard(&store, &who, Some(path), None).unwrap();
     }

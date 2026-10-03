@@ -186,7 +186,15 @@ fn restore(
             }),
     };
     let (node_type, id) = node?;
-    let part = path.target();
+    // A part of the source discards with it: the source is one change row.
+    let part = path.target().map(|part| {
+        if let Target::Setting(setting) = part {
+            Target::Setting(setting.row())
+        } else {
+            part.clone()
+        }
+    });
+    let part = part.as_ref();
     let field = path.volume_field();
     let holds = |intent: &SavedEnvironmentIntent| match node_type {
         EnvironmentNodeType::Service => intent.services.iter().any(|service| service.id == id),

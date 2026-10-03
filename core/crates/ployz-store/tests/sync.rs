@@ -302,14 +302,14 @@ fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_nex
     );
     let review = view(&store, &who);
     assert_eq!(review.into.name.as_str(), "production");
-    assert_eq!(labels(&review), ["web.env.NEW", "web.image"]);
-    let [new, image] = [row(&review, "web.env.NEW"), row(&review, "web.image")];
+    assert_eq!(labels(&review), ["web.env.NEW", "web.source"]);
+    let [new, image] = [row(&review, "web.env.NEW"), row(&review, "web.source")];
     assert_eq!(new.at.node().to_string(), "web");
     assert_eq!((new.ticked, new.change), (true, SyncChange::New));
     assert_eq!((&new.from, &new.into), (&json!("1"), &Value::Null));
     assert_eq!((image.ticked, image.change), (true, SyncChange::Conflict));
     assert_eq!(
-        (&image.from, &image.into),
+        (&image.from["image"], &image.into["image"]),
         (&json!("web:2"), &json!("web:hot"))
     );
     // The Branch's count to its Parent is the rows ticked by default.
@@ -353,7 +353,7 @@ fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_nex
 
     // Only the image, by name: the variable is left out, so it is offered again.
     let synced = store
-        .write(&who, &sync(&review, Some(&["web.image"])))
+        .write(&who, &sync(&review, Some(&["web.source"])))
         .unwrap();
     assert_eq!(synced.into.name.as_str(), "production");
     let SyncedWhen::Now { staged, closing } = &synced.when else {
@@ -512,7 +512,7 @@ fn a_skip_names_a_row_as_the_receiver_calls_it() {
     store
         .write(
             &who,
-            &skipping(&review, Some(&["frontend.image"]), &["frontend.env.A"]),
+            &skipping(&review, Some(&["frontend.source"]), &["frontend.env.A"]),
         )
         .unwrap();
     let landed = values(&store, &who, "production", "frontend");
@@ -537,18 +537,18 @@ fn a_synced_change_discarded_before_it_deploys_is_offered_again() {
     set(&store, &who, "fix-web", &[("api.env.MODE", json!("fast"))]);
     assert_eq!(
         labels(&view(&store, &who)),
-        ["api", "api.env.MODE", "web.image"]
+        ["api", "api.env.MODE", "web.source"]
     );
     store.write(&who, &sync(&view(&store, &who), None)).unwrap();
     assert!(view(&store, &who).rows.is_empty());
 
-    discard(&store, &who, "web.image");
+    discard(&store, &who, "web.source");
     let again = view(&store, &who);
-    assert_eq!(labels(&again), ["web.image"]);
-    assert_eq!(row(&again, "web.image").change, SyncChange::Changed);
+    assert_eq!(labels(&again), ["web.source"]);
+    assert_eq!(row(&again, "web.source").change, SyncChange::Changed);
     discard(&store, &who, "api");
     let again = view(&store, &who);
-    assert_eq!(labels(&again), ["api", "api.env.MODE", "web.image"]);
+    assert_eq!(labels(&again), ["api", "api.env.MODE", "web.source"]);
     assert_eq!(row(&again, "api").change, SyncChange::New);
 
     // Once production deploys them, a Discard there no longer gives them back.
@@ -560,7 +560,7 @@ fn a_synced_change_discarded_before_it_deploys_is_offered_again() {
         "production",
         &[("web.image", json!("web:hot"))],
     );
-    discard(&store, &who, "web.image");
+    discard(&store, &who, "web.source");
     assert_eq!(
         values(&store, &who, "production", "web")["image"],
         json!("web:2")
@@ -568,7 +568,7 @@ fn a_synced_change_discarded_before_it_deploys_is_offered_again() {
     assert!(view(&store, &who).rows.is_empty());
     set(&store, &who, "fix-web", &[("web.image", json!("web:3"))]);
     assert_eq!(
-        row(&view(&store, &who), "web.image").change,
+        row(&view(&store, &who), "web.source").change,
         SyncChange::Changed
     );
 }
@@ -682,7 +682,7 @@ fn switch(store: &ConfigStore, who: &Actor, environment: &str, from: &str, to: (
 }
 
 #[test]
-fn undoing_a_source_switch_rewinds_the_base_to_the_whole_source() {
+fn undoing_a_source_switch_rewinds_the_base_to_its_source() {
     let (store, who) = shop(false);
     switch(
         &store,
@@ -727,7 +727,7 @@ fn undoing_a_source_switch_rewinds_the_base_to_the_whole_source() {
         "{:?}",
         ticks(&offered)
     );
-    assert_eq!(row(&offered, "web.repository").change, SyncChange::Changed);
+    assert_eq!(row(&offered, "web.source").change, SyncChange::Changed);
 }
 
 #[test]
@@ -760,7 +760,7 @@ fn a_sync_is_not_undone_once_a_row_it_landed_changed_or_deployed() {
         undo(&store, &who, &image),
         Err((
             RpcErrorCode::Conflict,
-            "web.image is deployed: change it back instead".into()
+            "web.source is deployed: change it back instead".into()
         ))
     );
     assert_eq!(
@@ -875,7 +875,7 @@ fn a_branch_syncs_skipping_a_level_and_sideways_ticking_only_its_own_changes() {
         &[("web.env.PLAIN", json!("hot"))],
     );
     let skip = offered(&store, &who, "fix-a", "production");
-    assert_eq!(ticks(&skip), ["-web.env.MID", "web.image"]);
+    assert_eq!(ticks(&skip), ["-web.env.MID", "web.source"]);
     assert_eq!(row(&skip, "web.env.MID").change, SyncChange::New);
     sync_into(&store, &who, ("fix-a", "production"), None);
     let web = values(&store, &who, "production", "web");
@@ -893,7 +893,7 @@ fn a_branch_syncs_skipping_a_level_and_sideways_ticking_only_its_own_changes() {
     let sideways = offered(&store, &who, "fix-a", "fix-b");
     assert_eq!(
         ticks(&sideways),
-        ["-web.env.MID", "-web.env.ROOT", "web.image"]
+        ["-web.env.MID", "-web.env.ROOT", "web.source"]
     );
     sync_into(&store, &who, ("fix-a", "fix-b"), None);
     let web = values(&store, &who, "fix-b", "web");
@@ -905,7 +905,7 @@ fn a_branch_syncs_skipping_a_level_and_sideways_ticking_only_its_own_changes() {
     // Into its own Parent, every row is ticked.
     assert_eq!(
         ticks(&offered(&store, &who, "fix-a", "fix-web")),
-        ["web.image"]
+        ["web.source"]
     );
 
     // Once synced into its Parent, a change is no longer fix-a's own: unticked
@@ -1275,17 +1275,61 @@ fn picks_name_rows_by_either_sides_name_or_by_a_prefix() {
     store
         .write(&who, &sync(&view(&store, &who), Some(&["frontend.env.A"])))
         .unwrap();
-    assert_eq!(labels(&view(&store, &who)), ["web.env.B", "web.image"]);
+    assert_eq!(labels(&view(&store, &who)), ["web.env.B", "web.source"]);
     store
         .write(&who, &sync(&view(&store, &who), Some(&["web.env"])))
         .unwrap();
-    assert_eq!(labels(&view(&store, &who)), ["web.image"]);
+    assert_eq!(labels(&view(&store, &who)), ["web.source"]);
     let unknown = store
         .write(&who, &sync(&view(&store, &who), Some(&["web.nope"])))
         .unwrap_err();
     assert_eq!(unknown.code, RpcErrorCode::NotFound);
     assert_eq!(
         unknown.details["valid_children"],
-        json!(["frontend.image", "web.image"])
+        json!(["frontend.source", "web.source"])
     );
+}
+
+/// A synced source that turns credentials on brings the Branch's credential; one
+/// already on keeps the receiver's own.
+#[test]
+fn a_synced_source_brings_its_credential_only_where_it_turns_credentials_on() {
+    let (store, who) = shop(false);
+    let pulls_with = |n: u8| {
+        let id = backend::admit(&store, &who, "production", n);
+        let runner = ployz_store::RunnerId::parse("runner").unwrap();
+        let claimed = store.claim(&id, &runner).unwrap().intent.registry_auth;
+        backend::run(&store, &id);
+        claimed
+            .into_values()
+            .map(|auth| auth.password)
+            .collect::<Vec<_>>()
+    };
+    let credential = |environment: &str, secret: &str| {
+        set(
+            &store,
+            &who,
+            environment,
+            &[("web.registryCredential", json!({ "secret": secret }))],
+        );
+    };
+    credential("fix-web", "branch-token");
+    sync_into(
+        &store,
+        &who,
+        ("fix-web", "production"),
+        Some(&["web.source"]),
+    );
+    assert_eq!(pulls_with(1), ["branch-token"]);
+
+    credential("production", "own-token");
+    set(&store, &who, "fix-web", &[("web.image", json!("web:2"))]);
+    sync_into(
+        &store,
+        &who,
+        ("fix-web", "production"),
+        Some(&["web.source"]),
+    );
+    assert_eq!(values(&store, &who, "production", "web")["image"], "web:2");
+    assert_eq!(pulls_with(2), ["own-token"]);
 }

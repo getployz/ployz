@@ -443,12 +443,8 @@ pub(super) fn share(
 fn rewind_bases(
     tx: &mut dyn Tx,
     receiver: &EnvironmentId,
-    mut cells: Vec<(EnvironmentId, RowId, Prior)>,
+    cells: Vec<(EnvironmentId, RowId, Cell)>,
 ) -> Result<(), RpcError> {
-    // A whole source goes back before the rest of its lineage's rows, which arrived
-    // with it or before it, so they put back their own cells on it: those of the
-    // other kind of source `put` ignores.
-    cells.sort_by_key(|(_, _, prior)| !matches!(prior, Prior::Source(_)));
     let mut bases: BTreeMap<EnvironmentId, SavedEnvironmentIntent> = BTreeMap::new();
     for (other, row, cell) in cells {
         let base = match bases.remove(&other) {
@@ -458,7 +454,7 @@ fn rewind_bases(
                 None => continue,
             },
         };
-        let base = cell.put_back(&base, &row).map_err(config)?;
+        let base = put_back(&base, &row, &cell).map_err(config)?;
         bases.insert(other, base);
     }
     for (other, base) in &bases {
@@ -575,8 +571,8 @@ enum Arrival {
     /// `was` the receiver's own, to rewind a discard and to undo `sync`, the Sync
     /// that landed it.
     Pending {
-        prior: Prior,
-        was: Was,
+        prior: Cell,
+        was: SealedCell,
         sync: Option<SyncId>,
     },
     /// A Follow the receiver changed too, or discarded.
@@ -812,6 +808,17 @@ impl Carried {
     }
 }
 
+/// Whether `service` pulls its image with a registry credential.
+const fn credentialed(service: &SavedServiceIntent) -> bool {
+    matches!(
+        service.config.source,
+        ServiceSource::Image {
+            credentials: ServiceImageCredentials::Configured { .. },
+            ..
+        }
+    )
+}
+
 /// Land `next` as `branch`'s Working State: the nodes arriving from `from` bring
 /// their registry credentials and Deployment Policies (`carried`) and get their Node
 /// Introductions, and a picked credential row brings its credential to the Service
@@ -848,15 +855,10 @@ pub(crate) fn land(
         if old.is_some() {
             continue;
         }
-        let credentials = matches!(
-            service.config.source,
-            ServiceSource::Image {
-                credentials: ServiceImageCredentials::Configured { .. },
-                ..
-            }
-        );
         if let Some(source) = source_of(&service.lineage_id) {
-            if credentials && let Some(sealed) = carried.credentials.get(&source) {
+            if credentialed(service)
+                && let Some(sealed) = carried.credentials.get(&source)
+            {
                 registry::store(tx, who, &id, &service.id, sealed)?;
             }
             if let Some(policy) = carried.policies.get(&source) {
@@ -865,15 +867,25 @@ pub(crate) fn land(
         }
         scope::introduce(tx, who, &id, scope::Node::Service(service))?;
     }
+    // A picked source that turns credentials on brings the credential; one already on
+    // keeps the receiver's own.
     for pick in picks
         .iter()
-        .filter(|pick| *pick.at() == At::Setting(Setting::Credentials))
+        .filter(|pick| *pick.at() == At::Setting(Setting::Source))
     {
         let lineage = pick.lineage();
-        let receiver = before.services.iter().find(|old| old.lineage_id == lineage);
+        let of = |intent: &SavedEnvironmentIntent| {
+            intent
+                .services
+                .iter()
+                .find(|service| service.lineage_id == lineage)
+                .filter(|service| credentialed(service))
+                .map(|service| service.id.clone())
+        };
+        let turned_on = of(&branch.working).filter(|_| of(&before).is_none());
         let sealed = source_of(lineage).and_then(|source| carried.credentials.get(&source));
-        if let (Some(receiver), Some(sealed)) = (receiver, sealed) {
-            registry::store(tx, who, &id, &receiver.id, sealed)?;
+        if let (Some(receiver), Some(sealed)) = (turned_on, sealed) {
+            registry::store(tx, who, &id, &receiver, sealed)?;
         }
     }
     for volume in &branch.working.volumes {

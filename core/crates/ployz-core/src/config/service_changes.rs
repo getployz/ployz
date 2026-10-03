@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
-use super::{At, ConfigError, ServiceConfig, ServiceSource, Setting, parse_service_config};
+use super::{
+    At, ConfigError, ServiceConfig, ServiceImageCredentials, ServiceSource, Setting,
+    parse_service_config,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Whether an owned setting appeared, changed, or disappeared.
@@ -33,11 +36,7 @@ pub struct ServiceSettingChange {
 
 /// Each compared field and the Setting whose row it falls in.
 const FIELDS: &[(&str, Setting)] = &[
-    ("source.repository", Setting::Repository),
     ("source.branch", Setting::Branch),
-    ("source.rootDir", Setting::RootDir),
-    ("source.image", Setting::Image),
-    ("source.credentials", Setting::Credentials),
     ("preDeployCommand", Setting::PreDeployCommand),
     ("startCommand", Setting::StartCommand),
     ("restartPolicy", Setting::RestartPolicy),
@@ -60,30 +59,22 @@ pub fn compare_service_settings(
     current: &ServiceConfig,
     baseline: Option<&ServiceConfig>,
 ) -> Vec<(ServiceSettingChange, Option<At>)> {
-    // A switch falls in the row of the source it switches to, or, emptied, of the one it removes.
-    let switched = match (
-        &current.settings.source,
-        baseline.map(|b| &b.settings.source),
-    ) {
-        (ServiceSource::Git { .. }, _)
-        | (ServiceSource::Empty { .. }, Some(ServiceSource::Git { .. })) => Setting::Repository,
-        (ServiceSource::Image { .. } | ServiceSource::Empty { .. }, _) => Setting::Image,
+    // The source is one row, as Sync moves it and Discard takes it, but for its git branch.
+    let source = |config: &ServiceConfig| {
+        Some(source_cell(&config.settings.source)).filter(|cell| *cell != default_value("source"))
     };
-    let source_changed = baseline.is_some_and(|b| {
-        std::mem::discriminant(&b.settings.source)
-            != std::mem::discriminant(&current.settings.source)
-    });
-    let current = json!(current);
-    let baseline = baseline.map_or(Value::Null, |value| json!(value));
+    let (before, after) = (baseline.and_then(source), source(current));
     let mut changes = Vec::new();
-    if source_changed {
+    if before != after {
         changes.push(change(
-            ("source", Some(At::Setting(switched))),
-            at(&baseline, "source").clone(),
-            at(&current, "source").clone(),
-            true,
+            ("source", Some(At::Setting(Setting::Source))),
+            before.unwrap_or_default(),
+            after.unwrap_or_default(),
+            baseline.is_some(),
         ));
     }
+    let current = json!(current);
+    let baseline = baseline.map_or(Value::Null, |value| json!(value));
     // One row, as Sync moves it and Discard takes it, whichever of its parts changed.
     if at(&current, "healthcheck") != at(&baseline, "healthcheck")
         && (!baseline.is_null() || at(&current, "healthcheck.type") != "none")
@@ -96,17 +87,13 @@ pub fn compare_service_settings(
         ));
     }
     for &(path, setting) in FIELDS {
-        if source_changed && path.starts_with("source.") {
-            continue;
-        }
         let before = at(&baseline, path);
         let after = at(&current, path);
-        let repository_changed = path == "source.repository"
-            && !before.is_null()
-            && !after.is_null()
-            && (at(&baseline, "source.repositoryId") != at(&current, "source.repositoryId")
-                || at(&baseline, "source.access") != at(&current, "source.access"));
-        if before == after && !repository_changed {
+        // A git branch that comes or goes with its source is the source's change.
+        let switched = path == "source.branch"
+            && !baseline.is_null()
+            && at(&baseline, "source.type") != at(&current, "source.type");
+        if before == after || switched {
             continue;
         }
         if baseline.is_null() && *after == default_value(path) {
@@ -175,28 +162,20 @@ pub fn restore_service_setting(
             .as_object_mut()
             .expect("serialized service")
             .insert("healthcheck".into(), at(&baseline, "healthcheck").clone());
-    } else if path == "source"
-        || (path.starts_with("source.")
-            && at(&current, "source.type") != at(&baseline, "source.type"))
-    {
+    } else if path == "source" {
+        // All of it but the git branch, which stays the Service's own where it has one.
+        let mut source = at(&baseline, "source").clone();
+        let branch = at(&current, "source.branch");
+        if let Some(fields) = source.as_object_mut()
+            && fields.contains_key("branch")
+            && !branch.is_null()
+        {
+            fields.insert("branch".into(), branch.clone());
+        }
         current
             .as_object_mut()
             .expect("serialized service")
-            .insert("source".into(), at(&baseline, "source").clone());
-    } else if path == "source.repository" && at(&current, "source.type") == "git" {
-        let source = current
-            .get_mut("source")
-            .and_then(Value::as_object_mut)
-            .expect("serialized source");
-        for field in ["repository", "repositoryId", "access"] {
-            source.insert(
-                field.into(),
-                at(&baseline, "source")
-                    .get(field)
-                    .cloned()
-                    .unwrap_or_default(),
-            );
-        }
+            .insert("source".into(), source);
     } else if let Some((parent, field)) = path.split_once('.') {
         let Some(value) = baseline.get(parent).and_then(|v| v.get(field)) else {
             return parse_service_config(current);
@@ -220,9 +199,22 @@ pub(super) fn at<'a>(value: &'a Value, path: &str) -> &'a Value {
         .fold(value, |value, key| value.get(key).unwrap_or(&Value::Null))
 }
 
+/// A source as its row holds it: all of it but its git branch, its credentials by
+/// presence.
+pub(super) fn source_cell(source: &ServiceSource) -> Value {
+    let mut cell = json!(source);
+    let fields = cell.as_object_mut().expect("a source is an object");
+    fields.remove("branch");
+    if let ServiceSource::Image { credentials, .. } = source {
+        let configured = matches!(credentials, ServiceImageCredentials::Configured { .. });
+        fields.insert("credentials".into(), json!(configured));
+    }
+    cell
+}
+
 pub(super) fn default_value(path: &str) -> Value {
     match path {
-        "source.credentials" => json!({"type": "none"}),
+        "source" => json!({"type": "empty", "version": 1, "rootDir": "/"}),
         "healthcheck" => json!({"type": "none"}),
         "restartPolicy" => json!("unless-stopped"),
         "maxRetries" => json!(10),

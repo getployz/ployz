@@ -33,21 +33,21 @@ fn service_comparison_and_restore_preserve_authored_source_identity() {
         rows.iter()
             .map(|(row, _)| row.path.as_str())
             .collect::<Vec<_>>(),
-        ["source.repository", "source.branch", "startCommand"]
+        ["source", "source.branch", "startCommand"]
     );
     assert_eq!(
         rows.iter().map(|(_, at)| at.clone()).collect::<Vec<_>>(),
-        [Setting::Repository, Setting::Branch, Setting::StartCommand].map(|s| Some(At::Setting(s)))
+        [Setting::Source, Setting::Branch, Setting::StartCommand].map(|s| Some(At::Setting(s)))
     );
-    let restored =
-        restore_service_setting(current.clone(), &baseline, "source.repository").unwrap();
+    let restored = restore_service_setting(current.clone(), &baseline, "source").unwrap();
     assert_eq!(
         serde_json::to_value(&restored).unwrap()["source"]["access"]["installationId"],
         7
     );
     assert_eq!(
         serde_json::to_value(&restored).unwrap()["source"]["branch"]["type"],
-        "disconnected"
+        "disconnected",
+        "the git branch is the Service's own"
     );
     assert_eq!(
         serde_json::to_value(restored).unwrap()["startCommand"],
@@ -58,36 +58,38 @@ fn service_comparison_and_restore_preserve_authored_source_identity() {
     image["source"] = json!({"version": 1, "type": "image", "image": "api:latest",
         "credentials": {"type": "configured", "credentialId": "00000000-0000-4000-8000-000000000002"}});
     let image = parse_service_config(image).unwrap();
-    let (switched, at) = &compare_service_settings(&image, Some(&baseline))[0];
+    let rows = compare_service_settings(&image, Some(&baseline));
+    assert_eq!(rows.len(), 1, "the branch goes with its source");
+    let (switched, at) = &rows[0];
     assert_eq!(switched.path, "source");
+    assert_eq!(*at, Some(At::Setting(Setting::Source)));
     assert_eq!(
-        *at,
-        Some(At::Setting(Setting::Image)),
-        "the source it switches to"
+        switched.after["credentials"],
+        json!(true),
+        "never the credential"
     );
     assert_eq!(
-        restore_service_setting(image.clone(), &baseline, "source.branch").unwrap(),
-        baseline
+        restore_service_setting(image.clone(), &baseline, "source").unwrap(),
+        baseline,
+        "a Service without a git branch takes the baseline's"
     );
     assert!(compare_service_settings(&image, Some(&image)).is_empty());
     assert!(restore_service_setting(current, &baseline, "unrecognized.setting").is_err());
 }
 
 #[test]
-fn an_emptied_source_falls_in_the_row_of_the_source_it_removes() {
+fn an_emptied_source_is_the_source_row_and_discard_brings_it_back() {
     let git = parse_service_config(config()).unwrap();
-    let mut image = config();
-    image["source"] = json!({"version": 1, "type": "image", "image": "api:latest",
-        "credentials": {"type": "none"}});
-    let image = parse_service_config(image).unwrap();
     let mut empty = config();
     empty["source"] = json!({"version": 1, "type": "empty", "rootDir": "/"});
     let empty = parse_service_config(empty).unwrap();
-    for (removed, setting) in [(&git, Setting::Repository), (&image, Setting::Image)] {
-        let rows = compare_service_settings(&empty, Some(removed));
-        assert_eq!(rows[0].0.path, "source");
-        assert_eq!(rows[0].1, Some(At::Setting(setting)));
-    }
+    let rows = compare_service_settings(&empty, Some(&git));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (rows[0].0.path.as_str(), &rows[0].0.after, &rows[0].1),
+        ("source", &Value::Null, &Some(At::Setting(Setting::Source)))
+    );
+    assert_eq!(restore_service_setting(empty, &git, "source").unwrap(), git);
 }
 
 #[test]

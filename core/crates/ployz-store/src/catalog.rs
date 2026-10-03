@@ -91,8 +91,10 @@ fn versioned(mut schema: Value) -> Value {
 }
 
 fn service() -> Value {
+    // The source isn't set whole: `image` and `repository` are its fields here.
     let mut properties = ServiceSetting::ALL
         .into_iter()
+        .filter(|one| *one != ServiceSetting::Source)
         .map(|one| (one.name().to_owned(), setting(one)))
         .collect::<Map<_, _>>();
     properties.insert(

@@ -246,7 +246,7 @@ fn a_setting_either_side_marks_never_sync_is_never_a_row_and_is_listed_apart() {
     assert_eq!(marked(&store, &who, "production"), [row("variables.PLAIN")]);
 
     let offered = view(&store, &who);
-    assert_eq!(labels(&offered), ["web.image"]);
+    assert_eq!(labels(&offered), ["web.source"]);
     let apart: Vec<(String, Vec<&str>)> = offered
         .never_synced
         .iter()
@@ -449,16 +449,20 @@ fn a_new_services_row_kept_out_by_a_mark_names_the_mark_to_undo() {
             },
         )
         .unwrap();
-    store
-        .write(
+    // The source is one row: its image is no row of its own.
+    let mark = |row: &str| {
+        store.write(
             &who,
             &NeverSync {
                 environment: at("fix-web"),
-                rows: vec!["api.image".into()],
+                rows: vec![row.into()],
                 off: false,
             },
         )
-        .unwrap();
+    };
+    let none = mark("api.image").unwrap_err();
+    assert_eq!(none.message, "No row named api.image here");
+    mark("api.source").unwrap();
     let apart = view(&store, &who).never_synced;
     assert_eq!(apart.len(), 1);
     assert_eq!(apart[0].at.to_string(), "api");

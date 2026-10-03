@@ -9,9 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
     Applied, Arrives, Cell, Cells, ConfigError, EncryptedSecretValue, Hostnames, NodeRef, Plan,
-    PlannedRow, Policy, Prior, RowId, SavedEnvironmentIntent, SealedCell, SealedSecret, Sides,
-    Verdict, Was, Way, Why, name_of, parse_environment_intent, plan, put,
-    redact_environment_intent, unapply,
+    PlannedRow, Policy, RowId, SavedEnvironmentIntent, SealedSecret, Sides, Verdict, Way, Why,
+    name_of, parse_environment_intent, plan, put, put_back, redact_environment_intent, unapply,
 };
 use serde_json::{Value, json};
 
@@ -292,7 +291,7 @@ fn row_ids_read_back_as_they_print() {
         format!("{DATA}:data"),
         format!("{DATA}:name"),
         format!("{DATA}:storage"),
-        format!("{API}:source.repository"),
+        format!("{API}:source"),
         format!("{API}:healthcheck"),
         format!("{API}:build.buildMethod"),
         format!("{API}:mounts.{DATA}"),
@@ -508,13 +507,13 @@ fn removals_and_equal_secrets_produce_no_rows_in_a_sync_and_land_as_they_are() {
         .unwrap()
         .retain(|v| v["key"] != "PLAIN");
     api["volumeAttachments"] = json!([]);
-    api["config"]["source"]["credentials"] = json!({"type": "none"});
     // Same secret value under a new id and new ciphertext.
     var(&mut from, API, "TOKEN")["value"] = secret("branch-cipher");
     let rows = summary(&compare(Some(&parent()), &from, &parent(), Way::Sync));
     assert!(rows.iter().all(|r| !r.contains(":variables.")), "{rows:#?}");
     assert!(rows.iter().all(|r| !r.contains(":mounts.")), "{rows:#?}");
-    assert!(rows.iter().all(|r| !r.contains("credentials")), "{rows:#?}");
+    // api's credential has another id here, but credentials compare by presence.
+    assert!(rows.iter().all(|r| !r.contains(":source")), "{rows:#?}");
 
     // As it is, each removal lands.
     let copy = compare(Some(&parent()), &from, &parent(), Way::Copy);
@@ -535,11 +534,15 @@ fn removals_and_equal_secrets_produce_no_rows_in_a_sync_and_land_as_they_are() {
             .all(|v| v["key"] != "PLAIN")
     );
 
-    // Credentials compare by presence: adding one where `into` has none moves.
+    // Credentials compare by presence, as part of the source: adding one where `into`
+    // has none changes the source.
     let mut into = parent();
     svc(&mut into, API)["config"]["source"]["credentials"] = json!({"type": "none"});
     let rows = summary(&compare(None, &branch(), &into, Way::Sync));
-    assert!(rows.contains(&format!("{API}:source.credentials move conflict=false")));
+    assert!(
+        rows.contains(&format!("{API}:source move conflict=true")),
+        "{rows:#?}"
+    );
 }
 
 #[test]
@@ -1028,7 +1031,7 @@ fn repository_authority_moves_with_the_repository() {
         json!({"type": "github-installation", "installationId": 9});
     svc(&mut from, WEB)["config"]["source"]["repositoryId"] = json!(2);
     let plan = compare(Some(&parent()), &from, &parent(), Way::Sync);
-    assert_eq!(moves(&plan), [format!("{WEB}:source.repository")]);
+    assert_eq!(moves(&plan), [format!("{WEB}:source")]);
     let next = next_of(&plan, &moves(&plan));
     let web = find(&next["services"], "lineageId", WEB);
     assert_eq!(web["config"]["source"]["repositoryId"], 2);
@@ -1218,7 +1221,7 @@ fn a_sync_introduces_a_new_branch_service_into_the_parent() {
                 "name": "jobs",
                 "managedHostnames": [{ "prefix": "jobs", "targetPort": null }],
                 "privateDns": "jobs",
-                "source.image": "jobs:1",
+                "source": {"type": "image", "version": 1, "image": "jobs:1", "credentials": false},
             })),
             &Cell::Absent,
             None
@@ -1394,13 +1397,7 @@ fn a_mark_on_what_a_new_node_needs_keeps_the_node_out() {
         from_marks: vec![format!("{JOBS}:{mark}")],
         ..Opts::default()
     };
-    let plan = compare_with(
-        Some(&parent()),
-        &from,
-        &parent(),
-        Way::Sync,
-        opts("source.image"),
-    );
+    let plan = compare_with(Some(&parent()), &from, &parent(), Way::Sync, opts("source"));
     assert_has(
         &summary(&plan),
         &[
@@ -1492,7 +1489,7 @@ fn put_undoes_every_landing() {
     let next = unapply(&applied.next, "", &applied.landed).unwrap();
     let mut base = applied.base;
     for landed in applied.landed.iter().rev() {
-        base = landed.prior.put_back(&base, &landed.row).unwrap();
+        base = put_back(&base, &landed.row, &landed.prior).unwrap();
     }
     let unchanged = |a: &SavedEnvironmentIntent, b: &Value| {
         let rows = moves(&compare(None, &json_of(a), b, Way::Copy));
@@ -1532,27 +1529,26 @@ fn a_new_node_is_not_undone_once_it_holds_a_row_it_didnt_land_with() {
     );
 }
 
-/// Switching a source's kind is one change: Undo puts the whole source back, and is
-/// refused once any of it changed since.
+/// A source minus its git branch, as its row holds it.
+fn source_of(env: &mut Value, lineage: &str) -> Value {
+    let mut source = svc(env, lineage)["config"]["source"].clone();
+    source.as_object_mut().unwrap().remove("branch");
+    source
+}
+
+/// Switching a source's kind is one row: Undo puts the source back, and is refused
+/// once it changed since.
 #[test]
-fn undoing_a_source_switch_puts_the_whole_source_back() {
+fn undoing_a_source_switch_puts_the_source_back() {
     let mut from = parent();
     svc(&mut from, WEB)["config"]["source"] =
         json!({"version": 1, "type": "image", "image": "web:9", "credentials": {"type": "none"}});
     let plan = compare(Some(&parent()), &from, &parent(), Way::Sync);
-    let applied = land(&plan, &[format!("{WEB}:source.image")]).unwrap();
-    // As the Store keeps it; a row's own cell keeps the shape it always had.
-    let was = &applied.landed[0].was;
-    assert!(matches!(was, Was::Source { .. }), "{was:?}");
-    assert_eq!(serde_json::from_value::<Was>(json!(was)).unwrap(), *was);
-    let cell = SealedCell::Cell(Cell::Absent);
-    assert_eq!(json!(Was::Cell(cell.clone())), json!(cell));
+    let row = format!("{WEB}:source");
+    assert_eq!(moves(&plan), std::slice::from_ref(&row));
+    let applied = land(&plan, std::slice::from_ref(&row)).unwrap();
     let mut undone = json_of(&unapply(&applied.next, "", &applied.landed).unwrap());
-    let mut parent = parent();
-    assert_eq!(
-        svc(&mut undone, WEB)["config"]["source"],
-        svc(&mut parent, WEB)["config"]["source"]
-    );
+    assert_eq!(source_of(&mut undone, WEB), source_of(&mut parent(), WEB));
 
     let mut next = json_of(&applied.next);
     svc(&mut next, WEB)["config"]["source"]["credentials"] =
@@ -1560,35 +1556,50 @@ fn undoing_a_source_switch_puts_the_whole_source_back() {
     let refused = unapply(&intent(&next), "", &applied.landed).unwrap_err();
     assert_eq!(
         refused.to_string(),
-        format!("{WEB}:source.image changed since it landed")
+        format!("{row} changed since it landed")
     );
 }
 
-/// A discarded Follow that switched a source's kind puts the base's whole source back,
-/// whichever of the rows that switched it goes back first: never a source between.
+/// A discarded Follow that switched a source's kind puts the base's source back.
 #[test]
-fn a_discarded_source_switch_rewinds_the_base_in_any_order() {
+fn a_discarded_source_switch_rewinds_the_base() {
     let mut from = parent();
     svc(&mut from, WEB)["config"]["source"] =
         json!({"version": 1, "type": "image", "image": "web:9", "credentials": {"type": "none"}});
     let plan = compare(Some(&parent()), &from, &parent(), Way::Follow);
-    let mut landed = land(&plan, &moves(&plan)).unwrap();
-    let original = svc(&mut parent(), WEB)["config"]["source"].clone();
-    let arrived = svc(&mut json_of(&landed.base), WEB)["config"]["source"].clone();
-    for _ in 0..2 {
-        let mut base = landed.base.clone();
-        for one in &landed.landed {
-            base = one.prior.put_back(&base, &one.row).unwrap();
-            let source = svc(&mut json_of(&base), WEB)["config"]["source"].clone();
-            assert!(
-                source == original || source == arrived,
-                "{}: {source}",
-                one.row
-            );
-        }
-        assert_eq!(svc(&mut json_of(&base), WEB)["config"]["source"], original);
-        landed.landed.reverse();
+    let landed = land(&plan, &moves(&plan)).unwrap();
+    assert_eq!(
+        source_of(&mut json_of(&landed.base), WEB),
+        source_of(&mut from, WEB)
+    );
+    let mut base = landed.base.clone();
+    for one in &landed.landed {
+        base = put_back(&base, &one.row, &one.prior).unwrap();
     }
+    assert_eq!(
+        source_of(&mut json_of(&base), WEB),
+        source_of(&mut parent(), WEB)
+    );
+}
+
+/// The git branch is each side's own: a source landing on a git source keeps its branch.
+#[test]
+fn a_branch_keeps_its_git_branch_when_a_source_lands() {
+    let mut from = parent();
+    let source = &mut svc(&mut from, WEB)["config"]["source"];
+    source["repository"] = json!("acme/docs");
+    source["repositoryId"] = json!(2);
+    source["branch"] = json!({"type": "connected", "name": "fix"});
+    let plan = compare(Some(&parent()), &from, &parent(), Way::Sync);
+    let row = format!("{WEB}:source");
+    assert_eq!(moves(&plan), std::slice::from_ref(&row));
+    let mut next = next_of(&plan, &[row]);
+    let source = &svc(&mut next, WEB)["config"]["source"];
+    assert_eq!(source["repository"], "acme/docs");
+    assert_eq!(
+        source["branch"],
+        json!({"type": "connected", "name": "main"})
+    );
 }
 
 #[test]
@@ -1617,7 +1628,7 @@ fn put_refuses_what_a_row_cannot_hold() {
         assert!(put(&parent, &at(row.clone()), &cell).is_err(), "{row}");
     }
     // Putting a base back refuses the same, but leaves a row whose node is gone.
-    let back = |row: String, cell| Prior::Cell(cell).put_back(&parent, &at(row));
+    let back = |row: String, cell| put_back(&parent, &at(row), &cell);
     assert!(back(format!("{API}:replicas"), val(json!("many"))).is_err());
     assert_eq!(
         back(format!("{JOBS}:node"), val(json!("jobs"))).unwrap(),

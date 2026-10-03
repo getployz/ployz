@@ -7,11 +7,10 @@ use std::str::FromStr;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value, json};
 
-use crate::config::service_changes::{at, default_value};
+use crate::config::service_changes::{at, default_value, source_cell};
 use crate::config::{
     ConfigError, EncryptedSecretValue, SavedEnvironmentIntent as Intent, SavedServiceIntent,
-    SavedVariableIntent, SavedVariableValue, SavedVolumeIntent, ServiceImageCredentials,
-    ServiceSource,
+    SavedVariableIntent, SavedVariableValue, SavedVolumeIntent,
 };
 
 /// One row's address: a lineage and a place in its node. The only row address anywhere;
@@ -42,16 +41,12 @@ pub enum At {
     Variable(String),
 }
 
-/// A Service setting a row can address. Declaration order is landing order: what a
-/// source is comes before what it holds.
+/// A Service setting a row can address. Declaration order is landing order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[expect(missing_docs, reason = "each is the setting its path names")]
 pub enum Setting {
-    Repository,
-    Image,
-    RootDir,
+    Source,
     Branch,
-    Credentials,
     PrivateDns,
     ManagedHostnames,
     Routes,
@@ -70,12 +65,9 @@ pub enum Setting {
 
 impl Setting {
     /// Every Setting, in landing order.
-    pub const ALL: [Self; 19] = [
-        Self::Repository,
-        Self::Image,
-        Self::RootDir,
+    pub const ALL: [Self; 16] = [
+        Self::Source,
         Self::Branch,
-        Self::Credentials,
         Self::PrivateDns,
         Self::ManagedHostnames,
         Self::Routes,
@@ -96,11 +88,8 @@ impl Setting {
     #[must_use]
     pub const fn path(self) -> &'static str {
         match self {
-            Self::Repository => "source.repository",
-            Self::Image => "source.image",
-            Self::RootDir => "source.rootDir",
+            Self::Source => "source",
             Self::Branch => "source.branch",
-            Self::Credentials => "source.credentials",
             Self::PrivateDns => "privateDns",
             Self::ManagedHostnames => "managedHostnames",
             Self::Routes => "routes",
@@ -125,11 +114,8 @@ impl Setting {
     /// Whether a new node arrives with it on its node row rather than as a row.
     pub(super) fn carried(self) -> bool {
         match self {
-            Self::Repository
-            | Self::Image
-            | Self::RootDir
+            Self::Source
             | Self::Branch
-            | Self::Credentials
             | Self::PrivateDns
             | Self::ManagedHostnames
             | Self::Routes => true,
@@ -487,8 +473,8 @@ pub(super) fn sealed_cell(env: &Intent, cells: &Cells, row: &RowId) -> SealedCel
 }
 
 /// Every place in `node` that holds something, normalized so copies compare with their
-/// originals: generated addresses without `suffix`, credentials and custom domains by
-/// presence and hostname, mounts by Volume lineage, secrets by fingerprint.
+/// originals: generated addresses without `suffix`, a source without its git branch and
+/// its credentials by presence, custom domains by hostname, mounts by Volume lineage, secrets by fingerprint.
 fn cells(env: &Intent, node: NodeRef, suffix: &str) -> BTreeMap<At, Cell> {
     let service = match node {
         NodeRef::Volume(volume) => {
@@ -503,25 +489,7 @@ fn cells(env: &Intent, node: NodeRef, suffix: &str) -> BTreeMap<At, Cell> {
     let mut cells = BTreeMap::new();
     for setting in Setting::ALL {
         let value = match setting {
-            // Repository authority (id and access) moves with the repository it names.
-            Setting::Repository => match &service.config.source {
-                ServiceSource::Git {
-                    repository,
-                    repository_id,
-                    access,
-                    ..
-                } => json!({"access": access, "repository": repository, "repositoryId": repository_id}),
-                ServiceSource::Empty { .. } | ServiceSource::Image { .. } => Value::Null,
-            },
-            Setting::Credentials => match &service.config.source {
-                ServiceSource::Image {
-                    credentials: ServiceImageCredentials::Configured { .. },
-                    ..
-                } => json!(true),
-                ServiceSource::Image { .. } | ServiceSource::Empty { .. } | ServiceSource::Git { .. } => {
-                    Value::Null
-                }
-            },
+            Setting::Source => source_cell(&service.config.source),
             Setting::Routes => {
                 let mut domains: Vec<_> = service.config.routes.iter().map(|r| &r.hostname).collect();
                 domains.sort();
@@ -535,9 +503,7 @@ fn cells(env: &Intent, node: NodeRef, suffix: &str) -> BTreeMap<At, Cell> {
                     .map(|h| json!({"prefix": h.prefix.strip_suffix(suffix).unwrap_or(&h.prefix), "targetPort": h.target_port}))
                     .collect::<Vec<_>>()
             ),
-            Setting::Image
-            | Setting::RootDir
-            | Setting::Branch
+            Setting::Branch
             | Setting::PrivateDns
             | Setting::PreDeployCommand
             | Setting::StartCommand

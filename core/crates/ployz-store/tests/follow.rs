@@ -8,14 +8,15 @@
 //! value is a Use hint, as is one the Branch discards; it cascades one level per
 //! deploy; and a secret follows only into a Branch that never set its own.
 
-use ployz_core::config::{At, Setting};
+use ployz_core::config::{At, ServiceGitAccess, Setting};
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::RowId;
 use ployz_store::{
-    Actor, Batch, BatchCommand, Change, ConfigStore, CreateBranch, CreateProject, CreateService,
-    DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentQuery,
-    EnvironmentRef, HintSource, NeverSync, OrganizationId, ProjectId, ProjectName, Publish,
-    ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, Take, Trusted,
+    Actor, AuthorizedRepository, Batch, BatchCommand, Change, ConfigStore, CreateBranch,
+    CreateProject, CreateService, DiffQuery, DiffView, Discard, Edit, EnvironmentId,
+    EnvironmentName, EnvironmentQuery, EnvironmentRef, HintSource, NeverSync, OrganizationId,
+    ProjectId, ProjectName, Publish, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath,
+    Take, Trusted,
 };
 use serde_json::{Value, json};
 
@@ -153,7 +154,7 @@ fn hints(store: &ConfigStore, who: &Actor, environment: &str) -> Vec<String> {
         .collect()
 }
 
-/// `web`'s row `at`, as `variables.KEY` or `source.image`.
+/// `web`'s row `at`, as `variables.KEY` or `source`.
 fn row(at: &str) -> RowId {
     format!("{}:{at}", uuid(3)).parse().unwrap()
 }
@@ -228,14 +229,14 @@ fn a_parents_deploy_stages_its_changes_in_each_branch_once_tagged_with_where_fro
         );
         assert_eq!(
             incoming(&store, &who, branch),
-            ["web.env.NEW production", "web.image production"]
+            ["web.env.NEW production", "web.source production"]
         );
         assert!(hints(&store, &who, branch).is_empty());
     }
 
     // Edited after it arrived, it is the Branch's own.
     set(&store, &who, "qa", &[("web.env.NEW", json!("2"))]);
-    assert_eq!(incoming(&store, &who, "qa"), ["web.image production"]);
+    assert_eq!(incoming(&store, &who, "qa"), ["web.source production"]);
 
     // Delivered once: deploying again stages nothing more.
     let before = diff(&store, &who, "fix-web").version;
@@ -283,8 +284,8 @@ fn each_staged_change_names_the_row_it_falls_in() {
     assert_eq!(
         rows,
         [
+            ("web.source", Some(&At::Setting(Setting::Source))),
             ("web.healthcheck", Some(&At::Setting(Setting::Healthcheck))),
-            ("web.image", Some(&At::Setting(Setting::Image))),
         ]
     );
     for row in &web.settings {
@@ -311,7 +312,7 @@ fn a_branchs_own_change_wins_and_the_parents_value_is_a_hint_to_take() {
     );
     assert_eq!(
         hints(&store, &who, "fix-web"),
-        [r#"web.image = "web:2" from production"#]
+        [r#"web.source = {"credentials":false,"image":"web:2","type":"image"} from production"#]
     );
     assert_eq!(
         incoming(&store, &who, "fix-web"),
@@ -325,7 +326,7 @@ fn a_branchs_own_change_wins_and_the_parents_value_is_a_hint_to_take() {
             &take(
                 "fix-web",
                 "fix-web",
-                &["source.image"],
+                &["source"],
                 diff(&store, &who, "fix-web").version,
             ),
         )
@@ -346,17 +347,14 @@ fn a_branchs_own_change_wins_and_the_parents_value_is_a_hint_to_take() {
     let stale = store
         .write(
             &who,
-            &take("production", "fix-web", &["source.image"], "0:0:0".into()),
+            &take("production", "fix-web", &["source"], "0:0:0".into()),
         )
         .unwrap_err();
     assert_eq!(stale.code, RpcErrorCode::Conflict);
 
     let version = diff(&store, &who, "fix-web").version;
     let took = store
-        .write(
-            &who,
-            &take("production", "fix-web", &["source.image"], version),
-        )
+        .write(&who, &take("production", "fix-web", &["source"], version))
         .unwrap();
     assert_eq!(
         (took.from.name.as_str(), took.into.name.as_str()),
@@ -373,9 +371,10 @@ fn a_discarded_change_stays_a_hint_until_the_parent_changes_that_setting_again()
     deploy(&store, &who, "production", 2);
     assert_eq!(web(&store, &who, "fix-web")["image"], json!("web:2"));
 
-    discard(&store, &who, "fix-web", "web.image");
+    discard(&store, &who, "fix-web", "web.source");
     assert_eq!(web(&store, &who, "fix-web")["image"], json!("web:1"));
-    let hint = [r#"web.image = "web:2" from production"#];
+    let hint =
+        [r#"web.source = {"credentials":false,"image":"web:2","type":"image"} from production"#];
     assert_eq!(hints(&store, &who, "fix-web"), hint);
     assert!(incoming(&store, &who, "fix-web").is_empty());
 
@@ -433,7 +432,7 @@ fn changes_cascade_one_level_per_deploy() {
 
     deploy(&store, &who, "fix-web", 3);
     assert_eq!(web(&store, &who, "child")["image"], json!("web:2"));
-    assert_eq!(incoming(&store, &who, "child"), ["web.image fix-web"]);
+    assert_eq!(incoming(&store, &who, "child"), ["web.source fix-web"]);
 }
 
 #[test]
@@ -495,7 +494,7 @@ fn a_followed_variable_the_branch_removes_is_its_own() {
             },
         )
         .unwrap();
-    assert_eq!(incoming(&store, &who, "fix-web"), ["web.image production"]);
+    assert_eq!(incoming(&store, &who, "fix-web"), ["web.source production"]);
 }
 
 #[test]
@@ -519,7 +518,7 @@ fn a_change_the_branch_refuses_is_a_hint_and_the_rest_still_follows() {
     set(&store, &who, "production", &[("web.image", json!("web:2"))]);
     deploy(&store, &who, "production", 2);
     assert_eq!(web(&store, &who, "fix-web")["image"], json!("web:2"));
-    assert_eq!(incoming(&store, &who, "fix-web"), ["web.image production"]);
+    assert_eq!(incoming(&store, &who, "fix-web"), ["web.source production"]);
     let hints = hints(&store, &who, "fix-web");
     assert!(
         hints.iter().any(|hint| hint.starts_with("api ")),
@@ -612,7 +611,7 @@ fn never_sync_on_what_arrived_discards_it_and_marks_its_row_or_neither() {
     };
 
     // The review moved on: the discard is refused, and so is the mark.
-    let stale = never_sync_arrived("source.image", "web.image", "0:stale".into());
+    let stale = never_sync_arrived("source", "web.source", "0:stale".into());
     let refused = store.write(&who, &stale).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
     assert_eq!(marked(), 0);
@@ -620,10 +619,7 @@ fn never_sync_on_what_arrived_discards_it_and_marks_its_row_or_neither() {
 
     let version = diff(&store, &who, "fix-web").version;
     store
-        .write(
-            &who,
-            &never_sync_arrived("source.image", "web.image", version),
-        )
+        .write(&who, &never_sync_arrived("source", "web.source", version))
         .unwrap();
     assert_eq!(marked(), 1);
     assert_eq!(web(&store, &who, "fix-web")["image"], json!("web:1"));
@@ -634,4 +630,95 @@ fn never_sync_on_what_arrived_discards_it_and_marks_its_row_or_neither() {
     set(&store, &who, "production", &[("web.image", json!("web:3"))]);
     deploy(&store, &who, "production", 3);
     assert_eq!(web(&store, &who, "fix-web")["image"], json!("web:1"));
+}
+
+/// Edit `environment` as `changes` say, `None` unsetting, with Cloud's evidence for
+/// the repositories `acme/web` and `acme/docs`.
+fn edit_git(
+    store: &ConfigStore,
+    who: &Actor,
+    environment: &str,
+    changes: &[(&str, Option<Value>)],
+) {
+    let repository = |name: &str, n| AuthorizedRepository {
+        repository: backend::repo_name(name),
+        repository_id: backend::repo_id(n),
+        access: ServiceGitAccess::Public,
+        default_branch: backend::git_branch("main"),
+        branches: Vec::new(),
+    };
+    let evidence = Trusted {
+        repositories: vec![repository("acme/web", 11), repository("acme/docs", 12)],
+        ..Trusted::default()
+    };
+    let changes = changes
+        .iter()
+        .map(|(path, value)| {
+            let path = SettingPath::parse(path).unwrap();
+            match value {
+                Some(value) => Change::Set {
+                    path,
+                    value: value.clone(),
+                },
+                None => Change::Unset { path },
+            }
+        })
+        .collect();
+    let edit = Edit {
+        environment: at(environment),
+        expect: None,
+        changes,
+    };
+    store.write_trusted(who, &edit, &evidence).unwrap();
+}
+
+#[test]
+fn a_source_discarded_after_two_follows_lets_the_next_one_follow() {
+    let (store, who) = shop();
+    // `web` starts without a source on both sides.
+    edit_git(&store, &who, "production", &[("web.image", None)]);
+    branch(&store, &who, 10, "production", "fix-git");
+    // Empty to Git, then Git to an image, each followed.
+    edit_git(
+        &store,
+        &who,
+        "production",
+        &[("web.repository", Some(json!("acme/web")))],
+    );
+    deploy(&store, &who, "production", 4);
+    edit_git(
+        &store,
+        &who,
+        "production",
+        &[
+            ("web.repository", None),
+            ("web.image", Some(json!("web:2"))),
+        ],
+    );
+    deploy(&store, &who, "production", 5);
+    assert_eq!(web(&store, &who, "fix-git")["image"], json!("web:2"));
+
+    discard(&store, &who, "fix-git", "web.source");
+    let values = web(&store, &who, "fix-git");
+    assert_eq!(
+        (&values["image"], &values["repository"]),
+        (&Value::Null, &Value::Null)
+    );
+
+    // The base is production's source from before either Follow, so the next one follows.
+    edit_git(
+        &store,
+        &who,
+        "production",
+        &[
+            ("web.image", None),
+            ("web.repository", Some(json!("acme/docs"))),
+        ],
+    );
+    deploy(&store, &who, "production", 6);
+    assert_eq!(hints(&store, &who, "fix-git"), Vec::<String>::new());
+    assert_eq!(
+        web(&store, &who, "fix-git")["repository"],
+        json!("acme/docs")
+    );
 }

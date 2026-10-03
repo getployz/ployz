@@ -849,7 +849,7 @@ fn an_agent_marks_settings_never_sync_without_servers() {
                 "env",
                 "never-sync",
                 "web.env.APP_ENV",
-                "web.image",
+                "web.source",
                 "--env",
                 "fix-web",
             ],
@@ -857,7 +857,7 @@ fn an_agent_marks_settings_never_sync_without_servers() {
         assert_eq!(marked["environment"]["name"], json!("fix-web"));
         assert_eq!(
             labels(&marked["never_synced"]),
-            ["web.env.APP_ENV", "web.image"]
+            ["web.env.APP_ENV", "web.source"]
         );
         // `get` lists them by RowId, in RowId order.
         let mut rows: Vec<&str> = marked["never_synced"]
@@ -880,7 +880,7 @@ fn an_agent_marks_settings_never_sync_without_servers() {
         assert_eq!(plan["rows"], json!([]));
         assert_eq!(
             labels(&plan["never_synced"]),
-            ["web.image", "web.env.APP_ENV"]
+            ["web.source", "web.env.APP_ENV"]
         );
         assert_eq!(
             plan["never_synced"][0]["marks"][0]["environment"],
@@ -894,7 +894,7 @@ fn an_agent_marks_settings_never_sync_without_servers() {
             &[
                 "env",
                 "never-sync",
-                "web.image",
+                "web.source",
                 "--off",
                 "--env",
                 "fix-web",
@@ -905,14 +905,14 @@ fn an_agent_marks_settings_never_sync_without_servers() {
             store,
             &["env", "sync", "--to", "--plan", "--env", "fix-web"],
         );
-        assert_eq!(label(&plan["rows"][0]), "web.image");
+        assert_eq!(label(&plan["rows"][0]), "web.source");
 
         failed(store, &["env", "never-sync", "--env", "fix-web"], 2);
         // A node's name marks it and each of its rows, changed, unchanged or at its default.
         let whole = ok(store, &["env", "never-sync", "web", "--env", "fix-web"]);
         let whole = labels(&whole["never_synced"]);
-        assert_eq!(whole.len(), 21);
-        for row in ["web", "web.env.APP_ENV", "web.image", "web.startCommand"] {
+        assert_eq!(whole.len(), 18);
+        for row in ["web", "web.env.APP_ENV", "web.source", "web.startCommand"] {
             assert!(whole.contains(&row.to_owned()), "{row} in {whole:?}");
         }
         let missing = error(
@@ -955,18 +955,22 @@ fn an_agent_syncs_a_branch_into_its_parent_without_servers() {
         let rows = plan["rows"].as_array().unwrap();
         assert_eq!(
             labels(&plan["rows"]),
-            ["web.image", "web.env.DEBUG", "web.env.NEW"]
+            ["web.source", "web.env.DEBUG", "web.env.NEW"]
         );
         let image = &rows[0];
         assert_eq!(
-            (&image["node"], &image["from"], &image["into"]),
+            (
+                &image["node"],
+                &image["from"]["image"],
+                &image["into"]["image"]
+            ),
             (&json!("web"), &json!("web:2"), &json!("web:1"))
         );
         assert_eq!(
             (&image["ticked"], &image["change"]),
             (&json!(true), &json!("changed"))
         );
-        assert!(image["row"].as_str().unwrap().ends_with(":source.image"));
+        assert!(image["row"].as_str().unwrap().ends_with(":source"));
         let version = plan["version"].as_str().unwrap();
         assert_eq!(
             plan["next"],
@@ -2233,7 +2237,7 @@ fn a_repository_service_is_checked_by_cloud() {
 
         ok(store, &["set", "web.branch=main", "web.rootDir=/apps/web"]);
         let diff = ok(store, &["diff"]);
-        assert!(diff.to_string().contains("web.rootDir"), "{diff}");
+        assert!(diff.to_string().contains("web.source"), "{diff}");
 
         // An empty Service connects a repository by setting it; unset disconnects it.
         ok(store, &["service", "add", "blank"]);
@@ -2694,11 +2698,11 @@ fn a_branch_follows_its_parent_and_diff_shows_where_changes_came_from_and_the_hi
         let diff = ok(store, &["diff", "--env", "fix-web"]);
         assert_eq!(labels(&diff["incoming"]), ["web.env.NEW"], "{diff}");
         assert_eq!(diff["incoming"][0]["from"], json!("production"));
-        assert_eq!(labels(&diff["follow_hints"]), ["web.image"]);
+        assert_eq!(labels(&diff["follow_hints"]), ["web.source"]);
         assert_eq!(
             (
                 &diff["follow_hints"][0]["from"],
-                &diff["follow_hints"][0]["value"]
+                &diff["follow_hints"][0]["value"]["image"]
             ),
             (&json!("production"), &json!("web:2"))
         );
@@ -2710,7 +2714,7 @@ fn a_branch_follows_its_parent_and_diff_shows_where_changes_came_from_and_the_hi
                 "--take",
                 "production",
                 "--only",
-                "web.image",
+                "web.source",
                 "--env",
                 "fix-web",
             ],
