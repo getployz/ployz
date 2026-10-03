@@ -444,6 +444,8 @@ impl Namespaces {
 impl Drop for Namespaces {
     fn drop(&mut self) {
         for name in &self.0 {
+            // Server::drop kills sudo, not its root python child; a server whose
+            // connection was denied would outlive the test and hold its stdout.
             let _ = Command::new("sudo")
                 .args([
                     "-n",
