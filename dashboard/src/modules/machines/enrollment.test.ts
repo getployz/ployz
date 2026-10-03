@@ -6,6 +6,7 @@ import {
   enrollmentIdentitySchema,
   type EnrollmentTokenRow,
   mintedEnrollment,
+  redactIpAddresses,
   registerRequestFromEnrollmentIdentity,
   ResetPendingEnrollmentInput,
   rustMachineIdSchema,
@@ -252,5 +253,30 @@ describe("setup report", () => {
       failed_step_seconds: 25.5,
       error: "e".repeat(1_000),
     });
+  });
+});
+
+describe("setup report error", () => {
+  it("redacts IP addresses and keeps hostnames and versions", () => {
+    expect(redactIpAddresses("failed to connect to root@203.0.113.10:22")).toBe("failed to connect to root@<ip>:22");
+    expect(redactIpAddresses("no route to 2001:db8::1")).toBe("no route to <ip>");
+    expect(redactIpAddresses("dial [fe80::1%eth0]:22 refused")).toBe("dial [<ip>]:22 refused");
+    expect(redactIpAddresses("2001:0db8:0000:0000:0000:ff00:0042:8329 down")).toBe("<ip> down");
+    const kept = "ployz 0.2.1 on kernel 6.12.43 at db.example.com, 12:34:56, std::io::Error";
+    expect(redactIpAddresses(kept)).toBe(kept);
+  });
+
+  it("redacts before truncating", () => {
+    const report = Schema.decodeUnknownSync(setupReportSchema)({
+      outcome: "failed",
+      profile: {},
+      steps: [],
+      totalSeconds: 1,
+      failedStep: "install",
+      failedStepSeconds: 1,
+      error: `${"x".repeat(990)} 203.0.113.10`,
+    });
+
+    expect(report.outcome === "failed" && report.error).toBe(`${"x".repeat(990)} <ip>`);
   });
 });

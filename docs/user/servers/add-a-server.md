@@ -88,41 +88,5 @@ these there:
   [The install stops while checking Docker](../troubleshooting/servers.md#the-install-stops-while-checking-docker).
   Docker's default never rotates container logs, so they can fill the disk; see
   [The server's disk is filling up](../troubleshooting/servers.md#the-servers-disk-is-filling-up).
-- **Ployz Cloud learns a little about the server**, so we can see which setups work and which
-  fail; see [What Ployz Cloud records about your servers](#what-ployz-cloud-records-about-your-servers).
-
-## What Ployz Cloud records about your servers
-
-Only `ployz server add --token` sends a report. When it finishes or fails, it sends Ployz Cloud
-one short report about the server, which Ployz Cloud records as `server_setup_succeeded` or
-`server_setup_failed`:
-
-- `provider` and `instance_type`: read from the server's hardware info, such as `aws` and
-  `t3.small`.
-- `os_id`, `os_version`, `kernel`, `arch` and `virtualization`: the operating system and its
-  version, the kernel, the CPU architecture, and the kind of virtualization, if any.
-- `cpu_count`, `memory_total_bytes` and `disk_total_bytes`: the number of CPUs, the memory and
-  the size of the main disk.
-- `storage`, `ployz_version` and `founder`: whether you chose ZFS, the Ployz version, and
-  whether this server started your cluster.
-- `step_install_seconds`, `step_enroll_seconds`, `step_storage_seconds`, `step_join_seconds`
-  and `total_seconds`: how long each setup step took (install, enroll, storage and join), and
-  the whole setup.
-- `failed_step`, `failed_step_seconds` and `error`: if setup failed, the step that failed, how
-  long it ran, and the error you saw.
-
-When you run it from your laptop over SSH, as in
-`ployz server add root@203.0.113.10 --token '...'`, the report has no host profile: no
-`provider`, `instance_type`, `os_id`, `os_version`, `kernel`, `arch`, `virtualization` or
-`cpu_count`, since those describe the machine the command runs on.
-
-It never sends the server's hostname or name, its IP addresses, labels, tokens or secrets. A
-self-hosted Ployz Cloud keeps the report to itself.
-
-To send nothing, set `DO_NOT_TRACK=1` when you run the command:
-
-```sh
-curl -fsSL https://ployz.sh/ | sh && sudo DO_NOT_TRACK=1 ployz server add --token '...'
-```
 
 Next: [manage your servers](manage-servers.md).

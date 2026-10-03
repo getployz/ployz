@@ -165,12 +165,22 @@ export type EnrollmentCallback = typeof enrollmentCallbackBodySchema.Type;
 const SetupStep = Schema.Literals(["install", "enroll", "storage", "join"]);
 const Seconds = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
 /** Text cut to `maxLength` rather than rejected, so a long field never loses the report. */
-const truncated = (schema: Schema.String, maxLength: number) =>
+const truncated = (schema: Schema.String, maxLength: number, clean = (value: string) => value) =>
   schema.pipe(Schema.decodeTo(Schema.String, {
-    decode: SchemaGetter.transform((value) => value.slice(0, maxLength)),
+    decode: SchemaGetter.transform((value) => clean(value).slice(0, maxLength)),
     encode: SchemaGetter.transform((value) => value),
   }));
 const ProfileText = truncated(NonEmptyString, 256);
+
+const IPV4 = /\b(?:\d{1,3}\.){3}\d{1,3}\b/gu;
+// Eight full groups, or any groups around `::`, with an optional zone. Needing `::` or eight groups
+// spares times (12:34:56), MAC addresses and Rust paths (`std::io` is not hex).
+const IPV6 = /(?<![\w:])(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:)*[0-9a-f]{0,4}::(?:[0-9a-f]{1,4}:)*[0-9a-f]{0,4})(?:%[\w.-]+)?(?![\w:])/giu;
+
+/** An error the user saw, with every IP address replaced by `<ip>`; hostnames stay. */
+export function redactIpAddresses(text: string) {
+  return text.replace(IPV4, "<ip>").replace(IPV6, "<ip>");
+}
 
 /** Fields both outcomes carry; unknown fields from newer CLIs are dropped. */
 const setupReportFields = {
@@ -201,7 +211,7 @@ export const setupReportSchema = Schema.Union([
     ...setupReportFields,
     failedStep: SetupStep,
     failedStepSeconds: Seconds,
-    error: truncated(Schema.String, 1_000),
+    error: truncated(Schema.String, 1_000, redactIpAddresses),
   }),
 ]);
 
