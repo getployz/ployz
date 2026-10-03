@@ -9,7 +9,9 @@ const row = (id: string, node: string, name: string | null, extra: Partial<SyncR
 });
 const secret = { held: false };
 
-const image = row("a:source.image", "api", "image", { from: "shop/api:1.9", into: "shop/api:1.8" });
+const image = row("a:source", "api", "source", {
+  from: { type: "image", image: "shop/api:1.9", credentials: false }, into: { type: "image", image: "shop/api:1.8", credentials: false },
+});
 const logLevel = row("a:variables.LOG_LEVEL", "api", "env.LOG_LEVEL", { from: "debug", into: "warn", change: "conflict" });
 const appEnv = row("a:variables.APP_ENV", "api", "env.APP_ENV", { from: "staging", into: "production", ticked: false });
 const webhook = row("a:variables.STRIPE_WEBHOOK_SECRET", "api", "env.STRIPE_WEBHOOK_SECRET",
@@ -22,7 +24,7 @@ describe("the Sync dialog over the Store", () => {
   it("words each change by name, with at most one badge, Secret first, and hides a secret's value", () => {
     const lines = [image, logLevel, webhook, cache, cacheMode, dataName].map((one) => syncLine(one, "production"));
     expect(lines).toEqual([
-      { name: "Container image", variable: false, badge: null, before: "shop/api:1.8", after: "shop/api:1.9" },
+      { name: "Source", variable: false, badge: null, before: "shop/api:1.8", after: "shop/api:1.9" },
       { name: "LOG_LEVEL", variable: true, badge: "Changed in production", before: "warn", after: "debug" },
       { name: "STRIPE_WEBHOOK_SECRET", variable: true, badge: "Secret", before: "", after: "" },
       { name: "Service", variable: false, badge: "New", before: "", after: "" },
@@ -33,18 +35,18 @@ describe("the Sync dialog over the Store", () => {
 
   it("groups the rows by node in the Store's order", () => {
     expect(syncSections([image, cache, logLevel, cacheMode]).map(({ node, rows }) => [node, rows.map((one) => one.row)])).toEqual([
-      ["api", ["a:source.image", "a:variables.LOG_LEVEL"]],
+      ["api", ["a:source", "a:variables.LOG_LEVEL"]],
       ["cache", ["c:node", "c:variables.MODE"]],
     ]);
   });
 
   it("picks the defaults, then what the user flipped; a new node left out leaves its settings out", () => {
     const rows = [image, appEnv, cache, cacheMode];
-    expect(syncPicks(rows, new Set()).map((one) => one.row)).toEqual(["a:source.image", "c:node", "c:variables.MODE"]);
+    expect(syncPicks(rows, new Set()).map((one) => one.row)).toEqual(["a:source", "c:node", "c:variables.MODE"]);
     expect(syncPicks(rows, new Set([image.row, appEnv.row, cache.row])).map((one) => one.row))
       .toEqual(["a:variables.APP_ENV"]);
     // A new node's setting can be left out on its own.
-    expect(syncPicks(rows, new Set([cacheMode.row])).map((one) => one.row)).toEqual(["a:source.image", "c:node"]);
+    expect(syncPicks(rows, new Set([cacheMode.row])).map((one) => one.row)).toEqual(["a:source", "c:node"]);
   });
 });
 

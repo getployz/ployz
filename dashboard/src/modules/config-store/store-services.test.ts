@@ -60,6 +60,20 @@ it("reads one Service's pink trail from the Environment's diff, a rename under `
   expect(serviceChanges(diff, "b").size).toBe(0);
 });
 
+it("reads a source change as a change to each field of it that differs", () => {
+  const diff = asTestDouble<DiffView>()({
+    changes: [{ type: "service", id: "a", name: "web", lifecycle: "update", comparison: "head", settings: [
+      { path: "web.source", kind: "update", before: { type: "git", repository: "acme/web", rootDir: "/" },
+        after: { type: "image", image: "web:2", credentials: true }, canRestore: true },
+    ] }],
+  });
+  const changes = serviceChanges(diff, "a");
+  expect([...changes.keys()]).toEqual(["source", "image", "repository", "rootDir", "registryCredential"]);
+  expect(changes.get("image")).toMatchObject({ path: "web.source", before: null, after: "web:2" });
+  expect(changes.get("repository")).toMatchObject({ before: "acme/web", after: null });
+  expect(changes.get("registryCredential")).toMatchObject({ before: null, after: { secret: true } });
+});
+
 it("marks the domains the next Deploy changes: the generated one by its list, a custom one by its route's hostname", () => {
   const route = (hostname: string, targetPort: number | null) => ({ id: `${hostname}-id`, hostname, targetPort });
   const diff = asTestDouble<DiffView>()({

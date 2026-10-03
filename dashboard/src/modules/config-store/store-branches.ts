@@ -10,7 +10,12 @@ export function rowText(value: JsonValue): string {
   if (value === null) return "";
   if (Array.isArray(value)) return value.map(rowText).join(", ");
   const record = asRecord(value);
-  if (record) return "secret" in record ? "hidden" : JSON.stringify(record);
+  if (record) {
+    if ("secret" in record) return "hidden";
+    // A Service's source reads as what it runs from.
+    if ("type" in record) return String(record["image"] ?? record["repository"] ?? "None");
+    return JSON.stringify(record);
+  }
   return String(value);
 }
 
@@ -18,7 +23,7 @@ export function rowText(value: JsonValue): string {
 export function settingName(name: string) {
   const title = name.startsWith("env.") ? name.slice("env.".length)
     : name.startsWith("mounts.") ? `Mount of ${name.slice("mounts.".length)}`
-    : name === "name" ? "Name" : settingTitle(name) ?? name;
+    : name === "name" ? "Name" : name === "source" ? "Source" : settingTitle(name) ?? name;
   return { name: title, variable: name.startsWith("env.") };
 }
 

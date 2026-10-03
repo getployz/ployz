@@ -36,7 +36,7 @@ const row = (name: string, extra: Partial<SyncRow> = {}): SyncRow => ({
   ...extra,
 });
 const rows = [
-  row("image", { from: "shop/api:1.9", into: "shop/api:1.8" }),
+  row("source", { from: { type: "image", image: "shop/api:1.9", credentials: false }, into: { type: "image", image: "shop/api:1.8", credentials: false } }),
   row("env.LOG_LEVEL", { from: "debug", into: "warn", change: "conflict" }),
   row("env.APP_ENV", { from: "staging", into: "production" }),
   row("env.STRIPE_WEBHOOK_SECRET", { from: { secret: true }, change: "new", secret: { held: false } }),
@@ -125,7 +125,7 @@ it("says what a Sync into the Parent carries, and opens the dialog into the Pare
   expect(sync.getByText("These changes from fix-api become production's changes to deploy.")).toBeTruthy();
   const changes = within(sync.getByRole("region", { name: "api" })).getAllByRole("listitem").map((item) => item.textContent);
   expect(changes).toEqual([
-    "Container imageshop/api:1.8shop/api:1.9",
+    "Sourceshop/api:1.8shop/api:1.9",
     "LOG_LEVELChanged in productionwarndebug",
     "APP_ENVproductionstaging",
     "STRIPE_WEBHOOK_SECRETSecret",
@@ -204,7 +204,7 @@ it("syncs what's ticked, closes the Branch after, lands on the receiver, and Und
   await waitFor(() => expect(app.router.state.location.pathname).toBe("/cloud/acme/shop/production"));
   expect(app.commands()).toEqual([{
     command: "sync", from: fixApi, into: { project: "shop", environment: "production" }, version: "4:abc",
-    when: { kind: "now", close_after: true }, picks: ["a:image", "a:env.LOG_LEVEL", "a:env.STRIPE_WEBHOOK_SECRET"], values: {},
+    when: { kind: "now", close_after: true }, picks: ["a:source", "a:env.LOG_LEVEL", "a:env.STRIPE_WEBHOOK_SECRET"], values: {},
   }]);
   expect(app.success.mock.calls.at(0)?.[0]).toBe("Synced 3 changes from fix-api");
   // SAFETY: the Sync button's toast action is a label and a click, never a node.
@@ -267,7 +267,7 @@ it("syncs a PR Environment into another Environment now, from the menu", async (
   const staging = { project: "shop", environment: "staging" };
   expect(app.commands()).toEqual([{
     command: "sync", from: fixApi, into: staging, when: null, version: "4:abc",
-    picks: ["a:image", "a:env.LOG_LEVEL", "a:env.APP_ENV", "a:env.STRIPE_WEBHOOK_SECRET"],
+    picks: ["a:source", "a:env.LOG_LEVEL", "a:env.APP_ENV", "a:env.STRIPE_WEBHOOK_SECRET"],
     values: { "a:env.STRIPE_WEBHOOK_SECRET": "whsec" },
   }]);
   expect(app.success.mock.calls.at(0)?.[0]).toBe("Synced 4 changes from fix-api");

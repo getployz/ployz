@@ -1,6 +1,7 @@
 import type { ConfigCommand, DiffView, DomainRow, EnvironmentRef, EnvironmentView, JsonValue, ServiceId, ServiceListing, ServiceSettingChange } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { adjectives, animals, uniqueNamesGenerator } from "unique-names-generator";
+import { asRecord } from "#/lib/json";
 import { slugifySegment } from "#/utils/slug";
 
 /** Where a new Service's image comes from. */
@@ -79,7 +80,20 @@ export function serviceSettingRows(view: EnvironmentView, service: string) {
 /** What the next Deploy changes in one Service, by Setting name (`name` for a rename). */
 export function serviceChanges(diff: DiffView, id: string): Map<string, ServiceSettingChange> {
   const node = diff.changes.find((change) => change.type === "service" && change.id === id);
-  return new Map(node?.settings.map((row) => [row.path.slice(row.path.indexOf(".") + 1), row]) ?? []);
+  const changes = new Map(node?.settings.map((row) => [row.path.slice(row.path.indexOf(".") + 1), row]) ?? []);
+  // The source is one change; each field it holds reads as changed where it differs.
+  const source = changes.get("source");
+  if (source) {
+    for (const [name, key] of [["image", "image"], ["repository", "repository"], ["rootDir", "rootDir"], ["registryCredential", "credentials"]] as const) {
+      const part = (value: JsonValue) => {
+        const held = asRecord(value)?.[key] ?? null;
+        return key === "credentials" ? (held === true ? { secret: true } : null) : held;
+      };
+      const [before, after] = [part(source.before), part(source.after)];
+      if (JSON.stringify(before) !== JSON.stringify(after)) changes.set(name, { ...source, before, after });
+    }
+  }
+  return changes;
 }
 
 /** A scalar Setting's value as a field shows it: blank when it has none. */
