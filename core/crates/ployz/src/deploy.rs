@@ -13,6 +13,7 @@ use ployz_core::{
 use thiserror::Error;
 
 mod apply;
+mod convergence;
 mod exec;
 pub(crate) mod pipeline;
 mod planning;
@@ -21,6 +22,9 @@ mod render;
 mod report;
 
 pub(crate) use apply::{Outcome, apply_requested};
+#[cfg(test)]
+pub(crate) use convergence::Move;
+pub(crate) use convergence::{Convergence, converge};
 pub use pipeline::DeployError;
 pub(crate) use planning::capacity::endpoint_capacity_error;
 pub use planning::{

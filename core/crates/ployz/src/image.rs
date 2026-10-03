@@ -206,6 +206,103 @@ pub(crate) async fn ensure_cluster_image(
         .map_err(rpc_error)
 }
 
+/// Copy the image a Container runs, by its local image ID, from `source` to `dest`,
+/// tagged `image` there. Never asks a registry: a tag moved since the Deploy must not
+/// change what runs after Placement convergence.
+///
+/// # Errors
+///
+/// Returns when either store can't be listed, `source` holds no variant `dest` runs,
+/// or opening ingest or the peer pull fails.
+pub(crate) async fn copy_running_image(
+    client: &Client,
+    source: &Machine,
+    dest: &Machine,
+    image: &str,
+    image_id: &str,
+) -> Result<(), PushError> {
+    let mut client = client.clone();
+    let listings = client
+        .list_images(None, &[source.clone(), dest.clone()])
+        .await;
+    if let Some(failure) = listings.failures.into_iter().next() {
+        return Err(PushError::Cluster(crate::connect::ConnectError::Remote(
+            failure.error,
+        )));
+    }
+    let store = |id: &MachineId| {
+        listings
+            .successes
+            .iter()
+            .find(|success| success.machine_id == *id)
+            .map(|success| &success.value.images)
+    };
+    if store(&dest.id).is_some_and(|images| built::holds_as(images, image, image_id)) {
+        return Ok(());
+    }
+    let source_images = store(&source.id).expect("every listed target answered");
+    if !source_images.containerd_store {
+        return Err(PushError::UnsupportedImageStore);
+    }
+    let Some(platform) = available_variant(source_images, image_id, &dest.runtime.architecture)
+    else {
+        return Err(PushError::VariantUnavailable {
+            image: image_id.to_owned(),
+            machine_id: source.id,
+            platform: dest.runtime.architecture.clone(),
+        });
+    };
+    let pull = if image.contains('@') {
+        PeerImagePull::Reference {
+            image: image.to_owned(),
+        }
+    } else {
+        let pinned = format!("{}@{image_id}", repository(image));
+        PeerImagePull::Publish {
+            image: ployz_core::ImageDigestReference::parse(&pinned).map_err(|error| {
+                PushError::InvalidReference {
+                    reference: pinned.clone(),
+                    message: error.to_string(),
+                }
+            })?,
+            tag: image.to_owned(),
+        }
+    };
+    let opened = client
+        .call::<op::EnsureImageIngest>(
+            EnsureImageIngestRequest {},
+            Some(&MachineTarget::from(&source.id)),
+        )
+        .await
+        .map_err(|error| ingest_error(rpc_error(error)))?;
+    client
+        .call::<op::PullImageFromMachine>(
+            PullImageFromMachineRequest {
+                pull,
+                source: opened.destination,
+                platform: platform.to_owned(),
+            },
+            Some(&MachineTarget::from(&dest.id)),
+        )
+        .await
+        .map(drop)
+        .map_err(|error| PushError::PeerPull(rpc_error(error)))
+}
+
+/// `image` without its tag or registry: the path a digest pull asks the source for.
+/// The destination pulls it through its own loopback registry, which cannot nest a
+/// registry host like `registry:5000`, and the source serves digests by content alone.
+fn repository(image: &str) -> &str {
+    let repository = match image.rsplit_once(':') {
+        Some((repository, tag)) if !tag.contains('/') => repository,
+        _ => image,
+    };
+    match repository.split_once('/') {
+        Some((host, path)) if host.contains(['.', ':']) || host == "localhost" => path,
+        _ => repository,
+    }
+}
+
 fn ingest_error(error: RpcError) -> PushError {
     match ImageIngestReason::from_details(&error.details) {
         Some(ImageIngestReason::UnsupportedContainerdStore) => PushError::UnsupportedImageStore,
@@ -297,6 +394,16 @@ mod tests {
         let named = delivery_selection(&mixed, &["machine-1".into()]).unwrap();
         assert_eq!(named.targets.len(), 1);
         assert!(named.omissions.is_empty());
+    }
+
+    #[test]
+    fn repository_drops_the_tag_and_registry() {
+        assert_eq!(repository("127.0.0.1:5000/app:latest"), "app");
+        assert_eq!(repository("registry:5000/team/app"), "team/app");
+        assert_eq!(repository("ghcr.io/team/app:v1"), "team/app");
+        assert_eq!(repository("localhost/app"), "app");
+        assert_eq!(repository("team/app:v1"), "team/app");
+        assert_eq!(repository("alpine"), "alpine");
     }
 
     #[test]

@@ -29,6 +29,7 @@ use super::{Error, leaf_matches, string_values, with_client};
 
 mod add;
 mod clean;
+mod drain;
 mod enroll;
 mod forget;
 mod helpers;
@@ -224,7 +225,10 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
                 return output::emit(&json!({ "server": server_json(&machine) }));
             }
             let followed = async {
-                wait_for_ingress_role(client, &machine.id).await?;
+                wait_for_role(client, &machine.id, "ingress", |machine| {
+                    machine.accepts_ingress
+                })
+                .await?;
                 crate::ingress::follow_roles(client, ingress).await
             }
             .await;
@@ -238,10 +242,12 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// Wait until this entry sees the Server's new ingress role, so the deploy plans from it.
-async fn wait_for_ingress_role(
+/// Wait until this entry sees the Server's new `role` setting, so what plans next plans from it.
+pub(super) async fn wait_for_role(
     client: &mut Client,
     id: &ployz_core::MachineId,
+    role: &str,
+    settled: fn(&Machine) -> bool,
 ) -> Result<(), Error> {
     // ponytail: fixed 30 s bound; the role replicates within seconds on a healthy Cluster.
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -249,14 +255,14 @@ async fn wait_for_ingress_role(
         let machines = client.machines().await?;
         if machines
             .iter()
-            .any(|entry| entry.machine.id == *id && entry.machine.accepts_ingress)
+            .any(|entry| entry.machine.id == *id && settled(&entry.machine))
         {
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(Error::unavailable(
-                "this entry Server has not yet observed the new ingress role",
-            ));
+            return Err(Error::unavailable(format!(
+                "this entry Server has not yet observed the new {role} role"
+            )));
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
@@ -422,6 +428,11 @@ pub(crate) fn command() -> Command {
         .subcommand(base("build-cache-clear", "Clear this execution host user's Ployz build cache")
             .long_about("Clear this execution host user's Ployz build cache. Run on the build host as the user running its Builds (including the daemon). Refuses active or quarantined builder ownership; preserves completed images and unrelated Docker data. No daemon is required.\n\nHost configuration: ~/.ployz/build.yaml. Optional cpu_cores and memory_bytes limit BuildKit and Railpack preparation, independently of Service runtime limits. Both are disabled when omitted. Optional cache_bytes and min_free_bytes are retention/GC targets, not hard peak disk quotas. Unconfigured GC uses pinned BuildKit defaults."))
         .subcommand(
+            base("drain", "Stop placing Services on a Server and move its Services' Containers off it")
+                .long_about("Turn off the Server's services role, then move each replicated Service's Containers off it one at a time: a new Container starts on another Server from the same image and serves before the old one stops. No hooks run and no Deployment is recorded. Rerun to act on what remains. Turning the services role back on does not move anything back.")
+                .arg(positional("server", true)),
+        )
+        .subcommand(
             base(
                 "inspect",
                 "Inspect a Server: telemetry, round-trip times, and its latest upgrade attempt",
@@ -517,6 +528,7 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
         "add" => enroll::add,
         "build-cache-clear" => clear_build_cache,
         "clean" => clean::clean,
+        "drain" => drain::drain,
         "forget" => forget::forget,
         "inspect" => inspect,
         "logs" => super::operator::machine_logs,
