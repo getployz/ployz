@@ -401,7 +401,6 @@ impl ServiceSetting {
             // Never the stored credential reference: only whether one is on.
             Self::RegistryCredential => match value.get("type").and_then(Value::as_str) {
                 Some("configured") => json!({ "secret": true }),
-                _ if value == Value::Bool(true) => json!({ "secret": true }),
                 _ => Value::Null,
             },
             // Off reads as none; on, its path and timeout.
