@@ -356,6 +356,7 @@ Bar text stays minimal: fewer words on mobile, and explanations belong in a pane
 - Storage settings are editable until deployment is requested, then shown as fixed, including after failed or cancelled attempts.
 - New Volumes refuse a second writer unless shared writes is on: one Service with one replica. Allow shared writes, under the volume's Advanced, applies at once and is never staged; turning it off with several writers is refused, and the reason shows on the switch.
 - Product copy does not expose ZFS or imply backups, replication, or resizing.
+  - Exception: the Add Server dialog may name ZFS where it explains a requirement, because "managed volumes" alone doesn't tell someone why they'd opt out.
 
 ## Voice
 

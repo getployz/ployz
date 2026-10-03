@@ -231,7 +231,10 @@ fn build_zfs_module(
     kernel: &str,
     build: impl FnOnce() -> Result<(), BuildFailure>,
 ) -> Result<(), Error> {
-    println!("Building ZFS for kernel {kernel}. This takes a few minutes.");
+    eprintln!(
+        "WARNING: {} doesn't include ZFS, so Ployz is building it for kernel {kernel}. This can take up to 20 minutes on small Servers. Ubuntu includes ZFS and sets up in seconds.",
+        os.display()
+    );
     build()
         .and_then(|()| {
             if zfs_installed(kernel) {
