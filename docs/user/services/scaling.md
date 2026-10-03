@@ -58,7 +58,9 @@ ployz server set db-1 --accepts-ingress=false
 
 For a build server, also turn off **Run builds here** on your other servers. Running replicas
 move on your next deploy. Keep services on for a server that holds a volume: the services that
-use it can only run there.
+use it can only run there. Turning web traffic off drops the server from your generated addresses
+but keeps it serving anyone who reaches it directly; to keep the internet out, also close ports 80
+and 443 in its firewall.
 
 ## When a server goes down
 
