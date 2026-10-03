@@ -10,11 +10,14 @@ import {
   ENROLLMENT_PROTOCOL_VERSION,
   enrollmentCallbackBodySchema,
   enrollmentIdentitySchema,
+  setupReportSchema,
   type EnrollResponse,
 } from "#/modules/machines/enrollment";
 import {
   completeMachineEnrollment,
   enrollMachine,
+  loadSetupReportToken,
+  recordSetupReport,
 } from "#/modules/machines/enrollment.server";
 
 type EnrollmentResponseBody =
@@ -167,5 +170,49 @@ export function handleMachineEnrollmentCallback<R>(
       : yield* Effect.result(completeMachineEnrollment(input));
     if (Result.isFailure(stored)) return errorResponse(stored.failure);
     return response({ machineId: stored.success.machineId }, 200);
+  });
+}
+
+type LoadReportTokenEffect = ReturnType<typeof loadSetupReportToken>;
+type LoadReportTokenRequirements = LoadReportTokenEffect extends Effect.Effect<unknown, unknown, infer R> ? R : never;
+
+type LoadReportTokenOperation<R> = (
+  token: string,
+) => Effect.Effect<Effect.Success<LoadReportTokenEffect>, Effect.Error<LoadReportTokenEffect>, R>;
+
+export function handleMachineSetupReport(
+  request: Request,
+  token: string,
+): Effect.Effect<Response, never, LoadReportTokenRequirements>;
+export function handleMachineSetupReport<R>(
+  request: Request,
+  token: string,
+  loadOperation: LoadReportTokenOperation<R>,
+): Effect.Effect<Response, never, R>;
+export function handleMachineSetupReport<R>(
+  request: Request,
+  token: string,
+  loadOperation?: LoadReportTokenOperation<R>,
+) {
+  return Effect.gen(function* () {
+    if (!token) return invalidTokenResponse();
+
+    const json = yield* Effect.option(
+      Effect.tryPromise({
+        try: () => request.json(),
+        catch: () => new Validation({ message: "Invalid JSON body." }),
+      }),
+    );
+    const parsed = Schema.decodeUnknownOption(setupReportSchema)(Option.getOrNull(json));
+    if (Option.isNone(parsed)) {
+      return errorResponse(new Validation({ message: "Invalid setup report." }));
+    }
+
+    const recorded = yield* Effect.result(Effect.gen(function* () {
+      const row = loadOperation ? yield* loadOperation(token) : yield* loadSetupReportToken(token);
+      yield* recordSetupReport(row, parsed.value);
+    }));
+    if (Result.isFailure(recorded)) return errorResponse(recorded.failure);
+    return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
   });
 }

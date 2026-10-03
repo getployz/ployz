@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { JsonValue } from "#/db/schema";
 import { Validation, Unauthorized } from "#/server/public-error";
-import { Effect } from "effect";
+import { ConfigProvider, Effect } from "effect";
 import {
   handleMachineEnrollmentCallback,
   handleMachineEnrollmentJoin,
+  handleMachineSetupReport,
 } from "#/routes/api/enroll/-handlers";
+import { PostHog, PostHogLive, type PostHogService } from "#/modules/analytics/posthog.server";
+import { AppConfig } from "#/server/config.server";
+import type { SetupReportToken } from "#/modules/machines/enrollment.server";
 
 const mocks = {
   enroll: vi.fn(),
@@ -377,5 +381,212 @@ describe("machine enrollment routes", () => {
     expect(callbackResponse.status).toBe(422);
     expect(joinBody).not.toContain(token);
     expect(callbackBody).not.toContain(token);
+  });
+});
+
+describe("setup report route", () => {
+  const pending: SetupReportToken = {
+    userId: "user-1",
+    organizationId: "org-1",
+    joinedMachineId: null,
+    expiresAt: new Date(Date.now() + 60_000),
+  };
+  const joined = { ...pending, joinedMachineId: machineId };
+  const expired = { ...pending, expiresAt: new Date(Date.now() - 1) };
+  const profile = {
+    provider: "Hetzner",
+    instanceType: "CX22",
+    osId: "debian",
+    osVersion: "13",
+    kernel: "6.12.0",
+    arch: "x86_64",
+    virtualization: "kvm",
+    cpuCount: 2,
+    memoryTotalBytes: 4_294_967_296,
+    diskTotalBytes: 42_949_672_960,
+    storage: "zfs",
+    ployzVersion: "0.2.1",
+    founder: true,
+  };
+  const profileProperties = {
+    provider: "Hetzner",
+    instance_type: "CX22",
+    os_id: "debian",
+    os_version: "13",
+    kernel: "6.12.0",
+    arch: "x86_64",
+    virtualization: "kvm",
+    cpu_count: 2,
+    memory_total_bytes: 4_294_967_296,
+    disk_total_bytes: 42_949_672_960,
+    storage: "zfs",
+    ployz_version: "0.2.1",
+    founder: true,
+  };
+  const succeeded = {
+    outcome: "succeeded",
+    profile,
+    steps: [
+      { name: "install", seconds: 3.5 },
+      { name: "enroll", seconds: 1 },
+      { name: "storage", seconds: 960 },
+      { name: "join", seconds: 12 },
+    ],
+    totalSeconds: 976.5,
+  };
+  const failed = {
+    outcome: "failed",
+    profile,
+    steps: [{ name: "install", seconds: 3.5 }, { name: "enroll", seconds: 1 }],
+    totalSeconds: 30,
+    failedStep: "storage",
+    failedStepSeconds: 25.5,
+    error: "ZFS is not supported on this kernel.",
+    futureFact: true,
+  };
+
+  function report(body: JsonValue, row: SetupReportToken | undefined, posthog?: PostHogService) {
+    const captured: Parameters<PostHogService["capture"]>[0][] = [];
+    const recorder: PostHogService = posthog ?? {
+      capture: (input) => Effect.sync(() => void captured.push(input)),
+      identify: () => Effect.void,
+      identifyOrganization: () => Effect.void,
+    };
+    const handled = handleMachineSetupReport(
+      new Request("https://cloud.example/api/enroll/pmet_secret/report", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      token,
+      () => Effect.succeed(row),
+    );
+    return Effect.runPromise(Effect.provideService(handled, PostHog, recorder))
+      .then((response) => ({ response, captured }));
+  }
+
+  it("captures server_setup_succeeded for a joined token, flattened and credited to its creator", async () => {
+    const { response, captured } = await report(succeeded, joined);
+
+    expect(response.status).toBe(204);
+    expect(captured).toEqual([{
+      userId: "user-1",
+      organizationId: "org-1",
+      event: "server_setup_succeeded",
+      properties: {
+        ...profileProperties,
+        step_install_seconds: 3.5,
+        step_enroll_seconds: 1,
+        step_storage_seconds: 960,
+        step_join_seconds: 12,
+        total_seconds: 976.5,
+      },
+    }]);
+  });
+
+  it("captures server_setup_failed for a pending token, with the failed step and a capped error", async () => {
+    const { response, captured } = await report({ ...failed, error: "x".repeat(5_000) }, pending);
+
+    expect(response.status).toBe(204);
+    expect(captured).toEqual([{
+      userId: "user-1",
+      organizationId: "org-1",
+      event: "server_setup_failed",
+      properties: {
+        ...profileProperties,
+        step_install_seconds: 3.5,
+        step_enroll_seconds: 1,
+        total_seconds: 30,
+        failed_step: "storage",
+        failed_step_seconds: 25.5,
+        error: "x".repeat(1_000),
+      },
+    }]);
+  });
+
+  it("accepts a partial profile", async () => {
+    const { response, captured } = await report({ ...failed, profile: { arch: "aarch64" } }, pending);
+
+    expect(response.status).toBe(204);
+    expect(captured[0]?.properties).toEqual({
+      arch: "aarch64",
+      step_install_seconds: 3.5,
+      step_enroll_seconds: 1,
+      total_seconds: 30,
+      failed_step: "storage",
+      failed_step_seconds: 25.5,
+      error: "ZFS is not supported on this kernel.",
+    });
+  });
+
+  it("answers not found and captures nothing for tokens the outcome doesn't fit", async () => {
+    const cases: [JsonValue, SetupReportToken | undefined][] = [
+      [succeeded, undefined],
+      [failed, undefined],
+      [failed, joined],
+      [failed, expired],
+      [succeeded, pending],
+      [succeeded, expired],
+    ];
+    for (const [body, row] of cases) {
+      const { response, captured } = await report(body, row);
+      expect(response.status, JSON.stringify(row)).toBe(404);
+      expect(await response.text()).not.toContain(token);
+      expect(captured).toEqual([]);
+    }
+  });
+
+  it("rejects invalid bodies and captures nothing", async () => {
+    const invalidBodies: JsonValue[] = [
+      {},
+      { ...succeeded, outcome: "maybe" },
+      { ...succeeded, steps: [{ name: "reboot", seconds: 1 }] },
+      { ...succeeded, steps: [{ name: "install", seconds: -1 }] },
+      { ...succeeded, totalSeconds: "10" },
+      { ...succeeded, profile: { ...profile, cpuCount: 1.5 } },
+      { ...succeeded, profile: { ...profile, osId: "x".repeat(257) } },
+      { ...failed, failedStep: "reboot" },
+    ];
+    for (const body of invalidBodies) {
+      const { response, captured } = await report(body, joined);
+      expect(response.status, JSON.stringify(body)).toBe(422);
+      expect(captured).toEqual([]);
+    }
+  });
+
+  it("captures nothing on a Cloud without PostHog", async () => {
+    // A Cloud started without POSTHOG_KEY, as every Self-hosted Cloud is.
+    const config = AppConfig.make.pipe(Effect.provideService(
+      ConfigProvider.ConfigProvider,
+      ConfigProvider.fromEnv({ env: {
+        DATABASE_URL: "postgres://postgres:postgres@localhost:5432/ployz_cloud",
+        APP_URL: "http://localhost:3000",
+        BETTER_AUTH_SECRET: "better-auth-secret",
+        GITHUB_CLIENT_ID: "github-client-id",
+        GITHUB_CLIENT_SECRET: "github-client-secret",
+        GITHUB_APP_ID: "12345",
+        GITHUB_APP_PRIVATE_KEY: "github-app-private-key",
+        GITHUB_APP_SLUG: "ployz-test",
+        GITHUB_APP_WEBHOOK_SECRET: "github-app-webhook-secret",
+        INNGEST_EVENT_KEY: "inngest-event-key",
+        INNGEST_SIGNING_KEY: "inngest-signing-key",
+        APP_ENCRYPTION_SECRET: "app-encryption-secret-at-least-32-characters",
+      } }),
+    ));
+    const { response, posthog } = await Effect.runPromise(Effect.gen(function* () {
+      const response = yield* handleMachineSetupReport(
+        new Request("https://cloud.example/api/enroll/pmet_secret/report", {
+          method: "POST",
+          body: JSON.stringify(succeeded),
+        }),
+        token,
+        () => Effect.succeed(joined),
+      );
+      return { response, posthog: yield* PostHog };
+    }).pipe(Effect.provide(PostHogLive), Effect.provideServiceEffect(AppConfig, config)));
+
+    expect(response.status).toBe(204);
+    // The no-op service a Cloud without PostHog runs with: no SDK client exists to send anything.
+    expect(posthog).toBe(await Effect.runPromise(Effect.gen(function* () { return yield* PostHog; })));
   });
 });

@@ -24,6 +24,8 @@ import {
   mintedEnrollment,
   registerRequestFromEnrollmentIdentity,
   rustMachineIdSchema,
+  setupReportProperties,
+  type SetupReport,
   waitForFounder,
   type EnrollmentIdentity,
   type EnrollmentCallback,
@@ -163,6 +165,50 @@ const recordJoined = Effect.fn("MachineEnrollment.recordJoined")(
     for (const { userId, organizationId } of joined) {
       yield* (yield* PostHog).capture({ userId, organizationId, event: "server_enrolled", properties: { founder } });
     }
+  },
+);
+
+export type SetupReportToken = {
+  readonly userId: string;
+  readonly organizationId: string;
+  readonly joinedMachineId: string | null;
+  readonly expiresAt: Date;
+};
+
+export const loadSetupReportToken = Effect.fn("MachineEnrollment.loadSetupReportToken")(
+  function* (token: string) {
+    const { drizzle } = yield* Database;
+    const [row] = yield* drizzle
+      .select({
+        userId: schemaMachineEnrollmentToken.createdByUserId,
+        organizationId: schemaMachineEnrollmentToken.organizationId,
+        joinedMachineId: schemaMachineEnrollmentToken.joinedMachineId,
+        expiresAt: schemaMachineEnrollmentToken.expiresAt,
+      })
+      .from(schemaMachineEnrollmentToken)
+      .where(eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(token)))
+      .limit(1);
+    return row;
+  },
+);
+
+/**
+ * One setup report becomes one event for whoever made the token, as `server_enrolled` is.
+ * Success counts only once the token joined a Machine; failure only while it is still pending,
+ * so a token can't be used to inject events after the fact. Enrollment itself is never touched.
+ */
+export const recordSetupReport = Effect.fn("MachineEnrollment.recordSetupReport")(
+  function* (token: SetupReportToken | undefined, report: SetupReport) {
+    const accepted = token !== undefined && (report.outcome === "succeeded"
+      ? token.joinedMachineId !== null
+      : token.joinedMachineId === null && token.expiresAt.getTime() > Date.now());
+    if (!accepted) return yield* new NotFound({ message: "Enrollment not found." });
+    yield* (yield* PostHog).capture({
+      userId: token.userId,
+      organizationId: token.organizationId,
+      event: `server_setup_${report.outcome}`,
+      properties: setupReportProperties(report),
+    });
   },
 );
 

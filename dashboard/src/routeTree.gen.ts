@@ -38,6 +38,7 @@ import { Route as ApiCliCloudResetRouteImport } from './routes/api/cli/cloud/res
 import { Route as ApiCliServersEnrollRouteImport } from './routes/api/cli/servers/enroll'
 import { Route as ApiCliServersEnrollmentRouteImport } from './routes/api/cli/servers/enrollment'
 import { Route as ApiEnrollTokenCallbackRouteImport } from './routes/api/enroll/$token/callback'
+import { Route as ApiEnrollTokenReportRouteImport } from './routes/api/enroll/$token/report'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/route'
 import { Route as ProtectedCloudOrganizationSlugProjectNewRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/new'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126IndexRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/index'
@@ -202,6 +203,11 @@ const ApiCliServersEnrollmentRoute = ApiCliServersEnrollmentRouteImport.update({
 const ApiEnrollTokenCallbackRoute = ApiEnrollTokenCallbackRouteImport.update({
   id: '/callback',
   path: '/callback',
+  getParentRoute: () => ApiEnrollTokenRoute,
+} as any)
+const ApiEnrollTokenReportRoute = ApiEnrollTokenReportRouteImport.update({
+  id: '/report',
+  path: '/report',
   getParentRoute: () => ApiEnrollTokenRoute,
 } as any)
 const ProtectedCloudOrganizationSlugProjectProjectSlugRouteRoute =
@@ -396,6 +402,7 @@ export interface FileRoutesByFullPath {
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
+  '/api/enroll/$token/report': typeof ApiEnrollTokenReportRoute
   '/cloud/$organizationSlug/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteWithChildren
@@ -442,6 +449,7 @@ export interface FileRoutesByTo {
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
+  '/api/enroll/$token/report': typeof ApiEnrollTokenReportRoute
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasIndexRoute
   '/cloud/$organizationSlug/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
@@ -492,6 +500,7 @@ export interface FileRoutesById {
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
+  '/api/enroll/$token/report': typeof ApiEnrollTokenReportRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_project/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteWithChildren
@@ -542,6 +551,7 @@ export interface FileRouteTypes {
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
     | '/api/enroll/$token/callback'
+    | '/api/enroll/$token/report'
     | '/cloud/$organizationSlug/$projectSlug'
     | '/cloud/$organizationSlug/new'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug'
@@ -588,6 +598,7 @@ export interface FileRouteTypes {
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
     | '/api/enroll/$token/callback'
+    | '/api/enroll/$token/report'
     | '/cloud/$organizationSlug/new'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug'
     | '/cloud/$organizationSlug/~/billing'
@@ -637,6 +648,7 @@ export interface FileRouteTypes {
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
     | '/api/enroll/$token/callback'
+    | '/api/enroll/$token/report'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug'
     | '/_protected/cloud/$organizationSlug/_project/new'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug'
@@ -887,6 +899,13 @@ declare module '@tanstack/react-router' {
       path: '/callback'
       fullPath: '/api/enroll/$token/callback'
       preLoaderRoute: typeof ApiEnrollTokenCallbackRouteImport
+      parentRoute: typeof ApiEnrollTokenRoute
+    }
+    '/api/enroll/$token/report': {
+      id: '/api/enroll/$token/report'
+      path: '/report'
+      fullPath: '/api/enroll/$token/report'
+      preLoaderRoute: typeof ApiEnrollTokenReportRouteImport
       parentRoute: typeof ApiEnrollTokenRoute
     }
     '/_protected/cloud/$organizationSlug/_project/$projectSlug': {
@@ -1222,10 +1241,12 @@ const PublicRouteRouteWithChildren = PublicRouteRoute._addFileChildren(
 
 interface ApiEnrollTokenRouteChildren {
   ApiEnrollTokenCallbackRoute: typeof ApiEnrollTokenCallbackRoute
+  ApiEnrollTokenReportRoute: typeof ApiEnrollTokenReportRoute
 }
 
 const ApiEnrollTokenRouteChildren: ApiEnrollTokenRouteChildren = {
   ApiEnrollTokenCallbackRoute: ApiEnrollTokenCallbackRoute,
+  ApiEnrollTokenReportRoute: ApiEnrollTokenReportRoute,
 }
 
 const ApiEnrollTokenRouteWithChildren = ApiEnrollTokenRoute._addFileChildren(

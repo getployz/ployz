@@ -161,6 +161,69 @@ export const enrollmentCallbackBodySchema = Schema.Union([
 
 export type EnrollmentCallback = typeof enrollmentCallbackBodySchema.Type;
 
+/** The phases of `server add --token`; each name is a PostHog property, so renaming one breaks analytics. */
+const SetupStep = Schema.Literals(["install", "enroll", "storage", "join"]);
+const Seconds = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
+const ProfileText = NonEmptyString.check(Schema.isMaxLength(256));
+export const SETUP_REPORT_ERROR_MAX_LENGTH = 1_000;
+
+/** What `server add --token` reports about its Server and how setup went; unknown fields from newer CLIs are ignored. */
+export const setupReportSchema = Schema.Struct({
+  outcome: Schema.Literals(["succeeded", "failed"]),
+  profile: Schema.Struct({
+    provider: Schema.optionalKey(ProfileText),
+    instanceType: Schema.optionalKey(ProfileText),
+    osId: Schema.optionalKey(ProfileText),
+    osVersion: Schema.optionalKey(ProfileText),
+    kernel: Schema.optionalKey(ProfileText),
+    arch: Schema.optionalKey(ProfileText),
+    virtualization: Schema.optionalKey(ProfileText),
+    cpuCount: Schema.optionalKey(NonnegativeSafeInteger),
+    memoryTotalBytes: Schema.optionalKey(NonnegativeSafeInteger),
+    diskTotalBytes: Schema.optionalKey(NonnegativeSafeInteger),
+    storage: Schema.optionalKey(Schema.Literals(["none", "zfs"])),
+    ployzVersion: Schema.optionalKey(ProfileText),
+    founder: Schema.optionalKey(Schema.Boolean),
+  }),
+  steps: Schema.Array(Schema.Struct({ name: SetupStep, seconds: Seconds })),
+  totalSeconds: Seconds,
+  failedStep: Schema.optionalKey(SetupStep),
+  failedStepSeconds: Schema.optionalKey(Seconds),
+  error: Schema.optionalKey(Schema.String),
+});
+
+export type SetupReport = typeof setupReportSchema.Type;
+
+/** The report as flat snake_case PostHog properties, so each one charts and breaks down directly. */
+export function setupReportProperties(report: SetupReport) {
+  const { profile } = report;
+  const properties: Record<string, string | number | boolean> = {};
+  const set = (key: string, value: string | number | boolean | undefined) => {
+    if (value !== undefined) properties[key] = value;
+  };
+  set("provider", profile.provider);
+  set("instance_type", profile.instanceType);
+  set("os_id", profile.osId);
+  set("os_version", profile.osVersion);
+  set("kernel", profile.kernel);
+  set("arch", profile.arch);
+  set("virtualization", profile.virtualization);
+  set("cpu_count", profile.cpuCount);
+  set("memory_total_bytes", profile.memoryTotalBytes);
+  set("disk_total_bytes", profile.diskTotalBytes);
+  set("storage", profile.storage);
+  set("ployz_version", profile.ployzVersion);
+  set("founder", profile.founder);
+  for (const step of report.steps) set(`step_${step.name}_seconds`, step.seconds);
+  set("total_seconds", report.totalSeconds);
+  if (report.outcome === "failed") {
+    set("failed_step", report.failedStep);
+    set("failed_step_seconds", report.failedStepSeconds);
+    set("error", report.error?.slice(0, SETUP_REPORT_ERROR_MAX_LENGTH));
+  }
+  return properties;
+}
+
 export type CloudPairing = {
   secret: string;
 };
