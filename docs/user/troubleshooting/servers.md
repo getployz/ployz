@@ -29,20 +29,85 @@ Use an amd64 (x86_64) or arm64 (aarch64) server running a Linux distribution wit
 
 ## The install stops while preparing ZFS
 
-You'll see one of these:
+The server can't set up managed volumes as it is. Find your message below for the fix. Either way,
+you can add `--storage none` to the end of the command and run it again: the server shows **Docker
+only**; see [Start without ZFS](../servers/add-a-server.md#start-without-zfs) for what that costs.
 
-- `ZFS storage preparation is not supported on debian yet; use a supported Ubuntu release`
-- `Ubuntu has no packaged ZFS module for the running kernel ...`
+- ``Managed volumes need Ubuntu LTS, Debian 12–13 or Amazon Linux 2023; this Server runs ... Use one of those, or add `--storage none`.``
+
+  The server runs another distribution, or another version of one of these. Reinstall it with a
+  supported image.
+
+- ``Secure Boot is on, so this Server can't load the ZFS module Ployz builds for ... Turn Secure Boot off, use Ubuntu, or add `--storage none`.``
+
+  Turn Secure Boot off in your provider's settings for the server, or reinstall it with Ubuntu.
+  Then run the command again.
+
+- ``Amazon Linux 2023 has no kernel-devel package for the running kernel ..., so ZFS can't be built for it. Update the kernel, reboot, and retry, or add `--storage none`.``
+
+  The server runs an older kernel than its package repositories offer. Update it, reboot, then
+  run the command again:
+
+  ```sh
+  sudo dnf upgrade -y
+  sudo reboot
+  ```
+
+- ``Couldn't build ZFS for kernel ... on ...: the OpenZFS checksum check failed. Add `--storage none` to start without managed volumes.``
+
+  The ZFS source the server downloaded wasn't the release Ployz expects, so nothing was installed.
+  Run the command again. If it fails the same way, something between the server and GitHub, like a
+  proxy, changes downloads.
+
+- ``Couldn't build ZFS for kernel ... on ...: ... failed. Add `--storage none` to start without managed volumes.``
+
+  The build stopped at the step the message names. The output above the message shows why. Fix
+  that and run the command again.
+
+- `Ubuntu has no packaged ZFS module for the running kernel ...; install a supported Ubuntu kernel and retry`
+
+  Switch the server to Ubuntu's stock kernel, reboot, and run the command again.
+
+- `... apt-get is required for ZFS storage preparation`, or the same for `dnf`
+
+  Reinstall the server with its provider's stock image.
+
 - `OpenVZ does not allow this Machine to load the host ZFS kernel module`, or the same for
   unprivileged LXC
+
+  Use a VM or bare metal.
+
 - `Host root has ... bytes available; ZFS validation needs ...`
 
-The server can't run managed volumes. Either:
+  Free disk space, or give the server a bigger disk. Ployz keeps a quarter of the disk, at least
+  10 GB, free for the system, so use a main disk of 30 GB or more.
 
-- use Ubuntu LTS with its stock kernel, on a VM or bare metal, with free disk space (Ployz keeps a
-  quarter of the disk, at least 10 GB, free for the system), or
-- add `--storage none` to the end of the command and run it again. The server shows **Docker
-  only**; see [Start without ZFS](../servers/add-a-server.md#start-without-zfs) for what that costs.
+## Managed volumes are missing after a kernel update
+
+After a Debian or Amazon Linux server reboots into a new kernel, its managed volumes are
+unavailable and the services that use them don't start. Your volume data is still on the disk.
+
+The server rebuilds ZFS for each kernel it installs, but that build failed, for example because
+the kernel is newer than ZFS supports. Either:
+
+- rebuild ZFS for the running kernel, then reboot:
+
+  ```sh
+  sudo dkms autoinstall
+  sudo reboot
+  ```
+
+  If it fails, install the running kernel's headers first, then try again:
+
+  ```sh
+  # Debian
+  sudo apt-get install linux-headers-$(uname -r)
+  # Amazon Linux
+  sudo dnf install "kernel-devel-uname-r = $(uname -r)"
+  ```
+
+- or boot the previous kernel, which stays installed. Choose it in the boot menu from your
+  provider's console.
 
 ## The command was rejected
 

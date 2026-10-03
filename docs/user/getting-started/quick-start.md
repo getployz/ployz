@@ -7,8 +7,8 @@ This page puts a small example app,
 [render-examples/express-hello-world](https://github.com/render-examples/express-hello-world),
 online at an https address on your own server.
 
-You need a GitHub account and a server: Ubuntu LTS with a public IP address, that you can reach
-as root over SSH. A small VPS from any provider, like Hetzner or DigitalOcean, is plenty to
+You need a GitHub account and a server: Ubuntu LTS, Debian 12–13 or Amazon Linux 2023 with a
+public IP address, that you can reach as root over SSH. A small VPS from any provider, like Hetzner or DigitalOcean, is plenty to
 start. Builds run on it too, so give it 2 GB of memory or more.
 
 ## Sign in
@@ -51,7 +51,7 @@ The address goes live on your first deploy.
 While you have no server, the bottom bar shows **Add a server** where **Deploy** would be.
 
 1. Click **Add a server** in the bottom bar.
-2. Not on Ubuntu? Click **Start without it** first; see
+2. Not on Ubuntu, Debian or Amazon Linux? Click **Start without it** first; see
    [Start without ZFS](../servers/add-a-server.md#start-without-zfs).
 3. Click **Copy** next to the command under **Run this as root**. It works for 24 hours.
 4. Connect to your server with `ssh root@203.0.113.10` (your server's IP), paste the command and
