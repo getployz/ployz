@@ -82,6 +82,31 @@ only**; see [Start without ZFS](../servers/add-a-server.md#start-without-zfs) fo
   Free disk space, or give the server a bigger disk. Ployz keeps a quarter of the disk, at least
   10 GB, free for the system, so use a main disk of 30 GB or more.
 
+## The install stops while checking Docker
+
+The server already has a Docker that Ployz can't use. Setup stops before it changes anything, so
+fix Docker and run the command again. Or uninstall Docker, and Ployz installs a current one.
+
+- `Docker is installed but not running. Start it (systemctl start docker) and run this again.`
+
+  Run `sudo systemctl start docker`, then run the command again.
+
+- `Docker ... is too old: Ployz needs Docker 29.2 or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one.`
+
+  Upgrade Docker from the source you installed it from. A distribution's own Docker package, like
+  Amazon Linux's `docker`, is often older: remove it with `sudo dnf remove docker` or
+  `sudo apt-get remove docker.io`, then run the command again.
+
+- `Docker Buildx ... is too old: Ployz needs Buildx 0.18 or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one.`
+
+  Upgrade the buildx plugin along with Docker, or uninstall Docker.
+
+- `Docker isn't using the containerd image store, which Ployz Builds need. Enable it in /etc/docker/daemon.json ("features": {"containerd-snapshotter": true}) and restart Docker, or uninstall Docker and run this again.`
+
+  Add `"features": {"containerd-snapshotter": true}` to `/etc/docker/daemon.json` and run
+  `sudo systemctl restart docker`. Images you pulled before switching don't carry over, so pull
+  them again.
+
 ## Managed volumes are missing after a kernel update
 
 After a Debian or Amazon Linux server reboots into a new kernel, its managed volumes are

@@ -84,8 +84,9 @@ these there:
 - **Operating system updates stay with you.** Ployz doesn't install them.
 - **Already running Docker?** Ployz keeps it and its settings, if it's Docker 29.2 or newer
   with buildx 0.18 or newer and the containerd image store turned on. Otherwise setup stops
-  before changing anything and says what to fix. Docker's default never rotates
-  container logs, so they can fill the disk; see
+  before changing anything; see
+  [The install stops while checking Docker](../troubleshooting/servers.md#the-install-stops-while-checking-docker).
+  Docker's default never rotates container logs, so they can fill the disk; see
   [The server's disk is filling up](../troubleshooting/servers.md#the-servers-disk-is-filling-up).
 
 Next: [manage your servers](manage-servers.md).

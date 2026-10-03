@@ -1,6 +1,7 @@
 //! Bounded local installation of a Ployz Machine release.
 
 mod host;
+mod os_release;
 mod release;
 mod storage;
 #[cfg(test)]
@@ -346,6 +347,14 @@ fn sudo_user() -> Option<String> {
     std::env::var("SUDO_USER")
         .ok()
         .filter(|user| !user.is_empty())
+}
+
+/// A refusal at `stage`, worded for the user.
+pub(super) fn refuse(stage: &str, message: impl Into<String>) -> Error {
+    Error::Command {
+        stage: stage.into(),
+        message: message.into(),
+    }
 }
 
 pub(super) fn command_exists(name: &str) -> bool {

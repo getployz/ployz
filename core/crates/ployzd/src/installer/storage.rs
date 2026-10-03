@@ -11,7 +11,8 @@ use std::{
 
 use ployz_core::StorageChoice;
 
-use super::{Error, InstallPaths, command_exists, run_apt, run_command, run_host};
+use super::os_release::OsRelease;
+use super::{Error, InstallPaths, command_exists, refuse, run_apt, run_command, run_host};
 use super::{
     host::write_file_atomically,
     release::{staging_directory, verify_checksum, write_private},
@@ -27,13 +28,7 @@ pub(super) fn prepare_storage(storage: StorageChoice, paths: &InstallPaths) -> R
     }
 }
 
-/// A refusal to prepare ZFS storage, worded for the user.
-fn refuse(message: impl Into<String>) -> Error {
-    Error::Command {
-        stage: "prepare ZFS storage".into(),
-        message: message.into(),
-    }
-}
+const STAGE: &str = "prepare ZFS storage";
 
 /// How the ZFS kernel module becomes loadable on the Machine's distro.
 #[derive(Clone, Copy)]
@@ -63,11 +58,14 @@ impl ZfsRoute {
                 codename: "trixie",
                 keyring: "debian-archive-keyring.pgp",
             }),
-            ("amzn", Some("2023")) => Ok(Self::AmazonLinux),
-            _ => Err(refuse(format!(
-                "Managed volumes need Ubuntu LTS, Debian 12–13 or Amazon Linux 2023; this Server runs {}. Use one of those, or add `--storage none`.",
-                os.display()
-            ))),
+            (_, Some("2023")) if os.is_amazon_linux() => Ok(Self::AmazonLinux),
+            _ => Err(refuse(
+                STAGE,
+                format!(
+                    "Managed volumes need Ubuntu LTS, Debian 12–13 or Amazon Linux 2023; this Server runs {}. Use one of those, or add `--storage none`.",
+                    os.display()
+                ),
+            )),
         }
     }
 
@@ -101,29 +99,37 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
     let route = ZfsRoute::for_os(&os)?;
     // Unsigned modules this Machine builds can't load under Secure Boot; refuse before installing.
     if route.builds_module() && secure_boot_enabled(paths)? {
-        return Err(refuse(format!(
-            "Secure Boot is on, so this Server can't load the ZFS module Ployz builds for {}. Turn Secure Boot off, use Ubuntu, or add `--storage none`.",
-            os.name
-        )));
+        return Err(refuse(
+            STAGE,
+            format!(
+                "Secure Boot is on, so this Server can't load the ZFS module Ployz builds for {}. Turn Secure Boot off, use Ubuntu, or add `--storage none`.",
+                os.name
+            ),
+        ));
     }
     let container = container_virtualization();
     if container == "openvz" || (Path::new("/proc/vz").is_dir() && !Path::new("/proc/bc").is_dir())
     {
         return Err(refuse(
+            STAGE,
             "OpenVZ does not allow this Machine to load the host ZFS kernel module",
         ));
     }
     if container == "lxc" && lxc_is_unprivileged()? {
         return Err(refuse(
+            STAGE,
             "Unprivileged LXC does not allow this Machine to load the host ZFS kernel module",
         ));
     }
     let package_manager = route.package_manager();
     if !command_exists(package_manager) {
-        return Err(refuse(format!(
-            "{} {package_manager} is required for ZFS storage preparation",
-            os.name
-        )));
+        return Err(refuse(
+            STAGE,
+            format!(
+                "{} {package_manager} is required for ZFS storage preparation",
+                os.name
+            ),
+        ));
     }
     let kernel = uname("-r", "read running kernel")?;
     // A module this Machine built earlier stays; Ubuntu's install checks its own package.
@@ -144,54 +150,6 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
     validate_zfs()?;
     println!("ZFS storage preparation validated; no Machine Pool was created");
     Ok(())
-}
-
-/// The os-release fields that pick a [`ZfsRoute`] and name the OS in a refusal.
-pub(super) struct OsRelease {
-    pub(super) id: String,
-    name: String,
-    version_id: Option<String>,
-}
-
-impl OsRelease {
-    /// # Errors
-    ///
-    /// Fails when `path` can't be read or names no distribution `ID`.
-    pub(super) fn read(path: &Path) -> Result<Self, Error> {
-        let value = fs::read_to_string(path).map_err(|source| Error::Io {
-            stage: "identify Linux distribution for ZFS storage preparation",
-            source,
-        })?;
-        let field = |key: &str| {
-            value
-                .lines()
-                .find_map(|line| line.strip_prefix(key)?.strip_prefix('='))
-                .map(|field| field.trim().trim_matches(['"', '\'']).to_owned())
-                .filter(|field| !field.is_empty())
-        };
-        let Some(id) = field("ID") else {
-            return Err(refuse(
-                "Could not identify the Linux distribution for ZFS storage preparation",
-            ));
-        };
-        Ok(Self {
-            // Debian's NAME is "Debian GNU/Linux"; messages say "Debian 13".
-            name: field("NAME").map_or_else(
-                || id.clone(),
-                |name| name.trim_end_matches(" GNU/Linux").to_owned(),
-            ),
-            version_id: field("VERSION_ID"),
-            id,
-        })
-    }
-
-    /// `NAME VERSION_ID`, e.g. "Amazon Linux 2023"; rolling releases have no version.
-    fn display(&self) -> String {
-        match &self.version_id {
-            Some(version) => format!("{} {version}", self.name),
-            None => self.name.clone(),
-        }
-    }
 }
 
 /// Firmware Secure Boot state; a Machine without EFI variables boots with it off.
@@ -254,7 +212,7 @@ fn build_zfs_module(
         .map_err(|BuildFailure { step, cause }| {
             // The drafted message has no room for the cause; keep it in the install log.
             eprintln!("{cause}");
-            refuse(format!(
+            refuse(STAGE, format!(
                 "Couldn't build ZFS for kernel {kernel} on {}: {step} failed. Add `--storage none` to start without managed volumes.",
                 os.display()
             ))
@@ -383,10 +341,13 @@ fn require_kernel_devel(os: &OsRelease, kernel: &str) -> Result<(), Error> {
         ["-q", "repoquery", "--whatprovides", &kernel_devel(kernel)],
     )?;
     if providers.trim().is_empty() {
-        return Err(refuse(format!(
-            "{} has no kernel-devel package for the running kernel {kernel}, so ZFS can't be built for it. Update the kernel, reboot, and retry, or add `--storage none`.",
-            os.display()
-        )));
+        return Err(refuse(
+            STAGE,
+            format!(
+                "{} has no kernel-devel package for the running kernel {kernel}, so ZFS can't be built for it. Update the kernel, reboot, and retry, or add `--storage none`.",
+                os.display()
+            ),
+        ));
     }
     Ok(())
 }
@@ -550,9 +511,12 @@ fn require_host_root_reserve(allocation: u64) -> Result<(), Error> {
         })?;
     let reserve = ployz_core::storage_host_reserve(size);
     if available < reserve.saturating_add(allocation) {
-        return Err(refuse(format!(
-            "Host root has {available} bytes available; ZFS validation needs {allocation} bytes while preserving the {reserve}-byte host-root reserve"
-        )));
+        return Err(refuse(
+            STAGE,
+            format!(
+                "Host root has {available} bytes available; ZFS validation needs {allocation} bytes while preserving the {reserve}-byte host-root reserve"
+            ),
+        ));
     }
     Ok(())
 }
@@ -569,7 +533,7 @@ fn zfs_arc_max() -> Result<u64, Error> {
                 .and_then(|value| value.split_whitespace().next())
         })
         .and_then(|value| value.parse::<u64>().ok())
-        .ok_or_else(|| refuse("Could not read total RAM for the ZFS ARC limit"))?;
+        .ok_or_else(|| refuse(STAGE, "Could not read total RAM for the ZFS ARC limit"))?;
     Ok((kib.saturating_mul(1024) / 4).clamp(256 * 1024 * 1024, 1024 * 1024 * 1024))
 }
 
@@ -669,7 +633,7 @@ pub(super) fn install_zfs_packages(kernel: &str) -> Result<(), Error> {
         }
     }
     let package = package.ok_or_else(|| {
-        download_error.unwrap_or_else(|| refuse(format!(
+        download_error.unwrap_or_else(|| refuse(STAGE, format!(
                 "Ubuntu has no packaged ZFS module for the running kernel {kernel}; install a supported Ubuntu kernel and retry"
             )))
     })?;
@@ -693,9 +657,12 @@ pub(super) fn install_zfs_packages(kernel: &str) -> Result<(), Error> {
     if package_has_zfs_module(&files, kernel) {
         Ok(())
     } else {
-        Err(refuse(format!(
-            "Installed package {package} does not supply the ZFS module for running kernel {kernel}"
-        )))
+        Err(refuse(
+            STAGE,
+            format!(
+                "Installed package {package} does not supply the ZFS module for running kernel {kernel}"
+            ),
+        ))
     }
 }
 
