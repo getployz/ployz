@@ -158,8 +158,8 @@ impl CatchUpClient for Client {
                 details: serde_json::Value::Null,
             });
         }
-        // Explicit Deploy replacement keys also distinguish the previous Container.
-        // Reuse its exact persisted creation when catch-up finds it before Start.
+        // A Container already on the Machine with this exact spec, say from a
+        // catch-up that stopped before Start, is reused rather than created again.
         let containers = self
             .read::<op::ListContainers>(
                 ListContainersRequest {
