@@ -1,3 +1,12 @@
+CREATE TABLE "organization_server_upgrades" (
+	"organization_id" uuid PRIMARY KEY,
+	"automatic" boolean DEFAULT true NOT NULL,
+	"channel" text DEFAULT 'stable' NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "organization_server_upgrades_channel_check" CHECK ("channel" in ('stable','beta'))
+);
+--> statement-breakpoint
 CREATE TABLE "server_upgrade_attempt" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 	"organization_id" uuid NOT NULL,
@@ -26,7 +35,8 @@ CREATE TABLE "server_upgrade_attempt" (
 CREATE UNIQUE INDEX "server_upgrade_attempt_attempt_uidx" ON "server_upgrade_attempt" ("organization_id","machine_id","attempt_id");--> statement-breakpoint
 CREATE INDEX "server_upgrade_attempt_latest_idx" ON "server_upgrade_attempt" ("organization_id","machine_id","started_at");--> statement-breakpoint
 CREATE INDEX "server_upgrade_attempt_run_idx" ON "server_upgrade_attempt" ("inngest_run_id");--> statement-breakpoint
+ALTER TABLE "organization_server_upgrades" ADD CONSTRAINT "organization_server_upgrades_eLbQmpv5tk3t_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "server_upgrade_attempt" ADD CONSTRAINT "server_upgrade_attempt_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
-ALTER TABLE "server_upgrade_attempt" ADD CONSTRAINT "server_upgrade_attempt_requested_by_user_id_user_id_fkey" FOREIGN KEY ("requested_by_user_id") REFERENCES "user"("id") ON DELETE SET NULL;
---> statement-breakpoint
-SELECT organization_change_attach('server_upgrade_attempt', 'organization_id', 'id');
+ALTER TABLE "server_upgrade_attempt" ADD CONSTRAINT "server_upgrade_attempt_requested_by_user_id_user_id_fkey" FOREIGN KEY ("requested_by_user_id") REFERENCES "user"("id") ON DELETE SET NULL;--> statement-breakpoint
+SELECT organization_change_attach('server_upgrade_attempt', 'organization_id', 'id');--> statement-breakpoint
+SELECT organization_change_attach('organization_server_upgrades', 'organization_id', 'organization_id');

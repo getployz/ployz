@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "6e7f1158-47f9-43de-b5d8-6132daeb1de8",
+  "id": "e5b2b42a-2c72-4b9b-9e61-80628e0eacb6",
   "prevIds": [
     "04f6a0eb-b88d-4493-baca-31ba126acc35"
   ],
@@ -141,6 +141,12 @@
     {
       "isRlsEnabled": false,
       "name": "environment_canvas_node_position",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "organization_server_upgrades",
       "entityType": "tables",
       "schema": "public"
     },
@@ -2660,6 +2666,71 @@
       "typeSchema": null,
       "notNull": true,
       "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_server_upgrades"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "true",
+      "generated": null,
+      "identity": null,
+      "name": "automatic",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_server_upgrades"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'stable'",
+      "generated": null,
+      "identity": null,
+      "name": "channel",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_server_upgrades"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_server_upgrades"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_server_upgrades"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
       "default": "gen_random_uuid()",
       "generated": null,
       "identity": null,
@@ -3916,6 +3987,23 @@
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
+      "name": "organization_server_upgrades_eLbQmpv5tk3t_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "organization_server_upgrades"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "organization",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
       "name": "server_upgrade_attempt_organization_id_organization_id_fkey",
       "entityType": "fks",
       "schema": "public",
@@ -4177,6 +4265,16 @@
     },
     {
       "columns": [
+        "organization_id"
+      ],
+      "nameExplicit": false,
+      "name": "organization_server_upgrades_pkey",
+      "schema": "public",
+      "table": "organization_server_upgrades",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
         "id"
       ],
       "nameExplicit": false,
@@ -4427,6 +4525,13 @@
       "entityType": "checks",
       "schema": "public",
       "table": "upload_chunk"
+    },
+    {
+      "value": "\"channel\" in ('stable','beta')",
+      "name": "organization_server_upgrades_channel_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "organization_server_upgrades"
     },
     {
       "value": "\"attempt_id\" ~ '^[0-9a-f]{32}$'",

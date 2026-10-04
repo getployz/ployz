@@ -1,2 +1,0 @@
-ALTER TABLE "organization_server_upgrades" ADD COLUMN "channel" text DEFAULT 'stable' NOT NULL;--> statement-breakpoint
-ALTER TABLE "organization_server_upgrades" ADD CONSTRAINT "organization_server_upgrades_channel_check" CHECK ("channel" in ('stable','beta'));
