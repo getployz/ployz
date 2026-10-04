@@ -3,6 +3,7 @@
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
     HOSTNAME_VERIFY_PATH, HttpProtocol, INGRESS_VERIFY_PATH, IngressHost, Machine, MachineId,
+    ingress_upstream,
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
@@ -258,7 +259,7 @@ fn route_summary(projection: &IngressProjection) -> String {
             };
             let upstreams = endpoints
                 .iter()
-                .map(|endpoint| format!("{}:{}", endpoint.address.0, endpoint.port))
+                .map(|endpoint| ingress_upstream(endpoint.address, endpoint.port))
                 .collect::<Vec<_>>()
                 .join(" ");
             let _ = write!(summary, " {scheme}://{}=[{upstreams}]", site.hostname);
@@ -322,7 +323,7 @@ fn write_site(
 \tlog_append upstream {{http.reverse_proxy.upstream.hostport}}\n",
             endpoints
                 .iter()
-                .map(|endpoint| format!("{}:{}", endpoint.address.0, endpoint.port))
+                .map(|endpoint| ingress_upstream(endpoint.address, endpoint.port))
                 .collect::<Vec<_>>()
                 .join(" ")
         )

@@ -289,18 +289,17 @@ impl MachineOperations for Client {
         container_id: &ContainerId,
         grace_period_seconds: Option<i32>,
     ) -> Result<(), RpcError> {
-        crate::ingress::withdraw(self, machine_id, container_id).await;
-        self.invoke::<op::StopContainer>(
+        crate::ingress::stop_container(
+            self,
+            machine_id,
             StopContainerRequest {
                 container_id: *container_id,
                 signal: None,
                 grace_period_seconds,
             },
-            &MachineTarget::from(machine_id),
             stop_rpc_timeout(grace_period_seconds, 1),
         )
         .await
-        .map(|_| ())
     }
 
     async fn remove_container(

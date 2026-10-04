@@ -279,13 +279,15 @@ impl MachineRpc for MachineService {
             Ok(containers) => containers,
             Err(error) => return respond(error),
         };
-        containers.mark_stopping(request.container_id);
         let machine_id = self.local_record().id();
         match containers
             .inspect_managed_details(&request.container_id, &machine_id)
             .await
         {
-            Ok(details) => respond(details),
+            Ok(details) => {
+                containers.mark_stopping(request.container_id);
+                respond(details)
+            }
             Err(error) => respond(RpcError::from(&error)),
         }
     }

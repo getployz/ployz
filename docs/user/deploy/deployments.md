@@ -84,7 +84,9 @@ header. Each service it included has a tab with its **Build** and **Deploy**
 ## Deploy without downtime
 
 Ployz swaps in the new version one replica at a time: it starts a new one, waits until it's
-ready, then stops an old one, so your app keeps serving.
+ready, then stops an old one, so your app keeps serving. Before any replica stops, every server
+taking web traffic stops sending it requests. If a server can't confirm that within 10 seconds,
+the replica stops anyway and the deploy warns which server didn't answer.
 
 - **Set a health check.** Under **Settings → Deploy**, set **Healthcheck** to a path like `/up`.
   A new replica is ready when that path answers with a 2xx status. A redirect, to `https://` or

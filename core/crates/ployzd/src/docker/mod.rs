@@ -144,7 +144,7 @@ impl ContainerRuntime {
         }
     }
 
-    /// Report this Container as `stopping` until it is removed or started again,
+    /// Report this Container as `stopping` until its stop runs,
     /// so the Ingress Proxies stop routing to it before it stops.
     pub fn mark_stopping(&self, container_id: ContainerId) {
         self.stopping
