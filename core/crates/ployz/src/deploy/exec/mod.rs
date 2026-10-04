@@ -531,6 +531,8 @@ fn pull_rank(policy: PullPolicy) -> u8 {
 
 // Each image once per Machine, under the strictest policy any operation asks
 // for, remembering the earliest operation that needs it.
+// One Service's registry credentials pull an image every Service shares, on
+// purpose: under `Missing` the first create pulled it and the rest found it.
 fn image_pulls(operations: &[DeployOperation]) -> BTreeMap<MachineId, Vec<ImagePull<'_>>> {
     let mut pulls: BTreeMap<MachineId, Vec<ImagePull<'_>>> = BTreeMap::new();
     for (first_operation, operation) in operations.iter().enumerate() {
