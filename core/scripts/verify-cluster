@@ -1,0 +1,378 @@
+#!/usr/bin/env python3
+"""Disposable real-Machine verification; provider mechanics live in verify/."""
+
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+import fcntl
+import hashlib
+import importlib
+import json
+import os
+from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import uuid
+
+CORE = Path(__file__).resolve().parents[1]
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(CORE / "scripts" / "verify"))
+
+
+def save(run):
+    path = Path(run["manifest"])
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(run, indent=2) + "\n")
+    temporary.replace(path)
+
+
+class Commands:
+    def __init__(self, run):
+        self.evidence = Path(run["manifest"]).parent / "evidence"
+        self.evidence.mkdir(parents=True, exist_ok=True)
+        self.lock = threading.Lock()
+
+    def __call__(self, args, *, check=True, timeout=300, **kwargs):
+        args = [str(arg) for arg in args]
+        started = time.monotonic()
+        stem = str(time.time_ns()) + "-" + uuid.uuid4().hex[:6]
+        try:
+            result = subprocess.run(args, capture_output=True, timeout=timeout, **kwargs)
+        except subprocess.TimeoutExpired as error:
+            result = subprocess.CompletedProcess(args, 124, error.stdout or b"",
+                                                 (error.stderr or b"") + f"\nTimed out after {timeout}s\n".encode())
+        (self.evidence / (stem + ".stdout")).write_bytes(result.stdout)
+        (self.evidence / (stem + ".stderr")).write_bytes(result.stderr)
+        event = dict(command=args, exit_code=result.returncode,
+                     seconds=round(time.monotonic() - started, 3), artifact=stem)
+        with self.lock, (self.evidence / "commands.jsonl").open("a") as output:
+            output.write(json.dumps(event) + "\n")
+        if check and result.returncode:
+            detail = (result.stdout[-2000:] + result.stderr[-2000:]).decode(errors="replace")
+            raise RuntimeError(f"{shlex.join(args)}\n{detail}\nEvidence: {self.evidence}")
+        return result
+
+
+def provider(run, commands):
+    # A backend implements prepare/create/start/exec/push/address/destroy.
+    # The manifest binds subsequent operations to the provider that created it.
+    if run["provider"] != "incus":
+        raise RuntimeError(f"Unknown provider: {run['provider']}")
+    return importlib.import_module(run["provider"]).Provider(run, commands, CORE)
+
+
+def parallel(function, items):
+    with ThreadPoolExecutor(max_workers=len(items)) as workers:
+        return list(workers.map(function, items))
+
+
+def build(run, commands, *, daemon=True):
+    started = time.monotonic()
+    compiled = commands(["cargo", "build", "--locked", "--message-format=json-render-diagnostics",
+                         "-p", "ployz", *(["-p", "ployzd"] if daemon else [])], cwd=CORE, timeout=1800)
+    fresh = {event["target"]["name"] for line in compiled.stdout.splitlines()
+             if (event := json.loads(line)).get("reason") == "compiler-artifact"
+             and event["fresh"] and event.get("executable")}
+    metadata = commands(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=CORE)
+    target = Path(json.loads(metadata.stdout)["target_directory"]) / "debug"
+    artifacts = Path(run["manifest"]).parent / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    hashes = {}
+    sources = [("ployz", target / "ployz")]
+    if daemon:
+        sources += [("ployzd", target / "ployzd"), ("ployz-uninstall", CORE / "scripts" / "uninstall.sh")]
+    for name, source in sources:
+        destination = artifacts / name
+        previous = run.get("client_sha256") if name == "ployz" else run.get("binaries", {}).get(name)
+        if name in fresh and destination.exists() and hashlib.sha256(destination.read_bytes()).hexdigest() == previous:
+            hashes[name] = previous
+            continue
+        shutil.copy2(source, destination)
+        destination.chmod(0o755)
+        if name != "ployz-uninstall":
+            commands(["strip", "--strip-debug", destination])
+        hashes[name] = hashlib.sha256(destination.read_bytes()).hexdigest()
+    run["client_sha256"] = hashes["ployz"]
+    if daemon:
+        run["binaries"] = hashes
+    run["timings"]["build"] = round(time.monotonic() - started, 3)
+    run["revision"] = commands(["git", "rev-parse", "HEAD"], cwd=CORE).stdout.decode().strip()
+    save(run)
+
+
+def runtime_artifacts(run):
+    directory = Path(run["manifest"]).parent / "artifacts"
+    return directory / "runtime" if run.get("daemon", {}).get("source", "checkout") != "checkout" else directory
+
+
+def prepare_runtime(run, commands):
+    run.setdefault("daemon", {"source": "checkout"})
+    checkout = run["daemon"]["source"] == "checkout"
+    if not checkout:
+        importlib.import_module("releases").prepare(run, commands, CORE)
+    run["bootstrap_release"] = "0.2.2" if checkout else run["daemon"]["version"]
+    save(run)
+
+
+def cli(run, commands, args, **kwargs):
+    directory = Path(run["manifest"]).parent
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("PLOYZ_")}
+    environment.update(PLOYZ_CONFIG=str(directory / "private" / "config.yaml"),
+                       PLOYZ_CONTEXT="verify", PLOYZ_STORE="sqlite:" + str(directory / "private" / "store.sqlite"),
+                       PATH=str(directory / "private" / "bin") + os.pathsep + os.environ["PATH"])
+    return commands([directory / "artifacts" / "ployz", *args],
+                    cwd=directory / "workspace", env=environment, **kwargs)
+
+
+def install(run, backend, node):
+    artifacts = runtime_artifacts(run)
+    backend.exec(node, ["install", "-d", "/opt/ployz-verify"])
+    paths = ["/opt/ployz-verify/" + name for name in run["binaries"]]
+    result = backend.exec(node, ["sha256sum", *paths], check=False)
+    staged = {line.split(maxsplit=1)[1]: line.split()[0] for line in result.stdout.decode().splitlines()}
+    for name in run["binaries"]:
+        destination = "/opt/ployz-verify/" + name
+        if staged.get(destination) != run["binaries"][name]:
+            backend.push(node, artifacts / name, destination)
+    backend.exec(node, ["bash", "-ec", """
+systemctl stop ployz.socket ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service
+install -d -m 750 -o ployz -g ployz /run/ployz
+for binary in "$@"; do
+    if cmp -s "/opt/ployz-verify/$binary" "/usr/local/bin/$binary"; then continue; fi
+    install -m 755 "/opt/ployz-verify/$binary" "/usr/local/bin/$binary.next"
+    mv "/usr/local/bin/$binary.next" "/usr/local/bin/$binary"
+done
+# The exact installed version retains these binaries and writes their own units.
+ployzd install --version "$(ployzd version)" --install-only
+systemctl daemon-reload
+systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service
+""", "install", *run["binaries"]])
+
+
+def doctor(run, commands, backend):
+    expected = run["binaries"]["ployzd"]
+    def inspect(node):
+        names = [name for name in run["binaries"] if name != "ployzd"]
+        result = backend.exec(node, ["bash", "-ec", """
+systemctl is-active --quiet docker ssh ployz ployz.socket ployz-volume-plugin.socket
+pid=$(systemctl show ployz.service -p MainPID --value)
+sha256sum "/proc/$pid/exe" "$@"
+test -d /sys/module/zfs
+zfs version
+""", "doctor", *("/usr/local/bin/" + name for name in names)])
+        hashes = [line.split()[0] for line in result.stdout.decode().splitlines()[:1 + len(names)]]
+        if hashes != [expected, *(run["binaries"][name] for name in names)]:
+            raise RuntimeError(f"{node['name']}: running binaries differ from this run's artifacts")
+        result = cli(run, commands, ["--json", "--connect", "ssh://root@" + node["address"], "server", "ls"])
+        servers = json.loads(result.stdout)["servers"]
+        expected_ids = {item["machine_id"] for item in run["machines"]}
+        if {item["machine"]["id"] for item in servers} != expected_ids or any(item["membership"] != "up" for item in servers):
+            raise RuntimeError(f"{node['name']}: expected {len(run['machines'])} reachable Machines")
+        return {"machine": node["name"], "servers": servers, "running_daemon_sha256": expected}
+    observations = parallel(inspect, run["machines"])
+    (commands.evidence / "doctor.json").write_text(json.dumps(observations, indent=2) + "\n")
+    return observations
+
+
+def wait_ready(run, commands, backend):
+    deadline = time.monotonic() + 60
+    while True:
+        try:
+            return doctor(run, commands, backend)
+        except RuntimeError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.5)
+
+
+def teardown(run, commands, backend):
+    run["state"] = "tearing-down"
+    save(run)
+    for node in run["machines"]:
+        try:
+            backend.exec(node, ["bash", "-c", "journalctl -u ployz -u ployz-volume-plugin -u docker -u ssh -u ssh.socket --no-pager -n 300; zpool status; zfs list; wg show"], check=False, timeout=10)
+        except (RuntimeError, subprocess.TimeoutExpired):
+            pass
+    backend.destroy()
+    shutil.rmtree(Path(run["manifest"]).parent / "private", ignore_errors=True)
+    run["state"] = "removed"
+    save(run)
+
+
+def up(args):
+    total_started = time.monotonic()
+    directory = CORE / ".verify" / (time.strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:10])
+    directory.mkdir(parents=True, mode=0o700)
+    private = directory / "private"
+    (private / "bin").mkdir(parents=True, mode=0o700)
+    (directory / "workspace").mkdir()
+    run = dict(manifest=str(directory / "cluster.json"), root=str(CORE),
+               id=directory.name.rsplit("-", 1)[1], provider=args.provider, provider_state={}, state="starting", daemon={"source": args.daemon},
+               timings={}, machines=[dict(name=f"machine-{index}") for index in range(1, args.machines + 1)])
+    save(run)
+    commands = Commands(run)
+    backend = provider(run, commands)
+    print(f"Preparing verification run: {run['manifest']}", file=sys.stderr)
+    try:
+        prepare_runtime(run, commands)
+        # The context joins compilation before failure cleanup can remove resources.
+        with ThreadPoolExecutor(max_workers=1) as builder:
+            binaries = builder.submit(build, run, commands, daemon=run["daemon"]["source"] == "checkout")
+            started = time.monotonic()
+            backend.prepare()
+            run["timings"]["prepare_image"] = round(time.monotonic() - started, 3)
+            if binaries.done():
+                binaries.result()
+            started = time.monotonic()
+            backend.create()
+            commands(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", private / "id_ed25519"])
+            ssh = shutil.which("ssh")
+            wrapper = private / "bin" / "ssh"
+            wrapper.write_text("#!/bin/sh\nexec " + shlex.quote(ssh) + " -o BatchMode=yes -o " +
+                               shlex.quote("UserKnownHostsFile=" + str(private / "known_hosts")) +
+                               " -i " + shlex.quote(str(private / "id_ed25519")) +
+                               ' -o GlobalKnownHostsFile=/dev/null "$@"\n')
+            wrapper.chmod(0o755)
+            def start(node):
+                backend.start(node)
+                backend.push(node, private / "id_ed25519.pub", "/root/.ssh/authorized_keys")
+                backend.exec(node, ["bash", "-ec", "chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; systemctl stop ssh.service ssh.socket; rm -f /etc/ssh/ssh_host_*; ssh-keygen -A; systemctl start ssh.socket ssh.service"])
+                if run["daemon"]["source"] == "checkout":
+                    binaries.result()
+                    install(run, backend, node)
+                else:
+                    # The release and its units are already installed in this image.
+                    backend.exec(node, ["systemctl", "enable", "--now", "ployz.socket", "ployz-volume-plugin.socket", "ployz.service"])
+                node["address"] = backend.address(node)
+            parallel(start, run["machines"])
+            binaries.result()
+        run["timings"]["boot_and_install"] = round(time.monotonic() - started, 3)
+        save(run)
+        started = time.monotonic()
+        for node in run["machines"]:
+            result = cli(run, commands, ["--json", "server", "add", "root@" + node["address"],
+                               "--standalone", "--no-install", "--storage", "none", "--yes",
+                               "--name", node["name"], "--ssh-key", str(private / "id_ed25519"),
+                               "--public-ip", "none", "--wg-endpoint", node["address"] + ":51820", "--wg-mtu", "1420"], check=False)
+            response = json.loads(result.stdout) if result.stdout else {}
+            follow_up = response.get("follow_up_error", {})
+            if result.returncode and not (result.returncode == 3 and response.get("server") and follow_up.get("code") == "unavailable"):
+                raise RuntimeError(f"Enrollment failed: {result.stderr.decode(errors='replace')}\nEvidence: {commands.evidence}")
+            node["machine_id"] = response["server"]["machine"]["id"]
+            if result.returncode:
+                # Initialization committed, but the published daemon can serve
+                # before its Cluster network row is visible. Observe readiness;
+                # rerunning `add --yes` would reset the committed founder.
+                run.setdefault("setup_follow_up_errors", []).append({"machine": node["name"], **follow_up})
+                print(f"{node['name']}: enrollment committed with a follow-up failure; checking readiness. Evidence: {commands.evidence}", file=sys.stderr)
+                deadline = time.monotonic() + 30
+                while True:
+                    observed = cli(run, commands, ["--json", "--connect", "ssh://root@" + node["address"], "server", "ls"], check=False, timeout=5)
+                    if not observed.returncode and any(server["machine"]["id"] == node["machine_id"] and server["membership"] == "up"
+                            for server in json.loads(observed.stdout)["servers"]):
+                        break
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError(f"{node['name']}: committed enrollment never became ready; see {commands.evidence}")
+                    time.sleep(0.25)
+                # Complete the same Ingress Proxy follow-up offered by the CLI.
+                cli(run, commands, ["--json", "server", "set", node["machine_id"], "--accepts-ingress=true"])
+            save(run)
+        wait_ready(run, commands, backend)
+        run["timings"]["join_and_ready"] = round(time.monotonic() - started, 3)
+        run["state"] = "ready"
+        run["timings"]["total"] = round(time.monotonic() - total_started, 3)
+        save(run)
+        print(run["manifest"])
+        print(json.dumps(run["timings"]), file=sys.stderr)
+    except BaseException:
+        print(f"Setup failed; cleaning up. Evidence: {commands.evidence}", file=sys.stderr)
+        teardown(run, commands, backend)
+        raise
+
+
+@contextmanager
+def locked(run):
+    with Path(run["manifest"]).with_suffix(".lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("Another update or teardown is using this run") from None
+        yield
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    actions = parser.add_subparsers(dest="action", required=True)
+    launch = actions.add_parser("up", help="Boot a new disposable cluster")
+    launch.add_argument("--provider", choices=["incus"], default="incus")
+    launch.add_argument("--machines", type=int, choices=range(1, 9), default=2)
+    launch.add_argument("--daemon", default="checkout", help="checkout (default), stable, beta or an exact release version")
+    for action in ["doctor", "update", "down", "exec", "cli"]:
+        command = actions.add_parser(action)
+        command.add_argument("manifest", type=Path)
+        if action == "update":
+            command.add_argument("--daemon", help="Change the daemon source; otherwise keep this run's selection")
+        if action == "exec":
+            command.add_argument("machine", help="machine-1, machine-2, …")
+        if action in ["exec", "cli"]:
+            command.add_argument("--timeout", type=float, default=300, help="Command deadline in seconds")
+            command.add_argument("command", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    if args.action == "up":
+        up(args)
+        return 0
+    run = json.loads(args.manifest.read_text())
+    if run["root"] != str(CORE) or Path(run["manifest"]).resolve() != args.manifest.resolve():
+        raise RuntimeError("Use this run's originating checkout and manifest path")
+    if run["state"] == "removed":
+        if args.action == "down":
+            print(f"Already removed. Evidence: {args.manifest.parent / 'evidence'}")
+            return 0
+        raise RuntimeError("This cluster has been removed")
+    commands = Commands(run)
+    backend = provider(run, commands)
+    if args.action in ["exec", "cli"]:
+        command = args.command[1:] if args.command[:1] == ["--"] else args.command
+        if not command:
+            raise RuntimeError("Supply a command after --")
+        if args.action == "cli":
+            result = cli(run, commands, command, check=False, timeout=args.timeout)
+        else:
+            node = next((node for node in run["machines"] if node["name"] == args.machine), None)
+            if node is None:
+                raise RuntimeError(f"Unknown Machine: {args.machine}")
+            result = backend.exec(node, command, check=False, timeout=args.timeout)
+        sys.stdout.buffer.write(result.stdout)
+        sys.stderr.buffer.write(result.stderr)
+        return result.returncode
+    if args.action == "doctor":
+        print(json.dumps(doctor(run, commands, backend), indent=2))
+        return 0
+    with locked(run):
+        if args.action == "down":
+            teardown(run, commands, backend)
+            print(f"Removed cluster. Evidence: {commands.evidence}")
+        else:
+            if args.daemon:
+                run["daemon"] = {"source": args.daemon}
+            prepare_runtime(run, commands)
+            build(run, commands, daemon=run["daemon"]["source"] == "checkout")
+            started = time.monotonic()
+            parallel(lambda node: install(run, backend, node), run["machines"])
+            wait_ready(run, commands, backend)
+            run["timings"]["update_and_ready"] = round(time.monotonic() - started, 3)
+            save(run)
+            print(json.dumps(run["timings"]))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (RuntimeError, subprocess.TimeoutExpired, OSError) as error:
+        print(f"verify-cluster: {error}", file=sys.stderr)
+        sys.exit(1)
