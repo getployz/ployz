@@ -622,7 +622,31 @@ mod tests {
     }
 
     async fn post(socket: &Path, route: &str, body: Value) -> Value {
-        let body = serde_json::to_vec(&body).unwrap();
+        let mut stream = send(socket, route, &serde_json::to_vec(&body).unwrap()).await;
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let body = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .and_then(|index| response.get(index + 4..))
+            .unwrap();
+        serde_json::from_slice(body).unwrap()
+    }
+
+    /// Asserts the plugin closes the connection without writing any response bytes.
+    async fn assert_hangs_up(socket: &Path, route: &str, body: &[u8]) {
+        let mut stream = send(socket, route, body).await;
+        let mut response = Vec::new();
+        // A reset is also a hang-up; only bytes written before it matter.
+        let _ = stream.read_to_end(&mut response).await;
+        assert!(
+            response.is_empty(),
+            "{route} answered {}",
+            String::from_utf8_lossy(&response)
+        );
+    }
+
+    async fn send(socket: &Path, route: &str, body: &[u8]) -> UnixStream {
         let mut stream = UnixStream::connect(socket).await.unwrap();
         stream
             .write_all(
@@ -634,15 +658,8 @@ mod tests {
             )
             .await
             .unwrap();
-        stream.write_all(&body).await.unwrap();
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).await.unwrap();
-        let body = response
-            .windows(4)
-            .position(|window| window == b"\r\n\r\n")
-            .and_then(|index| response.get(index + 4..))
-            .unwrap();
-        serde_json::from_slice(body).unwrap()
+        stream.write_all(body).await.unwrap();
+        stream
     }
 
     fn error(response: &Value) -> &str {

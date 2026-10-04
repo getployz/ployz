@@ -191,19 +191,33 @@ async fn get_returns_volume_identity_mountpoint_bound_and_usage() {
             "Err":""
         })
     );
-    assert!(
-        post(&socket, "/VolumeDriver.Get", json!({"Name":"missing"}))
-            .await
-            .get("Volume")
-            .is_none()
+    server.abort();
+}
+
+#[tokio::test]
+async fn get_answers_only_names_it_is_sure_are_not_provisioned_volumes() {
+    let test = TestDir::new();
+    fs::write(test.0.join("root"), "").unwrap();
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+    let socket = test.0.join("plugin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+
+    assert_eq!(
+        post(&socket, "/VolumeDriver.Get", json!({"Name":"missing"})).await,
+        json!({"Err":"Provisioned Volume missing does not exist"})
+    );
+    assert_eq!(
+        post(&socket, "/VolumeDriver.Get", json!({"Name":"../data"})).await,
+        json!({"Err":"invalid Docker Volume name \"../data\""})
     );
     server.abort();
 }
 
 #[tokio::test]
-async fn get_rejects_a_volume_with_a_descendant_dataset() {
+async fn get_hangs_up_while_zfs_cannot_list_datasets() {
     let test = TestDir::new();
-    for marker in ["root", "volume", "descendant"] {
+    for marker in ["root", "volume", "list-fails"] {
         fs::write(test.0.join(marker), "").unwrap();
     }
     let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
@@ -211,13 +225,54 @@ async fn get_rejects_a_volume_with_a_descendant_dataset() {
     let listener = UnixListener::bind(&socket).unwrap();
     let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
 
-    let response = post(&socket, "/VolumeDriver.Get", json!({"Name":"data"})).await;
+    assert_hangs_up(&socket, "/VolumeDriver.Get", br#"{"Name":"data"}"#).await;
 
-    assert!(response.get("Volume").is_none());
-    let message = error(&response);
-    assert!(message.contains("tank/ployz/data/child"));
-    assert!(message.contains("descendant"));
+    fs::remove_file(test.0.join("list-fails")).unwrap();
+    assert_eq!(
+        post(&socket, "/VolumeDriver.Get", json!({"Name":"data"}))
+            .await
+            .pointer("/Volume/Name"),
+        Some(&json!("data"))
+    );
     server.abort();
+}
+
+#[tokio::test]
+async fn get_hangs_up_on_an_empty_or_unparseable_body() {
+    let test = TestDir::new();
+    fs::write(test.0.join("root"), "").unwrap();
+    fs::write(test.0.join("volume"), "").unwrap();
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+    let socket = test.0.join("plugin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+
+    for body in [&b""[..], b"{", br#"{"Name":7}"#] {
+        assert_hangs_up(&socket, "/VolumeDriver.Get", body).await;
+    }
+    server.abort();
+}
+
+#[tokio::test]
+async fn get_hangs_up_when_pool_or_dataset_state_is_unsure() {
+    for (pools, markers) in [
+        ("", &["root", "volume"][..]),
+        (USABLE_POOL, &["root", "volume", "descendant"][..]),
+        (USABLE_POOL, &["root", "volume", "unbounded-volume"][..]),
+        (USABLE_POOL, &["volume"][..]),
+    ] {
+        let test = TestDir::new();
+        for marker in markers {
+            fs::write(test.0.join(marker), "").unwrap();
+        }
+        let (zpool, zfs) = fake_zfs(&test.0, pools);
+        let socket = test.0.join("plugin.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+
+        assert_hangs_up(&socket, "/VolumeDriver.Get", br#"{"Name":"data"}"#).await;
+        server.abort();
+    }
 }
 
 #[tokio::test]
