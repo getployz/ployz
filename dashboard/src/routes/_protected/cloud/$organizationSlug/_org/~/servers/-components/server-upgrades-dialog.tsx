@@ -13,7 +13,7 @@ import { RELEASE_CHANNELS, type ReleaseChannel, serverUpgradeSettings } from "#/
 import { setServerUpgradeSettingsServerFn } from "#/modules/server-upgrade/server-upgrade.functions";
 
 type Change = { readonly automatic: boolean } | { readonly channel: ReleaseChannel };
-const CHANNEL_LABELS: Record<ReleaseChannel, string> = { stable: "Stable", beta: "Beta" };
+const CHANNEL_LABELS = { stable: "Stable", beta: "Beta" } satisfies Record<ReleaseChannel, string>;
 
 /**
  * The Organization's Server upgrade settings: "Upgrade automatically" and its Release Channel. A change shows at once,

@@ -70,7 +70,7 @@ const ON_DEMAND_READS = {
   githubInstallUrlQueryOptions: "read together with repository access when a repository picker opens",
   githubBranchesQueryOptions: "depends on the repository the user just picked",
   githubBuildRepositoriesQueryOptions: "calls GitHub per repository; Organization Settings › Builds fills it in after hydration",
-  stableReleaseQueryOptions: "scoped to the release line of the version the Server reports, known only once the Runtime Watch answers",
+  channelReleaseQueryOptions: "scoped to the release line of the version the Servers report, known only once the Runtime Watch answers",
   strayNamespacesQueryOptions: "asks about the Namespaces the Servers report live, known only once the Runtime Watch answers",
 };
 
