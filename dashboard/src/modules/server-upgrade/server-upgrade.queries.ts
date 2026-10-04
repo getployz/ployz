@@ -1,5 +1,5 @@
-import { queryOptions, useQuery, useSuspenseQuery } from "@tanstack/react-query";
-import type { ReleaseChannel } from "./server-upgrade";
+import { queryOptions, skipToken, useQuery, useSuspenseQuery } from "@tanstack/react-query";
+import type { ChannelPointer } from "./server-upgrade";
 import { listLatestServerUpgradesServerFn, readChannelReleaseServerFn } from "./server-upgrade.functions";
 
 /** Each Server's latest attempts; the change stream's `server_upgrade` invalidates this root. */
@@ -19,16 +19,11 @@ export function latestServerUpgradesQueryOptions(organizationSlug: string) {
   });
 }
 
-/** A Release Channel pointer: one release line's, or the unscoped stable one the new-major-line notice reads. */
-export type ChannelPointer =
-  | { readonly channel: ReleaseChannel; readonly line: string }
-  | { readonly channel: "stable"; readonly line: null };
-
-/** The newest release `pointer` names. Cloud caches the pointer for a few minutes too. */
-export function channelReleaseQueryOptions(pointer: ChannelPointer) {
+/** The newest release `pointer` names; a null pointer reads nothing. Cloud caches the pointer for a few minutes too. */
+export function channelReleaseQueryOptions(pointer: ChannelPointer | null) {
   return queryOptions({
-    queryKey: [...channelReleaseKeys.all, pointer.channel, pointer.line] as const,
-    queryFn: () => readChannelReleaseServerFn({ data: pointer }),
+    queryKey: [...channelReleaseKeys.all, pointer?.channel ?? null, pointer?.line ?? null] as const,
+    queryFn: pointer === null ? skipToken : () => readChannelReleaseServerFn({ data: pointer }),
     staleTime: 5 * 60_000,
   });
 }
@@ -40,5 +35,5 @@ export function useServerUpgrades(organizationSlug: string) {
 
 /** The release `pointer` names, as Query's result: pending, failed, or the release (null with none). Null reads nothing. */
 export function useChannelRelease(pointer: ChannelPointer | null) {
-  return useQuery({ ...channelReleaseQueryOptions(pointer ?? { channel: "stable", line: null }), enabled: pointer !== null });
+  return useQuery(channelReleaseQueryOptions(pointer));
 }

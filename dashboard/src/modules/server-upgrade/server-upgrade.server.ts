@@ -16,6 +16,7 @@ import { rpcErrorCode } from "#/modules/runtime/ployz.server";
 import {
   DEFAULT_SERVER_UPGRADE_SETTINGS,
   endEvidence,
+  type EndEvidence,
   type FinalOutcome,
   isBehind,
   type LatestUpgrade,
@@ -278,17 +279,36 @@ export const pollUpgradeOnServer = Effect.fn("ServerUpgrade.poll")(function* (in
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({ startedAt: serverUpgradeAttempt.startedAt }).from(serverUpgradeAttempt)
     .where(attemptWhere(input.organizationId, input.attemptId));
-  if (row === undefined || outlivedObservation(row.startedAt, Date.now())) return "expired" as const;
-  return yield* inspectUpgradeOnServer(input);
+  if (row === undefined || outlivedObservation(row.startedAt, Date.now())) return { kind: "expired" } as const;
+  const attempt = yield* inspectUpgradeOnServer(input);
+  return attempt === null ? { kind: "unreadable" } as const : { kind: "read", attempt } as const;
 });
 
 /** The outcome to record for a terminal attempt; null while it still runs. */
-export function finalOutcome(attempt: MachineUpgradeAttempt): { outcome: FinalOutcome; stage: string | null; error: string | null } | null {
-  if (attempt.outcome !== "succeeded" && attempt.outcome !== "failed" && attempt.outcome !== "interrupted") return null;
-  const stage = "stage" in attempt ? attempt.stage : null;
-  const error = "error" in attempt ? attempt.error : null;
-  return { outcome: attempt.outcome, stage: null, error: null, ...endEvidence(attempt.outcome, stage, error) };
+export function finalOutcome(attempt: MachineUpgradeAttempt): ({ outcome: FinalOutcome } & EndEvidence) | null {
+  switch (attempt.outcome) {
+    case "accepted":
+    case "running":
+      return null;
+    case "succeeded":
+      return { outcome: "succeeded", ...endEvidence("succeeded", null, null) };
+    case "failed":
+      return { outcome: "failed", ...endEvidence("failed", attempt.stage, attempt.error) };
+    case "interrupted":
+      return { outcome: "interrupted", ...endEvidence("interrupted", attempt.stage, null) };
+  }
 }
+
+/** A `server_upgrade_<outcome>` event's properties. */
+type UpgradeEventProperties = {
+  trigger: string;
+  channel: string;
+  from_version: string;
+  to_version: string | null;
+  total_seconds: number;
+  stage?: string;
+  error?: string;
+};
 
 /**
  * Record an attempt's outcome and send its one PostHog event. Only the write that ends a `running` row sends it, so
@@ -310,14 +330,17 @@ export const finishUpgradeAttempt = Effect.fn("ServerUpgrade.finish")(function* 
     endedAt,
   }).where(and(attemptWhere(input.organizationId, input.attemptId), eq(serverUpgradeAttempt.outcome, "running"))).returning();
   if (row === undefined) return false;
-  const base = {
+  const properties: UpgradeEventProperties = {
     trigger: row.trigger,
     channel: row.channel,
     from_version: row.fromVersion,
     to_version: row.targetVersion,
     total_seconds: Math.round((endedAt.getTime() - row.startedAt.getTime()) / 1000),
   };
-  const properties = { ...base, ...endEvidence(input.outcome, row.stage, row.error) };
+  const { stage, error } = endEvidence(input.outcome, row.stage, row.error);
+  // PostHog gets only the evidence there is.
+  if (stage !== null) properties.stage = stage;
+  if (error !== null) properties.error = error;
   const posthog = yield* PostHog;
   // Automatic attempts belong to the Organization's system person; so does a manual one whose user was deleted.
   const userId = row.requestedByUserId ?? `system:${row.organizationId}`;

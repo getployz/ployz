@@ -1,8 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Schema } from "effect";
 import {
-  RELEASE_CHANNELS,
-  ReleaseLine,
+  ChannelPointer,
   RequestServerUpgradeInput,
   SetServerUpgradeSettingsInput,
 } from "#/modules/server-upgrade/server-upgrade";
@@ -22,10 +21,7 @@ export const listLatestServerUpgradesServerFn = createServerFn({ method: "GET" }
 /** A null line reads the unscoped stable pointer, only for the new-major-line notice. */
 export const readChannelReleaseServerFn = createServerFn({ method: "GET" })
   .middleware([publicErrorMiddleware, actorMiddleware])
-  .validator(strictValidator(Schema.Union([
-    Schema.Struct({ channel: Schema.Literals(RELEASE_CHANNELS), line: ReleaseLine }),
-    Schema.Struct({ channel: Schema.Literal("stable"), line: Schema.Null }),
-  ])))
+  .validator(strictValidator(ChannelPointer))
   .handler(({ context, data }) => runActor(context, channelRelease(data.channel, data.line)));
 
 export const requestServerUpgradeServerFn = createServerFn({ method: "POST" })

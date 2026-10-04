@@ -101,18 +101,23 @@ async function upgradeServer(
     fromVersion,
     inngestRunId: runId,
   })));
-  let attempt = await step.run(`request-upgrade-${machineId}`, () =>
+  const attempt = await step.run(`request-upgrade-${machineId}`, () =>
     runEffect(requestUpgradeOnServer({ organizationId, machineId, attemptId, channel })));
   if (attempt === null) return { kind: "skipped", reason: "busy" };
 
   let outcome = finalOutcome(attempt);
-  for (let poll = 0; outcome === null; poll += 1) {
+  poll: for (let poll = 0; outcome === null; poll += 1) {
     await step.sleep(`wait-${machineId}-${poll}`, POLL_INTERVAL_MS);
     const polled = await step.run(`inspect-upgrade-${machineId}-${poll}`, () =>
       runEffect(pollUpgradeOnServer({ organizationId, machineId, attemptId })));
-    if (polled === "expired") break;
-    attempt = polled ?? attempt;
-    outcome = finalOutcome(attempt);
+    switch (polled.kind) {
+      case "expired":
+        break poll;
+      case "unreadable":
+        continue;
+      case "read":
+        outcome = finalOutcome(polled.attempt);
+    }
   }
   const recorded = outcome ?? { outcome: "unknown" as const, stage: null, error: null };
   await step.run(`record-outcome-${machineId}`, () => runEffect(finishUpgradeAttempt({ organizationId, attemptId, ...recorded })));

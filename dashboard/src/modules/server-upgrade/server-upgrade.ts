@@ -44,6 +44,12 @@ export function isBehind(version: string, release: string | null) {
   return order !== null && order < 0;
 }
 
+/** A Server runs `release` or newer. An unknown version is never current. */
+export function isCurrent(version: string, release: string) {
+  const order = compareVersions(version, release);
+  return order !== null && order >= 0;
+}
+
 /** The release a Release Channel pointer names (`v0.2.2\n`), as Servers report versions (`0.2.2`). */
 export function releaseFromPointer(text: string) {
   const version = text.trim().replace(/^v/u, "");
@@ -57,6 +63,13 @@ export function releaseLine(version: string) {
 }
 
 export const ReleaseLine = Schema.String.check(Schema.isPattern(/^v\d{1,4}$/u));
+
+/** A Release Channel pointer: one release line's, or the unscoped stable one the new-major-line notice reads. */
+export const ChannelPointer = Schema.Union([
+  Schema.Struct({ channel: Schema.Literals(RELEASE_CHANNELS), line: ReleaseLine }),
+  Schema.Struct({ channel: Schema.Literal("stable"), line: Schema.Null }),
+]);
+export type ChannelPointer = typeof ChannelPointer.Type;
 
 /**
  * The new-major-line notice: the release the unscoped `stable` pointer names, when its line is newer than the Servers'
@@ -120,15 +133,15 @@ export type ServerUpgradeLine =
   | { readonly kind: "when-back"; readonly release: string }
   | null;
 
-export type EndEvidence = { readonly stage?: string | null; readonly error?: string | null };
+export type EndEvidence = { readonly stage: string | null; readonly error: string | null };
 
 /**
  * What an attempt that ended keeps besides its outcome: nothing after a success, the stage a non-success stopped at,
  * and a failure's error too. The row, its PostHog event, and the Server page's details all read it.
  */
 export function endEvidence(outcome: FinalOutcome, stage: string | null, error: string | null): EndEvidence {
-  if (outcome === "succeeded") return {};
-  return outcome === "failed" ? { stage, error } : { stage };
+  if (outcome === "succeeded") return { stage: null, error: null };
+  return { stage, error: outcome === "failed" ? error : null };
 }
 
 /** An attempt started at `startedAt` has outlived the observation limit: Cloud stops waiting and it reads as unknown. */
@@ -185,7 +198,7 @@ export function serverUpgradeLine(input: {
 }
 
 /** The exact error for a failure; the stage reached otherwise. */
-const details = (evidence: ReturnType<typeof endEvidence>) => evidence.error ?? evidence.stage ?? null;
+const details = (evidence: EndEvidence) => evidence.error ?? evidence.stage ?? null;
 
 /** The attempt started last; null with none. */
 export const newestAttempt = (latest: readonly LatestUpgrade[]) => latest.reduce<LatestUpgrade | null>((found, row) =>
@@ -224,7 +237,7 @@ export function serversUpgradeLine(input: {
   const { servers, release, latest } = input;
   if (release === null || servers.length === 0) return null;
   const behind = servers.filter(({ version }) => isBehind(version, release));
-  const done = servers.filter(({ version }) => (compareVersions(version, release) ?? -1) >= 0).length;
+  const done = servers.filter(({ version }) => isCurrent(version, release)).length;
 
   const pending = input.pendingFrom !== undefined && (newestAttempt(latest)?.attemptId ?? null) === input.pendingFrom;
   const running = latest.find((row) => isRunning(row, input.now));
