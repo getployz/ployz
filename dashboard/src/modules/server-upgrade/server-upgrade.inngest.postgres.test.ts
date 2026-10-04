@@ -563,7 +563,6 @@ describe("roll-out-server-upgrade", () => {
     ]);
 
     await rollOut();
-    const [{ ended_at: endedAt } = { ended_at: null }] = await rows();
     expect(await runEffect(listLatestServerUpgrades({ userId }, { organizationSlug: "acme" }))).toEqual({
       servers: {
         [machineId]: {
@@ -576,7 +575,6 @@ describe("roll-out-server-upgrade", () => {
           startedAt: expect.any(String),
         },
       },
-      lastUpgradedAt: endedAt?.toISOString(),
     });
   });
 });

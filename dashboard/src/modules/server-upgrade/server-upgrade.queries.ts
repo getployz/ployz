@@ -7,10 +7,7 @@ export const serverUpgradeKeys = { all: ["server-upgrade"] as const };
 /** The Release Channel pointers: their own root, so an attempt changing doesn't refetch them. */
 const channelReleaseKeys = { all: ["channel-release"] as const };
 
-/**
- * Each Server's latest Upgrade attempt, keyed by Machine ID, and when the latest successful one ended. The change
- * stream refetches it when an attempt changes.
- */
+/** Each Server's latest Upgrade attempt, keyed by Machine ID. The change stream refetches it when an attempt changes. */
 export function latestServerUpgradesQueryOptions(organizationSlug: string) {
   return queryOptions({
     queryKey: [...serverUpgradeKeys.all, organizationSlug, "latest"] as const,
