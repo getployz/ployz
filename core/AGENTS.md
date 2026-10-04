@@ -1,6 +1,6 @@
 # Core
 
-Use `$implement` for Rust changes. Run project commands from `core/`.
+Run project commands from `core/`.
 
 ## Testing rungs
 
