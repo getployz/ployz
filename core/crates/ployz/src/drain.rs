@@ -9,8 +9,6 @@
 //! Callers: `ployz server drain` (streams a line per step through `progress`) and
 //! [`crate::sdk::Session::drain_machine`] (Cloud stores the final report).
 
-use std::fmt;
-
 use ployz_core::{
     EnvironmentValues, LiveServices, Machine, MachineId, MachineName, MachineTarget, MachineUpdate,
     Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceMode, UpdateMachineRequest, op,
@@ -21,13 +19,13 @@ use ts_rs::TS;
 
 use crate::cluster::{RoleSetting, RoleWaitError, visible_machine, wait_for_role};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
-use crate::deploy::{Converged, Halt, converge};
+use crate::deploy::{Converged, converge};
 
 mod retirement;
 
 use retirement::{Retirement, retire_globals};
 
-pub use crate::deploy::{MachineRef, Move, MoveFailure, StayReason};
+pub use crate::deploy::{DrainStop, MachineRef, Move, MoveFailure, StayReason};
 
 /// Which user Namespaces a Drain acts on. Reserved Namespaces never are.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -198,27 +196,6 @@ impl DrainOutcome {
             | Self::NotRetired { .. }
             | Self::Interrupted { .. }
             | Self::NotAttempted => false,
-        }
-    }
-}
-
-/// Why a Drain ended early. Every other problem is one Service's evidence.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum DrainStop {
-    /// The caller cancelled, or the SDK session closed.
-    Cancelled,
-    /// The entry Server stopped answering.
-    EntryUnreachable { detail: String },
-}
-
-impl fmt::Display for DrainStop {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Cancelled => f.write_str("cancelled"),
-            Self::EntryUnreachable { detail } => {
-                write!(f, "the entry Server stopped answering: {detail}")
-            }
         }
     }
 }
@@ -506,12 +483,8 @@ async fn execute<C: DrainClient>(
                 Converged::NothingToMove => DrainOutcome::NothingToMove,
                 Converged::Failed { moves, failure } => DrainOutcome::Failed { moves, failure },
                 Converged::Stays { reason } => DrainOutcome::Stays { reason },
-                Converged::Stopped { moves, halt } => {
+                Converged::Stopped { moves, stop } => {
                     record.push(service.clone(), DrainOutcome::Interrupted { moves });
-                    let stop = match halt {
-                        Halt::Cancelled => DrainStop::Cancelled,
-                        Halt::EntryLost(detail) => DrainStop::EntryUnreachable { detail },
-                    };
                     record.stop(stop, after);
                     break 'work;
                 }

@@ -137,6 +137,15 @@ describe("Drain dialog", () => {
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
+  it("is announced as one description: the lead, then the notes", () => {
+    render(<DrainDialog serverName="web-2" names={["api"]} unowned={["old"]} open onOpenChange={() => {}} onConfirm={() => {}} />);
+    const describedBy = screen.getByRole("alertdialog").getAttribute("aria-describedby") ?? "";
+    const description = document.getElementById(describedBy)?.textContent ?? "";
+    expect(description.startsWith(LEAD)).toBe(true);
+    expect(description).toContain("old stays: no project owns it. Services that use a volume here stay.");
+    expect(description.endsWith(NOTHING_BACK)).toBe(true);
+  });
+
   it("says so when nothing runs here", () => {
     render(<DrainDialog serverName="web-2" names={[]} unowned={[]} open onOpenChange={() => {}} onConfirm={() => {}} />);
     expect(inOrder(screen.getByText(LEAD), screen.getByText("Nothing runs here now."), screen.getByText(NOTHING_BACK))).toBe(true);

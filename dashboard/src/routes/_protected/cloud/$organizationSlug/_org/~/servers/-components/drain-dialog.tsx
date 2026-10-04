@@ -1,6 +1,5 @@
 import { BoxIcon } from "lucide-react";
 import { ConfirmDialog } from "#/components/confirm-dialog";
-import { AlertDialogDescription } from "#/components/ui/alert-dialog";
 import { Item, ItemContent, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { listNames } from "#/lib/plural";
 
@@ -26,26 +25,27 @@ export function DrainDialog({ serverName, names, unowned, open, onOpenChange, on
       open={open}
       onOpenChange={onOpenChange}
       title={`Drain ${serverName}?`}
-      description={`Services turn off for ${serverName}, and what runs here moves to your other servers one at a time.`}
+      description={
+        <div className="flex flex-col gap-4">
+          <p>Services turn off for {serverName}, and what runs here moves to your other servers one at a time.</p>
+          {names.length === 0 ? (
+            <p>{unowned.length === 0 ? "Nothing runs here now." : "Nothing here for Drain to move."}</p>
+          ) : (
+            <ItemGroup aria-label={`Running on ${serverName}`}>
+              {names.map((name) => (
+                <Item key={name} variant="outline" size="xs">
+                  <ItemMedia variant="icon"><BoxIcon /></ItemMedia>
+                  <ItemContent><ItemTitle>{name}</ItemTitle></ItemContent>
+                </Item>
+              ))}
+            </ItemGroup>
+          )}
+          <p>{notes}</p>
+          <p>Turning services back on doesn’t move anything back.</p>
+        </div>
+      }
       actionLabel="Drain"
       onConfirm={onConfirm}
-    >
-      {names.length === 0 ? (
-        <AlertDialogDescription>
-          {unowned.length === 0 ? "Nothing runs here now." : "Nothing here for Drain to move."}
-        </AlertDialogDescription>
-      ) : (
-        <ItemGroup aria-label={`Running on ${serverName}`}>
-          {names.map((name) => (
-            <Item key={name} variant="outline" size="xs">
-              <ItemMedia variant="icon"><BoxIcon /></ItemMedia>
-              <ItemContent><ItemTitle>{name}</ItemTitle></ItemContent>
-            </Item>
-          ))}
-        </ItemGroup>
-      )}
-      <AlertDialogDescription>{notes}</AlertDialogDescription>
-      <AlertDialogDescription>Turning services back on doesn’t move anything back.</AlertDialogDescription>
-    </ConfirmDialog>
+    />
   );
 }

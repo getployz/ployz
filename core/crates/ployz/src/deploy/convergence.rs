@@ -66,17 +66,29 @@ pub(crate) enum Converged {
     },
     /// Nothing moved, and why.
     Stays { reason: StayReason },
-    /// It stopped after `moves` without deciding the rest.
-    Stopped { moves: Vec<Move>, halt: Halt },
+    /// It stopped after `moves` without deciding the rest, and the Drain stops with it.
+    Stopped { moves: Vec<Move>, stop: DrainStop },
 }
 
-/// Why convergence stopped with Containers left undecided.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Halt {
-    /// Cancelled before the next move.
+/// Why a Drain ended early. Every other problem is one Service's evidence.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DrainStop {
+    /// The caller cancelled, or the SDK session closed.
     Cancelled,
     /// The entry Server stopped answering.
-    EntryLost(String),
+    EntryUnreachable { detail: String },
+}
+
+impl fmt::Display for DrainStop {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cancelled => f.write_str("cancelled"),
+            Self::EntryUnreachable { detail } => {
+                write!(f, "the entry Server stopped answering: {detail}")
+            }
+        }
+    }
 }
 
 /// Why a Service's Containers stay where they are. Each holds what the snapshot can't
@@ -228,7 +240,9 @@ pub(crate) async fn converge<C: ConvergenceClient>(
 ) -> Converged {
     let entry_lost = |moves, error: ConnectError| Converged::Stopped {
         moves,
-        halt: Halt::EntryLost(error.to_string()),
+        stop: DrainStop::EntryUnreachable {
+            detail: error.to_string(),
+        },
     };
     let failed = |moves, failure| Converged::Failed { moves, failure };
     let snapshot = match client.observe().await {
@@ -273,7 +287,7 @@ pub(crate) async fn converge<C: ConvergenceClient>(
         if cancellation.is_cancelled() {
             return Converged::Stopped {
                 moves,
-                halt: Halt::Cancelled,
+                stop: DrainStop::Cancelled,
             };
         }
         match client.move_one(&snapshot, container, cancellation).await {
@@ -529,7 +543,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{
-        Converged, ConvergenceClient, DeploySnapshot, Halt, MachineRef, Move, MoveFailure,
+        Converged, ConvergenceClient, DeploySnapshot, DrainStop, MachineRef, Move, MoveFailure,
         converge, refusal, stays,
     };
     use crate::connect::ConnectError;
@@ -690,7 +704,9 @@ mod tests {
             converge(&mut client, &service, &CancellationToken::new()).await,
             Converged::Stopped {
                 moves: one_move(),
-                halt: Halt::EntryLost("connection attempt failed: entry went away".into()),
+                stop: DrainStop::EntryUnreachable {
+                    detail: "connection attempt failed: entry went away".into(),
+                },
             }
         );
 
@@ -701,7 +717,9 @@ mod tests {
             converge(&mut client, &service, &CancellationToken::new()).await,
             Converged::Stopped {
                 moves: Vec::new(),
-                halt: Halt::EntryLost("connection attempt failed: down".into()),
+                stop: DrainStop::EntryUnreachable {
+                    detail: "connection attempt failed: down".into(),
+                },
             },
             "an entry lost before the first look moves nothing"
         );
@@ -758,7 +776,7 @@ mod tests {
             converge(&mut client, &service, &cancelled).await,
             Converged::Stopped {
                 moves: Vec::new(),
-                halt: Halt::Cancelled,
+                stop: DrainStop::Cancelled,
             }
         );
     }

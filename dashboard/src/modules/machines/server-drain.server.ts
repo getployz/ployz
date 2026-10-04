@@ -57,6 +57,7 @@ export function latestDrainOf(row: DrainAttemptRow): Effect.Effect<LatestDrain> 
       const { endedAt, endCode, refusalMessage } = row;
       if (endedAt === null || endCode === null || DRAIN_END_CODES[endCode] !== row.state) return missing("end");
       const end = { attemptId, endedAt: endedAt.toISOString() };
+      // One arm per code so the compiler pairs each code with its own state; merged arms would need a cast.
       switch (endCode) {
         case "refused":
           return refusalMessage === null

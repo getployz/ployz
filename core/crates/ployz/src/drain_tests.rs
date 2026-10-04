@@ -12,7 +12,7 @@ use super::{
     DrainClient, DrainOutcome, DrainReport, DrainScope, DrainStop, Lost, MachineRef, Move,
     MoveFailure, Ready, Remaining, ServiceDrain, ServicesRole, StayReason, execute,
 };
-use crate::deploy::{Converged, Halt};
+use crate::deploy::Converged;
 use crate::drain::retirement::Retirement;
 
 fn namespace(value: &str) -> Namespace {
@@ -339,7 +339,9 @@ async fn losing_the_entry_after_globals_keeps_their_retirements_and_stops() {
 async fn losing_the_entry_mid_replicated_stops_at_that_service() {
     let lost = Converged::Stopped {
         moves: Vec::new(),
-        halt: Halt::EntryLost("timed out".into()),
+        stop: DrainStop::EntryUnreachable {
+            detail: "timed out".into(),
+        },
     };
     let mut client = Scripted {
         observations: [nothing_left()].into(),
