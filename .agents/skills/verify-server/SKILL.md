@@ -1,0 +1,74 @@
+---
+name: verify-server
+description: Verify a Ployz feature on disposable real Machines. Use when core or dashboard verification needs an actual Cluster, Docker, WireGuard, systemd or ZFS, including multi-Machine service and volume moves.
+---
+
+# Verify a server feature
+
+Run from `core/` on the Linux development host. From a Mac, SSH to that host and run the same commands there. Choose the number of Machines and the checks from the feature being implemented; the helper provides the environment. Read `DESIGN.md` and the relevant `../docs/user/` behavior before choosing expected outcomes.
+
+```mermaid
+flowchart LR
+    Agent[Agent verifying a feature] --> Helper[verify-cluster]
+    Helper --> Build[Compile checkout binaries]
+    Helper --> Provider[VM provider: initially Incus]
+    Build --> Enroll[Install when needed and enroll]
+    Provider --> Enroll
+    Enroll --> Cluster[Disposable real Machines]
+    Helper --> Evidence[Per-run evidence retained after cleanup]
+```
+
+## Launch and doctor
+
+Choose `stable` for dashboard or client work against a published daemon. Use `checkout` when the feature changes daemon behavior; use `beta` or an exact version when that is the required baseline.
+
+```bash
+run=$(scripts/verify-cluster up --machines 2 --daemon stable)
+scripts/verify-cluster doctor "$run"
+```
+
+`--daemon checkout` is the command's default; it builds and installs this checkout's runtime. `--daemon stable`, `beta` or an exact version uses a cached published runtime image and skips daemon compilation, per-Machine binary uploads and installation. Channel selection resolves to an exact version recorded in the manifest. The host CLI still comes from this checkout because the released CLI enrolls through Cloud rather than supporting standalone enrollment.
+
+`up` returns an absolute manifest path on stdout. Each invocation creates a separate cluster, SSH credentials, CLI context, Config Store and application workspace. The manifest records the selected daemon, Machines, artifact hashes and timings. Incus is the initial provider; its image, bridge and VM commands stay in `scripts/verify/incus.py`.
+
+The first run for an image recipe prepares Ubuntu with Docker, real ZFS, Corrosion, Caddy and nginx. Later runs boot clones with cached dependencies. Published daemons and their systemd units stay installed in release images; checkout runs install their own binaries and units. The host CLI drives both and reads each Entry Machine over SSH. Machine identities are created after cloning. Compilation overlaps image preparation and VM boot; installation and enrollment wait for the required binaries. Phase timings overlap; `total` records elapsed startup time.
+
+`doctor` checks active services, the running daemon's executable hash, ZFS, and each Entry Machine's observation of the expected peers. Run it before driving and after an unexpected failure. A deliberate fault can make doctor fail; restore that fault or start a fresh run before continuing unrelated checks.
+
+A committed enrollment can return a startup follow-up failure. The helper retains that failure in `setup_follow_up_errors`, checks readiness for up to 30 seconds and completes the public ingress recovery command. It reports setup failures in stderr and evidence; inspect and report these when enrollment itself is the feature under verification.
+
+## Drive the feature
+
+```bash
+scripts/verify-cluster cli "$run" -- --json server ls
+scripts/verify-cluster cli "$run" -- project new verify
+scripts/verify-cluster cli "$run" -- service add web --image nginx:1.29-alpine
+scripts/verify-cluster cli "$run" -- deploy
+scripts/verify-cluster cli "$run" -- --json ps
+scripts/verify-cluster exec "$run" machine-1 -- zpool status
+scripts/verify-cluster exec "$run" machine-2 -- journalctl -u ployz --no-pager -n 100
+```
+
+Use `cli` for product actions; it isolates ambient Ployz credentials and runs in the manifest's sibling `workspace/`. Use `exec` for diagnostics or faults inside a selected Machine. Arguments are passed directly; use `-- bash -ec '...'` when a shell is needed. Both commands capture stdout, stderr and exit status and return the underlying command's status. Read the current CLI's `--help` for the feature's actual interface.
+
+Select checks that can expose the feature's failures. For a ZFS migration, run a stateful workload with durable numbered writes and an external request trace, trigger the actual migration, then compare acknowledged writes with destination data and measure the outage. Exercise relevant transfer interruption, destination capacity, startup and retry cases against the intended contract. Report observed downtime; a migration that finishes does not alone prove minimal downtime. A recipe for a feature still being implemented comes from its requirements and current interface.
+
+After correcting the implementation, keep the Machines and their data while updating binaries. `update` keeps the run's daemon selection; a channel is resolved again:
+
+```bash
+scripts/verify-cluster update "$run"
+```
+
+To switch a release cluster to a modified daemon, use `scripts/verify-cluster update "$run" --daemon checkout` explicitly.
+
+## Evidence and cleanup
+
+Every helper command saves its argv, exit code, duration, stdout and stderr beside the manifest in `evidence/`. Save client traffic traces, feature-specific assertions and any additional proof there too. Capture each Entry Machine separately when replicated observations matter. Name the behavior exercised and report failures or untested cases precisely.
+
+```bash
+scripts/verify-cluster down "$run"
+```
+
+Run cleanup after failed attempts as well as successful verification. It collects journals, ZFS and WireGuard state where reachable, deletes only this run's provider resources and private credentials, and retains the manifest and evidence. Confirm the evidence remains after teardown. Shared prepared images and the storage pool remain cached.
+
+The Incus host needs KVM, passwordless sudo, Python 3, Rust, `strip`, OpenSSH, Incus and QEMU/OVMF. The backend uses the shared `ployz-verify` directory pool here. Set `PLOYZ_VERIFY_INCUS_POOL` before launch to use another existing Incus pool; the manifest binds subsequent commands to that pool. A copy-on-write pool cuts disk cloning time, but measure total startup on the actual host: loop-backed ZFS made complete VM startup slower on this VM. Prepared images and the first pool import are shared cache costs. Agents may install missing development dependencies under this VM's environment instructions. Docker's host forwarding rules can block guest networking; the Incus backend adds and removes rules scoped to this run's bridge. The lab proves runtime behavior through standalone enrollment; Cloud pairing and dashboard workflows require their own entry points.

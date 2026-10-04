@@ -67,7 +67,7 @@ scripts/verify/down.sh        # stops vite, removes the container and browser se
 
 ## Known gaps
 
-- No Server answers, so service nodes read **Queued · Can't reach servers**, and Logs and runtime status stay empty. Verifying runtime needs `core/` (see `core/AGENTS.md`).
+- No Server answers, so service nodes read **Queued · Can't reach servers**, and Logs and runtime status stay empty. For disposable real Machines, use [verify-server](../verify-server/SKILL.md) from `core/` with `--daemon stable` or `beta`; choose `checkout` when the feature needs daemon changes. That helper enrolls standalone; connecting the cluster to this dashboard still requires Cloud pairing.
 - Inngest and hosted DNS point at a dead port. Anything that sends an Inngest event or creates a hosted domain fails at that call.
 - GitHub and Polar are fake. Connecting a repository or completing checkout cannot be verified here; `BILLING=1` only renders the billing UI.
 

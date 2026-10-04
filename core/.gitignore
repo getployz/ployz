@@ -1,3 +1,4 @@
 /target/
 /dist/
+/.verify/
 /crates/ployz-testkit/prebuilt/
