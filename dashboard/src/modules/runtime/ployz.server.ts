@@ -198,6 +198,7 @@ function wrapClient(client: Client): PloyzSession {
       // SAFETY: Cloud mints attempt IDs in the daemon's 32-hex form.
       sdkPromise("request machine upgrade", () => client.requestMachineUpgrade(machine, { attempt_id: attemptId as MachineUpgradeAttemptId, release })),
     inspectMachineUpgrade: (machine, attemptId) =>
+      // SAFETY: Cloud mints attempt IDs in the daemon's 32-hex form.
       sdkPromise("inspect machine upgrade", () => client.inspectMachineUpgrade(machine, { attempt_id: attemptId as MachineUpgradeAttemptId })),
     publishCertificateMaterial: (request) =>
       sdkPromise("publish certificate material", () => client.publishCertificateMaterial(request).then(() => undefined)),
