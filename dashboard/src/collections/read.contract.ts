@@ -4,7 +4,7 @@ import { Schema } from "effect";
 export const changeCursorSchema = Schema.String.check(Schema.isPattern(/^\d{1,20}$/u));
 
 export const collectionNames = [
-  "environment_canvas_node_position", "organization_enrollment", "organization_cluster_domain",
+  "environment_canvas_node_position", "organization_enrollment", "organization_cluster_domain", "organization_server_upgrades",
 ] as const;
 
 export const collectionReadInput = Schema.Struct({
@@ -22,10 +22,10 @@ export const storeViewNames = ["store_project", "store_environment", "store_depl
 export type StoreViewName = (typeof storeViewNames)[number];
 
 /**
- * What a change stream event names: an Org Store collection, `organization` for the organization state read, or a
- * Config Store table family.
+ * What a change stream event names: an Org Store collection, `organization` for the organization state read,
+ * `server_upgrade` for the Servers' latest Upgrade attempts, or a Config Store table family.
  */
-export const changeNameSchema = Schema.Literals([...collectionNames, "organization", ...storeViewNames]);
+export const changeNameSchema = Schema.Literals([...collectionNames, "organization", "server_upgrade", ...storeViewNames]);
 export type ChangeName = typeof changeNameSchema.Type;
 
 /** A collection read. `full` replaces every row; otherwise drop `deleted`, then upsert `rows`. `cursor` is the next `since`. */

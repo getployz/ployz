@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 /// Request one exact or channel-selected Machine release under a stable retry identity.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct RequestMachineUpgradeRequest {
     /// Identity reused by every retry of the same request.
     pub attempt_id: crate::MachineUpgradeAttemptId,
@@ -13,10 +13,11 @@ pub struct RequestMachineUpgradeRequest {
 }
 
 /// Read the latest attempt, optionally requiring one exact retry identity.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct InspectMachineUpgradeRequest {
     /// Required attempt identity, or the latest local attempt when absent.
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub attempt_id: Option<crate::MachineUpgradeAttemptId>,
 }
 

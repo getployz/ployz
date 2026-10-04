@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Effect, Option, Schema } from "effect";
 import { BoxIcon, ChevronRightIcon, TriangleAlertIcon } from "lucide-react";
@@ -13,10 +13,13 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "#/components/ui/sh
 import { Skeleton } from "#/components/ui/skeleton";
 import { needsAttention } from "#/modules/machines/server-status";
 import { useServers, type Server } from "#/modules/machines/use-servers";
+import { latestServerUpgradesQueryOptions } from "#/modules/server-upgrade/server-upgrade.queries";
+import { prefetchRemote } from "#/collections/route-data";
 import { RemoveServerSection } from "./-components/remove-server-section";
 import { runsHere } from "./-components/runs-here";
 import { ServerBuildsSection } from "./-components/server-builds-section";
 import { ServerSwitcher } from "./-components/server-switcher";
+import { ServerUpgradeSection } from "./-components/server-upgrade-section";
 import { StrayNamespaces } from "./-components/stray-namespaces";
 import { ServersStaleAlert, ServersUnreachable } from "./-components/servers-unreachable";
 
@@ -30,6 +33,7 @@ export const Route = createFileRoute(
     )),
   })),
   staticData: { crumb: ServerSwitcher },
+  loader: ({ params, context }) => prefetchRemote(context, latestServerUpgradesQueryOptions(params.organizationSlug)),
   component: RouteComponent,
 });
 
@@ -82,6 +86,9 @@ function RouteComponent() {
         </Alert>
       ) : null}
       <RunningHere organizationSlug={organizationSlug} server={server} servers={servers} stale={stale} />
+      <Suspense fallback={null}>
+        <ServerUpgradeSection machine={machine} status={server.status} organizationSlug={organizationSlug} />
+      </Suspense>
       <ServerBuildsSection machine={machine} organizationSlug={organizationSlug} />
       <RemoveServerSection machine={machine} organizationSlug={organizationSlug} last={servers.length === 1} />
     </DashboardPage>

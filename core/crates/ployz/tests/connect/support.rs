@@ -184,6 +184,12 @@ pub(super) struct DiscoveryService {
     pub(super) register_calls: Arc<AtomicUsize>,
     pub(super) lose_register_reply: bool,
     pub(super) register_blocked: Option<Arc<tokio::sync::Notify>>,
+    /// The one Upgrade attempt this daemon holds.
+    upgrade_attempt: Arc<Mutex<Option<ployz_core::MachineUpgradeAttempt>>>,
+    /// The Machine Target of every Upgrade call, in order.
+    pub(super) upgrade_targets: Arc<Mutex<Vec<String>>>,
+    /// Lose the next Upgrade request's reply after accepting it.
+    pub(super) lose_upgrade_reply: Arc<AtomicBool>,
 }
 
 impl DiscoveryService {
@@ -230,11 +236,21 @@ impl DiscoveryService {
             register_calls: Arc::new(AtomicUsize::new(0)),
             lose_register_reply: false,
             register_blocked: None,
+            upgrade_attempt: Arc::default(),
+            upgrade_targets: Arc::default(),
+            lose_upgrade_reply: Arc::default(),
         }
     }
 
     pub(super) fn set_register_error(&self, error: RpcError) {
         *self.register_error.lock().unwrap() = Some(error);
+    }
+
+    /// Record an Upgrade call's Machine Target and decode it.
+    fn upgrade_call(&self, request: Request<OpaquePayload>) -> ployz_core::RpcRequest {
+        let target = request.metadata().get("machine").unwrap().to_str().unwrap();
+        self.upgrade_targets.lock().unwrap().push(target.to_owned());
+        request.into_inner().decode_request().unwrap()
     }
 
     pub(super) fn emit_watch_frame_on_open(&self, frame: RuntimeWatchFrame) {
@@ -719,16 +735,51 @@ impl MachineRpc for DiscoveryService {
 
     async fn request_machine_upgrade(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        let RpcRequestBody::RequestMachineUpgrade(body) = self.upgrade_call(request).body else {
+            return Err(Status::invalid_argument("expected request_machine_upgrade"));
+        };
+        let mut stored = self.upgrade_attempt.lock().unwrap();
+        let attempt = stored.get_or_insert_with(|| ployz_core::MachineUpgradeAttempt {
+            attempt_id: body.attempt_id,
+            target: ployz_core::MachineVersion::parse("1.2.3").unwrap(),
+            outcome: ployz_core::MachineUpgradeOutcome::Accepted,
+        });
+        let reply = if attempt.attempt_id == body.attempt_id {
+            RpcResponse::from(attempt.clone())
+        } else {
+            RpcResponse::from(RpcError {
+                code: RpcErrorCode::Conflict,
+                message: "a Machine upgrade or mutation is active".into(),
+                details: Value::Null,
+            })
+        };
+        if self.lose_upgrade_reply.swap(false, Ordering::SeqCst) {
+            return Err(Status::unavailable("reply lost after dispatch"));
+        }
+        Ok(Response::new(reply.encode().unwrap()))
     }
 
     async fn inspect_machine_upgrade(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
+        let RpcRequestBody::InspectMachineUpgrade(body) = self.upgrade_call(request).body else {
+            return Err(Status::invalid_argument("expected inspect_machine_upgrade"));
+        };
+        let stored = self.upgrade_attempt.lock().unwrap().clone();
+        let reply = match stored {
+            Some(attempt) if body.attempt_id.is_none_or(|id| id == attempt.attempt_id) => {
+                RpcResponse::from(attempt)
+            }
+            _ => RpcResponse::from(RpcError {
+                code: RpcErrorCode::NotFound,
+                message: "Machine upgrade attempt was not found".into(),
+                details: Value::Null,
+            }),
+        };
+        Ok(Response::new(reply.encode().unwrap()))
     }
 
     async fn inspect_container(

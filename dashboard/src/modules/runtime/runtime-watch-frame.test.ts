@@ -109,6 +109,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
           buildConcurrency: 2,
           effectiveBuildConcurrency: 2,
           runningBuilds: 1,
+          daemonVersion: "0.1.2",
           membership: "suspect",
           observedContainerCount: 1,
           observedAt: OBSERVED_AT,

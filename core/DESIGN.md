@@ -112,7 +112,10 @@ cluster-wide reconcilers, any behavior that continues after its command returns.
 **The bet.** A fan-out returns successes together with per-target failures and
 omissions — an expected outcome, not a failed transaction. A Deploy may complete
 only a prefix of its plan; there is no atomicity and no general rollback, only
-narrow, explicit compensation.
+narrow, explicit compensation. A failed Upgrade that already replaced the daemon
+restores the prior release: Replacement Compensation, allowed only within one
+release line, where the Stable promise keeps everything the newer daemon wrote
+readable by the older one.
 
 **Why.** Pretending a multi-Machine operation is atomic requires either lying in
 the result or coordination machinery bet 1 forbids. Reporting the true

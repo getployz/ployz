@@ -1545,6 +1545,12 @@ accepts_services: boolean,
  */
 accepts_ingress: boolean, };
 
+export type InspectMachineUpgradeRequest = {
+/**
+ * Required attempt identity, or the latest local attempt when absent.
+ */
+attempt_id?: MachineUpgradeAttemptId | null, };
+
 export type Instead = { "kind": "reference", value: string, } | { "kind": "sealed" };
 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
@@ -1668,6 +1674,8 @@ rtt: RttStatistics | null, };
 
 export type MachinePath = string;
 
+export type MachineRelease = string;
+
 export type MachineRuntime = { daemon_version: string, docker_version: string, hostname: string, architecture: string, os_pretty_name: string, kernel_version: string,
 /**
  * Host memory, absent when the daemon could not observe it.
@@ -1781,6 +1789,42 @@ advertised_endpoints: Array<AdvertisedEndpoint> | null,
 build_concurrency: BuildConcurrencyUpdate, };
 
 export type MachineUpdated = { machine: Machine, };
+
+export type MachineUpgradeAttempt = {
+/**
+ * Stable identity assigned before the request is dispatched.
+ */
+attempt_id: MachineUpgradeAttemptId,
+/**
+ * Exact version resolved before any host mutation.
+ */
+target: MachineVersion, } & ({ "outcome": "accepted" } | { "outcome": "running",
+/**
+ * Latest stage durably recorded by the worker.
+ */
+stage: MachineUpgradeStage, } | { "outcome": "succeeded",
+/**
+ * Exact version reported by the ready, activated daemon.
+ */
+version: MachineVersion, } | { "outcome": "failed",
+/**
+ * First installation stage that did not complete.
+ */
+stage: MachineUpgradeStage,
+/**
+ * Operator-facing failure evidence.
+ */
+error: string, } | { "outcome": "interrupted",
+/**
+ * Last durable stage before the worker stopped.
+ */
+stage: MachineUpgradeStage, });
+
+export type MachineUpgradeAttemptId = string & { readonly __brand: "MachineUpgradeAttemptId" };
+
+export type MachineUpgradeStage = "launching" | "preparing" | "acquiring" | "verifying" | "activating" | "restarting" | "readiness" | string;
+
+export type MachineVersion = string;
 
 export type ManagementClientLabel = string;
 
@@ -2475,6 +2519,16 @@ skip_health_monitor: boolean, };
 export type RepositoryId = number;
 
 export type RepositoryName = string;
+
+export type RequestMachineUpgradeRequest = {
+/**
+ * Identity reused by every retry of the same request.
+ */
+attempt_id: MachineUpgradeAttemptId,
+/**
+ * Exact version or supported release channel to resolve once.
+ */
+release: MachineRelease, };
 
 export type RequestedServiceSpec = { name: ServiceName, mode: ServiceMode, container: ServiceContainerSpec, placement: Placement, ports: Array<PortPublication>, volumes: Array<ServiceVolume>, mounts: Array<ServiceMount>, configs: Array<ConfigSpec>, pre_deploy: PreDeployHook | null, update: UpdateConfig, };
 

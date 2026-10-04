@@ -26,6 +26,8 @@ export const changeNameSources = {
   environment_canvas_node_position: ["environment_canvas_node_position"],
   organization_enrollment: ["organization_pairing"],
   organization_cluster_domain: ["organization_cluster_domain"],
+  organization_server_upgrades: ["organization_server_upgrades"],
+  server_upgrade: ["server_upgrade_attempt"],
   ...storeViewSources,
 } satisfies Record<ChangeName, readonly [ChangeSource, ...ChangeSource[]]>;
 

@@ -861,7 +861,7 @@ fn upgrade_error(error: crate::installer::upgrade::Error) -> RpcError {
         | Error::InspectWorker(_)
         | Error::WorkerEvidence(_)
         | Error::NotActive(_)
-        | Error::Installation(_)
+        | Error::Upgrade(_)
         | Error::Admission(mutation::Error::Io(_)) => RpcErrorCode::Internal,
     };
     RpcError {

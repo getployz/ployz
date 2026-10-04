@@ -411,6 +411,22 @@ fn activate(daemon: &Path, uninstall: &Path, paths: &InstallPaths) -> Result<(),
     })
 }
 
+/// Move the daemon [`activate`] retained back into place.
+pub(super) fn restore_previous(paths: &InstallPaths) -> Result<(), Error> {
+    fs::rename(paths.bin_dir.join("ployzd.previous"), paths.daemon()).map_err(|source| {
+        Error::Io {
+            stage: "restore previous daemon release",
+            source,
+        }
+    })?;
+    File::open(&paths.bin_dir)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| Error::Io {
+            stage: "persist restored daemon release",
+            source,
+        })
+}
+
 fn root_ownership(path: &Path, stage: &'static str) -> Result<(), Error> {
     #[cfg(not(test))]
     chown(path, Some(0), Some(0)).map_err(|source| Error::Io { stage, source })?;

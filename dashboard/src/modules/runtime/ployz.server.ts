@@ -14,6 +14,8 @@ import type {
   MachineDetails,
   MachineTarget,
   MachineUpdate,
+  MachineUpgradeAttempt,
+  MachineUpgradeAttemptId,
   ObservedDataLoss,
   PublishCertificateMaterialRequest,
   RuntimeWatchView,
@@ -67,6 +69,16 @@ export interface PloyzSession {
     machine: MachineTarget,
     update: Partial<MachineUpdate>,
   ) => Effect.Effect<void, PloyzSdkError>;
+  /** Ask one Server to Upgrade; repeating it with the same attempt ID returns that attempt. */
+  readonly requestMachineUpgrade: (
+    machine: MachineTarget,
+    attemptId: MachineUpgradeAttemptId,
+    release: string,
+  ) => Effect.Effect<MachineUpgradeAttempt, PloyzSdkError>;
+  readonly inspectMachineUpgrade: (
+    machine: MachineTarget,
+    attemptId: MachineUpgradeAttemptId,
+  ) => Effect.Effect<MachineUpgradeAttempt, PloyzSdkError>;
   /** What removing Namespace `namespace`, its Volumes included, deletes. */
   readonly dataLossIfNamespaceDestroyed: (namespace: string) => Effect.Effect<ObservedDataLoss, PloyzSdkError>;
   /** Remove Namespace `namespace` from every Server, its Volumes included, accepting exactly `confirmDataLoss`. */
@@ -182,6 +194,10 @@ function wrapClient(client: Client): PloyzSession {
       sdkPromise("update machine", () =>
         client.updateMachine(machine, update).then(() => undefined),
       ),
+    requestMachineUpgrade: (machine, attemptId, release) =>
+      sdkPromise("request machine upgrade", () => client.requestMachineUpgrade(machine, { attempt_id: attemptId, release })),
+    inspectMachineUpgrade: (machine, attemptId) =>
+      sdkPromise("inspect machine upgrade", () => client.inspectMachineUpgrade(machine, { attempt_id: attemptId })),
     publishCertificateMaterial: (request) =>
       sdkPromise("publish certificate material", () => client.publishCertificateMaterial(request).then(() => undefined)),
     watch,

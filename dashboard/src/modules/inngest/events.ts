@@ -1,6 +1,7 @@
 import type { webhooks } from "#/modules/billing/polar-api";
 import { Schema } from "effect";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
+import type { UpgradeTrigger } from "#/modules/server-upgrade/server-upgrade";
 import { eventType, staticSchema } from "inngest";
 import { githubCheckSuiteReceivedEventDataSchema, githubPullRequestReceivedEventDataSchema, githubPushReceivedEventDataSchema, type GithubCheckSuiteReceivedEventData, type GithubCheckSuiteReceivedEventInput, type GithubPullRequestReceivedEventData, type GithubPullRequestReceivedEventInput, type GithubPushReceivedEventData, type GithubPushReceivedEventInput } from "#/modules/github/github-ingestion.contracts";
 import { asReferenceId } from "#/lib/json";
@@ -58,6 +59,7 @@ export const githubCheckSuiteReceivedEvent = "github/check-suite.received";
 export const githubPullRequestReceivedEvent = "github/pull-request.received";
 export const machineRemoveRequestedEvent = "machine/remove.requested";
 export const serverPolicyChangeRequestedEvent = "machine/policy-change.requested";
+export const serverUpgradeRequestedEvent = "server/upgrade.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
 export const configDeploymentAdmittedEvent = "config/deployment.admitted";
 export const configPrCheckRequestedEvent = "config/pr-check.requested";
@@ -87,6 +89,15 @@ export type ServerPolicyChangeRequestedEventData = {
   organizationId: string;
   machineId: string;
   change: ServerPolicyChange;
+};
+
+/** A rollout request. A manual one names who clicked and the Server they clicked on. */
+export type ServerUpgradeRequestedEventData = {
+  organizationId: string;
+  /** The Server to Upgrade; null upgrades every Server behind. */
+  machineId: string | null;
+  trigger: UpgradeTrigger;
+  userId: string | null;
 };
 
 export type MachineRemoveRequestedEventData = {
@@ -192,6 +203,10 @@ export const serverPolicyChangeRequestedEventType = eventType(
   serverPolicyChangeRequestedEvent,
   { schema: staticSchema<ServerPolicyChangeRequestedEventData>() },
 );
+export const serverUpgradeRequestedEventType = eventType(
+  serverUpgradeRequestedEvent,
+  { schema: staticSchema<ServerUpgradeRequestedEventData>() },
+);
 export const configFirstServerJoinedEventType = eventType(
   configFirstServerJoinedEvent,
   { schema: staticSchema<ConfigFirstServerJoinedEventData>() },
@@ -267,6 +282,10 @@ export function createServerPolicyChangeRequestedEvent(
   data: ServerPolicyChangeRequestedEventData,
 ) {
   return { name: serverPolicyChangeRequestedEvent, data } as const;
+}
+
+export function createServerUpgradeRequestedEvent(data: ServerUpgradeRequestedEventData) {
+  return { name: serverUpgradeRequestedEvent, data } as const;
 }
 
 /** Keyed by founding: a retried completion sends it again, and Inngest runs it once. */
@@ -431,6 +450,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createGithubRepositoriesSyncRequestedEvent>
   | ReturnType<typeof createMachineRemoveRequestedEvent>
   | ReturnType<typeof createServerPolicyChangeRequestedEvent>
+  | ReturnType<typeof createServerUpgradeRequestedEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
   | ReturnType<typeof createConfigFirstServerJoinedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>
