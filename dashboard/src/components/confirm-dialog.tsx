@@ -23,6 +23,7 @@ export function ConfirmDialog({
   pendingLabel,
   variant = "default",
   onConfirm,
+  children,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -33,6 +34,8 @@ export function ConfirmDialog({
   pendingLabel?: string;
   variant?: "default" | "destructive";
   onConfirm: () => void | Promise<void>;
+  /** A body between the header and the footer, for what a description's one paragraph can't hold, like a list. */
+  children?: ReactNode;
 }) {
   const [pending, setPending] = useState(false);
 
@@ -55,6 +58,7 @@ export function ConfirmDialog({
             <AlertDialogDescription>{description}</AlertDialogDescription>
           ) : null}
         </AlertDialogHeader>
+        {children ? <div className="flex flex-col gap-3 text-sm">{children}</div> : null}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={pending}>{cancelLabel}</AlertDialogCancel>
           <AlertDialogAction

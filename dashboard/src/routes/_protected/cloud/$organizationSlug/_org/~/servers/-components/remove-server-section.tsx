@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useStillHere } from "#/hooks/use-still-here";
 import { Trash2Icon } from "lucide-react";
@@ -16,6 +16,9 @@ import type { MachineRemoveResult } from "#/modules/machines/machine-removal";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
+import { RowWarning } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
+import { listNames, plural } from "#/lib/plural";
+import type { RemoveHint } from "#/modules/machines/server-drain";
 
 /** Polls the removal until it settles. Closing the dialog or leaving the page aborts; polling stops within a second. */
 async function waitForMachineRemoveAttempt(
@@ -57,8 +60,10 @@ const volumes = (rust: DataLossList["rust"]) =>
  * everything running with it, and Cloud lets go of the cluster: Deploy asks for a server until one is added. It waits on
  * the runtime, and once the Server is gone the page returns to Servers.
  */
-export function RemoveServerSection({ machine, organizationSlug, last }: {
+export function RemoveServerSection({ machine, organizationSlug, last, hint }: {
   machine: RuntimeMachineRecord; organizationSlug: string; last: boolean;
+  /** What still runs here, and the Drain button that would move it. */
+  hint: ReactNode;
 }) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
@@ -84,7 +89,9 @@ export function RemoveServerSection({ machine, organizationSlug, last }: {
             Remove server
           </Button>
         }
-      />
+      >
+        {hint}
+      </DangerRow>
     </SettingsSection>
       <DeletionDialog
         open={open}
@@ -131,4 +138,29 @@ export function RemoveServerSection({ machine, organizationSlug, last }: {
       />
   </>
   );
+}
+
+/**
+ * While Containers remain here, Remove suggests draining first. When the latest Drain left only Services whose data
+ * is on this Server, draining again won't move them, so it says why instead.
+ */
+export function RemoveServerHint({ hint, drainButton }: { hint: RemoveHint; drainButton: ReactNode }) {
+  switch (hint.kind) {
+    case "none":
+      return null;
+    case "pinned": {
+      const one = hint.names.length === 1;
+      return (
+        <RowWarning>
+          {listNames([...hint.names])} still {one ? "runs" : "run"} here. {one ? "Its volume is" : "Their volumes are"} on this server.
+        </RowWarning>
+      );
+    }
+    case "drain":
+      return (
+        <RowWarning action={drainButton}>
+          {plural(hint.count, "service")} still {hint.count === 1 ? "runs" : "run"} here. Drain first to move them.
+        </RowWarning>
+      );
+  }
 }
