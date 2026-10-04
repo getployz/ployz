@@ -13,9 +13,9 @@ export const RELEASE_CHANNELS = ["stable", "beta"] as const;
 export type ReleaseChannel = (typeof RELEASE_CHANNELS)[number];
 export type FinalOutcome = Exclude<UpgradeOutcome, "running">;
 
-/** The settings of an Organization without a settings row: automatic upgrades on, Stable releases. */
+/** The settings of an Organization without a settings row: automatic upgrades off (opt in), Stable releases. */
 export const DEFAULT_SERVER_UPGRADE_SETTINGS = {
-  automatic: true,
+  automatic: false,
   channel: "stable",
 } satisfies Omit<ServerUpgradeSettingsRow, "id">;
 

@@ -25,7 +25,7 @@ The user-facing name for a host participating in an Organization Cluster. Rust c
 _Avoid_: Machine in user-facing copy, Cloud server record
 
 **Upgrade**:
-Moving a Server's Ployz software to a newer published release, either automatically once the release is out or when a user asks. An Upgrade whose result Cloud cannot observe reads as outcome unknown.
+Moving a Server's Ployz software to a newer published release, either automatically once the release is out, for an Organization that turned automatic upgrades on, or when a user asks. An Upgrade whose result Cloud cannot observe reads as outcome unknown.
 _Avoid_: Update (that is Branch staging), self-update
 
 **Rollout**:

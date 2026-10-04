@@ -2679,7 +2679,7 @@
       "typeSchema": null,
       "notNull": true,
       "dimensions": 0,
-      "default": "true",
+      "default": "false",
       "generated": null,
       "identity": null,
       "name": "automatic",

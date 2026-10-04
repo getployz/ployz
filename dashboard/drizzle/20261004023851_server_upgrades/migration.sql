@@ -1,6 +1,6 @@
 CREATE TABLE "organization_server_upgrades" (
 	"organization_id" uuid PRIMARY KEY,
-	"automatic" boolean DEFAULT true NOT NULL,
+	"automatic" boolean DEFAULT false NOT NULL,
 	"channel" text DEFAULT 'stable' NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,

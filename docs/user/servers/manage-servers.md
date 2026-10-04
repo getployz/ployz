@@ -49,12 +49,19 @@ and your generated addresses stop pointing at it within the hour.
 
 ## Upgrade Ployz on a server
 
-Servers upgrade automatically to the newest release on your organization's channel (Stable unless
-you [choose Beta](#choose-stable-or-beta-releases)), one at a time in name order, and your
-apps keep running while they do. Ployz checks every hour. Each server on the **Servers** page shows
-the release it runs, and the line under the page header sums them up: **On Ployz `0.2.2`, upgraded
-last night · Upgrades automatically**. While an upgrade runs, it reads **Upgrading to `0.2.2` · 1
-of 4 done**.
+Each server on the **Servers** page shows the Ployz release it runs. When a newer release is out on
+your organization's channel (Stable unless you [choose Beta](#choose-stable-or-beta-releases)),
+the line under the page header reads **Ployz `0.2.2` is out · your servers run `0.2.1`**. Click **Upgrade** to upgrade every server that's behind, one at a time in name order.
+Your apps keep running while they do. While an upgrade runs, the line reads **Upgrading to `0.2.2`
+· 1 of 4 done**.
+
+### Turn on automatic upgrades
+
+Automatic upgrades are off until you turn them on. Click **Manual** next to **Upgrade** (or **Manual
+upgrades** on the line once your servers are current) and turn on **Upgrade automatically**. Any member can change it.
+Ployz starts upgrading right away, then checks every hour. The line then reads **On Ployz `0.2.2`,
+upgraded last night · Upgrades automatically**. Turn the switch off to go back to upgrading by
+hand.
 
 Servers that are offline or building are skipped and upgrade at a later check. While only offline
 servers are behind, the line reads **web-3 upgrades when it's back**, and the server's page reads
@@ -66,14 +73,7 @@ other servers wait: automatic upgrades skip that release until a newer one is ou
 server that failed says so on its page. **Show details** has the exact error to copy, and **Try
 again** retries. Once an upgrade of that release succeeds, automatic upgrades pick it up again.
 
-### Turn automatic upgrades off
-
-Click **Upgrades automatically** on the line (or **Automatic** next to **Upgrade**) and turn off
-**Upgrade automatically**. Any member can change it. The line then reads **Manual upgrades**, and
-when a release is out, **Ployz `0.2.2` is out · your servers run `0.2.1`**. Click **Upgrade** to
-upgrade every server that's behind, one at a time.
-Turning **Upgrade automatically** back on starts upgrading right away, without waiting for the
-hourly check.
+### Upgrade one server
 
 To upgrade one server, open it: its **Ployz** section reads **`0.2.2` is out**. Click **Upgrade**.
 Any member can upgrade servers while they're online and not building. One upgrade runs at a time

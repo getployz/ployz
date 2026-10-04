@@ -338,7 +338,7 @@ describe("roll-out-server-upgrade", () => {
       captured = [];
     };
 
-    it("the hourly schedule requests one automatic rollout per paired Organization with automatic upgrades on, on by default", async () => {
+    it("the hourly schedule requests one automatic rollout per paired Organization that turned automatic upgrades on, off by default", async () => {
       const org = (digit: string) => `00000000-0000-4000-8000-00000000000${digit}`;
       await harness.pool.query(`
         insert into organization (id, name, slug) values
@@ -357,11 +357,10 @@ describe("roll-out-server-upgrade", () => {
       expect(output.ctx.step.sendEvent).toHaveBeenCalledTimes(1);
       const [[id, events]] = vi.mocked(output.ctx.step.sendEvent).mock.calls as [[string, unknown[]]];
       expect(id).toBe("request-automatic-rollouts");
-      expect(events).toHaveLength(2);
-      expect(events).toEqual(expect.arrayContaining([organizationId, org("2")].map((id) => ({
+      expect(events).toEqual([{
         name: "server/upgrade.requested",
-        data: { organizationId: id, machineId: null, trigger: "automatic", userId: null },
-      }))));
+        data: { organizationId: org("2"), machineId: null, trigger: "automatic", userId: null },
+      }]);
     });
 
     it("a plain member turns automatic upgrades off and on, and the schedule follows", async () => {
@@ -491,7 +490,7 @@ describe("roll-out-server-upgrade", () => {
       expect(captured.map(({ properties }) => properties?.["channel"])).toEqual(["beta", "beta"]);
 
       expect(await runEffect(setServerUpgradeSettings({ userId }, { organizationSlug: "acme", channel: "stable" })))
-        .toEqual({ id: organizationId, automatic: true, channel: "stable" });
+        .toEqual({ id: organizationId, automatic: false, channel: "stable" });
       frame = runtimeWatchFrameFixture({ machines: [
         server("1", "web-1", publishedBeta), server("2", "web-2", publishedBeta), server("3", "web-3", "3.0.0-beta.2"),
       ] });
