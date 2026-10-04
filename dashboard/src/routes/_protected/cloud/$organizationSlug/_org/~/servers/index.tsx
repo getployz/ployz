@@ -1,4 +1,3 @@
-import { Suspense } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { ServerIcon } from "lucide-react";
 import { DashboardPage } from "#/components/dashboard-page";
@@ -15,7 +14,7 @@ import { AddServerDialog } from "./-components/add-server-dialog";
 import { runsHere } from "./-components/runs-here";
 import { ServersSkeleton } from "./-components/servers-skeleton";
 import { ServersStaleAlert, ServersUnreachable } from "./-components/servers-unreachable";
-import { ServersUpgradeBar, ServerUpgradeTag, useServersUpgrade, type ServersUpgrade } from "./-components/servers-upgrade";
+import { ServersUpgradeBar, ServerUpgradeTag, useServersUpgrade } from "./-components/servers-upgrade";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/servers/",
@@ -32,23 +31,9 @@ export const Route = createFileRoute(
 function RouteComponent() {
   const { organizationSlug } = Route.useParams();
   const { state, servers } = useServers(organizationSlug);
-  const view = { organizationSlug, state, servers };
-  // Without upgrades the page lays out the same, so they arrive without moving the list.
-  return (
-    <Suspense fallback={<ServersView {...view} upgrade={null} />}>
-      <UpgradableServersView {...view} />
-    </Suspense>
-  );
-}
+  const upgrades = useServersUpgrade(organizationSlug, servers);
+  const upgrade = state === "live" && servers.length > 0 ? upgrades : null;
 
-type ServersViewProps = Pick<ReturnType<typeof useServers>, "state" | "servers"> & { organizationSlug: string };
-
-function UpgradableServersView(props: ServersViewProps) {
-  const upgrade = useServersUpgrade(props.organizationSlug, props.servers);
-  return <ServersView {...props} upgrade={props.state === "live" && props.servers.length > 0 ? upgrade : null} />;
-}
-
-function ServersView({ organizationSlug, state, servers, upgrade }: ServersViewProps & { upgrade: ServersUpgrade | null }) {
   return (
     <DashboardPage width="content">
       {/* The top bar names the page. */}
