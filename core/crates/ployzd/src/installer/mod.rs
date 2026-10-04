@@ -3,6 +3,7 @@
 mod host;
 mod os_release;
 mod release;
+mod rollback;
 mod storage;
 #[cfg(test)]
 mod test_support;
