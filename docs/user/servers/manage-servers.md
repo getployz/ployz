@@ -81,7 +81,7 @@ per organization, so **Upgrade** and **Try again** wait while one is running.
 
 ### Choose Stable or Beta releases
 
-Click **Upgrades automatically** (or **Manual upgrades**) on the line and pick **Releases: Stable**
+Click **Manual upgrades** (or **Upgrades automatically**) on the line and pick **Releases: Stable**
 or **Beta**. Stable is the default; Beta gets fixes early, as prereleases like `0.2.3-beta.1`. Any
 member can change it, and it applies to every upgrade, automatic or by hand. The line and each
 server's page then show the newest release on that channel.

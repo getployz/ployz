@@ -56,7 +56,7 @@ export const serverUpgradeAttempt = pgTable(
   ],
 );
 
-/** The Organization's Server upgrade settings. No row reads as the defaults, so every Organization starts automatic. */
+/** The Organization's Server upgrade settings. No row reads as the defaults, so every Organization starts with manual upgrades. */
 export const organizationServerUpgrades = pgTable("organization_server_upgrades", {
   organizationId: uuid("organization_id").primaryKey()
     .references(() => organization.id, { onDelete: "cascade" }),
