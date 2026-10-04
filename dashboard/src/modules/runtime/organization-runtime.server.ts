@@ -18,6 +18,7 @@ import { SecretEncryption } from "#/utils/encrypted-secret.server";
  * ponytail: one poll per session; move to one loop per instance when sessions reach the thousands.
  */
 export const PAIRING_CHANGE_POLL = "1 second";
+export const PAIRING_CHECK_FAILURE_LIMIT = 30;
 
 /**
  * Ceiling on establishing a shared organization session. The SDK's own
