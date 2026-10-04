@@ -71,6 +71,9 @@ export const ChannelPointer = Schema.Union([
 ]);
 export type ChannelPointer = typeof ChannelPointer.Type;
 
+/** The installer's unscoped pointer: the only place a newer major line shows. */
+export const NEWEST_RELEASE = { channel: "stable", line: null } as const satisfies ChannelPointer;
+
 /**
  * The new-major-line notice: the release the unscoped `stable` pointer names, when its line is newer than the Servers'
  * `line` (`v0`). `name` reads it as its line (`1.0`), `running` the Servers' line (`0.x`).
@@ -205,31 +208,27 @@ export const newestAttempt = (latest: readonly LatestUpgrade[]) => latest.reduce
   found === null || Date.parse(row.startedAt) > Date.parse(found.startedAt) ? row : found, null);
 
 export type ServersUpgradeLine =
-  | { readonly kind: "current"; readonly release: string; readonly upgradedAt: string | null }
+  | { readonly kind: "current"; readonly release: string }
   | { readonly kind: "upgrading"; readonly target: string; readonly done: number; readonly total: number }
   | {
     readonly kind: "behind";
     readonly release: string;
     readonly upgraded: number;
-    readonly total: number;
-    /** The oldest version the Servers behind report. */
-    readonly running: string | null;
     /** Some Server behind is online and idle, so an Upgrade has one to take. */
     readonly canUpgrade: boolean;
   }
   /** Only offline Servers are behind, and automatic upgrades pick them up once they're back. */
-  | { readonly kind: "when-back"; readonly release: string; readonly names: readonly string[] }
+  | { readonly kind: "when-back"; readonly release: string }
   | null;
 
 /**
- * The Servers page's upgrade line. `latest` holds each Server's latest attempt; `lastUpgradedAt` ends the latest
- * successful one. A Server whose version is unknown is neither behind nor upgraded.
+ * The Servers page's top bar upgrade state. `latest` holds each Server's latest attempt. A Server whose version is
+ * unknown is neither behind nor upgraded.
  */
 export function serversUpgradeLine(input: {
-  readonly servers: ReadonlyArray<{ readonly name: string; readonly version: string; readonly status: ServerStatus }>;
+  readonly servers: ReadonlyArray<{ readonly version: string; readonly status: ServerStatus }>;
   readonly release: string | null;
   readonly latest: readonly LatestUpgrade[];
-  readonly lastUpgradedAt: string | null;
   readonly pendingFrom: PendingFrom;
   readonly now: number;
   readonly automatic: boolean;
@@ -245,17 +244,40 @@ export function serversUpgradeLine(input: {
     return { kind: "upgrading", target: running?.targetVersion ?? release, done, total: servers.length };
   }
 
-  if (behind.length === 0) return done === servers.length ? { kind: "current", release, upgradedAt: input.lastUpgradedAt } : null;
+  if (behind.length === 0) return done === servers.length ? { kind: "current", release } : null;
   if (input.automatic && behind.every(({ status }) => status === "offline")) {
-    return { kind: "when-back", release, names: behind.map(({ name }) => name) };
+    return { kind: "when-back", release };
   }
-  const oldest = behind.map(({ version }) => version).sort((left, right) => compareVersions(left, right) ?? 0)[0] ?? null;
-  return {
-    kind: "behind",
-    release,
-    upgraded: done,
-    total: servers.length,
-    running: oldest,
-    canUpgrade: behind.some(({ status }) => status === "online"),
-  };
+  return { kind: "behind", release, upgraded: done, canUpgrade: behind.some(({ status }) => status === "online") };
+}
+
+/**
+ * Each Server's Upgrade line on the Servers page, by Machine ID. `pendingFrom` is the Servers page's Upgrade, which
+ * reads as upgrading on the Servers it takes: online and behind.
+ */
+export function serverUpgradeLines(input: {
+  readonly servers: ReadonlyArray<{ readonly id: string; readonly version: string; readonly status: ServerStatus }>;
+  readonly release: string | null;
+  readonly latest: Readonly<Record<string, LatestUpgrade>>;
+  readonly pendingFrom: PendingFrom;
+  readonly now: number;
+  readonly automatic: boolean;
+}): ReadonlyMap<string, ServerUpgradeLine> {
+  const every = Object.values(input.latest);
+  const pending = input.pendingFrom !== undefined && (newestAttempt(every)?.attemptId ?? null) === input.pendingFrom;
+  const running = rolloutRunning(every, input.now);
+  return new Map(input.servers.map(({ id, version, status }) => {
+    const latest = input.latest[id] ?? null;
+    const taken = pending && status === "online" && isBehind(version, input.release);
+    return [id, serverUpgradeLine({
+      version,
+      status,
+      release: input.release,
+      latest,
+      pendingFrom: taken ? latest?.attemptId ?? null : undefined,
+      now: input.now,
+      automatic: input.automatic,
+      rolloutRunning: running,
+    })];
+  }));
 }

@@ -76,27 +76,25 @@ taking traffic.
 
 Each server on the **Servers** page shows the Ployz release it runs. When a newer release is out on
 your organization's channel (Stable unless you [choose Beta](#choose-stable-or-beta-releases)),
-the line under the page header reads **Ployz `0.2.2` is out · your servers run `0.2.1`**. Click **Upgrade** to upgrade every server that's behind, one at a time in name order.
-Your apps keep running while they do. While an upgrade runs, the line reads **Upgrading to `0.2.2`
-· 1 of 4 done**.
+each server behind is tagged **→ `0.2.2`**, and the top of the page offers **Upgrade to `0.2.2`**.
+Click it to upgrade every server that's behind, one at a time in name order. Your apps keep running
+while they do. While an upgrade runs, the top of the page reads **Upgrading to `0.2.2` · 1 of 4**,
+and the server upgrading is tagged **Upgrading**.
 
 ### Turn on automatic upgrades
 
-Automatic upgrades are off until you turn them on. Click **Manual** next to **Upgrade** (or **Manual
-upgrades** on the line once your servers are current) and turn on **Upgrade automatically**. Any member can change it.
-Ployz starts upgrading right away, then checks every hour. The line then reads **On Ployz `0.2.2`,
-upgraded last night · Upgrades automatically**. Turn the switch off to go back to upgrading by
-hand.
+Automatic upgrades are off until you turn them on. Click **Upgrades: Manual** at the top of the
+**Servers** page and turn on **Upgrade automatically**. Any member can change it. Ployz starts
+upgrading right away, then checks every hour, and the button then reads **Upgrades: Automatic**.
+Turn the switch off to go back to upgrading by hand.
 
-Servers that are offline or building are skipped and upgrade at a later check. While only offline
-servers are behind, the line reads **web-3 upgrades when it's back**, and the server's page reads
-**Upgrades to `0.2.2` when it's back**.
+Servers that are offline or building are skipped and upgrade at a later check. An offline server
+behind is tagged **→ `0.2.2` when back**, and its page reads **Upgrades to `0.2.2` when it's back**.
 
 If a server's upgrade doesn't install, that server goes back to the release it ran before, and the
-other servers wait: automatic upgrades skip that release until a newer one is out. The line reads
-**Ployz `0.2.2` is out · 1 of 4 upgraded**, with **Upgrade the rest** to carry on yourself. Only the
-server that failed says so on its page. **Show details** has the exact error to copy, and **Try
-again** retries. Once an upgrade of that release succeeds, automatic upgrades pick it up again.
+other servers wait: automatic upgrades skip that release until a newer one is out. That server is
+tagged **Upgrade failed**, and the top of the page offers **Upgrade the rest** to carry on yourself.
+On the server's page, **Show details** has the exact error to copy, and **Try again** retries. Once an upgrade of that release succeeds, automatic upgrades pick it up again.
 
 ### Upgrade one server
 
@@ -106,20 +104,19 @@ per organization, so **Upgrade** and **Try again** wait while one is running.
 
 ### Choose Stable or Beta releases
 
-Click **Manual upgrades** (or **Upgrades automatically**) on the line and pick **Releases: Stable**
-or **Beta**. Stable is the default; Beta gets fixes early, as prereleases like `0.2.3-beta.1`. Any
-member can change it, and it applies to every upgrade, automatic or by hand. The line and each
-server's page then show the newest release on that channel.
+Click **Upgrades: Manual** (or **Upgrades: Automatic**) at the top of the **Servers** page and pick
+**Releases: Stable** or **Beta**. Stable is the default; Beta gets fixes early, as prereleases like `0.2.3-beta.1`. Any
+member can change it, and it applies to every upgrade, automatic or by hand. The **Servers** page
+and each server's page then show the newest release on that channel.
 
 Switching back to Stable never downgrades a server. A server on a beta ahead of Stable reads as
 current and waits until Stable catches up.
 
 ### New major lines
 
-Upgrades stay on your servers' release line (`0.x`). When a new line like 1.0 is published, the
-**Servers** page says **Ployz 1.0 is out. New lines install only when you choose. Your servers stay
-on 0.x and keep getting its upgrades.** **See what's new** opens its release notes. Nothing installs
-the new line for you.
+Upgrades stay on your servers' release line (`0.x`). When a new line like 1.0 is published, the top
+of the **Servers** page links **Ployz 1.0 is out** to its release notes. Nothing installs the new
+line for you: your servers stay on 0.x and keep getting its upgrades.
 
 ### Upgrade from the CLI
 

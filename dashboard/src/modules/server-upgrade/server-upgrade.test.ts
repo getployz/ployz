@@ -5,6 +5,7 @@ import {
   releaseFromPointer,
   releaseLine,
   serverUpgradeLine,
+  serverUpgradeLines,
   serversUpgradeLine,
   UPGRADE_OBSERVATION_LIMIT_MS,
   type LatestUpgrade,
@@ -135,16 +136,15 @@ describe("serverUpgradeLine", () => {
 });
 
 describe("serversUpgradeLine", () => {
-  const servers = (...versions: string[]) => versions.map((version, at) => ({ name: `web-${at + 1}`, version, status: "online" as const }));
+  const servers = (...versions: string[]) => versions.map((version) => ({ version, status: "online" as const }));
   const servers4 = servers("0.2.2", "0.2.1", "0.2.1", "0.2.1");
   const summary = (input: Partial<Parameters<typeof serversUpgradeLine>[0]> = {}) => serversUpgradeLine({
-    servers: servers4, release: "0.2.2", latest: [], lastUpgradedAt: null, pendingFrom: undefined, now: NOW, automatic: true, ...input,
+    servers: servers4, release: "0.2.2", latest: [], pendingFrom: undefined, now: NOW, automatic: true, ...input,
   });
 
-  it("says every Server is current, and when the latest successful attempt ran", () => {
-    const at = new Date(NOW - 12 * 3_600_000).toISOString();
-    expect(summary({ servers: servers("0.2.2", "0.2.2"), lastUpgradedAt: at })).toEqual({ kind: "current", release: "0.2.2", upgradedAt: at });
-    expect(summary({ servers: servers("0.2.2", "0.2.3") })).toEqual({ kind: "current", release: "0.2.2", upgradedAt: null });
+  it("says every Server is current", () => {
+    expect(summary({ servers: servers("0.2.2", "0.2.2") })).toEqual({ kind: "current", release: "0.2.2" });
+    expect(summary({ servers: servers("0.2.2", "0.2.3") })).toEqual({ kind: "current", release: "0.2.2" });
   });
 
   it("reads a running attempt as the rollout, counting every Server already on the release", () => {
@@ -165,31 +165,30 @@ describe("serversUpgradeLine", () => {
     expect(summary({ latest: [stale] })).toMatchObject({ kind: "behind" });
   });
 
-  it("offers Upgrade with the version the Servers run while none has upgraded", () => {
-    expect(summary({ servers: servers("0.2.1", "0.2.0", "") }))
-      .toEqual({ kind: "behind", release: "0.2.2", upgraded: 0, total: 3, running: "0.2.0", canUpgrade: true });
+  it("offers Upgrade while none has upgraded", () => {
+    expect(summary({ servers: servers("0.2.1", "0.2.0", "") })).toEqual({ kind: "behind", release: "0.2.2", upgraded: 0, canUpgrade: true });
     // Cloud can't upgrade a Server whose version is unknown, nor say it runs the release.
     expect(summary({ servers: servers("") })).toBeNull();
   });
 
   it("offers Upgrade the rest once some Servers have upgraded", () => {
-    expect(summary()).toEqual({ kind: "behind", release: "0.2.2", upgraded: 1, total: 4, running: "0.2.1", canUpgrade: true });
+    expect(summary()).toEqual({ kind: "behind", release: "0.2.2", upgraded: 1, canUpgrade: true });
   });
 
-  it("names the offline Servers that upgrade when they're back, while automatic upgrades are on and only they are behind", () => {
+  it("waits for offline Servers to come back, while automatic upgrades are on and only they are behind", () => {
     const offline = [
-      { name: "web-1", version: "0.2.2", status: "online" as const },
-      { name: "web-3", version: "0.2.1", status: "offline" as const },
+      { version: "0.2.2", status: "online" as const },
+      { version: "0.2.1", status: "offline" as const },
     ];
-    expect(summary({ servers: offline })).toEqual({ kind: "when-back", release: "0.2.2", names: ["web-3"] });
+    expect(summary({ servers: offline })).toEqual({ kind: "when-back", release: "0.2.2" });
     expect(summary({ servers: offline, automatic: false })).toMatchObject({ kind: "behind", canUpgrade: false });
-    expect(summary({ servers: [...offline, { name: "web-4", version: "0.2.1", status: "building" }] }))
+    expect(summary({ servers: [...offline, { version: "0.2.1", status: "building" }] }))
       .toMatchObject({ kind: "behind", canUpgrade: false });
   });
 
   it("reads Servers ahead of the release, on a beta, as current", () => {
     expect(summary({ servers: servers("0.2.3-beta.1", "0.2.2") })).toMatchObject({ kind: "current", release: "0.2.2" });
-    expect(summary({ servers: servers("0.2.3-beta.1", "0.2.3"), release: "0.2.3" })).toMatchObject({ kind: "behind", upgraded: 1, running: "0.2.3-beta.1" });
+    expect(summary({ servers: servers("0.2.3-beta.1", "0.2.3"), release: "0.2.3" })).toMatchObject({ kind: "behind", upgraded: 1 });
   });
 
   it("says nothing until the release is known, or with no Servers", () => {
@@ -206,5 +205,45 @@ describe("newMajorLine", () => {
     expect(newMajorLine("v1", "0.9.0")).toBeNull();
     expect(newMajorLine(null, "1.0.0")).toBeNull();
     expect(newMajorLine("v0", null)).toBeNull();
+  });
+});
+
+describe("serverUpgradeLines", () => {
+  const fleet = [
+    { id: "current", version: "0.2.2", status: "online" as const },
+    { id: "behind", version: "0.2.1", status: "online" as const },
+    { id: "away", version: "0.2.1", status: "offline" as const },
+    { id: "broke", version: "0.2.1", status: "online" as const },
+  ];
+  const failed = attempt({ attemptId: "f".repeat(32), outcome: "failed", error: "boom" });
+  const rows = (input: Partial<Parameters<typeof serverUpgradeLines>[0]> = {}) => Object.fromEntries(serverUpgradeLines({
+    servers: fleet, release: "0.2.2", latest: { broke: failed }, pendingFrom: undefined, now: NOW, automatic: true, ...input,
+  }));
+
+  it("gives each Server its own line", () => {
+    expect(rows()).toEqual({
+      current: null,
+      behind: { kind: "behind", release: "0.2.2", canUpgrade: true },
+      away: { kind: "when-back", release: "0.2.2" },
+      broke: expect.objectContaining({ kind: "failed", target: "0.2.2", canRetry: true }),
+    });
+  });
+
+  it("reads the Servers page's Upgrade as upgrading on the online Servers behind, and only them", () => {
+    expect(rows({ pendingFrom: failed.attemptId })).toEqual({
+      current: null,
+      behind: { kind: "upgrading", target: "0.2.2" },
+      away: { kind: "when-back", release: "0.2.2" },
+      broke: { kind: "upgrading", target: "0.2.2" },
+    });
+    // A newer attempt than the one the click saw: the request was recorded, so each Server reads its own attempt.
+    expect(rows({ pendingFrom: "0".repeat(32) })["behind"]).toEqual({ kind: "behind", release: "0.2.2", canUpgrade: true });
+  });
+
+  it("holds Upgrade on every row while one Server's attempt runs", () => {
+    expect(rows({ latest: { current: attempt({ outcome: "running" }) } })).toMatchObject({
+      current: { kind: "upgrading" },
+      behind: { kind: "behind", canUpgrade: false },
+    });
   });
 });

@@ -7,41 +7,58 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/
 import { ItemGroup } from "#/components/ui/item";
 import { needsAttention, type ServerStatus } from "#/modules/machines/server-status";
 import { useServers, type Server } from "#/modules/machines/use-servers";
-import { latestServerUpgradesQueryOptions } from "#/modules/server-upgrade/server-upgrade.queries";
+import { NEWEST_RELEASE } from "#/modules/server-upgrade/server-upgrade";
+import { channelReleaseQueryOptions, latestServerUpgradesQueryOptions } from "#/modules/server-upgrade/server-upgrade.queries";
 import { prefetchRemote } from "#/collections/route-data";
 import { ServerLinkItem } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/server-link-item";
 import { AddServerDialog } from "./-components/add-server-dialog";
 import { runsHere } from "./-components/runs-here";
 import { ServersSkeleton } from "./-components/servers-skeleton";
 import { ServersStaleAlert, ServersUnreachable } from "./-components/servers-unreachable";
-import { ServersUpgradeLine } from "./-components/servers-upgrade-line";
+import { ServersUpgradeBar, ServerUpgradeTag, useServersUpgrade, type ServersUpgrade } from "./-components/servers-upgrade";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/servers/",
 )({
-  loader: ({ params, context }) => prefetchRemote(context, latestServerUpgradesQueryOptions(params.organizationSlug)),
+  // The release on the Servers' own line waits for the versions they report.
+  loader: ({ params, context }) => prefetchRemote(
+    context,
+    latestServerUpgradesQueryOptions(params.organizationSlug),
+    channelReleaseQueryOptions(NEWEST_RELEASE),
+  ),
   component: RouteComponent,
 });
 
 function RouteComponent() {
   const { organizationSlug } = Route.useParams();
   const { state, servers } = useServers(organizationSlug);
+  const view = { organizationSlug, state, servers };
+  // Without upgrades the page lays out the same, so they arrive without moving the list.
+  return (
+    <Suspense fallback={<ServersView {...view} upgrade={null} />}>
+      <UpgradableServersView {...view} />
+    </Suspense>
+  );
+}
 
+type ServersViewProps = Pick<ReturnType<typeof useServers>, "state" | "servers"> & { organizationSlug: string };
+
+function UpgradableServersView(props: ServersViewProps) {
+  const upgrade = useServersUpgrade(props.organizationSlug, props.servers);
+  return <ServersView {...props} upgrade={props.state === "live" && props.servers.length > 0 ? upgrade : null} />;
+}
+
+function ServersView({ organizationSlug, state, servers, upgrade }: ServersViewProps & { upgrade: ServersUpgrade | null }) {
   return (
     <DashboardPage width="content">
       {/* The top bar names the page. */}
       <div className="flex items-center gap-3">
         {state === "live" && servers.length > 0 ? <ServersHealth servers={servers} /> : null}
-        <div className="ml-auto"><AddServerDialog organizationSlug={organizationSlug} /></div>
+        <div className="ml-auto flex items-center gap-2">
+          {upgrade === null ? null : <ServersUpgradeBar organizationSlug={organizationSlug} upgrade={upgrade} />}
+          <AddServerDialog organizationSlug={organizationSlug} />
+        </div>
       </div>
-      {state === "live" && servers.length > 0 ? (
-        <Suspense fallback={null}>
-          <ServersUpgradeLine
-            organizationSlug={organizationSlug}
-            servers={servers.map(({ machine, status }) => ({ name: machine.name, version: machine.daemonVersion, status }))}
-          />
-        </Suspense>
-      ) : null}
       {state === "loading" ? (
         <ServersSkeleton />
       ) : state === "unreachable" ? (
@@ -60,6 +77,7 @@ function RouteComponent() {
           <ItemGroup>
             {servers.map((server) => (
               <ServerLinkItem key={server.machine.id} organizationSlug={organizationSlug} server={server} description={runsHere(server)}>
+                <ServerUpgradeTag line={upgrade?.rows.get(server.machine.id) ?? null} />
                 <ServerStatusLabel status={server.status} stale={state === "stale"} />
               </ServerLinkItem>
             ))}
