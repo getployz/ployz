@@ -5,6 +5,7 @@
 //! The handwritten façade is connect / session observation and registration /
 //! about / runtime.watch / prepare / build / preview / run / previewNamespaceRemoval /
 //! remove_volumes / pruneImages / dataLossIfMachineRemoved / removeMachine /
+//! requestMachineUpgrade / inspectMachineUpgrade /
 //! dataLossIfNamespaceDestroyed / destroyNamespace / dataLossIfClusterDestroyed /
 //! destroyCluster / close, and the Config Store's openConfigStore / read / write.
 pub mod config_store;
@@ -461,6 +462,41 @@ impl Client {
             .await
             .map_err(rpc_to_napi)?;
         to_json(&updated)
+    }
+
+    /// Ask one Machine to Upgrade. Repeating the request with the same attempt ID returns that attempt.
+    #[napi]
+    pub async fn request_machine_upgrade(
+        &self,
+        machine: String,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let request: ployz_core::RequestMachineUpgradeRequest =
+            serde_json::from_value(request).map_err(invalid_argument)?;
+        let attempt = self
+            .inner
+            .request_machine_upgrade(&machine, request)
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&attempt)
+    }
+
+    /// Read one Machine's Upgrade attempt. Its daemon restarts during the Upgrade, so a caller
+    /// polling for the outcome keeps polling through `unavailable`.
+    #[napi]
+    pub async fn inspect_machine_upgrade(
+        &self,
+        machine: String,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let request: ployz_core::InspectMachineUpgradeRequest =
+            serde_json::from_value(request).map_err(invalid_argument)?;
+        let attempt = self
+            .inner
+            .inspect_machine_upgrade(&machine, request)
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&attempt)
     }
 
     /// Live Observation of Data Loss that destroying `namespace` would cause.

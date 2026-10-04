@@ -130,6 +130,14 @@ class Client {
     return withRpcError(this._inner.updateMachine(machine, update));
   }
 
+  requestMachineUpgrade(machine, request) {
+    return withRpcError(this._inner.requestMachineUpgrade(machine, request));
+  }
+
+  inspectMachineUpgrade(machine, request) {
+    return withRpcError(this._inner.inspectMachineUpgrade(machine, request));
+  }
+
   dataLossIfNamespaceDestroyed(namespace, destroyVolumes = false) {
     return withRpcError(this._inner.dataLossIfNamespaceDestroyed(namespace, destroyVolumes));
   }
