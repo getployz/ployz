@@ -1,7 +1,7 @@
 import { BoxIcon, CircleCheckIcon, CircleDashedIcon, CircleMinusIcon, CircleStopIcon, CircleXIcon, GlobeIcon, type LucideIcon } from "lucide-react";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { cn } from "#/lib/utils";
-import type { DrainRow, DrainTone } from "#/modules/machines/server-drain";
+import type { DrainRow, DrainTone } from "#/modules/machines/server-drain-view";
 
 const TONE_CLASS = {
   moved: "text-success",
@@ -19,8 +19,8 @@ const TONE_ICON = {
 } satisfies Record<DrainTone, LucideIcon>;
 
 /**
- * Each Service and what the latest Drain did with it. Below the navigation breakpoint the outcome takes its own line
- * under the name, so a long reason never squeezes it.
+ * Each Service and what the latest Drain did with it. Below the navigation breakpoint the outcome wraps onto its own
+ * line, so a long reason never squeezes it.
  */
 export function DrainResultList({ rows }: { rows: readonly DrainRow[] }) {
   if (rows.length === 0) return null;
@@ -37,7 +37,7 @@ export function DrainResultList({ rows }: { rows: readonly DrainRow[] }) {
                 {row.reason ?? row.namespace}
               </ItemDescription>
             </ItemContent>
-            <ItemActions className={cn("gap-1.5 max-wf-nav:basis-full max-wf-nav:ps-6.5", TONE_CLASS[row.tone])}>
+            <ItemActions className={cn("max-wf-nav:basis-full", TONE_CLASS[row.tone])}>
               <Icon aria-hidden className="size-4 shrink-0" />
               <span>{row.label}</span>
             </ItemActions>

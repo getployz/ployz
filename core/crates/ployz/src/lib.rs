@@ -17,6 +17,7 @@ pub mod drain;
 pub mod enrollment;
 pub mod failure;
 mod global_catch_up;
+mod global_slot;
 pub mod handlers;
 pub mod image;
 pub mod ingress;

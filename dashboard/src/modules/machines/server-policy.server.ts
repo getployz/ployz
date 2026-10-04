@@ -26,8 +26,9 @@ export class ServerPolicyProviderFailure extends Data.TaggedError(
 
 /**
  * A Drain turns services off for its Server and moves what runs there; turning them back on would undo it. The request
- * refuses so the user hears why at once. The apply shares its Organization's Drain slot, so no Drain runs while it
- * does; it checks again right before the update, which refuses one requested while the change waited.
+ * refuses so the user hears why at once. Applying a change that turns services on takes its Organization's Drain slot
+ * (`DRAIN_SLOT`), so no Drain runs while it does; it checks again right before the update, which refuses one
+ * requested while the change waited.
  */
 const refuseWhileDraining = Effect.fn("ServerPolicy.refuseWhileDraining")(function* (
   organizationId: string, machineId: string, change: ServerPolicyChange,

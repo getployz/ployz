@@ -55,8 +55,13 @@ and names apart what no project owns: draining leaves that where it is. Draining
 each replicated service's containers to your other servers one at a time. Each new container runs
 the same image, and each one starts and is healthy before the old container is removed.
 Pre-deploy commands don't run again, and nothing is deployed. Drains in one organization run one
-at a time: a second one reads **Waits for the drain on web-1 to finish**. A change to **Run services
-here** also waits while a drain runs in the organization. You can leave the page while one runs.
+at a time: a second one reads **Waits for the drain on web-1 to finish**. You can leave the page
+while one runs.
+
+While a server drains, you can't turn **Run services here** back on for it: Cloud refuses the
+change until the drain ends. Turning services on for another server waits until
+the organization's drain ends. Other server settings, like **Run builds here**, never wait for a
+drain.
 
 A service stays running where it is, and is reported with the reason, when:
 

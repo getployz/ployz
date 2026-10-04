@@ -7,11 +7,13 @@ import { sendInngestEvent } from "#/modules/inngest/client";
 import { createServerDrainRequestedEvent, type ServerDrainRequestedEventData } from "#/modules/inngest/events";
 import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
 import {
+  DRAIN_END_CODES,
   DRAIN_PENDING_LIMIT_MS,
   DRAIN_RUNNING_LIMIT_MS,
-  type DrainEndState,
-  type DrainFailureCode,
+  type DrainEndCode,
+  type DrainEndCodeWithoutMessage,
   type DrainState,
+  type EndedDrain,
   type LatestDrain,
   type RequestServerDrainInput,
 } from "#/modules/machines/server-drain";
@@ -27,7 +29,7 @@ export class ServerDrainUnreachable extends Data.TaggedError("ServerDrainUnreach
   readonly cause: unknown;
 }> {}
 
-type DrainRow = typeof serverDrainAttempt.$inferSelect;
+type DrainAttemptRow = typeof serverDrainAttempt.$inferSelect;
 type DrainRequest = ServerDrainRequestedEventData;
 /** What a run step answers with: the row's state once the step is done with it. */
 export type DrainRunReply = { readonly attemptId: string; readonly state: DrainState };
@@ -36,7 +38,7 @@ const ACTIVE_STATES: readonly DrainState[] = ["pending", "running"];
 const MESSAGE_LIMIT = 1024;
 
 /** A row as the page reads it. The check constraint keeps each state's evidence; a row without it is a defect. */
-export function latestDrainOf(row: DrainRow): Effect.Effect<LatestDrain> {
+export function latestDrainOf(row: DrainAttemptRow): Effect.Effect<LatestDrain> {
   const attemptId = row.id;
   const missing = (what: string) => Effect.die(new Error(`Drain ${attemptId} is ${row.state} without its ${what}.`));
   switch (row.state) {
@@ -52,20 +54,28 @@ export function latestDrainOf(row: DrainRow): Effect.Effect<LatestDrain> {
         : Effect.succeed({ attemptId, state: "finished", endedAt: row.endedAt.toISOString(), report: row.report });
     case "failed":
     case "cancelled":
-    case "unknown":
-      return row.endedAt === null || row.failureCode === null || row.failureMessage === null
-        ? missing("failure")
-        : Effect.succeed({
-          attemptId, state: row.state, endedAt: row.endedAt.toISOString(), failureCode: row.failureCode, failureMessage: row.failureMessage,
-        });
+    case "unknown": {
+      const { endedAt, endCode, refusalMessage } = row;
+      if (endedAt === null || endCode === null || DRAIN_END_CODES[endCode] !== row.state) return missing("end");
+      if (endCode === "refused") {
+        return refusalMessage === null
+          ? missing("refusal")
+          : Effect.succeed({ attemptId, state: "failed", endedAt: endedAt.toISOString(), endCode, refusalMessage });
+      }
+      // SAFETY: the state is the one this code ends in, checked above and by the row's check constraint.
+      return Effect.succeed({ attemptId, state: row.state, endedAt: endedAt.toISOString(), endCode } as EndedDrain);
+    }
   }
 }
 
-const closed = (state: Exclude<DrainState, "pending" | "running" | "finished">, failureCode: DrainFailureCode, failureMessage: string) =>
-  ({ state, endedAt: new Date(), failureCode, failureMessage }) as const;
+/** The columns that end a row under `code`; its state follows from the code. */
+const ended = (code: DrainEndCodeWithoutMessage) =>
+  ({ state: DRAIN_END_CODES[code], endCode: code, refusalMessage: null, endedAt: new Date() }) as const;
+const refused = (message: string) =>
+  ({ state: DRAIN_END_CODES.refused, endCode: "refused", refusalMessage: message, endedAt: new Date() }) as const;
 
-/** Ask for the row's run. A row whose event could not be sent no run will bind: it ends `failed` at once. */
-const dispatch = Effect.fn("ServerDrain.dispatch")(function* (row: DrainRow) {
+/** Ask for the row's run. A row whose event could not be sent no run will bind: it ends `not_started` at once. */
+const dispatch = Effect.fn("ServerDrain.dispatch")(function* (row: DrainAttemptRow) {
   const { drizzle } = yield* Database;
   yield* sendInngestEvent(createServerDrainRequestedEvent({
     attemptId: row.id,
@@ -74,7 +84,7 @@ const dispatch = Effect.fn("ServerDrain.dispatch")(function* (row: DrainRow) {
   })).pipe(Effect.tapError(() =>
     // Only a row no run has bound: a run that got the event anyway keeps it.
     drizzle.update(serverDrainAttempt)
-      .set(closed("failed", "dispatch_failed", "The drain could not be queued."))
+      .set(ended("not_started"))
       .where(and(eq(serverDrainAttempt.id, row.id), eq(serverDrainAttempt.state, "pending"), isNull(serverDrainAttempt.inngestRunId)))));
 });
 
@@ -161,12 +171,6 @@ export const bindDrainRun = Effect.fn("ServerDrain.bind")(function* (request: Dr
   return { kind: "settled", state: row.state } as const;
 });
 
-/** What the Drain selects: the Namespaces the Organization's Environments own. Containers no Project owns stay. */
-export const prepareDrain = Effect.fn("ServerDrain.prepare")(function* (organizationId: string) {
-  const namespaces = yield* ownedNamespaces(organizationId);
-  return { scope: "owned", namespaces } satisfies DrainScope;
-});
-
 const openSession = Effect.fn("ServerDrain.openSession")(function* (organizationId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
   if (session.status !== "connected") {
@@ -194,59 +198,50 @@ const stateOf = Effect.fn("ServerDrain.stateOf")(function* (attemptId: string) {
 
 /**
  * Ask the Engine once. The row is claimed (`running`) right before the call and ended with the Engine's answer right
- * after, in one step: a retry that finds the row running knows the Engine may have been asked, closes it as unknown
+ * after, in one step: a retry that finds the row running knows the Engine may have been asked, closes it lost
  * and never asks again; one that finds it ended returns what's there. An error from the Engine means nothing moved
- * (its preflight refused), so the row ends `failed`. An answer replaces an unknown end (a cancellation that couldn't
- * know what moved) but never another answer, and a Drain with no answer in a day ends unknown here.
+ * (its preflight refused), so the row ends refused. An answer replaces an unknown end (a cancellation that couldn't
+ * know what moved) but never another answer, and a Drain with no answer in a day ends lost here.
  */
-export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (request: DrainRequest, runId: string, scope: DrainScope) {
+export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (request: DrainRequest, runId: string) {
   const { drizzle } = yield* Database;
   const owned = and(eq(serverDrainAttempt.id, request.attemptId), eq(serverDrainAttempt.inngestRunId, runId));
   const current = yield* stateOf(request.attemptId);
   if (current.state === "running") {
     yield* drizzle.update(serverDrainAttempt)
-      .set(closed("unknown", "lost", "Cloud lost track of this drain while it ran."))
+      .set(ended("lost"))
       .where(and(owned, eq(serverDrainAttempt.state, "running")));
     return yield* stateOf(request.attemptId);
   }
   if (current.state !== "pending") return current;
-  // Before the claim: a cluster Cloud can't reach leaves the row pending for the retry.
+  // Before the claim: a Config Store or cluster Cloud can't reach leaves the row pending for the retry. The Drain
+  // selects only the Namespaces the Organization's Environments own; Containers no Project owns stay.
+  const scope: DrainScope = { scope: "owned", namespaces: yield* ownedNamespaces(request.organizationId) };
   const session = yield* openSession(request.organizationId);
   const [claimed] = yield* drizzle.update(serverDrainAttempt).set({ state: "running", startedAt: new Date() })
     .where(and(owned, eq(serverDrainAttempt.state, "pending"))).returning({ id: serverDrainAttempt.id });
   if (claimed === undefined) return yield* stateOf(request.attemptId);
   const end = yield* session.drainMachine(request.machineId, scope).pipe(
-    Effect.map((report) => ({ state: "finished", report, endedAt: new Date(), failureCode: null, failureMessage: null }) as const),
-    Effect.catch((error) => Effect.succeed(closed("failed", "refused", refusalMessage(error)))),
-    Effect.timeoutOrElse({
-      duration: DRAIN_RUNNING_LIMIT_MS,
-      orElse: () => Effect.succeed(closed("unknown", "lost", "The drain ran for a day without an answer.")),
-    }),
+    Effect.map((report) => ({ state: "finished", report, endedAt: new Date(), endCode: null, refusalMessage: null }) as const),
+    Effect.catch((error) => Effect.succeed(refused(refusalMessage(error)))),
+    Effect.timeoutOrElse({ duration: DRAIN_RUNNING_LIMIT_MS, orElse: () => Effect.succeed(ended("lost")) }),
   );
   // The answer is in hand: the write is retried here rather than by asking the Engine again.
-  const [ended] = yield* drizzle.update(serverDrainAttempt).set(end)
+  const [written] = yield* drizzle.update(serverDrainAttempt).set(end)
     .where(and(owned, inArray(serverDrainAttempt.state, ["running", "unknown"]))).returning({ state: serverDrainAttempt.state })
     .pipe(Effect.retry({ times: 4, schedule: Schedule.exponential("500 millis") }));
-  return ended === undefined ? yield* stateOf(request.attemptId) : { attemptId: request.attemptId, state: ended.state };
+  return written === undefined ? yield* stateOf(request.attemptId) : { attemptId: request.attemptId, state: written.state };
 }, Effect.scoped);
 
 /** How a run that ended for good closes its row: by whether the row ever asked the Engine. */
 const RUN_ENDS = {
-  failure: {
-    pending: { state: "failed", failureCode: "workflow_failed", failureMessage: "The drain run failed before it started." },
-    running: { state: "unknown", failureCode: "lost", failureMessage: "The drain run failed while it ran." },
-  },
-  cancellation: {
-    pending: { state: "cancelled", failureCode: "cancelled", failureMessage: "The drain run was cancelled before it started." },
-    running: { state: "unknown", failureCode: "cancelled", failureMessage: "The drain run was cancelled while it ran." },
-  },
-} as const satisfies Record<string, Record<"pending" | "running", {
-  state: DrainEndState; failureCode: DrainFailureCode; failureMessage: string;
-}>>;
+  failure: { pending: "not_started", running: "lost" },
+  cancellation: { pending: "cancelled", running: "interrupted" },
+} as const satisfies Record<string, Record<"pending" | "running", DrainEndCodeWithoutMessage>>;
 
 /**
  * A run that failed for good or was cancelled must not leave its row active. A pending row never asked the Engine
- * (`failed`, `cancelled`); a running one may have, so it ends `unknown`: Cloud can't undo what the Engine did, and
+ * (`not_started`, `cancelled`); a running one may have, so it ends `lost` or `interrupted`, both unknown: Cloud can't undo what the Engine did, and
  * Running here shows it. A run cancelled before it bound its row names the row by `attemptId` from its event. How many
  * rows this call ended.
  */
@@ -264,9 +259,8 @@ export const closeDrainRun = Effect.fn("ServerDrain.closeRun")(function* (
     or(isNull(serverDrainAttempt.inngestRunId), eq(serverDrainAttempt.inngestRunId, runId)),
   );
   const rows = yield* drizzle.update(serverDrainAttempt).set({
-    state: sql<DrainState>`case when ${isPending} then ${pending.state} else ${running.state} end`,
-    failureCode: sql<DrainFailureCode>`case when ${isPending} then ${pending.failureCode} else ${running.failureCode} end`,
-    failureMessage: sql<string>`case when ${isPending} then ${pending.failureMessage} else ${running.failureMessage} end`,
+    state: sql<DrainState>`case when ${isPending} then ${DRAIN_END_CODES[pending]} else ${DRAIN_END_CODES[running]} end`,
+    endCode: sql<DrainEndCode>`case when ${isPending} then ${pending} else ${running} end`,
     endedAt: new Date(),
   })
     .where(or(and(eq(serverDrainAttempt.inngestRunId, runId), inArray(serverDrainAttempt.state, ACTIVE_STATES)), unbound))
@@ -283,11 +277,11 @@ export const closeStaleDrains = Effect.fn("ServerDrain.closeStale")(function* ()
   const { drizzle } = yield* Database;
   const now = Date.now();
   const unknown = yield* drizzle.update(serverDrainAttempt)
-    .set(closed("unknown", "lost", "The drain ran for a day without an answer."))
+    .set(ended("lost"))
     .where(and(eq(serverDrainAttempt.state, "running"), lt(serverDrainAttempt.startedAt, new Date(now - DRAIN_RUNNING_LIMIT_MS))))
     .returning({ id: serverDrainAttempt.id });
   const failed = yield* drizzle.update(serverDrainAttempt)
-    .set(closed("failed", "never_started", "No run picked the drain up in time."))
+    .set(ended("not_started"))
     .where(and(
       eq(serverDrainAttempt.state, "pending"),
       // Spelled out: an update renders its columns unqualified, which inside a subquery would name the alias's.

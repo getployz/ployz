@@ -682,18 +682,20 @@ async fn execute_operation<C: MachineOperations>(
 
 /// Why a Placement convergence move did not complete. Each case leaves a different set of
 /// Containers behind, so the report tells them apart.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub(in crate::deploy) enum MoveContainerError {
     /// The new Container did not start or serve, or the move was cancelled first (then the
     /// error is [`ExecutionError::Cancelled`]). `old` keeps serving. `replacement_removed`
     /// says no new Container is left on `to`: none was made, or its removal was
     /// acknowledged.
+    #[error("the new Container did not serve: {error}")]
     NotServing {
         error: ExecutionError,
         replacement_removed: bool,
     },
     /// The new Container serves on `to`, but `old` could not be stopped (both serve) or,
     /// once stopped, removed.
+    #[error("the old Container was not removed: {error}")]
     OldNotRemoved {
         error: ExecutionError,
         old_stopped: bool,

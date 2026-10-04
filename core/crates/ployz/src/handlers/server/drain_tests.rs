@@ -1,10 +1,10 @@
-//! The CLI projection of a Drain report. The fixtures are the bytes the handler printed
+//! The CLI's lines for a Drain report. The fixtures are the lines the handler printed
 //! before the report was typed, so every outcome that existed then prints the same now.
 
 use ployz_core::{Machine, MachineId, MachineName, QualifiedService, WireGuardPublicKey};
 use serde_json::json;
 
-use super::{NOTHING_MOVES_BACK, closing_lines, line, report_json, server_json};
+use super::{NOTHING_MOVES_BACK, closing_lines, line};
 use crate::drain::{
     DrainOutcome, DrainReport, DrainStop, MachineRef, Move, MoveFailure, Remaining, ServiceDrain,
     ServicesRole, StayReason,
@@ -90,117 +90,6 @@ fn every_legacy_outcome() -> Vec<ServiceDrain> {
     .collect()
 }
 
-/// `--json` as the handler printed it before the report was typed.
-const LEGACY_JSON: &str = r#"{
-  "note": "Turning the services role back on does not move anything back.",
-  "remaining": [
-    "app/db",
-    "ployz-system/ingress"
-  ],
-  "server": {
-    "machine": {
-      "accepts_builds": true,
-      "accepts_ingress": true,
-      "accepts_services": true,
-      "advertised_endpoints": [],
-      "build_concurrency": null,
-      "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "labels": {},
-      "name": "web-2",
-      "public_ip": null,
-      "public_key": "YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI=",
-      "runtime": {
-        "architecture": "",
-        "daemon_version": "",
-        "docker_version": "",
-        "hostname": "",
-        "kernel_version": "",
-        "memory_total_bytes": null,
-        "os_pretty_name": "",
-        "running_builds": 0
-      },
-      "subnet": "10.210.11.0/24"
-    }
-  },
-  "services": [
-    {
-      "result": "retired",
-      "service": "app/metrics"
-    },
-    {
-      "error": "still running on web-2",
-      "result": "failed",
-      "service": "app/probe"
-    },
-    {
-      "failed": null,
-      "moved": [
-        {
-          "from": "web-2",
-          "to": "web-1"
-        },
-        {
-          "from": "web-2",
-          "to": "web-3"
-        },
-        {
-          "from": "web-2",
-          "to": "web-1"
-        }
-      ],
-      "result": "moved",
-      "service": "app/web"
-    },
-    {
-      "failed": null,
-      "moved": [],
-      "result": "moved",
-      "service": "app/idle"
-    },
-    {
-      "failed": "moving it from web-2 to web-1: deploy cancelled",
-      "moved": [
-        {
-          "from": "web-2",
-          "to": "web-1"
-        }
-      ],
-      "result": "moved",
-      "service": "app/api"
-    },
-    {
-      "failed": "moving it from web-2 to web-1: deploy cancelled",
-      "moved": [],
-      "result": "moved",
-      "service": "app/solo"
-    },
-    {
-      "reason": "Volume data is on web-2",
-      "result": "stays",
-      "service": "app/db"
-    }
-  ]
-}"#;
-
-#[test]
-fn every_outcome_that_existed_prints_the_same_json() {
-    let report = DrainReport {
-        server: server('b', "web-2"),
-        services_role: ServicesRole::TurnedOff,
-        services: every_legacy_outcome(),
-        stopped: None,
-        remaining: Remaining::Observed {
-            services: vec![service("db"), QualifiedService::system_ingress()],
-        },
-    };
-    assert_eq!(
-        serde_json::to_string_pretty(&report_json(&report)).unwrap(),
-        LEGACY_JSON,
-        "the CLI writes `--json` pretty-printed"
-    );
-    assert!(!report.complete(), "anything left on the Server is partial");
-}
-
 #[test]
 fn every_outcome_that_existed_prints_the_same_line() {
     let drained = server('b', "web-2");
@@ -241,7 +130,6 @@ fn every_outcome_that_existed_prints_the_same_line() {
                 to: to.clone(),
                 replacement_removed: false,
             }),
-            failed(MoveFailure::CancelledBeforeMove { from: from.clone() }),
             failed(MoveFailure::OldNotRemoved {
                 from,
                 to,
@@ -251,26 +139,49 @@ fn every_outcome_that_existed_prints_the_same_line() {
         ],
         [
             "app/web: failed: moving it from web-2 to web-1: deploy cancelled",
-            "app/web: failed: cancelled before moving it off web-2",
             "app/web: failed: moving it from web-2 to web-1: remove failed",
         ],
         "what a move now records about its Containers stays out of the line"
     );
-    let report = |remaining| DrainReport {
-        server: drained.clone(),
-        services_role: ServicesRole::AlreadyOff,
-        services: Vec::new(),
-        stopped: None,
-        remaining,
+    let interrupted = |moves| {
+        line(
+            &ServiceDrain {
+                service: service("web"),
+                outcome: DrainOutcome::Interrupted { moves },
+            },
+            &drained.name,
+        )
     };
     assert_eq!(
-        closing_lines(&report(Remaining::Observed {
-            services: vec![service("db")]
-        })),
+        [
+            interrupted(Vec::new()),
+            interrupted(vec![step(&server('a', "web-1"))])
+        ],
+        [
+            "app/web: interrupted",
+            "app/web: moved 1 from web-2 to web-1; interrupted",
+        ]
+    );
+    let report = |remaining| {
+        DrainReport::new(
+            drained.clone(),
+            ServicesRole::AlreadyOff,
+            Vec::new(),
+            None,
+            remaining,
+        )
+    };
+    let db = report(Remaining::Observed {
+        services: vec![service("db")],
+        unchosen: vec![service("db")],
+    });
+    assert_eq!(
+        closing_lines(&db),
         ["Still on web-2: app/db", NOTHING_MOVES_BACK]
     );
     let empty = report(Remaining::Observed {
         services: Vec::new(),
+        unchosen: Vec::new(),
     });
     assert_eq!(
         closing_lines(&empty),
@@ -280,30 +191,19 @@ fn every_outcome_that_existed_prints_the_same_line() {
 }
 
 #[test]
-fn a_stopped_drain_adds_what_used_to_be_lost() {
+fn a_stopped_drain_says_why_and_that_what_remains_went_unchecked() {
     let drained = server('b', "web-2");
-    let report = DrainReport {
-        server: drained.clone(),
-        services_role: ServicesRole::TurnedOff,
-        services: vec![ServiceDrain {
+    let report = DrainReport::new(
+        drained,
+        ServicesRole::TurnedOff,
+        vec![ServiceDrain {
             service: service("web"),
             outcome: DrainOutcome::NotAttempted,
         }],
-        stopped: Some(DrainStop::Cancelled),
-        remaining: Remaining::Unobserved {
+        Some(DrainStop::Cancelled),
+        Remaining::Unobserved {
             error: "no terminal response".into(),
         },
-    };
-    assert_eq!(
-        report_json(&report),
-        json!({
-            "server": server_json(&drained),
-            "services": [{ "service": "app/web", "result": "not_attempted" }],
-            "stopped": "cancelled",
-            "remaining": null,
-            "remaining_error": "no terminal response",
-            "note": NOTHING_MOVES_BACK,
-        })
     );
     assert_eq!(
         closing_lines(&report),

@@ -4,7 +4,7 @@ import { Button } from "#/components/ui/button";
 import { Field, FieldContent, FieldDescription, FieldLabel, FieldTitle } from "#/components/ui/field";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
-import { drainBusy, drainButtonLabel, type DrainView } from "#/modules/machines/server-drain";
+import { drainBusy, drainButtonLabel, type DrainView } from "#/modules/machines/server-drain-view";
 import { useServerPolicy } from "#/modules/machines/server-policy.hooks";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";

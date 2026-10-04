@@ -1,5 +1,6 @@
 import type { DrainReport, MachineRef, MoveFailure, ServiceDrain } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
+import type { LatestDrain, LatestDrains } from "#/modules/machines/server-drain";
 import {
   drainButtonLabel,
   drainDialogNames,
@@ -7,9 +8,7 @@ import {
   drainSummary,
   drainView,
   removeHint,
-  type LatestDrain,
-  type LatestDrains,
-} from "#/modules/machines/server-drain";
+} from "#/modules/machines/server-drain-view";
 import { runtimeWatchMachineFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 
 const ref = (digit: string, name: string): MachineRef => {
@@ -25,13 +24,16 @@ const serverNames = new Map([web1, web2, web3].map(({ id, name }) => [id, name])
 const report = (
   services: ServiceDrain[],
   stopped: DrainReport["stopped"] = null,
-  remaining: DrainReport["remaining"] = { kind: "observed", services: [] },
+  remaining: DrainReport["remaining"] = { kind: "observed", services: [], unchosen: [] },
 ): DrainReport => ({
   server: runtimeWatchMachineFixture(web2.id, web2.name),
   services_role: "turned_off",
   services,
   stopped,
   remaining,
+  // As the Engine derives it.
+  complete: stopped === null && remaining.kind === "observed"
+    && services.every((entry) => ["moved", "nothing_to_move", "retired"].includes(entry.result)),
 });
 const finished = (services: ServiceDrain[], stopped: DrainReport["stopped"] = null): LatestDrain => ({
   attemptId: "a1", state: "finished", endedAt: "2026-10-04T10:00:00.000Z", report: report(services, stopped),
@@ -53,16 +55,19 @@ describe("Drain result", () => {
   });
 
   it("counts what it left alone and never says nothing ran here while something does", () => {
-    const left: DrainReport["remaining"] = { kind: "observed", services: ["left-behind/old", "ployz-system/dns", "shop/postgres"] };
+    const unowned = ["left-behind/old", "legacy/cron"];
+    const left: DrainReport["remaining"] = { kind: "observed", services: [...unowned, "ployz-system/dns"], unchosen: unowned };
     expect(drainSummary(report([], null, left), "web-2")).toBe("2 left alone");
-    expect(drainSummary(report([moved, volume], null, left), "web-2")).toBe("1 moved, 1 stayed, 1 left alone");
-    expect(drainSummary(report([], null, { kind: "observed", services: ["ployz-system/dns"] }), "web-2")).toBe("Nothing was running here");
+    const stayed: DrainReport["remaining"] = { kind: "observed", services: ["left-behind/old", "shop/postgres"], unchosen: ["left-behind/old"] };
+    expect(drainSummary(report([moved, volume], null, stayed), "web-2")).toBe("1 moved, 1 stayed, 1 left alone");
+    const system: DrainReport["remaining"] = { kind: "observed", services: ["ployz-system/dns"], unchosen: [] };
+    expect(drainSummary(report([], null, system), "web-2")).toBe("Nothing was running here");
   });
 
   it("says when it couldn't check what's left, and offers Drain again", () => {
     const unobserved = { kind: "unobserved", error: "timeout" } as const;
     expect(drainSummary(report([], null, unobserved), "web-2")).toBe("Couldn't check what's left on web-2");
-    expect(drainSummary(report([moved], null, unobserved), "web-2")).toBe("1 moved; couldn't check what's left");
+    expect(drainSummary(report([moved], null, unobserved), "web-2")).toBe("1 moved, but couldn't check what's left");
     const own: LatestDrain = { attemptId: "a1", state: "finished", endedAt: "2026-10-04T10:00:00.000Z", report: report([moved], null, unobserved) };
     expect(drainButtonLabel(view({ [web2.id]: own }))).toBe("Drain again");
   });
@@ -99,9 +104,14 @@ describe("Drain result", () => {
     expect(drainRow(refused, web2.id).reason).toBe("Stopped moving it. A deploy is in progress. Deploy it first. Moved to web-1 before that.");
   });
 
-  it("says whether a cancelled Drain stopped before or during a move, and what a mid-move cancel may have left", () => {
+  it("says where a stopped Drain left a Service, and what a mid-move cancel may have left", () => {
+    expect(drainRow({ service: "shop/worker", result: "interrupted", moves: [] }, web2.id))
+      .toMatchObject({ tone: "neutral", label: "Interrupted", reason: "The drain stopped while moving it." });
+    expect(drainRow({ service: "shop/worker", result: "interrupted", moves: [{ from: web2, to: web1 }] }, web2.id).reason)
+      .toBe("The drain stopped while moving it. Moved to web-1 before that.");
+    expect(drainSummary(report([moved, { service: "shop/worker", result: "interrupted", moves: [] }], { kind: "cancelled" }), "web-2"))
+      .toBe("1 moved, 1 interrupted");
     const failure = (failure: MoveFailure): ServiceDrain => ({ service: "shop/worker", result: "failed", moves: [], failure });
-    expect(drainRow(failure({ stage: "cancelled_before_move", from: web2 }), web2.id).reason).toBe("The drain stopped before moving it.");
     expect(drainRow(failure({ stage: "cancelled", from: web2, to: web1, replacement_removed: true }), web2.id).reason)
       .toBe("The drain stopped mid-move. It still runs here.");
     expect(drainRow(failure({ stage: "cancelled", from: web2, to: web1, replacement_removed: false }), web2.id).reason)
@@ -137,16 +147,35 @@ describe("Drain view", () => {
     const stopped = view({ [web2.id]: finished([moved], { kind: "entry_unreachable", detail: "timeout" }) });
     expect(stopped).toMatchObject({ kind: "finished", stoppedEarly: "Lost contact with your servers", again: true });
     expect(drainButtonLabel(view({
-      [web2.id]: { attemptId: "a1", state: "unknown", endedAt: "2026-10-04T10:00:00.000Z", failureCode: "lost", failureMessage: "lost" },
+      [web2.id]: { attemptId: "a1", state: "unknown", endedAt: "2026-10-04T10:00:00.000Z", endCode: "lost" },
     }))).toBe("Drain again");
   });
 
-  it("shows the Engine's words only when it refused", () => {
-    const failed = (failureCode: "refused" | "dispatch_failed") => view({
-      [web2.id]: { attemptId: "a1", state: "failed", endedAt: "2026-10-04T10:00:00.000Z", failureCode, failureMessage: "no server named web-2" },
-    });
-    expect(failed("refused")).toMatchObject({ kind: "failed", words: "Drain didn't start", details: "no server named web-2" });
-    expect(failed("dispatch_failed")).toMatchObject({ kind: "failed", words: "Drain didn't start. Try again.", details: null });
+  it("shows the Engine's words only when it refused, and says what each other end means", () => {
+    const at = "2026-10-04T10:00:00.000Z";
+    const ended = (drain: LatestDrain) => view({ [web2.id]: drain });
+    expect(ended({ attemptId: "a1", state: "failed", endedAt: at, endCode: "refused", refusalMessage: "no server named web-2" }))
+      .toEqual({ kind: "failed", at, words: "Drain didn't start", details: "no server named web-2" });
+    expect(ended({ attemptId: "a1", state: "failed", endedAt: at, endCode: "not_started" }))
+      .toEqual({ kind: "failed", at, words: "Drain didn't start. Try again.", details: null });
+    expect(ended({ attemptId: "a1", state: "cancelled", endedAt: at, endCode: "cancelled" })).toEqual({ kind: "cancelled", at });
+    expect(ended({ attemptId: "a1", state: "unknown", endedAt: at, endCode: "interrupted" }))
+      .toEqual({ kind: "unknown", at, words: "Drain was cancelled. Running here shows what's still on this server." });
+  });
+});
+
+describe("Drain ends", () => {
+  it("lets an end carry only its own state, and words only for a refusal", () => {
+    const at = "2026-10-04T10:00:00.000Z";
+    const ends: LatestDrain[] = [
+      // @ts-expect-error a lost Drain may have moved anything: it is unknown, never failed
+      { attemptId: "a1", state: "failed", endedAt: at, endCode: "lost" },
+      // @ts-expect-error only the Engine's refusal has words
+      { attemptId: "a1", state: "failed", endedAt: at, endCode: "not_started", refusalMessage: "no" },
+      // @ts-expect-error a refusal always has the Engine's words
+      { attemptId: "a1", state: "failed", endedAt: at, endCode: "refused" },
+    ];
+    expect(ends).toHaveLength(3);
   });
 });
 

@@ -230,8 +230,7 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
                 crate::cluster::wait_for_role(
                     client,
                     &machine.id,
-                    "ingress",
-                    |machine| machine.accepts_ingress,
+                    crate::cluster::RoleSetting::IngressOn,
                     &CancellationToken::new(),
                 )
                 .await

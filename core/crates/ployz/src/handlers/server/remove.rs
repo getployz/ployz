@@ -356,11 +356,9 @@ pub(super) fn select_machine(
     selector: &str,
 ) -> Result<Machine, Error> {
     let selector = MachineTarget::parse(selector)?;
-    Ok(
-        crate::cluster::visible_machine(&selector, machines, "Server")?
-            .machine
-            .clone(),
-    )
+    Ok(crate::cluster::visible_machine(&selector, machines)?
+        .machine
+        .clone())
 }
 
 fn machine_removal_refusal(error: RpcError) -> Error {

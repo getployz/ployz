@@ -25,9 +25,6 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
             target_services: None,
             create_result: Ok(Some(created())),
             create_calls: Vec::new(),
-            retire_calls: Vec::new(),
-            retire_error: None,
-            cancel_on_retire: None,
             failures: if failed {
                 vec![ployz_core::MachineFailure {
                     machine_id: peer.id,
@@ -68,9 +65,6 @@ async fn successful_ensure_is_reobserved_before_success() {
         target_services: None,
         create_result: Ok(Some(created())),
         create_calls: Vec::new(),
-        retire_calls: Vec::new(),
-        retire_error: None,
-        cancel_on_retire: None,
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -95,9 +89,6 @@ async fn initially_eligible_global_absent_from_target_inspection_remains_missing
         target_services: Some(Vec::new()),
         create_result: Ok(Some(created())),
         create_calls: Vec::new(),
-        retire_calls: Vec::new(),
-        retire_error: None,
-        cancel_on_retire: None,
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -136,9 +127,6 @@ async fn initially_eligible_global_with_only_hook_visible_remains_missing() {
         target_services: Some(vec![hook_only]),
         create_result: Ok(Some(created())),
         create_calls: Vec::new(),
-        retire_calls: Vec::new(),
-        retire_error: None,
-        cancel_on_retire: None,
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -170,9 +158,6 @@ async fn initially_eligible_generation_absent_from_target_inspection_remains_mis
         target_services: Some(vec![stale]),
         create_result: Ok(Some(created())),
         create_calls: Vec::new(),
-        retire_calls: Vec::new(),
-        retire_error: None,
-        cancel_on_retire: None,
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -203,9 +188,6 @@ async fn another_namespaces_matching_shape_does_not_satisfy_catch_up() {
         target_services: Some(vec![shop]),
         create_result: Ok(Some(created())),
         create_calls: Vec::new(),
-        retire_calls: Vec::new(),
-        retire_error: None,
-        cancel_on_retire: None,
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -220,18 +202,12 @@ struct FakeCatchUpClient {
     target_services: Option<Vec<ServiceObservation>>,
     create_calls: Vec<CreateContainerRequest>,
     create_result: Result<Option<ployz_core::ContainerCreated>, RpcError>,
-    retire_calls: Vec<QualifiedService>,
-    retire_error: Option<RpcError>,
-    cancel_on_retire: Option<CancellationToken>,
     failures: Vec<ployz_core::MachineFailure<RpcError>>,
     omissions: Vec<MachineId>,
 }
 
 impl CatchUpClient for FakeCatchUpClient {
-    async fn live_services(
-        &mut self,
-        _environment: EnvironmentValues,
-    ) -> Result<LiveServices<RpcError>, Failure> {
+    async fn live_services(&mut self) -> Result<LiveServices<RpcError>, Failure> {
         Ok(LiveServices {
             containers: ployz_core::PartialResult {
                 successes: vec![ployz_core::MachineSuccess {
@@ -273,18 +249,6 @@ impl CatchUpClient for FakeCatchUpClient {
         Ok(())
     }
 
-    async fn retire_slot(
-        &mut self,
-        _machine_id: &MachineId,
-        slot: &ObservedGlobalSlotSpec,
-    ) -> Result<(), RpcError> {
-        self.retire_calls.push(slot.identity().clone());
-        if let Some(cancellation) = &self.cancel_on_retire {
-            cancellation.cancel();
-        }
-        self.retire_error.clone().map_or(Ok(()), Err)
-    }
-
     async fn target_containers(
         &mut self,
         _machine_id: &MachineId,
@@ -300,7 +264,7 @@ impl CatchUpClient for FakeCatchUpClient {
     }
 }
 
-fn machine(hex: char, name: &str) -> Machine {
+pub(crate) fn machine(hex: char, name: &str) -> Machine {
     Machine {
         labels: Default::default(),
         accepts_builds: true,
@@ -319,14 +283,14 @@ fn machine(hex: char, name: &str) -> Machine {
     }
 }
 
-fn qualified(namespace: &str, name: &str) -> QualifiedService {
+pub(crate) fn qualified(namespace: &str, name: &str) -> QualifiedService {
     QualifiedService::new(
         Namespace::parse(namespace).unwrap(),
         ServiceName::parse(name).unwrap(),
     )
 }
 
-fn service_id(hex: char) -> ServiceId {
+pub(crate) fn service_id(hex: char) -> ServiceId {
     ServiceId::parse(hex.to_string().repeat(32)).unwrap()
 }
 
@@ -334,7 +298,7 @@ fn container_id(hex: char) -> ContainerId {
     ContainerId::parse(hex.to_string().repeat(64)).unwrap()
 }
 
-fn requested(mode: ServiceMode) -> RequestedServiceSpec {
+pub(crate) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
     RequestedServiceSpec {
         name: ServiceName::parse("api").unwrap(),
         mode,
@@ -371,7 +335,7 @@ fn requested(mode: ServiceMode) -> RequestedServiceSpec {
     }
 }
 
-fn global_service(
+pub(crate) fn global_service(
     identity: QualifiedService,
     id: char,
     placement: Placement,
@@ -399,7 +363,7 @@ fn global_service_with_image(
     )
 }
 
-fn grouped(
+pub(crate) fn grouped(
     identity: QualifiedService,
     spec: ResolvedServiceSpec,
     mut container: ContainerObservation,
@@ -418,7 +382,7 @@ fn grouped(
     }
 }
 
-fn running_on(machine: &Machine, hex: char) -> ContainerObservation {
+pub(crate) fn running_on(machine: &Machine, hex: char) -> ContainerObservation {
     container_on(
         machine,
         hex,
@@ -508,9 +472,6 @@ async fn failed_placement_is_reported_even_if_final_observation_is_running() {
         )]),
 
         create_calls: Vec::new(),
-        retire_calls: Vec::new(),
-        retire_error: None,
-        cancel_on_retire: None,
         create_result: Err(RpcError {
             code: ployz_core::RpcErrorCode::Conflict,
             message: "creation key conflict".into(),
@@ -521,137 +482,6 @@ async fn failed_placement_is_reported_even_if_final_observation_is_running() {
     };
     let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
     assert!(joined_catch_up_error(error, &joiner).contains("creation key conflict"));
-}
-
-fn retiring(drained: &Machine, services: Vec<ServiceObservation>) -> FakeCatchUpClient {
-    FakeCatchUpClient {
-        machine_id: drained.id,
-        services,
-        target_services: None,
-        create_calls: Vec::new(),
-        retire_calls: Vec::new(),
-        retire_error: None,
-        cancel_on_retire: None,
-        create_result: Ok(Some(created())),
-        failures: Vec::new(),
-        omissions: Vec::new(),
-    }
-}
-
-fn global_on(drained: &Machine, namespace: &str, hex: char) -> ServiceObservation {
-    global_service(
-        qualified(namespace, "api"),
-        hex,
-        Placement::default(),
-        running_on(drained, hex),
-    )
-}
-
-#[tokio::test]
-async fn retirement_touches_only_the_chosen_globals_and_starts_nothing() {
-    let drained = machine('1', "drained");
-    let mut client = retiring(
-        &drained,
-        vec![
-            global_on(&drained, "app", 'a'),
-            global_on(&drained, "other", 'b'),
-        ],
-    );
-    let chosen = qualified("app", "api");
-    let never = CancellationToken::new();
-    let retired =
-        retire_globals(&mut client, &drained, std::slice::from_ref(&chosen), &never).await;
-    assert_eq!(retired, [(chosen.clone(), Retirement::Retired)]);
-    assert_eq!(client.retire_calls, [chosen]);
-    assert!(client.create_calls.is_empty());
-
-    client.retire_calls.clear();
-    assert!(
-        retire_globals(&mut client, &drained, &[], &never)
-            .await
-            .is_empty()
-    );
-    assert!(client.retire_calls.is_empty() && client.create_calls.is_empty());
-}
-
-#[tokio::test]
-async fn retirement_reports_every_global_and_stops_at_the_next_once_cancelled() {
-    let drained = machine('1', "drained");
-    let globals = [qualified("app", "api"), qualified("other", "api")];
-    let services = vec![
-        global_on(&drained, "app", 'a'),
-        global_on(&drained, "other", 'b'),
-    ];
-
-    let cancellation = CancellationToken::new();
-    let mut client = retiring(&drained, services.clone());
-    client.cancel_on_retire = Some(cancellation.clone());
-    assert_eq!(
-        retire_globals(&mut client, &drained, &globals, &cancellation).await,
-        [
-            (globals[0].clone(), Retirement::Retired),
-            (globals[1].clone(), Retirement::NotAttempted),
-        ]
-    );
-    assert_eq!(client.retire_calls, [globals[0].clone()]);
-
-    let mut client = retiring(&drained, services);
-    client.retire_error = Some(RpcError {
-        code: ployz_core::RpcErrorCode::Conflict,
-        message: "the Server accepts it again".into(),
-        details: serde_json::Value::Null,
-    });
-    let gone = qualified("gone", "api");
-    let outcomes = retire_globals(
-        &mut client,
-        &drained,
-        &[globals[0].clone(), gone.clone()],
-        &CancellationToken::new(),
-    )
-    .await;
-    assert_eq!(
-        outcomes,
-        [
-            (
-                globals[0].clone(),
-                Retirement::NotRetired("the Server accepts it again".into())
-            ),
-            (gone, Retirement::Retired),
-        ],
-        "a Global a full observation no longer finds has nothing left to retire"
-    );
-}
-
-#[tokio::test]
-async fn a_global_whose_newest_container_is_not_global_is_reported_not_retired() {
-    let drained = machine('1', "drained");
-    let identity = qualified("app", "api");
-    let mut spec = requested(ServiceMode::Replicated {
-        replicas: std::num::NonZeroU32::MIN,
-    });
-    spec.name = identity.name.clone();
-    let replicated = grouped(
-        identity.clone(),
-        spec.to_resolved(service_id('a'), ResolvedUpdateConfig::default())
-            .expect("volume graph is scoped"),
-        running_on(&drained, 'a'),
-    );
-    let mut client = retiring(&drained, vec![replicated]);
-    let outcomes = retire_globals(
-        &mut client,
-        &drained,
-        std::slice::from_ref(&identity),
-        &CancellationToken::new(),
-    )
-    .await;
-    assert_eq!(
-        outcomes,
-        [(
-            identity,
-            Retirement::NotRetired("its newest Container is not Global; deploy it first".into())
-        )]
-    );
-    assert!(client.retire_calls.is_empty());
 }
 
 fn created() -> ployz_core::ContainerCreated {

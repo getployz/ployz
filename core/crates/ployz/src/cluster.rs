@@ -578,7 +578,7 @@ impl Client {
         machine: &MachineTarget,
     ) -> Result<ObservedDataLoss, RpcError> {
         let machines = self.machines().await.map_err(RpcError::from)?;
-        let observation = visible_machine(machine, &machines, "Machine")?;
+        let observation = visible_machine(machine, &machines)?;
         data_loss_on_machine(self, observation).await
     }
 
@@ -606,7 +606,7 @@ impl Client {
         remover: Remover,
     ) -> Result<LocalMachineRemoved, RpcError> {
         let machines = self.machines().await.map_err(RpcError::from)?;
-        let observation = visible_machine(machine, &machines, "Machine")?;
+        let observation = visible_machine(machine, &machines)?;
         let selected = observation.machine.id;
         let current = self
             .call::<op::DescribeContract>(DescribeContractRequest {}, None)
@@ -644,7 +644,7 @@ impl Client {
         machine: &MachineTarget,
     ) -> Result<(), RpcError> {
         let machines = self.machines().await.map_err(RpcError::from)?;
-        let observation = visible_machine(machine, &machines, "Machine")?;
+        let observation = visible_machine(machine, &machines)?;
         let selected = observation.machine.id;
         if refuse_last_managed(self, &machines, selected).await? == CloudHold::Last {
             return Err(cloud_holds_last(selected));
@@ -1072,20 +1072,18 @@ pub(crate) async fn refuse_last_managed(
 }
 
 /// Resolve a Machine Target without hiding Name Ambiguity in the visible observations.
-/// Errors call the Machine `noun`, as the caller's audience knows it.
 ///
 /// # Errors
 /// Returns NotFound or Ambiguous when the target does not resolve to one Machine.
 pub(crate) fn visible_machine<'list>(
     machine: &MachineTarget,
     machines: &'list [MachineObservation],
-    noun: &str,
 ) -> Result<&'list MachineObservation, RpcError> {
     let selected = match machine.resolve(machines.iter().map(|entry| &entry.machine)) {
         NameMatches::None => {
             return Err(RpcError {
                 code: RpcErrorCode::NotFound,
-                message: format!("{noun} {} was not found", machine.as_str().escape_debug()),
+                message: format!("Server {} was not found", machine.as_str().escape_debug()),
                 details: Value::Null,
             });
         }
@@ -1093,7 +1091,7 @@ pub(crate) fn visible_machine<'list>(
             return Err(RpcError {
                 code: RpcErrorCode::Ambiguous,
                 message: format!(
-                    "{noun} name {} is ambiguous: {}",
+                    "Server name {} is ambiguous: {}",
                     machine.as_str().escape_debug(),
                     matches
                         .iter()
@@ -1112,19 +1110,41 @@ pub(crate) fn visible_machine<'list>(
         .expect("resolved Machine came from this list"))
 }
 
+/// A role setting a caller waits for this entry to observe.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum RoleSetting {
+    ServicesOff,
+    IngressOn,
+}
+
+impl RoleSetting {
+    fn role(self) -> &'static str {
+        match self {
+            Self::ServicesOff => "services",
+            Self::IngressOn => "ingress",
+        }
+    }
+
+    fn holds(self, machine: &Machine) -> bool {
+        match self {
+            Self::ServicesOff => !machine.accepts_services,
+            Self::IngressOn => machine.accepts_ingress,
+        }
+    }
+}
+
 /// Why [`wait_for_role`] gave up.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum RoleWaitError {
-    #[error("this entry Server has not yet observed the new {0} role")]
-    NotObserved(&'static str),
+    #[error("this entry Server has not yet observed the new {} role", .0.role())]
+    NotObserved(RoleSetting),
     #[error("cancelled while waiting for the new role")]
     Cancelled,
     #[error(transparent)]
     Connect(#[from] ConnectError),
 }
 
-/// Wait until this entry sees Machine `id`'s new `role` setting, so what plans next plans
-/// from it.
+/// Wait until this entry sees Machine `id` with `setting`, so what plans next plans from it.
 ///
 /// # Errors
 /// Fails when the entry hasn't observed it within 30 s, `cancellation` fires first, or
@@ -1132,8 +1152,7 @@ pub(crate) enum RoleWaitError {
 pub(crate) async fn wait_for_role(
     client: &mut Client,
     id: &MachineId,
-    role: &'static str,
-    settled: fn(&Machine) -> bool,
+    setting: RoleSetting,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<(), RoleWaitError> {
     // ponytail: fixed 30 s bound; the role replicates within seconds on a healthy Cluster.
@@ -1146,12 +1165,12 @@ pub(crate) async fn wait_for_role(
         };
         if machines
             .iter()
-            .any(|entry| entry.machine.id == *id && settled(&entry.machine))
+            .any(|entry| entry.machine.id == *id && setting.holds(&entry.machine))
         {
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(RoleWaitError::NotObserved(role));
+            return Err(RoleWaitError::NotObserved(setting));
         }
         tokio::select! {
             biased;

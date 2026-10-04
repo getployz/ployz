@@ -5,6 +5,7 @@ use std::{
 };
 
 use ployz::deploy::plan_deploy;
+use ployz::drain::{DrainOutcome, Remaining, ServiceDrain};
 use ployz_core::{
     ContainerId, ContainerKind, GetIngressProxyConfigRequest, InspectContainerRequest,
     ListMachinesRequest, Machine, MachineId, MachineTarget, Namespace, RequestedServiceSpec,
@@ -133,10 +134,15 @@ async fn drain_moves_containers_off_without_a_gap_or_a_deploy() {
     ))
     .unwrap();
     assert_eq!(rerun.get("services"), Some(&serde_json::json!([])));
+    assert_eq!(rerun.get("complete"), Some(&serde_json::json!(true)));
     // The Ingress Proxy follows the ingress role, not the services role.
     assert_eq!(
         rerun.get("remaining"),
-        Some(&serde_json::json!(["ployz-system/ingress"]))
+        Some(&serde_json::json!({
+            "kind": "observed",
+            "services": ["ployz-system/ingress"],
+            "unchosen": [],
+        }))
     );
     assert_eq!(
         running(&mut client, &[web_id, solo_id], 3)
@@ -334,48 +340,48 @@ async fn drain_leaves_what_it_cannot_move_and_retires_globals() {
         "a drain that leaves Services behind is partial"
     );
     let report: serde_json::Value = serde_json::from_str(&report).unwrap();
-    let field = |value: &serde_json::Value, key: &str| value.get(key).cloned().unwrap_or_default();
+    assert_eq!(report.get("complete"), Some(&serde_json::json!(false)));
+    let services: Vec<ServiceDrain> =
+        serde_json::from_value(report.get("services").cloned().unwrap_or_default()).unwrap();
     let result = |service: &str| {
-        field(&report, "services")
-            .as_array()
-            .unwrap()
+        services
             .iter()
-            .find(|entry| field(entry, "service") == format!("app/{service}"))
+            .find(|entry| entry.service.to_string() == format!("app/{service}"))
             .unwrap_or_else(|| panic!("{service} is reported: {report}"))
+            .outcome
             .clone()
     };
-    assert_eq!(
-        result("metrics"),
-        serde_json::json!({ "service": "app/metrics", "result": "retired" })
-    );
+    let stays = |service: &str| {
+        let outcome = result(service);
+        let DrainOutcome::Stays { reason } = &outcome else {
+            panic!("{service} stays: {outcome:?}");
+        };
+        reason.to_string()
+    };
+    assert_eq!(result("metrics"), DrainOutcome::Retired);
     for (service, reason) in [
         ("volume", format!("Volume data is on {}", web2.name)),
         ("bind", format!("Bind Mount on {}", web2.name)),
         ("mixed", "mid-rollout: deploy it first".to_owned()),
     ] {
-        assert_eq!(
-            result(service),
-            serde_json::json!({ "service": format!("app/{service}"), "result": "stays", "reason": reason })
-        );
+        assert_eq!(stays(service), reason);
     }
-    let free = result("free");
-    assert_eq!(field(&free, "result"), "stays");
-    assert!(
-        field(&free, "reason")
-            .as_str()
-            .unwrap()
-            .starts_with("no eligible Server"),
-        "{free}"
-    );
-    let remaining = field(&report, "remaining");
-    let remaining = remaining.as_array().unwrap();
+    assert!(stays("free").starts_with("no eligible Server"));
+    let Remaining::Observed {
+        services: remaining,
+        ..
+    } = serde_json::from_value(report.get("remaining").cloned().unwrap_or_default()).unwrap()
+    else {
+        panic!("what remains is observed: {report}");
+    };
+    let remaining = remaining
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
     for service in ["volume", "bind", "free", "mixed"] {
-        assert!(
-            remaining.contains(&serde_json::json!(format!("app/{service}"))),
-            "{report}"
-        );
+        assert!(remaining.contains(&format!("app/{service}")), "{report}");
     }
-    assert!(!remaining.contains(&serde_json::json!("app/metrics")));
+    assert!(!remaining.contains(&"app/metrics".to_owned()));
 
     running(&mut client, &[global_id], 0).await;
     let after = running(&mut client, &ids, 5).await;

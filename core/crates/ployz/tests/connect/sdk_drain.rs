@@ -58,7 +58,8 @@ async fn an_empty_owned_scope_turns_the_role_off_and_touches_nothing() {
     assert_eq!(
         report.remaining,
         Remaining::Observed {
-            services: vec![QualifiedService::parse("app/api").unwrap()]
+            services: vec![QualifiedService::parse("app/api").unwrap()],
+            unchosen: vec![QualifiedService::parse("app/api").unwrap()],
         }
     );
     // Neither convergence nor Global slot convergence ran: both inspect a Machine first.

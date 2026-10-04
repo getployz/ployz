@@ -15,7 +15,7 @@ import { needsAttention } from "#/modules/machines/server-status";
 import { useServers, type Server } from "#/modules/machines/use-servers";
 import { latestServerUpgradesQueryOptions } from "#/modules/server-upgrade/server-upgrade.queries";
 import { useStrayNamespaces } from "#/modules/machines/namespace-cleanup.queries";
-import { drainDialogNames, removeHint } from "#/modules/machines/server-drain";
+import { drainDialogNames, removeHint } from "#/modules/machines/server-drain-view";
 import { useServerDrain } from "#/modules/machines/server-drain.hooks";
 import { latestServerDrainsQueryOptions } from "#/modules/machines/server-drain.queries";
 import { prefetchRemote } from "#/collections/route-data";

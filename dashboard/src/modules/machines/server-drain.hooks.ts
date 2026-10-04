@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
-import { drainView, type DrainView } from "./server-drain";
+import { drainView, type DrainView } from "./server-drain-view";
 import { requestServerDrainServerFn } from "./server-drain.functions";
 import { serverDrainKeys, useServerDrains } from "./server-drain.queries";
 

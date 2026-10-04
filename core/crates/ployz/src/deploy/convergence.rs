@@ -20,6 +20,7 @@ use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 
 use super::DeploySnapshot;
 use super::exec::MoveContainerError;
+use crate::drain::{DrainOutcome, DrainStop};
 
 /// A Server as a report names it: its durable identity and the name it had then. Two
 /// Servers may share a name, so the id is what a reader links by.
@@ -52,38 +53,14 @@ pub struct Move {
     pub to: MachineRef,
 }
 
-/// What Placement convergence did for one replicated Service.
+/// How converging one replicated Service ended.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Convergence {
-    /// Every Container on a Machine its spec rules out moved, in order. Never empty.
-    Moved { moves: Vec<Move> },
-    /// None of its active Containers sits on a Machine its spec rules out.
-    NothingToMove,
-    /// `moves` were made, then `failure` stopped the rest.
-    Failed {
-        moves: Vec<Move>,
-        failure: MoveFailure,
-    },
-    /// Refused before anything moved.
-    Stays { reason: StayReason },
-}
-
-impl Convergence {
-    /// The entry stopped answering while this Service was handled; a Drain stops after it.
-    pub(crate) fn lost_entry(&self) -> Option<&str> {
-        match self {
-            Self::Failed {
-                failure: MoveFailure::Unobservable { detail },
-                ..
-            }
-            | Self::Stays {
-                reason: StayReason::EntryUnobservable { detail },
-            } => Some(detail),
-            Self::Moved { .. } | Self::NothingToMove | Self::Failed { .. } | Self::Stays { .. } => {
-                None
-            }
-        }
-    }
+pub(crate) enum Converged {
+    /// It ran to its outcome: `Moved`, `NothingToMove`, `Failed` or `Stays`.
+    Done(DrainOutcome),
+    /// The Drain stops here, after `moves`: cancelled before the next move, or the entry
+    /// stopped answering.
+    Stopped { moves: Vec<Move>, stop: DrainStop },
 }
 
 /// Why a Service's Containers stay where they are. Each holds what the snapshot can't
@@ -91,8 +68,6 @@ impl Convergence {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StayReason {
-    /// The entry did not answer the observation.
-    EntryUnobservable { detail: String },
     /// A Server's Containers could not be listed.
     Unobserved { server: MachineRef },
     /// Its Containers carry more than one Serving Shape.
@@ -115,7 +90,6 @@ pub enum StayReason {
 impl fmt::Display for StayReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EntryUnobservable { detail } => write!(f, "cannot observe the Cluster: {detail}"),
             Self::Unobserved { server } => write!(f, "cannot observe {server}"),
             Self::MidRollout => f.write_str("mid-rollout: deploy it first"),
             Self::EligibilityUnknown { server } => write!(f, "eligibility on {server} is unknown"),
@@ -171,10 +145,6 @@ pub enum MoveFailure {
         to: MachineRef,
         replacement_removed: bool,
     },
-    /// Cancelled before the next move began.
-    CancelledBeforeMove { from: MachineRef },
-    /// The entry stopped answering before the next move.
-    Unobservable { detail: String },
     /// A fresh observation before the next move refuses it.
     Refused { reason: StayReason },
 }
@@ -200,10 +170,6 @@ impl fmt::Display for MoveFailure {
                 "moving it from {from} to {to}: {}",
                 ExecutionError::Cancelled
             ),
-            Self::CancelledBeforeMove { from } => {
-                write!(f, "cancelled before moving it off {from}")
-            }
-            Self::Unobservable { detail } => write!(f, "cannot observe the Cluster: {detail}"),
             Self::Refused { reason } => reason.fmt(f),
         }
     }
@@ -243,20 +209,21 @@ pub(crate) async fn converge<C: ConvergenceClient>(
     client: &mut C,
     service: &QualifiedService,
     cancellation: &CancellationToken,
-) -> Convergence {
+) -> Converged {
+    let entry_lost = |moves, error: ConnectError| Converged::Stopped {
+        moves,
+        stop: DrainStop::EntryUnreachable {
+            detail: error.to_string(),
+        },
+    };
+    let failed = |moves, failure| Converged::Done(DrainOutcome::Failed { moves, failure });
     let snapshot = match client.observe().await {
         Ok(snapshot) => snapshot,
-        Err(error) => {
-            return Convergence::Stays {
-                reason: StayReason::EntryUnobservable {
-                    detail: error.to_string(),
-                },
-            };
-        }
+        Err(error) => return entry_lost(Vec::new(), error),
     };
     let initial = stranded(&snapshot, service);
     if let Some(reason) = refusal(&snapshot, service, &initial) {
-        return Convergence::Stays { reason };
+        return Converged::Done(DrainOutcome::Stays { reason });
     }
     let ids = initial
         .iter()
@@ -269,22 +236,12 @@ pub(crate) async fn converge<C: ConvergenceClient>(
             Some(snapshot) => snapshot,
             None => match client.observe().await {
                 Ok(snapshot) => snapshot,
-                Err(error) => {
-                    return Convergence::Failed {
-                        moves,
-                        failure: MoveFailure::Unobservable {
-                            detail: error.to_string(),
-                        },
-                    };
-                }
+                Err(error) => return entry_lost(moves, error),
             },
         };
         // A snapshot missing a Server's listing can't tell a gone Container from an unlisted one.
         if let Some(reason) = unobserved(&snapshot) {
-            return Convergence::Failed {
-                moves,
-                failure: MoveFailure::Refused { reason },
-            };
+            return failed(moves, MoveFailure::Refused { reason });
         }
         let fresh = stranded(&snapshot, service);
         // Gone, exited, or admitted again since the first snapshot: it stays put, whatever
@@ -297,29 +254,24 @@ pub(crate) async fn converge<C: ConvergenceClient>(
             continue;
         };
         if let Some(reason) = refusal(&snapshot, service, &fresh) {
-            return Convergence::Failed {
-                moves,
-                failure: MoveFailure::Refused { reason },
-            };
+            return failed(moves, MoveFailure::Refused { reason });
         }
         if cancellation.is_cancelled() {
-            return Convergence::Failed {
+            return Converged::Stopped {
                 moves,
-                failure: MoveFailure::CancelledBeforeMove {
-                    from: machine_ref(&snapshot, &container.machine_id),
-                },
+                stop: DrainStop::Cancelled,
             };
         }
         match client.move_one(&snapshot, container, cancellation).await {
             Ok(step) => moves.push(step),
-            Err(failure) => return Convergence::Failed { moves, failure },
+            Err(failure) => return failed(moves, failure),
         }
     }
-    if moves.is_empty() {
-        Convergence::NothingToMove
+    Converged::Done(if moves.is_empty() {
+        DrainOutcome::NothingToMove
     } else {
-        Convergence::Moved { moves }
-    }
+        DrainOutcome::Moved { moves }
+    })
 }
 
 /// Why nothing of this Service may move now, if so. It holds whatever the snapshot can't
@@ -475,16 +427,7 @@ async fn move_one(
         })?;
     let dest = machine(snapshot, &dest);
     let to = MachineRef::from(dest);
-    let image_id = image_id(client, source, &container.container_id)
-        .await
-        .map_err(|failure| match failure {
-            NoImageId::Unreported => MoveFailure::SourceTooOld { from: from.clone() },
-            NoImageId::Unread(detail) => MoveFailure::ReadImage {
-                from: from.clone(),
-                to: to.clone(),
-                detail,
-            },
-        })?;
+    let image_id = image_id(client, &container.container_id, &from, &to).await?;
     crate::image::copy_running_image(client, source, dest, &spec.container.image, &image_id)
         .await
         .map_err(|error| MoveFailure::CopyImage {
@@ -534,30 +477,29 @@ async fn move_one(
     }
 }
 
-enum NoImageId {
-    /// The source predates image IDs.
-    Unreported,
-    /// Inspecting the Container failed: the RPC error's message.
-    Unread(String),
-}
-
+/// The image ID the Container runs on `from`.
 async fn image_id(
     client: &Client,
-    source: &Machine,
     container: &ContainerId,
-) -> Result<String, NoImageId> {
+    from: &MachineRef,
+    to: &MachineRef,
+) -> Result<String, MoveFailure> {
     client
         .invoke::<op::InspectContainer>(
             InspectContainerRequest {
                 container_id: *container,
             },
-            &MachineTarget::from(&source.id),
+            &MachineTarget::from(&from.id),
             Some(TARGET_RPC_TIMEOUT),
         )
         .await
-        .map_err(|error| NoImageId::Unread(error.message))?
+        .map_err(|error| MoveFailure::ReadImage {
+            from: from.clone(),
+            to: to.clone(),
+            detail: error.message,
+        })?
         .image_id
-        .ok_or(NoImageId::Unreported)
+        .ok_or_else(|| MoveFailure::SourceTooOld { from: from.clone() })
 }
 
 #[cfg(test)]
@@ -573,10 +515,11 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{
-        Convergence, ConvergenceClient, DeploySnapshot, MachineRef, Move, MoveFailure, converge,
+        Converged, ConvergenceClient, DeploySnapshot, MachineRef, Move, MoveFailure, converge,
         refusal, stays,
     };
     use crate::connect::ConnectError;
+    use crate::drain::{DrainOutcome, DrainStop};
 
     fn spec(mode: serde_json::Value, source: serde_json::Value) -> ResolvedServiceSpec {
         serde_json::from_value(json!({
@@ -721,7 +664,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_lost_observation_keeps_the_moves_already_made() {
+    async fn losing_the_entry_stops_and_keeps_the_moves_already_made() {
         let service = QualifiedService::parse("app/api").unwrap();
         let mut client = Scripted {
             snapshots: [
@@ -730,17 +673,29 @@ mod tests {
             ]
             .into(),
         };
-        let convergence = converge(&mut client, &service, &CancellationToken::new()).await;
         assert_eq!(
-            convergence,
-            Convergence::Failed {
+            converge(&mut client, &service, &CancellationToken::new()).await,
+            Converged::Stopped {
                 moves: one_move(),
-                failure: MoveFailure::Unobservable {
+                stop: DrainStop::EntryUnreachable {
                     detail: "connection attempt failed: entry went away".into()
                 },
             }
         );
-        assert!(convergence.lost_entry().is_some());
+
+        let mut client = Scripted {
+            snapshots: [Err(ConnectError::Attempt("down".into()))].into(),
+        };
+        assert_eq!(
+            converge(&mut client, &service, &CancellationToken::new()).await,
+            Converged::Stopped {
+                moves: Vec::new(),
+                stop: DrainStop::EntryUnreachable {
+                    detail: "connection attempt failed: down".into()
+                },
+            },
+            "an entry lost before the first look moves nothing"
+        );
     }
 
     #[tokio::test]
@@ -753,13 +708,12 @@ mod tests {
         let mut client = Scripted {
             snapshots: [Ok(two_on_a()), Ok(unobserved)].into(),
         };
-        let convergence = converge(&mut client, &service, &CancellationToken::new()).await;
-        let Convergence::Failed { moves, failure } = &convergence else {
-            panic!("{convergence:?}");
+        let converged = converge(&mut client, &service, &CancellationToken::new()).await;
+        let Converged::Done(DrainOutcome::Failed { moves, failure }) = &converged else {
+            panic!("{converged:?}");
         };
         assert_eq!(moves, &one_move());
         assert_eq!(failure.to_string(), "cannot observe machine-b");
-        assert!(convergence.lost_entry().is_none());
     }
 
     #[tokio::test]
@@ -777,43 +731,26 @@ mod tests {
         let mut client = Scripted {
             snapshots: [Ok(first), Ok(after)].into(),
         };
-        let convergence = converge(&mut client, &service, &CancellationToken::new()).await;
-        assert_eq!(convergence, Convergence::Moved { moves: one_move() });
+        assert_eq!(
+            converge(&mut client, &service, &CancellationToken::new()).await,
+            Converged::Done(DrainOutcome::Moved { moves: one_move() })
+        );
     }
 
     #[tokio::test]
-    async fn a_cancelled_convergence_says_it_stopped_before_moving() {
+    async fn a_cancelled_convergence_stops_before_moving() {
         let service = QualifiedService::parse("app/api").unwrap();
         let mut client = Scripted {
             snapshots: [Ok(two_on_a())].into(),
         };
         let cancelled = CancellationToken::new();
         cancelled.cancel();
-        let convergence = converge(&mut client, &service, &cancelled).await;
         assert_eq!(
-            convergence,
-            Convergence::Failed {
+            converge(&mut client, &service, &cancelled).await,
+            Converged::Stopped {
                 moves: Vec::new(),
-                failure: MoveFailure::CancelledBeforeMove {
-                    from: MachineRef::from(&machine('a', false).machine),
-                },
+                stop: DrainStop::Cancelled,
             }
-        );
-    }
-
-    #[tokio::test]
-    async fn an_unobservable_entry_moves_nothing_and_says_so() {
-        let service = QualifiedService::parse("app/api").unwrap();
-        let mut client = Scripted {
-            snapshots: [Err(ConnectError::Attempt("down".into()))].into(),
-        };
-        let convergence = converge(&mut client, &service, &CancellationToken::new()).await;
-        let Convergence::Stays { reason } = &convergence else {
-            panic!("{convergence:?}");
-        };
-        assert_eq!(
-            reason.to_string(),
-            "cannot observe the Cluster: connection attempt failed: down"
         );
     }
 

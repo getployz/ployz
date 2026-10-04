@@ -102,11 +102,11 @@ describe("drain-server", () => {
   }).execute();
   const latest = async () => (await runEffect(listLatestServerDrains(actor, { organizationSlug: "acme" }))).servers;
   const rows = async () => (await harness.pool.query(
-    `select id, machine_id, state, inngest_run_id, report, failure_code, failure_message, started_at, ended_at
+    `select id, machine_id, state, inngest_run_id, report, end_code, refusal_message, started_at, ended_at
      from server_drain_attempt order by requested_at, id`,
   )).rows as Array<{
     id: string; machine_id: string; state: string; inngest_run_id: string | null; report: unknown;
-    failure_code: string | null; failure_message: string | null; started_at: Date | null; ended_at: Date | null;
+    end_code: string | null; refusal_message: string | null; started_at: Date | null; ended_at: Date | null;
   }>;
   /** Bind the row to `runId` and claim it, as a run that reached the Engine leaves it. */
   const claim = (id: string, runId: string) => harness.pool.query(
@@ -170,8 +170,8 @@ describe("drain-server", () => {
   it("fails the unbound pending row when its event can't be sent, so Drain is offered again", async () => {
     send.mockRejectedValueOnce(new Error("inngest unavailable"));
     await expect(request()).rejects.toThrow();
-    expect(await rows()).toMatchObject([{ state: "failed", failure_code: "dispatch_failed", inngest_run_id: null }]);
-    expect(await latest()).toMatchObject({ [machineId]: { state: "failed", failureCode: "dispatch_failed" } });
+    expect(await rows()).toMatchObject([{ state: "failed", end_code: "not_started", refusal_message: null, inngest_run_id: null }]);
+    expect(await latest()).toEqual({ [machineId]: { attemptId: requestId, state: "failed", endedAt: expect.any(String), endCode: "not_started" } });
 
     expect(await request(secondTab)).toMatchObject({ attemptId: secondTab, state: "pending" });
   });
@@ -210,20 +210,21 @@ describe("drain-server", () => {
 
     expect(output.result).toEqual({ attemptId: requestId, state: "failed" });
     expect(drainCalls).toHaveLength(1);
-    expect(await rows()).toMatchObject([{ state: "failed", failure_code: "refused", failure_message: "no server named web-2" }]);
-    expect(await latest()).toMatchObject({ [machineId]: { state: "failed", failureCode: "refused", failureMessage: "no server named web-2" } });
+    expect(await rows()).toMatchObject([{ state: "failed", end_code: "refused", refusal_message: "no server named web-2" }]);
+    expect(await latest()).toEqual({ [machineId]: {
+      attemptId: requestId, state: "failed", endedAt: expect.any(String), endCode: "refused", refusalMessage: "no server named web-2",
+    } });
   });
 
   it("a retried execute step that finds the row running closes it unknown and never asks the Engine", async () => {
     await request();
     await claim(requestId, "run-1");
-    const scope = { scope: "owned", namespaces: ["shop-production"] } satisfies DrainScope;
 
-    expect(await runEffect(executeDrainOnce(request0, "run-1", scope))).toEqual({ attemptId: requestId, state: "unknown" });
+    expect(await runEffect(executeDrainOnce(request0, "run-1"))).toEqual({ attemptId: requestId, state: "unknown" });
     expect(drainCalls).toEqual([]);
-    expect(await rows()).toMatchObject([{ state: "unknown", failure_code: "lost", ended_at: expect.any(Date) }]);
+    expect(await rows()).toMatchObject([{ state: "unknown", end_code: "lost", refusal_message: null, ended_at: expect.any(Date) }]);
 
-    expect(await runEffect(executeDrainOnce(request0, "run-1", scope))).toEqual({ attemptId: requestId, state: "unknown" });
+    expect(await runEffect(executeDrainOnce(request0, "run-1"))).toEqual({ attemptId: requestId, state: "unknown" });
     expect(drainCalls).toEqual([]);
   });
 
@@ -233,7 +234,7 @@ describe("drain-server", () => {
     const [{ inngest_run_id: runId } = { inngest_run_id: null }] = await rows();
     if (runId === null) return expect.fail("the run binds its row");
 
-    expect(await runEffect(executeDrainOnce(request0, runId, { scope: "owned", namespaces: [] })))
+    expect(await runEffect(executeDrainOnce(request0, runId)))
       .toEqual({ attemptId: requestId, state: "finished" });
     expect(drainCalls).toHaveLength(1);
     expect((await rows())[0]?.report).toEqual(partialReport);
@@ -244,12 +245,12 @@ describe("drain-server", () => {
     drainAnswer = () => Effect.promise(async () => {
       const [{ inngest_run_id: runId } = { inngest_run_id: null }] = await rows();
       expect((await cancel(String(runId))).result).toEqual({ closed: 1 });
-      expect(await rows()).toMatchObject([{ state: "unknown", failure_code: "cancelled" }]);
+      expect(await rows()).toMatchObject([{ state: "unknown", end_code: "interrupted" }]);
       return partialReport;
     });
 
     expect((await drain()).result).toEqual({ attemptId: requestId, state: "finished" });
-    expect(await rows()).toMatchObject([{ state: "finished", failure_code: null, failure_message: null, report: partialReport }]);
+    expect(await rows()).toMatchObject([{ state: "finished", end_code: null, refusal_message: null, report: partialReport }]);
   });
 
   it("the cancel handler ends its own run's row once: a running one unknown, a pending one cancelled", async () => {
@@ -259,18 +260,18 @@ describe("drain-server", () => {
     expect((await cancel("run-1", "roll-out-server-upgrade")).result).toEqual({ skipped: true });
     expect((await cancel("run-1")).result).toEqual({ closed: 1 });
     expect((await cancel("run-1")).result).toEqual({ closed: 0 });
-    expect(await rows()).toMatchObject([{ state: "unknown", failure_code: "cancelled", ended_at: expect.any(Date) }]);
+    expect(await rows()).toMatchObject([{ state: "unknown", end_code: "interrupted", ended_at: expect.any(Date) }]);
 
     await request(secondTab, otherMachineId);
     await harness.pool.query(`update server_drain_attempt set inngest_run_id = 'run-2' where id = $1`, [secondTab]);
     expect((await cancel("run-2", "drain-server", secondTab)).result).toEqual({ closed: 1 });
-    expect((await rows())[1]).toMatchObject({ state: "cancelled", failure_code: "cancelled" });
+    expect((await rows())[1]).toMatchObject({ state: "cancelled", end_code: "cancelled" });
   });
 
   it("the cancel handler ends the pending row its run was cancelled before binding, but not one another run bound", async () => {
     await request();
     expect((await cancel("run-never-bound")).result).toEqual({ closed: 1 });
-    expect(await rows()).toMatchObject([{ state: "cancelled", failure_code: "cancelled", inngest_run_id: null }]);
+    expect(await rows()).toMatchObject([{ state: "cancelled", end_code: "cancelled", inngest_run_id: null }]);
 
     await request(secondTab, otherMachineId);
     await harness.pool.query(`update server_drain_attempt set inngest_run_id = 'run-2' where id = $1`, [secondTab]);
@@ -289,14 +290,31 @@ describe("drain-server", () => {
     await harness.pool.query(`update server_drain_attempt set inngest_run_id = 'run-1' where id = $1`, [requestId]);
 
     const ended = await runEffect(Effect.gen(function* () {
-      const fiber = yield* Effect.forkChild(executeDrainOnce(request0, "run-1", { scope: "owned", namespaces: [] }));
+      const fiber = yield* Effect.forkChild(executeDrainOnce(request0, "run-1"));
       yield* Effect.promise(() => engineAsked);
       yield* TestClock.adjust(DRAIN_RUNNING_LIMIT_MS);
       return yield* Fiber.join(fiber);
     }).pipe(Effect.provide(TestClock.layer())));
 
     expect(ended).toEqual({ attemptId: requestId, state: "unknown" });
-    expect(await rows()).toMatchObject([{ state: "unknown", failure_code: "lost", failure_message: "The drain ran for a day without an answer." }]);
+    expect(await rows()).toMatchObject([{ state: "unknown", end_code: "lost", refusal_message: null }]);
+  });
+
+  it("stores an end only in the state its code ends in, with words exactly for a refusal", async () => {
+    const end = (state: string, code: string, message: string | null) => harness.pool.query(
+      `insert into server_drain_attempt (id, organization_id, machine_id, state, inngest_run_id, started_at, ended_at, end_code, refusal_message)
+       values (gen_random_uuid(), $1, $2, $3, gen_random_uuid()::text, now(), now(), $4, $5)`,
+      [organizationId, machineId, state, code, message],
+    );
+    await expect(end("failed", "lost", null)).rejects.toThrow(/server_drain_attempt_end_code_check/);
+    await expect(end("failed", "refused", null)).rejects.toThrow(/server_drain_attempt_refusal_check/);
+    await expect(end("failed", "not_started", "no server named web-2")).rejects.toThrow(/server_drain_attempt_refusal_check/);
+    await end("unknown", "lost", null);
+    await end("failed", "refused", "no server named web-2");
+    expect((await rows()).map(({ state, end_code: code }) => [state, code])).toEqual(expect.arrayContaining([
+      ["unknown", "lost"],
+      ["failed", "refused"],
+    ]));
   });
 
   it("reads a row without its state's evidence as a defect, not as a Drain", async () => {
@@ -306,7 +324,7 @@ describe("drain-server", () => {
     await expect(Effect.runPromise(latestDrainOf({ ...pending, state: "running" })))
       .rejects.toThrow(`Drain ${requestId} is running without its start time.`);
     await expect(Effect.runPromise(latestDrainOf({ ...pending, state: "unknown" })))
-      .rejects.toThrow(`Drain ${requestId} is unknown without its failure.`);
+      .rejects.toThrow(`Drain ${requestId} is unknown without its end.`);
   });
 
   it("onFailure ends a pending row failed and a running one unknown, and leaves an ended row alone", async () => {
@@ -323,8 +341,8 @@ describe("drain-server", () => {
     await fail("run-2");
     await fail("run-2");
 
-    expect((await rows()).map(({ state, failure_code: code }) => [state, code])).toEqual([
-      ["failed", "workflow_failed"],
+    expect((await rows()).map(({ state, end_code: code }) => [state, code])).toEqual([
+      ["failed", "not_started"],
       ["unknown", "lost"],
     ]);
   });
@@ -357,8 +375,8 @@ describe("drain-server", () => {
              ('00000000-0000-4000-8000-0000000000d1', '${lastOrganization}', '${machineId}', 'pending', now() - interval '30 minutes');
       insert into server_drain_attempt (id, organization_id, machine_id, state, inngest_run_id, requested_at, started_at)
       values ('00000000-0000-4000-8000-0000000000b3', '${otherOrganization}', '${otherMachineId}', 'running', 'run-new', now() - interval '1 hour', now() - interval '1 hour');
-      insert into server_drain_attempt (id, organization_id, machine_id, state, inngest_run_id, requested_at, started_at, ended_at, failure_code, failure_message)
-      values ('00000000-0000-4000-8000-0000000000d2', '${lastOrganization}', '${otherMachineId}', 'unknown', 'run-last', now() - interval '2 hours', now() - interval '2 hours', now() - interval '5 minutes', 'lost', 'lost');
+      insert into server_drain_attempt (id, organization_id, machine_id, state, inngest_run_id, requested_at, started_at, ended_at, end_code)
+      values ('00000000-0000-4000-8000-0000000000d2', '${lastOrganization}', '${otherMachineId}', 'unknown', 'run-last', now() - interval '2 hours', now() - interval '2 hours', now() - interval '5 minutes', 'lost');
     `);
 
     // c1 is first in its Organization and stale; c2 waits behind it, and its time starts once c1 ends.

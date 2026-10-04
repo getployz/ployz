@@ -15,6 +15,7 @@ import {
   createCancelMachineRemove,
   createProcessMachineRemove,
 } from "#/modules/machines/machine-removal.inngest";
+import { DRAIN_SLOT } from "#/modules/inngest/drain-slot";
 import { createApplyServerPolicyChange } from "#/modules/machines/server-policy.inngest";
 import { createCancelServerDrain, createCloseStaleServerDrains, createDrainServer } from "#/modules/machines/server-drain.inngest";
 import {
@@ -65,8 +66,8 @@ describe("Inngest function policies", () => {
       { id: "process-github-installation-repositories-received", retries: 3, concurrency: [{ key: "event.data.installation.id", limit: 1 }] },
       { id: "process-machine-remove", retries: 5, concurrency: [{ key: "event.data.attemptId", limit: 1 }] },
       { id: "cancel-machine-remove", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
-      { id: "apply-server-policy-change", retries: 3, concurrency: [{ scope: "env", key: '"server-drain-" + event.data.organizationId', limit: 1 }, { key: "event.data.machineId", limit: 1 }] },
-      { id: "drain-server", retries: 3, concurrency: [{ scope: "env", key: '"server-drain-" + event.data.organizationId', limit: 1 }] },
+      { id: "apply-server-policy-change", retries: 3, concurrency: [DRAIN_SLOT, { key: "event.data.machineId", limit: 1 }] },
+      { id: "drain-server", retries: 3, concurrency: [DRAIN_SLOT] },
       { id: "cancel-server-drain", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
       { id: "close-stale-server-drains", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "retire-server-access", retries: 3, concurrency: [{ limit: 1 }] },
@@ -77,6 +78,14 @@ describe("Inngest function policies", () => {
       { id: "cancel-server-upgrade", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
       { id: "schedule-server-upgrades", retries: 3, concurrency: [{ limit: 1 }] },
     ]);
+  });
+
+  it("keys Drain and Server Policy changes with one expression, which Inngest needs to share a slot across functions", () => {
+    const inngest = new Inngest({ id: "drain-slot-contract" });
+    const [drainSlot] = [createDrainServer(inngest).opts.concurrency].flat();
+    const [policySlot] = [createApplyServerPolicyChange(inngest).opts.concurrency].flat();
+    expect(drainSlot).toMatchObject({ scope: "env", limit: 1 });
+    expect(policySlot).toEqual(drainSlot);
   });
 
   it("registers billing sync only on hosted Cloud", () => {

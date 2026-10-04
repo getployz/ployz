@@ -2,7 +2,8 @@
 import type { DrainReport, MachineRef, ServiceDrain } from "@ployz/sdk";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { drainView, removeHint, type DrainView, type LatestDrain } from "#/modules/machines/server-drain";
+import type { LatestDrain } from "#/modules/machines/server-drain";
+import { drainView, removeHint, type DrainView } from "#/modules/machines/server-drain-view";
 import { DrainDialog } from "./drain-dialog";
 import { RemoveServerHint } from "./remove-server-section";
 import { DrainButton, ServerServicesRows } from "./server-services-section";
@@ -18,11 +19,11 @@ const web1 = ref("1", "web-1");
 const web2 = ref("2", "web-2");
 const at = new Date().toISOString();
 
-const finished = (services: ServiceDrain[], stopped: DrainReport["stopped"] = null): LatestDrain => ({
+const finished = (services: ServiceDrain[], stopped: DrainReport["stopped"] = null, complete = stopped === null): LatestDrain => ({
   attemptId: "a1",
   state: "finished",
   endedAt: at,
-  report: { server: runtimeWatchMachineFixture(web2.id, web2.name), services_role: "turned_off", services, stopped, remaining: { kind: "observed", services: [] } },
+  report: { server: runtimeWatchMachineFixture(web2.id, web2.name), services_role: "turned_off", services, stopped, remaining: { kind: "observed", services: [], unchosen: [] }, complete },
 });
 const view = (latest: LatestDrain | null, requested: string | null = null) => drainView({
   server: web2,
@@ -80,7 +81,7 @@ describe("Services section", () => {
   });
 
   it("shows the summary and each Service's outcome, and offers Drain again", () => {
-    rows({ view: view(finished([moved, volume, retired, failed])) });
+    rows({ view: view(finished([moved, volume, retired, failed], null, false)) });
     expect(screen.getByText(/1 moved, 1 stopped, 1 stayed, 1 failed/)).toBeTruthy();
     expect(within(resultRow("shop/api")).getByText("Moved to web-1")).toBeTruthy();
     expect(within(resultRow("shop/postgres")).getByText("Stayed")).toBeTruthy();
@@ -108,30 +109,33 @@ describe("Services section", () => {
 });
 
 describe("Drain dialog", () => {
+  const description = () => screen.getByText(/^Services turn off for web-2/).textContent;
+
   it("lists what runs here, says what stays, and drains on confirm", () => {
     const onConfirm = vi.fn();
     render(<DrainDialog serverName="web-2" names={["api", "postgres"]} unowned={[]} open onOpenChange={() => {}} onConfirm={onConfirm} />);
     expect(screen.getByText("Drain web-2?")).toBeTruthy();
-    expect(screen.getByText("Services turn off for web-2, and what runs here moves to your other servers one at a time.")).toBeTruthy();
+    expect(description()).toBe(
+      "Services turn off for web-2, and what runs here moves to your other servers one at a time. "
+        + "Services that use a volume here stay. Turning services back on doesn’t move anything back.",
+    );
     const list = screen.getByLabelText("Running on web-2");
     expect(within(list).getByText("api")).toBeTruthy();
     expect(within(list).getByText("postgres")).toBeTruthy();
-    expect(screen.getByText("Services that use a volume here stay.")).toBeTruthy();
-    expect(screen.getByText("Turning services back on doesn’t move anything back.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Drain" }));
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
   it("says so when nothing runs here", () => {
     render(<DrainDialog serverName="web-2" names={[]} unowned={[]} open onOpenChange={() => {}} onConfirm={() => {}} />);
-    expect(screen.getByText("Nothing runs here now.")).toBeTruthy();
+    expect(description()).toContain("Nothing runs here now.");
+    expect(screen.queryByLabelText("Running on web-2")).toBeNull();
   });
 
   it("names what stays because no Project owns it, and never says nothing runs here", () => {
     render(<DrainDialog serverName="web-2" names={[]} unowned={["old"]} open onOpenChange={() => {}} onConfirm={() => {}} />);
-    expect(screen.getByText("Nothing here for Drain to move.")).toBeTruthy();
-    expect(screen.getByText("old stays: no project owns it.")).toBeTruthy();
-    expect(screen.queryByText("Nothing runs here now.")).toBeNull();
+    expect(description()).toContain("Nothing here for Drain to move. old stays: no project owns it.");
+    expect(description()).not.toContain("Nothing runs here now.");
   });
 });
 
@@ -151,7 +155,7 @@ describe("Remove hint", () => {
   });
 
   it("says a Service whose volume is here won't move", () => {
-    hint(finished([moved, volume]), [{ identity: "shop/postgres", name: "postgres", namespace: "shop" }]);
+    hint(finished([moved, volume], null, false), [{ identity: "shop/postgres", name: "postgres", namespace: "shop" }]);
     expect(screen.getByRole("note").textContent).toBe("postgres still runs here. Its volume is on this server.");
     expect(screen.queryByRole("button")).toBeNull();
   });

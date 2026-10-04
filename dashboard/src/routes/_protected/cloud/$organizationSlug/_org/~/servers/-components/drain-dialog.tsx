@@ -14,18 +14,25 @@ export function DrainDialog({ serverName, names, unowned, open, onOpenChange, on
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
 }) {
+  const description = [
+    `Services turn off for ${serverName}, and what runs here moves to your other servers one at a time.`,
+    names.length > 0 ? null : unowned.length === 0 ? "Nothing runs here now." : "Nothing here for Drain to move.",
+    unowned.length === 0
+      ? null
+      : `${listNames([...unowned])} ${unowned.length === 1 ? "stays" : "stay"}: no project owns ${unowned.length === 1 ? "it" : "them"}.`,
+    "Services that use a volume here stay.",
+    "Turning services back on doesn’t move anything back.",
+  ].filter((sentence) => sentence !== null).join(" ");
   return (
     <ConfirmDialog
       open={open}
       onOpenChange={onOpenChange}
       title={`Drain ${serverName}?`}
-      description={`Services turn off for ${serverName}, and what runs here moves to your other servers one at a time.`}
+      description={description}
       actionLabel="Drain"
       onConfirm={onConfirm}
     >
-      {names.length === 0 ? (
-        <p>{unowned.length === 0 ? "Nothing runs here now." : "Nothing here for Drain to move."}</p>
-      ) : (
+      {names.length === 0 ? null : (
         <ItemGroup aria-label={`Running on ${serverName}`}>
           {names.map((name) => (
             <Item key={name} variant="outline" size="xs">
@@ -35,11 +42,6 @@ export function DrainDialog({ serverName, names, unowned, open, onOpenChange, on
           ))}
         </ItemGroup>
       )}
-      {unowned.length === 0 ? null : (
-        <p>{listNames([...unowned])} {unowned.length === 1 ? "stays" : "stay"}: no project owns {unowned.length === 1 ? "it" : "them"}.</p>
-      )}
-      <p>Services that use a volume here stay.</p>
-      <p className="text-muted-foreground">Turning services back on doesn’t move anything back.</p>
     </ConfirmDialog>
   );
 }

@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "cf543dc6-8a4e-4c11-b6b6-02777a074f40",
+  "id": "bbf6ca61-312c-47ec-9aea-478b8a4d9e8a",
   "prevIds": [
     "e5b2b42a-2c72-4b9b-9e61-80628e0eacb6"
   ],
@@ -2025,7 +2025,7 @@
       "default": null,
       "generated": null,
       "identity": null,
-      "name": "failure_code",
+      "name": "end_code",
       "entityType": "columns",
       "schema": "public",
       "table": "server_drain_attempt"
@@ -2038,7 +2038,7 @@
       "default": null,
       "generated": null,
       "identity": null,
-      "name": "failure_message",
+      "name": "refusal_message",
       "entityType": "columns",
       "schema": "public",
       "table": "server_drain_attempt"
@@ -4803,8 +4803,15 @@
       "table": "server_drain_attempt"
     },
     {
-      "value": "\"failure_code\" is null or \"failure_code\" in ('dispatch_failed','refused','workflow_failed','never_started','cancelled','lost')",
-      "name": "server_drain_attempt_failure_code_check",
+      "value": "\"end_code\" is null or (\"end_code\", \"state\") in (('refused','failed'),('not_started','failed'),('cancelled','cancelled'),('interrupted','unknown'),('lost','unknown'))",
+      "name": "server_drain_attempt_end_code_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_drain_attempt"
+    },
+    {
+      "value": "(\"end_code\" is not distinct from 'refused') = (\"refusal_message\" is not null)\n        and (\"refusal_message\" is null or length(\"refusal_message\") between 1 and 1024)",
+      "name": "server_drain_attempt_refusal_check",
       "entityType": "checks",
       "schema": "public",
       "table": "server_drain_attempt"
@@ -4817,7 +4824,7 @@
       "table": "server_drain_attempt"
     },
     {
-      "value": "(\n        (\"state\" = 'pending'\n          and \"started_at\" is null and \"ended_at\" is null\n          and \"report\" is null and \"failure_code\" is null and \"failure_message\" is null)\n        or (\"state\" = 'running' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"ended_at\" is null\n          and \"report\" is null and \"failure_code\" is null and \"failure_message\" is null)\n        or (\"state\" = 'finished' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"ended_at\" is not null\n          and jsonb_typeof(\"report\") = 'object' and \"failure_code\" is null and \"failure_message\" is null)\n        or (\"state\" in ('failed', 'cancelled')\n          and \"ended_at\" is not null and \"report\" is null\n          and \"failure_code\" is not null and \"failure_message\" is not null\n          and length(\"failure_message\") between 1 and 1024)\n        or (\"state\" = 'unknown' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"ended_at\" is not null and \"report\" is null\n          and \"failure_code\" is not null and \"failure_message\" is not null\n          and length(\"failure_message\") between 1 and 1024)\n      )",
+      "value": "(\n        (\"state\" = 'pending'\n          and \"started_at\" is null and \"ended_at\" is null and \"report\" is null and \"end_code\" is null)\n        or (\"state\" = 'running' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"ended_at\" is null and \"report\" is null and \"end_code\" is null)\n        or (\"state\" = 'finished' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"ended_at\" is not null\n          and jsonb_typeof(\"report\") = 'object' and \"end_code\" is null)\n        or (\"state\" in ('failed', 'cancelled')\n          and \"ended_at\" is not null and \"report\" is null and \"end_code\" is not null)\n        or (\"state\" = 'unknown' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"ended_at\" is not null and \"report\" is null\n          and \"end_code\" is not null)\n      )",
       "name": "server_drain_attempt_state_shape_check",
       "entityType": "checks",
       "schema": "public",

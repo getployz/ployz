@@ -18,7 +18,7 @@ import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-co
 import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
 import { RowWarning } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { listNames, plural } from "#/lib/plural";
-import type { RemoveHint } from "#/modules/machines/server-drain";
+import type { RemoveHint } from "#/modules/machines/server-drain-view";
 
 /** Polls the removal until it settles. Closing the dialog or leaving the page aborts; polling stops within a second. */
 async function waitForMachineRemoveAttempt(

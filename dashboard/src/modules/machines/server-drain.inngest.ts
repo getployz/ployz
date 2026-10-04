@@ -1,5 +1,6 @@
 import { Option, Schema } from "effect";
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
+import { DRAIN_SLOT } from "#/modules/inngest/drain-slot";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import {
   inngestFunctionCancelledEnvelopeSchema,
@@ -12,14 +13,10 @@ import {
   closeDrainRun,
   closeStaleDrains,
   executeDrainOnce,
-  prepareDrain,
 } from "#/modules/machines/server-drain.server";
 import { runInngestEffect } from "#/server/run.server";
 
 export const DRAIN_SERVER_FUNCTION_ID = "drain-server";
-
-/** One Organization's Drain slot. `env` scope shares it across functions; `account` would share it across environments. */
-export const DRAIN_SLOT = { scope: "env", key: '"server-drain-" + event.data.organizationId', limit: 1 } as const;
 
 type StepTools = Pick<PloyzStepTools, "run">;
 type EffectRunner = typeof runInngestEffect;
@@ -34,8 +31,8 @@ const decodeFailedRun = Schema.decodeUnknownOption(Schema.Struct({ data: Schema.
 const decodeCancelledRequest = Schema.decodeUnknownOption(Schema.Struct({ data: Schema.Struct({ attemptId: Schema.String }) }));
 
 /**
- * One Drain: bind the run to its row → read what the Drain selects → claim the row, ask the Engine once and record its
- * answer. Only the last step touches the Engine, and a retry of it never asks again (see `executeDrainOnce`).
+ * One Drain: bind the run to its row → claim the row, ask the Engine once and record its answer. Only the last step
+ * touches the Engine, and a retry of it never asks again (see `executeDrainOnce`).
  */
 export async function executeDrainServer(
   { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },
@@ -48,8 +45,7 @@ export async function executeDrainServer(
   if (request === null) return { skipped: "invalid" as const };
   const bound = await step.run("bind-run", () => runEffect(bindDrainRun(request, runId)));
   if (bound.kind === "settled") return { attemptId: request.attemptId, state: bound.state };
-  const scope = await step.run("prepare", () => runEffect(prepareDrain(request.organizationId)));
-  return step.run("execute-once", () => runEffect(executeDrainOnce(request, runId, scope)));
+  return step.run("execute-once", () => runEffect(executeDrainOnce(request, runId)));
 }
 
 /** A cancelled Drain run must not leave its row active, even one it was cancelled before binding. */
@@ -69,7 +65,7 @@ export const createDrainServer = (inngest: PloyzInngest, runEffect: EffectRunner
       retries: 3,
       triggers: [{ event: serverDrainRequestedEventType }],
       // Drains in one Organization run one at a time: each sees the Containers the one before it moved. A Server
-      // Policy change shares the slot, so it never applies while a Drain runs.
+      // Policy change that turns services on shares the slot, so it never applies while a Drain runs.
       concurrency: [DRAIN_SLOT],
       onFailure: async ({ event }) => {
         // `inngest/function.failed` names the failed run.

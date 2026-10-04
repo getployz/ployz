@@ -314,6 +314,8 @@ function describeDrain(entry: DrainReport["services"][number]): string {
       return entry.reason.kind;
     case "not_retired":
       return entry.error;
+    case "interrupted":
+      return `${entry.moves.length} moved, then the Drain stopped`;
     case "nothing_to_move":
     case "retired":
     case "not_attempted":

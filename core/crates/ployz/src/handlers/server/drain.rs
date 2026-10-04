@@ -4,13 +4,13 @@
 use std::collections::BTreeMap;
 
 use clap::ArgMatches;
-use ployz_core::{MachineName, MachineTarget, QualifiedService, RpcError};
+use ployz_core::{MachineName, MachineTarget, RpcError};
 use ployz_store::NamespacesQuery;
-use serde_json::{Map, Value, json};
+use serde_json::Value;
 
 use super::{server_json, target};
 use crate::drain::{
-    DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Move, Remaining, ServiceDrain,
+    DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Remaining, ServiceDrain,
     ServicesRole,
 };
 use crate::handlers::{Error, leaf_matches, store, with_client};
@@ -35,7 +35,12 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
             for line in closing_lines(&report) {
                 say!("{line}");
             }
-            output::emit(&report_json(&report))?;
+            let mut json = serde_json::to_value(&report).expect("a Drain report serializes");
+            if let Value::Object(fields) = &mut json {
+                fields.insert("server".into(), server_json(&report.server));
+                fields.insert("note".into(), NOTHING_MOVES_BACK.into());
+            }
+            output::emit(&json)?;
             if !report.complete() {
                 return Err(Error::partial());
             }
@@ -73,8 +78,7 @@ fn refusal(error: DrainError) -> Error {
     match error {
         // The CLI reports a connection failure with its own words.
         DrainError::Connect(error) => error.into(),
-        error @ (DrainError::Select(_)
-        | DrainError::Cordon(_)
+        error @ (DrainError::Refused(_)
         | DrainError::RoleNotObserved
         | DrainError::Unobservable { .. }
         | DrainError::Cancelled) => RpcError::from(error).into(),
@@ -97,7 +101,7 @@ fn step_line(step: DrainStep<'_>) -> String {
 
 fn line(entry: &ServiceDrain, server: &MachineName) -> String {
     let service = &entry.service;
-    let (moves, failure) = match &entry.outcome {
+    let (moves, ending) = match &entry.outcome {
         DrainOutcome::Retired => return format!("{service}: global, retired on {server}"),
         DrainOutcome::NotRetired { error } => {
             return format!("{service}: global, failed to retire on {server}: {error}");
@@ -106,7 +110,8 @@ fn line(entry: &ServiceDrain, server: &MachineName) -> String {
         DrainOutcome::NothingToMove => return format!("{service}: nothing to move"),
         DrainOutcome::NotAttempted => return format!("{service}: not attempted"),
         DrainOutcome::Moved { moves } => (moves, None),
-        DrainOutcome::Failed { moves, failure } => (moves, Some(failure)),
+        DrainOutcome::Failed { moves, failure } => (moves, Some(format!("failed: {failure}"))),
+        DrainOutcome::Interrupted { moves } => (moves, Some("interrupted".to_owned())),
     };
     let mut counts = BTreeMap::<(&MachineName, &MachineName), usize>::new();
     for step in moves {
@@ -120,9 +125,7 @@ fn line(entry: &ServiceDrain, server: &MachineName) -> String {
             .collect::<Vec<_>>();
         parts.push(format!("moved {}", routes.join(", ")));
     }
-    if let Some(failure) = failure {
-        parts.push(format!("failed: {failure}"));
-    }
+    parts.extend(ending);
     format!("{service}: {}", parts.join("; "))
 }
 
@@ -133,10 +136,10 @@ fn closing_lines(report: &DrainReport) -> Vec<String> {
         lines.push(format!("Drain stopped: {stop}"));
     }
     lines.push(match &report.remaining {
-        Remaining::Observed { services } if services.is_empty() => {
+        Remaining::Observed { services, .. } if services.is_empty() => {
             format!("Nothing runs on {server} now.")
         }
-        Remaining::Observed { services } => format!(
+        Remaining::Observed { services, .. } => format!(
             "Still on {server}: {}",
             services
                 .iter()
@@ -150,63 +153,6 @@ fn closing_lines(report: &DrainReport) -> Vec<String> {
     });
     lines.push(NOTHING_MOVES_BACK.to_owned());
     lines
-}
-
-/// The CLI's `--json`, a projection of the report kept as it was before the report was
-/// typed. `stopped` and `remaining_error` appear only where the Drain used to exit
-/// without a result.
-fn report_json(report: &DrainReport) -> Value {
-    let mut out = Map::new();
-    out.insert("server".into(), server_json(&report.server));
-    out.insert(
-        "services".into(),
-        report.services.iter().map(service_json).collect(),
-    );
-    if let Some(stop) = &report.stopped {
-        out.insert("stopped".into(), Value::String(stop.to_string()));
-    }
-    match &report.remaining {
-        Remaining::Observed { services } => {
-            out.insert("remaining".into(), json!(services));
-        }
-        Remaining::Unobserved { error } => {
-            out.insert("remaining".into(), Value::Null);
-            out.insert("remaining_error".into(), Value::String(error.clone()));
-        }
-    }
-    out.insert("note".into(), Value::String(NOTHING_MOVES_BACK.into()));
-    Value::Object(out)
-}
-
-fn service_json(entry: &ServiceDrain) -> Value {
-    let service = &entry.service;
-    match &entry.outcome {
-        DrainOutcome::Moved { moves } => moved_json(service, moves, None),
-        DrainOutcome::NothingToMove => moved_json(service, &[], None),
-        DrainOutcome::Failed { moves, failure } => {
-            moved_json(service, moves, Some(failure.to_string()))
-        }
-        DrainOutcome::Stays { reason } => {
-            json!({ "service": service, "result": "stays", "reason": reason.to_string() })
-        }
-        DrainOutcome::Retired => json!({ "service": service, "result": "retired" }),
-        DrainOutcome::NotRetired { error } => {
-            json!({ "service": service, "result": "failed", "error": error })
-        }
-        DrainOutcome::NotAttempted => json!({ "service": service, "result": "not_attempted" }),
-    }
-}
-
-fn moved_json(service: &QualifiedService, moves: &[Move], failed: Option<String>) -> Value {
-    json!({
-        "service": service,
-        "result": "moved",
-        "moved": moves
-            .iter()
-            .map(|step| json!({ "from": step.from.name, "to": step.to.name }))
-            .collect::<Vec<_>>(),
-        "failed": failed,
-    })
 }
 
 #[cfg(test)]

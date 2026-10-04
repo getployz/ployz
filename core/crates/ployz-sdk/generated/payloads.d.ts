@@ -1164,11 +1164,12 @@ server: Machine, services_role: ServicesRole, services: Array<ServiceDrain>,
 /**
  * Why the Drain ended before handling every Service.
  */
-stopped: DrainStop | null,
+stopped: DrainStop | null, remaining: Remaining,
 /**
- * What runs on the Server after the Drain, reserved and unchosen Namespaces included.
+ * Every chosen Service left the Server, the Drain ran to its end, and what remains
+ * was observed.
  */
-remaining: Remaining, };
+complete: boolean, };
 
 export type DrainScope = { "scope": "every_namespace" } | { "scope": "owned", namespaces: Array<Namespace>, };
 
@@ -1880,7 +1881,7 @@ path: string, };
 
 export type Move = { from: MachineRef, to: MachineRef, };
 
-export type MoveFailure = { "stage": "no_destination", from: MachineRef, detail: string, } | { "stage": "source_too_old", from: MachineRef, } | { "stage": "read_image", from: MachineRef, to: MachineRef, detail: string, } | { "stage": "copy_image", from: MachineRef, to: MachineRef, detail: string, } | { "stage": "not_serving", from: MachineRef, to: MachineRef, detail: string, replacement_removed: boolean, } | { "stage": "old_not_removed", from: MachineRef, to: MachineRef, detail: string, old_stopped: boolean, } | { "stage": "cancelled", from: MachineRef, to: MachineRef, replacement_removed: boolean, } | { "stage": "cancelled_before_move", from: MachineRef, } | { "stage": "unobservable", detail: string, } | { "stage": "refused", reason: StayReason, };
+export type MoveFailure = { "stage": "no_destination", from: MachineRef, detail: string, } | { "stage": "source_too_old", from: MachineRef, } | { "stage": "read_image", from: MachineRef, to: MachineRef, detail: string, } | { "stage": "copy_image", from: MachineRef, to: MachineRef, detail: string, } | { "stage": "not_serving", from: MachineRef, to: MachineRef, detail: string, replacement_removed: boolean, } | { "stage": "old_not_removed", from: MachineRef, to: MachineRef, detail: string, old_stopped: boolean, } | { "stage": "cancelled", from: MachineRef, to: MachineRef, replacement_removed: boolean, } | { "stage": "refused", reason: StayReason, };
 
 export type NamedRow = {
 /**
@@ -2403,7 +2404,16 @@ export type RegistryAuth = { username?: string,
  */
 password: string, };
 
-export type Remaining = { "kind": "observed", services: Array<QualifiedService>, } | { "kind": "unobserved", error: string, };
+export type Remaining = { "kind": "observed",
+/**
+ * Every Service still with a Container there, reserved and unchosen Namespaces
+ * included.
+ */
+services: Array<QualifiedService>,
+/**
+ * Those of `services` in a user Namespace the Drain's scope left alone.
+ */
+unchosen: Array<QualifiedService>, } | { "kind": "unobserved", error: string, };
 
 export type Removal = { id: DeploymentId, environment: EnvironmentRef,
 /**
@@ -2757,7 +2767,7 @@ condition: DependencyCondition, };
 
 export type ServiceDeployMount = { volumeResourceId: string, volumeName: string, mountPath: string, };
 
-export type ServiceDrain = { service: QualifiedService, } & ({ "result": "moved", moves: Array<Move>, } | { "result": "nothing_to_move" } | { "result": "failed", moves: Array<Move>, failure: MoveFailure, } | { "result": "stays", reason: StayReason, } | { "result": "retired" } | { "result": "not_retired", error: string, } | { "result": "not_attempted" });
+export type ServiceDrain = { service: QualifiedService, } & ({ "result": "moved", moves: Array<Move>, } | { "result": "nothing_to_move" } | { "result": "failed", moves: Array<Move>, failure: MoveFailure, } | { "result": "stays", reason: StayReason, } | { "result": "retired" } | { "result": "not_retired", error: string, } | { "result": "interrupted", moves: Array<Move>, } | { "result": "not_attempted" });
 
 export type ServiceEnvValue = { "kind": "literal", value: string, parts?: Array<ValuePart>, } | { "kind": "secret", variableId?: string, encryptedValue?: EncryptedSecretValue, fingerprint: string, interpolated?: boolean, };
 
@@ -3092,7 +3102,7 @@ export type SourceKind = "empty" | "uploaded" | "git" | "image";
 
 export type Start = { deployment: DeploymentId, };
 
-export type StayReason = { "kind": "entry_unobservable", detail: string, } | { "kind": "unobserved", server: MachineRef, } | { "kind": "mid_rollout" } | { "kind": "eligibility_unknown", server: MachineRef, } | { "kind": "global" } | { "kind": "bind_mount", server: MachineRef, } | { "kind": "volume", volume: ServiceVolumeReference, server: MachineRef, } | { "kind": "no_destination", detail: string, };
+export type StayReason = { "kind": "unobserved", server: MachineRef, } | { "kind": "mid_rollout" } | { "kind": "eligibility_unknown", server: MachineRef, } | { "kind": "global" } | { "kind": "bind_mount", server: MachineRef, } | { "kind": "volume", volume: ServiceVolumeReference, server: MachineRef, } | { "kind": "no_destination", detail: string, };
 
 export type StopAttempt<E> = { "type": "stopped" } | { "type": "failed", error: E, };
 
