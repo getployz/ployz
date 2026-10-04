@@ -84,7 +84,8 @@ header. Each service it included has a tab with its **Build** and **Deploy**
 ## Deploy without downtime
 
 Ployz first pulls every image the deployment needs onto each server, and nothing changes until
-every pull succeeds; a pull that fails leaves your app as it was. It then swaps in the new
+every pull succeeds; a pull that fails leaves your app as it was. A server still on an older
+release pulls each image as it creates the container instead. Ployz then swaps in the new
 version one replica at a time: it starts a new one, waits until it's
 ready, then stops an old one, so your app keeps serving. Before any replica stops, every server
 taking web traffic stops sending it requests. If a server can't confirm that within 10 seconds,

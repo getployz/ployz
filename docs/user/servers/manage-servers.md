@@ -80,6 +80,9 @@ the line under the page header reads **Ployz `0.2.2` is out · your servers run 
 Your apps keep running while they do. While an upgrade runs, the line reads **Upgrading to `0.2.2`
 · 1 of 4 done**.
 
+While a server runs an older release, the containers your deploys create on it get generated
+names like `ployz-create-3f9a…`. They get readable names again at the next deploy after it upgrades.
+
 ### Turn on automatic upgrades
 
 Automatic upgrades are off until you turn them on. Click **Manual** next to **Upgrade** (or **Manual
