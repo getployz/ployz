@@ -448,10 +448,12 @@ async fn run_worker_case(root: &Path, case: &str) {
                 [
                     "restart ployz.socket ployz.service",
                     "try-restart ployz-volume-plugin.service",
-                    "reset-failed ployz.socket ployz.service ployz-volume-plugin.socket \
-                     ployz-volume-plugin.service",
+                    "reset-failed ployz.socket ployz.service",
+                    "reset-failed ployz-volume-plugin.socket",
+                    "reset-failed ployz-volume-plugin.service",
                     "restart ployz.socket ployz.service",
-                    "restart ployz-volume-plugin.socket ployz-volume-plugin.service",
+                    "restart ployz-volume-plugin.socket",
+                    "restart ployz-volume-plugin.service",
                 ]
             );
         }

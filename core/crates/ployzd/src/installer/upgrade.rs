@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{process::Command, time::timeout};
 
-use super::{Error as InstallError, InstallPaths, ReleaseSource, rollback::UpgradeFailure};
+use super::{Error as InstallError, InstallPaths, ReleaseSource, compensation::UpgradeFailure};
 use crate::mutation;
 
 const RECEIPT_FILE: &str = "upgrade-attempt.json";
@@ -240,16 +240,22 @@ async fn work(
     };
     write(data_dir, &stored)?;
 
-    let result = super::rollback::upgrade(source, paths, &guard, &target, |install_stage| {
-        stage = install_stage;
-        stored.attempt.outcome = MachineUpgradeOutcome::Running {
-            stage: stage.clone(),
-        };
-        write(data_dir, &stored).map_err(|error| InstallError::Io {
-            stage: "record Machine upgrade progress",
-            source: io::Error::other(error),
-        })
-    })
+    let result = super::compensation::install_or_compensate(
+        source,
+        paths,
+        &guard,
+        &target,
+        |install_stage| {
+            stage = install_stage;
+            stored.attempt.outcome = MachineUpgradeOutcome::Running {
+                stage: stage.clone(),
+            };
+            write(data_dir, &stored).map_err(|error| InstallError::Io {
+                stage: "record Machine upgrade progress",
+                source: io::Error::other(error),
+            })
+        },
+    )
     .await;
 
     stored.attempt.outcome = match &result {

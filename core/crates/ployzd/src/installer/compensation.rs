@@ -1,7 +1,7 @@
-//! Install an Upgrade's release over the running one, and put the previous release back when
-//! the new one does not stay ready.
+//! Install an Upgrade's release over the running one, with Replacement Compensation: put the
+//! previous release back when the new one does not stay ready.
 
-use std::{fs, os::unix::fs::MetadataExt, path::Path, process::Command, time::Duration};
+use std::{fs, os::unix::fs::MetadataExt, path::Path, time::Duration};
 
 use ployz_core::{MachineRelease, MachineUpgradeStage, MachineVersion};
 use thiserror::Error;
@@ -15,7 +15,7 @@ const SOAK: Duration = Duration::from_secs(30);
 #[cfg(test)]
 const SOAK: Duration = Duration::from_millis(100);
 
-/// Units besides the daemon that an Upgrade restarts and a restore must bring back.
+/// Units besides the daemon that an Upgrade restarts and compensation must bring back.
 const PLUGIN_UNITS: [&str; 2] = ["ployz-volume-plugin.socket", "ployz-volume-plugin.service"];
 
 /// Why an Upgrade failed, and whether the previous release went back into service. Its text is
@@ -41,9 +41,9 @@ pub enum UpgradeFailure {
     },
 }
 
-/// Install `target` over the running release. A failure after the swap puts the previous
-/// release back and restarts the units that were active before the attempt.
-pub(super) async fn upgrade(
+/// Install `target` over the running release. A failure after the swap compensates: it puts the
+/// previous release back and restarts the units that were active before the attempt.
+pub(super) async fn install_or_compensate(
     source: &ReleaseSource,
     paths: &InstallPaths,
     guard: &mutation::InstallationGuard,
@@ -59,7 +59,7 @@ pub(super) async fn upgrade(
     // it stopped after the restore.
     let active_plugins: Vec<&str> = PLUGIN_UNITS
         .into_iter()
-        .filter(|unit| is_active(unit))
+        .filter(|unit| super::systemctl("check unit", ["is-active", "--quiet", unit]).is_ok())
         .collect();
     let request = InstallRequest {
         release: MachineRelease::Exact(target.clone()),
@@ -107,35 +107,23 @@ async fn restore(
     plugins: &[&str],
 ) -> Result<(), InstallError> {
     super::release::restore_previous(paths)?;
-    // A crash loop exhausts a unit's start limit, which would refuse the restart.
-    let daemon = ["ployz.socket", "ployz.service"];
-    systemctl(
+    // A crash loop exhausts a unit's start limit, which would refuse the restart. `reset-failed`
+    // fails on a unit that is not loaded, so it only names units known to be.
+    super::systemctl(
         "clear daemon failure",
-        "reset-failed",
-        daemon.iter().chain(plugins),
+        ["reset-failed", "ployz.socket", "ployz.service"],
     )?;
-    systemctl("restart daemon", "restart", &daemon)?;
-    if !plugins.is_empty() {
-        systemctl("restart volume plugin", "restart", plugins)?;
+    for unit in plugins {
+        super::systemctl("clear volume plugin failure", ["reset-failed", unit])?;
+    }
+    super::systemctl(
+        "restart daemon",
+        ["restart", "ployz.socket", "ployz.service"],
+    )?;
+    for unit in plugins {
+        super::systemctl("restart volume plugin", ["restart", unit])?;
     }
     super::host::verify_running_daemon(paths, previous).await
-}
-
-fn systemctl<'unit>(
-    stage: &str,
-    verb: &str,
-    units: impl IntoIterator<Item = &'unit &'unit str>,
-) -> Result<(), InstallError> {
-    let mut command = Command::new("systemctl");
-    command.arg(verb).args(units);
-    super::run_command(stage, &mut command).map(drop)
-}
-
-fn is_active(unit: &str) -> bool {
-    Command::new("systemctl")
-        .args(["is-active", "--quiet", unit])
-        .status()
-        .is_ok_and(|status| status.success())
 }
 
 /// Which file `path` names, so a later rename over it shows.
