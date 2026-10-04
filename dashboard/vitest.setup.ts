@@ -1,3 +1,5 @@
+import { onlineManager } from "@tanstack/react-query";
+
 process.env["NODE_ENV"] ??= "test";
 process.env["DATABASE_URL"] ??= "postgres://postgres:postgres@localhost:5432/ployz_cloud";
 process.env["APP_URL"] ??= "http://localhost:3000";
@@ -14,3 +16,5 @@ process.env["APP_ENCRYPTION_SECRET"] ??= "test-app-encryption-secret-1234567890"
 
 // isolate: false lets a jsdom file inherit the previous file's rendered tree; node files have no document.
 globalThis.document?.body.replaceChildren();
+// Query's online state is a module singleton, so a file that fires `offline` would pause every later file's queries.
+onlineManager.setOnline(true);
