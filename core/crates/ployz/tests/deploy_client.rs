@@ -675,6 +675,38 @@ async fn preview_namespace_removal_refuses_the_reserved_namespace() {
 }
 
 #[tokio::test]
+async fn a_daemon_without_pull_image_still_creates_with_the_requested_pull_policy() {
+    let service = DeployService::new(machine('a', "one")).without_pull_image();
+    let created = service.created_specs();
+    let (mut client, server) = connected(service).await;
+
+    let outcome = client
+        .run(
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec("web"), skip_health()),
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let created = created.lock().unwrap();
+    assert_eq!(
+        created
+            .iter()
+            .map(|spec| spec.container.pull_policy)
+            .collect::<Vec<_>>(),
+        [ployz_core::PullPolicy::Always],
+        "the older daemon pulls during create, under the original policy"
+    );
+    drop(created);
+    server.abort();
+}
+
+#[tokio::test]
 async fn confirm_ignores_changed_preview_payload_and_replays_with_fresh_pending_rows() {
     let machine = machine('a', "one");
     let target = machine.machine.id;

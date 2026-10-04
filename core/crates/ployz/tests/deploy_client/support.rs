@@ -61,6 +61,8 @@ pub(super) struct DeployService {
     hold_health: bool,
     start_error: Option<RpcError>,
     listing_failures: Vec<MachineId>,
+    /// Answers PullImage like a daemon from before it existed.
+    without_pull_image: bool,
     /// Docker Volumes created and not yet removed.
     pub(super) volumes: Arc<Mutex<Vec<DockerVolume>>>,
 }
@@ -88,6 +90,7 @@ impl DeployService {
             hold_health: false,
             start_error: None,
             listing_failures: Vec::new(),
+            without_pull_image: false,
             volumes: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -114,6 +117,7 @@ impl DeployService {
             hold_health: false,
             start_error: None,
             listing_failures: Vec::new(),
+            without_pull_image: false,
             volumes: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -216,6 +220,11 @@ impl DeployService {
 
     pub(super) fn created_namespaces(&self) -> Arc<Mutex<Vec<Namespace>>> {
         self.created_namespaces.clone()
+    }
+
+    pub(super) fn without_pull_image(mut self) -> Self {
+        self.without_pull_image = true;
+        self
     }
 
     pub(super) fn created_specs(&self) -> Arc<Mutex<Vec<ResolvedServiceSpec>>> {
@@ -838,6 +847,9 @@ impl MachineRpc for DeployService {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if self.without_pull_image {
+            return Err(Status::unimplemented("PullImage"));
+        }
         encoded(RpcResponse::from(ployz_core::ImagePulled {}))
     }
     async fn get_ingress_proxy_config(
