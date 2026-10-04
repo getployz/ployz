@@ -2,22 +2,32 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { RelativeTime } from "#/components/relative-time";
 import { Button } from "#/components/ui/button";
+import { buttonVariants } from "#/components/ui/button-variants";
 import type { ServerStatus } from "#/modules/machines/server-status";
-import { newestAttempt, releaseLine, serversUpgradeLine, type ServersUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
+import {
+  newestAttempt,
+  newMajorLine,
+  releaseLine,
+  serversUpgradeLine,
+  type ServersUpgradeLine,
+} from "#/modules/server-upgrade/server-upgrade";
 import { requestServerUpgradeServerFn } from "#/modules/server-upgrade/server-upgrade.functions";
-import { useServerUpgrades, useStableRelease } from "#/modules/server-upgrade/server-upgrade.queries";
+import { useChannelRelease, useServerUpgrades } from "#/modules/server-upgrade/server-upgrade.queries";
 import { usePendingUpgrade, useNow } from "./server-upgrade-section";
-import { ServerUpgradesDialog, useAutomaticUpgrades } from "./server-upgrades-dialog";
+import { ServerUpgradesDialog, useServerUpgradeSettings } from "./server-upgrades-dialog";
 
 type LineServer = { readonly name: string; readonly version: string; readonly status: ServerStatus };
 
 /** The Servers page's one upgrade line: which release the Servers run, a rollout's progress, or Upgrade. */
 export function ServersUpgradeLine({ organizationSlug, servers }: { organizationSlug: string; servers: readonly LineServer[] }) {
   const upgrades = useServerUpgrades(organizationSlug);
-  const { automatic } = useAutomaticUpgrades(organizationSlug);
+  const { automatic, channel } = useServerUpgradeSettings(organizationSlug);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // ponytail: Cloud never moves a Server across release lines, so the first Server that reports a version names the line.
-  const release = useStableRelease(servers.map(({ version }) => releaseLine(version)).find((line) => line !== null) ?? null);
+  const serversLine = servers.map(({ version }) => releaseLine(version)).find((line) => line !== null) ?? null;
+  const release = useChannelRelease(channel, serversLine, serversLine !== null);
+  // The installer's unscoped pointer: the only place a newer major line shows.
+  const newest = useChannelRelease("stable", null, serversLine !== null);
   const latest = Object.values(upgrades?.servers ?? {});
   const pending = usePendingUpgrade(newestAttempt(latest)?.attemptId ?? null);
   const now = useNow(latest.some((row) => row.outcome === "running"));
@@ -43,6 +53,7 @@ export function ServersUpgradeLine({ organizationSlug, servers }: { organization
 
   return (
     <>
+      <NewMajorLineNotice notice={newMajorLine(serversLine, newest)} />
       <ServersUpgradeText line={line} automatic={automatic} onUpgrade={upgrade} onSettings={() => setSettingsOpen(true)} />
       <ServerUpgradesDialog organizationSlug={organizationSlug} open={settingsOpen} onOpenChange={setSettingsOpen} />
     </>
@@ -50,6 +61,27 @@ export function ServersUpgradeLine({ organizationSlug, servers }: { organization
 }
 
 const list = new Intl.ListFormat("en", { type: "conjunction" });
+
+/** A newer major line is out: say so and link its release notes. Nothing installs it. */
+export function NewMajorLineNotice({ notice }: { notice: ReturnType<typeof newMajorLine> }) {
+  if (notice === null) return null;
+  return (
+    <div role="status" className="flex items-center gap-3 rounded-lg border bg-card px-3 py-2 text-sm">
+      <p className="flex-1 text-muted-foreground">
+        <span className="font-medium text-foreground">Ployz {notice.name} is out.</span> New lines install only when you
+        choose. Your servers stay on {notice.running} and keep getting its upgrades.
+      </p>
+      <a
+        href={`https://github.com/getployz/ployz/releases/tag/v${notice.release}`}
+        target="_blank"
+        rel="noreferrer"
+        className={buttonVariants({ variant: "outline", size: "sm" })}
+      >
+        See what’s new
+      </a>
+    </div>
+  );
+}
 
 /** What the upgrade line says for one state. */
 export function ServersUpgradeText({ line, automatic, onUpgrade, onSettings }: {

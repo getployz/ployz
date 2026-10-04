@@ -61,6 +61,10 @@ export const organizationServerUpgrades = pgTable("organization_server_upgrades"
     .references(() => organization.id, { onDelete: "cascade" }),
   /** Off stops the hourly rollout; Upgrade still works. */
   automatic: boolean("automatic").default(true).notNull(),
+  /** The Release Channel every Upgrade requests, manual or automatic. */
+  channel: text("channel").default("stable").notNull().$type<ReleaseChannel>(),
   createdAt,
   updatedAt,
-});
+}, (table) => [
+  check("organization_server_upgrades_channel_check", sql`${table.channel} in (${sqlStringLiterals(RELEASE_CHANNELS)})`),
+]);

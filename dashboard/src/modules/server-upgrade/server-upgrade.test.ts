@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   compareVersions,
+  newMajorLine,
   releaseFromPointer,
   releaseLine,
   serverUpgradeLine,
@@ -16,6 +17,11 @@ describe("compareVersions", () => {
     expect(compareVersions("1.2.3", "1.2.3")).toBe(0);
     expect(compareVersions("1.2.3-beta.9", "1.2.3")).toBeLessThan(0);
     expect(compareVersions("1.2.3-beta.10", "1.2.3-beta.2")).toBeGreaterThan(0);
+  });
+
+  it("puts a beta behind its release and ahead of the release before", () => {
+    expect(compareVersions("0.2.3-beta.1", "0.2.3")).toBeLessThan(0);
+    expect(compareVersions("0.2.3-beta.1", "0.2.2")).toBeGreaterThan(0);
   });
 
   it("can't compare an unknown or unpublished version", () => {
@@ -180,8 +186,24 @@ describe("serversUpgradeLine", () => {
       .toMatchObject({ kind: "behind", canUpgrade: false });
   });
 
+  it("reads Servers ahead of the release, on a beta, as current", () => {
+    expect(summary({ servers: servers("0.2.3-beta.1", "0.2.2") })).toMatchObject({ kind: "current", release: "0.2.2" });
+    expect(summary({ servers: servers("0.2.3-beta.1", "0.2.3"), release: "0.2.3" })).toMatchObject({ kind: "behind", upgraded: 1, running: "0.2.3-beta.1" });
+  });
+
   it("says nothing until the release is known, or with no Servers", () => {
     expect(summary({ release: null })).toBeNull();
     expect(summary({ servers: [] })).toBeNull();
+  });
+});
+
+describe("newMajorLine", () => {
+  it("names the unscoped stable release only when its major line is newer than the Servers'", () => {
+    expect(newMajorLine("v0", "1.0.0")).toEqual({ release: "1.0.0", name: "1.0", running: "0.x" });
+    expect(newMajorLine("v1", "3.2.0")).toEqual({ release: "3.2.0", name: "3.2", running: "1.x" });
+    expect(newMajorLine("v0", "0.3.0")).toBeNull();
+    expect(newMajorLine("v1", "0.9.0")).toBeNull();
+    expect(newMajorLine(null, "1.0.0")).toBeNull();
+    expect(newMajorLine("v0", null)).toBeNull();
   });
 });

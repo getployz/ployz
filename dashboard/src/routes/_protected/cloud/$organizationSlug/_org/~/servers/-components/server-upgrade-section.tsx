@@ -7,9 +7,9 @@ import type { ServerStatus } from "#/modules/machines/server-status";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { releaseLine, rolloutRunning, serverUpgradeLine, type ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
 import { requestServerUpgradeServerFn } from "#/modules/server-upgrade/server-upgrade.functions";
-import { useServerUpgrades, useStableRelease } from "#/modules/server-upgrade/server-upgrade.queries";
+import { useChannelRelease, useServerUpgrades } from "#/modules/server-upgrade/server-upgrade.queries";
 import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
-import { useAutomaticUpgrades } from "./server-upgrades-dialog";
+import { useServerUpgradeSettings } from "./server-upgrades-dialog";
 
 /** How long a click reads as Upgrading before its attempt is recorded; a Busy Server records none. */
 const PENDING_MS = 60_000;
@@ -53,8 +53,9 @@ export function ServerUpgradeSection({ machine, status, organizationSlug }: {
   const upgrades = useServerUpgrades(organizationSlug);
   const latest = upgrades === undefined ? undefined : upgrades.servers[machine.id] ?? null;
   const everyLatest = Object.values(upgrades?.servers ?? {});
-  const { automatic } = useAutomaticUpgrades(organizationSlug);
-  const release = useStableRelease(releaseLine(version));
+  const { automatic, channel } = useServerUpgradeSettings(organizationSlug);
+  const serverLine = releaseLine(version);
+  const release = useChannelRelease(channel, serverLine, serverLine !== null);
   const pending = usePendingUpgrade(latest?.attemptId ?? null);
   const now = useNow(everyLatest.some((row) => row.outcome === "running"));
 

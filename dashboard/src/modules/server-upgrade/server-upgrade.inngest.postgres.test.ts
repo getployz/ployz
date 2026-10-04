@@ -17,7 +17,7 @@ import { createCancelServerUpgrade, createRollOutServerUpgrade, createScheduleSe
 import {
   listLatestServerUpgrades,
   requestServerUpgrade,
-  setAutomaticServerUpgrades,
+  setServerUpgradeSettings,
 } from "#/modules/server-upgrade/server-upgrade.server";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
@@ -28,9 +28,11 @@ const userId = "00000000-0000-4000-8000-000000000c02";
 const machineId = "a".repeat(32);
 // Every Server's ID repeats one hex digit: web-1 is `1…1`, web-2 `2…2`, web-10 `a…a` above.
 const serverId = (digit: string) => digit.repeat(32);
-/** The newest release the stable pointer names. */
+/** The newest release the stable pointer names; the beta pointer names `publishedBeta`, or the same with none. */
 let published = "0.2.2";
-const release = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(`v${published}\n`));
+let publishedBeta: string | null = null;
+const release = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
+  new Response(`v${String(url).endsWith("/beta") ? publishedBeta ?? published : published}\n`));
 const inngest = new Inngest({ id: "server-upgrade-test" });
 const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
@@ -40,8 +42,8 @@ const running = (stage: string): Partial<Attempt> => ({ outcome: "running", stag
 describe("roll-out-server-upgrade", () => {
   let harness: PostgresTestHarness;
   let frame: RuntimeWatchView;
-  /** What the fake Server answers the request with; `busy` refuses it as Busy. */
-  let requestAnswer: Partial<Attempt> | "busy";
+  /** What the fake Server answers the request with; `busy` refuses it as Busy, `unreachable` never answers. */
+  let requestAnswer: Partial<Attempt> | "busy" | "unreachable";
   /** What each inspect answers, in order; the last repeats. `unreadable` fails like a restarting daemon. */
   let inspectAnswers: Array<Partial<Attempt> | "unreadable">;
   /** Per-Server answers, over the two above. */
@@ -71,6 +73,9 @@ describe("roll-out-server-upgrade", () => {
             requests.push({ machine, attemptId, release });
             log.push(`request ${machine}`);
             const answer = requestAnswerFor[machine] ?? requestAnswer;
+            if (answer === "unreachable") {
+              return Effect.fail(new PloyzProviderError({ operation: "request machine upgrade", cause: { code: "unavailable" } }));
+            }
             return answer === "busy"
               ? Effect.fail(new PloyzProviderError({ operation: "request machine upgrade", cause: { code: "conflict", message: "busy" } }))
               : Effect.succeed(attempt(attemptId, answer));
@@ -130,6 +135,7 @@ describe("roll-out-server-upgrade", () => {
     captured = [];
     identified = [];
     published = "0.2.2";
+    publishedBeta = null;
     send.mockClear();
     await harness.pool.query(`
       truncate table organization, "user" cascade;
@@ -343,10 +349,10 @@ describe("roll-out-server-upgrade", () => {
       `);
       const requested = async () => (await schedule()).result;
 
-      expect(await runEffect(setAutomaticServerUpgrades({ userId }, { organizationSlug: "acme", automatic: false })))
-        .toEqual({ id: organizationId, automatic: false });
+      expect(await runEffect(setServerUpgradeSettings({ userId }, { organizationSlug: "acme", automatic: false })))
+        .toEqual({ id: organizationId, automatic: false, channel: "stable" });
       expect(await requested()).toMatchObject({ organizationCount: 0 });
-      await runEffect(setAutomaticServerUpgrades({ userId }, { organizationSlug: "acme", automatic: true }));
+      await runEffect(setServerUpgradeSettings({ userId }, { organizationSlug: "acme", automatic: true }));
       expect(await requested()).toMatchObject({ organizationCount: 1 });
     });
 
@@ -367,6 +373,23 @@ describe("roll-out-server-upgrade", () => {
       expect(next.result).toEqual({ results: [] });
       expect(requests).toEqual([]);
       expect(await rows()).toHaveLength(2);
+    });
+
+    it("an attempt whose request was never answered halts the release it expected, and is closed once", async () => {
+      requestAnswer = "unreachable";
+      await rollOut(null, "automatic");
+
+      expect(await rows()).toMatchObject([{ outcome: "running", target_version: "0.2.2" }]);
+      await harness.pool.query("update server_upgrade_attempt set started_at = now() - interval '21 minutes'");
+      expect((await schedule()).result).toMatchObject({ closed: 1 });
+      requestAnswer = { outcome: "accepted" };
+      requests = [];
+      await rollOut(null, "automatic");
+      expect((await schedule()).result).toMatchObject({ closed: 0 });
+
+      expect(requests).toEqual([]);
+      expect(await rows()).toMatchObject([{ outcome: "unknown", target_version: "0.2.2" }]);
+      expect(captured.map(({ event, properties }) => [event, properties?.["to_version"]])).toEqual([["server_upgrade_unknown", "0.2.2"]]);
     });
 
     it("a newer release lifts the halt", async () => {
@@ -407,6 +430,38 @@ describe("roll-out-server-upgrade", () => {
       await rollOut(null);
 
       expect(requests.map(({ machine }) => machine)).toEqual([serverId("2"), serverId("3")]);
+    });
+
+    it("an Organization on Beta requests beta; on Stable again, Servers ahead of the stable pointer are left alone", async () => {
+      // Its own release line, so the pointers this test sets stay out of the other tests' pointer cache.
+      published = "3.0.0";
+      publishedBeta = "3.0.1-beta.1";
+      const beta = { outcome: "succeeded", version: publishedBeta, target: publishedBeta } as const;
+      requestAnswer = { outcome: "accepted", target: publishedBeta };
+      inspectAnswers = [beta];
+      frame = runtimeWatchFrameFixture({ machines: [
+        server("1", "web-1", "3.0.0"), server("2", "web-2", "3.0.0"), server("3", "web-3", "3.0.0-beta.2", { membership: "down" }),
+      ] });
+      await runEffect(setServerUpgradeSettings({ userId }, { organizationSlug: "acme", channel: "beta" }));
+
+      await rollOut(null, "automatic");
+
+      expect(requests.map(({ machine, release: channel }) => [machine, channel])).toEqual([[serverId("1"), "beta"], [serverId("2"), "beta"]]);
+      expect((await rows()).map(({ channel, target_version: target }) => [channel, target])).toEqual(Array(2).fill(["beta", publishedBeta]));
+      expect(captured.map(({ properties }) => properties?.["channel"])).toEqual(["beta", "beta"]);
+
+      expect(await runEffect(setServerUpgradeSettings({ userId }, { organizationSlug: "acme", channel: "stable" })))
+        .toEqual({ id: organizationId, automatic: true, channel: "stable" });
+      frame = runtimeWatchFrameFixture({ machines: [
+        server("1", "web-1", publishedBeta), server("2", "web-2", publishedBeta), server("3", "web-3", "3.0.0-beta.2"),
+      ] });
+      requests = [];
+      requestAnswer = { outcome: "accepted" };
+      inspectAnswers = [{ outcome: "succeeded", version: "3.0.0" }];
+
+      await rollOut(null, "automatic");
+
+      expect(requests.map(({ machine, release: channel }) => [machine, channel])).toEqual([[serverId("3"), "stable"]]);
     });
 
     it("credits automatic attempts to the Organization's system person, and manual ones to who clicked", async () => {

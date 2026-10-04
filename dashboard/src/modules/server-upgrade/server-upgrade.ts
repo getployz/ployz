@@ -44,6 +44,16 @@ export function releaseLine(version: string) {
 
 export const ReleaseLine = Schema.String.check(Schema.isPattern(/^v\d{1,4}$/u));
 
+/**
+ * The new-major-line notice: the release the unscoped `stable` pointer names, when its line is newer than the Servers'
+ * `line` (`v0`). `name` reads it as its line (`1.0`), `running` the Servers' line (`0.x`).
+ */
+export function newMajorLine(line: string | null, newest: string | null) {
+  const [major, minor] = newest === null ? [] : versionParts(newest) ?? [];
+  if (line === null || newest === null || major === undefined || major <= Number(line.slice(1))) return null;
+  return { release: newest, name: `${major}.${minor}`, running: `${line.slice(1)}.x` };
+}
+
 export const RequestServerUpgradeInput = Schema.Struct({
   organizationSlug: Schema.String,
   /** Upgrade on a Server page names it; Upgrade on the Servers page upgrades every Server behind. */
@@ -51,14 +61,20 @@ export const RequestServerUpgradeInput = Schema.Struct({
 });
 export type RequestServerUpgradeInput = typeof RequestServerUpgradeInput.Type;
 
-export const SetAutomaticServerUpgradesInput = Schema.Struct({ organizationSlug: Schema.String, automatic: Schema.Boolean });
-export type SetAutomaticServerUpgradesInput = typeof SetAutomaticServerUpgradesInput.Type;
+/** The Server upgrades dialog changes one setting at a time; any it leaves out keeps its value. */
+export const SetServerUpgradeSettingsInput = Schema.Struct({
+  organizationSlug: Schema.String,
+  automatic: Schema.optionalKey(Schema.Boolean),
+  channel: Schema.optionalKey(Schema.Literals(RELEASE_CHANNELS)),
+});
+export type SetServerUpgradeSettingsInput = typeof SetServerUpgradeSettingsInput.Type;
 
 /** The Org Store's view of the Organization's Server upgrade settings, keyed by Organization ID. */
-export type ServerUpgradeSettingsRow = { readonly id: string; readonly automatic: boolean };
+export type ServerUpgradeSettingsRow = { readonly id: string; readonly automatic: boolean; readonly channel: ReleaseChannel };
 
-/** No row reads as the defaults: automatic upgrades on. */
-export const automaticUpgrades = (rows: readonly ServerUpgradeSettingsRow[]) => rows[0]?.automatic ?? true;
+/** No row reads as the defaults: automatic upgrades on, Stable releases. */
+export const serverUpgradeSettings = (rows: readonly ServerUpgradeSettingsRow[]) =>
+  ({ automatic: rows[0]?.automatic ?? true, channel: rows[0]?.channel ?? "stable" }) as const;
 
 /** A Server's latest Upgrade attempt, as the Server page reads it. */
 export const LatestUpgrade = Schema.Struct({

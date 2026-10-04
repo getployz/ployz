@@ -1,5 +1,6 @@
 import { queryOptions, useQuery } from "@tanstack/react-query";
-import { listLatestServerUpgradesServerFn, readStableReleaseServerFn } from "./server-upgrade.functions";
+import type { ReleaseChannel } from "./server-upgrade";
+import { listLatestServerUpgradesServerFn, readChannelReleaseServerFn } from "./server-upgrade.functions";
 
 export const serverUpgradeKeys = { all: ["server-upgrade"] as const };
 
@@ -15,13 +16,15 @@ export function latestServerUpgradesQueryOptions(organizationSlug: string) {
   });
 }
 
-/** The newest stable release on release line `line` (`v0`); Cloud caches the pointer for a few minutes too. */
-export function stableReleaseQueryOptions(line: string | null) {
+/**
+ * The newest release on `channel` for release line `line` (`v0`); a null line reads the unscoped pointer, which may
+ * name a newer line. Cloud caches the pointer for a few minutes too.
+ */
+export function channelReleaseQueryOptions(channel: ReleaseChannel, line: string | null) {
   return queryOptions({
-    queryKey: [...serverUpgradeKeys.all, "stable", line] as const,
-    queryFn: () => readStableReleaseServerFn({ data: { line: line ?? "" } }),
+    queryKey: [...serverUpgradeKeys.all, "release", channel, line] as const,
+    queryFn: () => readChannelReleaseServerFn({ data: { channel, line } }),
     staleTime: 5 * 60_000,
-    enabled: line !== null,
   });
 }
 
@@ -30,7 +33,7 @@ export function useServerUpgrades(organizationSlug: string) {
   return useQuery(latestServerUpgradesQueryOptions(organizationSlug)).data;
 }
 
-/** Null until Cloud has read it, or when it can't be read. */
-export function useStableRelease(line: string | null) {
-  return useQuery(stableReleaseQueryOptions(line)).data ?? null;
+/** Null until Cloud has read it, or when it can't be read. `enabled` false reads nothing. */
+export function useChannelRelease(channel: ReleaseChannel, line: string | null, enabled = true) {
+  return useQuery({ ...channelReleaseQueryOptions(channel, line), enabled }).data ?? null;
 }

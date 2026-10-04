@@ -7,7 +7,7 @@ import {
   inngestFunctionCancelledEventType,
   serverUpgradeRequestedEventType,
 } from "#/modules/inngest/events";
-import { UPGRADE_OBSERVATION_LIMIT_MS, UPGRADE_TRIGGERS } from "#/modules/server-upgrade/server-upgrade";
+import { type ReleaseChannel, UPGRADE_OBSERVATION_LIMIT_MS, UPGRADE_TRIGGERS } from "#/modules/server-upgrade/server-upgrade";
 import {
   closeRunUpgradeAttempts,
   closeStaleUpgradeAttempts,
@@ -18,6 +18,7 @@ import {
   listServersBehind,
   mintAttemptId,
   observeUpgradeableServer,
+  organizationReleaseChannel,
   recordUpgradeAttempt,
   requestUpgradeOnServer,
 } from "#/modules/server-upgrade/server-upgrade.server";
@@ -40,14 +41,15 @@ const ServerUpgradeRequestedData = Schema.Struct({
   trigger: Schema.Literals(UPGRADE_TRIGGERS),
   userId: Schema.NullOr(Schema.String),
 });
-type Request = Omit<typeof ServerUpgradeRequestedData.Type, "machineId">;
+type Request = Omit<typeof ServerUpgradeRequestedData.Type, "machineId"> & { readonly channel: ReleaseChannel };
 
 const decodeFailedRun = Schema.decodeUnknownOption(Schema.Struct({ data: Schema.Struct({ run_id: Schema.String }) }));
 
 /**
- * One rollout run: the named Server, or every Server behind (online, idle, older than the newest release on its line)
- * in name order, one at a time; an automatic one skips a release the Organization is halted on. It stops at the first outcome that isn't `succeeded`; a Server that went offline or
- * refuses as Busy is skipped and records nothing.
+ * One rollout run along the Organization's Release Channel: the named Server, or every Server behind (online, idle,
+ * older than the newest release on the channel for its line) in name order, one at a time; an automatic one skips a
+ * release the Organization is halted on. It stops at the first outcome that isn't `succeeded`; a Server that went
+ * offline or refuses as Busy is skipped and records nothing.
  */
 export async function executeRollOutServerUpgrade(
   { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },
@@ -59,13 +61,14 @@ export async function executeRollOutServerUpgrade(
   });
   if (request === null) return { skipped: "invalid" as const };
   const { machineId, ...rest } = request;
+  const channel = await step.run("read-channel", () => runEffect(organizationReleaseChannel(request.organizationId)));
   const machineIds = machineId === null
-    ? await step.run("pick-servers", () => runEffect(listServersBehind(request.organizationId, request.trigger)))
+    ? await step.run("pick-servers", () => runEffect(listServersBehind(request.organizationId, request.trigger, channel)))
     : [machineId];
 
   const results = [];
   for (const id of machineIds) {
-    const result = await upgradeServer({ request: rest, machineId: id, step, runId }, runEffect);
+    const result = await upgradeServer({ request: { ...rest, channel }, machineId: id, step, runId }, runEffect);
     results.push({ machineId: id, ...result });
     if ("outcome" in result && result.outcome !== "succeeded") break;
   }
@@ -73,15 +76,14 @@ export async function executeRollOutServerUpgrade(
 }
 
 /**
- * Upgrade one Server: observe it online and idle → record the attempt → request the Upgrade along `stable` → poll
+ * Upgrade one Server: observe it online and idle → record the attempt → request the Upgrade along the channel → poll
  * until the outcome is terminal → record it. Twenty minutes without one records `unknown` with the last stage seen.
  */
 async function upgradeServer(
   { request, machineId, step, runId }: { request: Request; machineId: string; step: StepTools; runId: string },
   runEffect: EffectRunner,
 ) {
-  const { organizationId } = request;
-  const channel = "stable" as const;
+  const { organizationId, channel, ...event } = request;
   const observed = await step.run(`observe-server-${machineId}`, async () => {
     const fromVersion = await runEffect(observeUpgradeableServer(organizationId, machineId));
     // Minted here so every retry of a later step reuses it.
@@ -90,7 +92,7 @@ async function upgradeServer(
   if (observed === null) return { skipped: "not-online" as const };
   const { fromVersion, attemptId } = observed;
   await step.run(`record-attempt-${machineId}`, () => runEffect(recordUpgradeAttempt({
-    request: { ...request, machineId },
+    request: { organizationId, ...event, machineId },
     attemptId,
     channel,
     fromVersion,

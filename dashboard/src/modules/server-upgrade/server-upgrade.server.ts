@@ -20,7 +20,7 @@ import {
   releaseFromPointer,
   releaseLine,
   type RequestServerUpgradeInput,
-  type SetAutomaticServerUpgradesInput,
+  type SetServerUpgradeSettingsInput,
   UPGRADE_OBSERVATION_LIMIT_MS,
   type UpgradeOutcome,
   type UpgradeTrigger,
@@ -31,7 +31,7 @@ import { Database } from "#/server/database.server";
 /** The daemon reads its Release Channel pointers here (core `CHANNEL_URL`). */
 const CHANNEL_URL = "https://ployz.sh";
 const POINTER_CACHE_MS = 5 * 60_000;
-// ponytail: one process-wide cache of a public, tiny pointer per release line; nothing to evict.
+// ponytail: one process-wide cache of a public, tiny pointer per path; a handful of paths, nothing to evict.
 const pointers = new Map<string, { readonly release: string | null; readonly readAt: number }>();
 
 export class ServerUpgradeUnreachable extends Data.TaggedError("ServerUpgradeUnreachable")<{
@@ -40,18 +40,28 @@ export class ServerUpgradeUnreachable extends Data.TaggedError("ServerUpgradeUnr
 }> {}
 
 /**
- * The newest release on the `stable` Release Channel for release line `line` (`v0`), the pointer the daemon reads;
- * null when it can't be read. Cached for a few minutes.
+ * The newest release on Release Channel `channel` for release line `line` (`v0`), the pointer the daemon reads; with
+ * no line, the unscoped pointer the installer reads, which may name a newer line. Null when it can't be read. Cached
+ * for a few minutes.
  */
-export const stableRelease = Effect.fn("ServerUpgrade.stableRelease")(function* (line: string) {
-  const cached = pointers.get(line);
+export const channelRelease = Effect.fn("ServerUpgrade.channelRelease")(function* (channel: ReleaseChannel, line: string | null) {
+  const path = line === null ? channel : `${line}/${channel}`;
+  const cached = pointers.get(path);
   if (cached !== undefined && Date.now() - cached.readAt < POINTER_CACHE_MS) return cached.release;
   const release = yield* Effect.tryPromise(async (signal) => {
-    const response = await fetch(`${CHANNEL_URL}/${line}/stable`, { signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]) });
+    const response = await fetch(`${CHANNEL_URL}/${path}`, { signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]) });
     return response.ok ? releaseFromPointer(await response.text()) : null;
-  }).pipe(Effect.catch((cause) => Effect.logWarning("The stable Release Channel pointer could not be read.", cause).pipe(Effect.as(null))));
-  pointers.set(line, { release, readAt: Date.now() });
+  }).pipe(Effect.catch((cause) => Effect.logWarning("A Release Channel pointer could not be read.", { path, cause }).pipe(Effect.as(null))));
+  pointers.set(path, { release, readAt: Date.now() });
   return release;
+});
+
+/** The Release Channel the Organization chose; no settings row reads as Stable. */
+export const organizationReleaseChannel = Effect.fn("ServerUpgrade.channel")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ channel: organizationServerUpgrades.channel }).from(organizationServerUpgrades)
+    .where(eq(organizationServerUpgrades.organizationId, organizationId));
+  return row?.channel ?? "stable";
 });
 
 /**
@@ -134,10 +144,15 @@ const haltedReleases = Effect.fn("ServerUpgrade.halted")(function* (organization
 });
 
 /**
- * Every Server observed online and idle on a release older than the newest on its line, in name order. An automatic
- * rollout also skips a release the Organization is halted on. A Cluster Cloud can't reach has none.
+ * Every Server observed online and idle on a release older than the newest on `channel` for its line, in name order:
+ * a Server ahead of it (on a beta, after switching to Stable) isn't behind. An automatic rollout also skips a release
+ * the Organization is halted on. A Cluster Cloud can't reach has none.
  */
-export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function* (organizationId: string, trigger: UpgradeTrigger) {
+export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function* (
+  organizationId: string,
+  trigger: UpgradeTrigger,
+  channel: ReleaseChannel,
+) {
   const session = yield* openSession(organizationId);
   const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
   const halted = trigger === "automatic" ? yield* haltedReleases(organizationId) : new Set<string>();
@@ -146,7 +161,7 @@ export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function*
     if (serverStatus({ membership, runningBuilds: machine.runtime.running_builds }) !== "online") continue;
     const version = machine.runtime.daemon_version;
     const line = releaseLine(version);
-    const release = line === null ? null : yield* stableRelease(line);
+    const release = line === null ? null : yield* channelRelease(channel, line);
     const order = release === null ? null : compareVersions(version, release);
     if (order !== null && order < 0 && !halted.has(release ?? "")) behind.push({ id: machine.id, name: machine.name, status: "online" });
   }
@@ -154,6 +169,11 @@ export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function*
 }, Effect.scoped, Effect.catchIf((error) => error instanceof ServerUpgradeUnreachable, (error) =>
   Effect.logInfo("The Cluster can't be reached; no Server is upgraded.", error).pipe(Effect.as<string[]>([]))));
 
+/**
+ * Write the attempt's row before its request. Its target starts as the release `channel` names for the Server's line,
+ * so an attempt whose request never gets an answer still halts that release; the Server's answer replaces it with
+ * the exact version it resolved.
+ */
 export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* (input: {
   readonly request: ServerUpgradeRequestedEventData & { readonly machineId: string };
   readonly attemptId: string;
@@ -161,6 +181,8 @@ export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* 
   readonly fromVersion: string;
   readonly inngestRunId: string;
 }) {
+  const line = releaseLine(input.fromVersion);
+  const expected = line === null ? null : yield* channelRelease(input.channel, line);
   const { drizzle } = yield* Database;
   // A retried step finds the row it already wrote.
   yield* drizzle.insert(serverUpgradeAttempt).values({
@@ -171,6 +193,7 @@ export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* 
     requestedByUserId: input.request.userId,
     channel: input.channel,
     fromVersion: input.fromVersion,
+    targetVersion: expected,
     inngestRunId: input.inngestRunId,
     startedAt: new Date(),
   }).onConflictDoNothing();
@@ -319,17 +342,22 @@ export const listAutomaticUpgradeOrganizationIds = Effect.fn("ServerUpgrade.list
   return rows.map(({ id }) => id);
 });
 
-/** "Upgrade automatically" in the Server upgrades dialog: any member may change it. */
-export const setAutomaticServerUpgrades = Effect.fn("ServerUpgrade.setAutomatic")(function* (
+/** "Upgrade automatically" and "Releases" in the Server upgrades dialog: any member may change them. */
+export const setServerUpgradeSettings = Effect.fn("ServerUpgrade.setSettings")(function* (
   actor: Actor,
-  input: SetAutomaticServerUpgradesInput,
+  { organizationSlug, ...settings }: SetServerUpgradeSettingsInput,
 ) {
-  const { id: organizationId } = yield* requireInfrastructureOrganization(actor, input.organizationSlug);
+  const { id: organizationId } = yield* requireInfrastructureOrganization(actor, organizationSlug);
   const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.insert(organizationServerUpgrades).values({ organizationId, automatic: input.automatic })
-    .onConflictDoUpdate({ target: organizationServerUpgrades.organizationId, set: { automatic: input.automatic, updatedAt: new Date() } })
-    .returning({ id: organizationServerUpgrades.organizationId, automatic: organizationServerUpgrades.automatic });
-  return row ?? { id: organizationId, automatic: input.automatic };
+  const [row] = yield* drizzle.insert(organizationServerUpgrades).values({ organizationId, ...settings })
+    .onConflictDoUpdate({ target: organizationServerUpgrades.organizationId, set: { ...settings, updatedAt: new Date() } })
+    .returning({
+      id: organizationServerUpgrades.organizationId,
+      automatic: organizationServerUpgrades.automatic,
+      channel: organizationServerUpgrades.channel,
+    });
+  // ponytail: an upsert always returns its row; the fallback only satisfies the type.
+  return row ?? { id: organizationId, automatic: settings.automatic ?? true, channel: settings.channel ?? "stable" };
 });
 
 /** Cloud mints attempt IDs in the daemon's 32-hex form. */
