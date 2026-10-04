@@ -49,7 +49,8 @@ and your generated addresses stop pointing at it within the hour.
 
 ## Upgrade Ployz on a server
 
-Servers upgrade automatically to the newest stable release, one at a time in name order, and your
+Servers upgrade automatically to the newest release on your organization's channel (Stable unless
+you [choose Beta](#choose-stable-or-beta-releases)), one at a time in name order, and your
 apps keep running while they do. Ployz checks every hour. Each server on the **Servers** page shows
 the release it runs, and the line under the page header sums them up: **On Ployz `0.2.2`, upgraded
 last night · Upgrades automatically**. While an upgrade runs, it reads **Upgrading to `0.2.2` · 1
@@ -76,7 +77,26 @@ To upgrade one server, open it: its **Ployz** section reads **`0.2.2` is out**. 
 Any member can upgrade servers while they're online and not building. One upgrade runs at a time
 per organization, so **Upgrade** and **Try again** wait while one is running.
 
-To upgrade from the CLI, or to pick beta or an exact version:
+### Choose Stable or Beta releases
+
+Click **Upgrades automatically** (or **Manual upgrades**) on the line and pick **Releases: Stable**
+or **Beta**. Stable is the default; Beta gets fixes early, as prereleases like `0.2.3-beta.1`. Any
+member can change it, and it applies to every upgrade, automatic or by hand. The line and each
+server's page then show the newest release on that channel.
+
+Switching back to Stable never downgrades a server. A server on a beta ahead of Stable reads as
+current and waits until Stable catches up.
+
+### New major lines
+
+Upgrades stay on your servers' release line (`0.x`). When a new line like 1.0 is published, the
+**Servers** page says **Ployz 1.0 is out. New lines install only when you choose. Your servers stay
+on 0.x and keep getting its upgrades.** **See what's new** opens its release notes. Nothing installs
+the new line for you.
+
+### Upgrade from the CLI
+
+To upgrade from the CLI, or to pick an exact version:
 
 ```sh
 # stable, beta, or an exact version like 0.2.0, on web-1 then web-2

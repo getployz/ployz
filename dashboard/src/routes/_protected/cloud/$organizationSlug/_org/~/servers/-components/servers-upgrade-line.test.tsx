@@ -2,8 +2,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ServerStatus } from "#/modules/machines/server-status";
-import { serversUpgradeLine, type LatestUpgrade } from "#/modules/server-upgrade/server-upgrade";
-import { ServersUpgradeText } from "./servers-upgrade-line";
+import { newMajorLine, serversUpgradeLine, type LatestUpgrade } from "#/modules/server-upgrade/server-upgrade";
+import { NewMajorLineNotice, ServersUpgradeText } from "./servers-upgrade-line";
 
 afterEach(cleanup);
 
@@ -71,4 +71,14 @@ it("names the offline Servers that upgrade when they're back, while automatic up
   // With automatic upgrades off the release reads as out, with nothing online to Upgrade.
   expect(show(["0.2.2", "0.2.1"], { statuses: ["online", "offline"], automatic: false }).text)
     .toBe("Ployz 0.2.2 is out · 1 of 2 upgradedManual");
+});
+
+it("announces a newer major line with its release notes, and nothing for the Servers' own line", () => {
+  const { container } = render(<NewMajorLineNotice notice={newMajorLine("v0", "1.0.0")} />);
+  expect(container.textContent).toBe(
+    "Ployz 1.0 is out. New lines install only when you choose. Your servers stay on 0.x and keep getting its upgrades.See what’s new",
+  );
+  expect(screen.getByRole("link", { name: "See what’s new" }).getAttribute("href")).toBe("https://github.com/getployz/ployz/releases/tag/v1.0.0");
+  cleanup();
+  expect(render(<NewMajorLineNotice notice={newMajorLine("v0", "0.3.0")} />).container.textContent).toBe("");
 });
