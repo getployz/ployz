@@ -49,10 +49,19 @@ and your generated addresses stop pointing at it within the hour.
 
 ## Upgrade Ployz on a server
 
-Servers don't upgrade themselves yet. To upgrade one, open it: when a newer stable release is out,
-its **Ployz** section reads **`0.2.2` is out**. Click **Upgrade**. The line reads **Upgrading to
-`0.2.2`** until the server is on it. Any member can upgrade a server, while it's online and not
-building.
+Servers don't upgrade themselves yet. Each server on the **Servers** page shows the release it
+runs, and the line under the page header says whether a newer stable release is out:
+**Ployz `0.2.2` is out · your servers run `0.2.1`**. Click **Upgrade** to upgrade every server
+that's behind, one at a time in name order. While it runs, the line reads **Upgrading to `0.2.2` ·
+1 of 4 done**; once every server is on it, **On Ployz `0.2.2`**, with when they last upgraded.
+
+Servers that are offline or building are skipped and stay behind. If a server's upgrade doesn't
+install, the rest aren't attempted, and the line reads **1 of 4 upgraded** with **Upgrade the rest**.
+
+To upgrade one server, open it: its **Ployz** section reads **`0.2.2` is out**. Click **Upgrade**.
+The line reads **Upgrading to `0.2.2`** until the server is on it. Any member can upgrade servers,
+while they're online and not building. One upgrade runs at a time per organization; a second
+request waits for the first.
 
 If an upgrade doesn't install, the line says so. **Show details** has the exact error to copy, and
 **Try again** retries.
