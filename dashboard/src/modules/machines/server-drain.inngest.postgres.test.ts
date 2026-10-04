@@ -44,7 +44,7 @@ const partialReport = {
       moves: [{ from: web2, to: web1 }],
       failure: { stage: "not_serving", from: web2, to: web1, detail: "health check timed out", replacement_removed: true },
     },
-    { service: "shop/db", result: "stays", reason: { kind: "volume", volume: "pg-data", server: web2 } },
+    { service: "shop/db", result: "stays", reason: { kind: "volume", server: web2 } },
     { service: "shop/web", result: "not_attempted" },
   ],
   stopped: { kind: "cancelled" },

@@ -42,7 +42,7 @@ const view = (latest: LatestDrains, requested: string | null = null) => drainVie
 
 const moved: ServiceDrain = { service: "shop/api", result: "moved", moves: [{ from: web2, to: web1 }, { from: web2, to: web3 }, { from: web2, to: web1 }] };
 const retired: ServiceDrain = { service: "monitoring/node-exporter", result: "retired" };
-const volume: ServiceDrain = { service: "shop/postgres", result: "stays", reason: { kind: "volume", volume: "pg-data", server: web2 } };
+const volume: ServiceDrain = { service: "shop/postgres", result: "stays", reason: { kind: "volume", server: web2 } };
 const rollout: ServiceDrain = { service: "shop/redis", result: "stays", reason: { kind: "mid_rollout" } };
 
 describe("Drain result", () => {

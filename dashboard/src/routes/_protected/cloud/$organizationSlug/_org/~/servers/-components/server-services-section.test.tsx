@@ -48,7 +48,7 @@ const rows = (input: { view: DrainView; acceptsServices?: boolean; unavailable?:
 const resultRow = (key: string) => document.querySelector(`[data-row="${key}"]`) as HTMLElement;
 
 const moved: ServiceDrain = { service: "shop/api", result: "moved", moves: [{ from: web2, to: web1 }] };
-const volume: ServiceDrain = { service: "shop/postgres", result: "stays", reason: { kind: "volume", volume: "pg-data", server: web2 } };
+const volume: ServiceDrain = { service: "shop/postgres", result: "stays", reason: { kind: "volume", server: web2 } };
 const retired: ServiceDrain = { service: "monitoring/node-exporter", result: "retired" };
 const failed: ServiceDrain = {
   service: "shop/worker",

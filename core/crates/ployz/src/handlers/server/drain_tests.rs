@@ -2,7 +2,6 @@
 //! before the report was typed, so every outcome that existed then prints the same now.
 
 use ployz_core::{Machine, MachineId, MachineName, QualifiedService, WireGuardPublicKey};
-use serde_json::json;
 
 use super::{NOTHING_MOVES_BACK, closing_lines, line};
 use crate::drain::{
@@ -51,7 +50,6 @@ fn every_legacy_outcome() -> Vec<ServiceDrain> {
         replacement_removed: true,
     };
     let reason = StayReason::Volume {
-        volume: serde_json::from_value(json!("data")).unwrap(),
         server: MachineRef::from(&server('b', "web-2")),
     };
     [

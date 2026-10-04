@@ -3118,7 +3118,7 @@ export type SourceKind = "empty" | "uploaded" | "git" | "image";
 
 export type Start = { deployment: DeploymentId, };
 
-export type StayReason = { "kind": "unobserved", server: MachineRef, } | { "kind": "mid_rollout" } | { "kind": "global" } | { "kind": "bind_mount", server: MachineRef, } | { "kind": "volume", volume: ServiceVolumeReference, server: MachineRef, } | { "kind": "no_destination", detail: string, };
+export type StayReason = { "kind": "unobserved", server: MachineRef, } | { "kind": "mid_rollout" } | { "kind": "global" } | { "kind": "bind_mount", server: MachineRef, } | { "kind": "volume", server: MachineRef, } | { "kind": "no_destination", detail: string, };
 
 export type StopAttempt<E> = { "type": "stopped" } | { "type": "failed", error: E, };
 

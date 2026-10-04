@@ -10,7 +10,7 @@ use std::fmt;
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ExecutionError, InspectContainerRequest,
     Machine, MachineId, MachineName, MachineTarget, PullPolicy, QualifiedService, RawVolumeSource,
-    ResolvedServiceSpec, ServiceMode, ServicePlacementEligibility, ServiceVolumeReference, op,
+    ResolvedServiceSpec, ServiceMode, ServicePlacementEligibility, op,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -104,11 +104,8 @@ pub enum StayReason {
     Global,
     /// It mounts a Bind Mount on `server`.
     BindMount { server: MachineRef },
-    /// It mounts `volume`, which lives on `server`.
-    Volume {
-        volume: ServiceVolumeReference,
-        server: MachineRef,
-    },
+    /// It mounts a Volume that lives on `server`.
+    Volume { server: MachineRef },
     /// No Server can take a Container; `detail` is the planner's.
     NoDestination { detail: String },
 }
@@ -120,7 +117,7 @@ impl fmt::Display for StayReason {
             Self::MidRollout => f.write_str("mid-rollout: deploy it first"),
             Self::Global => f.write_str("Global Services run on every Server that accepts them"),
             Self::BindMount { server } => write!(f, "Bind Mount on {server}"),
-            Self::Volume { server, .. } => write!(f, "its Volume is on {server}"),
+            Self::Volume { server } => write!(f, "its Volume is on {server}"),
             Self::NoDestination { detail } => write!(f, "no eligible Server: {detail}"),
         }
     }
@@ -321,6 +318,8 @@ fn refusal(
     {
         return Some(StayReason::MidRollout);
     }
+    // The snapshot carries no storage evidence: `stays` pins every storage-dependent spec
+    // first. Observe storage once Volumes can move.
     let first = stranded.first()?;
     if let Some(reason) = stays(spec, &machine_ref(snapshot, &first.machine_id)) {
         return Some(reason);
@@ -368,7 +367,6 @@ fn stays(spec: &ResolvedServiceSpec, machine: &MachineRef) -> Option<StayReason>
             RawVolumeSource::External { .. }
             | RawVolumeSource::Ordinary { .. }
             | RawVolumeSource::Provisioned { .. } => Some(StayReason::Volume {
-                volume: volume.reference.clone(),
                 server: machine.clone(),
             }),
         })
