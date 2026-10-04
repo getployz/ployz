@@ -2,6 +2,7 @@
 
 use std::{
     collections::BTreeMap, fmt, io, os::unix::net::UnixListener as StdUnixListener, str::FromStr,
+    time::Duration,
 };
 
 use axum::{
@@ -9,11 +10,14 @@ use axum::{
     extract::{Request, State},
     http::{HeaderValue, header::CONTENT_TYPE},
     middleware::{self, Next},
-    response::Response,
+    response::{IntoResponse, Response},
     routing::post,
 };
+use hyper::{body::Incoming, server::conn::http1, service::service_fn};
+use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use tokio::net::UnixListener;
+use tower_service::Service;
 
 mod capacity;
 mod pool;
@@ -44,6 +48,22 @@ impl From<String> for VolumeError {
 impl From<&str> for VolumeError {
     fn from(message: &str) -> Self {
         Self::Message(message.to_owned())
+    }
+}
+
+/// Why the plugin closes a connection instead of answering the request.
+///
+/// Docker keeps a Volume's stored labels only when `VolumeDriver.Get` fails as a
+/// `net.Error`; any answer, even an error, reads as "no such Volume" (moby `lookupVolume`).
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("{0}")]
+struct HangUp(String);
+
+impl IntoResponse for HangUp {
+    fn into_response(self) -> Response {
+        let mut response = Response::default();
+        response.extensions_mut().insert(self);
+        response
     }
 }
 
@@ -152,7 +172,42 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route("/VolumeDriver.Capabilities", post(capabilities))
         .layer(middleware::from_fn(legacy_plugin_json))
         .with_state(storage);
-    axum::serve(listener, router).await
+    loop {
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            Err(error) => {
+                tracing::error!(%error, "Volume plugin could not accept a connection");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+        let router = router.clone();
+        tokio::spawn(async move {
+            let service = service_fn(move |request| answer(router.clone(), request));
+            if let Err(error) = http1::Builder::new()
+                .serve_connection(TokioIo::new(stream), service)
+                .await
+            {
+                tracing::debug!(%error, "Volume plugin connection ended");
+            }
+        });
+    }
+}
+
+/// Fails the service for a [`HangUp`] response: hyper then closes without writing one.
+async fn answer(
+    mut router: Router,
+    request: hyper::Request<Incoming>,
+) -> std::result::Result<Response, HangUp> {
+    let route = request.uri().path().to_owned();
+    let Ok(mut response) = router.call(request).await;
+    match response.extensions_mut().remove::<HangUp>() {
+        Some(hang_up) => {
+            tracing::warn!(%route, reason = %hang_up, "Volume plugin hung up without answering");
+            Err(hang_up)
+        }
+        None => Ok(response),
+    }
 }
 
 async fn legacy_plugin_json(mut request: Request, next: Next) -> Response {
@@ -622,7 +677,31 @@ mod tests {
     }
 
     async fn post(socket: &Path, route: &str, body: Value) -> Value {
-        let body = serde_json::to_vec(&body).unwrap();
+        let mut stream = send(socket, route, &serde_json::to_vec(&body).unwrap()).await;
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let body = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .and_then(|index| response.get(index + 4..))
+            .unwrap();
+        serde_json::from_slice(body).unwrap()
+    }
+
+    /// Asserts the plugin closes the connection without writing any response bytes.
+    async fn assert_hangs_up(socket: &Path, route: &str, body: &[u8]) {
+        let mut stream = send(socket, route, body).await;
+        let mut response = Vec::new();
+        // A reset is also a hang-up; only bytes written before it matter.
+        let _ = stream.read_to_end(&mut response).await;
+        assert!(
+            response.is_empty(),
+            "{route} answered {}",
+            String::from_utf8_lossy(&response)
+        );
+    }
+
+    async fn send(socket: &Path, route: &str, body: &[u8]) -> UnixStream {
         let mut stream = UnixStream::connect(socket).await.unwrap();
         stream
             .write_all(
@@ -634,15 +713,8 @@ mod tests {
             )
             .await
             .unwrap();
-        stream.write_all(&body).await.unwrap();
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).await.unwrap();
-        let body = response
-            .windows(4)
-            .position(|window| window == b"\r\n\r\n")
-            .and_then(|index| response.get(index + 4..))
-            .unwrap();
-        serde_json::from_slice(body).unwrap()
+        stream.write_all(body).await.unwrap();
+        stream
     }
 
     fn error(response: &Value) -> &str {

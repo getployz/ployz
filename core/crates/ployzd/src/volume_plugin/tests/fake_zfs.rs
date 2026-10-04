@@ -24,6 +24,7 @@ pub(super) fn fake_zfs(directory: &Path, pools: &str) -> (PathBuf, PathBuf) {
     let sibling = directory.join("sibling");
     let mounted = directory.join("mounted");
     let destroy_fails = directory.join("destroy-fails");
+    let list_fails = directory.join("list-fails");
     let script_body = format!(
         r#"#!/bin/sh
 set -eu
@@ -35,6 +36,7 @@ if [ "$name" = zpool ]; then
 fi
 case "$*" in
   'list -Hp -o name,refquota,used,usedbydataset,mountpoint,mounted,readonly -r tank')
+    if [ -e '{list_fails}' ]; then echo 'pool is busy' >&2; exit 1; fi
     printf 'tank\t0\t0\t0\t/tank\tyes\toff\n'
     if [ -e '{root}' ]; then
       if [ -e '{incompatible_root}' ]; then root_mountpoint=/tank/ployz; else root_mountpoint=/var/lib/ployz-volumes; fi
@@ -79,6 +81,7 @@ esac
         sibling = sibling.display(),
         mounted = mounted.display(),
         destroy_fails = destroy_fails.display(),
+        list_fails = list_fails.display(),
     );
     fs::write(&script, script_body).unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
