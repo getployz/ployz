@@ -14,10 +14,10 @@ export type ReleaseChannel = (typeof RELEASE_CHANNELS)[number];
 export type FinalOutcome = Exclude<UpgradeOutcome, "running">;
 
 /** The settings of an Organization without a settings row: automatic upgrades on, Stable releases. */
-export const DEFAULT_SERVER_UPGRADE_SETTINGS: { readonly automatic: boolean; readonly channel: ReleaseChannel } = {
+export const DEFAULT_SERVER_UPGRADE_SETTINGS = {
   automatic: true,
   channel: "stable",
-};
+} satisfies Omit<ServerUpgradeSettingsRow, "id">;
 
 // The only forms a release is published in: `X.Y.Z` and `X.Y.Z-beta.N`.
 const VERSION = /^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$/u;
@@ -120,14 +120,13 @@ export type ServerUpgradeLine =
   | { readonly kind: "when-back"; readonly release: string }
   | null;
 
+export type EndEvidence = { readonly stage?: string | null; readonly error?: string | null };
+
 /**
  * What an attempt that ended keeps besides its outcome: nothing after a success, the stage a non-success stopped at,
  * and a failure's error too. The row, its PostHog event, and the Server page's details all read it.
  */
-export function endEvidence(outcome: FinalOutcome, stage: string | null, error: string | null): {
-  readonly stage?: string | null;
-  readonly error?: string | null;
-} {
+export function endEvidence(outcome: FinalOutcome, stage: string | null, error: string | null): EndEvidence {
   if (outcome === "succeeded") return {};
   return outcome === "failed" ? { stage, error } : { stage };
 }

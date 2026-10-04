@@ -383,5 +383,6 @@ export const setServerUpgradeSettings = Effect.fn("ServerUpgrade.setSettings")(f
 });
 
 /** Cloud mints attempt IDs in the daemon's 32-hex form. */
-// SAFETY: a UUID without its dashes is 32 lowercase hex digits, the daemon's attempt ID form.
-export const mintAttemptId = () => randomUUID().replaceAll("-", "") as MachineUpgradeAttemptId;
+export const mintAttemptId = () =>
+  // SAFETY: a UUID without its dashes is 32 lowercase hex digits, the daemon's attempt ID form.
+  randomUUID().replaceAll("-", "") as MachineUpgradeAttemptId;
