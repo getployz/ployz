@@ -13,7 +13,7 @@ use ployz::deploy::{
 };
 use ployz_core::{
     ContainerId, MachineId, MachineStorageObservation, Namespace, OperationPhase,
-    ProvisionedVolumeMaximumBytes, QualifiedService, RequestedServiceSpec,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RequestedServiceSpec, RpcErrorCode,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -337,15 +337,17 @@ async fn provisioned_volume_deploy_reaches_container_creation() {
     server.abort();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn volume_ensure_failure_is_reported_on_the_container_operation() {
     let machine = machine('a', "one");
-    let (mut client, server) =
-        connected(DeployService::new(machine.clone()).fail_create_volume("volume create failed"))
-            .await;
+    let (mut client, server, _socket) = connected_unix(
+        DeployService::new(machine.clone()).fail_create_volume("volume create failed"),
+    )
+    .await;
     let mut spec = spec("web");
     add_named_volume(&mut spec, "data");
 
+    let started = tokio::time::Instant::now();
     let outcome = client
         .run(
             DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec, skip_health()),
@@ -370,18 +372,24 @@ async fn volume_ensure_failure_is_reported_on_the_container_operation() {
             operation: DeployOperation::RunContainer { spec, .. },
             error: ExecutionError::Machine {
                 action: ployz_core::MachineAction::CreateContainer,
-                ..
+                error,
             },
         } if spec.name.as_str() == "web"
+            && error.code == RpcErrorCode::Unavailable
+            && error.message == "volume create failed"
     ));
+    assert!(
+        started.elapsed() >= Duration::from_secs(60),
+        "create waits out a restart before reporting Unavailable"
+    );
     assert!(unexecuted.is_empty());
     server.abort();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn created_but_unverified_volume_fails_the_container_operation() {
     let machine = machine('a', "one");
-    let (mut client, server) = connected(
+    let (mut client, server, _socket) = connected_unix(
         DeployService::new(machine)
             .fail_create_volume_verification("Docker inspect response was malformed"),
     )
@@ -389,6 +397,7 @@ async fn created_but_unverified_volume_fails_the_container_operation() {
     let mut spec = spec("web");
     add_named_volume(&mut spec, "data");
 
+    let started = tokio::time::Instant::now();
     let outcome = client
         .run(
             DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec, skip_health()),
@@ -418,11 +427,13 @@ async fn created_but_unverified_volume_fails_the_container_operation() {
     else {
         panic!("unexpected failed operation: {failed:?}");
     };
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
     assert!(
         error.message.contains("was created") && error.message.contains("could not be verified"),
         "{}",
         error.message
     );
+    assert!(started.elapsed() >= Duration::from_secs(60));
     assert!(unexecuted.is_empty());
     server.abort();
 }

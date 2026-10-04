@@ -27,7 +27,7 @@ use ployz_core::{
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
-use tokio_stream::wrappers::TcpListenerStream;
+use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
 use tonic::{Request, Response, Status, Streaming, transport::Server};
 
 #[path = "../support/inspect_telemetry.rs"]
@@ -120,7 +120,7 @@ impl DeployService {
 
     pub(super) fn fail_create_volume(mut self, message: &str) -> Self {
         self.create_volume_error = Some(RpcError {
-            code: RpcErrorCode::Internal,
+            code: RpcErrorCode::Unavailable,
             message: message.into(),
             details: Value::Null,
         });
@@ -129,7 +129,7 @@ impl DeployService {
 
     pub(super) fn fail_create_volume_verification(mut self, message: &str) -> Self {
         self.create_volume_verification_error = Some(RpcError {
-            code: RpcErrorCode::Internal,
+            code: RpcErrorCode::Unavailable,
             message: message.into(),
             details: Value::Null,
         });
@@ -936,6 +936,36 @@ pub(super) async fn connected(
     .await
     .unwrap();
     (client, server)
+}
+
+/// Like [`connected`], over a Unix socket. Loopback TCP can stall for real
+/// time, which a paused clock skips past as an RPC timeout; a Unix socket
+/// keeps tests under `start_paused` deterministic.
+pub(super) async fn connected_unix(
+    service: DeployService,
+) -> (
+    Client,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    tempfile::TempDir,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("machine.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(MachineRpcServer::new(service))
+            .serve_with_incoming(UnixListenerStream::new(listener)),
+    );
+    let client = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Direct,
+            connections: vec![Connection::unix(path).unwrap()],
+        },
+        Arc::new(SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+    (client, server, directory)
 }
 
 pub(super) async fn listening(

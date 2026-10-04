@@ -114,13 +114,14 @@ async fn deploy_returns_success_for_a_completed_run() {
     );
 }
 
-#[tokio::test]
+// Paused time lets the create retry wait out its whole restart window.
+#[tokio::test(start_paused = true)]
 async fn deploy_reports_volume_ensure_as_the_container_operation_failure() {
     let description = advertised_description();
     let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
     service.create_container_error = Some(RpcError {
-        code: RpcErrorCode::Internal,
+        code: RpcErrorCode::Unavailable,
         message: "Volume Ensure failed".into(),
         details: serde_json::Value::Null,
     });
@@ -128,6 +129,7 @@ async fn deploy_reports_volume_ensure_as_the_container_operation_failure() {
     let client = unix_session::connect(&session.directory, description.machine_id.as_str())
         .await
         .unwrap();
+    let started = tokio::time::Instant::now();
     let outcome = client
         .run(
             DeployIntent::apply_one(
@@ -155,10 +157,16 @@ async fn deploy_reports_volume_ensure_as_the_container_operation_failure() {
             operation: DeployOperation::RunContainer { spec, .. },
             error: ExecutionError::Machine {
                 action: MachineAction::CreateContainer,
-                ..
+                error,
             },
         } if spec.name.as_str() == "web"
+            && error.code == RpcErrorCode::Unavailable
+            && error.message == "Volume Ensure failed"
     ));
+    assert!(
+        started.elapsed() >= Duration::from_secs(60),
+        "create waits out a restart before reporting Unavailable"
+    );
     assert!(unexecuted.is_empty());
     assert!(
         client
