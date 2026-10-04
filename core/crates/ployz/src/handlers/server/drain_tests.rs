@@ -162,14 +162,12 @@ fn every_outcome_that_existed_prints_the_same_line() {
             "app/web: moved 1 from web-2 to web-1; interrupted",
         ]
     );
-    let report = |remaining| {
-        DrainReport::new(
-            drained.clone(),
-            ServicesRole::AlreadyOff,
-            Vec::new(),
-            None,
-            remaining,
-        )
+    let report = |remaining| DrainReport {
+        server: drained.clone(),
+        services_role: ServicesRole::AlreadyOff,
+        services: Vec::new(),
+        stopped: None,
+        remaining,
     };
     let db = report(Remaining::Observed {
         services: vec![service("db")],
@@ -193,18 +191,18 @@ fn every_outcome_that_existed_prints_the_same_line() {
 #[test]
 fn a_stopped_drain_says_why_and_that_what_remains_went_unchecked() {
     let drained = server('b', "web-2");
-    let report = DrainReport::new(
-        drained,
-        ServicesRole::TurnedOff,
-        vec![ServiceDrain {
+    let report = DrainReport {
+        server: drained,
+        services_role: ServicesRole::TurnedOff,
+        services: vec![ServiceDrain {
             service: service("web"),
             outcome: DrainOutcome::NotAttempted,
         }],
-        Some(DrainStop::Cancelled),
-        Remaining::Unobserved {
+        stopped: Some(DrainStop::Cancelled),
+        remaining: Remaining::Unobserved {
             error: "no terminal response".into(),
         },
-    );
+    };
     assert_eq!(
         closing_lines(&report),
         [

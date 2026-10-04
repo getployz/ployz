@@ -109,33 +109,45 @@ describe("Services section", () => {
 });
 
 describe("Drain dialog", () => {
-  const description = () => screen.getByText(/^Services turn off for web-2/).textContent;
+  const LEAD = "Services turn off for web-2, and what runs here moves to your other servers one at a time.";
+  const NOTHING_BACK = "Turning services back on doesn’t move anything back.";
+  const inOrder = (first: HTMLElement, ...rest: HTMLElement[]) => {
+    let previous = first;
+    for (const element of rest) {
+      if (!(previous.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING)) return false;
+      previous = element;
+    }
+    return true;
+  };
 
-  it("lists what runs here, says what stays, and drains on confirm", () => {
+  it("leads with what Drain does, lists what runs here, then says what stays, and drains on confirm", () => {
     const onConfirm = vi.fn();
     render(<DrainDialog serverName="web-2" names={["api", "postgres"]} unowned={[]} open onOpenChange={() => {}} onConfirm={onConfirm} />);
     expect(screen.getByText("Drain web-2?")).toBeTruthy();
-    expect(description()).toBe(
-      "Services turn off for web-2, and what runs here moves to your other servers one at a time. "
-        + "Services that use a volume here stay. Turning services back on doesn’t move anything back.",
-    );
     const list = screen.getByLabelText("Running on web-2");
     expect(within(list).getByText("api")).toBeTruthy();
     expect(within(list).getByText("postgres")).toBeTruthy();
+    expect(inOrder(
+      screen.getByText(LEAD),
+      list,
+      screen.getByText("Services that use a volume here stay."),
+      screen.getByText(NOTHING_BACK),
+    )).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Drain" }));
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
   it("says so when nothing runs here", () => {
     render(<DrainDialog serverName="web-2" names={[]} unowned={[]} open onOpenChange={() => {}} onConfirm={() => {}} />);
-    expect(description()).toContain("Nothing runs here now.");
+    expect(inOrder(screen.getByText(LEAD), screen.getByText("Nothing runs here now."), screen.getByText(NOTHING_BACK))).toBe(true);
     expect(screen.queryByLabelText("Running on web-2")).toBeNull();
   });
 
   it("names what stays because no Project owns it, and never says nothing runs here", () => {
     render(<DrainDialog serverName="web-2" names={[]} unowned={["old"]} open onOpenChange={() => {}} onConfirm={() => {}} />);
-    expect(description()).toContain("Nothing here for Drain to move. old stays: no project owns it.");
-    expect(description()).not.toContain("Nothing runs here now.");
+    expect(screen.getByText("Nothing here for Drain to move.")).toBeTruthy();
+    expect(screen.getByText("old stays: no project owns it. Services that use a volume here stay.")).toBeTruthy();
+    expect(screen.queryByText("Nothing runs here now.")).toBeNull();
   });
 });
 

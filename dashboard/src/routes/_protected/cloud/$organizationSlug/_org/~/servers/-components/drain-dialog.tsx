@@ -1,5 +1,6 @@
 import { BoxIcon } from "lucide-react";
 import { ConfirmDialog } from "#/components/confirm-dialog";
+import { AlertDialogDescription } from "#/components/ui/alert-dialog";
 import { Item, ItemContent, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { listNames } from "#/lib/plural";
 
@@ -14,25 +15,26 @@ export function DrainDialog({ serverName, names, unowned, open, onOpenChange, on
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
 }) {
-  const description = [
-    `Services turn off for ${serverName}, and what runs here moves to your other servers one at a time.`,
-    names.length > 0 ? null : unowned.length === 0 ? "Nothing runs here now." : "Nothing here for Drain to move.",
+  const notes = [
     unowned.length === 0
       ? null
       : `${listNames([...unowned])} ${unowned.length === 1 ? "stays" : "stay"}: no project owns ${unowned.length === 1 ? "it" : "them"}.`,
     "Services that use a volume here stay.",
-    "Turning services back on doesn’t move anything back.",
   ].filter((sentence) => sentence !== null).join(" ");
   return (
     <ConfirmDialog
       open={open}
       onOpenChange={onOpenChange}
       title={`Drain ${serverName}?`}
-      description={description}
+      description={`Services turn off for ${serverName}, and what runs here moves to your other servers one at a time.`}
       actionLabel="Drain"
       onConfirm={onConfirm}
     >
-      {names.length === 0 ? null : (
+      {names.length === 0 ? (
+        <AlertDialogDescription>
+          {unowned.length === 0 ? "Nothing runs here now." : "Nothing here for Drain to move."}
+        </AlertDialogDescription>
+      ) : (
         <ItemGroup aria-label={`Running on ${serverName}`}>
           {names.map((name) => (
             <Item key={name} variant="outline" size="xs">
@@ -42,6 +44,8 @@ export function DrainDialog({ serverName, names, unowned, open, onOpenChange, on
           ))}
         </ItemGroup>
       )}
+      <AlertDialogDescription>{notes}</AlertDialogDescription>
+      <AlertDialogDescription>Turning services back on doesn’t move anything back.</AlertDialogDescription>
     </ConfirmDialog>
   );
 }

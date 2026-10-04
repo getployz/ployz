@@ -6,7 +6,7 @@ use ployz_core::{
 };
 
 use super::*;
-use crate::global_catch_up::tests::{
+use crate::global_fixtures::{
     global_service, grouped, machine, qualified, requested, running_on, service_id,
 };
 

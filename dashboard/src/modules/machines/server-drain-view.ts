@@ -127,6 +127,10 @@ export function drainSummary(report: DrainReport, serverName: string): string {
 const destinations = (moves: ReadonlyArray<{ readonly to: MachineRef }>) =>
   [...new Set(moves.map((move) => move.to.name))].join(" and ");
 
+/** The moves made before a Service's drain stopped, as a trailing sentence; empty when none were. */
+const movedBefore = (moves: ReadonlyArray<{ readonly to: MachineRef }>) =>
+  moves.length > 0 ? ` Moved to ${destinations(moves)} before that.` : "";
+
 /** One report entry as a row. A `result` this page doesn't know (a newer Engine's) renders neutral, never crashes. */
 export function drainRow(entry: ServiceDrain, drained: string): DrainRow {
   const base = {
@@ -141,10 +145,8 @@ export function drainRow(entry: ServiceDrain, drained: string): DrainRow {
       return { ...base, tone: "moved", label: `Moved to ${destinations(entry.moves)}` };
     case "nothing_to_move":
       return { ...base, tone: "neutral", label: "Nothing to move" };
-    case "failed": {
-      const before = entry.moves.length > 0 ? ` Moved to ${destinations(entry.moves)} before that.` : "";
-      return { ...base, tone: "failed", label: "Failed", reason: failureWords(entry.failure, drained) + before };
-    }
+    case "failed":
+      return { ...base, tone: "failed", label: "Failed", reason: failureWords(entry.failure, drained) + movedBefore(entry.moves) };
     case "stays": {
       const reason = entry.reason;
       const pinned = (reason.kind === "volume" || reason.kind === "bind_mount") && reason.server.id === drained;
@@ -155,8 +157,10 @@ export function drainRow(entry: ServiceDrain, drained: string): DrainRow {
     case "not_retired":
       return { ...base, tone: "failed", label: "Failed", reason: "Couldn't stop it here", global: true };
     case "interrupted": {
-      const before = entry.moves.length > 0 ? ` Moved to ${destinations(entry.moves)} before that.` : "";
-      return { ...base, tone: "neutral", label: "Interrupted", reason: `The drain stopped while moving it.${before}` };
+      const reason = entry.moves.length === 0
+        ? "The drain stopped before moving it. It still runs here."
+        : `The drain stopped while moving it.${movedBefore(entry.moves)}`;
+      return { ...base, tone: "neutral", label: "Interrupted", reason };
     }
     case "not_attempted":
       return { ...base, tone: "neutral", label: "Not attempted", reason: "The drain stopped first" };

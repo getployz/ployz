@@ -8,7 +8,7 @@ use ployz_core::{MachineName, MachineTarget, RpcError};
 use ployz_store::NamespacesQuery;
 use serde_json::Value;
 
-use super::{server_json, target};
+use super::target;
 use crate::drain::{
     DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Remaining, ServiceDrain,
     ServicesRole,
@@ -37,7 +37,6 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
             }
             let mut json = serde_json::to_value(&report).expect("a Drain report serializes");
             if let Value::Object(fields) = &mut json {
-                fields.insert("server".into(), server_json(&report.server));
                 fields.insert("note".into(), NOTHING_MOVES_BACK.into());
             }
             output::emit(&json)?;

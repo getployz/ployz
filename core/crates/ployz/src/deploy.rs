@@ -22,7 +22,7 @@ mod render;
 mod report;
 
 pub(crate) use apply::{Outcome, apply_requested};
-pub(crate) use convergence::{Converged, converge};
+pub(crate) use convergence::{Converged, Halt, converge};
 pub use convergence::{MachineRef, Move, MoveFailure, StayReason};
 pub use pipeline::DeployError;
 pub(crate) use planning::capacity::endpoint_capacity_error;

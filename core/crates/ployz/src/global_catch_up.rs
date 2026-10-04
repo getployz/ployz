@@ -292,4 +292,4 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
 
 #[cfg(test)]
 #[path = "global_catch_up_tests.rs"]
-pub(crate) mod tests;
+mod tests;

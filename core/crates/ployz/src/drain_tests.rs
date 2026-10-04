@@ -12,7 +12,7 @@ use super::{
     DrainClient, DrainOutcome, DrainReport, DrainScope, DrainStop, Lost, MachineRef, Move,
     MoveFailure, Ready, Remaining, ServiceDrain, ServicesRole, StayReason, execute,
 };
-use crate::deploy::Converged;
+use crate::deploy::{Converged, Halt};
 use crate::drain::retirement::Retirement;
 
 fn namespace(value: &str) -> Namespace {
@@ -153,16 +153,18 @@ fn qualified(name: &str) -> QualifiedService {
     QualifiedService::parse(format!("app/{name}")).unwrap()
 }
 
+fn one_move() -> Vec<Move> {
+    vec![Move {
+        from: MachineRef::from(&drained()),
+        to: MachineRef {
+            id: MachineId::parse("a".repeat(32)).unwrap(),
+            name: MachineName::parse("web-1").unwrap(),
+        },
+    }]
+}
+
 fn moved() -> DrainOutcome {
-    DrainOutcome::Moved {
-        moves: vec![Move {
-            from: MachineRef::from(&drained()),
-            to: MachineRef {
-                id: MachineId::parse("a".repeat(32)).unwrap(),
-                name: MachineName::parse("web-1").unwrap(),
-            },
-        }],
-    }
+    DrainOutcome::Moved { moves: one_move() }
 }
 
 async fn run(
@@ -267,7 +269,7 @@ async fn cancelled_between_services_keeps_the_moves_made() {
     let cancellation = CancellationToken::new();
     let mut client = Scripted {
         observations: [nothing_left()].into(),
-        convergences: [Converged::Done(moved())].into(),
+        convergences: [Converged::Moved { moves: one_move() }].into(),
         cancel_after_converge: Some(cancellation.clone()),
         ..Scripted::default()
     };
@@ -288,6 +290,10 @@ async fn cancelled_between_services_keeps_the_moves_made() {
         }
     );
     assert!(!report.complete());
+    assert_eq!(
+        serde_json::to_value(&report).unwrap().get("complete"),
+        Some(&json!(false))
+    );
 }
 
 #[tokio::test]
@@ -333,13 +339,11 @@ async fn losing_the_entry_after_globals_keeps_their_retirements_and_stops() {
 async fn losing_the_entry_mid_replicated_stops_at_that_service() {
     let lost = Converged::Stopped {
         moves: Vec::new(),
-        stop: DrainStop::EntryUnreachable {
-            detail: "timed out".into(),
-        },
+        halt: Halt::EntryLost("timed out".into()),
     };
     let mut client = Scripted {
         observations: [nothing_left()].into(),
-        convergences: [Converged::Done(moved()), lost].into(),
+        convergences: [Converged::Moved { moves: one_move() }, lost].into(),
         ..Scripted::default()
     };
     let report = run(
@@ -384,7 +388,7 @@ async fn only_a_global_still_observed_undoes_its_retirement() {
             nothing_left(),
         ]
         .into(),
-        convergences: [Converged::Done(moved())].into(),
+        convergences: [Converged::Moved { moves: one_move() }].into(),
         ..Scripted::default()
     };
     let report = run(
@@ -414,7 +418,7 @@ async fn only_a_global_still_observed_undoes_its_retirement() {
     let mut client = Scripted {
         retirements: retirements(),
         observations: [Ok(vec![qualified("probe")]), Ok(vec![qualified("probe")])].into(),
-        convergences: [Converged::Done(moved())].into(),
+        convergences: [Converged::Moved { moves: one_move() }].into(),
         ..Scripted::default()
     };
     let report = run(
@@ -443,7 +447,7 @@ async fn a_full_drain_is_complete_and_names_the_user_services_its_scope_left_alo
     let blog = QualifiedService::parse("blog/web").unwrap();
     let mut client = Scripted {
         observations: [Ok(vec![blog.clone(), QualifiedService::system_ingress()])].into(),
-        convergences: [Converged::Done(moved())].into(),
+        convergences: [Converged::Moved { moves: one_move() }].into(),
         ..Scripted::default()
     };
     let scope = DrainScope::Owned {

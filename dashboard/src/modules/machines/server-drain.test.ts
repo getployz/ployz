@@ -106,7 +106,7 @@ describe("Drain result", () => {
 
   it("says where a stopped Drain left a Service, and what a mid-move cancel may have left", () => {
     expect(drainRow({ service: "shop/worker", result: "interrupted", moves: [] }, web2.id))
-      .toMatchObject({ tone: "neutral", label: "Interrupted", reason: "The drain stopped while moving it." });
+      .toMatchObject({ tone: "neutral", label: "Interrupted", reason: "The drain stopped before moving it. It still runs here." });
     expect(drainRow({ service: "shop/worker", result: "interrupted", moves: [{ from: web2, to: web1 }] }, web2.id).reason)
       .toBe("The drain stopped while moving it. Moved to web-1 before that.");
     expect(drainSummary(report([moved, { service: "shop/worker", result: "interrupted", moves: [] }], { kind: "cancelled" }), "web-2"))

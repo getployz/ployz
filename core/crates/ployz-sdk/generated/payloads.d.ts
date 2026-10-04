@@ -1160,11 +1160,23 @@ export type DrainReport = {
 /**
  * The drained Server's record as selected, before this Drain changed its role.
  */
-server: Machine, services_role: ServicesRole, services: Array<ServiceDrain>,
+server: Machine,
+/**
+ * Whether this Drain turned the services role off or found it off.
+ */
+services_role: ServicesRole,
+/**
+ * Each chosen Service and what the Drain did with it.
+ */
+services: Array<ServiceDrain>,
 /**
  * Why the Drain ended before handling every Service.
  */
-stopped: DrainStop | null, remaining: Remaining,
+stopped: DrainStop | null,
+/**
+ * What still runs on the Server after the Drain.
+ */
+remaining: Remaining,
 /**
  * Every chosen Service left the Server, the Drain ran to its end, and what remains
  * was observed.
@@ -2767,7 +2779,11 @@ condition: DependencyCondition, };
 
 export type ServiceDeployMount = { volumeResourceId: string, volumeName: string, mountPath: string, };
 
-export type ServiceDrain = { service: QualifiedService, } & ({ "result": "moved", moves: Array<Move>, } | { "result": "nothing_to_move" } | { "result": "failed", moves: Array<Move>, failure: MoveFailure, } | { "result": "stays", reason: StayReason, } | { "result": "retired" } | { "result": "not_retired", error: string, } | { "result": "interrupted", moves: Array<Move>, } | { "result": "not_attempted" });
+export type ServiceDrain = {
+/**
+ * The Service, by Namespace and name.
+ */
+service: QualifiedService, } & ({ "result": "moved", moves: Array<Move>, } | { "result": "nothing_to_move" } | { "result": "failed", moves: Array<Move>, failure: MoveFailure, } | { "result": "stays", reason: StayReason, } | { "result": "retired" } | { "result": "not_retired", error: string, } | { "result": "interrupted", moves: Array<Move>, } | { "result": "not_attempted" });
 
 export type ServiceEnvValue = { "kind": "literal", value: string, parts?: Array<ValuePart>, } | { "kind": "secret", variableId?: string, encryptedValue?: EncryptedSecretValue, fingerprint: string, interpolated?: boolean, };
 

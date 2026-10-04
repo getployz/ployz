@@ -13,7 +13,6 @@ import {
   type DrainEndCode,
   type DrainEndCodeWithoutMessage,
   type DrainState,
-  type EndedDrain,
   type LatestDrain,
   type RequestServerDrainInput,
 } from "#/modules/machines/server-drain";
@@ -57,13 +56,21 @@ export function latestDrainOf(row: DrainAttemptRow): Effect.Effect<LatestDrain> 
     case "unknown": {
       const { endedAt, endCode, refusalMessage } = row;
       if (endedAt === null || endCode === null || DRAIN_END_CODES[endCode] !== row.state) return missing("end");
-      if (endCode === "refused") {
-        return refusalMessage === null
-          ? missing("refusal")
-          : Effect.succeed({ attemptId, state: "failed", endedAt: endedAt.toISOString(), endCode, refusalMessage });
+      const end = { attemptId, endedAt: endedAt.toISOString() };
+      switch (endCode) {
+        case "refused":
+          return refusalMessage === null
+            ? missing("refusal")
+            : Effect.succeed({ ...end, state: DRAIN_END_CODES[endCode], endCode, refusalMessage });
+        case "not_started":
+          return Effect.succeed({ ...end, state: DRAIN_END_CODES[endCode], endCode });
+        case "cancelled":
+          return Effect.succeed({ ...end, state: DRAIN_END_CODES[endCode], endCode });
+        case "interrupted":
+          return Effect.succeed({ ...end, state: DRAIN_END_CODES[endCode], endCode });
+        case "lost":
+          return Effect.succeed({ ...end, state: DRAIN_END_CODES[endCode], endCode });
       }
-      // SAFETY: the state is the one this code ends in, checked above and by the row's check constraint.
-      return Effect.succeed({ attemptId, state: row.state, endedAt: endedAt.toISOString(), endCode } as EndedDrain);
     }
   }
 }

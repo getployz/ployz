@@ -133,6 +133,11 @@ async fn drain_moves_containers_off_without_a_gap_or_a_deploy() {
         &["--json", "server", "drain", web2.name.as_str()],
     ))
     .unwrap();
+    assert_eq!(
+        rerun.pointer("/server/name"),
+        Some(&serde_json::json!(web2.name.as_str())),
+        "--json carries the report as the SDK returns it"
+    );
     assert_eq!(rerun.get("services"), Some(&serde_json::json!([])));
     assert_eq!(rerun.get("complete"), Some(&serde_json::json!(true)));
     // The Ingress Proxy follows the ingress role, not the services role.

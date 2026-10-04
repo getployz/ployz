@@ -20,7 +20,6 @@ use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 
 use super::DeploySnapshot;
 use super::exec::MoveContainerError;
-use crate::drain::{DrainOutcome, DrainStop};
 
 /// A Server as a report names it: its durable identity and the name it had then. Two
 /// Servers may share a name, so the id is what a reader links by.
@@ -56,11 +55,28 @@ pub struct Move {
 /// How converging one replicated Service ended.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Converged {
-    /// It ran to its outcome: `Moved`, `NothingToMove`, `Failed` or `Stays`.
-    Done(DrainOutcome),
-    /// The Drain stops here, after `moves`: cancelled before the next move, or the entry
-    /// stopped answering.
-    Stopped { moves: Vec<Move>, stop: DrainStop },
+    /// Every Container that had to move did. Never empty.
+    Moved { moves: Vec<Move> },
+    /// None of its active Containers had to move.
+    NothingToMove,
+    /// `moves` were made, then `failure` stopped the rest.
+    Failed {
+        moves: Vec<Move>,
+        failure: MoveFailure,
+    },
+    /// Nothing moved, and why.
+    Stays { reason: StayReason },
+    /// It stopped after `moves` without deciding the rest.
+    Stopped { moves: Vec<Move>, halt: Halt },
+}
+
+/// Why convergence stopped with Containers left undecided.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Halt {
+    /// Cancelled before the next move.
+    Cancelled,
+    /// The entry Server stopped answering.
+    EntryLost(String),
 }
 
 /// Why a Service's Containers stay where they are. Each holds what the snapshot can't
@@ -212,18 +228,16 @@ pub(crate) async fn converge<C: ConvergenceClient>(
 ) -> Converged {
     let entry_lost = |moves, error: ConnectError| Converged::Stopped {
         moves,
-        stop: DrainStop::EntryUnreachable {
-            detail: error.to_string(),
-        },
+        halt: Halt::EntryLost(error.to_string()),
     };
-    let failed = |moves, failure| Converged::Done(DrainOutcome::Failed { moves, failure });
+    let failed = |moves, failure| Converged::Failed { moves, failure };
     let snapshot = match client.observe().await {
         Ok(snapshot) => snapshot,
         Err(error) => return entry_lost(Vec::new(), error),
     };
     let initial = stranded(&snapshot, service);
     if let Some(reason) = refusal(&snapshot, service, &initial) {
-        return Converged::Done(DrainOutcome::Stays { reason });
+        return Converged::Stays { reason };
     }
     let ids = initial
         .iter()
@@ -259,7 +273,7 @@ pub(crate) async fn converge<C: ConvergenceClient>(
         if cancellation.is_cancelled() {
             return Converged::Stopped {
                 moves,
-                stop: DrainStop::Cancelled,
+                halt: Halt::Cancelled,
             };
         }
         match client.move_one(&snapshot, container, cancellation).await {
@@ -267,11 +281,11 @@ pub(crate) async fn converge<C: ConvergenceClient>(
             Err(failure) => return failed(moves, failure),
         }
     }
-    Converged::Done(if moves.is_empty() {
-        DrainOutcome::NothingToMove
+    if moves.is_empty() {
+        Converged::NothingToMove
     } else {
-        DrainOutcome::Moved { moves }
-    })
+        Converged::Moved { moves }
+    }
 }
 
 /// Why nothing of this Service may move now, if so. It holds whatever the snapshot can't
@@ -515,11 +529,10 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{
-        Converged, ConvergenceClient, DeploySnapshot, MachineRef, Move, MoveFailure, converge,
-        refusal, stays,
+        Converged, ConvergenceClient, DeploySnapshot, Halt, MachineRef, Move, MoveFailure,
+        converge, refusal, stays,
     };
     use crate::connect::ConnectError;
-    use crate::drain::{DrainOutcome, DrainStop};
 
     fn spec(mode: serde_json::Value, source: serde_json::Value) -> ResolvedServiceSpec {
         serde_json::from_value(json!({
@@ -677,9 +690,7 @@ mod tests {
             converge(&mut client, &service, &CancellationToken::new()).await,
             Converged::Stopped {
                 moves: one_move(),
-                stop: DrainStop::EntryUnreachable {
-                    detail: "connection attempt failed: entry went away".into()
-                },
+                halt: Halt::EntryLost("connection attempt failed: entry went away".into()),
             }
         );
 
@@ -690,9 +701,7 @@ mod tests {
             converge(&mut client, &service, &CancellationToken::new()).await,
             Converged::Stopped {
                 moves: Vec::new(),
-                stop: DrainStop::EntryUnreachable {
-                    detail: "connection attempt failed: down".into()
-                },
+                halt: Halt::EntryLost("connection attempt failed: down".into()),
             },
             "an entry lost before the first look moves nothing"
         );
@@ -709,7 +718,7 @@ mod tests {
             snapshots: [Ok(two_on_a()), Ok(unobserved)].into(),
         };
         let converged = converge(&mut client, &service, &CancellationToken::new()).await;
-        let Converged::Done(DrainOutcome::Failed { moves, failure }) = &converged else {
+        let Converged::Failed { moves, failure } = &converged else {
             panic!("{converged:?}");
         };
         assert_eq!(moves, &one_move());
@@ -733,7 +742,7 @@ mod tests {
         };
         assert_eq!(
             converge(&mut client, &service, &CancellationToken::new()).await,
-            Converged::Done(DrainOutcome::Moved { moves: one_move() })
+            Converged::Moved { moves: one_move() }
         );
     }
 
@@ -749,7 +758,7 @@ mod tests {
             converge(&mut client, &service, &cancelled).await,
             Converged::Stopped {
                 moves: Vec::new(),
-                stop: DrainStop::Cancelled,
+                halt: Halt::Cancelled,
             }
         );
     }

@@ -72,7 +72,9 @@ A service stays running where it is, and is reported with the reason, when:
 
 When the drain ends, the **Drain** row counts what moved, stopped, stayed and failed, and how many
 services no project owns it left alone. It lists each service with where it went or why it stayed.
-If anything stayed or failed, or the drain couldn't check what's left on the server, the button
+A drain that stops early marks the service it was moving **Interrupted** and the ones it never
+reached **Not attempted**; those still run on the server.
+If anything stayed or failed, the drain stopped early, or it couldn't check what's left on the server, the button
 reads **Drain again**. Turning services back on doesn't move anything back.
 
 From the CLI, `ployz server drain web-2` does the same and prints the report. If anything stayed or

@@ -21,7 +21,7 @@ use ts_rs::TS;
 
 use crate::cluster::{RoleSetting, RoleWaitError, visible_machine, wait_for_role};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
-use crate::deploy::{Converged, converge};
+use crate::deploy::{Converged, Halt, converge};
 
 mod retirement;
 
@@ -72,33 +72,65 @@ pub enum DrainStep<'a> {
 /// looked: Globals first, then replicated Services, in the order handled. When `stopped` is
 /// set, the Service it stopped at reads `interrupted` or `not_attempted`, and every one
 /// after it reads `not_attempted`.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
+#[serde(into = "DrainReportWire")]
+#[ts(as = "DrainReportWire")]
 pub struct DrainReport {
     /// The drained Server's record as selected, before this Drain changed its role.
     pub server: Machine,
+    /// Whether this Drain turned the services role off or found it off.
     pub services_role: ServicesRole,
+    /// Each chosen Service and what the Drain did with it.
     pub services: Vec<ServiceDrain>,
     /// Why the Drain ended before handling every Service.
     pub stopped: Option<DrainStop>,
+    /// What still runs on the Server after the Drain.
     pub remaining: Remaining,
+}
+
+impl DrainReport {
+    /// Every chosen Service left the Server, the Drain ran to its end, and what remains
+    /// was observed.
+    #[must_use]
+    pub fn complete(&self) -> bool {
+        self.stopped.is_none()
+            && matches!(self.remaining, Remaining::Observed { .. })
+            && self
+                .services
+                .iter()
+                .all(|service| service.outcome.complete())
+    }
+}
+
+/// A [`DrainReport`] as it is sent, with [`DrainReport::complete`] worked out from it.
+#[derive(Serialize, TS)]
+#[ts(rename = "DrainReport")]
+struct DrainReportWire {
+    /// The drained Server's record as selected, before this Drain changed its role.
+    server: Machine,
+    /// Whether this Drain turned the services role off or found it off.
+    services_role: ServicesRole,
+    /// Each chosen Service and what the Drain did with it.
+    services: Vec<ServiceDrain>,
+    /// Why the Drain ended before handling every Service.
+    stopped: Option<DrainStop>,
+    /// What still runs on the Server after the Drain.
+    remaining: Remaining,
     /// Every chosen Service left the Server, the Drain ran to its end, and what remains
     /// was observed.
     complete: bool,
 }
 
-impl DrainReport {
-    /// The report of a Drain that ended this way.
-    #[must_use]
-    pub fn new(
-        server: Machine,
-        services_role: ServicesRole,
-        services: Vec<ServiceDrain>,
-        stopped: Option<DrainStop>,
-        remaining: Remaining,
-    ) -> Self {
-        let complete = stopped.is_none()
-            && matches!(remaining, Remaining::Observed { .. })
-            && services.iter().all(|service| service.outcome.complete());
+impl From<DrainReport> for DrainReportWire {
+    fn from(report: DrainReport) -> Self {
+        let complete = report.complete();
+        let DrainReport {
+            server,
+            services_role,
+            services,
+            stopped,
+            remaining,
+        } = report;
         Self {
             server,
             services_role,
@@ -107,13 +139,6 @@ impl DrainReport {
             remaining,
             complete,
         }
-    }
-
-    /// Every chosen Service left the Server, the Drain ran to its end, and what remains
-    /// was observed.
-    #[must_use]
-    pub fn complete(&self) -> bool {
-        self.complete
     }
 }
 
@@ -130,6 +155,7 @@ pub enum ServicesRole {
 /// One chosen Service and what the Drain did with it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceDrain {
+    /// The Service, by Namespace and name.
     pub service: QualifiedService,
     #[serde(flatten)]
     #[ts(flatten)]
@@ -475,14 +501,22 @@ async fn execute<C: DrainClient>(
                 record.stop(DrainStop::Cancelled, rest);
                 break 'work;
             }
-            match client.converge(service, cancellation).await {
-                Converged::Done(outcome) => record.push(service.clone(), outcome),
-                Converged::Stopped { moves, stop } => {
+            let outcome = match client.converge(service, cancellation).await {
+                Converged::Moved { moves } => DrainOutcome::Moved { moves },
+                Converged::NothingToMove => DrainOutcome::NothingToMove,
+                Converged::Failed { moves, failure } => DrainOutcome::Failed { moves, failure },
+                Converged::Stays { reason } => DrainOutcome::Stays { reason },
+                Converged::Stopped { moves, halt } => {
                     record.push(service.clone(), DrainOutcome::Interrupted { moves });
+                    let stop = match halt {
+                        Halt::Cancelled => DrainStop::Cancelled,
+                        Halt::EntryLost(detail) => DrainStop::EntryUnreachable { detail },
+                    };
                     record.stop(stop, after);
                     break 'work;
                 }
-            }
+            };
+            record.push(service.clone(), outcome);
             rest = after;
         }
     }
@@ -502,7 +536,13 @@ async fn execute<C: DrainClient>(
     let Record {
         services, stopped, ..
     } = record;
-    DrainReport::new(server, services_role, services, stopped, remaining)
+    DrainReport {
+        server,
+        services_role,
+        services,
+        stopped,
+        remaining,
+    }
 }
 
 /// The report's Services as they land, each handed to `progress`.
