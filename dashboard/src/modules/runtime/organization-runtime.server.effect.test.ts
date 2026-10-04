@@ -256,6 +256,36 @@ it.effect("an unreadable change log closes the session only after consecutive fa
   }),
 );
 
+it.effect("a removal whose pairing load failed is still seen by the next check", () =>
+  Effect.gen(function* () {
+    let pairing: "current" | "unloadable" | "missing" = "current";
+    let logged = false;
+    let closed = 0;
+    const runtime = makeOrganizationRuntimeLayer(() => {
+      if (pairing === "unloadable") return Effect.fail(new Error("database unavailable"));
+      return Effect.succeed(pairing === "missing" ? { kind: "missing" as const } : { kind: "ready" as const, generation: "current", connections });
+    }, {
+      current: Effect.succeed("0"),
+      changedSince: (_organizationId, since) => Effect.succeed(logged
+        ? { cursor: "removal", changed: since !== "removal" }
+        : { cursor: since, changed: false }),
+    }).pipe(Layer.provide(makePloyzLayer({
+      connect: async () => asTestDouble<Client>()({ close: async () => { closed += 1; } }),
+    })));
+    yield* Effect.scoped(Effect.gen(function* () {
+      assert.strictEqual((yield* (yield* OrganizationRuntime).open("org-1")).status, "connected");
+      yield* TestClock.adjust(PAIRING_CHANGE_POLL);
+      logged = true;
+      pairing = "unloadable";
+      yield* TestClock.adjust(PAIRING_CHANGE_POLL);
+      assert.strictEqual(closed, 0);
+      pairing = "missing";
+      yield* TestClock.adjust(PAIRING_CHANGE_POLL);
+      assert.strictEqual(closed, 1);
+    })).pipe(Effect.provide(runtime));
+  }),
+);
+
 it.effect("a delayed removal during loading does not cancel a replacement pairing", () =>
   Effect.gen(function* () {
     const loading = yield* Deferred.make<void>();
