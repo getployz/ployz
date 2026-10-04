@@ -378,6 +378,27 @@ describe("roll-out-server-upgrade", () => {
       expect(await requested()).toMatchObject({ organizationCount: 1 });
     });
 
+    it("turning automatic upgrades on starts a rollout now; turning them off or saving them unchanged sends nothing", async () => {
+      const settings = (automatic: boolean) => runEffect(setServerUpgradeSettings({ userId }, { organizationSlug: "acme", automatic }));
+      await settings(true);
+      await settings(false);
+      await settings(false);
+      expect(send).not.toHaveBeenCalled();
+      await settings(true);
+      expect(send).not.toHaveBeenCalled(); // no founded Cluster
+
+      await harness.pool.query(`
+        insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_claim_machine_id, founder_machine_id)
+        values ('${organizationId}', '{}', '${serverId("1")}', '${serverId("1")}');
+      `);
+      await settings(false);
+      await settings(true);
+      await settings(true);
+      expect(send.mock.calls).toEqual([
+        [{ name: "server/upgrade.requested", data: { organizationId, machineId: null, trigger: "automatic", userId: null } }],
+      ]);
+    });
+
     it("an automatic rollout halts at the first non-success, and the halt holds across hourly runs", async () => {
       inspectAnswersFor[serverId("2")] = [failure];
 

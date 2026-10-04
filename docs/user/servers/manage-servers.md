@@ -72,6 +72,8 @@ Click **Upgrades automatically** on the line (or **Automatic** next to **Upgrade
 **Upgrade automatically**. Any member can change it. The line then reads **Manual upgrades**, and
 when a release is out, **Ployz `0.2.2` is out · your servers run `0.2.1`**. Click **Upgrade** to
 upgrade every server that's behind, one at a time.
+Turning **Upgrade automatically** back on starts upgrading right away, without waiting for the
+hourly check.
 
 To upgrade one server, open it: its **Ployz** section reads **`0.2.2` is out**. Click **Upgrade**.
 Any member can upgrade servers while they're online and not building. One upgrade runs at a time
