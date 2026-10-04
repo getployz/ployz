@@ -393,29 +393,18 @@ export const setServerUpgradeSettings = Effect.fn("ServerUpgrade.setSettings")(f
   { organizationSlug, ...settings }: SetServerUpgradeSettingsInput,
 ) {
   const { id: organizationId } = yield* requireInfrastructureOrganization(actor, organizationSlug);
-  const database = yield* Database;
-  const { row, turnedOn } = yield* database.transaction(Effect.gen(function* () {
-    const { drizzle } = yield* Database;
-    const [before] = yield* drizzle.select({ automatic: organizationServerUpgrades.automatic }).from(organizationServerUpgrades)
-      .where(eq(organizationServerUpgrades.organizationId, organizationId)).for("update");
-    const [row] = yield* drizzle.insert(organizationServerUpgrades).values({ organizationId, ...settings })
-      .onConflictDoUpdate({ target: organizationServerUpgrades.organizationId, set: { ...settings, updatedAt: new Date() } })
-      .returning({
-        id: organizationServerUpgrades.organizationId,
-        automatic: organizationServerUpgrades.automatic,
-        channel: organizationServerUpgrades.channel,
-      });
-    // No row reads as the default, on, so only a row that said off can turn on.
-    return { row, turnedOn: before?.automatic === false && row?.automatic === true };
-  }));
-  // Turning automatic upgrades on starts a Rollout now rather than at the next hour, as the schedule would: only
-  // with a founded Cluster.
-  if (turnedOn) {
-    const [paired] = yield* database.drizzle.select({ id: organizationPairing.organizationId }).from(organizationPairing)
-      .where(and(eq(organizationPairing.organizationId, organizationId), isNotNull(organizationPairing.founderMachineId)));
-    if (paired !== undefined) {
-      yield* sendInngestEvent(createServerUpgradeRequestedEvent({ organizationId, machineId: null, trigger: "automatic", userId: null }));
-    }
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.insert(organizationServerUpgrades).values({ organizationId, ...settings })
+    .onConflictDoUpdate({ target: organizationServerUpgrades.organizationId, set: { ...settings, updatedAt: new Date() } })
+    .returning({
+      id: organizationServerUpgrades.organizationId,
+      automatic: organizationServerUpgrades.automatic,
+      channel: organizationServerUpgrades.channel,
+    });
+  // The switch sends `automatic` only when it flips; an extra Rollout queues behind the Organization's one and finds
+  // nothing behind, and without a founded Cluster `listServersBehind` returns [].
+  if (settings.automatic === true) {
+    yield* sendInngestEvent(createServerUpgradeRequestedEvent({ organizationId, machineId: null, trigger: "automatic", userId: null }));
   }
   // ponytail: an upsert always returns its row; the fallback only satisfies the type.
   return row ?? { id: organizationId, ...DEFAULT_SERVER_UPGRADE_SETTINGS, ...settings };

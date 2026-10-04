@@ -378,25 +378,22 @@ describe("roll-out-server-upgrade", () => {
       expect(await requested()).toMatchObject({ organizationCount: 1 });
     });
 
-    it("turning automatic upgrades on starts a rollout now; turning them off or saving them unchanged sends nothing", async () => {
-      const settings = (automatic: boolean) => runEffect(setServerUpgradeSettings({ userId }, { organizationSlug: "acme", automatic }));
-      await settings(true);
-      await settings(false);
-      await settings(false);
+    it("saving automatic upgrades on starts a rollout now, with or without a Cluster; off or a channel change sends nothing", async () => {
+      const save = (settings: { automatic?: boolean; channel?: "stable" | "beta" }) =>
+        runEffect(setServerUpgradeSettings({ userId }, { organizationSlug: "acme", ...settings }));
+      const automatic = { name: "server/upgrade.requested", data: { organizationId, machineId: null, trigger: "automatic", userId: null } };
+      await save({ automatic: false });
+      await save({ channel: "beta" });
       expect(send).not.toHaveBeenCalled();
-      await settings(true);
-      expect(send).not.toHaveBeenCalled(); // no founded Cluster
+      await save({ automatic: true });
 
       await harness.pool.query(`
         insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_claim_machine_id, founder_machine_id)
         values ('${organizationId}', '{}', '${serverId("1")}', '${serverId("1")}');
       `);
-      await settings(false);
-      await settings(true);
-      await settings(true);
-      expect(send.mock.calls).toEqual([
-        [{ name: "server/upgrade.requested", data: { organizationId, machineId: null, trigger: "automatic", userId: null } }],
-      ]);
+      await save({ automatic: false });
+      await save({ automatic: true });
+      expect(send.mock.calls).toEqual([[automatic], [automatic]]);
     });
 
     it("an automatic rollout halts at the first non-success, and the halt holds across hourly runs", async () => {
