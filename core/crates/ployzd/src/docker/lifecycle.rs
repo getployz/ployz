@@ -163,6 +163,14 @@ impl ContainerRuntime {
             namespace,
             spec,
         )?;
+        create::migrate_ingress_requests(
+            &mut body,
+            namespace,
+            spec,
+            std::path::Path::new("/proc/sys")
+                .join(create::TCP_MIGRATE_REQ.replace('.', "/"))
+                .exists(),
+        );
         if let Some(id) = deployment_id {
             body.labels
                 .get_or_insert_default()

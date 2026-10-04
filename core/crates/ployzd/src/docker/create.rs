@@ -11,14 +11,36 @@ use bollard::models::{
 };
 use ployz_core::{
     BindPropagation, BindRecursive, ContainerKind, HEALTHCHECK_DISABLE_SENTINEL, HealthcheckSpec,
-    HostBind, MachineGateway, MachineId, Namespace, PortPublication, ResolvedServiceSpec,
-    ResolvedServiceVolumeGraph, TransportProtocol,
+    HostBind, MachineGateway, MachineId, Namespace, PortPublication, QualifiedService,
+    ResolvedServiceSpec, ResolvedServiceVolumeGraph, TransportProtocol,
 };
 
 use super::{
     Error, LABEL_HOOK, LABEL_HOOK_PRE_DEPLOY, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_ID,
     LABEL_SERVICE_NAME,
 };
+
+pub(super) const TCP_MIGRATE_REQ: &str = "net.ipv4.tcp_migrate_req";
+
+/// Caddy binds a fresh `SO_REUSEPORT` listener on every reload and closes the old one.
+/// Without migration the kernel resets connections still queued on the closing listener.
+pub(super) fn migrate_ingress_requests(
+    body: &mut ContainerCreateBody,
+    namespace: &Namespace,
+    spec: &ResolvedServiceSpec,
+    kernel_supports: bool,
+) {
+    if kernel_supports
+        && QualifiedService::new(namespace.clone(), spec.name.clone())
+            == QualifiedService::system_ingress()
+    {
+        body.host_config
+            .get_or_insert_default()
+            .sysctls
+            .get_or_insert_default()
+            .insert(TCP_MIGRATE_REQ.into(), "1".into());
+    }
+}
 
 pub(super) fn container_create_body(
     machine_id: &MachineId,
