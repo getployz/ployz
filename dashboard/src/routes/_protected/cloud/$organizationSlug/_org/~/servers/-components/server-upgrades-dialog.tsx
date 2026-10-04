@@ -9,7 +9,7 @@ import { useServerUpgradeSettings } from "#/modules/server-upgrade/server-upgrad
 
 const CHANNEL_LABELS = { stable: "Stable", beta: "Beta" } satisfies Record<ReleaseChannel, string>;
 
-/** "Server upgrades": whether Servers upgrade themselves, and to Stable or Beta releases. Opened from the Servers page's upgrade line. */
+/** "Server upgrades": whether Servers upgrade themselves, and to Stable or Beta releases. Opened from the Servers page's top bar. */
 export function ServerUpgradesDialog({ organizationSlug, open, onOpenChange }: {
   organizationSlug: string;
   open: boolean;
