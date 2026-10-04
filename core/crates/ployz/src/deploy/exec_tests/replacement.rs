@@ -420,9 +420,9 @@ async fn start_first_serving_failure_is_compensated_like_a_health_failure() {
         created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
         ok(Call::Start(machine, new)),
         observed(Call::Inspect(machine, new), healthy()),
-        failed(
+        failed_unavailable(
             Call::Wait(vec![new], ContainerObservationCondition::Serving),
-            "never served",
+            "timed out waiting for replicated Container Observations",
         ),
         ok(Call::StopWithGrace(machine, new, 0)),
     ]);
@@ -444,9 +444,89 @@ async fn start_first_serving_failure_is_compensated_like_a_health_failure() {
                     ..
                 },
                 ..
-            } if error.message == "never served"
+            } if error.message.starts_with("timed out")
         ),
         "the never-serving candidate is stopped, kept for its logs, and the old one is untouched: {outcome:?}"
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn start_first_barrier_rpc_error_is_compensated_like_a_timeout() {
+    let machine = machine('1');
+    let old = container('a');
+    let new = container('b');
+    let plan = vec![replacement(&machine, &old, UpdateOrder::StartFirst)];
+    let client = Scripted::new(vec![
+        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+        ok(Call::Start(machine, new)),
+        observed(Call::Inspect(machine, new), healthy()),
+        failed(
+            Call::Wait(vec![new], ContainerObservationCondition::Serving),
+            "Machine 1: invalid response",
+        ),
+        ok(Call::StopWithGrace(machine, new, 0)),
+    ]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(
+            &outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Replacement {
+                    error: ExecutionError::Machine {
+                        action: MachineAction::InspectContainer,
+                        error,
+                    },
+                    compensation: ReplacementCompensation::OldUntouched {
+                        stop_new_container: StopAttempt::Stopped,
+                    },
+                    ..
+                },
+                ..
+            } if error.code == RpcErrorCode::Internal
+        ),
+        "a barrier that cannot prove serving stops the candidate: {outcome:?}"
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn start_first_cancel_during_the_barrier_leaves_the_candidate_running() {
+    let machine = machine('1');
+    let old = container('a');
+    let new = container('b');
+    let plan = vec![replacement(&machine, &old, UpdateOrder::StartFirst)];
+    let cancellation = CancellationToken::new();
+    let mut client = Scripted::new(vec![
+        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+        ok(Call::Start(machine, new)),
+        observed(Call::Inspect(machine, new), healthy()),
+        failed_unavailable(
+            Call::Wait(vec![new], ContainerObservationCondition::Serving),
+            "container observation wait cancelled",
+        ),
+    ]);
+    client.cancel_on_wait = Some(cancellation.clone());
+
+    let outcome = execute_with(&plan, &client, &cancellation).await;
+
+    assert!(
+        matches!(
+            &outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation {
+                    operation: DeployOperation::ReplaceContainer(_),
+                    error: ExecutionError::Machine {
+                        action: MachineAction::InspectContainer,
+                        ..
+                    },
+                },
+                ..
+            }
+        ),
+        "a cancelled barrier is not compensated, so the candidate is not stopped: {outcome:?}"
     );
     client.assert_done();
 }

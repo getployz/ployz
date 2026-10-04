@@ -950,9 +950,10 @@ async fn run_container<C: MachineOperations>(
 
 /// Why a started Service Container did not serve.
 enum ServeFailure {
-    /// It failed its health check or never served within the observation barrier.
+    /// It failed its health check, or the serving barrier ended without
+    /// proof it serves: a timeout or any error other than a cancel.
     Unproven(ExecutionError),
-    /// The Deploy was cancelled or the Machine could not be asked.
+    /// The Deploy was cancelled, or a health check could not ask the Machine.
     Interrupted(ExecutionError),
 }
 
@@ -1139,9 +1140,11 @@ async fn replace_container<C: MachineOperations>(
 enum Candidate {
     /// Create or start failed; no new Container runs.
     None,
-    /// Started, then the Deploy was cancelled or the Machine could not be asked.
+    /// Started, then the Deploy was cancelled or a health check could not
+    /// ask the Machine.
     Started(ContainerId),
-    /// Started, then failed its health check or never served.
+    /// Started, then failed its health check or the serving barrier ended
+    /// without proof it serves, including on a barrier RPC error.
     Unproven(ContainerId),
 }
 

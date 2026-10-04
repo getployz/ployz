@@ -74,6 +74,7 @@ struct Scripted {
     observations: Option<Vec<ContainerObservation>>,
     keys: Mutex<Vec<CreationKey>>,
     cancel_on_prepare: Option<CancellationToken>,
+    cancel_on_wait: Option<CancellationToken>,
 }
 
 impl Scripted {
@@ -83,6 +84,7 @@ impl Scripted {
             observations: None,
             keys: Mutex::new(Vec::new()),
             cancel_on_prepare: None,
+            cancel_on_wait: None,
         }
     }
 
@@ -147,6 +149,9 @@ impl MachineOperations for Scripted {
         condition: ContainerObservationCondition,
         _cancellation: &CancellationToken,
     ) -> Result<(), RpcError> {
+        if let Some(cancel) = &self.cancel_on_wait {
+            cancel.cancel();
+        }
         unit(self.next(Call::Wait(container_ids.to_vec(), condition)))
     }
 
