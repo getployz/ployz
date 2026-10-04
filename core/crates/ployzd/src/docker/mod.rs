@@ -1071,6 +1071,49 @@ mod tests {
     }
 
     #[test]
+    fn only_the_system_ingress_migrates_queued_connections_when_the_kernel_can() {
+        let machine_id = MachineId::parse("1".repeat(32)).unwrap();
+        let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
+        let ingress = ployz_core::QualifiedService::system_ingress();
+        let sysctls = |namespace: &ployz_core::Namespace, name: &str, kernel_supports| {
+            let spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
+                "service_id": "a".repeat(32),
+                "name": name,
+                "mode": { "mode": "global" },
+                "container": { "image": "caddy:2.11.4", "pull_policy": "missing" }
+            }))
+            .unwrap();
+            let mut body = create::container_create_body(
+                &machine_id,
+                gateway,
+                ContainerKind::ServiceContainer,
+                namespace,
+                &spec,
+            )
+            .unwrap();
+            create::migrate_ingress_requests(&mut body, namespace, &spec, kernel_supports);
+            body.host_config.unwrap().sysctls
+        };
+        let ingress_name = ingress.name.to_string();
+        assert_eq!(
+            sysctls(&ingress.namespace, &ingress_name, true),
+            Some(HashMap::from([(
+                "net.ipv4.tcp_migrate_req".into(),
+                "1".into()
+            )]))
+        );
+        assert_eq!(sysctls(&ingress.namespace, &ingress_name, false), None);
+        assert_eq!(
+            sysctls(
+                &ployz_core::Namespace::parse("app").unwrap(),
+                &ingress_name,
+                true
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn run_service_container_does_not_restart_after_exit_and_keeps_bind_mounts() {
         let machine_id = MachineId::parse("1".repeat(32)).unwrap();
         let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
