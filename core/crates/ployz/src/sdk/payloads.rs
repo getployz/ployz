@@ -75,6 +75,8 @@ pub fn typescript_declarations() -> String {
     declarations.add::<DeployIntent>();
     declarations.add::<DeployOutcome<ExecutionError>>();
     declarations.add::<DeployPreview>();
+    declarations.add::<crate::drain::DrainReport>();
+    declarations.add::<crate::drain::DrainScope>();
     declarations.add::<ExecutionError>();
     declarations.add::<LocalMachineRemoved>();
     declarations.add::<MachineId>();

@@ -8,6 +8,8 @@ import type {
   ContainerRuntimeObservation,
   DataLoss,
   DeployEvent,
+  DrainReport,
+  DrainScope,
   DeployIntent,
   DeviceMapping,
   HealthcheckSpec,
@@ -296,3 +298,29 @@ const reusedBuild: import("../index").BuildOutcome = { kind: "built", receipt, r
 void withReceipts;
 void withOneReceipt;
 void reusedBuild;
+
+// A Drain reads per Service by `result`; each arm carries only its own fields.
+client.drainMachine("one" as MachineTarget, { scope: "owned", namespaces: ["app" as Namespace] }) satisfies Promise<DrainReport>;
+({ scope: "every_namespace" }) satisfies DrainScope;
+// @ts-expect-error an owned scope names its Namespaces
+({ scope: "owned" }) satisfies DrainScope;
+function describeDrain(entry: DrainReport["services"][number]): string {
+  switch (entry.result) {
+    case "moved":
+      return `${entry.service}: ${entry.moves.map((step) => `${step.from.name} -> ${step.to.name}`).join(", ")}`;
+    case "failed":
+      return entry.failure.stage === "refused" ? entry.failure.reason.kind : entry.failure.stage;
+    case "stays":
+      return entry.reason.kind;
+    case "not_retired":
+      return entry.error;
+    case "interrupted":
+      return `${entry.moves.length} moved, then the Drain stopped`;
+    case "nothing_to_move":
+    case "retired":
+    case "not_attempted":
+      // @ts-expect-error only failed arms carry a failure
+      return entry.failure;
+  }
+}
+void describeDrain;

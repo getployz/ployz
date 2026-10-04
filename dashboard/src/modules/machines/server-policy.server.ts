@@ -7,13 +7,16 @@ import {
   createServerPolicyChangeRequestedEvent,
   type ServerPolicyChangeRequestedEventData,
 } from "#/modules/inngest/events";
+import { drainActiveOn } from "#/modules/machines/server-drain.server";
 import {
+  isEmptyPolicyChange,
   machineUpdateForPolicyChange,
   type RequestServerPolicyChangeInput,
+  type ServerPolicyChange,
 } from "#/modules/machines/server-policy";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { Validation } from "#/server/public-error";
+import { Conflict, Validation } from "#/server/public-error";
 
 export class ServerPolicyProviderFailure extends Data.TaggedError(
   "ServerPolicyProviderFailure",
@@ -22,16 +25,27 @@ export class ServerPolicyProviderFailure extends Data.TaggedError(
 }
 
 /**
+ * A Drain turns services off for its Server and moves what runs there; turning them back on would undo it. The request
+ * refuses so the user hears why at once. Applying a change that turns services on takes its Organization's Drain slot
+ * (`DRAIN_SLOT`), so no Drain runs while it does; it checks again right before the update, which refuses one
+ * requested while the change waited.
+ */
+const refuseWhileDraining = Effect.fn("ServerPolicy.refuseWhileDraining")(function* (
+  organizationId: string, machineId: string, change: ServerPolicyChange,
+) {
+  if (change.acceptsServices === true && (yield* drainActiveOn(organizationId, machineId))) {
+    return yield* new Conflict({ userFacing: true, message: "A drain is running on this server. Wait for it to finish." });
+  }
+});
+
+/**
  * Queue one Server Policy change. Cloud keeps no desired-policy record; the
  * Servers page reads the result back from Runtime observation.
  */
 export const requestServerPolicyChange = Effect.fn(
   "ServerPolicy.requestChange",
 )(function* (actor: Actor, input: RequestServerPolicyChangeInput) {
-  if (
-    input.change.acceptsBuilds === undefined &&
-    input.change.buildConcurrency === undefined
-  ) {
+  if (isEmptyPolicyChange(input.change)) {
     return yield* new Validation({
       message: "A Server Policy change must set at least one value.",
     });
@@ -40,6 +54,7 @@ export const requestServerPolicyChange = Effect.fn(
     actor,
     input.organizationSlug,
   );
+  yield* refuseWhileDraining(organization.id, input.machineId, input.change);
   yield* sendInngestEvent(
     createServerPolicyChangeRequestedEvent({
       organizationId: organization.id,
@@ -60,6 +75,7 @@ export const applyServerPolicyChangeActivity = Effect.fn(
       cause: session,
     });
   }
+  yield* refuseWhileDraining(request.organizationId, request.machineId, request.change);
   // Cloud machine ids are the Machine IDs Rust accepts as a Machine Target.
   yield* session.connected
     .updateMachine(request.machineId, machineUpdateForPolicyChange(request.change))

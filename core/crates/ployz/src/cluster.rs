@@ -1083,7 +1083,7 @@ pub(crate) fn visible_machine<'list>(
         NameMatches::None => {
             return Err(RpcError {
                 code: RpcErrorCode::NotFound,
-                message: format!("Machine {} was not found", machine.as_str().escape_debug()),
+                message: format!("Server {} was not found", machine.as_str().escape_debug()),
                 details: Value::Null,
             });
         }
@@ -1091,7 +1091,7 @@ pub(crate) fn visible_machine<'list>(
             return Err(RpcError {
                 code: RpcErrorCode::Ambiguous,
                 message: format!(
-                    "Machine name {} is ambiguous: {}",
+                    "Server name {} is ambiguous: {}",
                     machine.as_str().escape_debug(),
                     matches
                         .iter()
@@ -1108,6 +1108,76 @@ pub(crate) fn visible_machine<'list>(
         .iter()
         .find(|entry| entry.machine.id == selected)
         .expect("resolved Machine came from this list"))
+}
+
+/// A role setting a caller waits for this entry to observe.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum RoleSetting {
+    ServicesOff,
+    IngressOn,
+}
+
+impl RoleSetting {
+    fn role(self) -> &'static str {
+        match self {
+            Self::ServicesOff => "services",
+            Self::IngressOn => "ingress",
+        }
+    }
+
+    fn holds(self, machine: &Machine) -> bool {
+        match self {
+            Self::ServicesOff => !machine.accepts_services,
+            Self::IngressOn => machine.accepts_ingress,
+        }
+    }
+}
+
+/// Why [`wait_for_role`] gave up.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RoleWaitError {
+    #[error("this entry Server has not yet observed the new {} role", .0.role())]
+    NotObserved(RoleSetting),
+    #[error("cancelled while waiting for the new role")]
+    Cancelled,
+    #[error(transparent)]
+    Connect(#[from] ConnectError),
+}
+
+/// Wait until this entry sees Machine `id` with `setting`, so what plans next plans from it.
+///
+/// # Errors
+/// Fails when the entry hasn't observed it within 30 s, `cancellation` fires first, or
+/// listing Machines fails.
+pub(crate) async fn wait_for_role(
+    client: &mut Client,
+    id: &MachineId,
+    setting: RoleSetting,
+    cancellation: &tokio_util::sync::CancellationToken,
+) -> Result<(), RoleWaitError> {
+    // ponytail: fixed 30 s bound; the role replicates within seconds on a healthy Cluster.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let machines = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(RoleWaitError::Cancelled),
+            machines = client.machines() => machines?,
+        };
+        if machines
+            .iter()
+            .any(|entry| entry.machine.id == *id && setting.holds(&entry.machine))
+        {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(RoleWaitError::NotObserved(setting));
+        }
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(RoleWaitError::Cancelled),
+            () = tokio::time::sleep(Duration::from_millis(250)) => {}
+        }
+    }
 }
 
 pub(crate) async fn evict_machine(

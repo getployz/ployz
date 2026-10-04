@@ -32,6 +32,8 @@ Click a server. Its page shows its status and public IP address, then:
 
 - **Running here**: click it to list the server's services. While the server is offline, each one
   says whether it's **Still on** another server or **Down**.
+- **Services**: **Run services here** and **Drain**. See
+  [Change what a server does](#change-what-a-server-does).
 - **Builds**: **Run builds here** and **Builds at once**. See
   [Where builds run](../builds/where-builds-run.md#build-on-your-servers).
 
@@ -43,17 +45,23 @@ An entry marked **Not in any Project** is left over from a deleted project or en
 ## Change what a server does
 
 Every server runs builds, runs services and takes web traffic. To turn one off, see
-[Give servers different jobs](../services/scaling.md#give-servers-different-jobs): services move
-off on your next deploy. To move them off now, drain the server. This is CLI-only for now:
+[Give servers different jobs](../services/scaling.md#give-servers-different-jobs).
 
-```sh
-ployz server drain web-2
-```
+Under **Services** on a server's page, turn off **Run services here** and nothing new starts on
+the server. What already runs there stays until you drain it. Your next deploy also moves it.
 
-Draining turns services off for the server and stops its global services there. Then it moves
+To move everything off now, click **Drain** and confirm. The dialog lists what runs on the server,
+and names apart what no project owns: draining leaves that where it is. Draining turns services off for the server and stops its global services there. Then it moves
 each replicated service's containers to your other servers one at a time. Each new container runs
 the same image, and each one starts and is healthy before the old container is removed.
-Pre-deploy commands don't run again, and nothing is deployed.
+Pre-deploy commands don't run again, and nothing is deployed. Drains in one organization run one
+at a time: a second one reads **Waits for the drain on web-1 to finish**. You can leave the page
+while one runs.
+
+While a server drains, you can't turn **Run services here** back on for it: Cloud refuses the
+change until the drain ends. Turning services on for another server waits until
+the organization's drain ends. Other server settings, like **Run builds here**, never wait for a
+drain.
 
 A service stays running where it is, and is reported with the reason, when:
 
@@ -62,9 +70,15 @@ A service stays running where it is, and is reported with the reason, when:
 - a server it involves can't be checked right now;
 - no other server can take it.
 
-Ployz reports what moved where, then what still runs on the server. If anything stayed or failed,
-the command exits non-zero. Run it again to retry. Turning services back on doesn't move anything
-back.
+When the drain ends, the **Drain** row counts what moved, stopped, stayed and failed, and how many
+services no project owns it left alone. It lists each service with where it went or why it stayed.
+A drain that stops early marks the service it was moving **Interrupted** and the ones it never
+reached **Not attempted**; those still run on the server.
+If anything stayed or failed, the drain stopped early, or it couldn't check what's left on the server, the button
+reads **Drain again**. Turning services back on doesn't move anything back.
+
+From the CLI, `ployz server drain web-2` does the same and prints the report. If anything stayed or
+failed, it exits non-zero.
 
 Turning web traffic off stops advertising the server, not serving from
 it: your generated addresses stop pointing at it within the hour, or when you click **Check
@@ -142,7 +156,10 @@ the release it ran before.
 
 <!-- screenshot: the Remove web-2? dialog listing one volume, with the name typed -->
 
-[Drain the server](#change-what-a-server-does) first to move its services off. `ployz server rm`
+[Drain the server](#change-what-a-server-does) first to move its services off. While services still
+run there, **Remove server** says how many, next to a **Drain** button. If only services whose
+volume is on the server are left, it names them: draining won't move them. It also names services
+no project owns, which draining leaves. `ployz server rm`
 warns about services still running there and prints the drain command.
 Otherwise services that ran only on that server stop. Your next deploy replaces its replicas on your other
 servers, except for services whose volume was on it (see

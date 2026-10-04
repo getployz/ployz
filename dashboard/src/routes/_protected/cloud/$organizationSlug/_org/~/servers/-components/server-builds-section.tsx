@@ -1,68 +1,18 @@
 import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/ui/field";
-import { useEffect, useId, useState } from "react";
+import { useId } from "react";
 import { Link } from "@tanstack/react-router";
-import { toast } from "sonner";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Switch } from "#/components/ui/switch";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
-import {
-  policyChangeObserved,
-  type BuildConcurrencyChange,
-  type ServerPolicyChange,
-} from "#/modules/machines/server-policy";
-import { requestServerPolicyChangeServerFn } from "#/modules/machines/server-policy.functions";
+import type { BuildConcurrencyChange } from "#/modules/machines/server-policy";
+import { useServerPolicy } from "#/modules/machines/server-policy.hooks";
 
-/** How long a requested Server Policy change may take to appear in observation. */
-const POLICY_APPLY_TIMEOUT_MS = 60_000;
 const BUILD_CONCURRENCY_CHOICES = [1, 2, 4, 8];
-
-/**
- * Server Policy is read back from Runtime observation. A requested change shows
- * at once and settles when observation catches up; if it never does, the page
- * returns to what the Server reports and says so.
- */
-function useServerPolicy(machine: RuntimeMachineRecord, organizationSlug: string) {
-  const [pending, setPending] = useState<ServerPolicyChange | null>(null);
-  const settled = pending !== null && policyChangeObserved(machine, pending);
-
-  useEffect(() => {
-    if (settled) setPending(null);
-  }, [settled]);
-
-  useEffect(() => {
-    if (pending === null) return;
-    const timer = setTimeout(() => {
-      setPending(null);
-      toast.error(`${machine.name} has not applied the build settings yet`);
-    }, POLICY_APPLY_TIMEOUT_MS);
-    return () => clearTimeout(timer);
-  }, [pending, machine.name]);
-
-  function request(change: ServerPolicyChange) {
-    setPending((current) => ({ ...current, ...change }));
-    requestServerPolicyChangeServerFn({
-      data: { organizationSlug, machineId: machine.id, change },
-    }).catch(() => {
-      setPending(null);
-      toast.error(`Could not change build settings for ${machine.name}`);
-    });
-  }
-
-  const concurrency: BuildConcurrencyChange =
-    pending?.buildConcurrency ?? machine.buildConcurrency ?? "automatic";
-  return {
-    acceptsBuilds: pending?.acceptsBuilds ?? machine.acceptsBuilds,
-    concurrency,
-    // The Server reports what it enforces; while automatic, that is the automatic value.
-    automatic: machine.buildConcurrency === null ? machine.effectiveBuildConcurrency : null,
-    request,
-  };
-}
 
 /** One Server's part in builds: whether it takes them, and how many at once. Where builds run first is org-wide. */
 export function ServerBuildsSection({ machine, organizationSlug }: { machine: RuntimeMachineRecord; organizationSlug: string }) {
-  const policy = useServerPolicy(machine, organizationSlug);
+  const policy = useServerPolicy(machine, organizationSlug, "build settings");
   const switchId = useId();
   const choices = [
     ...new Set([

@@ -559,7 +559,7 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
                 result
                     .unwrap_err()
                     .message
-                    .contains("eligibility is Unknown")
+                    .contains("eligibility on the Server is unknown")
             ),
         }
         server.abort();

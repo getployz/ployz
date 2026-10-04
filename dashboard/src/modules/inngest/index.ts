@@ -10,11 +10,12 @@ import {
   createProcessMachineRemove,
 } from "#/modules/machines/machine-removal.inngest";
 import { createApplyServerPolicyChange } from "#/modules/machines/server-policy.inngest";
+import { createServerDrainFunctions } from "#/modules/machines/server-drain.inngest";
 import {
   createScheduleClusterDomainSync,
   createSyncClusterDomain,
 } from "#/modules/cluster-domain/sync.inngest";
-import { createCancelServerUpgrade, createRollOutServerUpgrade, createScheduleServerUpgrades } from "#/modules/server-upgrade/server-upgrade.inngest";
+import { createServerUpgradeFunctions } from "#/modules/server-upgrade/server-upgrade.inngest";
 import { createRetireServerAccess } from "#/modules/machines/server-access.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 import {
@@ -34,13 +35,12 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createProcessMachineRemove(inngest),
     createCancelMachineRemove(inngest),
     createApplyServerPolicyChange(inngest),
+    ...createServerDrainFunctions(inngest),
     createRetireServerAccess(inngest),
     createPruneOrganizationChangeLog(inngest),
     createSyncClusterDomain(inngest),
     createScheduleClusterDomainSync(inngest),
-    createRollOutServerUpgrade(inngest),
-    createCancelServerUpgrade(inngest),
-    createScheduleServerUpgrades(inngest),
+    ...createServerUpgradeFunctions(inngest),
     createRunStoreDeployment(inngest),
     createCancelStoreDeployment(inngest),
     createRedispatchStoreDeployments(inngest),

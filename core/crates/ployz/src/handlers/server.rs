@@ -15,10 +15,12 @@ use ployz_core::{
 };
 
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     cloud_account::{self, Credential},
     cloud_login::{CredentialStore, LoginError},
+    cluster::RoleWaitError,
     connect::{Client, SystemConnector, TARGET_RPC_TIMEOUT},
     context::{Config, ConnectionSource, ContextError, SelectedConnections},
     ingress::IngressImage,
@@ -225,10 +227,19 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
                 return output::emit(&json!({ "server": server_json(&machine) }));
             }
             let followed = async {
-                wait_for_role(client, &machine.id, "ingress", |machine| {
-                    machine.accepts_ingress
-                })
-                .await?;
+                crate::cluster::wait_for_role(
+                    client,
+                    &machine.id,
+                    crate::cluster::RoleSetting::IngressOn,
+                    &CancellationToken::new(),
+                )
+                .await
+                .map_err(|error| match error {
+                    RoleWaitError::Connect(error) => Error::from(error),
+                    error @ (RoleWaitError::NotObserved(_) | RoleWaitError::Cancelled) => {
+                        Error::unavailable(error.to_string())
+                    }
+                })?;
                 crate::ingress::follow_roles(client, ingress).await
             }
             .await;
@@ -240,32 +251,6 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
             )
         })
     })
-}
-
-/// Wait until this entry sees the Server's new `role` setting, so what plans next plans from it.
-pub(super) async fn wait_for_role(
-    client: &mut Client,
-    id: &ployz_core::MachineId,
-    role: &str,
-    settled: fn(&Machine) -> bool,
-) -> Result<(), Error> {
-    // ponytail: fixed 30 s bound; the role replicates within seconds on a healthy Cluster.
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        let machines = client.machines().await?;
-        if machines
-            .iter()
-            .any(|entry| entry.machine.id == *id && settled(&entry.machine))
-        {
-            return Ok(());
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(Error::unavailable(format!(
-                "this entry Server has not yet observed the new {role} role"
-            )));
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    }
 }
 
 /// The exact rerun of a Server command, keeping an explicit `--context`.

@@ -38,6 +38,8 @@ import type {
   ObservedDataLoss,
   LocalMachineRemoved,
   DataLossConfirmation,
+  DrainReport,
+  DrainScope,
   ClusterTeardown,
   PlanOptions,
   Namespace,
@@ -240,6 +242,12 @@ export declare class Client {
     machine: MachineTarget,
     confirmDataLoss: DataLossConfirmation,
   ): Promise<LocalMachineRemoved>;
+  /**
+   * Turn a Server's services role off, retire its Globals there, and move each replicated
+   * Service in `scope` off it, one at a time and start-first. Resolves with the report even
+   * when it is partial or the session closes mid-drain; rejects only before anything moved.
+   */
+  drainMachine(machine: MachineTarget, scope: DrainScope): Promise<DrainReport>;
   /** Take a Machine out of the Cluster without resetting it: it keeps its state and keys. */
   removeMachineMembership(machine: MachineTarget): Promise<void>;
   /** One Machine policy edit (Machine Roles and build concurrency); omitted fields keep their values. */

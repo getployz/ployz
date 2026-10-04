@@ -7,6 +7,9 @@ import { join } from "node:path";
 import { connect, type WorkerConnection } from "inngest/connect";
 import { Inngest } from "inngest";
 import { afterEach, describe, expect, it } from "vitest";
+import { DRAIN_SLOT } from "#/modules/inngest/drain-slot";
+import { serverDrainRequestedEvent, serverPolicyChangeRequestedEvent } from "#/modules/inngest/events";
+import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 
 type SmokeRow = {
   readonly operationId: string;
@@ -138,10 +141,9 @@ describe("Inngest development server durable smoke", () => {
       },
     ]);
 
-    const devPort = await availablePort();
-    const gatewayPort = await availablePort();
-    const gatewayGrpcPort = await availablePort();
-    const executorGrpcPort = await availablePort();
+    const started = await startDevServer();
+    devServer = started.process;
+    const { devPort, gatewayPort } = started;
     const inngest = new Inngest({
       id: "ployz-development-server-smoke",
       eventKey: "local",
@@ -247,29 +249,6 @@ describe("Inngest development server durable smoke", () => {
     });
     const functions = [resumed, cancellable, cancellation, draining];
 
-    devServer = spawn(
-      join(process.cwd(), "node_modules/inngest-cli/bin/inngest"),
-      [
-        "dev",
-        "--no-discovery",
-        "--no-poll",
-        "--port",
-        String(devPort),
-        "--connect-gateway-port",
-        String(gatewayPort),
-        "--connect-gateway-grpc-port",
-        String(gatewayGrpcPort),
-        "--connect-executor-grpc-port",
-        String(executorGrpcPort),
-        "--retry-interval",
-        "1",
-        "--tick",
-        "50",
-      ],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    );
-
-    await waitForDevServer(devPort, devServer);
     worker = await connect({ apps: [{ client: inngest, functions }],
       gatewayUrl: `ws://127.0.0.1:${gatewayPort}/v0/connect`, handleShutdownSignals: [] });
     await inngest.send({
@@ -330,7 +309,85 @@ describe("Inngest development server durable smoke", () => {
     await closing;
     expect(closed).toBe(true);
   }, 60_000);
+
+  it("holds a policy change that turns services on behind its Organization's Drain, and no other change", async () => {
+    const started = await startDevServer();
+    devServer = started.process;
+    const inngest = new Inngest({
+      id: "ployz-drain-slot-smoke",
+      eventKey: "local",
+      baseUrl: `http://127.0.0.1:${started.devPort}`,
+      isDev: true,
+    });
+    const running = new Set<string>();
+    let release = () => {};
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    releaseStep = release;
+    const drain = inngest.createFunction(
+      { id: "drain-slot-smoke-drain", retries: 0, triggers: [{ event: serverDrainRequestedEvent }], concurrency: [DRAIN_SLOT] },
+      async ({ event, step }) => {
+        await step.run("hold-drain", async () => {
+          running.add(`drain ${String(event.data["organizationId"])}`);
+          await released;
+        });
+      },
+    );
+    const policy = inngest.createFunction(
+      { id: "drain-slot-smoke-policy", retries: 0, triggers: [{ event: serverPolicyChangeRequestedEvent }], concurrency: [DRAIN_SLOT] },
+      async ({ event, step }) => {
+        await step.run("apply-policy", () => { running.add(`policy ${String(event.data["machineId"])}`); });
+      },
+    );
+    worker = await connect({ apps: [{ client: inngest, functions: [drain, policy] }],
+      gatewayUrl: `ws://127.0.0.1:${started.gatewayPort}/v0/connect`, handleShutdownSignals: [] });
+    const change = (organizationId: string, machineId: string, change: ServerPolicyChange) =>
+      inngest.send({ name: serverPolicyChangeRequestedEvent, data: { organizationId, machineId, change } });
+
+    await inngest.send({ name: serverDrainRequestedEvent, data: { attemptId: "a1", organizationId: "org-1", machineId: "m1" } });
+    await expect.poll(() => running.has("drain org-1"), { timeout: 10_000 }).toBe(true);
+
+    await change("org-1", "m1", { acceptsBuilds: false });
+    await change("org-1", "m2", { acceptsServices: false });
+    await change("org-1", "m3", { acceptsServices: true });
+    await change("org-2", "m4", { acceptsServices: true });
+    await expect.poll(() => ["policy m1", "policy m2", "policy m4"].every((key) => running.has(key)), { timeout: 10_000 }).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect(running.has("policy m3")).toBe(false);
+
+    release();
+    await expect.poll(() => running.has("policy m3"), { timeout: 10_000 }).toBe(true);
+  }, 60_000);
 });
+
+async function startDevServer() {
+  const devPort = await availablePort();
+  const gatewayPort = await availablePort();
+  const gatewayGrpcPort = await availablePort();
+  const executorGrpcPort = await availablePort();
+  const devServer = spawn(
+    join(process.cwd(), "node_modules/inngest-cli/bin/inngest"),
+    [
+      "dev",
+      "--no-discovery",
+      "--no-poll",
+      "--port",
+      String(devPort),
+      "--connect-gateway-port",
+      String(gatewayPort),
+      "--connect-gateway-grpc-port",
+      String(gatewayGrpcPort),
+      "--connect-executor-grpc-port",
+      String(executorGrpcPort),
+      "--retry-interval",
+      "1",
+      "--tick",
+      "50",
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  await waitForDevServer(devPort, devServer);
+  return { process: devServer, devPort, gatewayPort };
+}
 
 async function waitForDevServer(port: number, process: ChildProcess) {
   const deadline = Date.now() + 15_000;

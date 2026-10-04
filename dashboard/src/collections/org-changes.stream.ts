@@ -8,6 +8,7 @@ import type { CollectionScope } from "./scope";
 import { useCollectionScope } from "./use-collection-scope";
 import { organizationKeys } from "#/modules/organization/organization-state.queries";
 import { refetchStoreViews } from "#/modules/config-store/store-view.queries";
+import { serverDrainKeys } from "#/modules/machines/server-drain.queries";
 import { serverUpgradeKeys } from "#/modules/server-upgrade/server-upgrade.queries";
 import { liveStream } from "#/lib/live.stream";
 
@@ -26,6 +27,7 @@ const refetches = {
   ...EffectRecord.map(orgStoreTables, (get): Refetch => (organizationSlug, scope) => void get(organizationSlug, scope).utils.refetch()),
   organization: (_organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: organizationKeys.all }),
   server_upgrade: (_organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: serverUpgradeKeys.all }),
+  server_drain: (_organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: serverDrainKeys.all }),
   store_project: (organizationSlug: string, scope: CollectionScope) => refetchStoreViews(organizationSlug, scope, "store_project"),
   store_environment: (organizationSlug: string, scope: CollectionScope) => refetchStoreViews(organizationSlug, scope, "store_environment"),
   store_deployment: (organizationSlug: string, scope: CollectionScope) => refetchStoreViews(organizationSlug, scope, "store_deployment"),

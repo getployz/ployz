@@ -9,7 +9,7 @@ import { Conflict } from "#/server/public-error";
 import { SYSTEM_NAMESPACE } from "./server-services";
 
 /** The Namespaces the Organization's Environments own, as the Store names them. A failed read fails: nothing reads as unowned. */
-const ownedNamespaces = (organizationId: string) =>
+export const ownedNamespaces = (organizationId: string) =>
   readStore(organizationId, { query: "namespaces" }).pipe(Effect.map(({ namespaces }) => namespaces.map(({ namespace }) => namespace)));
 
 /** Which of `namespaces`, seen on the Organization's Servers, no Environment owns: the Servers page offers to remove them. */

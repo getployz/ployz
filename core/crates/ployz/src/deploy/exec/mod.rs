@@ -680,62 +680,117 @@ async fn execute_operation<C: MachineOperations>(
     }
 }
 
+/// Why a Placement convergence move did not complete. Each case leaves a different set of
+/// Containers behind, so the report tells them apart.
+#[derive(Debug, thiserror::Error)]
+pub(in crate::deploy) enum MoveContainerError {
+    /// The new Container did not start or serve, or the move was cancelled first (then the
+    /// error is [`ExecutionError::Cancelled`]). `old` keeps serving. `replacement_removed`
+    /// says no new Container is left on `to`: none was made, or its removal was
+    /// acknowledged.
+    #[error("the new Container did not serve: {error}")]
+    NotServing {
+        error: ExecutionError,
+        replacement_removed: bool,
+    },
+    /// The new Container serves on `to`, but `old` could not be stopped (both serve) or,
+    /// once stopped, removed.
+    #[error("the old Container was not removed: {error}")]
+    OldNotRemoved {
+        error: ExecutionError,
+        old_stopped: bool,
+    },
+}
+
 /// Placement convergence's one move: start `spec` on `to`, wait until it serves, then
 /// remove `old` from `from`. A new Container that never serves is removed again, so
-/// `old` keeps serving and the Container count holds. No hooks run.
-pub(super) async fn move_container(
-    client: &Client,
+/// `old` keeps serving. No hooks run. Once `old` is removed the move is done, even if
+/// waiting for observations to drop it fails or is cancelled.
+///
+/// # Errors
+///
+/// [`MoveContainerError::NotServing`] when the new Container never served;
+/// [`MoveContainerError::OldNotRemoved`] when it serves but `old` could not be removed.
+pub(in crate::deploy) async fn move_container<C: MachineOperations>(
+    client: &C,
     namespace: &Namespace,
     spec: &ResolvedServiceSpec,
     to: &MachineId,
     (from, old): (&MachineId, &ContainerId),
     cancellation: &CancellationToken,
-) -> Result<ContainerId, ExecutionError> {
+) -> Result<ContainerId, MoveContainerError> {
     let client = RestartTolerant {
         inner: client,
         cancellation,
     };
-    let mut progress = Progress::new(Vec::new(), None);
-    let created = create_and_start(
-        &client,
-        0,
-        &mut progress,
-        to,
-        ContainerKind::ServiceContainer,
-        namespace,
-        spec,
-        None,
-        cancellation,
-    )
-    .await?;
-    let new = created.container_id;
-    if let Err(error) = serve(
-        &client,
-        0,
-        &mut progress,
-        to,
-        &new,
-        spec,
-        false,
-        cancellation,
-    )
-    .await
-    {
-        let _ = client.stop_container(to, &new, None).await;
-        let _ = client.remove_container(to, &new).await;
-        return Err(error);
-    }
-    let removal = DeployOperation::RemoveContainer {
-        machine_id: *from,
-        container_id: *old,
-    };
-    execute_operation(&removal, 0, &mut progress, &client, cancellation, namespace)
+    let new = match client
+        .create_container(to, ContainerKind::ServiceContainer, namespace, spec, None)
         .await
-        .map_err(|failure| match failure {
-            OperationFailure::Ordinary(error) | OperationFailure::Replacement { error, .. } => {
-                error
+    {
+        Ok(created) => created.container_id,
+        Err(error) => {
+            // A create whose reply never arrived may still have made the Container.
+            let replacement_removed = !is_unavailable(&error);
+            let error = if cancellation.is_cancelled() {
+                ExecutionError::Cancelled
+            } else {
+                machine_error(MachineAction::CreateContainer, error)
+            };
+            return Err(MoveContainerError::NotServing {
+                error,
+                replacement_removed,
+            });
+        }
+    };
+    let served = if cancellation.is_cancelled() {
+        Err(ExecutionError::Cancelled)
+    } else {
+        match client.start_container(to, &new).await {
+            Ok(()) => {
+                let mut progress = Progress::new(Vec::new(), None);
+                serve(
+                    &client,
+                    0,
+                    &mut progress,
+                    to,
+                    &new,
+                    spec,
+                    false,
+                    cancellation,
+                )
+                .await
             }
-        })?;
+            Err(error) => Err(machine_error(MachineAction::StartContainer, error)),
+        }
+    };
+    if let Err(error) = served {
+        let _ = client.stop_container(to, &new, None).await;
+        let replacement_removed = ignore_not_found(client.remove_container(to, &new).await).is_ok();
+        return Err(MoveContainerError::NotServing {
+            error,
+            replacement_removed,
+        });
+    }
+    ignore_not_found(client.stop_container(from, old, None).await).map_err(|error| {
+        MoveContainerError::OldNotRemoved {
+            error: machine_error(MachineAction::StopContainer, error),
+            old_stopped: false,
+        }
+    })?;
+    ignore_not_found(client.remove_container(from, old).await).map_err(|error| {
+        MoveContainerError::OldNotRemoved {
+            error: machine_error(MachineAction::RemoveContainer, error),
+            old_stopped: true,
+        }
+    })?;
+    // Waiting keeps the next snapshot from still counting `old`; the move is done either way.
+    let _ = client
+        .wait_for_container_observations(
+            &[*old],
+            ContainerObservationCondition::Dropped,
+            cancellation,
+        )
+        .await;
     Ok(new)
 }
 

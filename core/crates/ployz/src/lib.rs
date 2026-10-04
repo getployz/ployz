@@ -13,9 +13,13 @@ pub mod connect;
 pub mod context;
 pub mod deploy;
 pub mod dns;
+pub mod drain;
 pub mod enrollment;
 pub mod failure;
 mod global_catch_up;
+#[cfg(test)]
+mod global_fixtures;
+mod global_slot;
 pub mod handlers;
 pub mod image;
 pub mod ingress;

@@ -1,12 +1,7 @@
-import { Option, Schema } from "effect";
-import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
-import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
-import {
-  createServerUpgradeRequestedEvent,
-  inngestFunctionCancelledEnvelopeSchema,
-  inngestFunctionCancelledEventType,
-  serverUpgradeRequestedEventType,
-} from "#/modules/inngest/events";
+import { Effect, Option, Schema } from "effect";
+import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
+import type { PloyzStepTools } from "#/modules/inngest/client";
+import { createServerUpgradeRequestedEvent, serverUpgradeRequestedEventType } from "#/modules/inngest/events";
 import { machineIdStringSchema } from "#/modules/machines/enrollment";
 import { type FinalOutcome, type ReleaseChannel, UPGRADE_TRIGGERS } from "#/modules/server-upgrade/server-upgrade";
 import {
@@ -23,12 +18,9 @@ import {
   recordUpgradeAttempt,
   requestUpgradeOnServer,
 } from "#/modules/server-upgrade/server-upgrade.server";
-import { runInngestEffect } from "#/server/run.server";
-
-export const ROLL_OUT_SERVER_UPGRADE_FUNCTION_ID = "roll-out-server-upgrade";
+import type { runInngestEffect } from "#/server/run.server";
 
 type StepTools = Pick<PloyzStepTools, "run" | "sleep">;
-type ScheduleStepTools = Pick<PloyzStepTools, "run" | "sendEvent">;
 type EffectRunner = typeof runInngestEffect;
 
 const POLL_INTERVAL_MS = 15_000;
@@ -44,8 +36,6 @@ type Request = Omit<typeof ServerUpgradeRequestedData.Type, "machineId"> & { rea
 type ServerResult =
   | { readonly kind: "skipped"; readonly reason: "not-online" | "busy" }
   | { readonly kind: "attempted"; readonly attemptId: string; readonly outcome: FinalOutcome };
-
-const decodeFailedRun = Schema.decodeUnknownOption(Schema.Struct({ data: Schema.Struct({ run_id: Schema.String }) }));
 
 /**
  * One Rollout run along the Organization's Release Channel: the named Server, or every Server behind (online, idle,
@@ -124,63 +114,30 @@ async function upgradeServer(
   return { kind: "attempted", attemptId, outcome: recorded.outcome };
 }
 
-/**
- * The hourly run: close attempts a dead rollout run left `running` → request one automatic rollout per Organization
- * with automatic upgrades on, as the hourly Cluster Domain sync fans out.
- */
-export async function executeScheduleServerUpgrades({ step }: { step: ScheduleStepTools }, runEffect: EffectRunner) {
-  const closed = await step.run("close-stale-attempts", () => runEffect(closeStaleUpgradeAttempts()));
-  const organizationIds = await step.run("list-automatic-organizations", () => runEffect(listAutomaticUpgradeOrganizationIds()));
-  if (organizationIds.length > 0) {
-    await step.sendEvent("request-automatic-rollouts", organizationIds.map((organizationId) =>
-      createServerUpgradeRequestedEvent({ organizationId, machineId: null, trigger: "automatic", userId: null })));
-  }
-  return { closed, organizationCount: organizationIds.length };
-}
-
-/** A cancelled rollout run must not leave its attempt `running`. */
-export async function executeCancelServerUpgrade({ event, step }: { event: unknown; step: Pick<StepTools, "run"> }, runEffect: EffectRunner) {
-  const decoded = await step.run("decode-cancellation", () => decodeInngestEnvelope(inngestFunctionCancelledEnvelopeSchema)(event));
-  if (decoded.data.function_id !== ROLL_OUT_SERVER_UPGRADE_FUNCTION_ID) return { skipped: true };
-  const runId = decoded.data.run_id;
-  return { closed: await step.run("close-attempts", () => runEffect(closeRunUpgradeAttempts(runId))) };
-}
-
-export const createRollOutServerUpgrade = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) =>
-  inngest.createFunction(
-    {
-      id: ROLL_OUT_SERVER_UPGRADE_FUNCTION_ID,
-      retries: 3,
-      triggers: [{ event: serverUpgradeRequestedEventType }],
-      // One rollout per Organization at a time.
-      concurrency: [{ key: "event.data.organizationId", limit: 1 }],
-      onFailure: async ({ event }) => {
-        // `inngest/function.failed` names the failed run.
-        const failed = decodeFailedRun(event);
-        if (Option.isSome(failed)) await runEffect(closeRunUpgradeAttempts(failed.value.data.run_id));
-      },
+const lifecycle = attemptLifecycle({
+  run: {
+    id: "roll-out-server-upgrade",
+    triggers: [{ event: serverUpgradeRequestedEventType }],
+    concurrency: [{ key: "event.data.organizationId", limit: 1 }],
+    handler: executeRollOutServerUpgrade,
+  },
+  cancelId: "cancel-server-upgrade",
+  closeRun: closeRunUpgradeAttempts,
+  sweep: {
+    id: "schedule-server-upgrades",
+    closeStale: () => Effect.map(closeStaleUpgradeAttempts(), (closed) => ({ closed })),
+    afterSweep: async (step, runEffect) => {
+      const organizationIds = await step.run("list-automatic-organizations", () => runEffect(listAutomaticUpgradeOrganizationIds()));
+      if (organizationIds.length > 0) {
+        await step.sendEvent("request-automatic-rollouts", organizationIds.map((organizationId) =>
+          createServerUpgradeRequestedEvent({ organizationId, machineId: null, trigger: "automatic", userId: null })));
+      }
+      return { organizationCount: organizationIds.length };
     },
-    async ({ event, step, runId }) => executeRollOutServerUpgrade({ event, step, runId }, runEffect),
-  );
+  },
+});
 
-export const createCancelServerUpgrade = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) =>
-  inngest.createFunction(
-    {
-      id: "cancel-server-upgrade",
-      retries: 3,
-      triggers: [{ event: inngestFunctionCancelledEventType }],
-      concurrency: [{ key: "event.data.run_id", limit: 1 }],
-    },
-    async ({ event, step }) => executeCancelServerUpgrade({ event, step }, runEffect),
-  );
-
-export const createScheduleServerUpgrades = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) =>
-  inngest.createFunction(
-    {
-      id: "schedule-server-upgrades",
-      retries: 3,
-      triggers: [{ cron: "TZ=UTC 0 * * * *" }],
-      concurrency: [{ limit: 1 }],
-    },
-    async ({ step }) => executeScheduleServerUpgrades({ step }, runEffect),
-  );
+export const createRollOutServerUpgrade = lifecycle.createRun;
+export const createCancelServerUpgrade = lifecycle.createCancel;
+export const createScheduleServerUpgrades = lifecycle.createSweep;
+export const createServerUpgradeFunctions = lifecycle.createFunctions;

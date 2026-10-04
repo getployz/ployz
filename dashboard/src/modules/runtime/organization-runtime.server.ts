@@ -18,6 +18,8 @@ import { SecretEncryption } from "#/utils/encrypted-secret.server";
  * ponytail: one poll per session; move to one loop per instance when sessions reach the thousands.
  */
 export const PAIRING_CHANGE_POLL = "1 second";
+/** Consecutive failed pairing checks, one per poll, before a session closes because removals can't be seen. */
+export const PAIRING_CHECK_FAILURE_LIMIT = 30;
 
 /**
  * Ceiling on establishing a shared organization session. The SDK's own
@@ -102,18 +104,26 @@ export function makeOrganizationRuntimeLayer(
         let cursor = since;
         return Effect.gen(function* () {
           const changes = yield* pairingChanges.changedSince(organizationId, cursor);
+          if (changes.changed) {
+            const access = yield* loadConnections(organizationId);
+            if (access.kind === "missing" || access.generation !== session.generation) yield* close(session);
+          }
+          // Advanced only once the change is checked, so a retried check still sees it.
           cursor = changes.cursor;
-          if (!changes.changed) return;
-          const access = yield* loadConnections(organizationId);
-          if (access.kind === "missing" || access.generation !== session.generation) yield* close(session);
         }).pipe(
           // Closing the caller's scope interrupts this watcher. Interrupting a pooled query makes the
           // SQL client send pg_cancel_backend later, which can cancel whatever statement that
           // connection runs next; so a check finishes, and only the sleep between checks is interrupted.
           Effect.uninterruptible,
+          // A brief database hiccup must not close the session and cancel the Drain running through it.
+          Effect.retry({
+            schedule: Schedule.spaced(PAIRING_CHANGE_POLL),
+            times: PAIRING_CHECK_FAILURE_LIMIT - 1,
+            while: () => !session.closed,
+          }),
           Effect.repeat({ schedule: Schedule.spaced(PAIRING_CHANGE_POLL), while: () => !session.closed }),
-          // Removals are unobservable until the log is readable again, so fail closed.
-          Effect.catch((error) => Effect.logWarning("Pairing change check failed; closing the session.", error).pipe(
+          // Removals are unobservable until the log is readable again, so a lasting outage fails closed.
+          Effect.catch((error) => Effect.logWarning("Pairing change checks kept failing; closing the session.", error).pipe(
             Effect.andThen(close(session)),
           )),
         );

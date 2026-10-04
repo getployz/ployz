@@ -14,10 +14,16 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { needsAttention } from "#/modules/machines/server-status";
 import { useServers, type Server } from "#/modules/machines/use-servers";
 import { latestServerUpgradesQueryOptions } from "#/modules/server-upgrade/server-upgrade.queries";
+import { useStrayNamespaces } from "#/modules/machines/namespace-cleanup.queries";
+import { drainDialogNames, removeHint } from "#/modules/machines/server-drain-view";
+import { useServerDrain } from "#/modules/machines/server-drain.hooks";
+import { latestServerDrainsQueryOptions } from "#/modules/machines/server-drain.queries";
 import { prefetchRemote } from "#/collections/route-data";
-import { RemoveServerSection } from "./-components/remove-server-section";
+import { DrainDialog } from "./-components/drain-dialog";
+import { RemoveServerHint, RemoveServerSection } from "./-components/remove-server-section";
 import { runsHere } from "./-components/runs-here";
 import { ServerBuildsSection } from "./-components/server-builds-section";
+import { DrainButton, ServerServicesSection } from "./-components/server-services-section";
 import { ServerSwitcher } from "./-components/server-switcher";
 import { ServerUpgradeSection } from "./-components/server-upgrade-section";
 import { StrayNamespaces } from "./-components/stray-namespaces";
@@ -33,7 +39,11 @@ export const Route = createFileRoute(
     )),
   })),
   staticData: { crumb: ServerSwitcher },
-  loader: ({ params, context }) => prefetchRemote(context, latestServerUpgradesQueryOptions(params.organizationSlug)),
+  loader: ({ params, context }) => prefetchRemote(
+    context,
+    latestServerUpgradesQueryOptions(params.organizationSlug),
+    latestServerDrainsQueryOptions(params.organizationSlug),
+  ),
   component: RouteComponent,
 });
 
@@ -89,18 +99,60 @@ function RouteComponent() {
       <Suspense fallback={null}>
         <ServerUpgradeSection machine={machine} status={server.status} organizationSlug={organizationSlug} />
       </Suspense>
-      <ServerBuildsSection machine={machine} organizationSlug={organizationSlug} />
-      <RemoveServerSection machine={machine} organizationSlug={organizationSlug} last={servers.length === 1} />
+      <Suspense fallback={null}>
+        <ServerSettings organizationSlug={organizationSlug} server={server} servers={servers} stale={stale} />
+      </Suspense>
     </DashboardPage>
   );
 }
 
-/** The page's shape while the Runtime Watch connects: status, Running here, Builds, Remove. */
+/** Services, Builds and Danger: the sections that share one Drain, whose dialog opens from Services and from Danger. */
+function ServerSettings({ organizationSlug, server, servers, stale }: {
+  organizationSlug: string;
+  server: Server;
+  servers: readonly Server[];
+  stale: boolean;
+}) {
+  const { machine } = server;
+  const drain = useServerDrain(organizationSlug, { id: machine.id, name: server.name }, servers);
+  const strays = useStrayNamespaces(organizationSlug, server.services.flatMap((service) => service.namespace ?? []));
+  const dialog = drainDialogNames(server.services, strays);
+  // A Drain cordons this Server and copies images from it: it needs the Server online, and the page to see it.
+  const unavailable = stale
+    ? "Drain needs Cloud to reach your servers."
+    : server.status === "offline" ? `Drain needs ${server.name} online.` : null;
+  return (
+    <>
+      <ServerServicesSection
+        machine={machine}
+        organizationSlug={organizationSlug}
+        view={drain.view}
+        onDrain={drain.ask}
+        unavailable={unavailable}
+      />
+      <ServerBuildsSection machine={machine} organizationSlug={organizationSlug} />
+      <RemoveServerSection
+        machine={machine}
+        organizationSlug={organizationSlug}
+        last={servers.length === 1}
+        hint={(
+          <RemoveServerHint
+            hint={removeHint(drain.view, server.services, strays)}
+            drainButton={<DrainButton view={drain.view} onClick={drain.ask} size="sm" disabled={unavailable !== null} />}
+          />
+        )}
+      />
+      <DrainDialog serverName={server.name} names={dialog.drainable} unowned={dialog.unowned} {...drain.dialog} />
+    </>
+  );
+}
+
+/** The page's shape while the Runtime Watch connects: status, Running here, Services, Builds, Remove. */
 function ServerPageSkeleton() {
   return (
     <div role="status" aria-label="Server loading" className="flex flex-col gap-6">
       <Skeleton className="h-5 w-48" />
-      {[1, 2, 1].map((rows, section) => (
+      {[1, 2, 2, 1].map((rows, section) => (
         <div key={section} aria-hidden="true" className="flex flex-col gap-2">
           <Skeleton className="h-4 w-24" />
           {Array.from({ length: rows }, (_, row) => <Skeleton key={row} className="h-14 w-full rounded-lg" />)}

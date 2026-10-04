@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use ployz_core::{
-    DescribeContractRequest, LiveServices, Machine, MachineId, MachineName, MachineTarget,
-    NameMatches, QualifiedService, RpcError, RpcErrorCode, ServiceMode, op,
+    DescribeContractRequest, Machine, MachineId, MachineName, MachineTarget, QualifiedService,
+    RpcError, RpcErrorCode, op,
 };
 
 use super::super::runtime;
@@ -10,6 +10,7 @@ use crate::cloud_account::{self, Credential, Release};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::cluster::{CloudHold, refuse_last_managed};
 use crate::connect::Remover;
+use crate::drain::{replicated_services_on, services_on};
 use crate::handlers::{
     Error,
     data_loss::{VolumeEffect, VolumeLabels, volume_label},
@@ -355,22 +356,9 @@ pub(super) fn select_machine(
     selector: &str,
 ) -> Result<Machine, Error> {
     let selector = MachineTarget::parse(selector)?;
-    match selector.resolve(machines.iter().map(|entry| &entry.machine)) {
-        NameMatches::None => Err(Error::not_found(format!(
-            "Server {} was not found",
-            selector.as_str().escape_debug()
-        ))),
-        NameMatches::One(machine) => Ok(machine.clone()),
-        matches @ NameMatches::Ambiguous { .. } => Err(Error::ambiguous(format!(
-            "Server name {} is ambiguous: {}",
-            selector.as_str().escape_debug(),
-            matches
-                .iter()
-                .map(|machine| machine.id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))),
-    }
+    Ok(crate::cluster::visible_machine(&selector, machines)?
+        .machine
+        .clone())
 }
 
 fn machine_removal_refusal(error: RpcError) -> Error {
@@ -381,23 +369,6 @@ fn machine_removal_refusal(error: RpcError) -> Error {
     } else {
         error.into()
     }
-}
-
-#[must_use]
-pub(super) fn services_on(
-    machine_id: &MachineId,
-    live: &LiveServices<RpcError>,
-) -> Vec<QualifiedService> {
-    live.services()
-        .into_iter()
-        .filter(|service| {
-            service
-                .containers
-                .iter()
-                .any(|container| container.as_observation().machine_id == *machine_id)
-        })
-        .map(|service| service.identity)
-        .collect()
 }
 
 #[must_use]
@@ -413,27 +384,6 @@ fn service_warnings(machine: &MachineName, services: &[QualifiedService]) -> Vec
             .collect::<Vec<_>>()
             .join(", ")
     )]
-}
-
-#[must_use]
-pub(super) fn replicated_services_on(
-    machine_id: &MachineId,
-    live: &LiveServices<RpcError>,
-) -> Vec<QualifiedService> {
-    live.services()
-        .into_iter()
-        .filter(|service| {
-            service.containers.iter().any(|container| {
-                let observation = container.as_observation();
-                observation.machine_id == *machine_id
-                    && matches!(
-                        observation.resolved_spec.mode,
-                        ServiceMode::Replicated { .. }
-                    )
-            })
-        })
-        .map(|service| service.identity)
-        .collect()
 }
 
 #[cfg(test)]

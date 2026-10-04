@@ -7,6 +7,7 @@ use ployz_core::{
     ServicePlacementEligibility, op, service_containers,
 };
 
+use crate::global_slot::{remove_slot, slot_eligibility, unknown_eligibility};
 use crate::{connect::Client, deploy::endpoint_capacity_error, failure::Failure};
 
 /// Catch-up failed after membership committed.
@@ -87,76 +88,22 @@ impl CatchUpClient for Client {
         request: CreateContainerRequest,
     ) -> Result<Option<ContainerCreated>, RpcError> {
         let target = MachineTarget::from(machine_id);
-        let details = self
-            .read::<op::Inspect>(
-                InspectRequest {
-                    include_storage: true,
-                    ..Default::default()
-                },
-                &target,
-            )
-            .await?;
-        let machine = details
-            .machine
-            .filter(|machine| {
-                machine.id == *machine_id
-                    && details.phase == ployz_core::LocalMachinePhase::Participating
-            })
-            .ok_or_else(|| RpcError {
-                code: ployz_core::RpcErrorCode::Conflict,
-                message: "Global catch-up target has no participating Machine observation".into(),
-                details: serde_json::Value::Null,
-            })?;
-        let eligibility = request.resolved_spec.placement_eligibility_in_namespace(
-            &request.namespace,
-            &machine,
-            details.storage.as_ref(),
-        );
-        if eligibility != ServicePlacementEligibility::Eligible {
-            if matches!(eligibility, ServicePlacementEligibility::Ineligible(_)) {
-                let containers = self
-                    .read::<op::ListContainers>(
-                        ListContainersRequest {
-                            environment: EnvironmentValues::Redacted,
-                        },
-                        &target,
-                    )
-                    .await?;
-                for container in containers.containers.into_iter().filter(|container| {
-                    container.machine_id == *machine_id
-                        && container.kind == ContainerKind::ServiceContainer
-                        && container.namespace == request.namespace
-                        && container.resolved_spec.name == request.resolved_spec.name
-                }) {
-                    crate::ingress::stop_container(
-                        self,
-                        machine_id,
-                        ployz_core::StopContainerRequest {
-                            container_id: container.container_id,
-                            signal: None,
-                            grace_period_seconds: None,
-                        },
-                        None,
-                    )
-                    .await?;
-                    self.call::<op::RemoveContainer>(
-                        ployz_core::RemoveContainerRequest {
-                            container_id: container.container_id,
-                            remove_volumes: false,
-                            force: false,
-                        },
-                        Some(&target),
-                    )
-                    .await
-                    .map_err(RpcError::from)?;
-                }
+        match slot_eligibility(self, machine_id, &request.namespace, &request.resolved_spec).await?
+        {
+            ServicePlacementEligibility::Eligible => {}
+            ServicePlacementEligibility::Ineligible(_) => {
+                remove_slot(
+                    self,
+                    machine_id,
+                    &request.namespace,
+                    &request.resolved_spec.name,
+                )
+                .await?;
                 return Ok(None);
             }
-            return Err(RpcError {
-                code: ployz_core::RpcErrorCode::Conflict,
-                message: format!("Global catch-up target eligibility is {eligibility:?}"),
-                details: serde_json::Value::Null,
-            });
+            ServicePlacementEligibility::Unknown(reason) => {
+                return Err(unknown_eligibility(reason));
+            }
         }
         // Explicit Deploy replacement keys also distinguish the previous Container.
         // Reuse its exact persisted creation when catch-up finds it before Start.

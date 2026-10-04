@@ -1,8 +1,8 @@
 //! Native Cloud session: connect, observe_enrollment, register,
 //! about, publish_certificate_material, runtime.watch, prepare, build, preview, run,
 //! preview_namespace_removal, remove_volumes, Data Loss for Machine, Namespace, and
-//! Cluster destroy, remove_machine, request and inspect a Machine Upgrade,
-//! destroy_namespace, destroy_cluster, and close.
+//! Cluster destroy, remove_machine, drain_machine, request and inspect a Machine
+//! Upgrade, destroy_namespace, destroy_cluster, and close.
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -626,6 +626,35 @@ impl Session {
             crate::cluster::Remover::Cloud,
         ))
         .await
+    }
+
+    /// Drain `machine` within `scope`: turn its services role off, retire its chosen
+    /// Globals there, and move each chosen replicated Service off it, one at a time and
+    /// start-first.
+    ///
+    /// Closing the session ends the Drain at its next safe point and still resolves: a
+    /// move in flight finishes or removes its new Container again, and the Services not
+    /// reached read `not_attempted`. That is why this is not wrapped in `until_closed`,
+    /// which would drop the work mid-move and lose the report.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] before anything moved: the session is closed,
+    /// `machine` is not a Machine Target or not visible (`not_found`, `ambiguous`), the
+    /// services role can't be turned off or observed off within 30 s, or the Server's
+    /// Services can't be observed.
+    pub async fn drain_machine(
+        &self,
+        machine: &str,
+        scope: &crate::drain::DrainScope,
+    ) -> Result<crate::drain::DrainReport, RpcError> {
+        let target =
+            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let mut client = self.client()?;
+        client
+            .drain(&target, scope, &self.inner.cancel, &mut |_| {})
+            .await
+            .map_err(RpcError::from)
     }
 
     /// Take `machine` out of the Cluster without resetting it: it keeps its state and

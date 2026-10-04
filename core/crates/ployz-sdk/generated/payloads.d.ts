@@ -1156,6 +1156,37 @@ service: ServiceName | null, };
 
 export type DomainsView = { environment: EnvironmentSummary, domains: Array<DomainRow>, };
 
+export type DrainReport = {
+/**
+ * The drained Server's record as selected, before this Drain changed its role.
+ */
+server: Machine,
+/**
+ * Whether this Drain turned the services role off or found it off.
+ */
+services_role: ServicesRole,
+/**
+ * Each chosen Service and what the Drain did with it.
+ */
+services: Array<ServiceDrain>,
+/**
+ * Why the Drain ended before handling every Service.
+ */
+stopped: DrainStop | null,
+/**
+ * What still runs on the Server after the Drain.
+ */
+remaining: Remaining,
+/**
+ * Every chosen Service left the Server, the Drain ran to its end, and what remains
+ * was observed.
+ */
+complete: boolean, };
+
+export type DrainScope = { "scope": "every_namespace" } | { "scope": "owned", namespaces: Array<Namespace>, };
+
+export type DrainStop = { "kind": "cancelled" } | { "kind": "entry_unreachable", detail: string, };
+
 export type Edit = {
 /**
  * The Environment to edit.
@@ -1674,6 +1705,8 @@ rtt: RttStatistics | null, };
 
 export type MachinePath = string;
 
+export type MachineRef = { id: MachineId, name: MachineName, };
+
 export type MachineRelease = string;
 
 export type MachineRuntime = { daemon_version: string, docker_version: string, hostname: string, architecture: string, os_pretty_name: string, kernel_version: string,
@@ -1857,6 +1890,10 @@ service: ServiceName,
  * The absolute path in its containers.
  */
 path: string, };
+
+export type Move = { from: MachineRef, to: MachineRef, };
+
+export type MoveFailure = { "stage": "no_destination", from: MachineRef, detail: string, } | { "stage": "source_too_old", from: MachineRef, } | { "stage": "read_image", from: MachineRef, to: MachineRef, detail: string, } | { "stage": "copy_image", from: MachineRef, to: MachineRef, detail: string, } | { "stage": "not_serving", from: MachineRef, to: MachineRef, detail: string, replacement_removed: boolean, } | { "stage": "old_not_removed", from: MachineRef, to: MachineRef, detail: string, old_stopped: boolean, } | { "stage": "cancelled", from: MachineRef, to: MachineRef, replacement_removed: boolean, } | { "stage": "refused", reason: StayReason, };
 
 export type NamedRow = {
 /**
@@ -2379,6 +2416,17 @@ export type RegistryAuth = { username?: string,
  */
 password: string, };
 
+export type Remaining = { "kind": "observed",
+/**
+ * Every Service still with a Container there, reserved and unchosen Namespaces
+ * included.
+ */
+services: Array<QualifiedService>,
+/**
+ * Those of `services` in a user Namespace the Drain's scope left alone.
+ */
+unchosen: Array<QualifiedService>, } | { "kind": "unobserved", error: string, };
+
 export type Removal = { id: DeploymentId, environment: EnvironmentRef,
 /**
  * As [`Deploy::version`].
@@ -2731,6 +2779,12 @@ condition: DependencyCondition, };
 
 export type ServiceDeployMount = { volumeResourceId: string, volumeName: string, mountPath: string, };
 
+export type ServiceDrain = {
+/**
+ * The Service, by Namespace and name.
+ */
+service: QualifiedService, } & ({ "result": "moved", moves: Array<Move>, } | { "result": "nothing_to_move" } | { "result": "failed", moves: Array<Move>, failure: MoveFailure, } | { "result": "stays", reason: StayReason, } | { "result": "retired" } | { "result": "not_retired", error: string, } | { "result": "interrupted", moves: Array<Move>, } | { "result": "not_attempted" });
+
 export type ServiceEnvValue = { "kind": "literal", value: string, parts?: Array<ValuePart>, } | { "kind": "secret", variableId?: string, encryptedValue?: EncryptedSecretValue, fingerprint: string, interpolated?: boolean, };
 
 export type ServiceGitAccess = { "type": "public" } | { "type": "github-installation", installationId: number, };
@@ -2926,6 +2980,8 @@ export type ServicesQuery = {
  */
 environment: EnvironmentRef, };
 
+export type ServicesRole = "turned_off" | "already_off";
+
 export type ServicesView = {
 /**
  * The Environment, at the revision read.
@@ -3061,6 +3117,8 @@ reason: string, };
 export type SourceKind = "empty" | "uploaded" | "git" | "image";
 
 export type Start = { deployment: DeploymentId, };
+
+export type StayReason = { "kind": "unobserved", server: MachineRef, } | { "kind": "mid_rollout" } | { "kind": "global" } | { "kind": "bind_mount", server: MachineRef, } | { "kind": "volume", server: MachineRef, } | { "kind": "no_destination", detail: string, };
 
 export type StopAttempt<E> = { "type": "stopped" } | { "type": "failed", error: E, };
 

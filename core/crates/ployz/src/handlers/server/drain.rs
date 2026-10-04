@@ -1,110 +1,46 @@
-//! `ployz server drain`: turn a Server's services role off, retire its user Globals, then
-//! converge every replicated user Service with a Container on it.
+//! `ployz server drain`: the CLI's face on [`crate::drain`]. It reads the owned Namespaces
+//! from its Config Store, streams a line per step, and prints the report as `--json`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use clap::ArgMatches;
-use ployz_core::{
-    EnvironmentValues, MachineName, MachineTarget, MachineUpdate, Namespace, QualifiedService,
-    UpdateMachineRequest, op,
-};
+use ployz_core::{MachineName, MachineTarget, RpcError};
 use ployz_store::NamespacesQuery;
-use serde::Serialize;
-use serde_json::json;
+use serde_json::Value;
 
-use super::remove::{replicated_services_on, select_machine, services_on};
-use super::{server_json, target, wait_for_role};
-use crate::connect::{Client, TARGET_RPC_TIMEOUT};
-use crate::deploy::{Convergence, converge};
-use crate::global_catch_up::catch_up_globals;
+use super::target;
+use crate::drain::{
+    DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Remaining, ServiceDrain,
+    ServicesRole,
+};
 use crate::handlers::{Error, leaf_matches, store, with_client};
 use crate::output::{self, say};
 
 const NOTHING_MOVES_BACK: &str = "Turning the services role back on does not move anything back.";
 
-#[derive(Serialize)]
-struct ServiceReport {
-    service: QualifiedService,
-    #[serde(flatten)]
-    outcome: Outcome,
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-enum Outcome {
-    Replicated(Convergence),
-    Global(Retirement),
-}
-
-/// What Global slot convergence did for a Global on the drained Server.
-#[derive(Serialize)]
-#[serde(tag = "result", rename_all = "snake_case")]
-enum Retirement {
-    Retired,
-    Failed { error: String },
-}
-
-impl Outcome {
-    /// Everything this Service had on the Server is gone from it.
-    fn complete(&self) -> bool {
-        matches!(
-            self,
-            Self::Replicated(Convergence::Moved { failed: None, .. })
-                | Self::Global(Retirement::Retired)
-        )
-    }
-}
-
 pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let selector = target(matches, "server")?.to_owned();
+    let target = MachineTarget::parse(target(matches, "server")?)?;
     // Store reads block on their own runtime, so they run before the Cluster's.
-    let owned = owned_namespaces(root)?;
+    let scope = scope(root)?;
     with_client(root, |client| {
         Box::pin(async move {
-            let machines = client.machines().await?;
-            let selected = select_machine(&machines, &selector)?;
-            if selected.accepts_services {
-                cordon(client, &selected.id).await?;
-                say!("Server {} no longer accepts Services.", selected.name);
-            } else {
-                say!("Server {} already accepts no Services.", selected.name);
-            }
-            let (services, globals) = movable(client, &selected, owned.as_ref()).await?;
-            let mut reports = Vec::new();
-            if !globals.is_empty() {
-                let retired = catch_up_globals(client, &selected).await;
-                let still = remaining(client, &selected).await?;
-                for service in globals {
-                    let outcome = Outcome::Global(match (&retired, still.contains(&service)) {
-                        (_, false) => Retirement::Retired,
-                        (Err(error), true) => Retirement::Failed {
-                            error: error.to_string(),
-                        },
-                        (Ok(()), true) => Retirement::Failed {
-                            error: format!("still running on {}", selected.name),
-                        },
-                    });
-                    say!("{}", line(&service, &outcome, &selected.name));
-                    reports.push(ServiceReport { service, outcome });
-                }
-            }
             let cancellation = crate::cancellation::on_ctrl_c();
-            for service in services {
-                let outcome = Outcome::Replicated(converge(client, &service, &cancellation).await?);
-                say!("{}", line(&service, &outcome, &selected.name));
-                reports.push(ServiceReport { service, outcome });
+            let report = client
+                .drain(&target, &scope, &cancellation, &mut |step| {
+                    say!("{}", step_line(step));
+                })
+                .await
+                .map_err(refusal)?;
+            for line in closing_lines(&report) {
+                say!("{line}");
             }
-            let remaining = remaining(client, &selected).await?;
-            say!("{}", remaining_line(&selected.name, &remaining));
-            say!("{NOTHING_MOVES_BACK}");
-            output::emit(&json!({
-                "server": server_json(&selected),
-                "services": reports,
-                "remaining": remaining,
-                "note": NOTHING_MOVES_BACK,
-            }))?;
-            if !reports.iter().all(|report| report.outcome.complete()) {
+            let mut json = serde_json::to_value(&report).expect("a Drain report serializes");
+            if let Value::Object(fields) = &mut json {
+                fields.insert("note".into(), NOTHING_MOVES_BACK.into());
+            }
+            output::emit(&json)?;
+            if !report.complete() {
                 return Err(Error::partial());
             }
             Ok(())
@@ -114,10 +50,10 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
 
 /// Namespaces some Project owns, when a Config Store is reachable. Standalone Clusters
 /// have none, so every user Namespace counts there.
-fn owned_namespaces(root: &ArgMatches) -> Result<Option<BTreeSet<Namespace>>, Error> {
+fn scope(root: &ArgMatches) -> Result<DrainScope, Error> {
     let matches = leaf_matches(root);
     let Some(store) = store::reachable(root)? else {
-        return Ok(None);
+        return Ok(DrainScope::EveryNamespace);
     };
     // A Cloud Store owns the signed-in Organization's Namespaces; another Cluster
     // reached through --context or --connect is not that Organization's.
@@ -125,193 +61,99 @@ fn owned_namespaces(root: &ArgMatches) -> Result<Option<BTreeSet<Namespace>>, Er
         && (matches.get_one::<String>("context").is_some()
             || matches.get_one::<String>("connect").is_some())
     {
-        return Ok(None);
+        return Ok(DrainScope::EveryNamespace);
     }
-    Ok(Some(
-        store
+    Ok(DrainScope::Owned {
+        namespaces: store
             .read(&NamespacesQuery {})?
             .namespaces
             .into_iter()
             .map(|owned| owned.namespace)
             .collect(),
-    ))
+    })
 }
 
-async fn cordon(client: &mut Client, id: &ployz_core::MachineId) -> Result<(), Error> {
-    client
-        .invoke::<op::UpdateMachine>(
-            UpdateMachineRequest {
-                update: MachineUpdate {
-                    accepts_services: Some(false),
-                    ..MachineUpdate::default()
-                },
-            },
-            &MachineTarget::from(id),
-            Some(TARGET_RPC_TIMEOUT),
-        )
-        .await?;
-    wait_for_role(client, id, "services", |machine| !machine.accepts_services).await
-}
-
-/// Replicated, then Global, user Services with a Container on the Server.
-async fn movable(
-    client: &mut Client,
-    selected: &ployz_core::Machine,
-    owned: Option<&BTreeSet<Namespace>>,
-) -> Result<(Vec<QualifiedService>, Vec<QualifiedService>), Error> {
-    let machines = client.machines().await?;
-    let live = client
-        .live_services_from(&machines, EnvironmentValues::Redacted)
-        .await?;
-    observed(&live, selected)?;
-    let replicated = replicated_services_on(&selected.id, &live);
-    Ok(services_on(&selected.id, &live)
-        .into_iter()
-        .filter(|service| {
-            !service.namespace.is_reserved()
-                && owned.is_none_or(|owned| owned.contains(&service.namespace))
-        })
-        .partition(|service| replicated.contains(service)))
-}
-
-async fn remaining(
-    client: &mut Client,
-    selected: &ployz_core::Machine,
-) -> Result<Vec<QualifiedService>, Error> {
-    let machines = client.machines().await?;
-    let live = client
-        .live_services_from(&machines, EnvironmentValues::Redacted)
-        .await?;
-    observed(&live, selected)?;
-    Ok(services_on(&selected.id, &live))
-}
-
-fn observed(
-    live: &ployz_core::LiveServices<ployz_core::RpcError>,
-    selected: &ployz_core::Machine,
-) -> Result<(), Error> {
-    if let Some(failure) = live
-        .containers
-        .failures
-        .iter()
-        .find(|failure| failure.machine_id == selected.id)
-    {
-        return Err(Error::unavailable(format!(
-            "Cannot observe Services on Server {}: {}",
-            selected.name, failure.error.message
-        )));
+fn refusal(error: DrainError) -> Error {
+    match error {
+        // The CLI reports a connection failure with its own words.
+        DrainError::Connect(error) => error.into(),
+        error @ (DrainError::Refused(_)
+        | DrainError::RoleNotObserved
+        | DrainError::Unobservable { .. }
+        | DrainError::Cancelled) => RpcError::from(error).into(),
     }
-    if live.containers.omissions.contains(&selected.id) {
-        return Err(Error::unavailable(format!(
-            "Cannot observe Services on Server {}: no terminal response",
-            selected.name
-        )));
-    }
-    Ok(())
 }
 
-fn line(service: &QualifiedService, outcome: &Outcome, server: &MachineName) -> String {
-    let convergence = match outcome {
-        Outcome::Global(Retirement::Retired) => {
-            return format!("{service}: global, retired on {server}");
-        }
-        Outcome::Global(Retirement::Failed { error }) => {
+fn step_line(step: DrainStep<'_>) -> String {
+    match step {
+        DrainStep::ServicesOff {
+            server,
+            role: ServicesRole::TurnedOff,
+        } => format!("Server {} no longer accepts Services.", server.name),
+        DrainStep::ServicesOff {
+            server,
+            role: ServicesRole::AlreadyOff,
+        } => format!("Server {} already accepts no Services.", server.name),
+        DrainStep::Service { server, service } => line(service, &server.name),
+    }
+}
+
+fn line(entry: &ServiceDrain, server: &MachineName) -> String {
+    let service = &entry.service;
+    let (moves, ending) = match &entry.outcome {
+        DrainOutcome::Retired => return format!("{service}: global, retired on {server}"),
+        DrainOutcome::NotRetired { error } => {
             return format!("{service}: global, failed to retire on {server}: {error}");
         }
-        Outcome::Replicated(convergence) => convergence,
+        DrainOutcome::Stays { reason } => return format!("{service}: stays: {reason}"),
+        DrainOutcome::NothingToMove => return format!("{service}: nothing to move"),
+        DrainOutcome::NotAttempted => return format!("{service}: not attempted"),
+        DrainOutcome::Moved { moves } => (moves, None),
+        DrainOutcome::Failed { moves, failure } => (moves, Some(format!("failed: {failure}"))),
+        DrainOutcome::Interrupted { moves } => (moves, Some("interrupted".to_owned())),
     };
-    match convergence {
-        Convergence::Stays { reason } => format!("{service}: stays: {reason}"),
-        Convergence::Moved {
-            moved,
-            failed: None,
-        } if moved.is_empty() => format!("{service}: nothing to move"),
-        Convergence::Moved { moved, failed } => {
-            let mut counts = BTreeMap::<(&MachineName, &MachineName), usize>::new();
-            for step in moved {
-                *counts.entry((&step.from, &step.to)).or_default() += 1;
-            }
-            let moves = counts
-                .iter()
-                .map(|((from, to), count)| format!("{count} from {from} to {to}"))
-                .collect::<Vec<_>>();
-            let mut parts = Vec::new();
-            if !moves.is_empty() {
-                parts.push(format!("moved {}", moves.join(", ")));
-            }
-            if let Some(error) = failed {
-                parts.push(format!("failed: {error}"));
-            }
-            format!("{service}: {}", parts.join("; "))
-        }
+    let mut counts = BTreeMap::<(&MachineName, &MachineName), usize>::new();
+    for step in moves {
+        *counts.entry((&step.from.name, &step.to.name)).or_default() += 1;
     }
+    let mut parts = Vec::new();
+    if !counts.is_empty() {
+        let routes = counts
+            .iter()
+            .map(|((from, to), count)| format!("{count} from {from} to {to}"))
+            .collect::<Vec<_>>();
+        parts.push(format!("moved {}", routes.join(", ")));
+    }
+    parts.extend(ending);
+    format!("{service}: {}", parts.join("; "))
 }
 
-fn remaining_line(server: &MachineName, remaining: &[QualifiedService]) -> String {
-    if remaining.is_empty() {
-        return format!("Nothing runs on {server} now.");
+fn closing_lines(report: &DrainReport) -> Vec<String> {
+    let server = &report.server.name;
+    let mut lines = Vec::new();
+    if let Some(stop) = &report.stopped {
+        lines.push(format!("Drain stopped: {stop}"));
     }
-    format!(
-        "Still on {server}: {}",
-        remaining
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
+    lines.push(match &report.remaining {
+        Remaining::Observed { services, .. } if services.is_empty() => {
+            format!("Nothing runs on {server} now.")
+        }
+        Remaining::Observed { services, .. } => format!(
+            "Still on {server}: {}",
+            services
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Remaining::Unobserved { error } => {
+            format!("Cannot observe Services on Server {server}: {error}")
+        }
+    });
+    lines.push(NOTHING_MOVES_BACK.to_owned());
+    lines
 }
 
 #[cfg(test)]
-mod tests {
-    use ployz_core::{MachineName, QualifiedService};
-
-    use super::{Convergence, Outcome, Retirement, line, remaining_line};
-    use crate::deploy::Move;
-
-    #[test]
-    fn the_report_counts_moves_by_route_then_names_what_remains() {
-        let name = |value: &str| MachineName::parse(value).unwrap();
-        let web2 = name("web-2");
-        let service = QualifiedService::parse("app/web").unwrap();
-        let step = |to: &str| Move {
-            from: name("web-2"),
-            to: name(to),
-        };
-        let moved = Outcome::Replicated(Convergence::Moved {
-            moved: vec![step("web-1"), step("web-3"), step("web-1")],
-            failed: Some("boom".into()),
-        });
-        assert_eq!(
-            line(&service, &moved, &web2),
-            "app/web: moved 2 from web-2 to web-1, 1 from web-2 to web-3; failed: boom"
-        );
-        let idle = Outcome::Replicated(Convergence::Moved {
-            moved: Vec::new(),
-            failed: None,
-        });
-        assert_eq!(line(&service, &idle, &web2), "app/web: nothing to move");
-        let stays = Outcome::Replicated(Convergence::Stays {
-            reason: "mid-rollout: deploy it first".into(),
-        });
-        assert_eq!(
-            line(&service, &stays, &web2),
-            "app/web: stays: mid-rollout: deploy it first"
-        );
-        let retired = Outcome::Global(Retirement::Retired);
-        assert_eq!(
-            line(&service, &retired, &web2),
-            "app/web: global, retired on web-2"
-        );
-        // Anything left on the Server makes the drain partial.
-        assert!(idle.complete() && retired.complete());
-        assert!(!moved.complete() && !stays.complete());
-        assert_eq!(
-            remaining_line(&name("web-2"), &[service]),
-            "Still on web-2: app/web"
-        );
-        assert_eq!(
-            remaining_line(&name("web-2"), &[]),
-            "Nothing runs on web-2 now."
-        );
-    }
-}
+#[path = "drain_tests.rs"]
+mod tests;

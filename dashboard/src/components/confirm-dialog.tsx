@@ -27,6 +27,7 @@ export function ConfirmDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: ReactNode;
+  /** One description, announced whole: it may hold blocks, like a list, as well as a sentence. */
   description?: ReactNode;
   actionLabel?: string;
   cancelLabel?: string;
@@ -52,7 +53,7 @@ export function ConfirmDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           {description ? (
-            <AlertDialogDescription>{description}</AlertDialogDescription>
+            <AlertDialogDescription render={<div />}>{description}</AlertDialogDescription>
           ) : null}
         </AlertDialogHeader>
         <AlertDialogFooter>
