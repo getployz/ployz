@@ -13,7 +13,9 @@ use ployz_core::{
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
 
-const SERVE: &str = "while true; do printf 'HTTP/1.1 200 OK\\r\\nContent-Length: 3\\r\\n\\r\\nok\\n' | nc -l -p 8080; done";
+// Reads the request before answering: a reply sent before the request arrives makes Caddy
+// drop the connection and count a failure against the upstream.
+const SERVE: &str = "nc -lk -p 8080 -e sh -c 'while read -r l && [ ${#l} -gt 1 ]; do :; done; printf \"HTTP/1.1 200 OK\\r\\nX-Container: $(hostname)\\r\\nContent-Length: 3\\r\\n\\r\\nok\\n\"'";
 
 /// Draining web-2 moves a hooked replicated Service and a single-Container Service onto
 /// web-1 without a serving gap, without rerunning the hook, on the same images; a rerun,
@@ -22,7 +24,7 @@ const SERVE: &str = "while true; do printf 'HTTP/1.1 200 OK\\r\\nContent-Length:
 #[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn drain_moves_containers_off_without_a_gap_or_a_deploy() {
     let plan = ClusterPlan::new(&format!("l3-drain-{}", process::id()), 2).unwrap();
-    let probe_machine = plan.machine_name(0);
+    let cluster_name = plan.name().to_owned();
     let cluster = Cluster::create(plan).unwrap();
     let [web1, web2] = cluster.initialize_two().await.unwrap();
     let direct = cluster.api_address(0).unwrap();
@@ -71,31 +73,7 @@ async fn drain_moves_containers_off_without_a_gap_or_a_deploy() {
     assert!(!hooks.is_empty(), "the deploy ran its pre-deploy hook");
     let images = image_ids(&mut client, &before).await;
 
-    let (done, finished) = tokio::sync::watch::channel(false);
-    let probe = tokio::task::spawn_blocking({
-        move || {
-            let mut probes = 0;
-            while !*finished.borrow() {
-                for host in ["web.test", "solo.test"] {
-                    let output = Command::new("docker")
-                        .args(["exec", &probe_machine, "curl", "-fsS", "-H"])
-                        .arg(format!("Host: {host}"))
-                        .arg("http://127.0.0.1")
-                        .output()
-                        .unwrap();
-                    assert!(
-                        output.status.success(),
-                        "{host} stopped serving during the drain: {}",
-                        String::from_utf8_lossy(&output.stderr)
-                    );
-                    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
-                }
-                probes += 1;
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            probes
-        }
-    });
+    cluster.start_probe(0, &["web.test", "solo.test"]).unwrap();
     let drained = tokio::task::spawn_blocking({
         let direct = direct.clone();
         let server = web2.name.to_string();
@@ -103,8 +81,28 @@ async fn drain_moves_containers_off_without_a_gap_or_a_deploy() {
     })
     .await
     .unwrap();
-    done.send(true).unwrap();
-    assert!(probe.await.unwrap() > 0);
+    let probes = cluster.stop_probe(0).unwrap();
+    assert!(!probes.is_empty());
+    if let Some(failed) = probes
+        .iter()
+        .find(|line| line.split(' ').nth(3) != Some("200"))
+    {
+        let timeline = cluster.timeline(&probes).unwrap();
+        let path = std::env::temp_dir().join(format!("{cluster_name}-timeline.log"));
+        std::fs::write(&path, timeline.join("\n")).unwrap();
+        let at = timeline.iter().position(|line| line == failed).unwrap_or(0);
+        let window = timeline
+            .iter()
+            .skip(at.saturating_sub(150))
+            .take(200)
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        panic!(
+            "{failed} failed during the drain; full timeline in {}:\n{}",
+            path.display(),
+            window.join("\n")
+        );
+    }
     assert!(
         drained.contains(&format!(
             "app/web: moved 1 from {} to {}",

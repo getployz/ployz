@@ -26,6 +26,8 @@ use crate::{
 pub const CONFIG_FILE: &str = "Caddyfile";
 const CONTAINER_CERTS_DIR: &str = "/config/caddy/certs";
 const ADMIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// Set to any value to turn on Caddy's debug log: every upstream selection, failure and retry.
+pub(crate) const DEBUG_ENV: &str = "PLOYZ_INGRESS_DEBUG";
 
 /// Failure while rendering or applying Caddy configuration.
 #[derive(Debug, Error)]
@@ -149,6 +151,7 @@ pub(crate) async fn reconcile<A: CaddyAdmin>(
 ) -> Result<(), Error> {
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     let caddyfile = render_caddyfile(projection, &timestamp);
+    tracing::info!(routes = %route_summary(projection), "ingress config");
     if let Some(admin) = admin {
         let json = admin.adapt(&caddyfile).await?;
         admin.load(&json).await?;
@@ -177,7 +180,12 @@ fn render_caddyfile(projection: &IngressProjection, timestamp: &str) -> String {
 \n"
     );
     // Caddy never issues certificates. The daemon pins material when it has any.
-    output.push_str("{\n\tauto_https off\n}\n\n");
+    let debug = if std::env::var_os(DEBUG_ENV).is_some() {
+        "\tdebug\n"
+    } else {
+        ""
+    };
+    let _ = write!(output, "{{\n{debug}\tauto_https off\n}}\n\n");
     let ingress_verify = verify_handle(INGRESS_VERIFY_PATH, local_machine);
     let hostname_verify = verify_handle(HOSTNAME_VERIFY_PATH, local_machine);
     let _ = write!(
@@ -199,8 +207,10 @@ https:// {{\n\
 (common_proxy) {{\n\
 \t# Retry failed requests up to lb_retries times against other available upstreams.\n\
 \tlb_retries 3\n\
-\t# Upstreams are marked unhealthy for fail_duration after a failed request (passive health checking).\n\
+\t# Passive health checking: an upstream failing max_fails requests within fail_duration is\n\
+\t# skipped until they expire, so one stray error never ejects a Service's only upstream.\n\
 \tfail_duration 30s\n\
+\tmax_fails 2\n\
 }}\n"
     );
     if projection.sites.iter().any(|site| {
@@ -236,6 +246,25 @@ https:// {{\n\
     }
     write_certificate_errors(&mut output, &projection.sites);
     output
+}
+
+/// Each routed hostname with the upstreams it proxies to, e.g. `http://web.test=[10.0.0.1:8080]`.
+fn route_summary(projection: &IngressProjection) -> String {
+    let mut summary = String::new();
+    for site in &projection.sites {
+        for (protocol, scheme) in [(HttpProtocol::Http, "http"), (HttpProtocol::Https, "https")] {
+            let Some(endpoints) = site.route(protocol) else {
+                continue;
+            };
+            let upstreams = endpoints
+                .iter()
+                .map(|endpoint| format!("{}:{}", endpoint.address.0, endpoint.port))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let _ = write!(summary, " {scheme}://{}=[{upstreams}]", site.hostname);
+        }
+    }
+    summary
 }
 
 /// A site handle that answers `path` with this Machine's id.
@@ -289,7 +318,8 @@ fn write_site(
         "\trespond \"Bad Gateway\" 502\n".to_owned()
     } else {
         format!(
-            "\treverse_proxy {} {{\n\t\timport common_proxy\n\t}}\n",
+            "\treverse_proxy {} {{\n\t\timport common_proxy\n\t}}\n\
+\tlog_append upstream {{http.reverse_proxy.upstream.hostport}}\n",
             endpoints
                 .iter()
                 .map(|endpoint| format!("{}:{}", endpoint.address.0, endpoint.port))

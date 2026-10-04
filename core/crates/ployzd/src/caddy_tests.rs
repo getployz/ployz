@@ -108,6 +108,8 @@ fn automatic_sites_render_routes_and_health_endpoint() {
     assert!(caddyfile.contains("respond \"Not Found\" 404"));
     assert!(caddyfile.contains("lb_retries 3"));
     assert!(caddyfile.contains("fail_duration 30s"));
+    assert!(caddyfile.contains("max_fails 2"));
+    assert!(caddyfile.contains("log_append upstream {http.reverse_proxy.upstream.hostport}"));
     // An unknown hostname a pinned wildcard covers gets 404 over HTTPS too, not an empty 200.
     assert_eq!(
         automatic_site_block(&caddyfile, "https://"),

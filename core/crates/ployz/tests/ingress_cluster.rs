@@ -51,7 +51,7 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
         "mode": { "mode": "replicated", "replicas": 3 },
         "container": {
             "image": "alpine:3.23.3",
-            "command": ["sh", "-c", "while true; do printf 'HTTP/1.1 200 OK\\r\\nContent-Length: 3\\r\\n\\r\\nok\\n' | nc -l -p 8080; done"],
+            "command": ["sh", "-c", "nc -lk -p 8080 -e sh -c 'while read -r l && [ ${#l} -gt 1 ]; do :; done; printf \"HTTP/1.1 200 OK\\r\\nContent-Length: 3\\r\\n\\r\\nok\\n\"'"],
             "pull_policy": "missing"
         },
         "ports": [{
@@ -159,7 +159,7 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
         "mode": { "mode": "replicated", "replicas": 1 },
         "container": {
             "image": "alpine:3.23.3",
-            "command": ["sh", "-c", "while true; do printf 'HTTP/1.1 200 OK\\r\\nContent-Length: 3\\r\\n\\r\\nok\\n' | nc -l -p 8080; done"],
+            "command": ["sh", "-c", "nc -lk -p 8080 -e sh -c 'while read -r l && [ ${#l} -gt 1 ]; do :; done; printf \"HTTP/1.1 200 OK\\r\\nContent-Length: 3\\r\\n\\r\\nok\\n\"'"],
             "pull_policy": "missing"
         },
         "ports": [{
@@ -252,7 +252,7 @@ async fn turning_ingress_off_keeps_the_proxy_serving() {
         "mode": { "mode": "replicated", "replicas": 1 },
         "container": {
             "image": "alpine:3.23.3",
-            "command": ["sh", "-c", "while true; do printf 'HTTP/1.1 200 OK\\r\\nContent-Length: 3\\r\\n\\r\\nok\\n' | nc -l -p 8080; done"],
+            "command": ["sh", "-c", "nc -lk -p 8080 -e sh -c 'while read -r l && [ ${#l} -gt 1 ]; do :; done; printf \"HTTP/1.1 200 OK\\r\\nContent-Length: 3\\r\\n\\r\\nok\\n\"'"],
             "pull_policy": "missing"
         },
         "ports": [{
@@ -420,7 +420,7 @@ async fn assert_start_first_gap(
             "mode": { "mode": "replicated", "replicas": 1 },
             "container": {
                 "image": "alpine:3.23.3",
-                "command": ["sh", "-c", format!("while true; do printf 'HTTP/1.1 200 OK\\r\\nContent-Length: {}\\r\\n\\r\\n{}\\n' | nc -l -p 8081; done", response.len() + 1, response)],
+                "command": ["sh", "-c", format!("nc -lk -p 8081 -e sh -c 'while read -r l && [ ${{#l}} -gt 1 ]; do :; done; printf \"HTTP/1.1 200 OK\\r\\nContent-Length: {}\\r\\n\\r\\n{}\\n\"'", response.len() + 1, response)],
                 "pull_policy": "missing"
             },
             "placement": { "machines": [machine.id] },

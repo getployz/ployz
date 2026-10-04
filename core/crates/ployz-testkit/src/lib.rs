@@ -70,10 +70,10 @@ impl ClusterPlan {
             .map(|_| {
                 Ok(MachinePlan {
                     api_port: reserve_loopback_port()?,
-                    environment: BTreeMap::from([(
-                        "PLOYZ_ACME_DIRECTORY".to_owned(),
-                        String::new(),
-                    )]),
+                    environment: BTreeMap::from([
+                        ("PLOYZ_ACME_DIRECTORY".to_owned(), String::new()),
+                        ("PLOYZ_INGRESS_DEBUG".to_owned(), "1".to_owned()),
+                    ]),
                     daemon_args: Vec::new(),
                 })
             })
@@ -731,6 +731,96 @@ impl Cluster {
         }
     }
 
+    /// Request each host through Machine `index`'s Ingress Proxy in a loop until `stop_probe`,
+    /// logging `<time> probe <host>#<n> <status> <X-Container>` per request. The request
+    /// carries `X-Request-Id: <host>#<n>`, so its Caddy log lines can be found.
+    pub fn start_probe(&self, index: usize, hosts: &[&str]) -> Result<(), TestkitError> {
+        let script = format!(
+            "rm -f /tmp/probe.log /tmp/probe.stop /tmp/probe.done; n=0
+while [ ! -e /tmp/probe.stop ]; do
+  n=$((n+1))
+  for h in {}; do
+    t=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
+    r=$(curl -sS -o /dev/null -w '%{{http_code}} %header{{x-container}}' -H \"Host: $h\" -H \"X-Request-Id: $h#$n\" http://127.0.0.1 2>&1 | tr '\\n' ' ')
+    echo \"$t probe $h#$n $r\" >>/tmp/probe.log
+  done
+  sleep 0.025
+done
+touch /tmp/probe.done",
+            hosts.join(" ")
+        );
+        docker([
+            "exec",
+            "--detach",
+            &self.container_name(index)?,
+            "sh",
+            "-c",
+            &script,
+        ])
+    }
+
+    /// Stop the `start_probe` loop on Machine `index` and return its lines.
+    pub fn stop_probe(&self, index: usize) -> Result<Vec<String>, TestkitError> {
+        let log = self.machine_shell(
+            index,
+            "touch /tmp/probe.stop; while [ ! -e /tmp/probe.done ]; do sleep 0.1; done; cat /tmp/probe.log",
+        )?;
+        Ok(log.lines().map(str::to_owned).collect())
+    }
+
+    /// Every Machine's ployzd log, Ingress Proxy (Caddy) log and Docker container events, plus
+    /// `extra` lines that start with an RFC 3339 time, merged into one time-ordered timeline.
+    pub fn timeline(&self, extra: &[String]) -> Result<Vec<String>, TestkitError> {
+        let mut lines = extra
+            .iter()
+            .filter_map(|line| line.split_once(' '))
+            .map(|(time, rest)| format!("{} {rest}", fixed_width_time(time)))
+            .collect::<Vec<_>>();
+        for index in 0..self.plan.machines.len() {
+            let machine = self.plan.machine_name(index);
+            let logs = docker_output(["logs", "--timestamps", machine.as_str()])?;
+            let caddy = self.machine_shell(
+                index,
+                "for c in $(docker ps -a --format '{{.ID}} {{.Image}}' | awk '$2 ~ /caddy/ {print $1}'); do docker logs --timestamps $c 2>&1; done",
+            )?;
+            let events = self.machine_shell(
+                index,
+                "docker events --since 0 --until $(date +%s) --filter type=container --format '{{.TimeNano}} {{.Action}} {{.Actor.Attributes.name}} {{.Actor.ID}}'",
+            )?;
+            let sources = [
+                ("ployzd", String::from_utf8_lossy(&logs.stdout).into_owned()),
+                ("ployzd", String::from_utf8_lossy(&logs.stderr).into_owned()),
+                ("caddy", caddy),
+            ];
+            for (source, text) in &sources {
+                lines.extend(text.lines().filter_map(|line| {
+                    let (time, rest) = line.split_once(' ')?;
+                    Some(format!(
+                        "{} {machine} {source} {rest}",
+                        fixed_width_time(time)
+                    ))
+                }));
+            }
+            lines.extend(events.lines().filter_map(|line| {
+                let (nanos, rest) = line.split_once(' ')?;
+                let time =
+                    time::OffsetDateTime::from_unix_timestamp_nanos(nanos.parse().ok()?).ok()?;
+                Some(format!(
+                    "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:09}Z {machine} docker {rest}",
+                    time.year(),
+                    u8::from(time.month()),
+                    time.day(),
+                    time.hour(),
+                    time.minute(),
+                    time.second(),
+                    time.nanosecond()
+                ))
+            }));
+        }
+        lines.sort();
+        Ok(lines)
+    }
+
     pub fn container_network_shell(
         &self,
         machine_index: usize,
@@ -925,6 +1015,13 @@ where
         .args(args)
         .output()
         .map_err(TestkitError::DockerIo)
+}
+
+/// Pad an RFC 3339 time's fraction to nine digits so times sort as strings.
+fn fixed_width_time(time: &str) -> String {
+    let time = time.trim_end_matches('Z');
+    let (seconds, fraction) = time.split_once('.').unwrap_or((time, ""));
+    format!("{seconds}.{fraction:0<9}Z")
 }
 
 fn command_error(output: Output) -> TestkitError {
