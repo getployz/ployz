@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Effect, Option, Schema } from "effect";
 import { BoxIcon, ChevronRightIcon, TriangleAlertIcon } from "lucide-react";
@@ -86,7 +86,9 @@ function RouteComponent() {
         </Alert>
       ) : null}
       <RunningHere organizationSlug={organizationSlug} server={server} servers={servers} stale={stale} />
-      <ServerUpgradeSection machine={machine} status={server.status} organizationSlug={organizationSlug} />
+      <Suspense fallback={null}>
+        <ServerUpgradeSection machine={machine} status={server.status} organizationSlug={organizationSlug} />
+      </Suspense>
       <ServerBuildsSection machine={machine} organizationSlug={organizationSlug} />
       <RemoveServerSection machine={machine} organizationSlug={organizationSlug} last={servers.length === 1} />
     </DashboardPage>

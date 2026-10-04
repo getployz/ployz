@@ -1,47 +1,13 @@
-import { useEffect, useState } from "react";
-import { toast } from "sonner";
+import { useState } from "react";
 import { CopyButton } from "#/components/copy-button";
 import { Button } from "#/components/ui/button";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/ui/field";
 import type { ServerStatus } from "#/modules/machines/server-status";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { releaseLine, rolloutRunning, serverUpgradeLine, type ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
-import { requestServerUpgradeServerFn } from "#/modules/server-upgrade/server-upgrade.functions";
+import { useNow, useRequestUpgrade, useServerUpgradeSettings } from "#/modules/server-upgrade/server-upgrade.hooks";
 import { useChannelRelease, useServerUpgrades } from "#/modules/server-upgrade/server-upgrade.queries";
 import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
-import { useServerUpgradeSettings } from "./server-upgrades-dialog";
-
-/** How long a click reads as Upgrading before its attempt is recorded; a Busy Server records none. */
-const PENDING_MS = 60_000;
-
-/**
- * A click on Upgrade reads as Upgrading until a newer attempt than `newestAttemptId` is recorded, or for a minute: a
- * Busy Server records none. `from` is the newest attempt ID at the click; undefined when nothing is pending.
- */
-export function usePendingUpgrade(newestAttemptId: string | null) {
-  const [from, setFrom] = useState<string | null | undefined>(undefined);
-  const recorded = from !== undefined && newestAttemptId !== from;
-  useEffect(() => {
-    if (recorded) setFrom(undefined);
-  }, [recorded]);
-  useEffect(() => {
-    if (from === undefined) return;
-    const timer = setTimeout(() => setFrom(undefined), PENDING_MS);
-    return () => clearTimeout(timer);
-  }, [from]);
-  return { from, start: () => setFrom(newestAttemptId), cancel: () => setFrom(undefined) };
-}
-
-/** The clock, ticking while an attempt runs: one reads as unknown once it outlives the observation limit. */
-export function useNow(running: boolean) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!running) return;
-    const timer = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(timer);
-  }, [running]);
-  return now;
-}
 
 /** The Ployz release this Server runs, and its one Upgrade line. */
 export function ServerUpgradeSection({ machine, status, organizationSlug }: {
@@ -51,26 +17,25 @@ export function ServerUpgradeSection({ machine, status, organizationSlug }: {
 }) {
   const version = machine.daemonVersion;
   const upgrades = useServerUpgrades(organizationSlug);
-  const latest = upgrades === undefined ? undefined : upgrades.servers[machine.id] ?? null;
-  const everyLatest = Object.values(upgrades?.servers ?? {});
+  const latest = upgrades.servers[machine.id] ?? null;
+  const everyLatest = Object.values(upgrades.servers);
   const { automatic, channel } = useServerUpgradeSettings(organizationSlug);
   const serverLine = releaseLine(version);
-  const release = useChannelRelease(channel, serverLine, serverLine !== null);
-  const pending = usePendingUpgrade(latest?.attemptId ?? null);
+  const release = useChannelRelease(serverLine === null ? null : { channel, line: serverLine });
+  const { pendingFrom, upgrade } = useRequestUpgrade(organizationSlug, latest?.attemptId ?? null, machine);
   const now = useNow(everyLatest.some((row) => row.outcome === "running"));
 
-  // Nothing is offered before Cloud says what the last attempt did.
-  const line = latest === undefined ? null : serverUpgradeLine({
-    version, status, release, latest, pendingFrom: pending.from, now, automatic, rolloutRunning: rolloutRunning(everyLatest, now),
+  const line = serverUpgradeLine({
+    version,
+    status,
+    // Until the release is read, or when it can't be, nothing new is offered; the latest attempt still shows.
+    release: release.isSuccess ? release.data : null,
+    latest,
+    pendingFrom,
+    now,
+    automatic,
+    rolloutRunning: rolloutRunning(everyLatest, now),
   });
-
-  function upgrade() {
-    pending.start();
-    requestServerUpgradeServerFn({ data: { organizationSlug, machineId: machine.id } }).catch(() => {
-      pending.cancel();
-      toast.error(`Could not upgrade ${machine.name}`);
-    });
-  }
 
   return <ServerUpgradeRow version={version} line={line} onUpgrade={upgrade} />;
 }
@@ -102,7 +67,7 @@ export function ServerUpgradeRow({ version, line, onUpgrade }: {
                   {line.details === null ? null : (
                     <>
                       {" "}
-                      <Button variant="link" size="xs" className="h-auto px-0" onClick={() => setShowDetails(!showDetails)}>
+                      <Button variant="link" size="xs" onClick={() => setShowDetails(!showDetails)}>
                         {showDetails ? "Hide details" : "Show details"}
                       </Button>
                     </>

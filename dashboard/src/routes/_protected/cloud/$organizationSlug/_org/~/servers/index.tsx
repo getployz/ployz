@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { ServerIcon } from "lucide-react";
 import { DashboardPage } from "#/components/dashboard-page";
@@ -34,10 +35,12 @@ function RouteComponent() {
         <div className="ml-auto"><AddServerDialog organizationSlug={organizationSlug} /></div>
       </div>
       {state === "live" && servers.length > 0 ? (
-        <ServersUpgradeLine
-          organizationSlug={organizationSlug}
-          servers={servers.map(({ machine, status }) => ({ name: machine.name, version: machine.daemonVersion, status }))}
-        />
+        <Suspense fallback={null}>
+          <ServersUpgradeLine
+            organizationSlug={organizationSlug}
+            servers={servers.map(({ machine, status }) => ({ name: machine.name, version: machine.daemonVersion, status }))}
+          />
+        </Suspense>
       ) : null}
       {state === "loading" ? (
         <ServersSkeleton />

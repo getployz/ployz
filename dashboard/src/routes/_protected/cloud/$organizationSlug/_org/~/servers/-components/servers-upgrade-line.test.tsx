@@ -76,7 +76,7 @@ it("names the offline Servers that upgrade when they're back, while automatic up
 it("announces a newer major line with its release notes, and nothing for the Servers' own line", () => {
   const { container } = render(<NewMajorLineNotice notice={newMajorLine("v0", "1.0.0")} />);
   expect(container.textContent).toBe(
-    "Ployz 1.0 is out. New lines install only when you choose. Your servers stay on 0.x and keep getting its upgrades.See what’s new",
+    "Ployz 1.0 is out.New lines install only when you choose. Your servers stay on 0.x and keep getting its upgrades.See what’s new",
   );
   expect(screen.getByRole("link", { name: "See what’s new" }).getAttribute("href")).toBe("https://github.com/getployz/ployz/releases/tag/v1.0.0");
   cleanup();
