@@ -8,6 +8,4 @@
 
 # Change workflow
 
-Route work through pstack (`pstack:poteto-mode`) and its playbooks. pstack owns building, review, debugging and design; model choices live in `~/.claude/pstack-models.md`.
-
 Draw a diagram where one picture compresses many words: how systems relate, flows, forks. Show UI with screenshots or prototypes, never ASCII.
