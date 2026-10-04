@@ -1,11 +1,14 @@
 //! Docker Volume plugin removal and lookup endpoints.
 
-use axum::{Json, extract::State};
+use axum::{
+    Json,
+    extract::{State, rejection::JsonRejection},
+};
 use ployzd::VolumePluginStatus;
 use serde::Serialize;
 
 use super::{
-    DATASET_ROOT, DockerVolumeName, ErrorResponse, Result, VolumeRequest, VolumeStorage,
+    DATASET_ROOT, DockerVolumeName, ErrorResponse, HangUp, Result, VolumeRequest, VolumeStorage,
     error_response,
 };
 
@@ -27,14 +30,15 @@ impl VolumeStorage {
         Ok(())
     }
 
-    async fn inspect(&self, name: &DockerVolumeName) -> Result<PluginVolume> {
+    async fn inspect(&self, name: &DockerVolumeName) -> Result<Option<PluginVolume>> {
         let _guard = self.mutation.lock().await;
         let pool = self.one_pool().await?;
         let datasets = self.datasets(&pool).await?;
-        let dataset = Self::dataset(&datasets, &pool, name)?
-            .ok_or_else(|| format!("Provisioned Volume {name} does not exist"))?;
+        let Some(dataset) = Self::dataset(&datasets, &pool, name)? else {
+            return Ok(None);
+        };
         dataset.require_provisioned(name)?;
-        Ok(PluginVolume::new(name, dataset))
+        Ok(Some(PluginVolume::new(name, dataset)))
     }
 
     async fn list(&self) -> Result<Vec<PluginVolume>> {
@@ -86,22 +90,18 @@ pub(super) async fn remove(
 
 pub(super) async fn get(
     State(storage): State<VolumeStorage>,
-    Json(request): Json<VolumeRequest>,
-) -> Json<GetResponse> {
-    let result = match request.name.parse::<DockerVolumeName>() {
-        Ok(name) => storage.inspect(&name).await,
-        Err(error) => Err(error),
+    request: std::result::Result<Json<VolumeRequest>, JsonRejection>,
+) -> std::result::Result<Json<GetResponse>, HangUp> {
+    let Json(request) = request.map_err(|rejection| HangUp(rejection.body_text()))?;
+    let (volume, error) = match request.name.parse::<DockerVolumeName>() {
+        Err(error) => (None, error.to_string()),
+        Ok(name) => match storage.inspect(&name).await {
+            Ok(Some(volume)) => (Some(volume), String::new()),
+            Ok(None) => (None, format!("Provisioned Volume {name} does not exist")),
+            Err(error) => return Err(HangUp(error.to_string())),
+        },
     };
-    match result {
-        Ok(volume) => Json(GetResponse {
-            volume: Some(volume),
-            error: String::new(),
-        }),
-        Err(error) => Json(GetResponse {
-            volume: None,
-            error: error.to_string(),
-        }),
-    }
+    Ok(Json(GetResponse { volume, error }))
 }
 
 pub(super) async fn list(State(storage): State<VolumeStorage>) -> Json<ListResponse> {
