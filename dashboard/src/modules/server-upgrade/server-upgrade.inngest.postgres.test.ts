@@ -554,6 +554,41 @@ describe("roll-out-server-upgrade", () => {
     expect(captured.map(({ event }) => event)).toEqual(["server_upgrade_unknown"]);
   });
 
+  it("the cancel handler leaves attempts alone when another function's run is cancelled", async () => {
+    await harness.pool.query(`
+      insert into server_upgrade_attempt (organization_id, machine_id, attempt_id, trigger, channel, from_version, inngest_run_id, started_at)
+      values ('${organizationId}', '${machineId}', '${"b".repeat(32)}', 'manual', 'stable', '0.2.1', 'run-1', now());
+    `);
+    const output = await new InngestTestEngine({
+      function: createCancelServerUpgrade(new Inngest({ id: "test" }), runEffect),
+      events: [{ name: "inngest/function.cancelled", data: { function_id: "drain-server", run_id: "run-1" } }],
+    }).execute();
+
+    expect(output.result).toEqual({ skipped: true });
+    expect(await rows()).toMatchObject([{ outcome: "running" }]);
+  });
+
+  it("onFailure closes the failed run's running attempts as unknown, once, and no other run's", async () => {
+    const onFailure = createRollOutServerUpgrade(new Inngest({ id: "test" }), runEffect).opts.onFailure;
+    if (onFailure === undefined) return expect.fail("a failed run closes its attempts");
+    await harness.pool.query(`
+      insert into server_upgrade_attempt (organization_id, machine_id, attempt_id, trigger, channel, from_version, stage, inngest_run_id, started_at)
+      values ('${organizationId}', '${machineId}', '${"b".repeat(32)}', 'manual', 'stable', '0.2.1', 'restarting', 'run-1', now()),
+             ('${organizationId}', '${machineId}', '${"c".repeat(32)}', 'manual', 'stable', '0.2.1', null, 'run-2', now());
+    `);
+
+    // SAFETY: the failure handler reads only the failed run's ID.
+    const fail = (runId: string) => Promise.resolve(onFailure({ event: { data: { run_id: runId } } } as never));
+    await fail("run-1");
+    await fail("run-1");
+
+    expect(Object.fromEntries((await rows()).map(({ attempt_id: id, outcome, stage }) => [id[0], [outcome, stage]]))).toEqual({
+      b: ["unknown", "restarting"],
+      c: ["running", null],
+    });
+    expect(captured.map(({ event }) => event)).toEqual(["server_upgrade_unknown"]);
+  });
+
   it("a plain member can Upgrade one Server or every Server behind, and reads each Server's latest attempt", async () => {
     await runEffect(requestServerUpgrade({ userId }, { organizationSlug: "acme", machineId }));
     await runEffect(requestServerUpgrade({ userId }, { organizationSlug: "acme", machineId: null }));

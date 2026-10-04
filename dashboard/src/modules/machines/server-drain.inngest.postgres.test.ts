@@ -347,6 +347,17 @@ describe("drain-server", () => {
     ]);
   });
 
+  it("onFailure leaves alone a pending row its run never bound, even when the failed run's event names it", async () => {
+    const onFailure = createDrainServer(new Inngest({ id: "test" }), runEffect).opts.onFailure;
+    if (onFailure === undefined) return expect.fail("a failed run closes its row");
+    await request();
+
+    // SAFETY: the failure handler reads only the failed run's ID and its event.
+    await onFailure({ event: { data: { run_id: "run-never-bound", event: { data: request0 } } } } as never);
+
+    expect(await rows()).toMatchObject([{ state: "pending", end_code: null, inngest_run_id: null }]);
+  });
+
   it("the hourly sweep fails requests no run picked up in time and closes day-old Drains unknown", async () => {
     await harness.pool.query(`
       insert into server_drain_attempt (id, organization_id, machine_id, state, requested_at)
