@@ -1,6 +1,7 @@
 import type { CollectionName, CollectionRead } from "./read.contract";
 import type { OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
 import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
+import type { ServerUpgradeSettingsRow } from "#/modules/server-upgrade/server-upgrade";
 import { createChangeCollection } from "#/collections/query-collection";
 import { readCollectionServerFn } from "#/collections/read.functions";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
@@ -25,6 +26,8 @@ function changeCollection<Row extends object>(table: CollectionName, getKey: (ro
 export const getCanvasPositionsCollection = changeCollection<CanvasPositionRow>("environment_canvas_node_position", canvasPositionKey);
 export const getOrganizationEnrollmentCollection = changeCollection<OrganizationEnrollmentRow>("organization_enrollment", (row) => row.id);
 export const getClusterDomainCollection = changeCollection<ClusterDomainRow>("organization_cluster_domain", (row) => row.id);
+/** The Organization's Server upgrade settings: no row reads as the defaults. */
+export const getServerUpgradeSettingsCollection = changeCollection<ServerUpgradeSettingsRow>("organization_server_upgrades", (row) => row.id);
 
 /**
  * Every Org Store table by the name the Organization change stream sends.
@@ -34,4 +37,5 @@ export const orgStoreTables = {
   environment_canvas_node_position: getCanvasPositionsCollection,
   organization_enrollment: getOrganizationEnrollmentCollection,
   organization_cluster_domain: getClusterDomainCollection,
+  organization_server_upgrades: getServerUpgradeSettingsCollection,
 } satisfies Record<CollectionName, (organizationSlug: string, scope: CollectionScope) => object>;

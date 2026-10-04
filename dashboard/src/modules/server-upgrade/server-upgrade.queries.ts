@@ -25,12 +25,6 @@ export function stableReleaseQueryOptions(line: string | null) {
   });
 }
 
-/** The Server's latest attempt, null with none; undefined until Cloud has answered (the loader prefetches it). */
-export function useLatestServerUpgrade(organizationSlug: string, machineId: string) {
-  const data = useServerUpgrades(organizationSlug);
-  return data === undefined ? undefined : data.servers[machineId] ?? null;
-}
-
 /** Every Server's latest attempt; undefined until Cloud has answered (the loader prefetches it). */
 export function useServerUpgrades(organizationSlug: string) {
   return useQuery(latestServerUpgradesQueryOptions(organizationSlug)).data;

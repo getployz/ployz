@@ -51,18 +51,29 @@ const attempt = (overrides: Partial<LatestUpgrade> = {}): LatestUpgrade => ({
   ...overrides,
 });
 const line = (input: Partial<Parameters<typeof serverUpgradeLine>[0]> = {}) => serverUpgradeLine({
-  version: "0.2.1", status: "online", release: "0.2.2", latest: null, pendingFrom: undefined, now: NOW, ...input,
+  version: "0.2.1", status: "online", release: "0.2.2", latest: null, pendingFrom: undefined, now: NOW,
+  automatic: true, rolloutRunning: false, ...input,
 });
 
 describe("serverUpgradeLine", () => {
   it("offers the release only to an online, idle Server running an older one", () => {
-    expect(line()).toEqual({ kind: "behind", release: "0.2.2" });
+    expect(line()).toEqual({ kind: "behind", release: "0.2.2", canUpgrade: true });
     expect(line({ version: "0.2.2" })).toBeNull();
     expect(line({ version: "0.2.3" })).toBeNull();
     expect(line({ status: "building" })).toBeNull();
-    expect(line({ status: "offline" })).toBeNull();
+    expect(line({ status: "offline", automatic: false })).toBeNull();
     expect(line({ status: "unknown" })).toBeNull();
     expect(line({ release: null })).toBeNull();
+  });
+
+  it("says an offline Server behind upgrades when it's back, while automatic upgrades are on", () => {
+    expect(line({ status: "offline" })).toEqual({ kind: "when-back", release: "0.2.2" });
+    expect(line({ status: "offline", version: "0.2.2" })).toBeNull();
+  });
+
+  it("offers neither Upgrade nor Try again while a rollout runs", () => {
+    expect(line({ rolloutRunning: true })).toEqual({ kind: "behind", release: "0.2.2", canUpgrade: false });
+    expect(line({ rolloutRunning: true, latest: attempt({ outcome: "failed", error: "boom" }) })).toMatchObject({ kind: "failed", canRetry: false });
   });
 
   it("offers nothing when the Server's version is unknown", () => {
@@ -118,10 +129,10 @@ describe("serverUpgradeLine", () => {
 });
 
 describe("serversUpgradeLine", () => {
-  const servers = (...versions: string[]) => versions.map((version) => ({ version }));
+  const servers = (...versions: string[]) => versions.map((version, at) => ({ name: `web-${at + 1}`, version, status: "online" as const }));
   const servers4 = servers("0.2.2", "0.2.1", "0.2.1", "0.2.1");
   const summary = (input: Partial<Parameters<typeof serversUpgradeLine>[0]> = {}) => serversUpgradeLine({
-    servers: servers4, release: "0.2.2", latest: [], lastUpgradedAt: null, pendingFrom: undefined, now: NOW, ...input,
+    servers: servers4, release: "0.2.2", latest: [], lastUpgradedAt: null, pendingFrom: undefined, now: NOW, automatic: true, ...input,
   });
 
   it("says every Server is current, and when the latest successful attempt ran", () => {
@@ -150,12 +161,23 @@ describe("serversUpgradeLine", () => {
 
   it("offers Upgrade with the version the Servers run while none has upgraded", () => {
     expect(summary({ servers: servers("0.2.1", "0.2.0", "") }))
-      .toEqual({ kind: "behind", release: "0.2.2", upgraded: 0, total: 3, running: "0.2.0" });
+      .toEqual({ kind: "behind", release: "0.2.2", upgraded: 0, total: 3, running: "0.2.0", canUpgrade: true });
     expect(summary({ servers: servers("") })).toMatchObject({ kind: "behind", upgraded: 0, running: null });
   });
 
   it("offers Upgrade the rest once some Servers have upgraded", () => {
-    expect(summary()).toEqual({ kind: "behind", release: "0.2.2", upgraded: 1, total: 4, running: "0.2.1" });
+    expect(summary()).toEqual({ kind: "behind", release: "0.2.2", upgraded: 1, total: 4, running: "0.2.1", canUpgrade: true });
+  });
+
+  it("names the offline Servers that upgrade when they're back, while automatic upgrades are on and only they are behind", () => {
+    const offline = [
+      { name: "web-1", version: "0.2.2", status: "online" as const },
+      { name: "web-3", version: "0.2.1", status: "offline" as const },
+    ];
+    expect(summary({ servers: offline })).toEqual({ kind: "when-back", release: "0.2.2", names: ["web-3"] });
+    expect(summary({ servers: offline, automatic: false })).toMatchObject({ kind: "behind", canUpgrade: false });
+    expect(summary({ servers: [...offline, { name: "web-4", version: "0.2.1", status: "building" }] }))
+      .toMatchObject({ kind: "behind", canUpgrade: false });
   });
 
   it("says nothing until the release is known, or with no Servers", () => {

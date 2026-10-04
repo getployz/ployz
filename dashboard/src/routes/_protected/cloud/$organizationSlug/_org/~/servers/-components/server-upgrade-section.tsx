@@ -5,10 +5,11 @@ import { Button } from "#/components/ui/button";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/ui/field";
 import type { ServerStatus } from "#/modules/machines/server-status";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
-import { releaseLine, serverUpgradeLine, type ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
+import { releaseLine, rolloutRunning, serverUpgradeLine, type ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
 import { requestServerUpgradeServerFn } from "#/modules/server-upgrade/server-upgrade.functions";
-import { useLatestServerUpgrade, useStableRelease } from "#/modules/server-upgrade/server-upgrade.queries";
+import { useServerUpgrades, useStableRelease } from "#/modules/server-upgrade/server-upgrade.queries";
 import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
+import { useAutomaticUpgrades } from "./server-upgrades-dialog";
 
 /** How long a click reads as Upgrading before its attempt is recorded; a Busy Server records none. */
 const PENDING_MS = 60_000;
@@ -49,14 +50,18 @@ export function ServerUpgradeSection({ machine, status, organizationSlug }: {
   organizationSlug: string;
 }) {
   const version = machine.daemonVersion;
-  const latest = useLatestServerUpgrade(organizationSlug, machine.id);
+  const upgrades = useServerUpgrades(organizationSlug);
+  const latest = upgrades === undefined ? undefined : upgrades.servers[machine.id] ?? null;
+  const everyLatest = Object.values(upgrades?.servers ?? {});
+  const { automatic } = useAutomaticUpgrades(organizationSlug);
   const release = useStableRelease(releaseLine(version));
   const pending = usePendingUpgrade(latest?.attemptId ?? null);
-  const now = useNow(latest?.outcome === "running");
+  const now = useNow(everyLatest.some((row) => row.outcome === "running"));
 
   // Nothing is offered before Cloud says what the last attempt did.
-  const line = latest === undefined ? null
-    : serverUpgradeLine({ version, status, release, latest, pendingFrom: pending.from, now });
+  const line = latest === undefined ? null : serverUpgradeLine({
+    version, status, release, latest, pendingFrom: pending.from, now, automatic, rolloutRunning: rolloutRunning(everyLatest, now),
+  });
 
   function upgrade() {
     pending.start();
@@ -85,6 +90,8 @@ export function ServerUpgradeRow({ version, line, onUpgrade }: {
             <FieldDescription>
               {line.kind === "behind" ? (
                 <><span className="font-mono">{line.release}</span> is out</>
+              ) : line.kind === "when-back" ? (
+                <>Upgrades to <span className="font-mono">{line.release}</span> when it’s back</>
               ) : line.kind === "upgrading" ? (
                 <>Upgrading{line.target === null ? null : <> to <span className="font-mono">{line.target}</span></>}</>
               ) : (
@@ -104,7 +111,7 @@ export function ServerUpgradeRow({ version, line, onUpgrade }: {
             </FieldDescription>
           )}
         </FieldContent>
-        {line?.kind === "behind" ? (
+        {line?.kind === "behind" && line.canUpgrade ? (
           <Button variant="outline" onClick={onUpgrade}>Upgrade</Button>
         ) : line?.kind === "failed" && line.canRetry ? (
           <Button variant="outline" onClick={() => { setShowDetails(false); onUpgrade(); }}>Try again</Button>

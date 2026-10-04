@@ -10,11 +10,17 @@ const failed = (overrides: Partial<LatestUpgrade> = {}): LatestUpgrade => ({
   attemptId: "b".repeat(32), outcome: "failed", stage: "readiness", error: "readiness timed out; restored 0.2.1",
   fromVersion: "0.2.1", targetVersion: "0.2.2", startedAt: new Date().toISOString(), ...overrides,
 });
-const row = (input: { latest?: LatestUpgrade | null; status?: "online" | "offline"; pendingFrom?: string | null }) => {
+const row = (input: {
+  latest?: LatestUpgrade | null;
+  status?: "online" | "offline";
+  pendingFrom?: string | null;
+  automatic?: boolean;
+  rolloutRunning?: boolean;
+}) => {
   const onUpgrade = vi.fn();
   const line = serverUpgradeLine({
     version: "0.2.1", status: input.status ?? "online", release: "0.2.2", latest: input.latest ?? null,
-    pendingFrom: input.pendingFrom, now: Date.now(),
+    pendingFrom: input.pendingFrom, now: Date.now(), automatic: input.automatic ?? true, rolloutRunning: input.rolloutRunning ?? false,
   });
   render(<ServerUpgradeRow version="0.2.1" line={line} onUpgrade={onUpgrade} />);
   return onUpgrade;
@@ -52,4 +58,19 @@ it("drops Nothing changed and Try again while the Server is offline, and shows t
   expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Show details" }));
   expect(screen.getByText("restarting")).toBeTruthy();
+});
+
+it("says an offline Server behind upgrades when it's back, while automatic upgrades are on", () => {
+  row({ status: "offline" });
+  expect(description()).toBe("0.2.1Upgrades to 0.2.2 when it’s back");
+  expect(screen.queryByRole("button")).toBeNull();
+});
+
+it("offers neither Upgrade nor Try again while a rollout runs", () => {
+  row({ rolloutRunning: true });
+  expect(description()).toContain("0.2.2 is out");
+  expect(screen.queryByRole("button", { name: "Upgrade" })).toBeNull();
+  cleanup();
+  row({ rolloutRunning: true, latest: failed() });
+  expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
 });

@@ -14,7 +14,11 @@ import {
   runtimeWatchMachineObservationFixture,
 } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { createCancelServerUpgrade, createRollOutServerUpgrade, createScheduleServerUpgrades } from "#/modules/server-upgrade/server-upgrade.inngest";
-import { listLatestServerUpgrades, requestServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
+import {
+  listLatestServerUpgrades,
+  requestServerUpgrade,
+  setAutomaticServerUpgrades,
+} from "#/modules/server-upgrade/server-upgrade.server";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -47,7 +51,7 @@ describe("roll-out-server-upgrade", () => {
   /** Each request and each terminal answer, in the order the Servers saw them. */
   let log: string[];
   let captured: Parameters<PostHogService["capture"]>[0][];
-  let identified: Array<[string, Record<string, unknown>]>;
+  let identified: Array<Parameters<PostHogService["identify"]>>;
 
   const attempt = (attemptId: string, answer: Partial<Attempt>) =>
     ({ attempt_id: attemptId as MachineUpgradeAttemptId, target: published, ...answer }) as Attempt;
@@ -332,6 +336,20 @@ describe("roll-out-server-upgrade", () => {
       }))));
     });
 
+    it("a plain member turns automatic upgrades off and on, and the schedule follows", async () => {
+      await harness.pool.query(`
+        insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_claim_machine_id, founder_machine_id)
+        values ('${organizationId}', '{}', '${serverId("1")}', '${serverId("1")}');
+      `);
+      const requested = async () => (await schedule()).result;
+
+      expect(await runEffect(setAutomaticServerUpgrades({ userId }, { organizationSlug: "acme", automatic: false })))
+        .toEqual({ id: organizationId, automatic: false });
+      expect(await requested()).toMatchObject({ organizationCount: 0 });
+      await runEffect(setAutomaticServerUpgrades({ userId }, { organizationSlug: "acme", automatic: true }));
+      expect(await requested()).toMatchObject({ organizationCount: 1 });
+    });
+
     it("an automatic rollout halts at the first non-success, and the halt holds across hourly runs", async () => {
       inspectAnswersFor[serverId("2")] = [failure];
 
@@ -413,7 +431,8 @@ describe("roll-out-server-upgrade", () => {
       expect((await schedule()).result).toMatchObject({ closed: 1 });
       expect((await schedule()).result).toMatchObject({ closed: 0 });
 
-      expect((await rows()).map(({ attempt_id: id, outcome, stage }) => [id, outcome, stage]).sort()).toEqual([
+      expect((await rows()).map(({ attempt_id: id, outcome, stage }) => [id, outcome, stage])
+        .sort(([left], [right]) => String(left).localeCompare(String(right)))).toEqual([
         ["b".repeat(32), "unknown", "restarting"],
         ["c".repeat(32), "running", "restarting"],
       ]);

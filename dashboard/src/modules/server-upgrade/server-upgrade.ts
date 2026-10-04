@@ -83,12 +83,22 @@ export type ServerUpgradeLine =
     readonly details: string | null;
     readonly canRetry: boolean;
   }
-  | { readonly kind: "behind"; readonly release: string }
+  | { readonly kind: "behind"; readonly release: string; readonly canUpgrade: boolean }
+  /** Offline and behind while automatic upgrades are on: a later check picks it up. */
+  | { readonly kind: "when-back"; readonly release: string }
   | null;
+
+/** An attempt still within the observation limit is running, and so is the Organization's one rollout. */
+const isRunning = (row: LatestUpgrade, now: number) =>
+  row.outcome === "running" && now - Date.parse(row.startedAt) < UPGRADE_OBSERVATION_LIMIT_MS;
+
+/** Whether any Server's latest attempt is running: the Organization's rollout is under way. */
+export const rolloutRunning = (latest: readonly LatestUpgrade[], now: number) => latest.some((row) => isRunning(row, now));
 
 /**
  * The Server page's Upgrade line. `release` is the newest release on the Server's line; `pendingFrom` is the latest
- * attempt ID when the user clicked Upgrade (null with none), undefined when nothing is pending.
+ * attempt ID when the user clicked Upgrade (null with none), undefined when nothing is pending. Upgrade and Try again
+ * wait while `rolloutRunning`.
  */
 export function serverUpgradeLine(input: {
   readonly version: string;
@@ -97,11 +107,12 @@ export function serverUpgradeLine(input: {
   readonly latest: LatestUpgrade | null;
   readonly pendingFrom: string | null | undefined;
   readonly now: number;
+  readonly automatic: boolean;
+  readonly rolloutRunning: boolean;
 }): ServerUpgradeLine {
   const { version, status, release, latest } = input;
   const pending = input.pendingFrom !== undefined && (latest?.attemptId ?? null) === input.pendingFrom;
-  const expired = latest !== null && latest.outcome === "running"
-    && input.now - Date.parse(latest.startedAt) >= UPGRADE_OBSERVATION_LIMIT_MS;
+  const expired = latest !== null && latest.outcome === "running" && !isRunning(latest, input.now);
   const outcome = expired ? "unknown" : latest?.outcome;
   if (pending || outcome === "running") return { kind: "upgrading", target: latest?.targetVersion ?? release };
 
@@ -116,13 +127,15 @@ export function serverUpgradeLine(input: {
         target,
         nothingChanged: online && latest.fromVersion !== "" && version === latest.fromVersion,
         details: outcome === "failed" ? latest.error : latest.stage,
-        canRetry: status === "online",
+        canRetry: status === "online" && !input.rolloutRunning,
       };
     }
   }
-  if (release === null || status !== "online") return null;
-  const behind = compareVersions(version, release);
-  return behind !== null && behind < 0 ? { kind: "behind", release } : null;
+  if (release === null) return null;
+  const order = compareVersions(version, release);
+  if (order === null || order >= 0) return null;
+  if (status === "online") return { kind: "behind", release, canUpgrade: !input.rolloutRunning };
+  return status === "offline" && input.automatic ? { kind: "when-back", release } : null;
 }
 
 /** The attempt started last; null with none. */
@@ -139,7 +152,11 @@ export type ServersUpgradeLine =
     readonly total: number;
     /** The oldest version the Servers behind report; null when none reports one. */
     readonly running: string | null;
+    /** Some Server behind is online and idle, so an Upgrade has one to take. */
+    readonly canUpgrade: boolean;
   }
+  /** Only offline Servers are behind, and automatic upgrades pick them up once they're back. */
+  | { readonly kind: "when-back"; readonly release: string; readonly names: readonly string[] }
   | null;
 
 /**
@@ -148,12 +165,13 @@ export type ServersUpgradeLine =
  * when nothing is pending.
  */
 export function serversUpgradeLine(input: {
-  readonly servers: ReadonlyArray<{ readonly version: string }>;
+  readonly servers: ReadonlyArray<{ readonly name: string; readonly version: string; readonly status: ServerStatus }>;
   readonly release: string | null;
   readonly latest: readonly LatestUpgrade[];
   readonly lastUpgradedAt: string | null;
   readonly pendingFrom: string | null | undefined;
   readonly now: number;
+  readonly automatic: boolean;
 }): ServersUpgradeLine {
   const { servers, release, latest } = input;
   if (release === null || servers.length === 0) return null;
@@ -162,14 +180,23 @@ export function serversUpgradeLine(input: {
   const done = servers.length - behind.length;
 
   const pending = input.pendingFrom !== undefined && (newestAttempt(latest)?.attemptId ?? null) === input.pendingFrom;
-  const running = latest.find((row) =>
-    row.outcome === "running" && input.now - Date.parse(row.startedAt) < UPGRADE_OBSERVATION_LIMIT_MS);
+  const running = latest.find((row) => isRunning(row, input.now));
   if (pending || running !== undefined) {
     return { kind: "upgrading", target: running?.targetVersion ?? release, done, total: servers.length };
   }
 
   if (behind.length === 0) return { kind: "current", release, upgradedAt: input.lastUpgradedAt };
+  if (input.automatic && behind.every(({ status }) => status === "offline")) {
+    return { kind: "when-back", release, names: behind.map(({ name }) => name) };
+  }
   const oldest = behind.map(({ version }) => version).filter((version) => compareVersions(version, release) !== null)
     .sort((left, right) => compareVersions(left, right) ?? 0)[0] ?? null;
-  return { kind: "behind", release, upgraded: done, total: servers.length, running: oldest };
+  return {
+    kind: "behind",
+    release,
+    upgraded: done,
+    total: servers.length,
+    running: oldest,
+    canUpgrade: behind.some(({ status }) => status === "online"),
+  };
 }

@@ -152,7 +152,7 @@ export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function*
   }
   return sortServers(behind).map(({ id }) => id);
 }, Effect.scoped, Effect.catchIf((error) => error instanceof ServerUpgradeUnreachable, (error) =>
-  Effect.logInfo("The Cluster can't be reached; no Server is upgraded.", error).pipe(Effect.as([] as string[]))));
+  Effect.logInfo("The Cluster can't be reached; no Server is upgraded.", error).pipe(Effect.as<string[]>([]))));
 
 export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* (input: {
   readonly request: ServerUpgradeRequestedEventData & { readonly machineId: string };

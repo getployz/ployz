@@ -34,7 +34,10 @@ function RouteComponent() {
         <div className="ml-auto"><AddServerDialog organizationSlug={organizationSlug} /></div>
       </div>
       {state === "live" && servers.length > 0 ? (
-        <ServersUpgradeLine organizationSlug={organizationSlug} versions={servers.map(({ machine }) => machine.daemonVersion)} />
+        <ServersUpgradeLine
+          organizationSlug={organizationSlug}
+          servers={servers.map(({ machine, status }) => ({ name: machine.name, version: machine.daemonVersion, status }))}
+        />
       ) : null}
       {state === "loading" ? (
         <ServersSkeleton />

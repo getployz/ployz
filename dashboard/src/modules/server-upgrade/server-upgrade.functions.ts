@@ -1,7 +1,12 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Schema } from "effect";
-import { ReleaseLine, RequestServerUpgradeInput } from "#/modules/server-upgrade/server-upgrade";
-import { listLatestServerUpgrades, requestServerUpgrade, stableRelease } from "#/modules/server-upgrade/server-upgrade.server";
+import { ReleaseLine, RequestServerUpgradeInput, SetAutomaticServerUpgradesInput } from "#/modules/server-upgrade/server-upgrade";
+import {
+  listLatestServerUpgrades,
+  requestServerUpgrade,
+  setAutomaticServerUpgrades,
+  stableRelease,
+} from "#/modules/server-upgrade/server-upgrade.server";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
 export const listLatestServerUpgradesServerFn = createServerFn({ method: "GET" })
@@ -18,3 +23,8 @@ export const requestServerUpgradeServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(RequestServerUpgradeInput))
   .handler(({ context, data }) => runActor(context, requestServerUpgrade(context.actor, data)));
+
+export const setAutomaticServerUpgradesServerFn = createServerFn({ method: "POST" })
+  .middleware([publicErrorMiddleware, actorMiddleware])
+  .validator(strictValidator(SetAutomaticServerUpgradesInput))
+  .handler(({ context, data }) => runActor(context, setAutomaticServerUpgrades(context.actor, data)));
