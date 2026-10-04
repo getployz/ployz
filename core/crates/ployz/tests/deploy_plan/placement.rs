@@ -281,6 +281,42 @@ fn global_active_non_running_container_is_replaced_before_reusing_its_host_port(
 }
 
 #[test]
+fn global_stopped_container_with_the_requested_spec_is_recreated_not_restarted() {
+    let requested = requested(ServiceMode::Global);
+    let mut stopped = container('b', '1', &requested, &service_id('a'));
+    stopped
+        .try_update(|parts| {
+            parts.runtime = ContainerRuntimeObservation::Exited { code: 1 };
+            parts
+                .labels
+                .insert("ployz.creation.key".into(), "deploy:earlier:0".into());
+        })
+        .unwrap();
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: vec![machine('1', "first")],
+            containers: vec![stopped],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(
+        matches!(
+            operations(&plan).as_slice(),
+            [
+                DeployOperation::RunContainer { .. },
+                DeployOperation::RemoveContainer { container_id: removed, .. },
+            ] if removed == &container_id('b')
+        ),
+        "an earlier Deploy's Container is never adopted: {:?}",
+        operations(&plan)
+    );
+}
+
+#[test]
 fn replicated_plan_removes_containers_beyond_the_requested_count() {
     let requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),

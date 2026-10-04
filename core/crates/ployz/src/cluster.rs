@@ -308,8 +308,9 @@ impl Client {
         self.call_once::<T>(payload, target).await
     }
 
-    /// One-shot targeted RPC. No retry — mutating operations must not
-    /// re-issue CreateContainer or CreateVolume after a dropped response.
+    /// One-shot targeted RPC. No retry here: CreateVolume must not be re-issued
+    /// after a dropped response, and a keyed CreateContainer retry is the
+    /// Deploy executor's call.
     pub(crate) async fn invoke<T: Rpc>(
         &self,
         request: T::Request,
@@ -1412,7 +1413,8 @@ fn accept_stop_result(
 #[path = "cluster_tests.rs"]
 mod tests;
 
-/// One Global revision per target; Namespace and kind are scoped by CreateContainer.
+/// Global catch-up's key: one Global revision per target, outside any Deploy.
+/// Namespace and kind are scoped by CreateContainer.
 pub(crate) fn global_creation_key(spec: &ResolvedServiceSpec) -> String {
     format!(
         "global:{}:{}",

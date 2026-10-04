@@ -220,13 +220,22 @@ async fn a_failure_at_each_position_keeps_the_exact_prefix_and_suffix() {
 
 #[tokio::test]
 async fn create_then_start_failure_removes_the_candidate_and_keeps_the_start_error() {
-    for cleanup in [
-        ok(Call::Remove(machine('1'), container('a'))),
-        failed(Call::Remove(machine('1'), container('a')), "cleanup failed"),
+    let mut global = spec(None, None, None);
+    global.mode = ployz_core::ServiceMode::Global;
+    for (service, cleanup) in [
+        (
+            spec(None, None, None),
+            ok(Call::Remove(machine('1'), container('a'))),
+        ),
+        (
+            spec(None, None, None),
+            failed(Call::Remove(machine('1'), container('a')), "cleanup failed"),
+        ),
+        (global, ok(Call::Remove(machine('1'), container('a')))),
     ] {
         let machine = machine('1');
         let created_id = container('a');
-        let plan = vec![run(&machine, spec(None, None, None), false)];
+        let plan = vec![run(&machine, service, false)];
         let client = Scripted::new(vec![
             created(
                 Call::Create(machine, ContainerKind::ServiceContainer),
@@ -301,26 +310,6 @@ async fn standalone_stop_and_remove_tolerate_missing_targets() {
 }
 
 #[tokio::test]
-async fn global_start_failure_retains_the_keyed_container_for_retry() {
-    let machine = machine('1');
-    let id = container('a');
-    let mut service = spec(None, None, None);
-    service.mode = ployz_core::ServiceMode::Global;
-    let client = Scripted::new(vec![
-        created(Call::Create(machine, ContainerKind::ServiceContainer), &id),
-        failed(Call::Start(machine, id), "start failed"),
-    ]);
-    let outcome = execute_with(
-        &[run(&machine, service, false)],
-        &client,
-        &CancellationToken::new(),
-    )
-    .await;
-    assert!(matches!(outcome, DeployOutcome::Failed { .. }));
-    client.assert_done();
-}
-
-#[tokio::test]
 async fn a_private_image_is_created_with_its_services_credentials_only() {
     use ployz_core::{
         CreateContainerRequest, OpaquePayload, RegistryAuth, RpcRequestBody, RpcResponse,
@@ -371,7 +360,7 @@ async fn a_private_image_is_created_with_its_services_credentials_only() {
             kind,
             &test_namespace(),
             specification,
-            None,
+            &DeployRun::new().creation_key(0),
         )
         .await
         .unwrap();
@@ -387,10 +376,83 @@ async fn a_private_image_is_created_with_its_services_credentials_only() {
 }
 
 #[tokio::test]
-async fn global_deploy_uses_stable_revision_keys_without_keying_hooks_or_replicas() {
-    use ployz_core::{
-        CreateContainerRequest, OpaquePayload, RpcRequestBody, RpcResponse, ServiceMode,
+async fn every_create_is_keyed_by_its_run_and_no_later_run_shares_a_key() {
+    let machine = machine('1');
+    let old = container('a');
+    let mut global = spec(None, None, None);
+    global.mode = ployz_core::ServiceMode::Global;
+    let hook_spec = spec(None, None, Some(5_000));
+    let plan = vec![
+        hook(&machine, hook_spec.clone()),
+        DeployOperation::ReplaceContainer(ReplacementOperation {
+            machine_id: machine,
+            old_container_id: old,
+            spec: global.clone(),
+            skip_health_monitor: true,
+        }),
+        run(&machine, spec(None, None, None), true),
+        run(&machine, spec(None, None, None), true),
+    ];
+    let mut runs = Vec::new();
+    for _ in 0..2 {
+        let (hook_id, new, first, second) = (
+            container('b'),
+            container('c'),
+            container('d'),
+            container('e'),
+        );
+        let client = Scripted::new(vec![
+            ok(pull(machine, &hook_spec)),
+            created(
+                Call::Create(machine, ContainerKind::PreDeployHook),
+                &hook_id,
+            ),
+            ok(Call::Start(machine, hook_id)),
+            Step(
+                Call::Inspect(machine, hook_id),
+                Reply::Observed(ContainerRuntimeObservation::Exited { code: 0 }, None),
+            ),
+            created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+            ok(Call::Start(machine, new)),
+            serving(new),
+            ok(Call::Stop(machine, old)),
+            ok(Call::Remove(machine, old)),
+            dropped(old),
+            created(
+                Call::Create(machine, ContainerKind::ServiceContainer),
+                &first,
+            ),
+            ok(Call::Start(machine, first)),
+            serving(first),
+            created(
+                Call::Create(machine, ContainerKind::ServiceContainer),
+                &second,
+            ),
+            ok(Call::Start(machine, second)),
+            serving(second),
+        ]);
+        assert!(matches!(
+            execute_with(&plan, &client, &CancellationToken::new()).await,
+            DeployOutcome::Success { .. }
+        ));
+        client.assert_done();
+        runs.push(client.keys.into_inner().unwrap());
+    }
+    let [earlier, later] = runs.as_slice() else {
+        unreachable!("two runs executed");
     };
+    let keys: std::collections::BTreeSet<_> =
+        earlier.iter().chain(later).map(|key| &key.0).collect();
+    assert_eq!(
+        keys.len(),
+        8,
+        "each create in a run has its own key and a later run, even of an identical Global, shares none: {runs:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_client_sends_the_runs_key_without_looking_for_a_reusable_container() {
+    use ployz_core::{CreateContainerRequest, OpaquePayload, RpcRequestBody, RpcResponse};
     use std::sync::Arc;
     use tonic::{Request, Response};
 
@@ -400,18 +462,10 @@ async fn global_deploy_uses_stable_revision_keys_without_keying_hooks_or_replica
         crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
             let requests = requests.clone();
             async move {
-                let body = rpc.into_inner().decode_request().unwrap().body;
-                if matches!(body, RpcRequestBody::ListContainers(_)) {
-                    return Ok(Response::new(
-                        RpcResponse::from(ployz_core::ContainerList {
-                            containers: Vec::new(),
-                        })
-                        .encode()
-                        .unwrap(),
-                    ));
-                }
-                let RpcRequestBody::CreateContainer(request) = body else {
-                    panic!("only create is expected");
+                let RpcRequestBody::CreateContainer(request) =
+                    rpc.into_inner().decode_request().unwrap().body
+                else {
+                    panic!("a create sends only CreateContainer");
                 };
                 requests.lock().unwrap().push(request);
                 Ok(Response::new(
@@ -425,361 +479,23 @@ async fn global_deploy_uses_stable_revision_keys_without_keying_hooks_or_replica
             }
         })
         .await;
-    let mut service = spec(None, None, None);
-    service.container.pull_policy = ployz_core::PullPolicy::Always;
-    service.mode = ServiceMode::Global;
-    let mut revision = service.clone();
-    revision.container.image = "alpine:new".into();
-    let mut other_inputs = service.clone();
-    other_inputs.update.monitor_millis = Some(500);
-    for specification in [&service, &service, &revision, &other_inputs] {
-        MachineOperations::create_container(
-            &client,
-            &machine('1'),
-            ContainerKind::ServiceContainer,
-            &test_namespace(),
-            specification,
-            None,
-        )
-        .await
-        .unwrap();
-    }
-    MachineOperations::create_container(
-        &client,
-        &machine('1'),
-        ContainerKind::PreDeployHook,
-        &test_namespace(),
-        &service,
-        None,
-    )
-    .await
-    .unwrap();
+    let mut global = spec(None, None, None);
+    global.mode = ployz_core::ServiceMode::Global;
+    let key = DeployRun::new().creation_key(3);
     MachineOperations::create_container(
         &client,
         &machine('1'),
         ContainerKind::ServiceContainer,
         &test_namespace(),
-        &service,
-        Some(container('f')),
+        &global,
+        &key,
     )
     .await
     .unwrap();
-    MachineOperations::create_container(
-        &client,
-        &machine('1'),
-        ContainerKind::ServiceContainer,
-        &test_namespace(),
-        &service,
-        Some(container('f')),
-    )
-    .await
-    .unwrap();
-    service.mode = ServiceMode::Replicated {
-        replicas: std::num::NonZeroU32::new(1).unwrap(),
-    };
-    MachineOperations::create_container(
-        &client,
-        &machine('1'),
-        ContainerKind::ServiceContainer,
-        &test_namespace(),
-        &service,
-        None,
-    )
-    .await
-    .unwrap();
-    let requests = captured.lock().unwrap();
-    let keys: Vec<_> = requests
-        .iter()
-        .map(|request| request.creation_key.as_ref())
-        .collect();
-    let [
-        first,
-        retry,
-        revision,
-        changed,
-        hook,
-        replacement,
-        replacement_retry,
-        replica,
-    ] = keys.as_slice()
-    else {
-        panic!("expected eight create requests");
-    };
-    assert!(first.is_some());
-    assert_eq!(first, retry);
-    assert_ne!(first, revision, "explicit revisions can coexist");
-    assert_eq!(
-        first, changed,
-        "changed non-revision inputs reach keyed conflict validation"
-    );
-    assert_eq!(*hook, None);
-    assert_ne!(
-        first, replacement,
-        "forced replacement can overlap an identical spec"
-    );
-    assert_eq!(
-        replacement, replacement_retry,
-        "retry the same explicit replacement"
-    );
-    assert_eq!(*replica, None);
     server.abort();
-}
-
-#[tokio::test]
-async fn global_replacement_scopes_creation_to_the_old_container_and_retires_it_explicitly() {
-    let machine = machine('1');
-    let old = container('a');
-    let new = container('b');
-    let mut service = spec(None, None, None);
-    service.mode = ployz_core::ServiceMode::Global;
-    let client = Scripted::new(vec![
-        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
-        ok(Call::Start(machine, new)),
-        ok(Call::Wait(
-            vec![new],
-            ContainerObservationCondition::Serving,
-        )),
-        ok(Call::Stop(machine, old)),
-        ok(Call::Remove(machine, old)),
-        ok(Call::Wait(
-            vec![old],
-            ContainerObservationCondition::Dropped,
-        )),
-    ]);
-    let operation = DeployOperation::ReplaceContainer(ReplacementOperation {
-        machine_id: machine,
-        old_container_id: old,
-        spec: service,
-        skip_health_monitor: true,
-    });
-    assert!(matches!(
-        execute_with(&[operation], &client, &CancellationToken::new()).await,
-        DeployOutcome::Success { .. }
-    ));
-    assert_eq!(*client.replacing.lock().unwrap(), [Some(old)]);
-    client.assert_done();
-}
-
-#[tokio::test]
-async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoints() {
-    use crate::deploy::{DeployIntent, DeploySnapshot, PlanOptions, plan_deploy};
-    use ployz_core::{
-        BridgeEndpointCapacity, ContainerChanged, ContainerDetails, ContainerList, Machine,
-        MachineName, MachineObservation, MembershipObservation, OpaquePayload,
-        RequestedServiceSpec, RpcRequestBody, RpcResponse, ServiceMode, WireGuardPublicKey,
+    let sent = captured.lock().unwrap();
+    let [request] = sent.as_slice() else {
+        panic!("expected one create: {sent:?}");
     };
-    use std::{
-        collections::BTreeMap,
-        sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        },
-    };
-    use tonic::{Request, Response};
-
-    let target = Machine {
-        id: machine('1'),
-        name: MachineName::parse("one").unwrap(),
-        subnet: "10.210.1.0/24".parse().unwrap(),
-        public_key: WireGuardPublicKey([1; 32]),
-        public_ip: None,
-        labels: Default::default(),
-        accepts_builds: true,
-        accepts_services: true,
-        accepts_ingress: true,
-        advertised_endpoints: Vec::new(),
-        runtime: Default::default(),
-        build_concurrency: None,
-    };
-    let mut desired = spec(None, None, None);
-    desired.mode = ServiceMode::Global;
-    desired.update.order = UpdateOrder::StopFirst;
-    desired.container.pull_policy = ployz_core::PullPolicy::Always;
-    let requested: RequestedServiceSpec =
-        serde_json::from_value(serde_json::to_value(&desired).unwrap()).unwrap();
-    let old_id = container('a');
-    let new_id = container('b');
-    let mut old = observation(
-        &target.id,
-        &old_id,
-        ContainerRuntimeObservation::Running {
-            health: HealthObservation::Healthy,
-        },
-    );
-    old.try_update(|parts| {
-        parts.resolved_spec = desired.clone();
-        parts.resolved_spec.container.image = "alpine:old".into();
-    })
-    .unwrap();
-    let state = Arc::new(Mutex::new(vec![old]));
-    let remote = state.clone();
-    let keys = Arc::new(Mutex::new(Vec::new()));
-    let captured = keys.clone();
-    let first_start = Arc::new(AtomicBool::new(true));
-    let (client, server) =
-        crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
-            let remote = remote.clone();
-            let captured = captured.clone();
-            let first_start = first_start.clone();
-            async move {
-                let mut remote = remote.lock().unwrap();
-                #[expect(
-                    clippy::wildcard_enum_match_arm,
-                    reason = "fixture exercises only replacement failure and retry primitives"
-                )]
-                let response = match rpc.into_inner().decode_request().unwrap().body {
-                    RpcRequestBody::InspectContainer(inspect) => {
-                        RpcResponse::from(ContainerDetails {
-                            image_id: None,
-                            container: remote
-                                .iter()
-                                .find(|c| c.container_id == inspect.container_id)
-                                .unwrap()
-                                .clone(),
-                            environment: None,
-                        })
-                    }
-                    RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
-                        containers: remote.clone(),
-                    }),
-                    RpcRequestBody::StopContainer(stop) => {
-                        remote
-                            .iter_mut()
-                            .find(|c| c.container_id == stop.container_id)
-                            .unwrap()
-                            .try_update(|parts| {
-                                parts.runtime = ContainerRuntimeObservation::Exited { code: 0 }
-                            })
-                            .unwrap();
-                        RpcResponse::from(ContainerChanged {
-                            container_id: stop.container_id,
-                        })
-                    }
-                    RpcRequestBody::CreateContainer(create) => {
-                        let key = create.creation_key.unwrap();
-                        captured.lock().unwrap().push(key.clone());
-                        if let Some(existing) = remote
-                            .iter()
-                            .find(|c| c.labels.get("ployz.creation.key") == Some(&key))
-                        {
-                            assert_eq!(existing.resolved_spec, create.resolved_spec);
-                            RpcResponse::from(ContainerCreated {
-                                container_id: existing.container_id,
-                                display_name: "retained".into(),
-                            })
-                        } else {
-                            let mut candidate = observation(
-                                &machine('1'),
-                                &new_id,
-                                ContainerRuntimeObservation::Created,
-                            );
-                            candidate
-                                .try_update(|parts| {
-                                    parts.resolved_spec = create.resolved_spec;
-                                    parts.created_at_unix_nanos = 1;
-                                    parts.labels.insert("ployz.creation.key".into(), key);
-                                })
-                                .unwrap();
-                            remote.push(candidate);
-                            RpcResponse::from(ContainerCreated {
-                                container_id: new_id,
-                                display_name: "candidate".into(),
-                            })
-                        }
-                    }
-                    RpcRequestBody::StartContainer(start) => {
-                        // Restoring v1 fails too, so the retry replans the candidate as a run.
-                        if start.container_id == old_id || first_start.swap(false, Ordering::SeqCst)
-                        {
-                            RpcResponse::from(error("start failed"))
-                        } else {
-                            remote
-                                .iter_mut()
-                                .find(|c| c.container_id == start.container_id)
-                                .unwrap()
-                                .try_update(|parts| {
-                                    parts.runtime = ContainerRuntimeObservation::Running {
-                                        health: HealthObservation::Healthy,
-                                    }
-                                })
-                                .unwrap();
-                            RpcResponse::from(ContainerChanged {
-                                container_id: start.container_id,
-                            })
-                        }
-                    }
-                    // Unmarked: the stop goes ahead without waiting on proxies.
-                    RpcRequestBody::MarkContainerStopping(_) => {
-                        RpcResponse::from(error("mark unsupported"))
-                    }
-                    RpcRequestBody::PullImage(_) => RpcResponse::from(ployz_core::ImagePulled {}),
-                    other => panic!("unexpected mutation: {other:?}"),
-                };
-                Ok(Response::new(response.encode().unwrap()))
-            }
-        })
-        .await;
-    let snapshot = |used| DeploySnapshot {
-        machines: vec![MachineObservation::new(
-            target.clone(),
-            MembershipObservation::Up,
-        )],
-        containers: state.lock().unwrap().clone(),
-        capacity: Some(BTreeMap::from([(
-            target.id,
-            BridgeEndpointCapacity::new(2, used),
-        )])),
-        ..Default::default()
-    };
-    let intent = DeployIntent::apply_one(
-        test_namespace(),
-        requested,
-        PlanOptions {
-            skip_health_monitor: true,
-            ..Default::default()
-        },
-    );
-    let first = plan_deploy(&intent, &snapshot(1)).unwrap();
-    assert!(matches!(
-        execute_operation_sequence(&first, &client, &CancellationToken::new(), None).await,
-        DeployOutcome::Failed { .. }
-    ));
-    assert_eq!(
-        state.lock().unwrap().len(),
-        2,
-        "failed start retains v2 beside stopped v1"
-    );
-    let retry =
-        plan_deploy(&intent, &snapshot(2)).expect("retained candidate needs no new endpoint");
-    let DeployOperation::RunContainer {
-        machine_id, spec, ..
-    } = retry.operations().first().unwrap()
-    else {
-        panic!("inactive replacement replans as a run");
-    };
-    let replay = MachineOperations::create_container(
-        &client,
-        machine_id,
-        ContainerKind::ServiceContainer,
-        &test_namespace(),
-        spec,
-        None,
-    )
-    .await
-    .unwrap();
-    assert_eq!(replay.container_id, new_id);
-    MachineOperations::start_container(&client, machine_id, &replay.container_id)
-        .await
-        .unwrap();
-    let captured = keys.lock().unwrap();
-    let [first_key, retry_key] = captured.as_slice() else {
-        panic!("expected create and replay");
-    };
-    assert_eq!(first_key, retry_key);
-    assert_eq!(
-        state.lock().unwrap().len(),
-        2,
-        "replay must not allocate a second v2"
-    );
-    server.abort();
+    assert_eq!(request.creation_key.as_ref(), Some(&key.0));
 }

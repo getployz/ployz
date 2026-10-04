@@ -297,14 +297,9 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     let events = EventLog::default();
     let pairing = json!({ "secret": PAIRING });
     let enroll = EnrollListen::script_recording(
-        [
-            json!({
-                "kind": "initialize", "resumed": false, "storage": "none", "pairing": pairing,
-            }),
-            json!({
-                "kind": "initialize", "resumed": true, "storage": "none", "pairing": pairing,
-            }),
-        ],
+        [json!({
+            "kind": "initialize", "resumed": false, "storage": "none", "pairing": pairing,
+        })],
         events.clone(),
     )
     .await;
@@ -344,28 +339,7 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
             .env("no_proxy", "127.0.0.1,localhost");
         command
     };
-    let first = command().arg("--reset").output().await.unwrap();
-    assert!(!first.status.success());
-    assert!(String::from_utf8_lossy(&first.stderr).contains(
-        "rerun the same ployz server add command without --reset (keep all other options)"
-    ));
-    assert!(
-        String::from_utf8_lossy(&first.stderr).contains("lost Ingress container creation reply")
-    );
-    assert_eq!(daemon.founder_tail_attempts(), [1, 0]);
-    assert_eq!(
-        daemon.initialize_requests().len(),
-        1,
-        "lost Initialize reply must be recovered by Inspect"
-    );
-    assert_eq!(daemon.reset_count(), 0);
-    assert_eq!(
-        daemon.containers().len(),
-        1,
-        "lost create reply must not cause an automatic second Create"
-    );
-
-    let output = command().output().await.unwrap();
+    let output = command().arg("--reset").output().await.unwrap();
 
     assert!(
         output.status.success(),
@@ -373,10 +347,22 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout)
     );
-    assert_eq!(daemon.reset_count(), 0, "resume must omit --reset");
-    assert_eq!(daemon.founder_tail_attempts(), [2, 2]);
+    assert_eq!(
+        daemon.initialize_requests().len(),
+        1,
+        "lost Initialize reply must be recovered by Inspect"
+    );
+    assert_eq!(
+        daemon.founder_tail_attempts(),
+        [2, 2],
+        "each lost reply is retried once, the create under its original key"
+    );
     let containers = daemon.containers();
-    assert_eq!(containers.len(), 1);
+    assert_eq!(
+        containers.len(),
+        1,
+        "the keyed retry lands on the Container the lost reply made"
+    );
     assert_eq!(
         containers.first().unwrap().service_name().as_str(),
         "ingress"
@@ -392,7 +378,7 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
         ]
     );
     assert_eq!(daemon.reset_count(), 0);
-    assert_eq!(enroll.posts().len(), 2);
+    assert_eq!(enroll.posts().len(), 1);
     assert_eq!(enroll.callbacks().len(), 1);
 }
 

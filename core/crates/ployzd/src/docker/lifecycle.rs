@@ -1,10 +1,11 @@
-use std::future::Future;
+use std::{collections::HashMap, future::Future};
 
 use bollard::{
     errors::Error as DockerError,
     models::{ContainerCreateBody, Mount, MountType},
     query_parameters::{
-        CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
+        CreateContainerOptionsBuilder, ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
+        StopContainerOptionsBuilder,
     },
 };
 use ployz_core::{
@@ -19,7 +20,8 @@ use ployz_core::MachineGateway;
 use crate::docker_image::prepare_image;
 
 use super::{
-    ContainerRuntime, Error, ManagedLabels, create, docker_error, spec_store::ConfigOperation,
+    ContainerRuntime, Error, LABEL_NAMESPACE, ManagedLabels, create, docker_error,
+    spec_store::ConfigOperation,
 };
 
 const CONTAINER_NAME_ATTEMPTS: u8 = 4;
@@ -96,13 +98,11 @@ impl ContainerRuntime {
             admission,
             storage,
         } = request;
-        let reserved_name =
-            creation_key.map(|key| creation_name(&machine.id, namespace, kind, key));
-        if let (Some(name), Some(key)) = (&reserved_name, creation_key) {
+        if let Some(key) = creation_key {
             // Wait for an in-flight create to persist its spec before comparing a retry.
             let _operation = self.specs.config_operation().await;
             if let Some(existing) = self
-                .matching_creation(machine, namespace, kind, spec, name, key)
+                .matching_creation(machine, namespace, kind, spec, key)
                 .await
                 .map_err(E::from)?
             {
@@ -154,8 +154,6 @@ impl ContainerRuntime {
         deployment_id: Option<&ployz_core::DeploymentLogId>,
         registry_auth: Option<&ployz_core::RegistryAuth>,
     ) -> Result<ContainerCreated, Error> {
-        let reserved_name =
-            creation_key.map(|key| creation_name(&machine.id, namespace, kind, key));
         let mut body = create::container_create_body(
             &machine.id,
             machine.subnet.gateway(),
@@ -196,9 +194,11 @@ impl ContainerRuntime {
         .await?;
         let mut config_operation = self.specs.config_operation().await;
         // Another request may have won while admission and image preparation ran.
-        if let (Some(name), Some(key)) = (&reserved_name, creation_key)
+        // Creates serialize under the exclusive admission lock, so a lookup here
+        // is the last word before Docker mints a Container.
+        if let Some(key) = creation_key
             && let Some(existing) = self
-                .matching_creation(machine, namespace, kind, spec, name, key)
+                .matching_creation(machine, namespace, kind, spec, key)
                 .await?
         {
             return Ok(existing);
@@ -210,61 +210,25 @@ impl ContainerRuntime {
             .get_or_insert_default();
         mounts.extend(docker_config_mounts(&mut config_operation, spec).await?);
         let result = async {
-            let (created, display_name) = match reserved_name {
-                Some(display_name) => {
-                    let options = CreateContainerOptionsBuilder::default()
-                        .name(&display_name)
-                        .build();
-                    match self.docker.create_container(Some(options), body).await {
-                        Ok(created) => (created, display_name),
-                        Err(Error::Docker(DockerError::DockerResponseServerError {
-                            status_code: 409,
-                            ..
-                        })) => {
-                            if let Some(key) = creation_key {
-                                return self
-                                    .matching_creation(
-                                        machine,
-                                        namespace,
-                                        kind,
-                                        spec,
-                                        &display_name,
-                                        key,
-                                    )
-                                    .await?
-                                    .ok_or(Error::SlotNameOccupied(display_name));
-                            }
-                            return Err(Error::SlotNameOccupied(display_name));
-                        }
-                        Err(error) => return Err(error),
-                    }
-                }
-                None => {
-                    let mut attempt = 0;
-                    loop {
-                        attempt += 1;
-                        let suffix = MachineId::random().as_str()[..4].to_owned();
-                        let display_name = match kind {
-                            ContainerKind::ServiceContainer => {
-                                format!("{}-{suffix}", spec.name)
-                            }
-                            ContainerKind::PreDeployHook => {
-                                format!("{}-pre-deploy-{suffix}", spec.name)
-                            }
-                        };
-                        let options = CreateContainerOptionsBuilder::default()
-                            .name(&display_name)
-                            .build();
-                        match self
-                            .docker
-                            .create_container(Some(options), body.clone())
-                            .await
-                        {
-                            Ok(created) => break (created, display_name),
-                            Err(Error::Docker(error)) if retry_name_conflict(attempt, &error) => {}
-                            Err(error) => return Err(error),
-                        }
-                    }
+            let mut attempt = 0;
+            let (created, display_name) = loop {
+                attempt += 1;
+                let suffix = MachineId::random().as_str()[..4].to_owned();
+                let display_name = match kind {
+                    ContainerKind::ServiceContainer => format!("{}-{suffix}", spec.name),
+                    ContainerKind::PreDeployHook => format!("{}-pre-deploy-{suffix}", spec.name),
+                };
+                let options = CreateContainerOptionsBuilder::default()
+                    .name(&display_name)
+                    .build();
+                match self
+                    .docker
+                    .create_container(Some(options), body.clone())
+                    .await
+                {
+                    Ok(created) => break (created, display_name),
+                    Err(Error::Docker(error)) if retry_name_conflict(attempt, &error) => {}
+                    Err(error) => return Err(error),
                 }
             };
             let container_id =
@@ -290,50 +254,47 @@ impl ContainerRuntime {
         result
     }
 
+    // The key is scoped by Namespace and kind: the same key in another
+    // Namespace or on a hook names a different Container.
     async fn matching_creation(
         &self,
         machine: &Machine,
         namespace: &Namespace,
         kind: ContainerKind,
         spec: &ResolvedServiceSpec,
-        name: &str,
         key: &str,
     ) -> Result<Option<ContainerCreated>, Error> {
-        let inspected = match self.docker.client.inspect_container(name, None).await {
-            Ok(inspected) => inspected,
-            Err(DockerError::DockerResponseServerError {
-                status_code: 404, ..
-            }) => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        if inspected
-            .config
-            .as_ref()
-            .and_then(|config| config.labels.as_ref())
-            .and_then(|labels| labels.get(LABEL_CREATION_KEY))
-            .map(String::as_str)
-            != Some(key)
-        {
-            return Err(Error::SlotNameOccupied(name.into()));
+        let filters = HashMap::from([(
+            "label",
+            vec![
+                format!("{LABEL_CREATION_KEY}={key}"),
+                format!("{LABEL_NAMESPACE}={namespace}"),
+            ],
+        )]);
+        let options = ListContainersOptionsBuilder::default()
+            .all(true)
+            .filters(&filters)
+            .build();
+        for summary in self.docker.client.list_containers(Some(options)).await? {
+            let container_id =
+                ContainerId::parse(summary.id.ok_or(Error::MissingField("container ID"))?)
+                    .map_err(|source| Error::InvalidValue {
+                        field: "container ID",
+                        source,
+                    })?;
+            let existing = self.inspect_managed(&container_id, &machine.id).await?;
+            if existing.kind != kind {
+                continue;
+            }
+            if existing.resolved_spec != *spec {
+                return Err(Error::CreationKeyOccupied(key.into()));
+            }
+            return Ok(Some(ContainerCreated {
+                container_id: existing.container_id,
+                display_name: existing.into_parts().display_name,
+            }));
         }
-        let container_id = ContainerId::parse(
-            inspected.id.ok_or(Error::MissingField("container ID"))?,
-        )
-        .map_err(|source| Error::InvalidValue {
-            field: "container ID",
-            source,
-        })?;
-        let existing = self.inspect_managed(&container_id, &machine.id).await?;
-        if existing.namespace != *namespace
-            || existing.kind != kind
-            || existing.resolved_spec != *spec
-        {
-            return Err(Error::SlotNameOccupied(name.into()));
-        }
-        Ok(Some(ContainerCreated {
-            container_id: existing.container_id,
-            display_name: existing.into_parts().display_name,
-        }))
+        Ok(None)
     }
 
     async fn admit_and_ensure_volumes(
@@ -548,18 +509,6 @@ fn retry_name_conflict(attempt: u8, error: &bollard::errors::Error) -> bool {
                 ..
             }
         )
-}
-
-fn creation_name(
-    machine: &MachineId,
-    namespace: &Namespace,
-    kind: ContainerKind,
-    key: &str,
-) -> String {
-    use sha2::{Digest, Sha256};
-    let scope =
-        serde_json::to_vec(&(machine, namespace, kind, key)).expect("creation scope serializes");
-    format!("ployz-create-{}", hex::encode(Sha256::digest(scope)))
 }
 
 /// Refuse unsupported or unobservable placement without conflating the two.

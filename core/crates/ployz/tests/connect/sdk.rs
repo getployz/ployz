@@ -120,7 +120,7 @@ async fn deploy_reports_volume_ensure_as_the_container_operation_failure() {
     let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
     service.create_container_error = Some(RpcError {
-        code: RpcErrorCode::Unavailable,
+        code: RpcErrorCode::Internal,
         message: "Volume Ensure failed".into(),
         details: serde_json::Value::Null,
     });

@@ -120,7 +120,7 @@ impl DeployService {
 
     pub(super) fn fail_create_volume(mut self, message: &str) -> Self {
         self.create_volume_error = Some(RpcError {
-            code: RpcErrorCode::Unavailable,
+            code: RpcErrorCode::Internal,
             message: message.into(),
             details: Value::Null,
         });
@@ -129,7 +129,7 @@ impl DeployService {
 
     pub(super) fn fail_create_volume_verification(mut self, message: &str) -> Self {
         self.create_volume_verification_error = Some(RpcError {
-            code: RpcErrorCode::Unavailable,
+            code: RpcErrorCode::Internal,
             message: message.into(),
             details: Value::Null,
         });

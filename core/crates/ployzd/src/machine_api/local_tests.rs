@@ -492,6 +492,11 @@ async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
         create(&service, request.clone())
     );
     let first = first.unwrap();
+    assert!(
+        first.display_name.starts_with("api-"),
+        "a keyed create keeps a readable name: {}",
+        first.display_name
+    );
     assert_eq!(first, simultaneous.unwrap());
     assert_eq!(first, create(&service, request.clone()).await.unwrap());
     assert_eq!(containers.lock().unwrap().len(), 1);

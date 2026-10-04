@@ -78,6 +78,34 @@ async fn fake_docker(
             )
                 .into_response();
         }
+        if method == Method::GET && path.ends_with("/containers/json") {
+            let wanted: Vec<String> = reqwest::Url::parse(&format!("http://docker{uri}"))
+                .unwrap()
+                .query_pairs()
+                .find(|(key, _)| key == "filters")
+                .and_then(|(_, filters)| serde_json::from_str::<serde_json::Value>(&filters).ok())
+                .and_then(|filters| filters.get("label").cloned())
+                .map(|labels| serde_json::from_value(labels).unwrap())
+                .unwrap_or_default();
+            let listed = containers
+                .iter()
+                .filter(|(_, container)| {
+                    wanted.iter().all(|label| {
+                        let labels = container.pointer("/Config/Labels");
+                        match label.split_once('=') {
+                            Some((key, value)) => {
+                                labels.and_then(|labels| labels.get(key)) == Some(&value.into())
+                            }
+                            None => labels.and_then(|labels| labels.get(label)).is_some(),
+                        }
+                    })
+                })
+                .map(|(name, container)| {
+                    serde_json::json!({"Id": container["Id"], "Names": [format!("/{name}")]})
+                })
+                .collect();
+            return Json(serde_json::Value::Array(listed)).into_response();
+        }
         if path.contains("/containers/") && !path.ends_with("/containers/json") {
             let selector = path
                 .split("/containers/")

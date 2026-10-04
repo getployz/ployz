@@ -756,8 +756,8 @@ pub enum Error {
     SpecNotFound(ContainerId),
     #[error("container {0} was not found")]
     ContainerNotFound(ContainerId),
-    #[error("Docker name '{0}' is occupied by incompatible creation inputs")]
-    SlotNameOccupied(String),
+    #[error("creation key '{0}' names a Container with incompatible creation inputs")]
+    CreationKeyOccupied(String),
     #[error("pre-deploy container requested without a pre-deploy hook")]
     MissingPreDeployHook,
     #[error("container duration exceeds Docker's range")]
@@ -797,7 +797,7 @@ impl Error {
             })
             | Self::VolumeShapeMismatch { .. }
             | Self::VolumeInUse { .. }
-            | Self::SlotNameOccupied(_)
+            | Self::CreationKeyOccupied(_)
             | Self::ServicePlacementMismatch
             | Self::WorkNotAccepted => RpcErrorCode::Conflict,
             Self::ProvisionedStorageUnsupported | Self::UnsupportedImageStore => RpcErrorCode::Unsupported,

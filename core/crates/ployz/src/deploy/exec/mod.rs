@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::cluster::ContainerObservationCondition;
 use crate::connect::{Client, TARGET_RPC_TIMEOUT, stop_rpc_timeout};
-use ployz_core::{EnvironmentValues, ListContainersRequest};
+use ployz_core::EnvironmentValues;
 
 use super::{
     DeployOperation, DeployOutcome, ReplacementCompensation, ReplacementOperation, RestartAttempt,
@@ -71,6 +71,29 @@ fn replacement_failure_outcome_from<E>(
     })
 }
 
+/// One Deploy run's identity. Every create the run makes is keyed off it, so a
+/// later Deploy or Retry never receives a Container this run created.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct DeployRun(uuid::Uuid);
+
+impl DeployRun {
+    pub(super) fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+
+    /// The key of the create `operation` makes. An Operation creates at most one
+    /// Container, so the key is unique within the run.
+    pub(super) fn creation_key(self, operation: usize) -> CreationKey {
+        CreationKey(format!("deploy:{}:{operation}", self.0))
+    }
+}
+
+/// Retry identity of one create. The daemon answers a repeated key with the
+/// Container it already made, so a create retried after a lost reply never
+/// mints a second one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct CreationKey(String);
+
 pub(super) trait MachineOperations {
     /// Make the image `spec` runs present on the Machine as its pull policy asks.
     async fn pull_image(
@@ -99,7 +122,7 @@ pub(super) trait MachineOperations {
         kind: ContainerKind,
         namespace: &Namespace,
         spec: &ResolvedServiceSpec,
-        replacing: Option<ContainerId>,
+        key: &CreationKey,
     ) -> Result<ContainerCreated, RpcError>;
     async fn start_container(
         &self,
@@ -225,49 +248,12 @@ impl MachineOperations for Client {
         kind: ContainerKind,
         namespace: &Namespace,
         spec: &ResolvedServiceSpec,
-        replacing: Option<ContainerId>,
+        key: &CreationKey,
     ) -> Result<ContainerCreated, RpcError> {
-        // Replanning a retained replacement as Run must keep its persisted creation identity.
-        let replay_key = if kind == ContainerKind::ServiceContainer
-            && spec.mode == ployz_core::ServiceMode::Global
-            && replacing.is_none()
-        {
-            self.clone()
-                .read::<op::ListContainers>(
-                    ListContainersRequest {
-                        environment: EnvironmentValues::Included,
-                    },
-                    &MachineTarget::from(machine_id),
-                )
-                .await?
-                .containers
-                .into_iter()
-                .find_map(|container| {
-                    (container.machine_id == *machine_id
-                        && container.kind == kind
-                        && container.namespace == *namespace
-                        && container.resolved_spec == *spec)
-                        .then(|| container.labels.get("ployz.creation.key").cloned())
-                        .flatten()
-                })
-        } else {
-            None
-        };
         self.invoke::<op::CreateContainer>(
             CreateContainerRequest {
                 deployment_id: self.deployment_id.clone(),
-                creation_key: replay_key.or_else(|| {
-                    (kind == ContainerKind::ServiceContainer
-                        && spec.mode == ployz_core::ServiceMode::Global)
-                        .then(|| {
-                            let key = crate::cluster::global_creation_key(spec);
-                            // Explicit replacement can overlap even an identical spec.
-                            match replacing {
-                                Some(old) => format!("{key}:replace:{old}"),
-                                None => key,
-                            }
-                        })
-                }),
+                creation_key: Some(key.0.clone()),
                 kind,
                 namespace: namespace.clone(),
                 resolved_spec: spec.clone(),
@@ -386,9 +372,10 @@ impl From<ExecutionError> for OperationFailure {
     }
 }
 
-// Wait out a target daemon restart on the same Machine. Create stays
-// one-shot — a dropped create response must not mint a second container.
-// Do not walk to another connection; that is a different command-entry problem.
+// Wait out a target daemon restart on the same Machine. Every create carries
+// its run's creation key, so a retried create finds the Container its lost
+// reply made. Do not walk to another connection; that is a different
+// command-entry problem.
 struct RestartTolerant<'a, C> {
     inner: &'a C,
     cancellation: &'a CancellationToken,
@@ -437,11 +424,13 @@ impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
         kind: ContainerKind,
         namespace: &Namespace,
         spec: &ResolvedServiceSpec,
-        replacing: Option<ContainerId>,
+        key: &CreationKey,
     ) -> Result<ContainerCreated, RpcError> {
-        self.inner
-            .create_container(machine_id, kind, namespace, spec, replacing)
-            .await
+        wait_out_restart(self.cancellation, || {
+            self.inner
+                .create_container(machine_id, kind, namespace, spec, key)
+        })
+        .await
     }
 
     async fn start_container(
@@ -608,6 +597,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         inner: client,
         cancellation,
     };
+    let run = DeployRun::new();
     if let Err((index, error)) = pull_images(operations, &client).await {
         let error = machine_error(MachineAction::PullImage, error);
         progress.fail(index, error.clone());
@@ -636,6 +626,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
             &client,
             cancellation,
             namespace,
+            run,
         )
         .await
         {
@@ -676,6 +667,7 @@ async fn execute_operation<C: MachineOperations>(
     client: &C,
     cancellation: &CancellationToken,
     namespace: &Namespace,
+    run: DeployRun,
 ) -> Result<(), OperationFailure> {
     progress.set_running(index, OperationPhase::Starting);
     match operation {
@@ -712,6 +704,7 @@ async fn execute_operation<C: MachineOperations>(
             spec,
             *skip_health_monitor,
             cancellation,
+            run,
         )
         .await
         .map(|_| ())
@@ -763,6 +756,7 @@ async fn execute_operation<C: MachineOperations>(
                 replacement,
                 namespace,
                 cancellation,
+                run,
             )
             .await
         }
@@ -787,6 +781,7 @@ async fn execute_operation<C: MachineOperations>(
             spec,
             old_hook_containers,
             cancellation,
+            run,
         )
         .await
         .map_err(Into::into),
@@ -814,6 +809,7 @@ pub(super) async fn move_container(
         cancellation,
     };
     let mut progress = Progress::new(Vec::new(), None);
+    let run = DeployRun::new();
     let created = create_and_start(
         &client,
         0,
@@ -822,7 +818,7 @@ pub(super) async fn move_container(
         ContainerKind::ServiceContainer,
         namespace,
         spec,
-        None,
+        run,
         cancellation,
     )
     .await?;
@@ -847,13 +843,19 @@ pub(super) async fn move_container(
         machine_id: *from,
         container_id: *old,
     };
-    execute_operation(&removal, 0, &mut progress, &client, cancellation, namespace)
-        .await
-        .map_err(|failure| match failure {
-            OperationFailure::Ordinary(error) | OperationFailure::Replacement { error, .. } => {
-                error
-            }
-        })?;
+    execute_operation(
+        &removal,
+        0,
+        &mut progress,
+        &client,
+        cancellation,
+        namespace,
+        run,
+    )
+    .await
+    .map_err(|failure| match failure {
+        OperationFailure::Ordinary(error) | OperationFailure::Replacement { error, .. } => error,
+    })?;
     Ok(new)
 }
 
@@ -869,12 +871,13 @@ async fn create_and_start<C: MachineOperations>(
     kind: ContainerKind,
     namespace: &Namespace,
     spec: &ResolvedServiceSpec,
-    replacing: Option<ContainerId>,
+    run: DeployRun,
     cancellation: &CancellationToken,
 ) -> Result<ContainerCreated, ExecutionError> {
     progress.set_running(index, OperationPhase::CreatingContainer);
+    let key = run.creation_key(index);
     let created = match client
-        .create_container(machine_id, kind, namespace, spec, replacing)
+        .create_container(machine_id, kind, namespace, spec, &key)
         .await
     {
         Ok(created) => created,
@@ -884,12 +887,9 @@ async fn create_and_start<C: MachineOperations>(
         }
     };
     if cancellation.is_cancelled() {
-        // A keyed create can return a Container owned by an earlier attempt.
-        if kind != ContainerKind::ServiceContainer || spec.mode != ployz_core::ServiceMode::Global {
-            let _ = client
-                .remove_container(machine_id, &created.container_id)
-                .await;
-        }
+        let _ = client
+            .remove_container(machine_id, &created.container_id)
+            .await;
         return Err(ExecutionError::Cancelled);
     }
     progress.set_display_name(index, created.display_name.clone());
@@ -898,12 +898,9 @@ async fn create_and_start<C: MachineOperations>(
         .start_container(machine_id, &created.container_id)
         .await
     {
-        // A keyed create can return a Container owned by an earlier attempt.
-        if kind != ContainerKind::ServiceContainer || spec.mode != ployz_core::ServiceMode::Global {
-            let _ = client
-                .remove_container(machine_id, &created.container_id)
-                .await;
-        }
+        let _ = client
+            .remove_container(machine_id, &created.container_id)
+            .await;
         return Err(machine_error(MachineAction::StartContainer, error));
     }
     Ok(created)
@@ -922,6 +919,7 @@ async fn run_container<C: MachineOperations>(
     spec: &ResolvedServiceSpec,
     skip_health_monitor: bool,
     cancellation: &CancellationToken,
+    run: DeployRun,
 ) -> Result<ContainerId, ExecutionError> {
     let created = create_and_start(
         client,
@@ -931,7 +929,7 @@ async fn run_container<C: MachineOperations>(
         ContainerKind::ServiceContainer,
         namespace,
         spec,
-        None,
+        run,
         cancellation,
     )
     .await?;
@@ -1001,6 +999,7 @@ async fn replace_container<C: MachineOperations>(
     operation: &ReplacementOperation,
     namespace: &Namespace,
     cancellation: &CancellationToken,
+    run: DeployRun,
 ) -> Result<(), OperationFailure> {
     let stop_first = operation.spec.update.order == UpdateOrder::StopFirst;
     let old_stopped = if stop_first {
@@ -1043,7 +1042,7 @@ async fn replace_container<C: MachineOperations>(
         ContainerKind::ServiceContainer,
         namespace,
         &operation.spec,
-        Some(operation.old_container_id),
+        run,
         cancellation,
     )
     .await
@@ -1184,6 +1183,7 @@ async fn run_hook<C: MachineOperations>(
     spec: &ResolvedServiceSpec,
     old_hook_containers: &[(MachineId, ContainerId)],
     cancellation: &CancellationToken,
+    run: DeployRun,
 ) -> Result<(), ExecutionError> {
     progress.set_running(index, OperationPhase::RemovingContainer);
     for (old_machine_id, old_container_id) in old_hook_containers {
@@ -1203,7 +1203,7 @@ async fn run_hook<C: MachineOperations>(
         ContainerKind::PreDeployHook,
         namespace,
         spec,
-        None,
+        run,
         cancellation,
     )
     .await?;

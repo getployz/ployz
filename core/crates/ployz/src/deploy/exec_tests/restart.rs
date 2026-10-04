@@ -99,29 +99,31 @@ async fn inspect_lost_to_a_daemon_restart_is_waited_out() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn create_unavailable_is_not_retried() {
+async fn create_lost_to_a_restart_is_retried_with_the_same_key() {
     let machine = machine('1');
+    let created_id = container('a');
     let plan = vec![run(&machine, spec(None, None, None), true)];
-    let client = Scripted::new(vec![failed_unavailable(
-        Call::Create(machine, ContainerKind::ServiceContainer),
-        "transport error",
-    )]);
+    let client = Scripted::new(vec![
+        failed_unavailable(
+            Call::Create(machine, ContainerKind::ServiceContainer),
+            "transport error",
+        ),
+        created(
+            Call::Create(machine, ContainerKind::ServiceContainer),
+            &created_id,
+        ),
+        ok(Call::Start(machine, created_id)),
+        serving(created_id),
+    ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-    assert!(matches!(
-        outcome,
-        DeployOutcome::Failed {
-            failed: FailedOperation::Operation {
-                error: ExecutionError::Machine {
-                    action: MachineAction::CreateContainer,
-                    ..
-                },
-                ..
-            },
-            ..
-        }
-    ));
+    assert!(matches!(outcome, DeployOutcome::Success { .. }));
+    let keys = client.keys.lock().unwrap();
+    let [first, retry] = keys.as_slice() else {
+        panic!("expected the create and its retry: {keys:?}");
+    };
+    assert_eq!(first, retry);
     client.assert_done();
 }
 

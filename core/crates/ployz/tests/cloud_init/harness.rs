@@ -759,6 +759,21 @@ impl MachineRpc for JoinDaemon {
                     details: serde_json::Value::Null,
                 });
             }
+            // Like the daemon, a repeated key answers with the Container it already made.
+            let key = create.creation_key.clone().unwrap();
+            if let Some(existing) = self
+                .inner
+                .containers
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|container| container.labels.get("ployz.creation.key") == Some(&key))
+            {
+                return rpc_ok(ContainerCreated {
+                    container_id: existing.container_id,
+                    display_name: existing.display_name.clone(),
+                });
+            }
             let n = self.inner.containers.lock().unwrap().len() + 1;
             let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
             let machine_id = self.inner.registration.assigned_machine.id;
@@ -774,7 +789,10 @@ impl MachineRpc for JoinDaemon {
                     effective_healthcheck: None,
                     resolved_spec: create.resolved_spec,
                     address: None,
-                    labels: Default::default(),
+                    labels: std::collections::BTreeMap::from([(
+                        "ployz.creation.key".to_owned(),
+                        key,
+                    )]),
                 })
                 .unwrap(),
             );
