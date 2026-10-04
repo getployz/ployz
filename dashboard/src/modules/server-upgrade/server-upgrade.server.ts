@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import type { MachineUpgradeAttempt, MachineUpgradeAttemptId } from "@ployz/sdk";
-import { and, desc, eq, isNotNull, lt, max, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, isNotNull, lt, sql, type SQL } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import type { Actor } from "#/modules/identity/actor";
@@ -79,10 +79,7 @@ export const organizationReleaseChannel = Effect.fn("ServerUpgrade.channel")(fun
   return row?.channel ?? DEFAULT_SERVER_UPGRADE_SETTINGS.channel;
 });
 
-/**
- * Each Server's latest Upgrade attempt in the Organization, keyed by Machine ID, and when the latest successful attempt
- * ended.
- */
+/** Each Server's latest Upgrade attempt in the Organization, keyed by Machine ID. */
 export const listLatestServerUpgrades = Effect.fn("ServerUpgrade.listLatest")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string },
@@ -102,12 +99,9 @@ export const listLatestServerUpgrades = Effect.fn("ServerUpgrade.listLatest")(fu
   }).from(serverUpgradeAttempt)
     .where(inOrganization)
     .orderBy(serverUpgradeAttempt.machineId, desc(serverUpgradeAttempt.startedAt));
-  const [succeeded] = yield* drizzle.select({ endedAt: max(serverUpgradeAttempt.endedAt) }).from(serverUpgradeAttempt)
-    .where(and(inOrganization, eq(serverUpgradeAttempt.outcome, "succeeded")));
   return {
     servers: Object.fromEntries(rows.map(({ machineId, startedAt, ...latest }) =>
       [machineId, { ...latest, startedAt: startedAt.toISOString() } satisfies LatestUpgrade])),
-    lastUpgradedAt: succeeded?.endedAt?.toISOString() ?? null,
   };
 });
 
