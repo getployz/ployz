@@ -478,9 +478,11 @@ pub(super) async fn verify_running_daemon(
     )?;
     let pid = daemon_main_pid()?;
     let running =
-        fs::metadata(paths.proc_dir.join(&pid).join("exe")).map_err(|source| Error::Io {
-            stage: "inspect running daemon executable",
-            source,
+        fs::metadata(paths.proc_dir.join(pid.to_string()).join("exe")).map_err(|source| {
+            Error::Io {
+                stage: "inspect running daemon executable",
+                source,
+            }
         })?;
     let installed = fs::metadata(paths.daemon()).map_err(|source| Error::Io {
         stage: "inspect installed daemon executable",
@@ -506,18 +508,19 @@ pub(super) async fn verify_running_daemon(
 }
 
 /// The process systemd currently runs as `ployz.service`'s main process.
-pub(super) fn daemon_main_pid() -> Result<String, Error> {
+pub(super) fn daemon_main_pid() -> Result<u32, Error> {
     let output = systemctl(
         "inspect running daemon",
         ["show", "--property=MainPID", "--value", "ployz.service"],
     )?;
-    let pid = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if pid.is_empty() || pid == "0" || !pid.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(Error::Verification(format!(
+    let pid = String::from_utf8_lossy(&output.stdout);
+    let pid = pid.trim();
+    match pid.parse() {
+        Ok(0) | Err(_) => Err(Error::Verification(format!(
             "ployz.service did not report a daemon process ID ({pid:?})"
-        )));
+        ))),
+        Ok(pid) => Ok(pid),
     }
-    Ok(pid)
 }
 
 /// Prove the Machine API on `socket` answers as `target`.
