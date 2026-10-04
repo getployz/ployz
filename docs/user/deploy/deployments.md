@@ -90,8 +90,8 @@ the replica stops anyway and the deploy warns which server didn't answer.
 
 - **Set a health check.** Under **Settings → Deploy**, set **Healthcheck** to a path like `/up`.
   A new replica is ready when that path answers with a 2xx status. A redirect, to `https://` or
-  `/login` for example, fails the check. Without a health check, the old replica stops a few
-  seconds after the new one starts, ready or not.
+  `/login` for example, fails the check. Without a health check, a new replica takes traffic as
+  soon as it starts, ready or not, and the old one stops a few seconds later.
 - **A service with a [volume](../services/volumes.md) has a short gap.** Its old replica stops
   first, so two never write the same files.
 - **Migrations run first.** A **Pre-deploy command**, like `npm run migrate`, runs once with the
@@ -102,8 +102,15 @@ the replica stops anyway and the deploy warns which server didn't answer.
 
 ## When a deploy fails
 
-Where a new replica doesn't come up, the old one keeps serving. Ployz doesn't roll back: what
-was already replaced keeps the new version, and services later in the order stay as they were.
+Ployz doesn't roll back. What happens to a service's traffic depends on how far it got:
+
+- **No new replica came up.** The old version keeps serving.
+- **Some new replicas came up.** They serve every request for that service, and the old
+  replicas run without traffic until your next deploy. Your app stays up on fewer replicas than
+  usual, so fix the cause and deploy again soon.
+
+Services later in the order stay as they were. A new replica that failed is stopped and kept, so
+you can read its logs.
 
 > [!WARNING]
 > Ployz doesn't undo a pre-deploy command. If a migration ran and the deploy then failed, your
