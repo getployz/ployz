@@ -848,6 +848,12 @@ impl MachineRpc for JoinDaemon {
             container_id: start.container_id,
         })
     }
+    async fn mark_container_stopping(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
     async fn stop_container(
         &self,
         request: Request<OpaquePayload>,

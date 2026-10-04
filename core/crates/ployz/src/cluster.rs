@@ -1346,6 +1346,7 @@ async fn change_container_rpc(
 ) -> Result<(), RpcError> {
     let target = MachineTarget::from(machine_id);
     if matches!(action, ContainerAction::Stop | ContainerAction::Remove) {
+        crate::ingress::withdraw(client, machine_id, container_id).await;
         accept_stop_result(
             action,
             client

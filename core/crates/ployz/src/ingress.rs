@@ -1,13 +1,21 @@
 //! Ingress Proxy identity and deployment boundaries.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, time::Duration};
 
 use ployz_core::{
-    ContainerObservation, EnvironmentValues, PlacementConstraint, QualifiedService,
-    RequestedServiceSpec, caddy_service_spec,
+    ContainerId, ContainerObservation, EnvironmentValues, GetIngressProxyConfigRequest, MachineId,
+    MachineTarget, MarkContainerStoppingRequest, PlacementConstraint, PortPublication,
+    QualifiedService, RequestedServiceSpec, caddy_service_spec, op,
 };
 
-use crate::{connect::Client, deploy::Outcome, failure::Failure};
+use crate::{
+    connect::{Client, TARGET_RPC_TIMEOUT},
+    deploy::Outcome,
+    failure::Failure,
+};
+
+const WITHDRAW_POLL: Duration = Duration::from_millis(250);
+const WITHDRAW_CAP: Duration = Duration::from_secs(10);
 
 mod caddy;
 pub use caddy::IngressImageError;
@@ -104,6 +112,94 @@ fn desired(
         .map(|running| running.constraints.clone())
         .unwrap_or_default();
     Some((image, constraints))
+}
+
+/// Take one Container out of every Ingress Proxy before it is stopped: mark it stopping on
+/// its Server, then wait until no reachable ingress-role Server's loaded config routes to it. A proxy
+/// that cannot be read counts as still routing. After [`WITHDRAW_CAP`] the stop goes ahead
+/// with a warning naming the unconfirmed Servers. Marking failures (an older daemon, a
+/// Container already gone) skip the wait; the stop reports its own error.
+pub(crate) async fn withdraw(client: &Client, machine_id: &MachineId, container_id: &ContainerId) {
+    let Ok(details) = client
+        .invoke::<op::MarkContainerStopping>(
+            MarkContainerStoppingRequest {
+                container_id: *container_id,
+            },
+            &MachineTarget::from(machine_id),
+            Some(TARGET_RPC_TIMEOUT),
+        )
+        .await
+    else {
+        return;
+    };
+    let upstreams = routed_upstreams(&details.container);
+    if upstreams.is_empty() {
+        return;
+    }
+    let Ok(machines) = client.clone().machines().await else {
+        return;
+    };
+    let mut pending = machines
+        .into_iter()
+        // A Server known down gets no config either; waiting on it only costs the cap.
+        .filter(|entry| entry.machine.accepts_ingress && entry.membership.invites_rpc())
+        .map(|entry| entry.machine)
+        .collect::<Vec<_>>();
+    let confirmed = tokio::time::timeout(WITHDRAW_CAP, async {
+        loop {
+            let routes = futures_util::future::join_all(pending.iter().map(|machine| async {
+                client
+                    .invoke::<op::GetIngressProxyConfig>(
+                        GetIngressProxyConfigRequest {},
+                        &MachineTarget::from(&machine.id),
+                        Some(WITHDRAW_CAP),
+                    )
+                    .await
+                    .map_or(true, |proxy| {
+                        proxy
+                            .config()
+                            .split_whitespace()
+                            .any(|token| upstreams.iter().any(|upstream| upstream == token))
+                    })
+            }))
+            .await;
+            let mut routes = routes.into_iter();
+            pending.retain(|_| routes.next().unwrap_or(true));
+            if pending.is_empty() {
+                return;
+            }
+            tokio::time::sleep(WITHDRAW_POLL).await;
+        }
+    })
+    .await;
+    if confirmed.is_err() {
+        let names = pending
+            .iter()
+            .map(|machine| machine.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        crate::output::warn(format!(
+            "stopping Container {container_id} before Ingress Proxies on {names} confirmed they stopped routing to it"
+        ));
+    }
+}
+
+/// The `ip:port` upstreams an Ingress Proxy would route to this Container.
+fn routed_upstreams(container: &ContainerObservation) -> Vec<String> {
+    let Some(address) = container.address else {
+        return Vec::new();
+    };
+    container
+        .resolved_spec
+        .ports
+        .iter()
+        .filter_map(|port| match port {
+            PortPublication::Ingress { container_port, .. } => {
+                Some(format!("{}:{container_port}", address.0))
+            }
+            PortPublication::Host { .. } => None,
+        })
+        .collect()
 }
 
 /// True when this observation is the reserved Ingress Proxy Service.

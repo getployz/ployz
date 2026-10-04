@@ -161,6 +161,7 @@ impl ContainerRuntime {
         // Bollard opens this lazy stream when first polled. The cursor replays any event
         // between capturing `since` and completing the initial snapshot.
         let mut events = Box::pin(self.docker.client.events(Some(options)));
+        let mut stopping = self.stopping.subscribe();
         sync(self, sink).await?;
 
         let mut rescans = tokio::time::interval(sink.rescan_interval);
@@ -177,6 +178,8 @@ impl ContainerRuntime {
                     None => return Err(Error::EventStreamClosed),
                 },
                 _ = rescans.tick() => sync(self, sink).await?,
+                // A stopping mark changes no Docker state, so no event announces it.
+                Ok(()) = stopping.changed() => sync(self, sink).await?,
                 () = async {
                     match scan_at {
                         Some(deadline) => tokio::time::sleep_until(deadline).await,

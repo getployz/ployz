@@ -289,6 +289,7 @@ impl MachineOperations for Client {
         container_id: &ContainerId,
         grace_period_seconds: Option<i32>,
     ) -> Result<(), RpcError> {
+        crate::ingress::withdraw(self, machine_id, container_id).await;
         self.invoke::<op::StopContainer>(
             StopContainerRequest {
                 container_id: *container_id,

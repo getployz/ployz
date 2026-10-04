@@ -329,6 +329,13 @@ pub struct StopContainerRequest {
     pub grace_period_seconds: Option<i32>,
 }
 
+/// Report one local Container's health as `stopping` so the Ingress Proxies drop it
+/// before it stops. Answers the Container as now observed.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MarkContainerStoppingRequest {
+    pub container_id: ContainerId,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RemoveContainerRequest {
     pub container_id: ContainerId,

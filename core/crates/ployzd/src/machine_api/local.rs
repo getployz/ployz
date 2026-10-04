@@ -270,6 +270,26 @@ impl MachineRpc for MachineService {
         }
     }
 
+    async fn mark_container_stopping(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::MarkContainerStopping>(request)?;
+        let containers = match self.containers() {
+            Ok(containers) => containers,
+            Err(error) => return respond(error),
+        };
+        containers.mark_stopping(request.container_id);
+        let machine_id = self.local_record().id();
+        match containers
+            .inspect_managed_details(&request.container_id, &machine_id)
+            .await
+        {
+            Ok(details) => respond(details),
+            Err(error) => respond(RpcError::from(&error)),
+        }
+    }
+
     async fn get_container_observations(
         &self,
         request: Request<OpaquePayload>,

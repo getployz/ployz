@@ -128,6 +128,7 @@ impl CatchUpClient for Client {
                         && container.namespace == request.namespace
                         && container.resolved_spec.name == request.resolved_spec.name
                 }) {
+                    crate::ingress::withdraw(self, machine_id, &container.container_id).await;
                     self.call::<op::StopContainer>(
                         ployz_core::StopContainerRequest {
                             container_id: container.container_id,

@@ -349,7 +349,9 @@ impl ContainerRuntime {
             .client
             .start_container(container_id.as_str(), None)
             .await;
-        idempotent_lifecycle_result(container_id, result)
+        idempotent_lifecycle_result(container_id, result)?;
+        self.clear_stopping(container_id);
+        Ok(())
     }
 
     pub async fn stop(
@@ -375,6 +377,18 @@ impl ContainerRuntime {
     }
 
     pub async fn remove(
+        &self,
+        container_id: &ContainerId,
+        remove_volumes: bool,
+        force: bool,
+    ) -> Result<(), Error> {
+        self.remove_managed(container_id, remove_volumes, force)
+            .await?;
+        self.clear_stopping(container_id);
+        Ok(())
+    }
+
+    async fn remove_managed(
         &self,
         container_id: &ContainerId,
         remove_volumes: bool,

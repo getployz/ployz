@@ -708,6 +708,10 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                             })
                         }
                     }
+                    // Unmarked: the stop goes ahead without waiting on proxies.
+                    RpcRequestBody::MarkContainerStopping(_) => {
+                        RpcResponse::from(error("mark unsupported"))
+                    }
                     other => panic!("unexpected mutation: {other:?}"),
                 };
                 Ok(Response::new(response.encode().unwrap()))

@@ -18,7 +18,7 @@ mod integration_tests;
 pub(crate) mod test_support;
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
     sync::Arc,
@@ -41,7 +41,7 @@ use ployz_core::{
 use serde::Deserialize;
 use serde_json::json;
 use thiserror::Error;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 
 use http_health::probe as http_health_probe;
 use observe::ObservationSink;
@@ -129,6 +129,8 @@ pub struct ContainerRuntime {
     docker: LocalDocker,
     specs: MachineSpecStore,
     sink: Option<ObservationSink>,
+    // ponytail: in memory only; a daemon restart forgets marks, the client stops anyway.
+    stopping: watch::Sender<BTreeSet<ContainerId>>,
 }
 
 impl ContainerRuntime {
@@ -138,7 +140,20 @@ impl ContainerRuntime {
             docker,
             specs,
             sink: None,
+            stopping: watch::Sender::new(BTreeSet::new()),
         }
+    }
+
+    /// Report this Container as `stopping` until it is removed or started again,
+    /// so the Ingress Proxies stop routing to it before it stops.
+    pub fn mark_stopping(&self, container_id: ContainerId) {
+        self.stopping
+            .send_if_modified(|stopping| stopping.insert(container_id));
+    }
+
+    fn clear_stopping(&self, container_id: &ContainerId) {
+        self.stopping
+            .send_if_modified(|stopping| stopping.remove(container_id));
     }
 
     pub async fn open(spec_store: impl Into<PathBuf>) -> Result<Self, Error> {
@@ -293,6 +308,7 @@ impl ContainerRuntime {
                 };
             }
         }
+        let runtime = withdrawn(runtime, self.stopping.borrow().contains(container_id));
         let container =
             ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
                 container_id: *container_id,
@@ -316,6 +332,34 @@ impl ContainerRuntime {
             image_id: inspected.image,
         })
     }
+}
+
+/// A Running Container marked stopping reports health `stopping`, which no proxy routes to.
+fn withdrawn(runtime: ContainerRuntimeObservation, stopping: bool) -> ContainerRuntimeObservation {
+    if stopping && matches!(runtime, ContainerRuntimeObservation::Running { .. }) {
+        return ContainerRuntimeObservation::Running {
+            health: HealthObservation::Stopping,
+        };
+    }
+    runtime
+}
+
+#[cfg(test)]
+#[test]
+fn withdrawn_hides_only_running_containers_marked_stopping() {
+    let healthy = ContainerRuntimeObservation::Running {
+        health: HealthObservation::Healthy,
+    };
+    let stopping = ContainerRuntimeObservation::Running {
+        health: HealthObservation::Stopping,
+    };
+    assert_eq!(withdrawn(healthy.clone(), true), stopping);
+    assert!(!withdrawn(healthy.clone(), true).is_healthy());
+    assert_eq!(withdrawn(healthy.clone(), false), healthy);
+    assert_eq!(
+        withdrawn(ContainerRuntimeObservation::Exited { code: 0 }, true),
+        ContainerRuntimeObservation::Exited { code: 0 }
+    );
 }
 
 fn decode_raw_inspect(

@@ -716,6 +716,7 @@ fn runtime_summary(observation: &ContainerRuntimeObservation) -> RuntimeSummary 
             HealthObservation::NotConfigured => RuntimeSummary::NoHealthcheck,
             HealthObservation::Healthy => RuntimeSummary::ReportedHealthy,
             HealthObservation::Unrecognized(_) => RuntimeSummary::Unrecognized,
+            HealthObservation::Stopping => RuntimeSummary::Removing,
         },
         ContainerRuntimeObservation::Paused => RuntimeSummary::Paused,
         ContainerRuntimeObservation::Restarting => RuntimeSummary::Restarting,

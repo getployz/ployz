@@ -208,6 +208,9 @@ containers, WireGuard for the mesh, SQLite-backed CRDT replication for state,
 Caddy for ingress, systemd for lifecycle — and writes only the thin coordination
 between them. Caddy is the only Ingress Proxy; its implementation is not a
 Cluster setting.
+A Container leaves every Ingress Proxy before it stops: the client marks it
+stopping and waits until each proxy's loaded config drops it, instead of tuning
+proxy retries to cover traffic sent to a Container that is already gone.
 
 **Why.** Every primitive we own is a primitive we patch, secure, and debug
 forever. The maintenance budget belongs to the coordination semantics above, which
