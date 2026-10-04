@@ -94,7 +94,8 @@ export type ServerPolicyChangeRequestedEventData = {
 /** A rollout request. A manual one names who clicked and the Server they clicked on. */
 export type ServerUpgradeRequestedEventData = {
   organizationId: string;
-  machineId: string;
+  /** The Server to Upgrade; null upgrades every Server behind. */
+  machineId: string | null;
   trigger: UpgradeTrigger;
   userId: string | null;
 };

@@ -22,6 +22,9 @@ import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postg
 const organizationId = "00000000-0000-4000-8000-000000000c01";
 const userId = "00000000-0000-4000-8000-000000000c02";
 const machineId = "a".repeat(32);
+// Every Server's ID repeats one hex digit: web-1 is `1…1`, web-2 `2…2`, web-10 `a…a` above.
+const serverId = (digit: string) => digit.repeat(32);
+const release = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("v0.2.2\n"));
 const inngest = new Inngest({ id: "server-upgrade-test" });
 const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
@@ -35,7 +38,12 @@ describe("roll-out-server-upgrade", () => {
   let requestAnswer: Partial<Attempt> | "busy";
   /** What each inspect answers, in order; the last repeats. `unreadable` fails like a restarting daemon. */
   let inspectAnswers: Array<Partial<Attempt> | "unreadable">;
+  /** Per-Server answers, over the two above. */
+  let requestAnswerFor: Record<string, Partial<Attempt> | "busy">;
+  let inspectAnswersFor: Record<string, Array<Partial<Attempt> | "unreadable">>;
   let requests: Array<{ machine: string; attemptId: string; release: string }>;
+  /** Each request and each terminal answer, in the order the Servers saw them. */
+  let log: string[];
   let captured: Parameters<PostHogService["capture"]>[0][];
 
   const attempt = (attemptId: string, answer: Partial<Attempt>) =>
@@ -54,26 +62,38 @@ describe("roll-out-server-upgrade", () => {
           watchFirstFrame: () => Effect.succeed(frame),
           requestMachineUpgrade: (machine: string, attemptId: string, release: string) => {
             requests.push({ machine, attemptId, release });
-            return requestAnswer === "busy"
+            log.push(`request ${machine}`);
+            const answer = requestAnswerFor[machine] ?? requestAnswer;
+            return answer === "busy"
               ? Effect.fail(new PloyzProviderError({ operation: "request machine upgrade", cause: { code: "conflict", message: "busy" } }))
-              : Effect.succeed(attempt(attemptId, requestAnswer));
-          },
-          inspectMachineUpgrade: (_machine: string, attemptId: string) => {
-            const answer = inspectAnswers.length > 1 ? inspectAnswers.shift() : inspectAnswers[0];
-            return answer === undefined || answer === "unreadable"
-              ? Effect.fail(new PloyzProviderError({ operation: "inspect machine upgrade", cause: { code: "unavailable" } }))
               : Effect.succeed(attempt(attemptId, answer));
+          },
+          inspectMachineUpgrade: (machine: string, attemptId: string) => {
+            const answers = inspectAnswersFor[machine] ??= [...inspectAnswers];
+            const answer = answers.length > 1 ? answers.shift() : answers[0];
+            if (answer === undefined || answer === "unreadable") {
+              return Effect.fail(new PloyzProviderError({ operation: "inspect machine upgrade", cause: { code: "unavailable" } }));
+            }
+            if (answer.outcome !== "running") log.push(`${answer.outcome} ${machine}`);
+            return Effect.succeed(attempt(attemptId, answer));
           },
         }) }),
       }),
     ))) as typeof runInngestEffect;
 
-  const rollOut = () => new InngestTestEngine({
+  /** Upgrade on a Server page names its Server; Upgrade and Upgrade the rest on the Servers page name none. */
+  const rollOut = (target: string | null = machineId) => new InngestTestEngine({
     function: createRollOutServerUpgrade(new Inngest({ id: "test" }), runEffect),
-    events: [{ name: "server/upgrade.requested", data: { organizationId, machineId, trigger: "manual", userId } }],
+    events: [{ name: "server/upgrade.requested", data: { organizationId, machineId: target, trigger: "manual", userId } }],
     // Each poll's sleep ends at once; eighty polls are the twenty minutes.
-    steps: Array.from({ length: 80 }, (_, poll) => ({ id: `wait-${poll}`, handler: () => undefined })),
+    steps: frame.machines.flatMap(({ machine }) =>
+      Array.from({ length: 80 }, (_, poll) => ({ id: `wait-${machine.id}-${poll}`, handler: () => undefined }))),
   }).execute();
+  const server = (digit: string, name: string, version: string, extra: { membership?: string; runningBuilds?: number } = {}) => {
+    const machine = runtimeWatchMachineFixture(serverId(digit), name);
+    machine.runtime = { ...machine.runtime, daemon_version: version, running_builds: extra.runningBuilds ?? 0 };
+    return runtimeWatchMachineObservationFixture({ machine, membership: extra.membership ?? "up" });
+  };
   const rows = async () => (await harness.pool.query(
     `select attempt_id, trigger, requested_by_user_id, channel, from_version, target_version, outcome, stage, error, ended_at
      from server_upgrade_attempt`,
@@ -93,7 +113,10 @@ describe("roll-out-server-upgrade", () => {
     })] });
     requestAnswer = { outcome: "accepted" };
     inspectAnswers = [running("restarting"), { outcome: "succeeded", version: "0.2.2" }];
+    requestAnswerFor = {};
+    inspectAnswersFor = {};
     requests = [];
+    log = [];
     captured = [];
     send.mockClear();
     await harness.pool.query(`
@@ -109,7 +132,7 @@ describe("roll-out-server-upgrade", () => {
     const output = await rollOut();
 
     expect(output.error).toBeUndefined();
-    expect(output.result).toMatchObject({ outcome: "succeeded" });
+    expect(output.result).toMatchObject({ results: [{ machineId, outcome: "succeeded" }] });
     expect(requests).toEqual([{ machine: machineId, attemptId: expect.stringMatching(/^[0-9a-f]{32}$/u), release: "stable" }]);
     expect(await rows()).toEqual([{
       attempt_id: requests[0]?.attemptId,
@@ -137,7 +160,7 @@ describe("roll-out-server-upgrade", () => {
 
     const output = await rollOut();
 
-    expect(output.result).toMatchObject({ outcome: "failed" });
+    expect(output.result).toMatchObject({ results: [{ outcome: "failed" }] });
     expect(await rows()).toMatchObject([{ outcome: "failed", stage: "readiness", error }]);
     expect(captured).toEqual([expect.objectContaining({
       event: "server_upgrade_failed",
@@ -161,7 +184,7 @@ describe("roll-out-server-upgrade", () => {
 
     const output = await rollOut();
 
-    expect(output.result).toMatchObject({ outcome: "unknown" });
+    expect(output.result).toMatchObject({ results: [{ outcome: "unknown" }] });
     expect(await rows()).toMatchObject([{ outcome: "unknown", stage: "readiness", error: null }]);
     expect(captured).toEqual([expect.objectContaining({ event: "server_upgrade_unknown", properties: expect.objectContaining({ stage: "readiness" }) })]);
   });
@@ -171,7 +194,7 @@ describe("roll-out-server-upgrade", () => {
 
     const output = await rollOut();
 
-    expect(output.result).toEqual({ skipped: "busy" });
+    expect(output.result).toEqual({ results: [{ machineId, skipped: "busy" }] });
     expect(await rows()).toEqual([]);
     expect(captured).toEqual([]);
   });
@@ -180,9 +203,78 @@ describe("roll-out-server-upgrade", () => {
     const observed = frame.machines[0];
     if (observed) observed.machine.runtime.running_builds = 1;
 
-    expect((await rollOut()).result).toEqual({ skipped: "not-online" });
+    expect((await rollOut()).result).toEqual({ results: [{ machineId, skipped: "not-online" }] });
     expect(requests).toEqual([]);
     expect(await rows()).toEqual([]);
+  });
+
+  describe("every Server behind, from the Servers page", () => {
+    beforeEach(() => {
+      frame = runtimeWatchFrameFixture({ machines: [
+        server("a", "web-10", "0.2.1"),
+        server("2", "web-2", "0.2.1"),
+        server("5", "web-5", "0.2.2"),
+        server("1", "web-1", "0.2.1"),
+      ] });
+    });
+
+    it("upgrades them one at a time, in name order, along stable", async () => {
+      const output = await rollOut(null);
+
+      expect(output.error).toBeUndefined();
+      expect(log).toEqual([
+        `request ${serverId("1")}`, `succeeded ${serverId("1")}`,
+        `request ${serverId("2")}`, `succeeded ${serverId("2")}`,
+        `request ${serverId("a")}`, `succeeded ${serverId("a")}`,
+      ]);
+      expect(new Set(requests.map(({ release }) => release))).toEqual(new Set(["stable"]));
+      expect((await rows()).map(({ outcome }) => outcome)).toEqual(["succeeded", "succeeded", "succeeded"]);
+      expect(captured.map(({ event }) => event)).toEqual(Array(3).fill("server_upgrade_succeeded"));
+      expect(release).toHaveBeenCalledWith("https://ployz.sh/v0/stable", expect.anything());
+    });
+
+    it("stops at the first outcome that isn't succeeded, so the rest aren't attempted", async () => {
+      inspectAnswersFor[serverId("2")] = [{ outcome: "failed", stage: "readiness", error: "readiness timed out; restored 0.2.1" }];
+
+      const output = await rollOut(null);
+
+      expect(log).toEqual([
+        `request ${serverId("1")}`, `succeeded ${serverId("1")}`,
+        `request ${serverId("2")}`, `failed ${serverId("2")}`,
+      ]);
+      expect(output.result).toMatchObject({ results: [{ outcome: "succeeded" }, { outcome: "failed" }] });
+      expect(captured.map(({ event }) => event)).toEqual(["server_upgrade_succeeded", "server_upgrade_failed"]);
+    });
+
+    it("skips offline and building Servers, which stay behind", async () => {
+      frame = runtimeWatchFrameFixture({ machines: [
+        server("1", "web-1", "0.2.1", { membership: "down" }),
+        server("2", "web-2", "0.2.1", { runningBuilds: 1 }),
+        server("3", "web-3", "0.2.1"),
+      ] });
+
+      await rollOut(null);
+
+      expect(requests.map(({ machine }) => machine)).toEqual([serverId("3")]);
+      expect(await rows()).toHaveLength(1);
+    });
+
+    it("skips a Server that refuses as Busy, with no row and no event, and goes on", async () => {
+      requestAnswerFor[serverId("1")] = "busy";
+
+      const output = await rollOut(null);
+
+      expect(requests.map(({ machine }) => machine)).toEqual([serverId("1"), serverId("2"), serverId("a")]);
+      expect(output.result).toMatchObject({ results: [{ machineId: serverId("1"), skipped: "busy" }, { outcome: "succeeded" }, { outcome: "succeeded" }] });
+      expect(await rows()).toHaveLength(2);
+      expect(captured).toHaveLength(2);
+    });
+
+    it("never runs two rollouts at once in one Organization: overlapping requests queue", () => {
+      // Inngest runs one rollout per Organization and queues the rest; each run upgrades one Server at a time.
+      expect(createRollOutServerUpgrade(new Inngest({ id: "test" }), runEffect).opts.concurrency)
+        .toEqual([{ key: "event.data.organizationId", limit: 1 }]);
+    });
   });
 
   it("a cancelled run closes its attempt as unknown, once", async () => {
@@ -201,21 +293,29 @@ describe("roll-out-server-upgrade", () => {
     expect(captured.map(({ event }) => event)).toEqual(["server_upgrade_unknown"]);
   });
 
-  it("a plain member can Upgrade, and reads each Server's latest attempt", async () => {
+  it("a plain member can Upgrade one Server or every Server behind, and reads each Server's latest attempt", async () => {
     await runEffect(requestServerUpgrade({ userId }, { organizationSlug: "acme", machineId }));
-    expect(send.mock.calls).toEqual([[{ name: "server/upgrade.requested", data: { organizationId, machineId, trigger: "manual", userId } }]]);
+    await runEffect(requestServerUpgrade({ userId }, { organizationSlug: "acme", machineId: null }));
+    expect(send.mock.calls).toEqual([
+      [{ name: "server/upgrade.requested", data: { organizationId, machineId, trigger: "manual", userId } }],
+      [{ name: "server/upgrade.requested", data: { organizationId, machineId: null, trigger: "manual", userId } }],
+    ]);
 
     await rollOut();
+    const [{ ended_at: endedAt } = { ended_at: null }] = await rows();
     expect(await runEffect(listLatestServerUpgrades({ userId }, { organizationSlug: "acme" }))).toEqual({
-      [machineId]: {
-        attemptId: requests[0]?.attemptId,
-        outcome: "succeeded",
-        stage: null,
-        error: null,
-        fromVersion: "0.2.1",
-        targetVersion: "0.2.2",
-        startedAt: expect.any(String),
+      servers: {
+        [machineId]: {
+          attemptId: requests[0]?.attemptId,
+          outcome: "succeeded",
+          stage: null,
+          error: null,
+          fromVersion: "0.2.1",
+          targetVersion: "0.2.2",
+          startedAt: expect.any(String),
+        },
       },
+      lastUpgradedAt: endedAt?.toISOString(),
     });
   });
 });

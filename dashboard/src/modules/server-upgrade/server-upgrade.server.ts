@@ -1,20 +1,22 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import type { MachineUpgradeAttempt } from "@ployz/sdk";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, max, sql } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import type { Actor } from "#/modules/identity/actor";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createServerUpgradeRequestedEvent, type ServerUpgradeRequestedEventData } from "#/modules/inngest/events";
-import { serverStatus } from "#/modules/machines/server-status";
+import { serverStatus, sortServers } from "#/modules/machines/server-status";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import { rpcErrorCode } from "#/modules/runtime/ployz.server";
 import {
+  compareVersions,
   type LatestUpgrade,
   type ReleaseChannel,
   releaseFromPointer,
+  releaseLine,
   type RequestServerUpgradeInput,
   type UpgradeOutcome,
 } from "#/modules/server-upgrade/server-upgrade";
@@ -47,13 +49,17 @@ export const stableRelease = Effect.fn("ServerUpgrade.stableRelease")(function* 
   return release;
 });
 
-/** Each Server's latest Upgrade attempt in the Organization, keyed by Machine ID. */
+/**
+ * Each Server's latest Upgrade attempt in the Organization, keyed by Machine ID, and when the latest successful attempt
+ * ended.
+ */
 export const listLatestServerUpgrades = Effect.fn("ServerUpgrade.listLatest")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string },
 ) {
   const organization = yield* requireInfrastructureOrganization(actor, input.organizationSlug);
   const { drizzle } = yield* Database;
+  const inOrganization = eq(serverUpgradeAttempt.organizationId, organization.id);
   const rows = yield* drizzle.selectDistinctOn([serverUpgradeAttempt.machineId], {
     machineId: serverUpgradeAttempt.machineId,
     attemptId: serverUpgradeAttempt.attemptId,
@@ -64,13 +70,18 @@ export const listLatestServerUpgrades = Effect.fn("ServerUpgrade.listLatest")(fu
     targetVersion: serverUpgradeAttempt.targetVersion,
     startedAt: serverUpgradeAttempt.startedAt,
   }).from(serverUpgradeAttempt)
-    .where(eq(serverUpgradeAttempt.organizationId, organization.id))
+    .where(inOrganization)
     .orderBy(serverUpgradeAttempt.machineId, desc(serverUpgradeAttempt.startedAt));
-  return Object.fromEntries(rows.map(({ machineId, startedAt, ...latest }) =>
-    [machineId, { ...latest, startedAt: startedAt.toISOString() } satisfies LatestUpgrade]));
+  const [succeeded] = yield* drizzle.select({ endedAt: max(serverUpgradeAttempt.endedAt) }).from(serverUpgradeAttempt)
+    .where(and(inOrganization, eq(serverUpgradeAttempt.outcome, "succeeded")));
+  return {
+    servers: Object.fromEntries(rows.map(({ machineId, startedAt, ...latest }) =>
+      [machineId, { ...latest, startedAt: startedAt.toISOString() } satisfies LatestUpgrade])),
+    lastUpgradedAt: succeeded?.endedAt?.toISOString() ?? null,
+  };
 });
 
-/** Upgrade and Try again on a Server page: any member may. The rollout run records the attempt. */
+/** Upgrade and Try again on a Server page, Upgrade on the Servers page: any member may. The rollout run records each attempt. */
 export const requestServerUpgrade = Effect.fn("ServerUpgrade.request")(function* (
   actor: Actor,
   input: RequestServerUpgradeInput,
@@ -102,8 +113,24 @@ export const observeUpgradeableServer = Effect.fn("ServerUpgrade.observe")(funct
   return status === "online" ? observed.machine.runtime.daemon_version : null;
 }, Effect.scoped);
 
+/** Every Server observed online and idle on a release older than the newest on its line, in name order. */
+export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function* (organizationId: string) {
+  const session = yield* openSession(organizationId);
+  const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
+  const behind: Array<{ readonly id: string; readonly name: string; readonly status: "online" }> = [];
+  for (const { machine, membership } of frame.machines) {
+    if (serverStatus({ membership, runningBuilds: machine.runtime.running_builds }) !== "online") continue;
+    const version = machine.runtime.daemon_version;
+    const line = releaseLine(version);
+    const release = line === null ? null : yield* stableRelease(line);
+    const order = release === null ? null : compareVersions(version, release);
+    if (order !== null && order < 0) behind.push({ id: machine.id, name: machine.name, status: "online" });
+  }
+  return sortServers(behind).map(({ id }) => id);
+}, Effect.scoped);
+
 export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* (input: {
-  readonly request: ServerUpgradeRequestedEventData;
+  readonly request: ServerUpgradeRequestedEventData & { readonly machineId: string };
   readonly attemptId: string;
   readonly channel: ReleaseChannel;
   readonly fromVersion: string;

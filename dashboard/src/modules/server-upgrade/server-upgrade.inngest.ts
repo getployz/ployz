@@ -12,6 +12,7 @@ import {
   finalOutcome,
   finishUpgradeAttempt,
   inspectUpgradeOnServer,
+  listServersBehind,
   mintAttemptId,
   observeUpgradeableServer,
   recordUpgradeAttempt,
@@ -31,17 +32,18 @@ const POLLS = UPGRADE_OBSERVATION_LIMIT_MS / POLL_INTERVAL_MS;
 const MachineId = Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/u));
 const ServerUpgradeRequestedData = Schema.Struct({
   organizationId: Schema.String.check(Schema.isNonEmpty()),
-  machineId: MachineId,
+  machineId: Schema.NullOr(MachineId),
   trigger: Schema.Literals(UPGRADE_TRIGGERS),
   userId: Schema.NullOr(Schema.String),
 });
+type Request = Omit<typeof ServerUpgradeRequestedData.Type, "machineId">;
 
 const decodeFailedRun = Schema.decodeUnknownOption(Schema.Struct({ data: Schema.Struct({ run_id: Schema.String }) }));
 
 /**
- * One rollout run: observe the clicked Server online and idle → record the attempt → request the Upgrade along
- * `stable` → poll until the outcome is terminal → record it. Twenty minutes without one records `unknown` with the
- * last stage seen. A Busy refusal records nothing.
+ * One rollout run: the named Server, or every Server behind (online, idle, older than the newest release on its line)
+ * in name order, one at a time. It stops at the first outcome that isn't `succeeded`; a Server that went offline or
+ * refuses as Busy is skipped and records nothing.
  */
 export async function executeRollOutServerUpgrade(
   { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },
@@ -49,34 +51,60 @@ export async function executeRollOutServerUpgrade(
 ) {
   const request = await step.run("normalize-request", () => {
     const decoded = Schema.decodeUnknownOption(ServerUpgradeRequestedData)(event.data, { onExcessProperty: "preserve" });
-    // Minted here so every retry of a later step reuses it.
-    return Option.isSome(decoded) ? { ...decoded.value, attemptId: mintAttemptId() } : null;
+    return Option.isSome(decoded) ? decoded.value : null;
   });
   if (request === null) return { skipped: "invalid" as const };
-  const { organizationId, machineId, attemptId } = request;
-  const channel = "stable" as const;
+  const { machineId, ...rest } = request;
+  const machineIds = machineId === null
+    ? await step.run("pick-servers", () => runEffect(listServersBehind(request.organizationId)))
+    : [machineId];
 
-  const fromVersion = await step.run("observe-server", () => runEffect(observeUpgradeableServer(organizationId, machineId)));
-  if (fromVersion === null) return { skipped: "not-online" as const };
-  await step.run("record-attempt", () => runEffect(recordUpgradeAttempt({
-    request: { organizationId, machineId, trigger: request.trigger, userId: request.userId },
+  const results = [];
+  for (const id of machineIds) {
+    const result = await upgradeServer({ request: rest, machineId: id, step, runId }, runEffect);
+    results.push({ machineId: id, ...result });
+    if ("outcome" in result && result.outcome !== "succeeded") break;
+  }
+  return { results };
+}
+
+/**
+ * Upgrade one Server: observe it online and idle → record the attempt → request the Upgrade along `stable` → poll
+ * until the outcome is terminal → record it. Twenty minutes without one records `unknown` with the last stage seen.
+ */
+async function upgradeServer(
+  { request, machineId, step, runId }: { request: Request; machineId: string; step: StepTools; runId: string },
+  runEffect: EffectRunner,
+) {
+  const { organizationId } = request;
+  const channel = "stable" as const;
+  const observed = await step.run(`observe-server-${machineId}`, async () => {
+    const fromVersion = await runEffect(observeUpgradeableServer(organizationId, machineId));
+    // Minted here so every retry of a later step reuses it.
+    return fromVersion === null ? null : { fromVersion, attemptId: mintAttemptId() };
+  });
+  if (observed === null) return { skipped: "not-online" as const };
+  const { fromVersion, attemptId } = observed;
+  await step.run(`record-attempt-${machineId}`, () => runEffect(recordUpgradeAttempt({
+    request: { ...request, machineId },
     attemptId,
     channel,
     fromVersion,
     inngestRunId: runId,
   })));
-  let attempt = await step.run("request-upgrade", () => runEffect(requestUpgradeOnServer({ organizationId, machineId, attemptId, channel })));
+  let attempt = await step.run(`request-upgrade-${machineId}`, () =>
+    runEffect(requestUpgradeOnServer({ organizationId, machineId, attemptId, channel })));
   if (attempt === null) return { skipped: "busy" as const };
 
   let outcome = finalOutcome(attempt);
   for (let poll = 0; outcome === null && poll < POLLS; poll += 1) {
-    await step.sleep(`wait-${poll}`, POLL_INTERVAL_MS);
-    attempt = (await step.run(`inspect-upgrade-${poll}`, () =>
+    await step.sleep(`wait-${machineId}-${poll}`, POLL_INTERVAL_MS);
+    attempt = (await step.run(`inspect-upgrade-${machineId}-${poll}`, () =>
       runEffect(inspectUpgradeOnServer({ organizationId, machineId, attemptId })))) ?? attempt;
     outcome = finalOutcome(attempt);
   }
   const recorded = outcome ?? { outcome: "unknown" as const, stage: null, error: null };
-  await step.run("record-outcome", () => runEffect(finishUpgradeAttempt({ organizationId, attemptId, ...recorded })));
+  await step.run(`record-outcome-${machineId}`, () => runEffect(finishUpgradeAttempt({ organizationId, attemptId, ...recorded })));
   return { attemptId, outcome: recorded.outcome };
 }
 
