@@ -5,7 +5,7 @@ import { Button } from "#/components/ui/button";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/ui/field";
 import type { ServerStatus } from "#/modules/machines/server-status";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
-import { releaseLine, serverUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
+import { releaseLine, serverUpgradeLine, type ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
 import { requestServerUpgradeServerFn } from "#/modules/server-upgrade/server-upgrade.functions";
 import { useLatestServerUpgrade, useStableRelease } from "#/modules/server-upgrade/server-upgrade.queries";
 import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
@@ -24,7 +24,6 @@ export function ServerUpgradeSection({ machine, status, organizationSlug }: {
   const release = useStableRelease(releaseLine(version));
   // The latest attempt ID when Upgrade was clicked; undefined when nothing is pending.
   const [pendingFrom, setPendingFrom] = useState<string | null | undefined>(undefined);
-  const [showDetails, setShowDetails] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
   const recorded = pendingFrom !== undefined && (latest?.attemptId ?? null) !== pendingFrom;
@@ -48,13 +47,22 @@ export function ServerUpgradeSection({ machine, status, organizationSlug }: {
 
   function upgrade() {
     setPendingFrom(latest?.attemptId ?? null);
-    setShowDetails(false);
     requestServerUpgradeServerFn({ data: { organizationSlug, machineId: machine.id } }).catch(() => {
       setPendingFrom(undefined);
       toast.error(`Could not upgrade ${machine.name}`);
     });
   }
 
+  return <ServerUpgradeRow version={version} line={line} onUpgrade={upgrade} />;
+}
+
+/** What the Ployz section shows for one Upgrade line. */
+export function ServerUpgradeRow({ version, line, onUpgrade }: {
+  version: string;
+  line: ServerUpgradeLine;
+  onUpgrade: () => void;
+}) {
+  const [showDetails, setShowDetails] = useState(false);
   return (
     <SettingsSection id="server-ployz" title="Ployz">
       <Field orientation="horizontal">
@@ -84,9 +92,9 @@ export function ServerUpgradeSection({ machine, status, organizationSlug }: {
           )}
         </FieldContent>
         {line?.kind === "behind" ? (
-          <Button variant="outline" onClick={upgrade}>Upgrade</Button>
+          <Button variant="outline" onClick={onUpgrade}>Upgrade</Button>
         ) : line?.kind === "failed" && line.canRetry ? (
-          <Button variant="outline" onClick={upgrade}>Try again</Button>
+          <Button variant="outline" onClick={() => { setShowDetails(false); onUpgrade(); }}>Try again</Button>
         ) : null}
       </Field>
       {line?.kind === "failed" && line.details !== null && showDetails ? (
