@@ -39,9 +39,14 @@ function RouteComponent() {
       {/* The top bar names the page. */}
       <div className="flex items-center gap-3">
         {state === "live" && servers.length > 0 ? <ServersHealth servers={servers} /> : null}
-        <div className="ml-auto flex items-center gap-2">
-          {upgrade === null ? null : <ServersUpgradeBar organizationSlug={organizationSlug} upgrade={upgrade} />}
-          <AddServerDialog organizationSlug={organizationSlug} />
+        <div className="flex flex-1 items-center justify-end gap-2">
+          {upgrade === null ? <AddServerDialog organizationSlug={organizationSlug} /> : (
+            <>
+              <ServersUpgradeBar organizationSlug={organizationSlug} upgrade={upgrade} />
+              {/* Beside the upgrade controls a phone has room for the icon only; the label stays the button's name. */}
+              <AddServerDialog organizationSlug={organizationSlug} label={<span className="max-sm:sr-only">Add server</span>} />
+            </>
+          )}
         </div>
       </div>
       {state === "loading" ? (
@@ -82,5 +87,5 @@ function ServersHealth({ servers }: { servers: readonly Server[] }) {
   const text = problems.size === 0
     ? servers.length === 1 ? "Online" : `All ${servers.length} online`
     : [...[...problems].map(([status, count]) => `${count} ${serverStatusWord(status).toLowerCase()}`), ...(online > 0 ? [`${online} online`] : [])].join(" · ");
-  return <p className="text-sm"><ServerStatusLabel status={problems.keys().next().value ?? "online"}>{text}</ServerStatusLabel></p>;
+  return <p className="shrink-0 text-sm whitespace-nowrap"><ServerStatusLabel status={problems.keys().next().value ?? "online"}>{text}</ServerStatusLabel></p>;
 }

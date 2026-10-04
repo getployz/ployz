@@ -33,7 +33,7 @@ export function AddServerDialog({
   variant = "ink",
 }: {
   organizationSlug: string;
-  label?: string;
+  label?: ReactNode;
   variant?: ButtonVariants["variant"];
 }) {
   const [open, setOpen] = useState(false);

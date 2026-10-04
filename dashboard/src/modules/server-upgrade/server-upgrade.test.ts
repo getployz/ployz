@@ -165,14 +165,11 @@ describe("serversUpgradeLine", () => {
     expect(summary({ latest: [stale] })).toMatchObject({ kind: "behind" });
   });
 
-  it("offers Upgrade while none has upgraded", () => {
-    expect(summary({ servers: servers("0.2.1", "0.2.0", "") })).toEqual({ kind: "behind", release: "0.2.2", upgraded: 0, canUpgrade: true });
+  it("offers Upgrade while Servers are behind, whether or not some have upgraded", () => {
+    expect(summary({ servers: servers("0.2.1", "0.2.0", "") })).toEqual({ kind: "behind", release: "0.2.2", canUpgrade: true });
+    expect(summary()).toEqual({ kind: "behind", release: "0.2.2", canUpgrade: true });
     // Cloud can't upgrade a Server whose version is unknown, nor say it runs the release.
     expect(summary({ servers: servers("") })).toBeNull();
-  });
-
-  it("offers Upgrade the rest once some Servers have upgraded", () => {
-    expect(summary()).toEqual({ kind: "behind", release: "0.2.2", upgraded: 1, canUpgrade: true });
   });
 
   it("waits for offline Servers to come back, while automatic upgrades are on and only they are behind", () => {
@@ -188,7 +185,7 @@ describe("serversUpgradeLine", () => {
 
   it("reads Servers ahead of the release, on a beta, as current", () => {
     expect(summary({ servers: servers("0.2.3-beta.1", "0.2.2") })).toMatchObject({ kind: "current", release: "0.2.2" });
-    expect(summary({ servers: servers("0.2.3-beta.1", "0.2.3"), release: "0.2.3" })).toMatchObject({ kind: "behind", upgraded: 1 });
+    expect(summary({ servers: servers("0.2.3-beta.1", "0.2.3"), release: "0.2.3" })).toMatchObject({ kind: "behind" });
   });
 
   it("says nothing until the release is known, or with no Servers", () => {

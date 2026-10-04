@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Settings2Icon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
@@ -80,10 +81,14 @@ export function ServersUpgradeActions({ line, major, automatic, upgrade, onSetti
         <p className="text-sm text-muted-foreground">Upgrading to {mono(line.target)} · {line.done} of {line.total}</p>
       ) : line?.kind === "behind" && line.canUpgrade ? (
         <Button variant="outline" onClick={upgrade}>
-          {line.upgraded > 0 ? "Upgrade the rest" : <>Upgrade to {mono(line.release)}</>}
+          Upgrade to {mono(line.release)}
         </Button>
       ) : null}
-      <Button variant="ghost" onClick={onSettings}>Upgrades: {automatic ? "Automatic" : "Manual"}</Button>
+      {/* On a phone the bar keeps one row: the icon stands in for the label, which stays the button's name. */}
+      <Button variant="ghost" onClick={onSettings}>
+        <Settings2Icon data-icon="inline-start" />
+        <span className="max-sm:sr-only">Upgrades: {automatic ? "Automatic" : "Manual"}</span>
+      </Button>
     </>
   );
 }

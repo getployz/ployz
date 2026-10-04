@@ -213,7 +213,6 @@ export type ServersUpgradeLine =
   | {
     readonly kind: "behind";
     readonly release: string;
-    readonly upgraded: number;
     /** Some Server behind is online and idle, so an Upgrade has one to take. */
     readonly canUpgrade: boolean;
   }
@@ -248,7 +247,7 @@ export function serversUpgradeLine(input: {
   if (input.automatic && behind.every(({ status }) => status === "offline")) {
     return { kind: "when-back", release };
   }
-  return { kind: "behind", release, upgraded: done, canUpgrade: behind.some(({ status }) => status === "online") };
+  return { kind: "behind", release, canUpgrade: behind.some(({ status }) => status === "online") };
 }
 
 /**

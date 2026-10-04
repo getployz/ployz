@@ -28,24 +28,18 @@ it("shows only the upgrade settings while the Servers are current, or wait to co
 });
 
 it("offers Upgrade to the release while Servers are behind", () => {
-  const { upgrade } = bar({ kind: "behind", release: "0.2.3", upgraded: 0, canUpgrade: true });
+  const { upgrade } = bar({ kind: "behind", release: "0.2.3", canUpgrade: true });
   fireEvent.click(screen.getByRole("button", { name: "Upgrade to 0.2.3" }));
   expect(upgrade).toHaveBeenCalledTimes(1);
 });
 
-it("offers Upgrade the rest once some Servers have upgraded", () => {
-  const { upgrade } = bar({ kind: "behind", release: "0.2.3", upgraded: 1, canUpgrade: true });
-  fireEvent.click(screen.getByRole("button", { name: "Upgrade the rest" }));
-  expect(upgrade).toHaveBeenCalledTimes(1);
-});
-
 it("offers no Upgrade when no Server behind can take one", () => {
-  expect(bar({ kind: "behind", release: "0.2.3", upgraded: 1, canUpgrade: false }, { automatic: false }).text).toBe("Upgrades: Manual");
+  expect(bar({ kind: "behind", release: "0.2.3", canUpgrade: false }, { automatic: false }).text).toBe("Upgrades: Manual");
 });
 
 it("shows a running rollout's progress instead of Upgrade", () => {
   expect(bar({ kind: "upgrading", target: "0.2.3", done: 1, total: 3 }).text).toBe("Upgrading to 0.2.3 · 1 of 3Upgrades: Automatic");
-  expect(screen.queryByRole("button", { name: /^Upgrade (to|the rest)/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: /^Upgrade to/ })).toBeNull();
 });
 
 it("links a newer major line's release notes, and nothing for the Servers' own line", () => {

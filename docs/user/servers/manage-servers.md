@@ -84,7 +84,7 @@ and the server upgrading is tagged **Upgrading**.
 ### Turn on automatic upgrades
 
 Automatic upgrades are off until you turn them on. Click **Upgrades: Manual** at the top of the
-**Servers** page and turn on **Upgrade automatically**. Any member can change it. Ployz starts
+**Servers** page (on a phone, its settings icon) and turn on **Upgrade automatically**. Any member can change it. Ployz starts
 upgrading right away, then checks every hour, and the button then reads **Upgrades: Automatic**.
 Turn the switch off to go back to upgrading by hand.
 
@@ -93,7 +93,7 @@ behind is tagged **→ `0.2.2` when back**, and its page reads **Upgrades to `0.
 
 If a server's upgrade doesn't install, that server goes back to the release it ran before, and the
 other servers wait: automatic upgrades skip that release until a newer one is out. That server is
-tagged **Upgrade failed**, and the top of the page offers **Upgrade the rest** to carry on yourself.
+tagged **Upgrade failed**, and the top of the page offers **Upgrade to `0.2.2`** to carry on yourself.
 On the server's page, **Show details** has the exact error to copy, and **Try again** retries. Once an upgrade of that release succeeds, automatic upgrades pick it up again.
 
 ### Upgrade one server
