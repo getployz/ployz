@@ -28,6 +28,14 @@ _Avoid_: Machine in user-facing copy, Cloud server record
 Moving a Server's Ployz software to a newer published release, either automatically once the release is out or when a user asks. An Upgrade whose result Cloud cannot observe reads as outcome unknown.
 _Avoid_: Update (that is Branch staging), self-update
 
+**Rollout**:
+One run of Upgrades over an Organization's Servers along its Release Channel: the Server a user named, or every online, idle Server behind, one at a time in name order. An Organization runs one Rollout at a time, and a Rollout stops at the first Upgrade that doesn't succeed.
+_Avoid_: Fleet upgrade, batch upgrade, upgrade wave
+
+**Halted release**:
+A release whose latest Upgrade in the Organization didn't succeed, including one whose outcome is unknown. Automatic Rollouts skip it until a newer release is out or a manual Upgrade to it succeeds; manual Upgrades still run.
+_Avoid_: Blocked release, paused rollout
+
 **Volume**:
 An Environment resource whose files survive deployments and restarts on the Server that hosts it. It is the Engine's Provisioned Volume by default, which product copy calls a Managed volume with a storage limit; a plain Docker volume is an explicit, not-recommended Advanced choice. Both stay local to that Server. Its storage is editable before deployment is requested, then fixed even if the attempt fails. A Server without managed storage reads Docker only. A Managed volume does not imply backups, replication, or resizing today.
 _Avoid_: Persistent storage as a resource name, network storage, replicated volume, Provisioned in product copy, ZFS in normal product copy except the Add Server opt-out
