@@ -10,6 +10,7 @@ import {
   createProcessMachineRemove,
 } from "#/modules/machines/machine-removal.inngest";
 import { createApplyServerPolicyChange } from "#/modules/machines/server-policy.inngest";
+import { createCancelServerDrain, createCloseStaleServerDrains, createDrainServer } from "#/modules/machines/server-drain.inngest";
 import {
   createScheduleClusterDomainSync,
   createSyncClusterDomain,
@@ -34,6 +35,9 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createProcessMachineRemove(inngest),
     createCancelMachineRemove(inngest),
     createApplyServerPolicyChange(inngest),
+    createDrainServer(inngest),
+    createCancelServerDrain(inngest),
+    createCloseStaleServerDrains(inngest),
     createRetireServerAccess(inngest),
     createPruneOrganizationChangeLog(inngest),
     createSyncClusterDomain(inngest),

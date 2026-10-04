@@ -60,6 +60,7 @@ export const githubPullRequestReceivedEvent = "github/pull-request.received";
 export const machineRemoveRequestedEvent = "machine/remove.requested";
 export const serverPolicyChangeRequestedEvent = "machine/policy-change.requested";
 export const serverUpgradeRequestedEvent = "server/upgrade.requested";
+export const serverDrainRequestedEvent = "server/drain.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
 export const configDeploymentAdmittedEvent = "config/deployment.admitted";
 export const configPrCheckRequestedEvent = "config/pr-check.requested";
@@ -102,6 +103,13 @@ export type ServerUpgradeRequestedEventData = {
 
 export type MachineRemoveRequestedEventData = {
   attemptId: string;
+};
+
+/** A Drain was requested: its row is written. `organizationId` keys the Organization's one-at-a-time Drains. */
+export type ServerDrainRequestedEventData = {
+  attemptId: string;
+  organizationId: string;
+  machineId: string;
 };
 
 export type ClusterDomainSyncRequestedEventData = {
@@ -207,6 +215,10 @@ export const serverUpgradeRequestedEventType = eventType(
   serverUpgradeRequestedEvent,
   { schema: staticSchema<ServerUpgradeRequestedEventData>() },
 );
+export const serverDrainRequestedEventType = eventType(
+  serverDrainRequestedEvent,
+  { schema: staticSchema<ServerDrainRequestedEventData>() },
+);
 export const configFirstServerJoinedEventType = eventType(
   configFirstServerJoinedEvent,
   { schema: staticSchema<ConfigFirstServerJoinedEventData>() },
@@ -286,6 +298,11 @@ export function createServerPolicyChangeRequestedEvent(
 
 export function createServerUpgradeRequestedEvent(data: ServerUpgradeRequestedEventData) {
   return { name: serverUpgradeRequestedEvent, data } as const;
+}
+
+/** Keyed by the Drain's row: sending it again for the same request runs nothing new. */
+export function createServerDrainRequestedEvent(data: ServerDrainRequestedEventData) {
+  return { id: `server-drain-${data.attemptId}`, name: serverDrainRequestedEvent, data } as const;
 }
 
 /** Keyed by founding: a retried completion sends it again, and Inngest runs it once. */
@@ -451,6 +468,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createMachineRemoveRequestedEvent>
   | ReturnType<typeof createServerPolicyChangeRequestedEvent>
   | ReturnType<typeof createServerUpgradeRequestedEvent>
+  | ReturnType<typeof createServerDrainRequestedEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
   | ReturnType<typeof createConfigFirstServerJoinedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>

@@ -16,6 +16,7 @@ import {
   createProcessMachineRemove,
 } from "#/modules/machines/machine-removal.inngest";
 import { createApplyServerPolicyChange } from "#/modules/machines/server-policy.inngest";
+import { createCancelServerDrain, createCloseStaleServerDrains, createDrainServer } from "#/modules/machines/server-drain.inngest";
 import {
   createScheduleClusterDomainSync,
   createSyncClusterDomain,
@@ -37,6 +38,9 @@ describe("Inngest function policies", () => {
       createProcessMachineRemove(inngest),
       createCancelMachineRemove(inngest),
       createApplyServerPolicyChange(inngest),
+      createDrainServer(inngest),
+      createCancelServerDrain(inngest),
+      createCloseStaleServerDrains(inngest),
       createRetireServerAccess(inngest),
       createPruneOrganizationChangeLog(inngest),
     createSyncClusterDomain(inngest),
@@ -62,6 +66,9 @@ describe("Inngest function policies", () => {
       { id: "process-machine-remove", retries: 5, concurrency: [{ key: "event.data.attemptId", limit: 1 }] },
       { id: "cancel-machine-remove", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
       { id: "apply-server-policy-change", retries: 3, concurrency: [{ key: "event.data.machineId", limit: 1 }] },
+      { id: "drain-server", retries: 3, concurrency: [{ key: "event.data.organizationId", limit: 1 }] },
+      { id: "cancel-server-drain", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
+      { id: "close-stale-server-drains", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "retire-server-access", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "prune-organization-change-log", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "sync-cluster-domain", retries: 3, concurrency: [{ key: "event.data.organizationId", limit: 1 }] },

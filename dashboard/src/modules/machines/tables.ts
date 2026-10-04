@@ -1,9 +1,11 @@
-import type { EnrollmentAssignment } from "@ployz/sdk";
+import type { DrainReport, EnrollmentAssignment } from "@ployz/sdk";
 import { createdAt, type EncryptedSecretValue, type MachineId, sqlStringLiterals, updatedAt } from "#/db/tables";
 
 import { user } from "#/modules/identity/tables";
 
 import { MACHINE_REMOVE_ATTEMPT_STATES, type MachineRemoveAttemptState, type MachineRemoveResult } from "#/modules/machines/machine-removal";
+
+import { DRAIN_FAILURE_CODES, DRAIN_STATES, type DrainFailureCode, type DrainState } from "#/modules/machines/server-drain";
 
 import { organization } from "#/modules/organization/tables";
 
@@ -109,6 +111,77 @@ export const machineRemoveAttempt = pgTable(
           and ${table.failureCode} is null and ${table.failureMessage} is null
           and jsonb_typeof(${table.missingIdentities}) = 'array'
           and jsonb_array_length(${table.missingIdentities}) > 0)
+      )`,
+    ),
+  ],
+);
+
+/**
+ * One Drain Cloud ran, or was asked to run, on one Server: history, read server-side as the latest per Server, never
+ * into the Org Store. The click writes the row (`pending`) under the id the tab minted, so the one-active guard answers
+ * the click and every tab sees it through the change stream; the run binds itself to it, claims it (`running`) right
+ * before it asks the Engine, and ends it with the Engine's report (`finished`) or without one (`failed`, `cancelled`,
+ * `unknown`).
+ */
+export const serverDrainAttempt = pgTable(
+  "server_drain_attempt",
+  {
+    /** The request id the confirming tab minted. */
+    id: uuid("id").primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    machineId: text("machine_id").notNull().$type<MachineId>(),
+    /** Who clicked Drain; kept when the user is deleted. */
+    requestedByUserId: uuid("requested_by_user_id").references(() => user.id, { onDelete: "set null" }),
+    state: text("state").default("pending").notNull().$type<DrainState>(),
+    /** The run that owns the row, bound while pending; only it may claim or end the row. */
+    inngestRunId: text("inngest_run_id"),
+    /** The Engine's DrainReport, verbatim, partial or not. Only `finished` has one. */
+    report: jsonb("report").$type<DrainReport | null>(),
+    failureCode: text("failure_code").$type<DrainFailureCode | null>(),
+    failureMessage: text("failure_message"),
+    requestedAt: timestamp("requested_at", { mode: "date", withTimezone: true }).defaultNow().notNull(),
+    startedAt: timestamp("started_at", { mode: "date", withTimezone: true }),
+    endedAt: timestamp("ended_at", { mode: "date", withTimezone: true }),
+  },
+  (table) => [
+    // One Drain per Server at a time: a second click returns the active one.
+    uniqueIndex("server_drain_attempt_one_active_idx")
+      .on(table.organizationId, table.machineId)
+      .where(sql`${table.state} in ('pending', 'running')`),
+    uniqueIndex("server_drain_attempt_run_uidx")
+      .on(table.inngestRunId)
+      .where(sql`${table.inngestRunId} is not null`),
+    index("server_drain_attempt_latest_idx").on(table.organizationId, table.machineId, table.requestedAt),
+    check("server_drain_attempt_machine_id_check", sql`${table.machineId} ~ '^[0-9a-f]{32}$'`),
+    check("server_drain_attempt_state_check", sql`${table.state} in (${sqlStringLiterals(DRAIN_STATES)})`),
+    check(
+      "server_drain_attempt_failure_code_check",
+      sql`${table.failureCode} is null or ${table.failureCode} in (${sqlStringLiterals(DRAIN_FAILURE_CODES)})`,
+    ),
+    check("server_drain_attempt_run_check", sql`${table.inngestRunId} is null or length(${table.inngestRunId}) between 1 and 255`),
+    // Each state carries exactly its evidence. A bound pending row names its run; a dispatch failure never had one.
+    check(
+      "server_drain_attempt_state_shape_check",
+      sql`(
+        (${table.state} = 'pending'
+          and ${table.startedAt} is null and ${table.endedAt} is null
+          and ${table.report} is null and ${table.failureCode} is null and ${table.failureMessage} is null)
+        or (${table.state} = 'running' and ${table.inngestRunId} is not null
+          and ${table.startedAt} is not null and ${table.endedAt} is null
+          and ${table.report} is null and ${table.failureCode} is null and ${table.failureMessage} is null)
+        or (${table.state} = 'finished' and ${table.inngestRunId} is not null
+          and ${table.startedAt} is not null and ${table.endedAt} is not null
+          and jsonb_typeof(${table.report}) = 'object' and ${table.failureCode} is null and ${table.failureMessage} is null)
+        or (${table.state} in ('failed', 'cancelled')
+          and ${table.endedAt} is not null and ${table.report} is null
+          and ${table.failureCode} is not null and ${table.failureMessage} is not null
+          and length(${table.failureMessage}) between 1 and 1024)
+        or (${table.state} = 'unknown' and ${table.inngestRunId} is not null
+          and ${table.startedAt} is not null and ${table.endedAt} is not null and ${table.report} is null
+          and ${table.failureCode} is not null and ${table.failureMessage} is not null
+          and length(${table.failureMessage}) between 1 and 1024)
       )`,
     ),
   ],

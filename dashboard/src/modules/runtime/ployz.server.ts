@@ -9,6 +9,8 @@ import type {
   Connection,
   DataLossConfirmation,
   DeployOutcome,
+  DrainReport,
+  DrainScope,
   ExecutionError,
   LocalMachineRemoved,
   MachineDetails,
@@ -69,6 +71,14 @@ export interface PloyzSession {
     machine: MachineTarget,
     update: Partial<MachineUpdate>,
   ) => Effect.Effect<void, PloyzSdkError>;
+  /**
+   * Drain a Server: turn its services role off, stop the selected Globals there, and move what runs there to other
+   * Servers one at a time. Resolves to the report even when partial; fails only when nothing moved.
+   */
+  readonly drainMachine: (
+    machine: MachineTarget,
+    scope: DrainScope,
+  ) => Effect.Effect<DrainReport, PloyzSdkError>;
   /** Ask one Server to Upgrade; repeating it with the same attempt ID returns that attempt. */
   readonly requestMachineUpgrade: (
     machine: MachineTarget,
@@ -194,6 +204,8 @@ function wrapClient(client: Client): PloyzSession {
       sdkPromise("update machine", () =>
         client.updateMachine(machine, update).then(() => undefined),
       ),
+    drainMachine: (machine, scope) =>
+      sdkPromise("drain machine", () => client.drainMachine(machine, scope)),
     requestMachineUpgrade: (machine, attemptId, release) =>
       sdkPromise("request machine upgrade", () => client.requestMachineUpgrade(machine, { attempt_id: attemptId, release })),
     inspectMachineUpgrade: (machine, attemptId) =>
