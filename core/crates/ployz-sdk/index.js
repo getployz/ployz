@@ -122,6 +122,10 @@ class Client {
     return withRpcError(this._inner.removeMachine(machine, confirmDataLoss));
   }
 
+  drainMachine(machine, scope) {
+    return withRpcError(this._inner.drainMachine(machine, scope));
+  }
+
   removeMachineMembership(machine) {
     return withRpcError(this._inner.removeMachineMembership(machine));
   }

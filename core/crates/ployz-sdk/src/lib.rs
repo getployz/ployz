@@ -426,6 +426,30 @@ impl Client {
         to_json(&removed)
     }
 
+    /// Drain `machine` within `scope`.
+    ///
+    /// Resolves with the report even when it is partial or the session closes mid-drain.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `scope` is not a DrainScope, the
+    /// session is closed, or the Drain refuses before anything moved.
+    #[napi]
+    pub async fn drain_machine(
+        &self,
+        machine: String,
+        scope: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let scope: ployz::drain::DrainScope =
+            serde_json::from_value(scope).map_err(invalid_argument)?;
+        let report = self
+            .inner
+            .drain_machine(&machine, &scope)
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&report)
+    }
+
     /// Take `machine` out of the Cluster without resetting it.
     ///
     /// # Errors
