@@ -46,7 +46,8 @@ export const ReleaseLine = Schema.String.check(Schema.isPattern(/^v\d{1,4}$/u));
 
 export const RequestServerUpgradeInput = Schema.Struct({
   organizationSlug: Schema.String,
-  machineId: Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/u)),
+  /** Upgrade on a Server page names it; Upgrade on the Servers page upgrades every Server behind. */
+  machineId: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/u))),
 });
 export type RequestServerUpgradeInput = typeof RequestServerUpgradeInput.Type;
 
@@ -113,4 +114,51 @@ export function serverUpgradeLine(input: {
   if (release === null || status !== "online") return null;
   const behind = compareVersions(version, release);
   return behind !== null && behind < 0 ? { kind: "behind", release } : null;
+}
+
+export type ServersUpgradeLine =
+  | { readonly kind: "current"; readonly release: string; readonly upgradedAt: string | null }
+  | { readonly kind: "upgrading"; readonly target: string; readonly done: number; readonly total: number }
+  | {
+    readonly kind: "behind";
+    readonly release: string;
+    readonly upgraded: number;
+    readonly total: number;
+    /** The oldest version the Servers behind report; null when none reports one. */
+    readonly running: string | null;
+  }
+  | null;
+
+/**
+ * The Servers page's upgrade line. `latest` holds each Server's latest attempt; `lastUpgradedAt` ends the latest
+ * successful one. `pendingFrom` is the newest attempt ID when the user clicked Upgrade (null with none), undefined
+ * when nothing is pending.
+ */
+export function serversUpgradeLine(input: {
+  readonly servers: ReadonlyArray<{ readonly version: string }>;
+  readonly release: string | null;
+  readonly latest: readonly LatestUpgrade[];
+  readonly lastUpgradedAt: string | null;
+  readonly pendingFrom: string | null | undefined;
+  readonly now: number;
+}): ServersUpgradeLine {
+  const { servers, release, latest } = input;
+  if (release === null || servers.length === 0) return null;
+  const isCurrent = (version: string) => (compareVersions(version, release) ?? -1) >= 0;
+  const behind = servers.filter(({ version }) => !isCurrent(version));
+  const done = servers.length - behind.length;
+
+  const newest = latest.reduce<LatestUpgrade | null>((found, row) =>
+    found === null || Date.parse(row.startedAt) > Date.parse(found.startedAt) ? row : found, null);
+  const pending = input.pendingFrom !== undefined && (newest?.attemptId ?? null) === input.pendingFrom;
+  const running = latest.find((row) =>
+    row.outcome === "running" && input.now - Date.parse(row.startedAt) < UPGRADE_OBSERVATION_LIMIT_MS);
+  if (pending || running !== undefined) {
+    return { kind: "upgrading", target: running?.targetVersion ?? release, done, total: servers.length };
+  }
+
+  if (behind.length === 0) return { kind: "current", release, upgradedAt: input.lastUpgradedAt };
+  const oldest = behind.map(({ version }) => version).filter((version) => compareVersions(version, release) !== null)
+    .sort((left, right) => compareVersions(left, right) ?? 0)[0] ?? null;
+  return { kind: "behind", release, upgraded: done, total: servers.length, running: oldest };
 }

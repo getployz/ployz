@@ -4,6 +4,7 @@ import {
   releaseFromPointer,
   releaseLine,
   serverUpgradeLine,
+  serversUpgradeLine,
   UPGRADE_OBSERVATION_LIMIT_MS,
   type LatestUpgrade,
 } from "./server-upgrade";
@@ -113,5 +114,52 @@ describe("serverUpgradeLine", () => {
 
   it("is quiet after a success", () => {
     expect(line({ latest: attempt({ outcome: "succeeded" }), version: "0.2.2" })).toBeNull();
+  });
+});
+
+describe("serversUpgradeLine", () => {
+  const servers = (...versions: string[]) => versions.map((version) => ({ version }));
+  const servers4 = servers("0.2.2", "0.2.1", "0.2.1", "0.2.1");
+  const summary = (input: Partial<Parameters<typeof serversUpgradeLine>[0]> = {}) => serversUpgradeLine({
+    servers: servers4, release: "0.2.2", latest: [], lastUpgradedAt: null, pendingFrom: undefined, now: NOW, ...input,
+  });
+
+  it("says every Server is current, and when the latest successful attempt ran", () => {
+    const at = new Date(NOW - 12 * 3_600_000).toISOString();
+    expect(summary({ servers: servers("0.2.2", "0.2.2"), lastUpgradedAt: at })).toEqual({ kind: "current", release: "0.2.2", upgradedAt: at });
+    expect(summary({ servers: servers("0.2.2", "0.2.3") })).toEqual({ kind: "current", release: "0.2.2", upgradedAt: null });
+  });
+
+  it("reads a running attempt as the rollout, counting every Server already on the release", () => {
+    expect(summary({ latest: [attempt({ outcome: "succeeded" }), attempt({ attemptId: "b".repeat(32) })] }))
+      .toEqual({ kind: "upgrading", target: "0.2.2", done: 1, total: 4 });
+  });
+
+  it("reads a requested rollout as upgrading until an attempt replaces the newest", () => {
+    const earlier = attempt({ outcome: "failed", error: "boom", startedAt: new Date(NOW - 120_000).toISOString() });
+    const newest = attempt({ attemptId: "c".repeat(32), outcome: "succeeded" });
+    expect(summary({ pendingFrom: null })).toMatchObject({ kind: "upgrading", done: 1, total: 4 });
+    expect(summary({ latest: [newest, earlier], pendingFrom: newest.attemptId })).toMatchObject({ kind: "upgrading" });
+    expect(summary({ latest: [newest, earlier], pendingFrom: earlier.attemptId })).toMatchObject({ kind: "behind" });
+  });
+
+  it("stops reading a running attempt as the rollout after the observation limit", () => {
+    const stale = attempt({ startedAt: new Date(NOW - UPGRADE_OBSERVATION_LIMIT_MS).toISOString() });
+    expect(summary({ latest: [stale] })).toMatchObject({ kind: "behind" });
+  });
+
+  it("offers Upgrade with the version the Servers run while none has upgraded", () => {
+    expect(summary({ servers: servers("0.2.1", "0.2.0", "") }))
+      .toEqual({ kind: "behind", release: "0.2.2", upgraded: 0, total: 3, running: "0.2.0" });
+    expect(summary({ servers: servers("") })).toMatchObject({ kind: "behind", upgraded: 0, running: null });
+  });
+
+  it("offers Upgrade the rest once some Servers have upgraded", () => {
+    expect(summary()).toEqual({ kind: "behind", release: "0.2.2", upgraded: 1, total: 4, running: "0.2.1" });
+  });
+
+  it("says nothing until the release is known, or with no Servers", () => {
+    expect(summary({ release: null })).toBeNull();
+    expect(summary({ servers: [] })).toBeNull();
   });
 });
