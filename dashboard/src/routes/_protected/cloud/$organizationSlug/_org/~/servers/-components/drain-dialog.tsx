@@ -31,7 +31,7 @@ export function DrainDialog({ serverName, names, unowned, open, onOpenChange, on
           {names.length === 0 ? (
             <p>{unowned.length === 0 ? "Nothing runs here now." : "Nothing here for Drain to move."}</p>
           ) : (
-            <ItemGroup aria-label={`Running on ${serverName}`}>
+            <ItemGroup aria-label={`Running on ${serverName}`} className="text-foreground">
               {names.map((name) => (
                 <Item key={name} variant="outline" size="xs">
                   <ItemMedia variant="icon"><BoxIcon /></ItemMedia>
