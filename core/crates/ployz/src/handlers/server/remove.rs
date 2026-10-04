@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use ployz_core::{
-    DescribeContractRequest, LiveServices, Machine, MachineId, MachineName, MachineTarget,
-    NameMatches, QualifiedService, RpcError, RpcErrorCode, ServiceMode, op,
+    DescribeContractRequest, Machine, MachineId, MachineName, MachineTarget, NameMatches,
+    QualifiedService, RpcError, RpcErrorCode, op,
 };
 
 use super::super::runtime;
@@ -10,6 +10,7 @@ use crate::cloud_account::{self, Credential, Release};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::cluster::{CloudHold, refuse_last_managed};
 use crate::connect::Remover;
+use crate::drain::{replicated_services_on, services_on};
 use crate::handlers::{
     Error,
     data_loss::{VolumeEffect, VolumeLabels, volume_label},
@@ -384,23 +385,6 @@ fn machine_removal_refusal(error: RpcError) -> Error {
 }
 
 #[must_use]
-pub(super) fn services_on(
-    machine_id: &MachineId,
-    live: &LiveServices<RpcError>,
-) -> Vec<QualifiedService> {
-    live.services()
-        .into_iter()
-        .filter(|service| {
-            service
-                .containers
-                .iter()
-                .any(|container| container.as_observation().machine_id == *machine_id)
-        })
-        .map(|service| service.identity)
-        .collect()
-}
-
-#[must_use]
 fn service_warnings(machine: &MachineName, services: &[QualifiedService]) -> Vec<String> {
     if services.is_empty() {
         return Vec::new();
@@ -413,27 +397,6 @@ fn service_warnings(machine: &MachineName, services: &[QualifiedService]) -> Vec
             .collect::<Vec<_>>()
             .join(", ")
     )]
-}
-
-#[must_use]
-pub(super) fn replicated_services_on(
-    machine_id: &MachineId,
-    live: &LiveServices<RpcError>,
-) -> Vec<QualifiedService> {
-    live.services()
-        .into_iter()
-        .filter(|service| {
-            service.containers.iter().any(|container| {
-                let observation = container.as_observation();
-                observation.machine_id == *machine_id
-                    && matches!(
-                        observation.resolved_spec.mode,
-                        ServiceMode::Replicated { .. }
-                    )
-            })
-        })
-        .map(|service| service.identity)
-        .collect()
 }
 
 #[cfg(test)]

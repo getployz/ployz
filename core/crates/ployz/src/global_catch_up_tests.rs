@@ -25,6 +25,7 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
             target_services: None,
             create_result: Ok(Some(created())),
             create_calls: Vec::new(),
+            retire_calls: Vec::new(),
             failures: if failed {
                 vec![ployz_core::MachineFailure {
                     machine_id: peer.id,
@@ -65,6 +66,7 @@ async fn successful_ensure_is_reobserved_before_success() {
         target_services: None,
         create_result: Ok(Some(created())),
         create_calls: Vec::new(),
+        retire_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -89,6 +91,7 @@ async fn initially_eligible_global_absent_from_target_inspection_remains_missing
         target_services: Some(Vec::new()),
         create_result: Ok(Some(created())),
         create_calls: Vec::new(),
+        retire_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -127,6 +130,7 @@ async fn initially_eligible_global_with_only_hook_visible_remains_missing() {
         target_services: Some(vec![hook_only]),
         create_result: Ok(Some(created())),
         create_calls: Vec::new(),
+        retire_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -158,6 +162,7 @@ async fn initially_eligible_generation_absent_from_target_inspection_remains_mis
         target_services: Some(vec![stale]),
         create_result: Ok(Some(created())),
         create_calls: Vec::new(),
+        retire_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -188,6 +193,7 @@ async fn another_namespaces_matching_shape_does_not_satisfy_catch_up() {
         target_services: Some(vec![shop]),
         create_result: Ok(Some(created())),
         create_calls: Vec::new(),
+        retire_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
@@ -202,6 +208,7 @@ struct FakeCatchUpClient {
     target_services: Option<Vec<ServiceObservation>>,
     create_calls: Vec<CreateContainerRequest>,
     create_result: Result<Option<ployz_core::ContainerCreated>, RpcError>,
+    retire_calls: Vec<QualifiedService>,
     failures: Vec<ployz_core::MachineFailure<RpcError>>,
     omissions: Vec<MachineId>,
 }
@@ -246,6 +253,15 @@ impl CatchUpClient for FakeCatchUpClient {
         _machine_id: &MachineId,
         _container_id: ContainerId,
     ) -> Result<(), RpcError> {
+        Ok(())
+    }
+
+    async fn retire_slot(
+        &mut self,
+        _machine_id: &MachineId,
+        slot: &ObservedGlobalSlotSpec,
+    ) -> Result<(), RpcError> {
+        self.retire_calls.push(slot.identity().clone());
         Ok(())
     }
 
@@ -472,6 +488,7 @@ async fn failed_placement_is_reported_even_if_final_observation_is_running() {
         )]),
 
         create_calls: Vec::new(),
+        retire_calls: Vec::new(),
         create_result: Err(RpcError {
             code: ployz_core::RpcErrorCode::Conflict,
             message: "creation key conflict".into(),
@@ -482,6 +499,41 @@ async fn failed_placement_is_reported_even_if_final_observation_is_running() {
     };
     let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
     assert!(joined_catch_up_error(error, &joiner).contains("creation key conflict"));
+}
+
+#[tokio::test]
+async fn retirement_touches_only_the_chosen_globals_and_starts_nothing() {
+    let drained = machine('1', "drained");
+    let chosen = global_service(
+        qualified("app", "api"),
+        'a',
+        Placement::default(),
+        running_on(&drained, 'a'),
+    );
+    let other = global_service(
+        qualified("other", "metrics"),
+        'b',
+        Placement::default(),
+        running_on(&drained, 'b'),
+    );
+    let mut client = FakeCatchUpClient {
+        machine_id: drained.id,
+        services: vec![chosen, other],
+        target_services: None,
+        create_calls: Vec::new(),
+        retire_calls: Vec::new(),
+        create_result: Ok(Some(created())),
+        failures: Vec::new(),
+        omissions: Vec::new(),
+    };
+    let unretired = retire_globals(&mut client, &drained, &[qualified("app", "api")]).await;
+    assert!(unretired.is_empty(), "{unretired:?}");
+    assert_eq!(client.retire_calls, [qualified("app", "api")]);
+    assert!(client.create_calls.is_empty());
+
+    client.retire_calls.clear();
+    assert!(retire_globals(&mut client, &drained, &[]).await.is_empty());
+    assert!(client.retire_calls.is_empty() && client.create_calls.is_empty());
 }
 
 fn created() -> ployz_core::ContainerCreated {

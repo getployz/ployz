@@ -22,9 +22,8 @@ mod render;
 mod report;
 
 pub(crate) use apply::{Outcome, apply_requested};
-#[cfg(test)]
-pub(crate) use convergence::Move;
 pub(crate) use convergence::{Convergence, converge};
+pub use convergence::{MachineRef, Move, MoveFailure, StayReason};
 pub use pipeline::DeployError;
 pub(crate) use planning::capacity::endpoint_capacity_error;
 pub use planning::{

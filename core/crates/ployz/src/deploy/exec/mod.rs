@@ -680,17 +680,34 @@ async fn execute_operation<C: MachineOperations>(
     }
 }
 
+/// Why a Placement convergence move did not complete. The two cases leave different
+/// Container counts behind, so the report tells them apart.
+#[derive(Debug)]
+pub(in crate::deploy) enum MoveContainerError {
+    /// The new Container did not start or serve, or the move was cancelled first (then the
+    /// error is [`ExecutionError::Cancelled`]). It was stopped and removed again; `old`
+    /// keeps serving and the Container count holds.
+    NotServing(ExecutionError),
+    /// The new Container serves on `to`, but removing `old` failed: both run now.
+    OldNotRemoved(ExecutionError),
+}
+
 /// Placement convergence's one move: start `spec` on `to`, wait until it serves, then
 /// remove `old` from `from`. A new Container that never serves is removed again, so
 /// `old` keeps serving and the Container count holds. No hooks run.
-pub(super) async fn move_container(
+///
+/// # Errors
+///
+/// [`MoveContainerError::NotServing`] when the new Container never served;
+/// [`MoveContainerError::OldNotRemoved`] when it serves but `old` could not be removed.
+pub(in crate::deploy) async fn move_container(
     client: &Client,
     namespace: &Namespace,
     spec: &ResolvedServiceSpec,
     to: &MachineId,
     (from, old): (&MachineId, &ContainerId),
     cancellation: &CancellationToken,
-) -> Result<ContainerId, ExecutionError> {
+) -> Result<ContainerId, MoveContainerError> {
     let client = RestartTolerant {
         inner: client,
         cancellation,
@@ -707,7 +724,8 @@ pub(super) async fn move_container(
         None,
         cancellation,
     )
-    .await?;
+    .await
+    .map_err(MoveContainerError::NotServing)?;
     let new = created.container_id;
     if let Err(error) = serve(
         &client,
@@ -723,7 +741,7 @@ pub(super) async fn move_container(
     {
         let _ = client.stop_container(to, &new, None).await;
         let _ = client.remove_container(to, &new).await;
-        return Err(error);
+        return Err(MoveContainerError::NotServing(error));
     }
     let removal = DeployOperation::RemoveContainer {
         machine_id: *from,
@@ -733,7 +751,7 @@ pub(super) async fn move_container(
         .await
         .map_err(|failure| match failure {
             OperationFailure::Ordinary(error) | OperationFailure::Replacement { error, .. } => {
-                error
+                MoveContainerError::OldNotRemoved(error)
             }
         })?;
     Ok(new)

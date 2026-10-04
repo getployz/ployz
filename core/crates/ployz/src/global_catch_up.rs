@@ -1,10 +1,12 @@
-//! Global catch-up: place observed eligible Globals onto this Machine only.
+//! Global catch-up: place observed eligible Globals onto this Machine only. Drain's
+//! retirement of chosen Globals on one Machine shares its slot primitives.
 
 use ployz_core::{
     BridgeEndpointCapacity, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
     CreateContainerRequest, EnvironmentValues, InspectRequest, ListContainersRequest, LiveServices,
-    Machine, MachineId, MachineTarget, QualifiedService, RpcError, ServiceObservation,
-    ServicePlacementEligibility, op, service_containers,
+    Machine, MachineId, MachineTarget, Namespace, ObservedGlobalSlotSpec, QualifiedService,
+    ResolvedServiceSpec, RpcError, ServiceName, ServiceObservation, ServicePlacementEligibility,
+    op, service_containers,
 };
 
 use crate::{connect::Client, deploy::endpoint_capacity_error, failure::Failure};
@@ -50,6 +52,13 @@ pub(crate) trait CatchUpClient {
         machine_id: &MachineId,
         container_id: ContainerId,
     ) -> Result<(), RpcError>;
+    /// Stop and remove `slot`'s Containers on `machine_id` when fresh evidence says it is
+    /// definitely ineligible there; refuse when it is eligible or its eligibility unknown.
+    async fn retire_slot(
+        &mut self,
+        machine_id: &MachineId,
+        slot: &ObservedGlobalSlotSpec,
+    ) -> Result<(), RpcError>;
     /// List Containers directly from the joined Machine for final verification.
     async fn target_containers(
         &mut self,
@@ -87,76 +96,20 @@ impl CatchUpClient for Client {
         request: CreateContainerRequest,
     ) -> Result<Option<ContainerCreated>, RpcError> {
         let target = MachineTarget::from(machine_id);
-        let details = self
-            .read::<op::Inspect>(
-                InspectRequest {
-                    include_storage: true,
-                    ..Default::default()
-                },
-                &target,
-            )
-            .await?;
-        let machine = details
-            .machine
-            .filter(|machine| {
-                machine.id == *machine_id
-                    && details.phase == ployz_core::LocalMachinePhase::Participating
-            })
-            .ok_or_else(|| RpcError {
-                code: ployz_core::RpcErrorCode::Conflict,
-                message: "Global catch-up target has no participating Machine observation".into(),
-                details: serde_json::Value::Null,
-            })?;
-        let eligibility = request.resolved_spec.placement_eligibility_in_namespace(
-            &request.namespace,
-            &machine,
-            details.storage.as_ref(),
-        );
+        let eligibility =
+            slot_eligibility(self, machine_id, &request.namespace, &request.resolved_spec).await?;
         if eligibility != ServicePlacementEligibility::Eligible {
             if matches!(eligibility, ServicePlacementEligibility::Ineligible(_)) {
-                let containers = self
-                    .read::<op::ListContainers>(
-                        ListContainersRequest {
-                            environment: EnvironmentValues::Redacted,
-                        },
-                        &target,
-                    )
-                    .await?;
-                for container in containers.containers.into_iter().filter(|container| {
-                    container.machine_id == *machine_id
-                        && container.kind == ContainerKind::ServiceContainer
-                        && container.namespace == request.namespace
-                        && container.resolved_spec.name == request.resolved_spec.name
-                }) {
-                    crate::ingress::stop_container(
-                        self,
-                        machine_id,
-                        ployz_core::StopContainerRequest {
-                            container_id: container.container_id,
-                            signal: None,
-                            grace_period_seconds: None,
-                        },
-                        None,
-                    )
-                    .await?;
-                    self.call::<op::RemoveContainer>(
-                        ployz_core::RemoveContainerRequest {
-                            container_id: container.container_id,
-                            remove_volumes: false,
-                            force: false,
-                        },
-                        Some(&target),
-                    )
-                    .await
-                    .map_err(RpcError::from)?;
-                }
+                remove_slot(
+                    self,
+                    machine_id,
+                    &request.namespace,
+                    &request.resolved_spec.name,
+                )
+                .await?;
                 return Ok(None);
             }
-            return Err(RpcError {
-                code: ployz_core::RpcErrorCode::Conflict,
-                message: format!("Global catch-up target eligibility is {eligibility:?}"),
-                details: serde_json::Value::Null,
-            });
+            return Err(unresolved_eligibility(&eligibility));
         }
         // Explicit Deploy replacement keys also distinguish the previous Container.
         // Reuse its exact persisted creation when catch-up finds it before Start.
@@ -214,6 +167,27 @@ impl CatchUpClient for Client {
         .map_err(Into::into)
     }
 
+    async fn retire_slot(
+        &mut self,
+        machine_id: &MachineId,
+        slot: &ObservedGlobalSlotSpec,
+    ) -> Result<(), RpcError> {
+        let identity = slot.identity();
+        match slot_eligibility(self, machine_id, &identity.namespace, slot.resolved_spec()).await? {
+            ServicePlacementEligibility::Ineligible(_) => {
+                remove_slot(self, machine_id, &identity.namespace, &identity.name).await
+            }
+            ServicePlacementEligibility::Eligible => Err(RpcError {
+                code: ployz_core::RpcErrorCode::Conflict,
+                message: "the Server accepts it again".into(),
+                details: serde_json::Value::Null,
+            }),
+            eligibility @ ServicePlacementEligibility::Unknown(_) => {
+                Err(unresolved_eligibility(&eligibility))
+            }
+        }
+    }
+
     async fn target_containers(
         &mut self,
         machine_id: &MachineId,
@@ -227,6 +201,92 @@ impl CatchUpClient for Client {
         .await
         .map(|list| list.containers)
         .map_err(Failure::from)
+    }
+}
+
+/// Fresh eligibility of `spec` on `machine_id`, from that Machine's own observation.
+async fn slot_eligibility(
+    client: &mut Client,
+    machine_id: &MachineId,
+    namespace: &Namespace,
+    spec: &ResolvedServiceSpec,
+) -> Result<ServicePlacementEligibility, RpcError> {
+    let details = client
+        .read::<op::Inspect>(
+            InspectRequest {
+                include_storage: true,
+                ..Default::default()
+            },
+            &MachineTarget::from(machine_id),
+        )
+        .await?;
+    let machine = details
+        .machine
+        .filter(|machine| {
+            machine.id == *machine_id
+                && details.phase == ployz_core::LocalMachinePhase::Participating
+        })
+        .ok_or_else(|| RpcError {
+            code: ployz_core::RpcErrorCode::Conflict,
+            message: "Global catch-up target has no participating Machine observation".into(),
+            details: serde_json::Value::Null,
+        })?;
+    Ok(spec.placement_eligibility_in_namespace(namespace, &machine, details.storage.as_ref()))
+}
+
+/// Stop and remove every Service Container of `namespace`/`name` on `machine_id`.
+async fn remove_slot(
+    client: &mut Client,
+    machine_id: &MachineId,
+    namespace: &Namespace,
+    name: &ServiceName,
+) -> Result<(), RpcError> {
+    let target = MachineTarget::from(machine_id);
+    let containers = client
+        .read::<op::ListContainers>(
+            ListContainersRequest {
+                environment: EnvironmentValues::Redacted,
+            },
+            &target,
+        )
+        .await?;
+    for container in containers.containers.into_iter().filter(|container| {
+        container.machine_id == *machine_id
+            && container.kind == ContainerKind::ServiceContainer
+            && container.namespace == *namespace
+            && container.resolved_spec.name == *name
+    }) {
+        crate::ingress::stop_container(
+            client,
+            machine_id,
+            ployz_core::StopContainerRequest {
+                container_id: container.container_id,
+                signal: None,
+                grace_period_seconds: None,
+            },
+            None,
+        )
+        .await?;
+        client
+            .call::<op::RemoveContainer>(
+                ployz_core::RemoveContainerRequest {
+                    container_id: container.container_id,
+                    remove_volumes: false,
+                    force: false,
+                },
+                Some(&target),
+            )
+            .await
+            .map_err(RpcError::from)?;
+    }
+    Ok(())
+}
+
+fn unresolved_eligibility(eligibility: &ServicePlacementEligibility) -> RpcError {
+    RpcError {
+        code: ployz_core::RpcErrorCode::Conflict,
+        message: format!("Global catch-up target eligibility is {eligibility:?}"),
+        details: serde_json::Value::Null,
     }
 }
 
@@ -341,6 +401,47 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         return Err(CatchUpError::new(cause, missing));
     }
     Ok(())
+}
+
+/// Retire `globals` on `server` only, through Global slot convergence: each is stopped
+/// and removed there when fresh evidence says the Server rules it out, and held when its
+/// eligibility is unknown. It starts nothing and touches no other Global or Server.
+///
+/// Returns why each Global that could not be retired was not; an empty list means every
+/// retirement was acknowledged. The caller observes what still runs.
+pub(crate) async fn retire_globals<C: CatchUpClient>(
+    client: &mut C,
+    server: &Machine,
+    globals: &[QualifiedService],
+) -> Vec<(QualifiedService, String)> {
+    let everyone = |error: String| {
+        globals
+            .iter()
+            .map(|identity| (identity.clone(), error.clone()))
+            .collect()
+    };
+    let live = match client.live_services().await {
+        Ok(live) => live,
+        Err(error) => return everyone(error.to_string()),
+    };
+    if !live.containers.all_targets_succeeded() {
+        return everyone(format!(
+            "Global retirement cannot plan from partial Service observations: {}",
+            crate::failure::partial_failure_details(&live.containers)
+        ));
+    }
+    let mut failures = Vec::new();
+    for slot in live
+        .services()
+        .iter()
+        .filter_map(ServiceObservation::observed_global_slot)
+        .filter(|slot| globals.contains(slot.identity()))
+    {
+        if let Err(error) = client.retire_slot(&server.id, &slot).await {
+            failures.push((slot.identity().clone(), error.to_string()));
+        }
+    }
+    failures
 }
 
 #[cfg(test)]
