@@ -7,6 +7,7 @@ import {
   makeOrganizationRuntimeLayer,
   ORGANIZATION_CONNECT_TIMEOUT,
   PAIRING_CHANGE_POLL,
+  PAIRING_CHECK_FAILURE_LIMIT,
   OrganizationRuntime,
 } from "#/modules/runtime/organization-runtime.server";
 import { OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
@@ -174,9 +175,8 @@ it.effect("removal aborts an in-progress SDK connection", () =>
 
 it.effect("a logged pairing change closes only sessions whose pairing was removed or replaced", () =>
   Effect.gen(function* () {
-    const access = new Map<string, "current" | "replacement" | "missing">([["org-1", "current"], ["org-2", "current"], ["org-3", "current"]]);
+    const access = new Map<string, "current" | "replacement" | "missing">([["org-1", "current"], ["org-2", "current"]]);
     const changed = new Set<string>();
-    const unreadable = new Set<string>();
     const closed: string[] = [];
     let dialing = "";
     let reads = 0;
@@ -189,7 +189,6 @@ it.effect("a logged pairing change closes only sessions whose pairing was remove
       current: Effect.succeed("0"),
       changedSince: (organizationId, since) => {
         reads += 1;
-        if (unreadable.has(organizationId)) return Effect.fail(new OrganizationChangeLogFailure({ cause: "log unavailable" }));
         const result = { cursor: `${Number(since) + 1}`, changed: changed.has(organizationId) };
         changed.delete(organizationId);
         return Effect.succeed(result);
@@ -202,7 +201,7 @@ it.effect("a logged pairing change closes only sessions whose pairing was remove
     })));
     yield* Effect.scoped(Effect.gen(function* () {
       const service = yield* OrganizationRuntime;
-      for (const organizationId of ["org-1", "org-2", "org-3"]) {
+      for (const organizationId of ["org-1", "org-2"]) {
         dialing = organizationId;
         assert.strictEqual((yield* service.open(organizationId)).status, "connected");
       }
@@ -215,13 +214,74 @@ it.effect("a logged pairing change closes only sessions whose pairing was remove
       changed.add("org-2");
       access.set("org-1", "replacement");
       changed.add("org-1");
-      unreadable.add("org-3");
       yield* TestClock.adjust(PAIRING_CHANGE_POLL);
-      assert.deepStrictEqual(closed.sort(), ["org-1", "org-2", "org-3"]);
+      assert.deepStrictEqual(closed.sort(), ["org-1", "org-2"]);
       // Closed sessions stop reading the log.
       const readsAtClose = reads;
       yield* TestClock.adjust(PAIRING_CHANGE_POLL);
       assert.strictEqual(reads, readsAtClose);
+    })).pipe(Effect.provide(runtime));
+  }),
+);
+
+it.effect("an unreadable change log closes the session only after consecutive failed checks", () =>
+  Effect.gen(function* () {
+    let unreadable = false;
+    let closed = 0;
+    const runtime = makeOrganizationRuntimeLayer(() => Effect.succeed({
+      kind: "ready", generation: "current", connections,
+    }), {
+      current: Effect.succeed("0"),
+      changedSince: (_organizationId, since) => unreadable
+        ? Effect.fail(new OrganizationChangeLogFailure({ cause: "log unavailable" }))
+        : Effect.succeed({ cursor: `${Number(since) + 1}`, changed: false }),
+    }).pipe(Layer.provide(makePloyzLayer({
+      connect: async () => asTestDouble<Client>()({ close: async () => { closed += 1; } }),
+    })));
+    const polls = (count: number) => Effect.repeat(TestClock.adjust(PAIRING_CHANGE_POLL), { times: count - 1 });
+    yield* Effect.scoped(Effect.gen(function* () {
+      assert.strictEqual((yield* (yield* OrganizationRuntime).open("org-1")).status, "connected");
+      yield* polls(1);
+      unreadable = true;
+      yield* polls(PAIRING_CHECK_FAILURE_LIMIT - 1);
+      assert.strictEqual(closed, 0, "a failure run shorter than the limit keeps the session");
+      unreadable = false;
+      yield* polls(1);
+      unreadable = true;
+      yield* polls(PAIRING_CHECK_FAILURE_LIMIT - 1);
+      assert.strictEqual(closed, 0, "a readable check resets the failure run");
+      yield* polls(1);
+      assert.strictEqual(closed, 1, "the limit of consecutive failures closes the session");
+    })).pipe(Effect.provide(runtime));
+  }),
+);
+
+it.effect("a removal whose pairing load failed is still seen by the next check", () =>
+  Effect.gen(function* () {
+    let pairing: "current" | "unloadable" | "missing" = "current";
+    let logged = false;
+    let closed = 0;
+    const runtime = makeOrganizationRuntimeLayer(() => {
+      if (pairing === "unloadable") return Effect.fail(new Error("database unavailable"));
+      return Effect.succeed(pairing === "missing" ? { kind: "missing" as const } : { kind: "ready" as const, generation: "current", connections });
+    }, {
+      current: Effect.succeed("0"),
+      changedSince: (_organizationId, since) => Effect.succeed(logged
+        ? { cursor: "removal", changed: since !== "removal" }
+        : { cursor: since, changed: false }),
+    }).pipe(Layer.provide(makePloyzLayer({
+      connect: async () => asTestDouble<Client>()({ close: async () => { closed += 1; } }),
+    })));
+    yield* Effect.scoped(Effect.gen(function* () {
+      assert.strictEqual((yield* (yield* OrganizationRuntime).open("org-1")).status, "connected");
+      yield* TestClock.adjust(PAIRING_CHANGE_POLL);
+      logged = true;
+      pairing = "unloadable";
+      yield* TestClock.adjust(PAIRING_CHANGE_POLL);
+      assert.strictEqual(closed, 0);
+      pairing = "missing";
+      yield* TestClock.adjust(PAIRING_CHANGE_POLL);
+      assert.strictEqual(closed, 1);
     })).pipe(Effect.provide(runtime));
   }),
 );
