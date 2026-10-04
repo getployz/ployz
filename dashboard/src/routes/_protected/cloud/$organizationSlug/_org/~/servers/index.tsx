@@ -6,15 +6,19 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/
 import { ItemGroup } from "#/components/ui/item";
 import { needsAttention, type ServerStatus } from "#/modules/machines/server-status";
 import { useServers, type Server } from "#/modules/machines/use-servers";
+import { latestServerUpgradesQueryOptions } from "#/modules/server-upgrade/server-upgrade.queries";
+import { prefetchRemote } from "#/collections/route-data";
 import { ServerLinkItem } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/server-link-item";
 import { AddServerDialog } from "./-components/add-server-dialog";
 import { runsHere } from "./-components/runs-here";
 import { ServersSkeleton } from "./-components/servers-skeleton";
 import { ServersStaleAlert, ServersUnreachable } from "./-components/servers-unreachable";
+import { ServersUpgradeLine } from "./-components/servers-upgrade-line";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/servers/",
 )({
+  loader: ({ params, context }) => prefetchRemote(context, latestServerUpgradesQueryOptions(params.organizationSlug)),
   component: RouteComponent,
 });
 
@@ -29,6 +33,9 @@ function RouteComponent() {
         {state === "live" && servers.length > 0 ? <ServersHealth servers={servers} /> : null}
         <div className="ml-auto"><AddServerDialog organizationSlug={organizationSlug} /></div>
       </div>
+      {state === "live" && servers.length > 0 ? (
+        <ServersUpgradeLine organizationSlug={organizationSlug} versions={servers.map(({ machine }) => machine.daemonVersion)} />
+      ) : null}
       {state === "loading" ? (
         <ServersSkeleton />
       ) : state === "unreachable" ? (

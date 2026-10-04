@@ -116,6 +116,10 @@ export function serverUpgradeLine(input: {
   return behind !== null && behind < 0 ? { kind: "behind", release } : null;
 }
 
+/** The attempt started last; null with none. */
+export const newestAttempt = (latest: readonly LatestUpgrade[]) => latest.reduce<LatestUpgrade | null>((found, row) =>
+  found === null || Date.parse(row.startedAt) > Date.parse(found.startedAt) ? row : found, null);
+
 export type ServersUpgradeLine =
   | { readonly kind: "current"; readonly release: string; readonly upgradedAt: string | null }
   | { readonly kind: "upgrading"; readonly target: string; readonly done: number; readonly total: number }
@@ -148,9 +152,7 @@ export function serversUpgradeLine(input: {
   const behind = servers.filter(({ version }) => !isCurrent(version));
   const done = servers.length - behind.length;
 
-  const newest = latest.reduce<LatestUpgrade | null>((found, row) =>
-    found === null || Date.parse(row.startedAt) > Date.parse(found.startedAt) ? row : found, null);
-  const pending = input.pendingFrom !== undefined && (newest?.attemptId ?? null) === input.pendingFrom;
+  const pending = input.pendingFrom !== undefined && (newestAttempt(latest)?.attemptId ?? null) === input.pendingFrom;
   const running = latest.find((row) =>
     row.outcome === "running" && input.now - Date.parse(row.startedAt) < UPGRADE_OBSERVATION_LIMIT_MS);
   if (pending || running !== undefined) {

@@ -22,7 +22,10 @@ export function ServerLinkItem({ organizationSlug, server, description, children
       <ItemContent className="min-w-0">
         <ItemTitle>{server.name}</ItemTitle>
         <ItemDescription className="line-clamp-1">{description}</ItemDescription>
-        <ItemDescription>{volumeSupportText(server.machine.storage)}</ItemDescription>
+        <ItemDescription>
+          {volumeSupportText(server.machine.storage)}
+          {server.machine.daemonVersion ? <> · <span className="font-mono">{server.machine.daemonVersion}</span></> : null}
+        </ItemDescription>
       </ItemContent>
       <ItemActions>
         {children}

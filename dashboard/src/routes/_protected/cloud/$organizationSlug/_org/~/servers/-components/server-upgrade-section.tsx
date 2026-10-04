@@ -13,6 +13,35 @@ import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-co
 /** How long a click reads as Upgrading before its attempt is recorded; a Busy Server records none. */
 const PENDING_MS = 60_000;
 
+/**
+ * A click on Upgrade reads as Upgrading until a newer attempt than `newestAttemptId` is recorded, or for a minute: a
+ * Busy Server records none. `from` is the newest attempt ID at the click; undefined when nothing is pending.
+ */
+export function usePendingUpgrade(newestAttemptId: string | null) {
+  const [from, setFrom] = useState<string | null | undefined>(undefined);
+  const recorded = from !== undefined && newestAttemptId !== from;
+  useEffect(() => {
+    if (recorded) setFrom(undefined);
+  }, [recorded]);
+  useEffect(() => {
+    if (from === undefined) return;
+    const timer = setTimeout(() => setFrom(undefined), PENDING_MS);
+    return () => clearTimeout(timer);
+  }, [from]);
+  return { from, start: () => setFrom(newestAttemptId), cancel: () => setFrom(undefined) };
+}
+
+/** The clock, ticking while an attempt runs: one reads as unknown once it outlives the observation limit. */
+export function useNow(running: boolean) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, [running]);
+  return now;
+}
+
 /** The Ployz release this Server runs, and its one Upgrade line. */
 export function ServerUpgradeSection({ machine, status, organizationSlug }: {
   machine: RuntimeMachineRecord;
@@ -22,33 +51,17 @@ export function ServerUpgradeSection({ machine, status, organizationSlug }: {
   const version = machine.daemonVersion;
   const latest = useLatestServerUpgrade(organizationSlug, machine.id);
   const release = useStableRelease(releaseLine(version));
-  // The latest attempt ID when Upgrade was clicked; undefined when nothing is pending.
-  const [pendingFrom, setPendingFrom] = useState<string | null | undefined>(undefined);
-  const [now, setNow] = useState(() => Date.now());
-
-  const recorded = pendingFrom !== undefined && (latest?.attemptId ?? null) !== pendingFrom;
-  useEffect(() => {
-    if (recorded) setPendingFrom(undefined);
-  }, [recorded]);
-  useEffect(() => {
-    if (pendingFrom === undefined) return;
-    const timer = setTimeout(() => setPendingFrom(undefined), PENDING_MS);
-    return () => clearTimeout(timer);
-  }, [pendingFrom]);
-  // A running attempt reads as unknown once it outlives the observation limit.
-  useEffect(() => {
-    if (latest?.outcome !== "running") return;
-    const timer = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(timer);
-  }, [latest?.outcome]);
+  const pending = usePendingUpgrade(latest?.attemptId ?? null);
+  const now = useNow(latest?.outcome === "running");
 
   // Nothing is offered before Cloud says what the last attempt did.
-  const line = latest === undefined ? null : serverUpgradeLine({ version, status, release, latest, pendingFrom, now });
+  const line = latest === undefined ? null
+    : serverUpgradeLine({ version, status, release, latest, pendingFrom: pending.from, now });
 
   function upgrade() {
-    setPendingFrom(latest?.attemptId ?? null);
+    pending.start();
     requestServerUpgradeServerFn({ data: { organizationSlug, machineId: machine.id } }).catch(() => {
-      setPendingFrom(undefined);
+      pending.cancel();
       toast.error(`Could not upgrade ${machine.name}`);
     });
   }
