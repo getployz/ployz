@@ -32,6 +32,9 @@ import type {
   MachineTarget,
   MachineUpdate,
   MachineUpdated,
+  MachineUpgradeAttempt,
+  RequestMachineUpgradeRequest,
+  InspectMachineUpgradeRequest,
   ObservedDataLoss,
   LocalMachineRemoved,
   DataLossConfirmation,
@@ -244,6 +247,16 @@ export declare class Client {
     machine: MachineTarget,
     update: Partial<MachineUpdate>,
   ): Promise<MachineUpdated>;
+  /** Ask one Machine to Upgrade. Repeating the request with the same attempt ID returns that attempt. */
+  requestMachineUpgrade(
+    machine: MachineTarget,
+    request: RequestMachineUpgradeRequest,
+  ): Promise<MachineUpgradeAttempt>;
+  /** Read one Machine's Upgrade attempt. Its daemon restarts during the Upgrade, so a caller polling for the outcome keeps polling through `unavailable`. */
+  inspectMachineUpgrade(
+    machine: MachineTarget,
+    request: InspectMachineUpgradeRequest,
+  ): Promise<MachineUpgradeAttempt>;
   dataLossIfNamespaceDestroyed(
     namespace: Namespace,
     destroy_volumes?: boolean,

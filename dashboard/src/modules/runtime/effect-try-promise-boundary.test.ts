@@ -14,6 +14,7 @@ const TRY_PROMISE_ALLOWLIST = new Set([
   "modules/cluster-domain/hosted-dns.server.ts",
   "modules/config-store/store-sdk.server.ts",
   "modules/cluster-domain/sync.server.ts",
+  "modules/server-upgrade/server-upgrade.server.ts",
   "server/auth.server.ts",
   "server/database.server.ts",
   "server/marketing-proxy.server.ts",

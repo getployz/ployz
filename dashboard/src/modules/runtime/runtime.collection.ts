@@ -55,6 +55,8 @@ export const runtimeMachineRecordSchema = Schema.Struct({
   effectiveBuildConcurrency: Schema.Number,
   /** Builds the Server reports running now; display only. */
   runningBuilds: NonnegativeInt,
+  /** The Ployz release the Server runs, bare `X.Y.Z`; empty when its record predates the field. */
+  daemonVersion: Schema.String,
   membership: Schema.String,
   observedContainerCount: NonnegativeInt,
   observedAt: Schema.String,

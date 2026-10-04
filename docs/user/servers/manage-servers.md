@@ -49,8 +49,15 @@ and your generated addresses stop pointing at it within the hour.
 
 ## Upgrade Ployz on a server
 
-Servers don't upgrade themselves, and the dashboard can't upgrade them yet. This is CLI-only for
-now:
+Servers don't upgrade themselves yet. To upgrade one, open it: when a newer stable release is out,
+its **Ployz** section reads **`0.2.2` is out**. Click **Upgrade**. The line reads **Upgrading to
+`0.2.2`** until the server is on it. Any member can upgrade a server, while it's online and not
+building.
+
+If an upgrade doesn't install, the line says so. **Show details** has the exact error to copy, and
+**Try again** retries.
+
+To upgrade from the CLI, or to pick beta or an exact version:
 
 ```sh
 # stable, beta, or an exact version like 0.2.0, on web-1 then web-2

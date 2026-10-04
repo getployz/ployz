@@ -40,6 +40,8 @@ import type {
   VolumeSource,
   MachineTarget,
   MachineUpdated,
+  MachineUpgradeAttempt,
+  MachineUpgradeAttemptId,
 } from "../generated/payloads";
 import {
   applyAll,
@@ -206,6 +208,13 @@ client.updateMachine("machine" as MachineTarget, {
   accepts_builds: false,
   build_concurrency: { action: "set", value: 2 },
 }) satisfies Promise<MachineUpdated>;
+// Cloud requests a Release Channel by name; the outcome is tagged.
+const attemptId = "0".repeat(32) as MachineUpgradeAttemptId;
+client.requestMachineUpgrade("machine" as MachineTarget, { attempt_id: attemptId, release: "stable" }) satisfies Promise<MachineUpgradeAttempt>;
+client.inspectMachineUpgrade("machine" as MachineTarget, { attempt_id: attemptId }) satisfies Promise<MachineUpgradeAttempt>;
+({ attempt_id: attemptId, target: "0.2.2", outcome: "failed", stage: "readiness", error: "not ready" }) satisfies MachineUpgradeAttempt;
+// @ts-expect-error a running attempt reports its stage
+({ attempt_id: attemptId, target: "0.2.2", outcome: "running" }) satisfies MachineUpgradeAttempt;
 const identity: RegisterRequest = {
   machine_id: "machine" as MachineId,
   assigned_subnet: null,

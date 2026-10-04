@@ -81,6 +81,9 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_core::MachineDetails>();
     declarations.add::<ployz_core::MachineUpdate>();
     declarations.add::<ployz_core::MachineUpdated>();
+    declarations.add::<ployz_core::RequestMachineUpgradeRequest>();
+    declarations.add::<ployz_core::InspectMachineUpgradeRequest>();
+    declarations.add::<ployz_core::MachineUpgradeAttempt>();
     declarations.add::<ployz_core::SetManagementClientResponse>();
     declarations.add::<MachineTarget>();
     declarations.add::<ployz_core::PruneTarget>();

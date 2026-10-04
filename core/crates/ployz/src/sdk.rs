@@ -1,7 +1,8 @@
 //! Native Cloud session: connect, observe_enrollment, register,
 //! about, publish_certificate_material, runtime.watch, prepare, build, preview, run,
 //! preview_namespace_removal, remove_volumes, Data Loss for Machine, Namespace, and
-//! Cluster destroy, remove_machine, destroy_namespace, destroy_cluster, and close.
+//! Cluster destroy, remove_machine, request and inspect a Machine Upgrade,
+//! destroy_namespace, destroy_cluster, and close.
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -666,6 +667,53 @@ impl Session {
             Some(crate::connect::TARGET_RPC_TIMEOUT),
         ))
         .await
+    }
+
+    /// Ask `machine` to Upgrade to `request.release`. Repeating the request with the same attempt ID
+    /// returns that attempt; a different one while an Upgrade or mutation runs is refused as `conflict`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, `machine`
+    /// is not a Machine Target, the Machine refuses the request, or it does not
+    /// answer.
+    pub async fn request_machine_upgrade(
+        &self,
+        machine: &str,
+        request: ployz_core::RequestMachineUpgradeRequest,
+    ) -> Result<ployz_core::MachineUpgradeAttempt, RpcError> {
+        self.repeatable::<op::RequestMachineUpgrade>(machine, request)
+            .await
+    }
+
+    /// Read `machine`'s Upgrade attempt. Its daemon restarts during the Upgrade, so a caller
+    /// polling for the outcome keeps polling through `unavailable`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, `machine`
+    /// is not a Machine Target, the attempt is not the Machine's latest
+    /// (`not_found`), or the Machine does not answer.
+    pub async fn inspect_machine_upgrade(
+        &self,
+        machine: &str,
+        request: ployz_core::InspectMachineUpgradeRequest,
+    ) -> Result<ployz_core::MachineUpgradeAttempt, RpcError> {
+        self.repeatable::<op::InspectMachineUpgrade>(machine, request)
+            .await
+    }
+
+    /// A call on `machine` that is safe to repeat, retried across dropped connections for
+    /// [`crate::connect::TARGET_RPC_TIMEOUT`]. Unlike the CLI's retries it never writes to stderr.
+    async fn repeatable<T: Rpc>(
+        &self,
+        machine: &str,
+        request: T::Request,
+    ) -> Result<T::Response, RpcError> {
+        let target =
+            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let mut client = self.client()?;
+        self.until_closed(client.read::<T>(request, &target)).await
     }
 
     /// Live Observation of Data Loss that destroying `namespace` would cause.

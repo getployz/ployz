@@ -1,0 +1,116 @@
+import { Schema } from "effect";
+import type { ServerStatus } from "#/modules/machines/server-status";
+
+/** How long Cloud waits for an Upgrade's outcome: longer than the upgrade worker's 15-minute cap. */
+export const UPGRADE_OBSERVATION_LIMIT_MS = 20 * 60_000;
+
+export const UPGRADE_OUTCOMES = ["running", "succeeded", "failed", "interrupted", "unknown"] as const;
+export type UpgradeOutcome = (typeof UPGRADE_OUTCOMES)[number];
+export const UPGRADE_TRIGGERS = ["automatic", "manual"] as const;
+export type UpgradeTrigger = (typeof UPGRADE_TRIGGERS)[number];
+export const RELEASE_CHANNELS = ["stable", "beta"] as const;
+export type ReleaseChannel = (typeof RELEASE_CHANNELS)[number];
+
+// The only forms a release is published in: `X.Y.Z` and `X.Y.Z-beta.N`.
+const VERSION = /^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$/u;
+
+function versionParts(version: string) {
+  const match = VERSION.exec(version);
+  if (match === null) return null;
+  // A release sorts after every beta of it.
+  return [match[1], match[2], match[3], match[4] ?? Infinity].map(Number);
+}
+
+/** Negative when `left` is older, zero when equal, positive when newer; null when either isn't a published version. */
+export function compareVersions(left: string, right: string) {
+  const a = versionParts(left);
+  const b = versionParts(right);
+  if (a === null || b === null) return null;
+  const index = a.findIndex((part, at) => part !== b[at]);
+  return index === -1 ? 0 : (a[index] ?? 0) - (b[index] ?? 0);
+}
+
+/** The release a Release Channel pointer names (`v0.2.2\n`), as Servers report versions (`0.2.2`). */
+export function releaseFromPointer(text: string) {
+  const version = text.trim().replace(/^v/u, "");
+  return versionParts(version) === null ? null : version;
+}
+
+/** The release line a version belongs to, as the pointer path names it (`v0`). */
+export function releaseLine(version: string) {
+  const parts = versionParts(version);
+  return parts === null ? null : `v${parts[0]}`;
+}
+
+export const ReleaseLine = Schema.String.check(Schema.isPattern(/^v\d{1,4}$/u));
+
+export const RequestServerUpgradeInput = Schema.Struct({
+  organizationSlug: Schema.String,
+  machineId: Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/u)),
+});
+export type RequestServerUpgradeInput = typeof RequestServerUpgradeInput.Type;
+
+/** A Server's latest Upgrade attempt, as the Server page reads it. */
+export const LatestUpgrade = Schema.Struct({
+  attemptId: Schema.String,
+  outcome: Schema.Literals(UPGRADE_OUTCOMES),
+  stage: Schema.NullOr(Schema.String),
+  error: Schema.NullOr(Schema.String),
+  fromVersion: Schema.String,
+  targetVersion: Schema.NullOr(Schema.String),
+  startedAt: Schema.String,
+});
+export type LatestUpgrade = typeof LatestUpgrade.Type;
+
+export type ServerUpgradeLine =
+  | { readonly kind: "upgrading"; readonly target: string | null }
+  | {
+    readonly kind: "failed";
+    readonly target: string;
+    /** True only while the Server is observed online on the version it ran before. */
+    readonly nothingChanged: boolean;
+    /** The exact error for a failure; the stage reached otherwise. */
+    readonly details: string | null;
+    readonly canRetry: boolean;
+  }
+  | { readonly kind: "behind"; readonly release: string }
+  | null;
+
+/**
+ * The Server page's Upgrade line. `release` is the newest release on the Server's line; `pendingFrom` is the latest
+ * attempt ID when the user clicked Upgrade (null with none), undefined when nothing is pending.
+ */
+export function serverUpgradeLine(input: {
+  readonly version: string;
+  readonly status: ServerStatus;
+  readonly release: string | null;
+  readonly latest: LatestUpgrade | null;
+  readonly pendingFrom: string | null | undefined;
+  readonly now: number;
+}): ServerUpgradeLine {
+  const { version, status, release, latest } = input;
+  const pending = input.pendingFrom !== undefined && (latest?.attemptId ?? null) === input.pendingFrom;
+  const expired = latest !== null && latest.outcome === "running"
+    && input.now - Date.parse(latest.startedAt) >= UPGRADE_OBSERVATION_LIMIT_MS;
+  const outcome = expired ? "unknown" : latest?.outcome;
+  if (pending || outcome === "running") return { kind: "upgrading", target: latest?.targetVersion ?? release };
+
+  const online = status === "online" || status === "building";
+  const target = latest?.targetVersion ?? release;
+  if (latest !== null && outcome !== "succeeded" && target !== null) {
+    // A Server that has since reached the target, by any route, has nothing left to report.
+    const passed = compareVersions(version, target);
+    if (passed === null || passed < 0) {
+      return {
+        kind: "failed",
+        target,
+        nothingChanged: online && latest.fromVersion !== "" && version === latest.fromVersion,
+        details: outcome === "failed" ? latest.error : latest.stage,
+        canRetry: status === "online",
+      };
+    }
+  }
+  if (release === null || status !== "online") return null;
+  const behind = compareVersions(version, release);
+  return behind !== null && behind < 0 ? { kind: "behind", release } : null;
+}
