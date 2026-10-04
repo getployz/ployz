@@ -610,6 +610,8 @@ impl Display for DeployWarning {
 /// Machine RPC invoked while executing one Deploy Operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub enum MachineAction {
+    /// Make an image present on the Machine before any Operation runs.
+    PullImage,
     /// Prepare the Machine-local batch of provisioned Volumes.
     PrepareVolumes,
     CreateContainer,
@@ -623,6 +625,7 @@ pub enum MachineAction {
 impl Display for MachineAction {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::PullImage => "pull image",
             Self::PrepareVolumes => "prepare Volumes",
             Self::CreateContainer => "create Container",
             Self::StartContainer => "start Container",

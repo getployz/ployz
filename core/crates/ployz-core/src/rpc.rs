@@ -492,7 +492,18 @@ impl PeerImagePull {
     }
 }
 
-/// Successful `PullImageFromMachine` payload.
+/// Make one image present on this Machine as its pull policy asks, before any
+/// Deploy Operation runs. The registry pull happens outside the Machine's
+/// exclusive admission lock.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PullImageRequest {
+    pub image: String,
+    pub pull_policy: crate::PullPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_auth: Option<crate::RegistryAuth>,
+}
+
+/// Successful `PullImageFromMachine` and `PullImage` payload.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ImagePulled {}
 

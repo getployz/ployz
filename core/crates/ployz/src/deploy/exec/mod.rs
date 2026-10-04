@@ -1,12 +1,13 @@
-use std::{future::Future, time::Duration};
+use std::{collections::BTreeMap, future::Future, time::Duration};
 
 use ployz_core::{
     ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, CreateContainerRequest, DeployEvent, DockerVolumeId,
     ExecutionError, FailedOperation, HookFailure, InspectContainerRequest, MachineAction,
-    MachineId, MachineTarget, MembershipObservation, Namespace, OperationPhase, QualifiedService,
-    RemoveContainerRequest, RemoveVolumeRequest, ResolvedServiceSpec, RpcError, RpcErrorCode,
-    StartContainerRequest, StopContainerPurpose, StopContainerRequest, UpdateOrder, op,
+    MachineId, MachineTarget, MembershipObservation, Namespace, OperationPhase, PullImageRequest,
+    PullPolicy, QualifiedService, RemoveContainerRequest, RemoveVolumeRequest, ResolvedServiceSpec,
+    RpcError, RpcErrorCode, StartContainerRequest, StopContainerPurpose, StopContainerRequest,
+    UpdateOrder, op,
 };
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
@@ -71,6 +72,12 @@ fn replacement_failure_outcome_from<E>(
 }
 
 pub(super) trait MachineOperations {
+    /// Make the image `spec` runs present on the Machine as its pull policy asks.
+    async fn pull_image(
+        &self,
+        machine_id: &MachineId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<(), RpcError>;
     async fn prepare_volumes(
         &self,
         machine_id: &MachineId,
@@ -119,6 +126,36 @@ pub(super) trait MachineOperations {
 }
 
 impl MachineOperations for Client {
+    async fn pull_image(
+        &self,
+        machine_id: &MachineId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<(), RpcError> {
+        let image = &spec.container.image;
+        let policy = spec.container.pull_policy;
+        crate::image::ensure_cluster_image(self, machine_id, image, policy).await?;
+        match self
+            .invoke::<op::PullImage>(
+                PullImageRequest {
+                    image: image.clone(),
+                    pull_policy: policy,
+                    registry_auth: self.registry_auth.get(&spec.name).cloned(),
+                },
+                &MachineTarget::from(machine_id),
+                None,
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            // A daemon from before PullImage still pulls while it creates.
+            Err(RpcError {
+                code: RpcErrorCode::Unsupported,
+                ..
+            }) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
     async fn prepare_volumes(
         &self,
         machine_id: &MachineId,
@@ -216,15 +253,6 @@ impl MachineOperations for Client {
         } else {
             None
         };
-        if replay_key.is_none() {
-            crate::image::ensure_cluster_image(
-                self,
-                machine_id,
-                &spec.container.image,
-                spec.container.pull_policy,
-            )
-            .await?;
-        }
         self.invoke::<op::CreateContainer>(
             CreateContainerRequest {
                 deployment_id: self.deployment_id.clone(),
@@ -367,6 +395,17 @@ struct RestartTolerant<'a, C> {
 }
 
 impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
+    async fn pull_image(
+        &self,
+        machine_id: &MachineId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<(), RpcError> {
+        wait_out_restart(self.cancellation, || {
+            self.inner.pull_image(machine_id, spec)
+        })
+        .await
+    }
+
     async fn prepare_volumes(
         &self,
         machine_id: &MachineId,
@@ -488,6 +527,72 @@ where
     }
 }
 
+struct ImagePull<'a> {
+    spec: &'a ResolvedServiceSpec,
+    first_operation: usize,
+}
+
+fn pull_rank(policy: PullPolicy) -> u8 {
+    match policy {
+        PullPolicy::Never => 0,
+        PullPolicy::Missing => 1,
+        PullPolicy::Always => 2,
+    }
+}
+
+// Each image once per Machine, under the strictest policy any operation asks
+// for, remembering the earliest operation that needs it.
+fn image_pulls(operations: &[DeployOperation]) -> BTreeMap<MachineId, Vec<ImagePull<'_>>> {
+    let mut pulls: BTreeMap<MachineId, Vec<ImagePull<'_>>> = BTreeMap::new();
+    for (first_operation, operation) in operations.iter().enumerate() {
+        let Some(spec) = operation.spec() else {
+            continue;
+        };
+        let machine = pulls.entry(operation.machine_id()).or_default();
+        match machine
+            .iter_mut()
+            .find(|pull| pull.spec.container.image == spec.container.image)
+        {
+            Some(pull) => {
+                if pull_rank(spec.container.pull_policy)
+                    > pull_rank(pull.spec.container.pull_policy)
+                {
+                    pull.spec = spec;
+                }
+            }
+            None => machine.push(ImagePull {
+                spec,
+                first_operation,
+            }),
+        }
+    }
+    pulls
+}
+
+// Machines pull in parallel; a failure names the earliest operation it blocks.
+async fn pull_images<C: MachineOperations>(
+    operations: &[DeployOperation],
+    client: &C,
+) -> Result<(), (usize, RpcError)> {
+    let pulls = image_pulls(operations);
+    let results =
+        futures_util::future::join_all(pulls.iter().map(|(machine_id, pulls)| async move {
+            for pull in pulls {
+                client
+                    .pull_image(machine_id, pull.spec)
+                    .await
+                    .map_err(|error| (pull.first_operation, error))?;
+            }
+            Ok(())
+        }))
+        .await;
+    results
+        .into_iter()
+        .filter_map(Result::err)
+        .min_by_key(|(first_operation, _)| *first_operation)
+        .map_or(Ok(()), Err)
+}
+
 pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     plan: &super::DeployPlan,
     client: &C,
@@ -503,6 +608,19 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         inner: client,
         cancellation,
     };
+    if let Err((index, error)) = pull_images(operations, &client).await {
+        let error = machine_error(MachineAction::PullImage, error);
+        progress.fail(index, error.clone());
+        let mut unexecuted = operations.to_vec();
+        let operation = unexecuted.remove(index);
+        let outcome = DeployOutcome::Failed {
+            completed: Vec::new(),
+            failed: FailedOperation::Operation { operation, error },
+            unexecuted,
+        };
+        progress.outcome(outcome.clone());
+        return outcome;
+    }
     for (index, operation) in operations.iter().enumerate() {
         if cancellation.is_cancelled() {
             progress.fail(index, ExecutionError::Cancelled);

@@ -668,6 +668,21 @@ impl MachineRpc for MachineService {
         finish(self.local.pull_image_from_machine(request).await)
     }
 
+    async fn pull_image(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::PullImage>(request)?;
+        if request.image.is_empty() {
+            return respond(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: "image is required".into(),
+                details: Value::Null,
+            });
+        }
+        finish(self.local.pull_image(request).await)
+    }
+
     async fn mint_build_grant(
         &self,
         request: Request<OpaquePayload>,

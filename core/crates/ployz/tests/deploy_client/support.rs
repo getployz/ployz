@@ -834,6 +834,12 @@ impl MachineRpc for DeployService {
         self.record_mutation();
         unused()
     }
+    async fn pull_image(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        encoded(RpcResponse::from(ployz_core::ImagePulled {}))
+    }
     async fn get_ingress_proxy_config(
         &self,
         _request: Request<OpaquePayload>,

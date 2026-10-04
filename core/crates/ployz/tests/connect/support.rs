@@ -948,6 +948,17 @@ impl MachineRpc for DiscoveryService {
         ))
     }
 
+    async fn pull_image(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Ok(Response::new(
+            RpcResponse::from(ployz_core::ImagePulled {})
+                .encode()
+                .unwrap(),
+        ))
+    }
+
     async fn remove_volume(
         &self,
         request: Request<OpaquePayload>,

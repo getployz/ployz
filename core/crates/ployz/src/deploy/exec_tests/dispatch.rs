@@ -712,6 +712,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                     RpcRequestBody::MarkContainerStopping(_) => {
                         RpcResponse::from(error("mark unsupported"))
                     }
+                    RpcRequestBody::PullImage(_) => RpcResponse::from(ployz_core::ImagePulled {}),
                     other => panic!("unexpected mutation: {other:?}"),
                 };
                 Ok(Response::new(response.encode().unwrap()))

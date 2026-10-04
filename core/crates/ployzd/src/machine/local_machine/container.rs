@@ -6,7 +6,7 @@ use ployz_core::{
     ContainerChanged, ContainerCreated, ContainerId, ContainerKind, CreateVolumeReport,
     CreateVolumeRequest, DockerVolumeName, ImageIngestOpened, ImageIngestReason, ImagePulled,
     ImagesRemoved, LocalMachinePhase, MachineStorageObservation, Namespace,
-    PullImageFromMachineRequest, ResolvedServiceSpec, VolumeRemoved,
+    PullImageFromMachineRequest, PullImageRequest, ResolvedServiceSpec, VolumeRemoved,
 };
 
 use super::super::ingress::admit_ingress_service;
@@ -279,6 +279,32 @@ impl LocalMachine {
             .open(address)
             .await
             .map_err(Error::StoragePreparation)
+    }
+
+    /// Make one image present for a Deploy before any of its Operations run, under
+    /// shared admission: registry pulls run side by side and never hold the
+    /// exclusive lock a Container change takes.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable or the image inspect or pull fails.
+    pub(crate) async fn pull_image(&self, request: PullImageRequest) -> Result<ImagePulled, Error> {
+        let local = self.clone();
+        let shared = self.owner.admission_lock().read_owned().await;
+        self.finish_admitted(shared, async move {
+            local
+                .containers
+                .as_ref()
+                .ok_or(Error::DockerUnavailable)?
+                .prepare_image(
+                    &request.image,
+                    request.pull_policy,
+                    request.registry_auth.as_ref(),
+                )
+                .await?;
+            Ok(ImagePulled {})
+        })
+        .await
     }
 
     /// Pull one image from peer ingest under shared admission: transfers run side by
@@ -687,6 +713,40 @@ mod tests {
                 .await,
             Err(LocalMachineError::NotParticipating)
         ));
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn image_pulls_share_admission() {
+        use crate::docker::test_support::{FakeDocker, fake_runtime_with};
+        use ployz_core::{PullImageRequest, PullPolicy};
+        let data_dir =
+            std::env::temp_dir().join(format!("ployzd-pull-admission-{}", MachineId::random()));
+        let owner = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
+        // Both pulls must reach Docker's image inspect together. Under an exclusive
+        // lock the first would wait at the barrier for a second that never arrives.
+        let (runtime, _fake) = fake_runtime_with(FakeDocker {
+            image_barrier: Some(Arc::new(tokio::sync::Barrier::new(2))),
+            ..Default::default()
+        })
+        .await;
+        let local = LocalMachine::new(owner).with_containers(Some(runtime));
+        let request = PullImageRequest {
+            image: "example.test/api".into(),
+            pull_policy: PullPolicy::Missing,
+            registry_auth: None,
+        };
+        let (first, second) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            futures_util::future::join(
+                local.pull_image(request.clone()),
+                local.pull_image(request),
+            ),
+        )
+        .await
+        .expect("pulls ran side by side under shared admission");
+        first.unwrap();
+        second.unwrap();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 }

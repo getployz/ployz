@@ -40,6 +40,7 @@ async fn execute_with<C: MachineOperations>(
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Call {
+    Pull(MachineId, String),
     Prepare(MachineId),
     Wait(Vec<ContainerId>, ContainerObservationCondition),
     List(QualifiedService),
@@ -102,6 +103,33 @@ impl Scripted {
 }
 
 impl MachineOperations for Scripted {
+    // Machines pull in parallel, so any pull scripted at the front may answer.
+    // A script with no pulls at the front answers Ok, so scripts about later
+    // operations need not spell out every pull.
+    async fn pull_image(
+        &self,
+        machine_id: &MachineId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<(), RpcError> {
+        let call = Call::Pull(*machine_id, spec.container.image.clone());
+        let mut steps = self.steps.lock().unwrap();
+        let leading = steps
+            .iter()
+            .take_while(|Step(expected, _)| matches!(expected, Call::Pull(..)))
+            .count();
+        if leading == 0 {
+            return Ok(());
+        }
+        let position = steps
+            .iter()
+            .take(leading)
+            .position(|Step(expected, _)| *expected == call)
+            .unwrap_or_else(|| panic!("unexpected call: {call:?}"));
+        let Step(_, reply) = steps.remove(position).unwrap();
+        drop(steps);
+        unit(reply)
+    }
+
     async fn prepare_volumes(
         &self,
         machine_id: &MachineId,
@@ -254,12 +282,18 @@ fn dropped(container_id: ContainerId) -> Step {
     ))
 }
 
+fn pull(machine_id: MachineId, spec: &ResolvedServiceSpec) -> Call {
+    Call::Pull(machine_id, spec.container.image.clone())
+}
+
 #[path = "exec_tests/dispatch.rs"]
 mod dispatch;
 #[path = "exec_tests/health.rs"]
 mod health;
 #[path = "exec_tests/hooks.rs"]
 mod hooks;
+#[path = "exec_tests/images.rs"]
+mod images;
 #[path = "exec_tests/replacement.rs"]
 mod replacement;
 #[path = "exec_tests/restart.rs"]

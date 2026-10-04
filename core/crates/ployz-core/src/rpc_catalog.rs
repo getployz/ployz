@@ -67,6 +67,7 @@ macro_rules! rpc_catalog {
                 RemoveImages: (remove_images, "RemoveImages", RemoveImagesRequest, "remove_images", ImagesRemoved, REMOVE_IMAGES_CAPABILITY, "ployz.image.remove.v1", Container),
                 EnsureImageIngest: (ensure_image_ingest, "EnsureImageIngest", EnsureImageIngestRequest, "ensure_image_ingest", ImageIngestOpened, ENSURE_IMAGE_INGEST_CAPABILITY, "ployz.image.ingest.ensure.v1", Container),
                 PullImageFromMachine: (pull_image_from_machine, "PullImageFromMachine", PullImageFromMachineRequest, "pull_image_from_machine", ImagePulled, PULL_IMAGE_FROM_MACHINE_CAPABILITY, "ployz.image.pull-from-machine.v1", Container),
+                PullImage: (pull_image, "PullImage", PullImageRequest, "pull_image", ImagePulled, PULL_IMAGE_CAPABILITY, "ployz.image.pull.v1", Container),
                 MintBuildGrant: (mint_build_grant, "MintBuildGrant", MintBuildGrantRequest, "mint_build_grant", BuildGrantMinted, MINT_BUILD_GRANT_CAPABILITY, "ployz.build.grant.mint.v1", Container),
                 EndBuildGrant: (end_build_grant, "EndBuildGrant", EndBuildGrantRequest, "end_build_grant", BuildGrantEnded, END_BUILD_GRANT_CAPABILITY, "ployz.build.grant.end.v1", Container),
                 GetIngressProxyConfig: (get_ingress_proxy_config, "GetIngressProxyConfig", GetIngressProxyConfigRequest, "get_ingress_proxy_config", IngressProxyConfig, GET_INGRESS_PROXY_CONFIG_CAPABILITY, "ployz.ingress.config.v1", Ingress),

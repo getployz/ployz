@@ -165,6 +165,7 @@ enum Cause {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ActionWord {
+    PullImage,
     PrepareVolumes,
     Create,
     Start,
@@ -375,6 +376,7 @@ impl Verb {
 impl ActionWord {
     fn from_machine(action: MachineAction) -> Self {
         match action {
+            MachineAction::PullImage => Self::PullImage,
             MachineAction::PrepareVolumes => Self::PrepareVolumes,
             MachineAction::CreateContainer => Self::Create,
             MachineAction::StartContainer => Self::Start,
@@ -387,6 +389,7 @@ impl ActionWord {
 
     fn word(self) -> &'static str {
         match self {
+            Self::PullImage => "pull image",
             Self::PrepareVolumes => "prepare storage",
             Self::Create => "create",
             Self::Start => "start",

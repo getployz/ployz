@@ -6,11 +6,27 @@ use bollard::{
     errors::Error as DockerError,
     query_parameters::{ListContainersOptionsBuilder, RemoveImageOptions},
 };
-use ployz_core::{ImageRemoval, ImageRemovalOutcome, ImagesRemoved};
+use ployz_core::{ImageRemoval, ImageRemovalOutcome, ImagesRemoved, PullPolicy, RegistryAuth};
 
 use super::{ContainerRuntime, Error};
 
 impl ContainerRuntime {
+    /// Make `image` present as `policy` asks, pulling with `auth` for a private image.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot inspect or pull the image.
+    pub async fn prepare_image(
+        &self,
+        image: &str,
+        policy: PullPolicy,
+        auth: Option<&RegistryAuth>,
+    ) -> Result<(), Error> {
+        crate::docker_image::prepare_image(&self.docker.client, image, policy, auth)
+            .await
+            .map_err(Error::from)
+    }
+
     /// Unix seconds this Machine last tagged the image, when Docker recorded it.
     pub(super) async fn last_tagged(&self, id: &str) -> Result<Option<i64>, Error> {
         match self.docker.client.inspect_image(id).await {

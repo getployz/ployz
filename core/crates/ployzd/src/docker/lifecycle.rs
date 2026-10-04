@@ -9,8 +9,8 @@ use bollard::{
 };
 use ployz_core::{
     ContainerCreated, ContainerId, ContainerKind, Machine, MachineId, MachineStorageObservation,
-    Namespace, ResolvedServiceSpec, ServicePlacementEligibility, ServicePlacementIneligibleReason,
-    ServicePlacementUnknownReason,
+    Namespace, PullPolicy, ResolvedServiceSpec, ServicePlacementEligibility,
+    ServicePlacementIneligibleReason, ServicePlacementUnknownReason,
 };
 
 #[cfg(test)]
@@ -181,10 +181,16 @@ impl ContainerRuntime {
                 .get_or_insert_default()
                 .insert(LABEL_CREATION_KEY.into(), key.into());
         }
+        // The Deploy pulled before its first Operation, outside the exclusive
+        // lock held here. Create only fills a gap left by a client that did not.
+        let policy = match spec.container.pull_policy {
+            PullPolicy::Always | PullPolicy::Missing => PullPolicy::Missing,
+            PullPolicy::Never => PullPolicy::Never,
+        };
         prepare_image(
             &self.docker.client,
             &spec.container.image,
-            spec.container.pull_policy,
+            policy,
             registry_auth,
         )
         .await?;
