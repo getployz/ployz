@@ -85,7 +85,7 @@ describe("Services section", () => {
     expect(screen.getByText(/1 moved, 1 stopped, 1 stayed, 1 failed/)).toBeTruthy();
     expect(within(resultRow("shop/api")).getByText("Moved to web-1")).toBeTruthy();
     expect(within(resultRow("shop/postgres")).getByText("Stayed")).toBeTruthy();
-    expect(within(resultRow("shop/postgres")).getByText("Its volume pg-data is on this server")).toBeTruthy();
+    expect(within(resultRow("shop/postgres")).getByText("Its volume is on this server")).toBeTruthy();
     expect(within(resultRow("monitoring/node-exporter")).getByText("Stopped here")).toBeTruthy();
     expect(within(resultRow("shop/worker")).getByText("Failed")).toBeTruthy();
     expect(within(resultRow("shop/worker")).getByText(/Couldn't copy its image to web-1\. It still runs here\. Moved to web-1 before that\./))

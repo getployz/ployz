@@ -174,13 +174,11 @@ export function stayWords(reason: StayReason, drained: string): string {
   const at = (server: MachineRef) => server.id === drained ? "this server" : server.name;
   switch (reason.kind) {
     case "volume":
-      return `Its volume ${reason.volume} is on ${at(reason.server)}`;
+      return `Its volume is on ${at(reason.server)}`;
     case "bind_mount":
       return `It uses a folder on ${at(reason.server)}`;
     case "mid_rollout":
       return "A deploy is in progress. Deploy it first.";
-    case "eligibility_unknown":
-      return `Can't tell yet whether ${reason.server.name} can run it`;
     case "unobserved":
       return `${reason.server.name} didn't answer`;
     case "global":

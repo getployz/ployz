@@ -365,7 +365,7 @@ async fn drain_leaves_what_it_cannot_move_and_retires_globals() {
     };
     assert_eq!(result("metrics"), DrainOutcome::Retired);
     for (service, reason) in [
-        ("volume", format!("Volume data is on {}", web2.name)),
+        ("volume", format!("its Volume is on {}", web2.name)),
         ("bind", format!("Bind Mount on {}", web2.name)),
         ("mixed", "mid-rollout: deploy it first".to_owned()),
     ] {

@@ -100,8 +100,6 @@ pub enum StayReason {
     Unobserved { server: MachineRef },
     /// Its Containers carry more than one Serving Shape.
     MidRollout,
-    /// Its eligibility on `server` is unknown, for lack of storage evidence.
-    EligibilityUnknown { server: MachineRef },
     /// It is a Global Service.
     Global,
     /// It mounts a Bind Mount on `server`.
@@ -120,10 +118,9 @@ impl fmt::Display for StayReason {
         match self {
             Self::Unobserved { server } => write!(f, "cannot observe {server}"),
             Self::MidRollout => f.write_str("mid-rollout: deploy it first"),
-            Self::EligibilityUnknown { server } => write!(f, "eligibility on {server} is unknown"),
             Self::Global => f.write_str("Global Services run on every Server that accepts them"),
             Self::BindMount { server } => write!(f, "Bind Mount on {server}"),
-            Self::Volume { volume, server } => write!(f, "Volume {volume} is on {server}"),
+            Self::Volume { server, .. } => write!(f, "its Volume is on {server}"),
             Self::NoDestination { detail } => write!(f, "no eligible Server: {detail}"),
         }
     }
@@ -324,26 +321,11 @@ fn refusal(
     {
         return Some(StayReason::MidRollout);
     }
-    let requested = spec.to_requested();
-    if let Some(machine) = snapshot.machines.iter().find(|machine| {
-        matches!(
-            requested.placement_eligibility_in_namespace(
-                &service.namespace,
-                &machine.machine,
-                machine.storage.as_ref(),
-            ),
-            ServicePlacementEligibility::Unknown(_)
-        )
-    }) {
-        return Some(StayReason::EligibilityUnknown {
-            server: MachineRef::from(&machine.machine),
-        });
-    }
     let first = stranded.first()?;
     if let Some(reason) = stays(spec, &machine_ref(snapshot, &first.machine_id)) {
         return Some(reason);
     }
-    super::planning::place_one(&requested, &service.namespace, snapshot)
+    super::planning::place_one(&spec.to_requested(), &service.namespace, snapshot)
         .err()
         .map(|error| StayReason::NoDestination {
             detail: error.to_string(),
@@ -579,7 +561,7 @@ mod tests {
         );
         assert_eq!(
             stays_with(&replicated, json!({ "kind": "external", "name": "app_db" })).as_deref(),
-            Some("Volume data is on machine-2")
+            Some("its Volume is on machine-2")
         );
         assert!(stays_with(&json!({ "mode": "global" }), tmpfs).is_some());
     }
@@ -618,11 +600,12 @@ mod tests {
                 "scope": { "namespace": "app", "logical_name": "data" }
             }),
         );
-        let mut unknown = base();
-        unknown.containers = vec![container('1', 'a', provisioned)];
+        let mut no_storage_evidence = base();
+        no_storage_evidence.containers = vec![container('1', 'a', provisioned)];
         assert_eq!(
-            refused(&unknown).as_deref(),
-            Some("eligibility on machine-b is unknown")
+            refused(&no_storage_evidence).as_deref(),
+            Some("its Volume is on machine-a"),
+            "a Managed volume holds its Service whatever the snapshot knows of storage"
         );
 
         let mut unobserved = base();

@@ -106,7 +106,7 @@ fn every_outcome_that_existed_prints_the_same_line() {
             "app/idle: nothing to move",
             "app/api: moved 1 from web-2 to web-1; failed: moving it from web-2 to web-1: deploy cancelled",
             "app/solo: failed: moving it from web-2 to web-1: deploy cancelled",
-            "app/db: stays: Volume data is on web-2",
+            "app/db: stays: its Volume is on web-2",
         ]
     );
     let failed = |failure| {

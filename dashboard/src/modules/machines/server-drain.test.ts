@@ -74,7 +74,7 @@ describe("Drain result", () => {
 
   it("names each destination once, says why a Service stayed, and stops a Global here", () => {
     expect(drainRow(moved, web2.id)).toMatchObject({ name: "api", namespace: "shop", tone: "moved", label: "Moved to web-1 and web-3", reason: null });
-    expect(drainRow(volume, web2.id)).toMatchObject({ tone: "stayed", label: "Stayed", reason: "Its volume pg-data is on this server", pinned: true });
+    expect(drainRow(volume, web2.id)).toMatchObject({ tone: "stayed", label: "Stayed", reason: "Its volume is on this server", pinned: true });
     expect(drainRow(rollout, web2.id)).toMatchObject({ reason: "A deploy is in progress. Deploy it first.", pinned: false });
     expect(drainRow(retired, web2.id)).toMatchObject({ global: true, tone: "stopped", label: "Stopped here", reason: "Runs on every server" });
   });
