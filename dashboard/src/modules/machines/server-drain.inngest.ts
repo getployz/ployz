@@ -1,12 +1,8 @@
 import { Option, Schema } from "effect";
-import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
+import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
+import type { PloyzStepTools } from "#/modules/inngest/client";
 import { DRAIN_SLOT } from "#/modules/inngest/drain-slot";
-import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
-import {
-  inngestFunctionCancelledEnvelopeSchema,
-  inngestFunctionCancelledEventType,
-  serverDrainRequestedEventType,
-} from "#/modules/inngest/events";
+import { serverDrainRequestedEventType } from "#/modules/inngest/events";
 import { machineIdStringSchema } from "#/modules/machines/enrollment";
 import {
   bindDrainRun,
@@ -14,9 +10,7 @@ import {
   closeStaleDrains,
   executeDrainOnce,
 } from "#/modules/machines/server-drain.server";
-import { runInngestEffect } from "#/server/run.server";
-
-export const DRAIN_SERVER_FUNCTION_ID = "drain-server";
+import type { runInngestEffect } from "#/server/run.server";
 
 type StepTools = Pick<PloyzStepTools, "run">;
 type EffectRunner = typeof runInngestEffect;
@@ -26,9 +20,6 @@ const ServerDrainRequestedData = Schema.Struct({
   organizationId: Schema.String.check(Schema.isNonEmpty()),
   machineId: machineIdStringSchema,
 });
-
-const decodeFailedRun = Schema.decodeUnknownOption(Schema.Struct({ data: Schema.Struct({ run_id: Schema.String }) }));
-const decodeCancelledRequest = Schema.decodeUnknownOption(Schema.Struct({ data: Schema.Struct({ attemptId: Schema.String }) }));
 
 /**
  * One Drain: bind the run to its row → claim the row, ask the Engine once and record its answer. Only the last step
@@ -48,53 +39,21 @@ export async function executeDrainServer(
   return step.run("execute-once", () => runEffect(executeDrainOnce(request, runId)));
 }
 
-/** A cancelled Drain run must not leave its row active, even one it was cancelled before binding. */
-export async function executeCancelServerDrain({ event, step }: { event: unknown; step: StepTools }, runEffect: EffectRunner) {
-  const decoded = await step.run("decode-cancellation", () => decodeInngestEnvelope(inngestFunctionCancelledEnvelopeSchema)(event));
-  if (decoded.data.function_id !== DRAIN_SERVER_FUNCTION_ID) return { skipped: true };
-  const runId = decoded.data.run_id;
-  const request = decodeCancelledRequest(decoded.data.event);
-  const attemptId = Option.isSome(request) ? request.value.data.attemptId : undefined;
-  return { closed: await step.run("close-run", () => runEffect(closeDrainRun(runId, "cancellation", attemptId))) };
-}
+const lifecycle = attemptLifecycle({
+  run: {
+    id: "drain-server",
+    triggers: [{ event: serverDrainRequestedEventType }],
+    concurrency: [DRAIN_SLOT],
+    handler: executeDrainServer,
+  },
+  cancelId: "cancel-server-drain",
+  triggeringEvent: Schema.Struct({ data: Schema.Struct({ attemptId: Schema.String }) }),
+  closeRun: (runId, end, triggering) =>
+    closeDrainRun(runId, end, Option.isSome(triggering) ? triggering.value.data.attemptId : undefined),
+  sweep: { id: "close-stale-server-drains", closeStale: closeStaleDrains },
+});
 
-export const createDrainServer = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) =>
-  inngest.createFunction(
-    {
-      id: DRAIN_SERVER_FUNCTION_ID,
-      retries: 3,
-      triggers: [{ event: serverDrainRequestedEventType }],
-      // Drains in one Organization run one at a time: each sees the Containers the one before it moved. A Server
-      // Policy change that turns services on shares the slot, so it never applies while a Drain runs.
-      concurrency: [DRAIN_SLOT],
-      onFailure: async ({ event }) => {
-        // `inngest/function.failed` names the failed run.
-        const failed = decodeFailedRun(event);
-        if (Option.isSome(failed)) await runEffect(closeDrainRun(failed.value.data.run_id, "failure"));
-      },
-    },
-    async ({ event, step, runId }) => executeDrainServer({ event, step, runId }, runEffect),
-  );
-
-export const createCancelServerDrain = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) =>
-  inngest.createFunction(
-    {
-      id: "cancel-server-drain",
-      retries: 3,
-      triggers: [{ event: inngestFunctionCancelledEventType }],
-      concurrency: [{ key: "event.data.run_id", limit: 1 }],
-    },
-    async ({ event, step }) => executeCancelServerDrain({ event, step }, runEffect),
-  );
-
-/** The hourly sweep: a request no run picked up in time never starts; a Drain running for a day lost its run. */
-export const createCloseStaleServerDrains = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) =>
-  inngest.createFunction(
-    {
-      id: "close-stale-server-drains",
-      retries: 3,
-      triggers: [{ cron: "TZ=UTC 0 * * * *" }],
-      concurrency: [{ limit: 1 }],
-    },
-    async ({ step }) => step.run("close-stale-drains", () => runEffect(closeStaleDrains())),
-  );
+export const createDrainServer = lifecycle.createRun;
+export const createCancelServerDrain = lifecycle.createCancel;
+export const createCloseStaleServerDrains = lifecycle.createSweep;
+export const createServerDrainFunctions = lifecycle.createFunctions;
