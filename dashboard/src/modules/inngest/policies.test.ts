@@ -20,7 +20,7 @@ import {
   createScheduleClusterDomainSync,
   createSyncClusterDomain,
 } from "#/modules/cluster-domain/sync.inngest";
-import { createCancelServerUpgrade, createRollOutServerUpgrade } from "#/modules/server-upgrade/server-upgrade.inngest";
+import { createCancelServerUpgrade, createRollOutServerUpgrade, createScheduleServerUpgrades } from "#/modules/server-upgrade/server-upgrade.inngest";
 import { createRetireServerAccess } from "#/modules/machines/server-access.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 
@@ -43,6 +43,7 @@ describe("Inngest function policies", () => {
     createScheduleClusterDomainSync(inngest),
     createRollOutServerUpgrade(inngest),
     createCancelServerUpgrade(inngest),
+    createScheduleServerUpgrades(inngest),
     ];
 
     expect(
@@ -67,6 +68,7 @@ describe("Inngest function policies", () => {
       { id: "schedule-cluster-domain-sync", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "roll-out-server-upgrade", retries: 3, concurrency: [{ key: "event.data.organizationId", limit: 1 }] },
       { id: "cancel-server-upgrade", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
+      { id: "schedule-server-upgrades", retries: 3, concurrency: [{ limit: 1 }] },
     ]);
   });
 

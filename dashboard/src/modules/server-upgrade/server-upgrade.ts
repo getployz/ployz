@@ -51,6 +51,15 @@ export const RequestServerUpgradeInput = Schema.Struct({
 });
 export type RequestServerUpgradeInput = typeof RequestServerUpgradeInput.Type;
 
+export const SetAutomaticServerUpgradesInput = Schema.Struct({ organizationSlug: Schema.String, automatic: Schema.Boolean });
+export type SetAutomaticServerUpgradesInput = typeof SetAutomaticServerUpgradesInput.Type;
+
+/** The Org Store's view of the Organization's Server upgrade settings, keyed by Organization ID. */
+export type ServerUpgradeSettingsRow = { readonly id: string; readonly automatic: boolean };
+
+/** No row reads as the defaults: automatic upgrades on. */
+export const automaticUpgrades = (rows: readonly ServerUpgradeSettingsRow[]) => rows[0]?.automatic ?? true;
+
 /** A Server's latest Upgrade attempt, as the Server page reads it. */
 export const LatestUpgrade = Schema.Struct({
   attemptId: Schema.String,

@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
-import { check, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
-import { type MachineId, sqlStringLiterals } from "#/db/tables";
+import { boolean, check, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { createdAt, type MachineId, sqlStringLiterals, updatedAt } from "#/db/tables";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import {
@@ -54,3 +54,13 @@ export const serverUpgradeAttempt = pgTable(
     check("server_upgrade_attempt_error_check", sql`${table.error} is null or ${table.outcome} = 'failed'`),
   ],
 );
+
+/** The Organization's Server upgrade settings. No row reads as the defaults, so every Organization starts automatic. */
+export const organizationServerUpgrades = pgTable("organization_server_upgrades", {
+  organizationId: uuid("organization_id").primaryKey()
+    .references(() => organization.id, { onDelete: "cascade" }),
+  /** Off stops the hourly rollout; Upgrade still works. */
+  automatic: boolean("automatic").default(true).notNull(),
+  createdAt,
+  updatedAt,
+});

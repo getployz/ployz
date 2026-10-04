@@ -13,7 +13,7 @@ import {
   runtimeWatchMachineFixture,
   runtimeWatchMachineObservationFixture,
 } from "#/modules/runtime/runtime-watch-frame.test-fixture";
-import { createCancelServerUpgrade, createRollOutServerUpgrade } from "#/modules/server-upgrade/server-upgrade.inngest";
+import { createCancelServerUpgrade, createRollOutServerUpgrade, createScheduleServerUpgrades } from "#/modules/server-upgrade/server-upgrade.inngest";
 import { listLatestServerUpgrades, requestServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
@@ -24,7 +24,9 @@ const userId = "00000000-0000-4000-8000-000000000c02";
 const machineId = "a".repeat(32);
 // Every Server's ID repeats one hex digit: web-1 is `1…1`, web-2 `2…2`, web-10 `a…a` above.
 const serverId = (digit: string) => digit.repeat(32);
-const release = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("v0.2.2\n"));
+/** The newest release the stable pointer names. */
+let published = "0.2.2";
+const release = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(`v${published}\n`));
 const inngest = new Inngest({ id: "server-upgrade-test" });
 const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
@@ -45,15 +47,16 @@ describe("roll-out-server-upgrade", () => {
   /** Each request and each terminal answer, in the order the Servers saw them. */
   let log: string[];
   let captured: Parameters<PostHogService["capture"]>[0][];
+  let identified: Array<[string, Record<string, unknown>]>;
 
   const attempt = (attemptId: string, answer: Partial<Attempt>) =>
-    ({ attempt_id: attemptId as MachineUpgradeAttemptId, target: "0.2.2", ...answer }) as Attempt;
+    ({ attempt_id: attemptId as MachineUpgradeAttemptId, target: published, ...answer }) as Attempt;
   const runEffect = makeInngestEffectRunner(<A, E>(operation: Effect.Effect<A, E, Database | OrganizationRuntime | InngestClient>) =>
     harness.runEffect(operation.pipe(
       Effect.provideService(InngestClient, inngest),
       Effect.provideService(PostHog, {
         capture: (input) => Effect.sync(() => void captured.push(input)),
-        identify: () => Effect.void,
+        identify: (distinctId, properties) => Effect.sync(() => void identified.push([distinctId, properties])),
         identifyOrganization: () => Effect.void,
       }),
       Effect.provideService(OrganizationRuntime, {
@@ -82,9 +85,12 @@ describe("roll-out-server-upgrade", () => {
     ))) as typeof runInngestEffect;
 
   /** Upgrade on a Server page names its Server; Upgrade and Upgrade the rest on the Servers page name none. */
-  const rollOut = (target: string | null = machineId) => new InngestTestEngine({
+  const rollOut = (target: string | null = machineId, trigger: "manual" | "automatic" = "manual") => new InngestTestEngine({
     function: createRollOutServerUpgrade(new Inngest({ id: "test" }), runEffect),
-    events: [{ name: "server/upgrade.requested", data: { organizationId, machineId: target, trigger: "manual", userId } }],
+    events: [{
+      name: "server/upgrade.requested",
+      data: { organizationId, machineId: target, trigger, userId: trigger === "manual" ? userId : null },
+    }],
     // Each poll's sleep ends at once; eighty polls are the twenty minutes.
     steps: frame.machines.flatMap(({ machine }) =>
       Array.from({ length: 80 }, (_, poll) => ({ id: `wait-${machine.id}-${poll}`, handler: () => undefined }))),
@@ -118,6 +124,8 @@ describe("roll-out-server-upgrade", () => {
     requests = [];
     log = [];
     captured = [];
+    identified = [];
+    published = "0.2.2";
     send.mockClear();
     await harness.pool.query(`
       truncate table organization, "user" cascade;
@@ -274,6 +282,146 @@ describe("roll-out-server-upgrade", () => {
       // Inngest runs one rollout per Organization and queues the rest; each run upgrades one Server at a time.
       expect(createRollOutServerUpgrade(new Inngest({ id: "test" }), runEffect).opts.concurrency)
         .toEqual([{ key: "event.data.organizationId", limit: 1 }]);
+    });
+  });
+
+  describe("automatic upgrades", () => {
+    const failure = { outcome: "failed", stage: "readiness", error: "readiness timed out; restored 0.2.1" } as const;
+    const schedule = () => new InngestTestEngine({
+      function: createScheduleServerUpgrades(new Inngest({ id: "test" }), runEffect),
+      steps: [{ id: "request-automatic-rollouts", handler: () => ({ ids: [] }) }],
+    }).execute();
+
+    beforeEach(() => {
+      frame = runtimeWatchFrameFixture({ machines: [server("1", "web-1", "0.2.1"), server("2", "web-2", "0.2.1"), server("3", "web-3", "0.2.1")] });
+    });
+
+    /** web-1 upgraded and web-2 failed (and restored), so the rollout halted on 0.2.2 before web-3. */
+    const halt = async () => {
+      inspectAnswersFor[serverId("2")] = [failure];
+      await rollOut(null, "automatic");
+      frame = runtimeWatchFrameFixture({ machines: [server("1", "web-1", "0.2.2"), server("2", "web-2", "0.2.1"), server("3", "web-3", "0.2.1")] });
+      inspectAnswersFor = {};
+      requests = [];
+      captured = [];
+    };
+
+    it("the hourly schedule requests one automatic rollout per paired Organization with automatic upgrades on, on by default", async () => {
+      const org = (digit: string) => `00000000-0000-4000-8000-00000000000${digit}`;
+      await harness.pool.query(`
+        insert into organization (id, name, slug) values
+          ('${org("1")}', 'Off', 'off'), ('${org("2")}', 'On', 'on'), ('${org("3")}', 'Unpaired', 'unpaired');
+        insert into organization_server_upgrades (organization_id, automatic) values ('${org("1")}', false), ('${org("2")}', true);
+        insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_claim_machine_id, founder_machine_id) values
+          ('${organizationId}', '{}', '${serverId("1")}', '${serverId("1")}'),
+          ('${org("1")}', '{}', '${serverId("1")}', '${serverId("1")}'),
+          ('${org("2")}', '{}', '${serverId("1")}', '${serverId("1")}');
+      `);
+      const fn = createScheduleServerUpgrades(new Inngest({ id: "test" }), runEffect);
+      expect(fn.opts.triggers).toEqual([{ cron: "TZ=UTC 0 * * * *" }]);
+
+      const output = await schedule();
+
+      expect(output.ctx.step.sendEvent).toHaveBeenCalledTimes(1);
+      const [[id, events]] = vi.mocked(output.ctx.step.sendEvent).mock.calls as [[string, unknown[]]];
+      expect(id).toBe("request-automatic-rollouts");
+      expect(events).toHaveLength(2);
+      expect(events).toEqual(expect.arrayContaining([organizationId, org("2")].map((id) => ({
+        name: "server/upgrade.requested",
+        data: { organizationId: id, machineId: null, trigger: "automatic", userId: null },
+      }))));
+    });
+
+    it("an automatic rollout halts at the first non-success, and the halt holds across hourly runs", async () => {
+      inspectAnswersFor[serverId("2")] = [failure];
+
+      await rollOut(null, "automatic");
+
+      expect(requests.map(({ machine }) => machine)).toEqual([serverId("1"), serverId("2")]);
+      expect((await rows()).map(({ trigger, requested_by_user_id: user }) => [trigger, user]))
+        .toEqual([["automatic", null], ["automatic", null]]);
+
+      frame = runtimeWatchFrameFixture({ machines: [server("1", "web-1", "0.2.2"), server("2", "web-2", "0.2.1"), server("3", "web-3", "0.2.1")] });
+      requests = [];
+      const next = await rollOut(null, "automatic");
+      await rollOut(null, "automatic");
+
+      expect(next.result).toEqual({ results: [] });
+      expect(requests).toEqual([]);
+      expect(await rows()).toHaveLength(2);
+    });
+
+    it("a newer release lifts the halt", async () => {
+      // Its own release line, so the pointer this test moves stays out of the other tests' pointer cache.
+      published = "1.0.1";
+      frame = runtimeWatchFrameFixture({ machines: [server("1", "web-1", "1.0.0"), server("2", "web-2", "1.0.0"), server("3", "web-3", "1.0.0")] });
+      inspectAnswersFor[serverId("2")] = [failure];
+      await rollOut(null, "automatic");
+      frame = runtimeWatchFrameFixture({ machines: [server("1", "web-1", "1.0.1"), server("2", "web-2", "1.0.0"), server("3", "web-3", "1.0.0")] });
+      inspectAnswersFor = {};
+      requests = [];
+      await rollOut(null, "automatic");
+      expect(requests).toEqual([]);
+
+      published = "1.0.2";
+      // Past Cloud's few minutes of pointer cache.
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6 * 60_000);
+      await rollOut(null, "automatic");
+      clock.mockRestore();
+
+      expect(requests.map(({ machine }) => machine)).toEqual([serverId("1"), serverId("2"), serverId("3")]);
+    });
+
+    it("a successful manual Upgrade of the halted release lifts the halt", async () => {
+      await halt();
+      await rollOut(serverId("2"));
+      frame = runtimeWatchFrameFixture({ machines: [server("1", "web-1", "0.2.2"), server("2", "web-2", "0.2.2"), server("3", "web-3", "0.2.1")] });
+      requests = [];
+
+      await rollOut(null, "automatic");
+
+      expect(requests.map(({ machine }) => machine)).toEqual([serverId("3")]);
+    });
+
+    it("a manual Upgrade of the rest still runs while halted", async () => {
+      await halt();
+
+      await rollOut(null);
+
+      expect(requests.map(({ machine }) => machine)).toEqual([serverId("2"), serverId("3")]);
+    });
+
+    it("credits automatic attempts to the Organization's system person, and manual ones to who clicked", async () => {
+      await rollOut(serverId("1"), "automatic");
+      await rollOut(serverId("2"));
+
+      expect(captured.map(({ userId: distinctId, organizationId: group }) => [distinctId, group])).toEqual([
+        [`system:${organizationId}`, organizationId],
+        [userId, organizationId],
+      ]);
+      expect(identified).toEqual([[`system:${organizationId}`, { name: "Acme (system)", is_system: true }]]);
+    });
+
+    it("the hourly run closes an attempt still running after twenty minutes as unknown, and sends its event once", async () => {
+      await harness.pool.query(`
+        insert into server_upgrade_attempt (organization_id, machine_id, attempt_id, trigger, channel, from_version, stage, inngest_run_id, started_at)
+        values
+          ('${organizationId}', '${serverId("1")}', '${"b".repeat(32)}', 'automatic', 'stable', '0.2.1', 'restarting', 'run-1', now() - interval '21 minutes'),
+          ('${organizationId}', '${serverId("2")}', '${"c".repeat(32)}', 'automatic', 'stable', '0.2.1', 'restarting', 'run-2', now() - interval '5 minutes');
+      `);
+
+      expect((await schedule()).result).toMatchObject({ closed: 1 });
+      expect((await schedule()).result).toMatchObject({ closed: 0 });
+
+      expect((await rows()).map(({ attempt_id: id, outcome, stage }) => [id, outcome, stage]).sort()).toEqual([
+        ["b".repeat(32), "unknown", "restarting"],
+        ["c".repeat(32), "running", "restarting"],
+      ]);
+      expect(captured).toEqual([expect.objectContaining({
+        userId: `system:${organizationId}`,
+        event: "server_upgrade_unknown",
+        properties: expect.objectContaining({ trigger: "automatic", stage: "restarting" }),
+      })]);
     });
   });
 

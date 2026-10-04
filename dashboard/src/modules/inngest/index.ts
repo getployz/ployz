@@ -14,7 +14,7 @@ import {
   createScheduleClusterDomainSync,
   createSyncClusterDomain,
 } from "#/modules/cluster-domain/sync.inngest";
-import { createCancelServerUpgrade, createRollOutServerUpgrade } from "#/modules/server-upgrade/server-upgrade.inngest";
+import { createCancelServerUpgrade, createRollOutServerUpgrade, createScheduleServerUpgrades } from "#/modules/server-upgrade/server-upgrade.inngest";
 import { createRetireServerAccess } from "#/modules/machines/server-access.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 import {
@@ -40,6 +40,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createScheduleClusterDomainSync(inngest),
     createRollOutServerUpgrade(inngest),
     createCancelServerUpgrade(inngest),
+    createScheduleServerUpgrades(inngest),
     createRunStoreDeployment(inngest),
     createCancelStoreDeployment(inngest),
     createRedispatchStoreDeployments(inngest),

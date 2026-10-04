@@ -1,10 +1,12 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import type { MachineUpgradeAttempt } from "@ployz/sdk";
-import { and, desc, eq, max, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, lt, max, sql } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import type { Actor } from "#/modules/identity/actor";
+import { organization } from "#/modules/organization/tables";
+import { organizationPairing } from "#/modules/runtime/tables";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createServerUpgradeRequestedEvent, type ServerUpgradeRequestedEventData } from "#/modules/inngest/events";
 import { serverStatus, sortServers } from "#/modules/machines/server-status";
@@ -18,9 +20,12 @@ import {
   releaseFromPointer,
   releaseLine,
   type RequestServerUpgradeInput,
+  type SetAutomaticServerUpgradesInput,
+  UPGRADE_OBSERVATION_LIMIT_MS,
   type UpgradeOutcome,
+  type UpgradeTrigger,
 } from "#/modules/server-upgrade/server-upgrade";
-import { serverUpgradeAttempt } from "#/modules/server-upgrade/tables";
+import { organizationServerUpgrades, serverUpgradeAttempt } from "#/modules/server-upgrade/tables";
 import { Database } from "#/server/database.server";
 
 /** The daemon reads its Release Channel pointers here (core `CHANNEL_URL`). */
@@ -113,10 +118,29 @@ export const observeUpgradeableServer = Effect.fn("ServerUpgrade.observe")(funct
   return status === "online" ? observed.machine.runtime.daemon_version : null;
 }, Effect.scoped);
 
-/** Every Server observed online and idle on a release older than the newest on its line, in name order. */
-export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function* (organizationId: string) {
+/**
+ * The releases the Organization is halted on: those whose latest attempt didn't succeed. A newer release has no
+ * attempts, and a manual Upgrade of the release that succeeds becomes its latest, so either lifts the halt.
+ */
+const haltedReleases = Effect.fn("ServerUpgrade.halted")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const latest = yield* drizzle.selectDistinctOn([serverUpgradeAttempt.targetVersion], {
+    target: serverUpgradeAttempt.targetVersion,
+    outcome: serverUpgradeAttempt.outcome,
+  }).from(serverUpgradeAttempt)
+    .where(and(eq(serverUpgradeAttempt.organizationId, organizationId), isNotNull(serverUpgradeAttempt.targetVersion)))
+    .orderBy(serverUpgradeAttempt.targetVersion, desc(serverUpgradeAttempt.startedAt));
+  return new Set(latest.flatMap(({ target, outcome }) => target !== null && outcome !== "succeeded" ? [target] : []));
+});
+
+/**
+ * Every Server observed online and idle on a release older than the newest on its line, in name order. An automatic
+ * rollout also skips a release the Organization is halted on. A Cluster Cloud can't reach has none.
+ */
+export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function* (organizationId: string, trigger: UpgradeTrigger) {
   const session = yield* openSession(organizationId);
   const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
+  const halted = trigger === "automatic" ? yield* haltedReleases(organizationId) : new Set<string>();
   const behind: Array<{ readonly id: string; readonly name: string; readonly status: "online" }> = [];
   for (const { machine, membership } of frame.machines) {
     if (serverStatus({ membership, runningBuilds: machine.runtime.running_builds }) !== "online") continue;
@@ -124,10 +148,11 @@ export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function*
     const line = releaseLine(version);
     const release = line === null ? null : yield* stableRelease(line);
     const order = release === null ? null : compareVersions(version, release);
-    if (order !== null && order < 0) behind.push({ id: machine.id, name: machine.name, status: "online" });
+    if (order !== null && order < 0 && !halted.has(release ?? "")) behind.push({ id: machine.id, name: machine.name, status: "online" });
   }
   return sortServers(behind).map(({ id }) => id);
-}, Effect.scoped);
+}, Effect.scoped, Effect.catchIf((error) => error instanceof ServerUpgradeUnreachable, (error) =>
+  Effect.logInfo("The Cluster can't be reached; no Server is upgraded.", error).pipe(Effect.as([] as string[]))));
 
 export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* (input: {
   readonly request: ServerUpgradeRequestedEventData & { readonly machineId: string };
@@ -247,8 +272,14 @@ export const finishUpgradeAttempt = Effect.fn("ServerUpgrade.finish")(function* 
     : input.outcome === "failed" ? { ...base, stage: row.stage, error: row.error }
     : { ...base, stage: row.stage };
   const posthog = yield* PostHog;
+  // Automatic attempts belong to the Organization's system person; so does a manual one whose user was deleted.
+  const userId = row.requestedByUserId ?? `system:${row.organizationId}`;
+  if (row.requestedByUserId === null) {
+    const [named] = yield* drizzle.select({ name: organization.name }).from(organization).where(eq(organization.id, row.organizationId));
+    yield* posthog.identify(userId, { name: `${named?.name ?? row.organizationId} (system)`, is_system: true });
+  }
   yield* posthog.capture({
-    userId: row.requestedByUserId ?? `system:${row.organizationId}`,
+    userId,
     event: `server_upgrade_${input.outcome}`,
     organizationId: row.organizationId,
     properties,
@@ -264,6 +295,41 @@ export const closeRunUpgradeAttempts = Effect.fn("ServerUpgrade.closeRun")(funct
     .where(and(eq(serverUpgradeAttempt.inngestRunId, inngestRunId), eq(serverUpgradeAttempt.outcome, "running")));
   yield* Effect.forEach(running, (row) => finishUpgradeAttempt({ ...row, outcome: "unknown", stage: null, error: null }));
   return running.length;
+});
+
+/** The hourly sweep: an attempt still `running` after the observation limit lost its rollout run, so it reads `unknown`. */
+export const closeStaleUpgradeAttempts = Effect.fn("ServerUpgrade.closeStale")(function* () {
+  const { drizzle } = yield* Database;
+  const stale = yield* drizzle.select({ organizationId: serverUpgradeAttempt.organizationId, attemptId: serverUpgradeAttempt.attemptId })
+    .from(serverUpgradeAttempt)
+    .where(and(
+      eq(serverUpgradeAttempt.outcome, "running"),
+      lt(serverUpgradeAttempt.startedAt, new Date(Date.now() - UPGRADE_OBSERVATION_LIMIT_MS)),
+    ));
+  const closed = yield* Effect.forEach(stale, (row) => finishUpgradeAttempt({ ...row, outcome: "unknown", stage: null, error: null }));
+  return closed.filter(Boolean).length;
+});
+
+/** Every Organization with a founded Cluster and automatic upgrades on (no settings row reads as on). */
+export const listAutomaticUpgradeOrganizationIds = Effect.fn("ServerUpgrade.listAutomatic")(function* () {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select({ id: organizationPairing.organizationId }).from(organizationPairing)
+    .leftJoin(organizationServerUpgrades, eq(organizationServerUpgrades.organizationId, organizationPairing.organizationId))
+    .where(and(isNotNull(organizationPairing.founderMachineId), sql`${organizationServerUpgrades.automatic} is not false`));
+  return rows.map(({ id }) => id);
+});
+
+/** "Upgrade automatically" in the Server upgrades dialog: any member may change it. */
+export const setAutomaticServerUpgrades = Effect.fn("ServerUpgrade.setAutomatic")(function* (
+  actor: Actor,
+  input: SetAutomaticServerUpgradesInput,
+) {
+  const { id: organizationId } = yield* requireInfrastructureOrganization(actor, input.organizationSlug);
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.insert(organizationServerUpgrades).values({ organizationId, automatic: input.automatic })
+    .onConflictDoUpdate({ target: organizationServerUpgrades.organizationId, set: { automatic: input.automatic, updatedAt: new Date() } })
+    .returning({ id: organizationServerUpgrades.organizationId, automatic: organizationServerUpgrades.automatic });
+  return row ?? { id: organizationId, automatic: input.automatic };
 });
 
 /** Cloud mints attempt IDs in the daemon's 32-hex form. */

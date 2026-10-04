@@ -2,6 +2,7 @@ import { Option, Schema } from "effect";
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import {
+  createServerUpgradeRequestedEvent,
   inngestFunctionCancelledEnvelopeSchema,
   inngestFunctionCancelledEventType,
   serverUpgradeRequestedEventType,
@@ -9,9 +10,11 @@ import {
 import { UPGRADE_OBSERVATION_LIMIT_MS, UPGRADE_TRIGGERS } from "#/modules/server-upgrade/server-upgrade";
 import {
   closeRunUpgradeAttempts,
+  closeStaleUpgradeAttempts,
   finalOutcome,
   finishUpgradeAttempt,
   inspectUpgradeOnServer,
+  listAutomaticUpgradeOrganizationIds,
   listServersBehind,
   mintAttemptId,
   observeUpgradeableServer,
@@ -23,6 +26,7 @@ import { runInngestEffect } from "#/server/run.server";
 export const ROLL_OUT_SERVER_UPGRADE_FUNCTION_ID = "roll-out-server-upgrade";
 
 type StepTools = Pick<PloyzStepTools, "run" | "sleep">;
+type ScheduleStepTools = Pick<PloyzStepTools, "run" | "sendEvent">;
 type EffectRunner = typeof runInngestEffect;
 
 const POLL_INTERVAL_MS = 15_000;
@@ -42,7 +46,7 @@ const decodeFailedRun = Schema.decodeUnknownOption(Schema.Struct({ data: Schema.
 
 /**
  * One rollout run: the named Server, or every Server behind (online, idle, older than the newest release on its line)
- * in name order, one at a time. It stops at the first outcome that isn't `succeeded`; a Server that went offline or
+ * in name order, one at a time; an automatic one skips a release the Organization is halted on. It stops at the first outcome that isn't `succeeded`; a Server that went offline or
  * refuses as Busy is skipped and records nothing.
  */
 export async function executeRollOutServerUpgrade(
@@ -56,7 +60,7 @@ export async function executeRollOutServerUpgrade(
   if (request === null) return { skipped: "invalid" as const };
   const { machineId, ...rest } = request;
   const machineIds = machineId === null
-    ? await step.run("pick-servers", () => runEffect(listServersBehind(request.organizationId)))
+    ? await step.run("pick-servers", () => runEffect(listServersBehind(request.organizationId, request.trigger)))
     : [machineId];
 
   const results = [];
@@ -108,6 +112,20 @@ async function upgradeServer(
   return { attemptId, outcome: recorded.outcome };
 }
 
+/**
+ * The hourly run: close attempts a dead rollout run left `running` → request one automatic rollout per Organization
+ * with automatic upgrades on, as the hourly Cluster Domain sync fans out.
+ */
+export async function executeScheduleServerUpgrades({ step }: { step: ScheduleStepTools }, runEffect: EffectRunner) {
+  const closed = await step.run("close-stale-attempts", () => runEffect(closeStaleUpgradeAttempts()));
+  const organizationIds = await step.run("list-automatic-organizations", () => runEffect(listAutomaticUpgradeOrganizationIds()));
+  if (organizationIds.length > 0) {
+    await step.sendEvent("request-automatic-rollouts", organizationIds.map((organizationId) =>
+      createServerUpgradeRequestedEvent({ organizationId, machineId: null, trigger: "automatic", userId: null })));
+  }
+  return { closed, organizationCount: organizationIds.length };
+}
+
 /** A cancelled rollout run must not leave its attempt `running`. */
 export async function executeCancelServerUpgrade({ event, step }: { event: unknown; step: Pick<StepTools, "run"> }, runEffect: EffectRunner) {
   const decoded = await step.run("decode-cancellation", () => decodeInngestEnvelope(inngestFunctionCancelledEnvelopeSchema)(event));
@@ -142,4 +160,15 @@ export const createCancelServerUpgrade = (inngest: PloyzInngest, runEffect: Effe
       concurrency: [{ key: "event.data.run_id", limit: 1 }],
     },
     async ({ event, step }) => executeCancelServerUpgrade({ event, step }, runEffect),
+  );
+
+export const createScheduleServerUpgrades = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) =>
+  inngest.createFunction(
+    {
+      id: "schedule-server-upgrades",
+      retries: 3,
+      triggers: [{ cron: "TZ=UTC 0 * * * *" }],
+      concurrency: [{ limit: 1 }],
+    },
+    async ({ step }) => executeScheduleServerUpgrades({ step }, runEffect),
   );
