@@ -57,7 +57,8 @@ now:
 ployz server upgrade stable web-1 web-2
 ```
 
-Your apps keep running. Ployz stops at the first server that fails.
+Your apps keep running. Ployz stops at the first server that fails. A server whose upgrade fails
+goes back to the release it ran before.
 
 ## Remove a server
 

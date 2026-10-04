@@ -2,13 +2,14 @@
 
 use std::{
     env, fs, io,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     time::Duration,
 };
 
 use ployz_core::{
     MachineRelease, MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome,
-    MachineUpgradeStage, RequestMachineUpgradeRequest,
+    MachineUpgradeStage, MachineVersion, RequestMachineUpgradeRequest,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -20,6 +21,11 @@ use crate::mutation;
 const RECEIPT_FILE: &str = "upgrade-attempt.json";
 const WORKER_RUNTIME: &str = "15min";
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long a ready daemon must keep running before an Upgrade succeeds.
+#[cfg(not(test))]
+const SOAK: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const SOAK: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -62,9 +68,9 @@ pub enum Error {
     /// The worker identity does not match the current nonterminal receipt.
     #[error("Machine upgrade worker does not own active attempt {0}")]
     NotActive(MachineUpgradeAttemptId),
-    /// The shared installer recorded a terminal failure.
+    /// The attempt failed; this is its recorded failure text, including any restore outcome.
     #[error("Machine upgrade failed: {0}")]
-    Installation(#[source] InstallError),
+    Installation(String),
     /// Machine mutation ownership could not be claimed or inspected.
     #[error(transparent)]
     Admission(#[from] mutation::Error),
@@ -213,7 +219,21 @@ pub async fn run_worker(
 ) -> Result<(), Error> {
     super::require_standard_machine_paths(data_dir, &run_dir.join("ployz.sock"))
         .map_err(Error::NonstandardPaths)?;
-    let admission = mutation::MutationGate::new(run_dir, data_dir);
+    work(
+        &ReleaseSource::Published,
+        &InstallPaths::system(data_dir, run_dir),
+        attempt_id,
+    )
+    .await
+}
+
+async fn work(
+    source: &ReleaseSource,
+    paths: &InstallPaths,
+    attempt_id: MachineUpgradeAttemptId,
+) -> Result<(), Error> {
+    let data_dir = &paths.data_dir;
+    let admission = mutation::MutationGate::new(&paths.run_dir, data_dir);
     let guard = admission.lock_installation()?;
     let mut stored = read(data_dir)?;
     if stored.attempt.attempt_id != attempt_id || stored.attempt.is_terminal() {
@@ -226,46 +246,100 @@ pub async fn run_worker(
     };
     write(data_dir, &stored)?;
 
-    let result = super::install_locked(
-        &ReleaseSource::Published,
-        InstallRequest {
-            release: MachineRelease::Exact(target.clone()),
-            mode: InstallMode::SoftwareOnly,
-        },
-        InstallPaths::system(data_dir, run_dir),
-        guard,
-        |install_stage| {
-            stage = install_stage;
-            stored.attempt.outcome = MachineUpgradeOutcome::Running {
-                stage: stage.clone(),
-            };
-            write(data_dir, &stored).map_err(|error| InstallError::Io {
-                stage: "record Machine upgrade progress",
-                source: io::Error::other(error),
-            })
-        },
-    )
+    let result = upgrade(source, paths, &guard, &target, |install_stage| {
+        stage = install_stage;
+        stored.attempt.outcome = MachineUpgradeOutcome::Running {
+            stage: stage.clone(),
+        };
+        write(data_dir, &stored).map_err(|error| InstallError::Io {
+            stage: "record Machine upgrade progress",
+            source: io::Error::other(error),
+        })
+    })
     .await;
 
-    match result {
-        Ok(_) => {
-            stored.attempt.outcome = MachineUpgradeOutcome::Succeeded {
-                version: target.clone(),
-            };
-            write(data_dir, &stored)?;
-            admission.clear_active(attempt_id.as_str())?;
-            Ok(())
-        }
-        Err(error) => {
-            stored.attempt.outcome = MachineUpgradeOutcome::Failed {
-                stage,
-                error: error.to_string(),
-            };
-            write(data_dir, &stored)?;
-            admission.clear_active(attempt_id.as_str())?;
-            Err(Error::Installation(error))
-        }
+    stored.attempt.outcome = match &result {
+        Ok(()) => MachineUpgradeOutcome::Succeeded { version: target },
+        Err(error) => MachineUpgradeOutcome::Failed {
+            stage,
+            error: error.clone(),
+        },
+    };
+    write(data_dir, &stored)?;
+    admission.clear_active(attempt_id.as_str())?;
+    result.map_err(Error::Installation)
+}
+
+/// Install `target` over the running release. A failure after the swap puts the previous
+/// release back; the returned error is the attempt's failure text, saying how that went.
+async fn upgrade(
+    source: &ReleaseSource,
+    paths: &InstallPaths,
+    guard: &mutation::InstallationGuard,
+    target: &MachineVersion,
+    progress: impl FnMut(MachineUpgradeStage) -> Result<(), InstallError>,
+) -> Result<(), String> {
+    let daemon = paths.daemon();
+    let before = file_identity(&daemon);
+    let previous = super::release::installed_release(&daemon)
+        .await
+        .map_err(|error| error.to_string())?;
+    let request = InstallRequest {
+        release: MachineRelease::Exact(target.clone()),
+        mode: InstallMode::SoftwareOnly,
+    };
+    let Err(error) = async {
+        super::install_locked(source, request, paths, guard, progress).await?;
+        soak(paths, target).await
     }
+    .await
+    else {
+        return Ok(());
+    };
+    // Only a swap this attempt made is undone, and only within one release line, where the
+    // older daemon still reads everything the newer one wrote.
+    let Some(previous) = previous
+        .filter(|previous| previous.major() == target.major() && file_identity(&daemon) != before)
+    else {
+        return Err(error.to_string());
+    };
+    Err(match restore(paths, &previous).await {
+        Ok(()) => format!("{error}; restored {previous}"),
+        Err(restore) => format!("{error}; restore failed: {restore}"),
+    })
+}
+
+/// Hold a ready daemon for [`SOAK`]: a crash restarts it under another main PID.
+async fn soak(paths: &InstallPaths, target: &MachineVersion) -> Result<(), InstallError> {
+    let started = super::host::daemon_main_pid()?;
+    tokio::time::sleep(SOAK).await;
+    let running = super::host::daemon_main_pid()?;
+    if running != started {
+        return Err(super::refuse(
+            "soak daemon",
+            format!("ployz.service restarted (main PID {started} became {running})"),
+        ));
+    }
+    super::host::verify_daemon_contract(&paths.run_dir.join("ployz.sock"), target).await
+}
+
+/// Put the retained previous daemon back into service and prove it ready.
+async fn restore(paths: &InstallPaths, previous: &MachineVersion) -> Result<(), InstallError> {
+    super::release::restore_previous(paths)?;
+    // A crash loop exhausts the daemon's start limit, which would refuse the restart.
+    super::systemctl(
+        "clear daemon failure",
+        ["reset-failed", "ployz.socket", "ployz.service"],
+    )?;
+    super::restart_daemon()?;
+    super::host::verify_running_daemon(paths, previous).await
+}
+
+/// Which file `path` names, so a later rename over it shows.
+fn file_identity(path: &Path) -> Option<(u64, u64)> {
+    fs::metadata(path)
+        .ok()
+        .map(|metadata| (metadata.dev(), metadata.ino()))
 }
 
 /// Reconcile a retained receipt before serving requests after daemon restart.
@@ -466,10 +540,48 @@ fn write(data_dir: &Path, stored: &StoredAttempt) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::BTreeSet,
+        convert::Infallible,
+        task::{Context, Poll},
+    };
+
+    use ployz_core::{ContractDescription, MachineId, OpaquePayload, PROTOCOL_MAJOR, RpcResponse};
+    use tokio::net::UnixListener;
+    use tokio_stream::wrappers::UnixListenerStream;
+
+    use super::super::test_support::{fixture, run_contract_child_with_environment, write_script};
+    use super::super::tests::{create_installation_fixture, write_existing_daemon};
     use super::*;
 
     const CONTRACT_CASE: &str = "PLOYZ_UPGRADE_CONTRACT_CASE";
     const CONTRACT_ROOT: &str = "PLOYZ_UPGRADE_CONTRACT_ROOT";
+    const WORKER_CASE: &str = "PLOYZ_UPGRADE_WORKER_CASE";
+
+    /// systemd for one fake daemon. `restart` starts whatever `bin/ployzd` is installed as a new
+    /// main process, whose `/proc` entry links that executable as the kernel's would. A version
+    /// with a `broken-<version>` marker never becomes active; one with `crashing-<version>` runs
+    /// under a new main PID whenever asked.
+    const SYSTEMCTL: &str = r#"root="$PLOYZ_INSTALLER_CONTRACT_ROOT"
+echo "$*" >> "$root/systemctl.log"
+start() {
+  pid=1000
+  if [ -f "$root/main-pid" ]; then read -r pid < "$root/main-pid"; fi
+  pid=$((pid + 1))
+  /bin/mkdir -p "$root/proc/$pid"
+  /bin/ln "$root/bin/ployzd" "$root/proc/$pid/exe"
+  "$root/bin/ployzd" version > "$root/running-version"
+  echo "$pid" > "$root/main-pid"
+}
+version=none
+if [ -f "$root/running-version" ]; then read -r version < "$root/running-version"; fi
+case "$1" in
+  restart) start ;;
+  is-active) if [ -e "$root/broken-$version" ]; then exit 3; fi ;;
+  show)
+    if [ -e "$root/crashing-$version" ]; then start; fi
+    read -r pid < "$root/main-pid"; echo "$pid" ;;
+esac"#;
 
     #[tokio::test]
     async fn worker_rejects_nonstandard_paths_before_reading_local_state() {
@@ -721,10 +833,255 @@ mod tests {
         }
     }
 
-    fn write_script(path: &Path, body: &str) {
-        use std::os::unix::fs::PermissionsExt;
+    /// The worker upgrades an installed daemon to a local release of 1.2.3; markers tell the fake
+    /// systemd which release misbehaves.
+    #[tokio::test]
+    async fn upgrade_worker_contract() {
+        if let Ok(case) = env::var(WORKER_CASE) {
+            let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
+            run_worker_case(&root, &case).await;
+            fs::write(root.join("child-completed"), case).unwrap();
+            return;
+        }
 
-        fs::write(path, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        for case in [
+            "succeeded",
+            "readiness-restored",
+            "soak-restored",
+            "restore-failed",
+            "before-activation",
+            "already-installed",
+            "other-line",
+        ] {
+            let fixture = fixture(case);
+            let root = fixture.path();
+            let release = if case == "before-activation" {
+                "corrupt"
+            } else {
+                "success"
+            };
+            create_installation_fixture(root, release);
+            write_script(&root.join("commands/systemctl"), SYSTEMCTL);
+            run_contract_child_with_environment(
+                "installer::upgrade::tests::upgrade_worker_contract",
+                root,
+                WORKER_CASE.into(),
+                case.into(),
+                case,
+                [],
+            );
+        }
+    }
+
+    async fn run_worker_case(root: &Path, case: &str) {
+        let paths = InstallPaths::at(root);
+        let mark = |marker: &str| fs::write(root.join(marker), "").unwrap();
+        write_existing_daemon(
+            &paths,
+            if case == "other-line" {
+                "0.9.9"
+            } else {
+                "1.2.2"
+            },
+        );
+        match case {
+            "readiness-restored" | "other-line" => mark("broken-1.2.3"),
+            "soak-restored" => mark("crashing-1.2.3"),
+            "restore-failed" => {
+                mark("broken-1.2.3");
+                mark("broken-1.2.2");
+            }
+            "already-installed" => {
+                // An earlier Upgrade retained 1.2.2; this one replaces nothing.
+                fs::rename(paths.daemon(), paths.bin_dir.join("ployzd.previous")).unwrap();
+                write_existing_daemon(&paths, "1.2.3");
+                mark("broken-1.2.3");
+            }
+            _ => {}
+        }
+        let before = fs::read(paths.daemon()).unwrap();
+        let attempt_id = MachineUpgradeAttemptId::parse("a".repeat(32)).unwrap();
+        let target = MachineVersion::parse("1.2.3").unwrap();
+        write(
+            &paths.data_dir,
+            &StoredAttempt {
+                requested: MachineRelease::Exact(target.clone()),
+                attempt: MachineUpgradeAttempt {
+                    attempt_id,
+                    target: target.clone(),
+                    outcome: MachineUpgradeOutcome::Accepted,
+                },
+            },
+        )
+        .unwrap();
+        mutation::MutationGate::new(&paths.run_dir, &paths.data_dir)
+            .mark_active(attempt_id.as_str())
+            .unwrap();
+        fs::create_dir_all(&paths.run_dir).unwrap();
+        let api = UnixListener::bind(paths.run_dir.join("ployz.sock")).unwrap();
+        tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_service(FakeMachineApi(root.join("running-version")))
+                .serve_with_incoming(UnixListenerStream::new(api)),
+        );
+
+        let result = work(
+            &ReleaseSource::Local(root.join("release")),
+            &paths,
+            attempt_id,
+        )
+        .await;
+
+        let outcome = read(&paths.data_dir).unwrap().attempt.outcome;
+        match (&result, &outcome) {
+            (Ok(()), MachineUpgradeOutcome::Succeeded { .. }) => {}
+            (Err(Error::Installation(returned)), MachineUpgradeOutcome::Failed { error, .. }) => {
+                assert_eq!(returned, error);
+            }
+            unexpected => panic!("{case}: worker returned and recorded {unexpected:?}"),
+        }
+        let installed = fs::read(paths.daemon()).unwrap();
+        let upgraded = fs::read(root.join("payload/ployzd")).unwrap();
+        let unready = "check daemon readiness: exited with exit status: 3";
+        let failed = |error: &str| MachineUpgradeOutcome::Failed {
+            stage: MachineUpgradeStage::Readiness,
+            error: error.into(),
+        };
+        let started = [
+            "restart ployz.socket ployz.service",
+            "try-restart ployz-volume-plugin.service",
+        ];
+        let restored = [
+            "restart ployz.socket ployz.service",
+            "try-restart ployz-volume-plugin.service",
+            "reset-failed ployz.socket ployz.service",
+            "restart ployz.socket ployz.service",
+            "try-restart ployz-volume-plugin.service",
+        ];
+        match case {
+            "succeeded" => {
+                assert_eq!(
+                    outcome,
+                    MachineUpgradeOutcome::Succeeded { version: target }
+                );
+                assert_eq!(installed, upgraded);
+                assert_eq!(transitions(root), started);
+            }
+            "readiness-restored" => {
+                assert_eq!(outcome, failed(&format!("{unready}; restored 1.2.2")));
+                assert_eq!(installed, before);
+                assert_eq!(transitions(root), restored);
+            }
+            "soak-restored" => {
+                assert!(matches!(
+                    outcome,
+                    MachineUpgradeOutcome::Failed {
+                        stage: MachineUpgradeStage::Readiness,
+                        ref error,
+                    } if error.starts_with("soak daemon: ployz.service restarted (main PID ")
+                        && error.ends_with("; restored 1.2.2")
+                ));
+                assert_eq!(installed, before);
+                assert_eq!(transitions(root), restored);
+            }
+            "restore-failed" => {
+                assert_eq!(
+                    outcome,
+                    failed(&format!("{unready}; restore failed: {unready}"))
+                );
+            }
+            "before-activation" => {
+                assert!(matches!(
+                    outcome,
+                    MachineUpgradeOutcome::Failed {
+                        stage: MachineUpgradeStage::Verifying,
+                        ref error,
+                    } if error.starts_with("artifact verification: ") && !error.contains("restore")
+                ));
+                assert_eq!(installed, before);
+                assert!(transitions(root).is_empty());
+            }
+            "already-installed" => {
+                assert_eq!(outcome, failed(unready));
+                assert_eq!(installed, before);
+                assert_eq!(transitions(root), started);
+            }
+            "other-line" => {
+                assert_eq!(outcome, failed(unready));
+                assert_eq!(installed, upgraded);
+                assert_eq!(transitions(root), started);
+            }
+            other => panic!("unknown upgrade worker case {other}"),
+        }
+        assert!(
+            !mutation::MutationGate::new(&paths.run_dir, &paths.data_dir)
+                .active()
+                .unwrap()
+        );
+    }
+
+    /// The systemd commands that start, stop, or reset units, in order.
+    fn transitions(root: &Path) -> Vec<String> {
+        fs::read_to_string(root.join("systemctl.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| {
+                matches!(
+                    line.split_whitespace().next(),
+                    Some("restart" | "try-restart" | "reset-failed")
+                )
+            })
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// A Machine API that answers every call as `DescribeContract` for the daemon the fake
+    /// systemd last started.
+    #[derive(Clone)]
+    struct FakeMachineApi(PathBuf);
+
+    impl tonic::server::NamedService for FakeMachineApi {
+        const NAME: &'static str = "ployz.rpc.v1.MachineRpc";
+    }
+
+    impl tonic::codegen::Service<http::Request<tonic::body::Body>> for FakeMachineApi {
+        type Response = http::Response<tonic::body::Body>;
+        type Error = Infallible;
+        type Future = tonic::codegen::BoxFuture<Self::Response, Infallible>;
+
+        fn poll_ready(&mut self, _context: &mut Context<'_>) -> Poll<Result<(), Infallible>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, request: http::Request<tonic::body::Body>) -> Self::Future {
+            let running = fs::read_to_string(&self.0).unwrap_or_default();
+            Box::pin(async move {
+                Ok(
+                    tonic::server::Grpc::new(tonic::codec::ProstCodec::default())
+                        .unary(Contract(running.trim().to_owned()), request)
+                        .await,
+                )
+            })
+        }
+    }
+
+    struct Contract(String);
+
+    impl tonic::server::UnaryService<OpaquePayload> for Contract {
+        type Response = OpaquePayload;
+        type Future = std::future::Ready<Result<tonic::Response<OpaquePayload>, tonic::Status>>;
+
+        fn call(&mut self, _request: tonic::Request<OpaquePayload>) -> Self::Future {
+            std::future::ready(Ok(tonic::Response::new(
+                RpcResponse::from(ContractDescription {
+                    machine_id: MachineId::random(),
+                    protocol_major: PROTOCOL_MAJOR,
+                    daemon_version: self.0.clone(),
+                    capabilities: BTreeSet::new(),
+                })
+                .encode()
+                .unwrap(),
+            )))
+        }
     }
 }

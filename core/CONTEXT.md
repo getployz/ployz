@@ -374,7 +374,7 @@ The evidence from a Deploy Plan: completed operations, any failed operation, eve
 _Avoid_: Bare deployment error, transaction result
 
 **Replacement Compensation**:
-A bounded attempt to clean up a failed replacement and restore the prior Service Container when it was stopped. Its outcome records recovery success or failure; it does not reverse application data writes or other completed changes.
+A bounded attempt to clean up a failed replacement and restore what it replaced: the prior Service Container when it was stopped, or the prior daemon release after a failed Upgrade. Its outcome records recovery success or failure; it does not reverse application data writes or other completed changes.
 _Avoid_: General rollback, atomic deployment
 
 **Docker Volume**:
@@ -513,6 +513,10 @@ _Avoid_: self-hosted cluster, offline mode, unpaired as a fault
 **Release Channel**:
 One of exactly two names a daemon or installer may follow: `stable` (the highest published `vX.Y.Z`) or `beta` (the highest published release, `vX.Y.Z-beta.N` or stable). A channel is scoped to a release line (a major version): a daemon resolves `ployz.sh/v<its major>/<channel>`, so it never crosses a breaking release through a channel. Only the live installer reads the unscoped `ployz.sh/<channel>`, which points at the newest line. A channel only moves forward, and upgrading through one never downgrades a Machine; only an exact version crosses a line or moves backwards. A build from `main` is addressable by tag or commit, never by a channel.
 _Avoid_: latest, nightly, dev channel
+
+**Upgrade**:
+Moving a Machine's daemon to another published release in one durable attempt the Machine runs itself, ending as succeeded, failed, or interrupted. When a failed Upgrade had already replaced the daemon, Replacement Compensation restores the prior release on the same line.
+_Avoid_: Update (that is Branch staging), self-update
 
 **Hosted DNS**:
 The Ployz-run service that grants Cluster Domains and serves their public records. Only Cloud calls it (see `dashboard/CONTEXT.md`); the daemon, SDK and CLI make no Hosted DNS calls, and a Cluster stores no reservation.

@@ -122,6 +122,8 @@ pub(super) struct InstallPaths {
     pub(super) os_release: PathBuf,
     pub(super) secure_boot: PathBuf,
     pub(super) apt_dir: PathBuf,
+    /// Where running processes are inspected, so readiness can prove which executable runs.
+    pub(super) proc_dir: PathBuf,
 }
 
 impl InstallPaths {
@@ -140,6 +142,7 @@ impl InstallPaths {
                 "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c",
             ),
             apt_dir: PathBuf::from("/etc/apt"),
+            proc_dir: PathBuf::from("/proc"),
         }
     }
 
@@ -162,6 +165,7 @@ impl InstallPaths {
             os_release: root.join("os-release"),
             secure_boot: root.join("efivars/SecureBoot"),
             apt_dir: root.join("apt"),
+            proc_dir: root.join("proc"),
         }
     }
 }
@@ -213,14 +217,14 @@ async fn install_at(
     upgrade::reconcile_for_install(&admission, &paths.data_dir)
         .await
         .map_err(map_upgrade_reconciliation)?;
-    install_locked(source, request, paths, lock, |_| Ok(())).await
+    install_locked(source, request, &paths, &lock, |_| Ok(())).await
 }
 
 async fn install_locked(
     source: &ReleaseSource,
     request: InstallRequest,
-    paths: InstallPaths,
-    _lock: mutation::InstallationGuard,
+    paths: &InstallPaths,
+    _lock: &mutation::InstallationGuard,
     mut progress: impl FnMut(MachineUpgradeStage) -> Result<(), Error>,
 ) -> Result<InstallOutcome, Error> {
     let installation_only = matches!(request.mode, InstallMode::InstallationOnly);
@@ -231,59 +235,65 @@ async fn install_locked(
     progress(MachineUpgradeStage::Preparing)?;
     match &request.mode {
         InstallMode::InstallationOnly => {}
-        InstallMode::SoftwareOnly => verify_software_prerequisites(&paths)?,
+        InstallMode::SoftwareOnly => verify_software_prerequisites(paths)?,
         InstallMode::PrepareHost {
             storage,
             group_user,
         } => {
             // Before the ZFS build or any change: Ployz can't use every Docker it would retain.
             verify_docker()?;
-            prepare_storage(*storage, &paths)?;
+            prepare_storage(*storage, paths)?;
             install_prerequisites()?;
             let inherited_group = sudo_user();
             create_user_and_directories(
                 group_user.as_deref().or(inherited_group.as_deref()),
-                &paths,
+                paths,
             )?;
         }
     }
 
     let mut restart_required = !paths.systemd_dir.join("ployz.service").is_file();
     restart_required |=
-        install_binaries(source, &paths, installed.as_ref(), &target, &mut progress).await?;
-    install_systemd(&paths, installation_only)?;
+        install_binaries(source, paths, installed.as_ref(), &target, &mut progress).await?;
+    install_systemd(paths, installation_only)?;
     if matches!(request.mode, InstallMode::PrepareHost { .. }) {
-        install_docker(&paths).await?;
+        install_docker(paths).await?;
     }
 
     if !installation_only && !restart_required {
         // A prior attempt may have activated these files without starting them.
-        restart_required = verify_running_daemon(&paths, &target).await.is_err();
+        restart_required = verify_running_daemon(paths, &target).await.is_err();
     }
     let readiness = if installation_only {
         Readiness::InstallationOnly
     } else {
         if restart_required {
             progress(MachineUpgradeStage::Restarting)?;
-            // One transaction: a changed socket unit takes effect, and
-            // After=ployz.socket starts the socket before the daemon.
-            systemctl(
-                "restart daemon",
-                ["restart", "ployz.socket", "ployz.service"],
-            )?;
-            systemctl(
-                "restart volume plugin",
-                ["try-restart", "ployz-volume-plugin.service"],
-            )?;
+            restart_daemon()?;
         }
         progress(MachineUpgradeStage::Readiness)?;
-        verify_running_daemon(&paths, &target).await?;
+        verify_running_daemon(paths, &target).await?;
         Readiness::Running
     };
     Ok(InstallOutcome {
         target: target.to_string(),
         readiness,
     })
+}
+
+/// Restart the daemon on whichever release is installed, then the volume plugin it serves.
+fn restart_daemon() -> Result<(), Error> {
+    // One transaction: a changed socket unit takes effect, and
+    // After=ployz.socket starts the socket before the daemon.
+    systemctl(
+        "restart daemon",
+        ["restart", "ployz.socket", "ployz.service"],
+    )?;
+    systemctl(
+        "restart volume plugin",
+        ["try-restart", "ployz-volume-plugin.service"],
+    )?;
+    Ok(())
 }
 
 fn map_admission_error(error: mutation::Error) -> Error {
@@ -647,7 +657,7 @@ mod tests {
         }
     }
 
-    fn create_installation_fixture(root: &Path, case: &str) {
+    pub(super) fn create_installation_fixture(root: &Path, case: &str) {
         let commands = root.join("commands");
         let release = root.join("release");
         let payload = root.join("payload");
@@ -736,7 +746,7 @@ mod tests {
         }
     }
 
-    fn write_existing_daemon(paths: &InstallPaths, version: &str) -> Vec<u8> {
+    pub(super) fn write_existing_daemon(paths: &InstallPaths, version: &str) -> Vec<u8> {
         fs::create_dir_all(&paths.bin_dir).unwrap();
         let existing = format!("#!/bin/sh\n[ \"$1\" = version ] && echo {version}\n").into_bytes();
         fs::write(paths.bin_dir.join("ployzd"), &existing).unwrap();

@@ -476,20 +476,12 @@ pub(super) async fn verify_running_daemon(
         "check daemon readiness",
         ["is-active", "--quiet", "ployz.service"],
     )?;
-    let output = systemctl(
-        "inspect running daemon",
-        ["show", "--property=MainPID", "--value", "ployz.service"],
-    )?;
-    let pid = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if pid.is_empty() || pid == "0" || !pid.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(Error::Verification(format!(
-            "ployz.service is active but did not report a daemon process ID ({pid:?})"
-        )));
-    }
-    let running = fs::metadata(format!("/proc/{pid}/exe")).map_err(|source| Error::Io {
-        stage: "inspect running daemon executable",
-        source,
-    })?;
+    let pid = daemon_main_pid()?;
+    let running =
+        fs::metadata(paths.proc_dir.join(&pid).join("exe")).map_err(|source| Error::Io {
+            stage: "inspect running daemon executable",
+            source,
+        })?;
     let installed = fs::metadata(paths.daemon()).map_err(|source| Error::Io {
         stage: "inspect installed daemon executable",
         source,
@@ -513,7 +505,26 @@ pub(super) async fn verify_running_daemon(
     verify_daemon_contract(&paths.run_dir.join("ployz.sock"), target).await
 }
 
-async fn verify_daemon_contract(socket: &Path, target: &MachineVersion) -> Result<(), Error> {
+/// The process systemd currently runs as `ployz.service`'s main process.
+pub(super) fn daemon_main_pid() -> Result<String, Error> {
+    let output = systemctl(
+        "inspect running daemon",
+        ["show", "--property=MainPID", "--value", "ployz.service"],
+    )?;
+    let pid = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if pid.is_empty() || pid == "0" || !pid.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(Error::Verification(format!(
+            "ployz.service did not report a daemon process ID ({pid:?})"
+        )));
+    }
+    Ok(pid)
+}
+
+/// Prove the Machine API on `socket` answers as `target`.
+pub(super) async fn verify_daemon_contract(
+    socket: &Path,
+    target: &MachineVersion,
+) -> Result<(), Error> {
     let endpoint =
         Endpoint::from_shared(format!("unix:{}", socket.display())).map_err(|error| {
             Error::Verification(format!("invalid Machine API socket address: {error}"))
