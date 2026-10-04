@@ -333,6 +333,18 @@ pub(super) fn plan_global(
                 skip_health_monitor: options.skip_health_monitor,
             }));
         } else {
+            // Stopped Containers still hold a bridge endpoint. Remove them
+            // first so a full bridge has room for the fresh one.
+            for stale in on_machine(current, machine_id) {
+                let container_id = stale.as_observation().container_id;
+                operations.push(DeployOperation::RemoveContainer {
+                    machine_id,
+                    container_id,
+                });
+                placement.capacity.release(&machine_id);
+                placement.sockets.release(machine_id, container_id);
+                used.insert(container_id);
+            }
             let demand =
                 endpoint_demand(EndpointOperation::Create, hook_machine == Some(machine_id));
             if !placement.capacity.reserve(&machine_id, demand) {

@@ -307,8 +307,8 @@ fn global_stopped_container_with_the_requested_spec_is_recreated_not_restarted()
         matches!(
             operations(&plan).as_slice(),
             [
-                DeployOperation::RunContainer { .. },
                 DeployOperation::RemoveContainer { container_id: removed, .. },
+                DeployOperation::RunContainer { .. },
             ] if removed == &container_id('b')
         ),
         "an earlier Deploy's Container is never adopted: {:?}",

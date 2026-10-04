@@ -186,6 +186,40 @@ fn scale_down_releases_capacity_before_a_later_service_creates() {
 }
 
 #[test]
+fn global_recreate_on_a_full_bridge_removes_the_stopped_container_first() {
+    let requested = requested(ServiceMode::Global);
+    let mut stopped = container('b', '1', &requested, &service_id('a'));
+    stopped
+        .try_update(|parts| {
+            parts.runtime = ContainerRuntimeObservation::Exited { code: 1 };
+        })
+        .unwrap();
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: vec![machine('1', "full")],
+            containers: vec![stopped],
+            capacity: capacity([('1', 0)]),
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .expect("removing the stopped Container frees its endpoint");
+
+    assert!(
+        matches!(
+            operations(&plan).as_slice(),
+            [
+                DeployOperation::RemoveContainer { container_id: removed, .. },
+                DeployOperation::RunContainer { machine_id: created_on, .. },
+            ] if removed == &container_id('b') && created_on == &machine_id('1')
+        ),
+        "{:?}",
+        operations(&plan)
+    );
+}
+
+#[test]
 fn all_unknown_global_capacity_is_reported_as_unknown() {
     let requested = requested(ServiceMode::Global);
     assert_eq!(
