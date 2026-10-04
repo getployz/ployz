@@ -4,6 +4,7 @@ import { createdAt, type MachineId, sqlStringLiterals, updatedAt } from "#/db/ta
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import {
+  DEFAULT_SERVER_UPGRADE_SETTINGS,
   RELEASE_CHANNELS,
   type ReleaseChannel,
   UPGRADE_OUTCOMES,
@@ -60,9 +61,9 @@ export const organizationServerUpgrades = pgTable("organization_server_upgrades"
   organizationId: uuid("organization_id").primaryKey()
     .references(() => organization.id, { onDelete: "cascade" }),
   /** Off stops the hourly rollout; Upgrade still works. */
-  automatic: boolean("automatic").default(true).notNull(),
+  automatic: boolean("automatic").default(DEFAULT_SERVER_UPGRADE_SETTINGS.automatic).notNull(),
   /** The Release Channel every Upgrade requests, manual or automatic. */
-  channel: text("channel").default("stable").notNull().$type<ReleaseChannel>(),
+  channel: text("channel").default(DEFAULT_SERVER_UPGRADE_SETTINGS.channel).notNull().$type<ReleaseChannel>(),
   createdAt,
   updatedAt,
 }, (table) => [

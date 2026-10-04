@@ -168,7 +168,8 @@ describe("serversUpgradeLine", () => {
   it("offers Upgrade with the version the Servers run while none has upgraded", () => {
     expect(summary({ servers: servers("0.2.1", "0.2.0", "") }))
       .toEqual({ kind: "behind", release: "0.2.2", upgraded: 0, total: 3, running: "0.2.0", canUpgrade: true });
-    expect(summary({ servers: servers("") })).toMatchObject({ kind: "behind", upgraded: 0, running: null });
+    // Cloud can't upgrade a Server whose version is unknown, nor say it runs the release.
+    expect(summary({ servers: servers("") })).toBeNull();
   });
 
   it("offers Upgrade the rest once some Servers have upgraded", () => {

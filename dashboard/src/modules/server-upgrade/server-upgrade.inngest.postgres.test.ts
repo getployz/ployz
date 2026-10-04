@@ -49,6 +49,9 @@ describe("roll-out-server-upgrade", () => {
   /** Per-Server answers, over the two above. */
   let requestAnswerFor: Record<string, Partial<Attempt> | "busy">;
   let inspectAnswersFor: Record<string, Array<Partial<Attempt> | "unreadable">>;
+  /** After this many inspects, every attempt's `startedAt` moves past the observation limit; null never. */
+  let outliveAfterInspects: number | null;
+  let inspects: number;
   let requests: Array<{ machine: string; attemptId: string; release: string }>;
   /** Each request and each terminal answer, in the order the Servers saw them. */
   let log: string[];
@@ -81,13 +84,17 @@ describe("roll-out-server-upgrade", () => {
               : Effect.succeed(attempt(attemptId, answer));
           },
           inspectMachineUpgrade: (machine: string, attemptId: string) => {
+            inspects += 1;
+            const outlive = inspects === outliveAfterInspects
+              ? Effect.promise(() => harness.pool.query("update server_upgrade_attempt set started_at = started_at - interval '20 minutes'"))
+              : Effect.void;
             const answers = inspectAnswersFor[machine] ??= [...inspectAnswers];
             const answer = answers.length > 1 ? answers.shift() : answers[0];
             if (answer === undefined || answer === "unreadable") {
-              return Effect.fail(new PloyzProviderError({ operation: "inspect machine upgrade", cause: { code: "unavailable" } }));
+              return Effect.andThen(outlive, Effect.fail(new PloyzProviderError({ operation: "inspect machine upgrade", cause: { code: "unavailable" } })));
             }
             if (answer.outcome !== "running") log.push(`${answer.outcome} ${machine}`);
-            return Effect.succeed(attempt(attemptId, answer));
+            return Effect.andThen(outlive, Effect.succeed(attempt(attemptId, answer)));
           },
         }) }),
       }),
@@ -100,7 +107,7 @@ describe("roll-out-server-upgrade", () => {
       name: "server/upgrade.requested",
       data: { organizationId, machineId: target, trigger, userId: trigger === "manual" ? userId : null },
     }],
-    // Each poll's sleep ends at once; eighty polls are the twenty minutes.
+    // Each poll's sleep ends at once; `outliveAfterInspects` moves the clock instead.
     steps: frame.machines.flatMap(({ machine }) =>
       Array.from({ length: 80 }, (_, poll) => ({ id: `wait-${machine.id}-${poll}`, handler: () => undefined }))),
   }).execute();
@@ -130,6 +137,8 @@ describe("roll-out-server-upgrade", () => {
     inspectAnswers = [running("restarting"), { outcome: "succeeded", version: "0.2.2" }];
     requestAnswerFor = {};
     inspectAnswersFor = {};
+    outliveAfterInspects = null;
+    inspects = 0;
     requests = [];
     log = [];
     captured = [];
@@ -197,14 +206,27 @@ describe("roll-out-server-upgrade", () => {
     expect(captured[0]?.properties).not.toHaveProperty("error");
   });
 
-  it("records unknown with the last stage seen after twenty minutes without an outcome", async () => {
+  it("records unknown with the last stage seen twenty minutes after the attempt started without an outcome", async () => {
     inspectAnswers = [running("readiness"), "unreadable"];
+    outliveAfterInspects = 3;
 
     const output = await rollOut();
 
     expect(output.result).toMatchObject({ results: [{ outcome: "unknown" }] });
+    expect(inspects).toBe(3);
     expect(await rows()).toMatchObject([{ outcome: "unknown", stage: "readiness", error: null }]);
     expect(captured).toEqual([expect.objectContaining({ event: "server_upgrade_unknown", properties: expect.objectContaining({ stage: "readiness" }) })]);
+  });
+
+  it("records unknown, as the sweep and the Server page read it, for an outcome that arrives after twenty minutes", async () => {
+    inspectAnswers = [running("readiness"), { outcome: "succeeded", version: "0.2.2" }];
+    outliveAfterInspects = 1;
+
+    const output = await rollOut();
+
+    expect(output.result).toMatchObject({ results: [{ outcome: "unknown" }] });
+    expect(inspects).toBe(1);
+    expect(await rows()).toMatchObject([{ outcome: "unknown", stage: "readiness" }]);
   });
 
   it("records nothing and sends nothing when the Server refuses as Busy", async () => {
@@ -212,7 +234,7 @@ describe("roll-out-server-upgrade", () => {
 
     const output = await rollOut();
 
-    expect(output.result).toEqual({ results: [{ machineId, skipped: "busy" }] });
+    expect(output.result).toEqual({ results: [{ machineId, kind: "skipped", reason: "busy" }] });
     expect(await rows()).toEqual([]);
     expect(captured).toEqual([]);
   });
@@ -221,7 +243,7 @@ describe("roll-out-server-upgrade", () => {
     const observed = frame.machines[0];
     if (observed) observed.machine.runtime.running_builds = 1;
 
-    expect((await rollOut()).result).toEqual({ results: [{ machineId, skipped: "not-online" }] });
+    expect((await rollOut()).result).toEqual({ results: [{ machineId, kind: "skipped", reason: "not-online" }] });
     expect(requests).toEqual([]);
     expect(await rows()).toEqual([]);
   });
@@ -283,7 +305,7 @@ describe("roll-out-server-upgrade", () => {
       const output = await rollOut(null);
 
       expect(requests.map(({ machine }) => machine)).toEqual([serverId("1"), serverId("2"), serverId("a")]);
-      expect(output.result).toMatchObject({ results: [{ machineId: serverId("1"), skipped: "busy" }, { outcome: "succeeded" }, { outcome: "succeeded" }] });
+      expect(output.result).toMatchObject({ results: [{ machineId: serverId("1"), kind: "skipped", reason: "busy" }, { outcome: "succeeded" }, { outcome: "succeeded" }] });
       expect(await rows()).toHaveLength(2);
       expect(captured).toHaveLength(2);
     });

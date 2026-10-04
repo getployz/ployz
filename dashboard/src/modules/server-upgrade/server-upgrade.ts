@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { machineIdStringSchema } from "#/modules/machines/enrollment";
 import type { ServerStatus } from "#/modules/machines/server-status";
 
 /** How long Cloud waits for an Upgrade's outcome: longer than the upgrade worker's 15-minute cap. */
@@ -10,6 +11,13 @@ export const UPGRADE_TRIGGERS = ["automatic", "manual"] as const;
 export type UpgradeTrigger = (typeof UPGRADE_TRIGGERS)[number];
 export const RELEASE_CHANNELS = ["stable", "beta"] as const;
 export type ReleaseChannel = (typeof RELEASE_CHANNELS)[number];
+export type FinalOutcome = Exclude<UpgradeOutcome, "running">;
+
+/** The settings of an Organization without a settings row: automatic upgrades on, Stable releases. */
+export const DEFAULT_SERVER_UPGRADE_SETTINGS: { readonly automatic: boolean; readonly channel: ReleaseChannel } = {
+  automatic: true,
+  channel: "stable",
+};
 
 // The only forms a release is published in: `X.Y.Z` and `X.Y.Z-beta.N`.
 const VERSION = /^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$/u;
@@ -28,6 +36,12 @@ export function compareVersions(left: string, right: string) {
   if (a === null || b === null) return null;
   const index = a.findIndex((part, at) => part !== b[at]);
   return index === -1 ? 0 : (a[index] ?? 0) - (b[index] ?? 0);
+}
+
+/** A Server runs a published version older than `release`. An unknown version is never behind: Cloud can't upgrade it. */
+export function isBehind(version: string, release: string | null) {
+  const order = release === null ? null : compareVersions(version, release);
+  return order !== null && order < 0;
 }
 
 /** The release a Release Channel pointer names (`v0.2.2\n`), as Servers report versions (`0.2.2`). */
@@ -57,7 +71,7 @@ export function newMajorLine(line: string | null, newest: string | null) {
 export const RequestServerUpgradeInput = Schema.Struct({
   organizationSlug: Schema.String,
   /** Upgrade on a Server page names it; Upgrade on the Servers page upgrades every Server behind. */
-  machineId: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/u))),
+  machineId: Schema.NullOr(machineIdStringSchema),
 });
 export type RequestServerUpgradeInput = typeof RequestServerUpgradeInput.Type;
 
@@ -72,9 +86,11 @@ export type SetServerUpgradeSettingsInput = typeof SetServerUpgradeSettingsInput
 /** The Org Store's view of the Organization's Server upgrade settings, keyed by Organization ID. */
 export type ServerUpgradeSettingsRow = { readonly id: string; readonly automatic: boolean; readonly channel: ReleaseChannel };
 
-/** No row reads as the defaults: automatic upgrades on, Stable releases. */
-export const serverUpgradeSettings = (rows: readonly ServerUpgradeSettingsRow[]) =>
-  ({ automatic: rows[0]?.automatic ?? true, channel: rows[0]?.channel ?? "stable" }) as const;
+/** No row reads as the defaults. */
+export const serverUpgradeSettings = (rows: readonly ServerUpgradeSettingsRow[]) => ({
+  automatic: rows[0]?.automatic ?? DEFAULT_SERVER_UPGRADE_SETTINGS.automatic,
+  channel: rows[0]?.channel ?? DEFAULT_SERVER_UPGRADE_SETTINGS.channel,
+});
 
 /** A Server's latest Upgrade attempt, as the Server page reads it. */
 export const LatestUpgrade = Schema.Struct({
@@ -104,24 +120,41 @@ export type ServerUpgradeLine =
   | { readonly kind: "when-back"; readonly release: string }
   | null;
 
-/** An attempt still within the observation limit is running, and so is the Organization's one rollout. */
-const isRunning = (row: LatestUpgrade, now: number) =>
-  row.outcome === "running" && now - Date.parse(row.startedAt) < UPGRADE_OBSERVATION_LIMIT_MS;
+/**
+ * What an attempt that ended keeps besides its outcome: nothing after a success, the stage a non-success stopped at,
+ * and a failure's error too. The row, its PostHog event, and the Server page's details all read it.
+ */
+export function endEvidence(outcome: FinalOutcome, stage: string | null, error: string | null): {
+  readonly stage?: string | null;
+  readonly error?: string | null;
+} {
+  if (outcome === "succeeded") return {};
+  return outcome === "failed" ? { stage, error } : { stage };
+}
 
-/** Whether any Server's latest attempt is running: the Organization's rollout is under way. */
+/** An attempt started at `startedAt` has outlived the observation limit: Cloud stops waiting and it reads as unknown. */
+export const outlivedObservation = (startedAt: Date, now: number) => now - startedAt.getTime() >= UPGRADE_OBSERVATION_LIMIT_MS;
+
+/** An attempt still within the observation limit is running, and so is the Organization's one Rollout. */
+const isRunning = (row: LatestUpgrade, now: number) =>
+  row.outcome === "running" && !outlivedObservation(new Date(row.startedAt), now);
+
+/** The newest attempt ID when the user clicked Upgrade (null with none); undefined when nothing is pending. */
+export type PendingFrom = string | null | undefined;
+
+/** Whether any Server's latest attempt is running: the Organization's Rollout is under way. */
 export const rolloutRunning = (latest: readonly LatestUpgrade[], now: number) => latest.some((row) => isRunning(row, now));
 
 /**
- * The Server page's Upgrade line. `release` is the newest release on the Server's line; `pendingFrom` is the latest
- * attempt ID when the user clicked Upgrade (null with none), undefined when nothing is pending. Upgrade and Try again
- * wait while `rolloutRunning`.
+ * The Server page's Upgrade line. `release` is the newest release on the Server's line. Upgrade and Try again wait
+ * while `rolloutRunning`.
  */
 export function serverUpgradeLine(input: {
   readonly version: string;
   readonly status: ServerStatus;
   readonly release: string | null;
   readonly latest: LatestUpgrade | null;
-  readonly pendingFrom: string | null | undefined;
+  readonly pendingFrom: PendingFrom;
   readonly now: number;
   readonly automatic: boolean;
   readonly rolloutRunning: boolean;
@@ -142,17 +175,18 @@ export function serverUpgradeLine(input: {
         kind: "failed",
         target,
         nothingChanged: online && latest.fromVersion !== "" && version === latest.fromVersion,
-        details: outcome === "failed" ? latest.error : latest.stage,
+        details: details(endEvidence(outcome ?? "unknown", latest.stage, latest.error)),
         canRetry: status === "online" && !input.rolloutRunning,
       };
     }
   }
-  if (release === null) return null;
-  const order = compareVersions(version, release);
-  if (order === null || order >= 0) return null;
+  if (release === null || !isBehind(version, release)) return null;
   if (status === "online") return { kind: "behind", release, canUpgrade: !input.rolloutRunning };
   return status === "offline" && input.automatic ? { kind: "when-back", release } : null;
 }
+
+/** The exact error for a failure; the stage reached otherwise. */
+const details = (evidence: ReturnType<typeof endEvidence>) => evidence.error ?? evidence.stage ?? null;
 
 /** The attempt started last; null with none. */
 export const newestAttempt = (latest: readonly LatestUpgrade[]) => latest.reduce<LatestUpgrade | null>((found, row) =>
@@ -166,7 +200,7 @@ export type ServersUpgradeLine =
     readonly release: string;
     readonly upgraded: number;
     readonly total: number;
-    /** The oldest version the Servers behind report; null when none reports one. */
+    /** The oldest version the Servers behind report. */
     readonly running: string | null;
     /** Some Server behind is online and idle, so an Upgrade has one to take. */
     readonly canUpgrade: boolean;
@@ -177,23 +211,21 @@ export type ServersUpgradeLine =
 
 /**
  * The Servers page's upgrade line. `latest` holds each Server's latest attempt; `lastUpgradedAt` ends the latest
- * successful one. `pendingFrom` is the newest attempt ID when the user clicked Upgrade (null with none), undefined
- * when nothing is pending.
+ * successful one. A Server whose version is unknown is neither behind nor upgraded.
  */
 export function serversUpgradeLine(input: {
   readonly servers: ReadonlyArray<{ readonly name: string; readonly version: string; readonly status: ServerStatus }>;
   readonly release: string | null;
   readonly latest: readonly LatestUpgrade[];
   readonly lastUpgradedAt: string | null;
-  readonly pendingFrom: string | null | undefined;
+  readonly pendingFrom: PendingFrom;
   readonly now: number;
   readonly automatic: boolean;
 }): ServersUpgradeLine {
   const { servers, release, latest } = input;
   if (release === null || servers.length === 0) return null;
-  const isCurrent = (version: string) => (compareVersions(version, release) ?? -1) >= 0;
-  const behind = servers.filter(({ version }) => !isCurrent(version));
-  const done = servers.length - behind.length;
+  const behind = servers.filter(({ version }) => isBehind(version, release));
+  const done = servers.filter(({ version }) => (compareVersions(version, release) ?? -1) >= 0).length;
 
   const pending = input.pendingFrom !== undefined && (newestAttempt(latest)?.attemptId ?? null) === input.pendingFrom;
   const running = latest.find((row) => isRunning(row, input.now));
@@ -201,12 +233,11 @@ export function serversUpgradeLine(input: {
     return { kind: "upgrading", target: running?.targetVersion ?? release, done, total: servers.length };
   }
 
-  if (behind.length === 0) return { kind: "current", release, upgradedAt: input.lastUpgradedAt };
+  if (behind.length === 0) return done === servers.length ? { kind: "current", release, upgradedAt: input.lastUpgradedAt } : null;
   if (input.automatic && behind.every(({ status }) => status === "offline")) {
     return { kind: "when-back", release, names: behind.map(({ name }) => name) };
   }
-  const oldest = behind.map(({ version }) => version).filter((version) => compareVersions(version, release) !== null)
-    .sort((left, right) => compareVersions(left, right) ?? 0)[0] ?? null;
+  const oldest = behind.map(({ version }) => version).sort((left, right) => compareVersions(left, right) ?? 0)[0] ?? null;
   return {
     kind: "behind",
     release,

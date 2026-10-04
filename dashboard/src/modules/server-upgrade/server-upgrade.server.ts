@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import type { MachineUpgradeAttempt } from "@ployz/sdk";
-import { and, desc, eq, isNotNull, lt, max, sql } from "drizzle-orm";
+import type { MachineUpgradeAttempt, MachineUpgradeAttemptId } from "@ployz/sdk";
+import { and, desc, eq, isNotNull, lt, max, sql, type SQL } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import type { Actor } from "#/modules/identity/actor";
@@ -14,15 +14,18 @@ import { requireInfrastructureOrganization } from "#/modules/runtime/organizatio
 import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import { rpcErrorCode } from "#/modules/runtime/ployz.server";
 import {
-  compareVersions,
+  DEFAULT_SERVER_UPGRADE_SETTINGS,
+  endEvidence,
+  type FinalOutcome,
+  isBehind,
   type LatestUpgrade,
+  outlivedObservation,
   type ReleaseChannel,
   releaseFromPointer,
   releaseLine,
   type RequestServerUpgradeInput,
   type SetServerUpgradeSettingsInput,
   UPGRADE_OBSERVATION_LIMIT_MS,
-  type UpgradeOutcome,
   type UpgradeTrigger,
 } from "#/modules/server-upgrade/server-upgrade";
 import { organizationServerUpgrades, serverUpgradeAttempt } from "#/modules/server-upgrade/tables";
@@ -34,6 +37,12 @@ const POINTER_CACHE_MS = 5 * 60_000;
 // ponytail: one process-wide cache of a public, tiny pointer per path; a handful of paths, nothing to evict.
 const pointers = new Map<string, { readonly release: string | null; readonly readAt: number }>();
 
+/** The Release Channel pointer could not be read; nothing is cached, so the next read tries again. */
+export class ReleasePointerUnreadable extends Data.TaggedError("ReleasePointerUnreadable")<{
+  readonly path: string;
+  readonly cause: unknown;
+}> {}
+
 export class ServerUpgradeUnreachable extends Data.TaggedError("ServerUpgradeUnreachable")<{
   readonly operation: string;
   readonly cause: unknown;
@@ -41,27 +50,32 @@ export class ServerUpgradeUnreachable extends Data.TaggedError("ServerUpgradeUnr
 
 /**
  * The newest release on Release Channel `channel` for release line `line` (`v0`), the pointer the daemon reads; with
- * no line, the unscoped pointer the installer reads, which may name a newer line. Null when it can't be read. Cached
- * for a few minutes.
+ * no line, the unscoped pointer the installer reads, which may name a newer line. Null when the line has no pointer
+ * or it names no published version; fails when it can't be read. A read is cached for a few minutes, a failure never.
  */
 export const channelRelease = Effect.fn("ServerUpgrade.channelRelease")(function* (channel: ReleaseChannel, line: string | null) {
   const path = line === null ? channel : `${line}/${channel}`;
   const cached = pointers.get(path);
   if (cached !== undefined && Date.now() - cached.readAt < POINTER_CACHE_MS) return cached.release;
-  const release = yield* Effect.tryPromise(async (signal) => {
-    const response = await fetch(`${CHANNEL_URL}/${path}`, { signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]) });
-    return response.ok ? releaseFromPointer(await response.text()) : null;
-  }).pipe(Effect.catch((cause) => Effect.logWarning("A Release Channel pointer could not be read.", { path, cause }).pipe(Effect.as(null))));
+  const release = yield* Effect.tryPromise({
+    try: async (signal) => {
+      const response = await fetch(`${CHANNEL_URL}/${path}`, { signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]) });
+      if (response.status === 404) return null;
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return releaseFromPointer(await response.text());
+    },
+    catch: (cause) => new ReleasePointerUnreadable({ path, cause }),
+  });
   pointers.set(path, { release, readAt: Date.now() });
   return release;
 });
 
-/** The Release Channel the Organization chose; no settings row reads as Stable. */
+/** The Release Channel the Organization chose; no settings row reads as the default. */
 export const organizationReleaseChannel = Effect.fn("ServerUpgrade.channel")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({ channel: organizationServerUpgrades.channel }).from(organizationServerUpgrades)
     .where(eq(organizationServerUpgrades.organizationId, organizationId));
-  return row?.channel ?? "stable";
+  return row?.channel ?? DEFAULT_SERVER_UPGRADE_SETTINGS.channel;
 });
 
 /**
@@ -118,18 +132,24 @@ const openSession = Effect.fn("ServerUpgrade.openSession")(function* (organizati
   return session.connected;
 });
 
-/** The version an online, idle Server runs; null when it isn't observed online and idle (it can't take an Upgrade). */
-export const observeUpgradeableServer = Effect.fn("ServerUpgrade.observe")(function* (organizationId: string, machineId: string) {
+/** Every Server the Runtime Watch observes online and idle, the only ones that can take an Upgrade, with its version. */
+const observeOnlineServers = Effect.fn("ServerUpgrade.observeOnline")(function* (organizationId: string) {
   const session = yield* openSession(organizationId);
   const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
-  const observed = frame.machines.find(({ machine }) => machine.id === machineId);
-  if (observed === undefined) return null;
-  const status = serverStatus({ membership: observed.membership, runningBuilds: observed.machine.runtime.running_builds });
-  return status === "online" ? observed.machine.runtime.daemon_version : null;
+  return frame.machines.flatMap(({ machine, membership }) =>
+    serverStatus({ membership, runningBuilds: machine.runtime.running_builds }) === "online"
+      ? [{ id: machine.id, name: machine.name, version: machine.runtime.daemon_version }]
+      : []);
 }, Effect.scoped);
 
+/** The version an online, idle Server runs; null when it isn't observed online and idle (it can't take an Upgrade). */
+export const observeUpgradeableServer = Effect.fn("ServerUpgrade.observe")(function* (organizationId: string, machineId: string) {
+  const online = yield* observeOnlineServers(organizationId);
+  return online.find(({ id }) => id === machineId)?.version ?? null;
+});
+
 /**
- * The releases the Organization is halted on: those whose latest attempt didn't succeed. A newer release has no
+ * The Organization's Halted releases: those whose latest attempt didn't succeed. A newer release has no
  * attempts, and a manual Upgrade of the release that succeeds becomes its latest, so either lifts the halt.
  */
 const haltedReleases = Effect.fn("ServerUpgrade.halted")(function* (organizationId: string) {
@@ -153,21 +173,20 @@ export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function*
   trigger: UpgradeTrigger,
   channel: ReleaseChannel,
 ) {
-  const session = yield* openSession(organizationId);
-  const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
+  const online = yield* observeOnlineServers(organizationId);
   const halted = trigger === "automatic" ? yield* haltedReleases(organizationId) : new Set<string>();
   const behind: Array<{ readonly id: string; readonly name: string; readonly status: "online" }> = [];
-  for (const { machine, membership } of frame.machines) {
-    if (serverStatus({ membership, runningBuilds: machine.runtime.running_builds }) !== "online") continue;
-    const version = machine.runtime.daemon_version;
-    const line = releaseLine(version);
+  for (const server of online) {
+    const line = releaseLine(server.version);
     const release = line === null ? null : yield* channelRelease(channel, line);
-    const order = release === null ? null : compareVersions(version, release);
-    if (order !== null && order < 0 && !halted.has(release ?? "")) behind.push({ id: machine.id, name: machine.name, status: "online" });
+    if (release !== null && isBehind(server.version, release) && !halted.has(release)) behind.push({ ...server, status: "online" });
   }
   return sortServers(behind).map(({ id }) => id);
-}, Effect.scoped, Effect.catchIf((error) => error instanceof ServerUpgradeUnreachable, (error) =>
-  Effect.logInfo("The Cluster can't be reached; no Server is upgraded.", error).pipe(Effect.as<string[]>([]))));
+}, Effect.catchIf(
+  (error) => error instanceof ServerUpgradeUnreachable || error instanceof ReleasePointerUnreadable,
+  (error) => Effect.logInfo("The Cluster or a Release Channel pointer can't be read; no Server is upgraded.", error)
+    .pipe(Effect.as<string[]>([])),
+));
 
 /**
  * Write the attempt's row before its request. Its target starts as the release `channel` names for the Server's line,
@@ -176,13 +195,14 @@ export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function*
  */
 export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* (input: {
   readonly request: ServerUpgradeRequestedEventData & { readonly machineId: string };
-  readonly attemptId: string;
+  readonly attemptId: MachineUpgradeAttemptId;
   readonly channel: ReleaseChannel;
   readonly fromVersion: string;
   readonly inngestRunId: string;
 }) {
   const line = releaseLine(input.fromVersion);
-  const expected = line === null ? null : yield* channelRelease(input.channel, line);
+  // An unreadable pointer leaves the target to the Server's answer.
+  const expected = line === null ? null : yield* channelRelease(input.channel, line).pipe(Effect.orElseSucceed(() => null));
   const { drizzle } = yield* Database;
   // A retried step finds the row it already wrote.
   yield* drizzle.insert(serverUpgradeAttempt).values({
@@ -216,7 +236,7 @@ const noteAttempt = Effect.fn("ServerUpgrade.note")(function* (organizationId: s
 export const requestUpgradeOnServer = Effect.fn("ServerUpgrade.requestOnServer")(function* (input: {
   readonly organizationId: string;
   readonly machineId: string;
-  readonly attemptId: string;
+  readonly attemptId: MachineUpgradeAttemptId;
   readonly channel: ReleaseChannel;
 }) {
   const session = yield* openSession(input.organizationId);
@@ -234,12 +254,14 @@ export const requestUpgradeOnServer = Effect.fn("ServerUpgrade.requestOnServer")
   return attempt.attempt;
 }, Effect.scoped);
 
-/** The attempt as the Server reports it now; null while it can't be read (its daemon restarts mid-Upgrade). */
-export const inspectUpgradeOnServer = Effect.fn("ServerUpgrade.inspectOnServer")(function* (input: {
+type AttemptOnServer = {
   readonly organizationId: string;
   readonly machineId: string;
-  readonly attemptId: string;
-}) {
+  readonly attemptId: MachineUpgradeAttemptId;
+};
+
+/** The attempt as the Server reports it now; null while it can't be read (its daemon restarts mid-Upgrade). */
+const inspectUpgradeOnServer = Effect.fn("ServerUpgrade.inspectOnServer")(function* (input: AttemptOnServer) {
   const session = yield* openSession(input.organizationId);
   const attempt = yield* session.inspectMachineUpgrade(input.machineId, input.attemptId);
   yield* noteAttempt(input.organizationId, attempt);
@@ -247,20 +269,25 @@ export const inspectUpgradeOnServer = Effect.fn("ServerUpgrade.inspectOnServer")
 }, Effect.scoped, Effect.catch((error) =>
   Effect.logInfo("The Upgrade attempt could not be read; polling again.", error).pipe(Effect.as(null))));
 
-export type FinalOutcome = Exclude<UpgradeOutcome, "running">;
+/**
+ * One poll of a running attempt: `expired` once its row's `startedAt` is past the observation limit, as the hourly
+ * sweep and the UI measure it, so a late outcome is not recorded over the unknown they already show; otherwise the
+ * attempt as the Server reports it now, null while it can't be read.
+ */
+export const pollUpgradeOnServer = Effect.fn("ServerUpgrade.poll")(function* (input: AttemptOnServer) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ startedAt: serverUpgradeAttempt.startedAt }).from(serverUpgradeAttempt)
+    .where(attemptWhere(input.organizationId, input.attemptId));
+  if (row === undefined || outlivedObservation(row.startedAt, Date.now())) return "expired" as const;
+  return yield* inspectUpgradeOnServer(input);
+});
 
 /** The outcome to record for a terminal attempt; null while it still runs. */
 export function finalOutcome(attempt: MachineUpgradeAttempt): { outcome: FinalOutcome; stage: string | null; error: string | null } | null {
-  switch (attempt.outcome) {
-    case "succeeded":
-      return { outcome: "succeeded", stage: null, error: null };
-    case "failed":
-      return { outcome: "failed", stage: attempt.stage, error: attempt.error };
-    case "interrupted":
-      return { outcome: "interrupted", stage: attempt.stage, error: null };
-    default:
-      return null;
-  }
+  if (attempt.outcome !== "succeeded" && attempt.outcome !== "failed" && attempt.outcome !== "interrupted") return null;
+  const stage = "stage" in attempt ? attempt.stage : null;
+  const error = "error" in attempt ? attempt.error : null;
+  return { outcome: attempt.outcome, stage: null, error: null, ...endEvidence(attempt.outcome, stage, error) };
 }
 
 /**
@@ -290,10 +317,7 @@ export const finishUpgradeAttempt = Effect.fn("ServerUpgrade.finish")(function* 
     to_version: row.targetVersion,
     total_seconds: Math.round((endedAt.getTime() - row.startedAt.getTime()) / 1000),
   };
-  // A non-success says where it stopped; a failure also says why.
-  const properties = input.outcome === "succeeded" ? base
-    : input.outcome === "failed" ? { ...base, stage: row.stage, error: row.error }
-    : { ...base, stage: row.stage };
+  const properties = { ...base, ...endEvidence(input.outcome, row.stage, row.error) };
   const posthog = yield* PostHog;
   // Automatic attempts belong to the Organization's system person; so does a manual one whose user was deleted.
   const userId = row.requestedByUserId ?? `system:${row.organizationId}`;
@@ -310,35 +334,33 @@ export const finishUpgradeAttempt = Effect.fn("ServerUpgrade.finish")(function* 
   return true;
 });
 
-/** A rollout run that failed or was cancelled lost track of its attempts: each still `running` reads `unknown`. */
-export const closeRunUpgradeAttempts = Effect.fn("ServerUpgrade.closeRun")(function* (inngestRunId: string) {
+/** Close every attempt matching `where` that is still `running` as `unknown`; how many this call closed. */
+const closeRunningAttempts = Effect.fn("ServerUpgrade.closeRunning")(function* (where: SQL | undefined) {
   const { drizzle } = yield* Database;
   const running = yield* drizzle.select({ organizationId: serverUpgradeAttempt.organizationId, attemptId: serverUpgradeAttempt.attemptId })
     .from(serverUpgradeAttempt)
-    .where(and(eq(serverUpgradeAttempt.inngestRunId, inngestRunId), eq(serverUpgradeAttempt.outcome, "running")));
-  yield* Effect.forEach(running, (row) => finishUpgradeAttempt({ ...row, outcome: "unknown", stage: null, error: null }));
-  return running.length;
-});
-
-/** The hourly sweep: an attempt still `running` after the observation limit lost its rollout run, so it reads `unknown`. */
-export const closeStaleUpgradeAttempts = Effect.fn("ServerUpgrade.closeStale")(function* () {
-  const { drizzle } = yield* Database;
-  const stale = yield* drizzle.select({ organizationId: serverUpgradeAttempt.organizationId, attemptId: serverUpgradeAttempt.attemptId })
-    .from(serverUpgradeAttempt)
-    .where(and(
-      eq(serverUpgradeAttempt.outcome, "running"),
-      lt(serverUpgradeAttempt.startedAt, new Date(Date.now() - UPGRADE_OBSERVATION_LIMIT_MS)),
-    ));
-  const closed = yield* Effect.forEach(stale, (row) => finishUpgradeAttempt({ ...row, outcome: "unknown", stage: null, error: null }));
+    .where(and(eq(serverUpgradeAttempt.outcome, "running"), where));
+  const closed = yield* Effect.forEach(running, (row) => finishUpgradeAttempt({ ...row, outcome: "unknown", stage: null, error: null }));
   return closed.filter(Boolean).length;
 });
 
-/** Every Organization with a founded Cluster and automatic upgrades on (no settings row reads as on). */
+/** A Rollout run that failed or was cancelled lost track of its attempts: each still `running` reads `unknown`. */
+export const closeRunUpgradeAttempts = (inngestRunId: string) =>
+  closeRunningAttempts(eq(serverUpgradeAttempt.inngestRunId, inngestRunId));
+
+/** The hourly sweep: an attempt still `running` after the observation limit lost its Rollout run, so it reads `unknown`. */
+export const closeStaleUpgradeAttempts = () =>
+  closeRunningAttempts(lt(serverUpgradeAttempt.startedAt, new Date(Date.now() - UPGRADE_OBSERVATION_LIMIT_MS)));
+
+/** Every Organization with a founded Cluster and automatic upgrades on (no settings row reads as the default). */
 export const listAutomaticUpgradeOrganizationIds = Effect.fn("ServerUpgrade.listAutomatic")(function* () {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select({ id: organizationPairing.organizationId }).from(organizationPairing)
     .leftJoin(organizationServerUpgrades, eq(organizationServerUpgrades.organizationId, organizationPairing.organizationId))
-    .where(and(isNotNull(organizationPairing.founderMachineId), sql`${organizationServerUpgrades.automatic} is not false`));
+    .where(and(
+      isNotNull(organizationPairing.founderMachineId),
+      sql`coalesce(${organizationServerUpgrades.automatic}, ${DEFAULT_SERVER_UPGRADE_SETTINGS.automatic})`,
+    ));
   return rows.map(({ id }) => id);
 });
 
@@ -357,8 +379,9 @@ export const setServerUpgradeSettings = Effect.fn("ServerUpgrade.setSettings")(f
       channel: organizationServerUpgrades.channel,
     });
   // ponytail: an upsert always returns its row; the fallback only satisfies the type.
-  return row ?? { id: organizationId, automatic: settings.automatic ?? true, channel: settings.channel ?? "stable" };
+  return row ?? { id: organizationId, ...DEFAULT_SERVER_UPGRADE_SETTINGS, ...settings };
 });
 
 /** Cloud mints attempt IDs in the daemon's 32-hex form. */
-export const mintAttemptId = () => randomUUID().replaceAll("-", "");
+// SAFETY: a UUID without its dashes is 32 lowercase hex digits, the daemon's attempt ID form.
+export const mintAttemptId = () => randomUUID().replaceAll("-", "") as MachineUpgradeAttemptId;

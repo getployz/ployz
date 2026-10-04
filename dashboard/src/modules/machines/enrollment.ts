@@ -39,11 +39,14 @@ const MachineIdType = Schema.declare<MachineId>(
   (value): value is MachineId => typeof value === "string",
 );
 
-export const rustMachineIdSchema = Schema.String.check(
+/** A Machine ID as Cloud's inputs and events carry it: the daemon's 32-hex form, as a plain string. */
+export const machineIdStringSchema = Schema.String.check(
   Schema.isPattern(MACHINE_ID_PATTERN, {
     message: "MachineId must be a 32-hex UUID",
   }),
-).pipe(Schema.decodeTo(MachineIdType));
+);
+
+export const rustMachineIdSchema = machineIdStringSchema.pipe(Schema.decodeTo(MachineIdType));
 
 const WIREGUARD_PUBLIC_KEY_BYTES = 32;
 

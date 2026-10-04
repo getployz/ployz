@@ -72,12 +72,12 @@ export interface PloyzSession {
   /** Ask one Server to Upgrade; repeating it with the same attempt ID returns that attempt. */
   readonly requestMachineUpgrade: (
     machine: MachineTarget,
-    attemptId: string,
+    attemptId: MachineUpgradeAttemptId,
     release: string,
   ) => Effect.Effect<MachineUpgradeAttempt, PloyzSdkError>;
   readonly inspectMachineUpgrade: (
     machine: MachineTarget,
-    attemptId: string,
+    attemptId: MachineUpgradeAttemptId,
   ) => Effect.Effect<MachineUpgradeAttempt, PloyzSdkError>;
   /** What removing Namespace `namespace`, its Volumes included, deletes. */
   readonly dataLossIfNamespaceDestroyed: (namespace: string) => Effect.Effect<ObservedDataLoss, PloyzSdkError>;
@@ -195,11 +195,9 @@ function wrapClient(client: Client): PloyzSession {
         client.updateMachine(machine, update).then(() => undefined),
       ),
     requestMachineUpgrade: (machine, attemptId, release) =>
-      // SAFETY: Cloud mints attempt IDs in the daemon's 32-hex form.
-      sdkPromise("request machine upgrade", () => client.requestMachineUpgrade(machine, { attempt_id: attemptId as MachineUpgradeAttemptId, release })),
+      sdkPromise("request machine upgrade", () => client.requestMachineUpgrade(machine, { attempt_id: attemptId, release })),
     inspectMachineUpgrade: (machine, attemptId) =>
-      // SAFETY: Cloud mints attempt IDs in the daemon's 32-hex form.
-      sdkPromise("inspect machine upgrade", () => client.inspectMachineUpgrade(machine, { attempt_id: attemptId as MachineUpgradeAttemptId })),
+      sdkPromise("inspect machine upgrade", () => client.inspectMachineUpgrade(machine, { attempt_id: attemptId })),
     publishCertificateMaterial: (request) =>
       sdkPromise("publish certificate material", () => client.publishCertificateMaterial(request).then(() => undefined)),
     watch,
