@@ -823,7 +823,7 @@ pub(super) async fn move_container(
     )
     .await?;
     let new = created.container_id;
-    if let Err(error) = serve(
+    if let Err(failure) = serve(
         &client,
         0,
         &mut progress,
@@ -837,7 +837,7 @@ pub(super) async fn move_container(
     {
         let _ = client.stop_container(to, &new, None).await;
         let _ = client.remove_container(to, &new).await;
-        return Err(error);
+        return Err(failure.into());
     }
     let removal = DeployOperation::RemoveContainer {
         machine_id: *from,
@@ -943,8 +943,25 @@ async fn run_container<C: MachineOperations>(
         skip_health_monitor,
         cancellation,
     )
-    .await?;
+    .await
+    .map_err(ExecutionError::from)?;
     Ok(created.container_id)
+}
+
+/// Why a started Service Container did not serve.
+enum ServeFailure {
+    /// It failed its health check or never served within the observation barrier.
+    Unproven(ExecutionError),
+    /// The Deploy was cancelled or the Machine could not be asked.
+    Interrupted(ExecutionError),
+}
+
+impl From<ServeFailure> for ExecutionError {
+    fn from(failure: ServeFailure) -> Self {
+        match failure {
+            ServeFailure::Unproven(error) | ServeFailure::Interrupted(error) => error,
+        }
+    }
 }
 
 // A new Service Container succeeds once it serves, not merely once it is healthy.
@@ -961,7 +978,7 @@ async fn serve<C: MachineOperations>(
     spec: &ResolvedServiceSpec,
     skip_health_monitor: bool,
     cancellation: &CancellationToken,
-) -> Result<(), ExecutionError> {
+) -> Result<(), ServeFailure> {
     if !skip_health_monitor {
         monitor_container(
             client,
@@ -972,9 +989,24 @@ async fn serve<C: MachineOperations>(
             spec,
             cancellation,
         )
-        .await?;
+        .await
+        .map_err(|error| match error {
+            ExecutionError::Health { .. } => ServeFailure::Unproven(error),
+            ExecutionError::Machine { .. }
+            | ExecutionError::DependencyHealth { .. }
+            | ExecutionError::Hook { .. }
+            | ExecutionError::Cancelled => ServeFailure::Interrupted(error),
+        })?;
     }
-    wait_serving(client, *container_id, cancellation).await
+    wait_serving(client, *container_id, cancellation)
+        .await
+        .map_err(|error| {
+            if cancellation.is_cancelled() {
+                ServeFailure::Interrupted(error)
+            } else {
+                ServeFailure::Unproven(error)
+            }
+        })
 }
 
 async fn wait_serving<C: MachineOperations>(
@@ -1033,7 +1065,6 @@ async fn replace_container<C: MachineOperations>(
         false
     };
 
-    // A started new container travels with the failure so compensation can stop it.
     let started = match create_and_start(
         client,
         index,
@@ -1058,17 +1089,20 @@ async fn replace_container<C: MachineOperations>(
             cancellation,
         )
         .await
-        .map_err(|error| (Some(created.container_id), error)),
-        Err(error) => Err((None, error)),
+        .map_err(|failure| match failure {
+            ServeFailure::Unproven(error) => (Candidate::Unproven(created.container_id), error),
+            ServeFailure::Interrupted(error) => (Candidate::Started(created.container_id), error),
+        }),
+        Err(error) => Err((Candidate::None, error)),
     };
-    if let Err((new_container, error)) = started {
+    if let Err((candidate, error)) = started {
         return Err(compensate(
             client,
             index,
             progress,
             operation,
             old_stopped,
-            new_container,
+            candidate,
             error,
         )
         .await);
@@ -1100,51 +1134,74 @@ async fn replace_container<C: MachineOperations>(
         .map_err(|error| machine_error(MachineAction::InspectContainer, error).into())
 }
 
-// A failure after the old container stopped restores it; otherwise only a health
-// failure is compensated, by stopping the new container.
+/// How far a replacement's new Container got before the replacement failed.
+#[derive(Clone, Copy)]
+enum Candidate {
+    /// Create or start failed; no new Container runs.
+    None,
+    /// Started, then the Deploy was cancelled or the Machine could not be asked.
+    Started(ContainerId),
+    /// Started, then failed its health check or never served.
+    Unproven(ContainerId),
+}
+
+// A failure after the old container stopped restores it. With the old one
+// untouched, only an unproven candidate is compensated: it is stopped, not
+// removed, so its logs stay readable.
 async fn compensate<C: MachineOperations>(
     client: &C,
     index: usize,
     progress: &mut Progress,
     operation: &ReplacementOperation,
     old_stopped: bool,
-    new_container: Option<ContainerId>,
+    candidate: Candidate,
     error: ExecutionError,
 ) -> OperationFailure {
-    if !old_stopped && !matches!(&error, ExecutionError::Health { .. }) {
-        return error.into();
-    }
-    progress.set_running(index, OperationPhase::Compensating);
-    let stop_new_container = match new_container {
-        Some(container_id) => Some(StopAttempt::from(
-            ignore_not_found(
-                client
-                    .stop_container(
-                        &operation.machine_id,
-                        &container_id,
-                        Some(stop_grace_period(&operation.spec).unwrap_or(0)),
-                    )
-                    .await,
-            )
-            .map_err(|error| machine_error(MachineAction::StopContainer, error)),
-        )),
-        None => None,
-    };
-    let compensation = match (old_stopped, stop_new_container) {
-        (true, stop_new_container) => ReplacementCompensation::OldStopped {
-            stop_new_container,
-            restart_old_container: restore_old_container(client, operation).await,
-        },
-        (false, Some(stop_new_container)) => {
-            ReplacementCompensation::OldUntouched { stop_new_container }
+    let compensation = match (old_stopped, candidate) {
+        (false, Candidate::None | Candidate::Started(_)) => return error.into(),
+        (false, Candidate::Unproven(container_id)) => {
+            progress.set_running(index, OperationPhase::Compensating);
+            ReplacementCompensation::OldUntouched {
+                stop_new_container: stop_candidate(client, operation, &container_id).await,
+            }
         }
-        // A health failure always follows a started container.
-        (false, None) => return error.into(),
+        (true, candidate) => {
+            progress.set_running(index, OperationPhase::Compensating);
+            let stop_new_container = match candidate {
+                Candidate::None => None,
+                Candidate::Started(container_id) | Candidate::Unproven(container_id) => {
+                    Some(stop_candidate(client, operation, &container_id).await)
+                }
+            };
+            ReplacementCompensation::OldStopped {
+                stop_new_container,
+                restart_old_container: restore_old_container(client, operation).await,
+            }
+        }
     };
     OperationFailure::Replacement {
         error,
         compensation: Box::new(compensation),
     }
+}
+
+async fn stop_candidate<C: MachineOperations>(
+    client: &C,
+    operation: &ReplacementOperation,
+    container_id: &ContainerId,
+) -> StopAttempt<ExecutionError> {
+    StopAttempt::from(
+        ignore_not_found(
+            client
+                .stop_container(
+                    &operation.machine_id,
+                    container_id,
+                    Some(stop_grace_period(&operation.spec).unwrap_or(0)),
+                )
+                .await,
+        )
+        .map_err(|error| machine_error(MachineAction::StopContainer, error)),
+    )
 }
 
 // Cancelling the Deploy does not abandon the container it stopped. The wait stays

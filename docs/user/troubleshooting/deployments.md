@@ -32,6 +32,15 @@ version serving. A running service that fails its health check shows
 - **Give it time to boot.** If you lowered **Healthcheck timeout** under **Settings → Deploy**,
   raise it. Otherwise make your app start faster.
 
+## My new version is healthy but never serves
+
+`inspect Container failed: timed out waiting for replicated Container Observations: …`
+
+The new replica passed its health check, but the cluster never saw it ready to take traffic in
+time. Ployz handles this like a failed health check: it stopped the new replica, kept it so you
+can read its **Logs**, and kept the old version serving. Check that every Server is online, then
+deploy again.
+
 ## My app exits as soon as it starts
 
 `container … failed health monitoring: exited with code 1`, or ending in `restarting`

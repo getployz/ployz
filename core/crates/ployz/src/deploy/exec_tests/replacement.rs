@@ -411,7 +411,7 @@ async fn stop_first_serving_failure_stops_the_new_container_and_reports_an_old_o
 }
 
 #[tokio::test]
-async fn start_first_serving_failure_leaves_the_old_container_alone() {
+async fn start_first_serving_failure_is_compensated_like_a_health_failure() {
     let machine = machine('1');
     let old = container('a');
     let new = container('b');
@@ -424,16 +424,29 @@ async fn start_first_serving_failure_leaves_the_old_container_alone() {
             Call::Wait(vec![new], ContainerObservationCondition::Serving),
             "never served",
         ),
+        ok(Call::StopWithGrace(machine, new, 0)),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-    assert!(matches!(
-        outcome,
-        DeployOutcome::Failed {
-            failed: FailedOperation::Operation { .. },
-            ..
-        }
-    ));
+    assert!(
+        matches!(
+            &outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Replacement {
+                    error: ExecutionError::Machine {
+                        action: MachineAction::InspectContainer,
+                        error,
+                    },
+                    compensation: ReplacementCompensation::OldUntouched {
+                        stop_new_container: StopAttempt::Stopped,
+                    },
+                    ..
+                },
+                ..
+            } if error.message == "never served"
+        ),
+        "the never-serving candidate is stopped, kept for its logs, and the old one is untouched: {outcome:?}"
+    );
     client.assert_done();
 }
