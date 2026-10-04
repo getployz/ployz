@@ -1,12 +1,14 @@
 import type { DrainReport, MachineRef, MoveFailure, ServiceDrain, StayReason } from "@ployz/sdk";
 import { Schema } from "effect";
 import { machineIdStringSchema } from "#/modules/machines/enrollment";
+import { SYSTEM_NAMESPACE } from "#/modules/machines/server-services";
 
 /**
  * One Drain Cloud runs on one Server, as its row moves: the click writes `pending`, the run claims it `running` right
  * before the Engine is asked, and the Engine's report ends it `finished`. The rest end it without a report: `failed`
- * (the Engine refused, or the run never got to ask), `cancelled` (the run was cancelled), `unknown` (the run lost
- * track of a Drain it had started: it may have moved anything).
+ * (the Engine refused, or the run never got to ask), `cancelled` (the run was cancelled before it asked), `unknown`
+ * (the run lost track of, or was cancelled during, a Drain it had started: it may have moved anything; a late report
+ * still replaces it).
  */
 export const DRAIN_STATES = ["pending", "running", "finished", "failed", "cancelled", "unknown"] as const;
 export type DrainState = (typeof DRAIN_STATES)[number];
@@ -22,7 +24,7 @@ export const DRAIN_FAILURE_CODES = [
   "workflow_failed",
   /** No run picked the request up in time. */
   "never_started",
-  /** The run was cancelled. */
+  /** The run was cancelled: before it asked the Engine (`cancelled`), or while it waited on it (`unknown`). */
   "cancelled",
   /** The run lost track of a Drain it had started. */
   "lost",
@@ -91,12 +93,13 @@ export type DrainView =
   | {
     readonly kind: "finished";
     readonly at: string;
-    /** "3 moved, 1 stopped, 2 stayed" | "Everything moved off web-2" | "Nothing was running here". */
+    /** "3 moved, 1 stopped, 2 stayed" | "Everything moved off web-2" | "Nothing was running here", and whether it
+     * couldn't check what's left. */
     readonly summary: string;
     /** Why it ended early, in user words; null when it handled every Service. */
     readonly stoppedEarly: string | null;
     readonly rows: readonly DrainRow[];
-    /** Something stayed, failed or wasn't reached: the button reads Drain again. */
+    /** Something stayed, failed or wasn't reached, or what's left went unchecked: the button reads Drain again. */
     readonly again: boolean;
   }
   | { readonly kind: "failed"; readonly at: string; readonly words: string; readonly details: string | null }
@@ -143,7 +146,7 @@ export function drainView(input: {
         summary: drainSummary(own.report, server.name),
         stoppedEarly: stopWords(stopped),
         rows: services.map((entry) => drainRow(entry, server.id)),
-        again: stopped !== null || services.some((entry) => !complete(entry)),
+        again: stopped !== null || own.report.remaining.kind === "unobserved" || services.some((entry) => !complete(entry)),
       };
     }
     case "failed":
@@ -159,22 +162,33 @@ export function drainView(input: {
 const complete = (entry: ServiceDrain) =>
   entry.result === "moved" || entry.result === "nothing_to_move" || entry.result === "retired";
 
-/** The counts line, in the order the page reads: moved, stopped, stayed, failed, not attempted. */
+/**
+ * The counts line, in the order the page reads: moved, stopped, stayed, failed, not attempted, then what the Drain left
+ * alone (no Project owns it, so it never chose it) and whether it couldn't check what's left.
+ */
 export function drainSummary(report: DrainReport, serverName: string): string {
-  const { services } = report;
-  if (services.length === 0) return "Nothing was running here";
+  const { services, remaining } = report;
   const count = (...results: ReadonlyArray<ServiceDrain["result"]>) =>
     services.filter((entry) => results.includes(entry.result)).length;
-  const moved = count("moved");
-  const stopped = count("retired");
-  if (services.every(complete)) return moved + stopped > 0 ? `Everything moved off ${serverName}` : "Nothing needed to move";
-  return [
-    moved > 0 ? `${moved} moved` : null,
-    stopped > 0 ? `${stopped} stopped` : null,
+  const handled = new Set(services.map((entry) => entry.service));
+  const leftAlone = remaining.kind === "observed"
+    ? remaining.services.filter((service) => !service.startsWith(`${SYSTEM_NAMESPACE}/`) && !handled.has(service)).length
+    : 0;
+  const unchecked = remaining.kind === "unobserved";
+  if (!unchecked && leftAlone === 0 && services.every(complete)) {
+    if (services.length === 0) return "Nothing was running here";
+    return count("moved", "retired") > 0 ? `Everything moved off ${serverName}` : "Nothing needed to move";
+  }
+  const parts = [
+    count("moved") > 0 ? `${count("moved")} moved` : null,
+    count("retired") > 0 ? `${count("retired")} stopped` : null,
     count("stays") > 0 ? `${count("stays")} stayed` : null,
     count("failed", "not_retired") > 0 ? `${count("failed", "not_retired")} failed` : null,
     count("not_attempted") > 0 ? `${count("not_attempted")} not attempted` : null,
+    leftAlone > 0 ? `${leftAlone} left alone` : null,
   ].filter((part) => part !== null).join(", ");
+  if (!unchecked) return parts;
+  return parts === "" ? `Couldn't check what's left on ${serverName}` : `${parts}; couldn't check what's left`;
 }
 
 /** Where a Service's containers went, by Server name; one name per Server however many containers moved there. */
@@ -244,7 +258,7 @@ export function stayWords(reason: StayReason, drained: string): string {
 
 /** Why a move failed, in the user's words, and where the Service still runs. */
 export function failureWords(failure: MoveFailure, drained: string): string {
-  const stillOn = (from: MachineRef | null) => from === null || from.id === drained ? "It still runs here." : `It still runs on ${from.name}.`;
+  const stillOn = (from: MachineRef) => from.id === drained ? "It still runs here." : `It still runs on ${from.name}.`;
   switch (failure.stage) {
     case "no_destination":
       return `No other server could run it. ${stillOn(failure.from)}`;
@@ -255,11 +269,17 @@ export function failureWords(failure: MoveFailure, drained: string): string {
     case "copy_image":
       return `Couldn't copy its image to ${failure.to.name}. ${stillOn(failure.from)}`;
     case "not_serving":
-      return `Its new container on ${failure.to.name} didn't become healthy. ${stillOn(failure.from)}`;
-    case "old_not_removed":
-      return `It now runs on ${failure.to.name} too, but its container ${failure.from.id === drained ? "here" : `on ${failure.from.name}`} couldn't be removed.`;
+      return `Its new container on ${failure.to.name} didn't become healthy${maybeLeft(failure)}. ${stillOn(failure.from)}`;
+    case "old_not_removed": {
+      const here = failure.from.id === drained ? "here" : `on ${failure.from.name}`;
+      return failure.old_stopped
+        ? `It now runs on ${failure.to.name}. Its container ${here} stopped but couldn't be removed.`
+        : `It now runs on ${failure.to.name} too, but its container ${here} couldn't be stopped.`;
+    }
     case "cancelled":
-      return `The drain stopped mid-move. ${stillOn(failure.from)}`;
+      return `The drain stopped mid-move. ${stillOn(failure.from)}${failure.replacement_removed ? "" : ` Its new container on ${failure.to.name} may still be there.`}`;
+    case "cancelled_before_move":
+      return "The drain stopped before moving it.";
     case "unobservable":
       return "Lost contact with your servers. It still runs here.";
     case "refused": {
@@ -270,6 +290,10 @@ export function failureWords(failure: MoveFailure, drained: string): string {
       return "It still runs here.";
   }
 }
+
+/** Said when the Engine couldn't confirm the new container it gave up on was removed. */
+const maybeLeft = (failure: { readonly replacement_removed: boolean }) =>
+  failure.replacement_removed ? "" : ", and may still be there";
 
 /** Why the Drain ended before handling every Service. Cloud cancels a Drain only by closing its session. */
 export function stopWords(stopped: DrainReport["stopped"]): string | null {
@@ -300,30 +324,49 @@ export function failureCodeWords(code: DrainFailureCode): string {
   }
 }
 
-/** The confirm dialog's list: what runs here, by name, minus Namespaces no Project owns (a Drain leaves those). */
-export function drainDialogNames(
-  services: ReadonlyArray<{ readonly name: string; readonly namespace: string | null }>,
-  strays: ReadonlySet<string>,
-): string[] {
-  return [...new Set(services
-    .filter((service) => service.namespace === null || !strays.has(service.namespace))
-    .map((service) => service.name))];
+/** A Service running here as the page lists it. */
+type RunningService = { readonly identity: string; readonly name: string; readonly namespace: string | null };
+
+/**
+ * What runs here split by whether a Drain acts on it: a Drain leaves Namespaces no Project owns (`strays`) alone. The
+ * dialog and the Remove hint both read it, so they agree on what a Drain would move.
+ */
+export function drainScope<S extends RunningService>(services: readonly S[], strays: ReadonlySet<string>) {
+  const unowned = (service: S) => service.namespace !== null && strays.has(service.namespace);
+  return {
+    drainable: services.filter((service) => !unowned(service)),
+    unowned: services.filter(unowned),
+  };
+}
+
+const names = (services: ReadonlyArray<{ readonly name: string }>) => [...new Set(services.map((service) => service.name))];
+
+/** The confirm dialog's lists: what a Drain would move, and what it leaves because no Project owns it. */
+export function drainDialogNames(services: readonly RunningService[], strays: ReadonlySet<string>) {
+  const scope = drainScope(services, strays);
+  return { drainable: names(scope.drainable), unowned: names(scope.unowned) };
 }
 
 /** What the Remove server row says about what still runs here. */
 export type RemoveHint =
-  | { readonly kind: "none" }
+  | { readonly kind: "none"; readonly unowned: readonly string[] }
   /** Drain first: it would move them. */
-  | { readonly kind: "drain"; readonly count: number }
+  | { readonly kind: "drain"; readonly count: number; readonly unowned: readonly string[] }
   /** The latest Drain left these here because their data is on this Server: draining again won't move them. */
-  | { readonly kind: "pinned"; readonly names: readonly string[] };
+  | { readonly kind: "pinned"; readonly names: readonly string[]; readonly unowned: readonly string[] };
 
-/** The hint under Remove server, from what runs here (the Runtime watch) and the latest Drain. Quiet while one runs. */
-export function removeHint(view: DrainView, running: ReadonlyArray<{ readonly identity: string; readonly name: string }>): RemoveHint {
-  if (running.length === 0 || drainBusy(view)) return { kind: "none" };
+/**
+ * The hint under Remove server, from what runs here (the Runtime watch) and the latest Drain. It counts only what a
+ * Drain would act on, and names apart what it leaves because no Project owns it. Quiet while one runs.
+ */
+export function removeHint(view: DrainView, running: readonly RunningService[], strays: ReadonlySet<string>): RemoveHint {
+  if (drainBusy(view)) return { kind: "none", unowned: [] };
+  const scope = drainScope(running, strays);
+  const unowned = names(scope.unowned);
+  if (scope.drainable.length === 0) return { kind: "none", unowned };
   const pinned = new Set(view.kind === "finished" ? view.rows.filter((row) => row.pinned).map((row) => row.key) : []);
-  if (running.every((service) => pinned.has(service.identity))) {
-    return { kind: "pinned", names: [...new Set(running.map((service) => service.name))] };
+  if (scope.drainable.every((service) => pinned.has(service.identity))) {
+    return { kind: "pinned", names: names(scope.drainable), unowned };
   }
-  return { kind: "drain", count: running.length };
+  return { kind: "drain", count: scope.drainable.length, unowned };
 }

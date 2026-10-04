@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { toErrorMessage } from "#/lib/error-message";
 import { drainView, type DrainView } from "./server-drain";
 import { requestServerDrainServerFn } from "./server-drain.functions";
 import { serverDrainKeys, useServerDrains } from "./server-drain.queries";
@@ -18,7 +19,7 @@ export type ServerDrain = {
 /**
  * Drain on a Server page: the row reads as starting at once, asks Cloud in the background under a request id this tab
  * minted, and settles when that Drain's row arrives. Cloud answers with the Drain it admitted, which is another tab's
- * when one was already active on this Server; the row then waits on that one. Cloud refusing toasts.
+ * when one was already active on this Server; the row then waits on that one. Cloud refusing toasts its words.
  */
 export function useServerDrain(
   organizationSlug: string,
@@ -50,9 +51,9 @@ export function useServerDrain(
         // The change stream brings the row too; this covers a tab whose stream is reconnecting.
         void queryClient.invalidateQueries({ queryKey: serverDrainKeys.all });
       },
-      () => {
+      (error: Error) => {
         setRequested((current) => (current === requestId ? null : current));
-        toast.error(`Could not drain ${server.name}`);
+        toast.error(toErrorMessage(error, `Could not drain ${server.name}`));
       },
     );
   };

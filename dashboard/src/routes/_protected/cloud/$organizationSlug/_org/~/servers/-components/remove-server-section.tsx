@@ -142,9 +142,24 @@ export function RemoveServerSection({ machine, organizationSlug, last, hint }: {
 
 /**
  * While Containers remain here, Remove suggests draining first. When the latest Drain left only Services whose data
- * is on this Server, draining again won't move them, so it says why instead.
+ * is on this Server, draining again won't move them, so it says why instead. Services no Project owns get their own
+ * line: a Drain leaves them.
  */
 export function RemoveServerHint({ hint, drainButton }: { hint: RemoveHint; drainButton: ReactNode }) {
+  return (
+    <>
+      <DrainableHint hint={hint} drainButton={drainButton} />
+      {hint.unowned.length === 0 ? null : (
+        <RowWarning>
+          {listNames([...hint.unowned])} still {hint.unowned.length === 1 ? "runs" : "run"} here. No project owns{" "}
+          {hint.unowned.length === 1 ? "it" : "them"}, so Drain leaves {hint.unowned.length === 1 ? "it" : "them"}.
+        </RowWarning>
+      )}
+    </>
+  );
+}
+
+function DrainableHint({ hint, drainButton }: { hint: RemoveHint; drainButton: ReactNode }) {
   switch (hint.kind) {
     case "none":
       return null;

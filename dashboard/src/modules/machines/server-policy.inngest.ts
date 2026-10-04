@@ -1,6 +1,7 @@
 import { Effect, Option, Schema } from "effect";
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
 import { serverPolicyChangeRequestedEventType } from "#/modules/inngest/events";
+import { DRAIN_SLOT } from "#/modules/machines/server-drain.inngest";
 import { ServerPolicyChangeSchema } from "#/modules/machines/server-policy";
 import { applyServerPolicyChangeActivity } from "#/modules/machines/server-policy.server";
 import { runInngestEffect } from "#/server/run.server";
@@ -47,8 +48,8 @@ export const createApplyServerPolicyChange = (
       id: "apply-server-policy-change",
       retries: 3,
       triggers: [{ event: serverPolicyChangeRequestedEventType }],
-      // Changes to one Server apply in the order they were requested.
-      concurrency: [{ key: "event.data.machineId", limit: 1 }],
+      // A change waits out its Organization's Drain, and changes to one Server apply in the order they were requested.
+      concurrency: [DRAIN_SLOT, { key: "event.data.machineId", limit: 1 }],
     },
     async ({ event, step }) =>
       executeApplyServerPolicyChange({ event, step }, runEffect),

@@ -110,7 +110,7 @@ describe("Services section", () => {
 describe("Drain dialog", () => {
   it("lists what runs here, says what stays, and drains on confirm", () => {
     const onConfirm = vi.fn();
-    render(<DrainDialog serverName="web-2" names={["api", "postgres"]} open onOpenChange={() => {}} onConfirm={onConfirm} />);
+    render(<DrainDialog serverName="web-2" names={["api", "postgres"]} unowned={[]} open onOpenChange={() => {}} onConfirm={onConfirm} />);
     expect(screen.getByText("Drain web-2?")).toBeTruthy();
     expect(screen.getByText("Services turn off for web-2, and what runs here moves to your other servers one at a time.")).toBeTruthy();
     const list = screen.getByLabelText("Running on web-2");
@@ -123,29 +123,42 @@ describe("Drain dialog", () => {
   });
 
   it("says so when nothing runs here", () => {
-    render(<DrainDialog serverName="web-2" names={[]} open onOpenChange={() => {}} onConfirm={() => {}} />);
+    render(<DrainDialog serverName="web-2" names={[]} unowned={[]} open onOpenChange={() => {}} onConfirm={() => {}} />);
     expect(screen.getByText("Nothing runs here now.")).toBeTruthy();
+  });
+
+  it("names what stays because no Project owns it, and never says nothing runs here", () => {
+    render(<DrainDialog serverName="web-2" names={[]} unowned={["old"]} open onOpenChange={() => {}} onConfirm={() => {}} />);
+    expect(screen.getByText("Nothing here for Drain to move.")).toBeTruthy();
+    expect(screen.getByText("old stays: no project owns it.")).toBeTruthy();
+    expect(screen.queryByText("Nothing runs here now.")).toBeNull();
   });
 });
 
 describe("Remove hint", () => {
-  const hint = (latest: LatestDrain | null, running: { identity: string; name: string }[]) => {
+  const hint = (latest: LatestDrain | null, running: { identity: string; name: string; namespace: string }[]) => {
     const current = view(latest);
     const onDrain = vi.fn();
-    render(<RemoveServerHint hint={removeHint(current, running)} drainButton={<DrainButton view={current} onClick={onDrain} size="sm" />} />);
+    render(<RemoveServerHint hint={removeHint(current, running, new Set(["left-behind"]))} drainButton={<DrainButton view={current} onClick={onDrain} size="sm" />} />);
     return onDrain;
   };
 
   it("suggests draining first, with the Drain button", () => {
-    const onDrain = hint(null, [{ identity: "shop/api", name: "api" }, { identity: "shop/web", name: "web" }]);
+    const onDrain = hint(null, [{ identity: "shop/api", name: "api", namespace: "shop" }, { identity: "shop/web", name: "web", namespace: "shop" }]);
     expect(screen.getByRole("note").textContent).toContain("2 services still run here. Drain first to move them.");
     fireEvent.click(screen.getByRole("button", { name: "Drain" }));
     expect(onDrain).toHaveBeenCalledTimes(1);
   });
 
   it("says a Service whose volume is here won't move", () => {
-    hint(finished([moved, volume]), [{ identity: "shop/postgres", name: "postgres" }]);
+    hint(finished([moved, volume]), [{ identity: "shop/postgres", name: "postgres", namespace: "shop" }]);
     expect(screen.getByRole("note").textContent).toBe("postgres still runs here. Its volume is on this server.");
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("names what no Project owns on its own line, and offers no Drain for it", () => {
+    hint(null, [{ identity: "left-behind/old", name: "old", namespace: "left-behind" }]);
+    expect(screen.getByRole("note").textContent).toBe("old still runs here. No project owns it, so Drain leaves it.");
     expect(screen.queryByRole("button")).toBeNull();
   });
 

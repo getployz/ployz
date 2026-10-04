@@ -44,6 +44,8 @@ export const inngestFunctionCancelledEnvelopeSchema = Schema.Struct({
     function_id: inngestEventIdentitySchema,
     run_id: inngestEventIdentitySchema,
     correlation_id: Schema.optionalKey(Schema.String),
+    /** The cancelled run's triggering event; each handler decodes what it needs from it. */
+    event: Schema.optionalKey(Schema.Unknown),
   }),
 });
 
@@ -152,6 +154,7 @@ export type InngestFunctionCancelledEventData = {
   function_id: string;
   run_id: string;
   correlation_id?: string;
+  event?: unknown;
 };
 
 export type {

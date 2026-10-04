@@ -25,9 +25,9 @@ export class ServerPolicyProviderFailure extends Data.TaggedError(
 }
 
 /**
- * A Drain turns services off for its Server and moves what runs there; turning them back on while it runs would
- * leave the rest of the Drain with nothing to move. Both the request and its apply refuse, so a change admitted
- * before the Drain can't slip through after it.
+ * A Drain turns services off for its Server and moves what runs there; turning them back on would undo it. The request
+ * refuses so the user hears why at once. The apply shares its Organization's Drain slot, so no Drain runs while it
+ * does; it checks again right before the update, which refuses one requested while the change waited.
  */
 const refuseWhileDraining = Effect.fn("ServerPolicy.refuseWhileDraining")(function* (
   organizationId: string, machineId: string, change: ServerPolicyChange,
@@ -66,7 +66,6 @@ export const requestServerPolicyChange = Effect.fn(
 export const applyServerPolicyChangeActivity = Effect.fn(
   "ServerPolicy.apply",
 )(function* (request: ServerPolicyChangeRequestedEventData) {
-  yield* refuseWhileDraining(request.organizationId, request.machineId, request.change);
   const runtime = yield* OrganizationRuntime;
   const session = yield* runtime.open(request.organizationId);
   if (session.status !== "connected") {
@@ -75,6 +74,7 @@ export const applyServerPolicyChangeActivity = Effect.fn(
       cause: session,
     });
   }
+  yield* refuseWhileDraining(request.organizationId, request.machineId, request.change);
   // Cloud machine ids are the Machine IDs Rust accepts as a Machine Target.
   yield* session.connected
     .updateMachine(request.machineId, machineUpdateForPolicyChange(request.change))

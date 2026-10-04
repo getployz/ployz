@@ -1,6 +1,5 @@
-//! The CLI projection of a Drain report. `legacy` is the handler's output types before
-//! the report was typed, kept verbatim so every outcome that existed then prints the same
-//! bytes now.
+//! The CLI projection of a Drain report. The fixtures are the bytes the handler printed
+//! before the report was typed, so every outcome that existed then prints the same now.
 
 use ployz_core::{Machine, MachineId, MachineName, QualifiedService, WireGuardPublicKey};
 use serde_json::json;
@@ -10,50 +9,6 @@ use crate::drain::{
     DrainOutcome, DrainReport, DrainStop, MachineRef, Move, MoveFailure, Remaining, ServiceDrain,
     ServicesRole, StayReason,
 };
-
-mod legacy {
-    use ployz_core::{MachineName, QualifiedService};
-    use serde::Serialize;
-
-    #[derive(Serialize)]
-    pub(super) struct ServiceReport {
-        pub(super) service: QualifiedService,
-        #[serde(flatten)]
-        pub(super) outcome: Outcome,
-    }
-
-    #[derive(Serialize)]
-    #[serde(untagged)]
-    pub(super) enum Outcome {
-        Replicated(Convergence),
-        Global(Retirement),
-    }
-
-    #[derive(Serialize)]
-    #[serde(tag = "result", rename_all = "snake_case")]
-    pub(super) enum Retirement {
-        Retired,
-        Failed { error: String },
-    }
-
-    #[derive(Serialize)]
-    pub(super) struct Move {
-        pub(super) from: MachineName,
-        pub(super) to: MachineName,
-    }
-
-    #[derive(Serialize)]
-    #[serde(tag = "result", rename_all = "snake_case")]
-    pub(super) enum Convergence {
-        Stays {
-            reason: String,
-        },
-        Moved {
-            moved: Vec<Move>,
-            failed: Option<String>,
-        },
-    }
-}
 
 fn server(hex: char, name: &str) -> Machine {
     Machine {
@@ -85,27 +40,21 @@ fn step(to: &Machine) -> Move {
     }
 }
 
-fn legacy_step(to: &str) -> legacy::Move {
-    legacy::Move {
-        from: MachineName::parse("web-2").unwrap(),
-        to: MachineName::parse(to).unwrap(),
-    }
-}
-
-/// Each outcome that existed before, as the report types it and as the old handler did.
-fn every_legacy_outcome() -> (Vec<ServiceDrain>, Vec<legacy::ServiceReport>) {
+/// Each outcome that existed before the report was typed.
+fn every_legacy_outcome() -> Vec<ServiceDrain> {
     let web1 = server('a', "web-1");
     let web3 = server('c', "web-3");
     let failure = MoveFailure::NotServing {
         from: MachineRef::from(&server('b', "web-2")),
         to: MachineRef::from(&web1),
         detail: "deploy cancelled".into(),
+        replacement_removed: true,
     };
     let reason = StayReason::Volume {
         volume: serde_json::from_value(json!("data")).unwrap(),
         server: MachineRef::from(&server('b', "web-2")),
     };
-    let typed = vec![
+    [
         (service("metrics"), DrainOutcome::Retired),
         (
             service("probe"),
@@ -135,75 +84,119 @@ fn every_legacy_outcome() -> (Vec<ServiceDrain>, Vec<legacy::ServiceReport>) {
             },
         ),
         (service("db"), DrainOutcome::Stays { reason }),
-    ];
-    let failed = Some("moving it from web-2 to web-1: deploy cancelled".to_owned());
-    let old = vec![
-        legacy::Outcome::Global(legacy::Retirement::Retired),
-        legacy::Outcome::Global(legacy::Retirement::Failed {
-            error: "still running on web-2".into(),
-        }),
-        legacy::Outcome::Replicated(legacy::Convergence::Moved {
-            moved: vec![
-                legacy_step("web-1"),
-                legacy_step("web-3"),
-                legacy_step("web-1"),
-            ],
-            failed: None,
-        }),
-        legacy::Outcome::Replicated(legacy::Convergence::Moved {
-            moved: Vec::new(),
-            failed: None,
-        }),
-        legacy::Outcome::Replicated(legacy::Convergence::Moved {
-            moved: vec![legacy_step("web-1")],
-            failed: failed.clone(),
-        }),
-        legacy::Outcome::Replicated(legacy::Convergence::Moved {
-            moved: Vec::new(),
-            failed,
-        }),
-        legacy::Outcome::Replicated(legacy::Convergence::Stays {
-            reason: "Volume data is on web-2".into(),
-        }),
-    ];
-    let reports = typed
-        .iter()
-        .zip(old)
-        .map(|((service, _), outcome)| legacy::ServiceReport {
-            service: service.clone(),
-            outcome,
-        })
-        .collect();
-    let typed = typed
-        .into_iter()
-        .map(|(service, outcome)| ServiceDrain { service, outcome })
-        .collect();
-    (typed, reports)
+    ]
+    .into_iter()
+    .map(|(service, outcome)| ServiceDrain { service, outcome })
+    .collect()
 }
+
+/// `--json` as the handler printed it before the report was typed.
+const LEGACY_JSON: &str = r#"{
+  "note": "Turning the services role back on does not move anything back.",
+  "remaining": [
+    "app/db",
+    "ployz-system/ingress"
+  ],
+  "server": {
+    "machine": {
+      "accepts_builds": true,
+      "accepts_ingress": true,
+      "accepts_services": true,
+      "advertised_endpoints": [],
+      "build_concurrency": null,
+      "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "labels": {},
+      "name": "web-2",
+      "public_ip": null,
+      "public_key": "YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI=",
+      "runtime": {
+        "architecture": "",
+        "daemon_version": "",
+        "docker_version": "",
+        "hostname": "",
+        "kernel_version": "",
+        "memory_total_bytes": null,
+        "os_pretty_name": "",
+        "running_builds": 0
+      },
+      "subnet": "10.210.11.0/24"
+    }
+  },
+  "services": [
+    {
+      "result": "retired",
+      "service": "app/metrics"
+    },
+    {
+      "error": "still running on web-2",
+      "result": "failed",
+      "service": "app/probe"
+    },
+    {
+      "failed": null,
+      "moved": [
+        {
+          "from": "web-2",
+          "to": "web-1"
+        },
+        {
+          "from": "web-2",
+          "to": "web-3"
+        },
+        {
+          "from": "web-2",
+          "to": "web-1"
+        }
+      ],
+      "result": "moved",
+      "service": "app/web"
+    },
+    {
+      "failed": null,
+      "moved": [],
+      "result": "moved",
+      "service": "app/idle"
+    },
+    {
+      "failed": "moving it from web-2 to web-1: deploy cancelled",
+      "moved": [
+        {
+          "from": "web-2",
+          "to": "web-1"
+        }
+      ],
+      "result": "moved",
+      "service": "app/api"
+    },
+    {
+      "failed": "moving it from web-2 to web-1: deploy cancelled",
+      "moved": [],
+      "result": "moved",
+      "service": "app/solo"
+    },
+    {
+      "reason": "Volume data is on web-2",
+      "result": "stays",
+      "service": "app/db"
+    }
+  ]
+}"#;
 
 #[test]
 fn every_outcome_that_existed_prints_the_same_json() {
-    let drained = server('b', "web-2");
-    let (services, reports) = every_legacy_outcome();
-    let remaining = vec![service("db"), QualifiedService::system_ingress()];
     let report = DrainReport {
-        server: drained.clone(),
+        server: server('b', "web-2"),
         services_role: ServicesRole::TurnedOff,
-        services,
+        services: every_legacy_outcome(),
         stopped: None,
         remaining: Remaining::Observed {
-            services: remaining.clone(),
+            services: vec![service("db"), QualifiedService::system_ingress()],
         },
     };
-    let before = json!({
-        "server": server_json(&drained),
-        "services": reports,
-        "remaining": remaining,
-        "note": NOTHING_MOVES_BACK,
-    });
     assert_eq!(
-        serde_json::to_string(&report_json(&report)).unwrap(),
-        serde_json::to_string(&before).unwrap()
+        serde_json::to_string_pretty(&report_json(&report)).unwrap(),
+        LEGACY_JSON,
+        "the CLI writes `--json` pretty-printed"
     );
     assert!(!report.complete(), "anything left on the Server is partial");
 }
@@ -211,8 +204,7 @@ fn every_outcome_that_existed_prints_the_same_json() {
 #[test]
 fn every_outcome_that_existed_prints_the_same_line() {
     let drained = server('b', "web-2");
-    let (services, _) = every_legacy_outcome();
-    let lines = services
+    let lines = every_legacy_outcome()
         .iter()
         .map(|entry| line(entry, &drained.name))
         .collect::<Vec<_>>();
@@ -227,6 +219,42 @@ fn every_outcome_that_existed_prints_the_same_line() {
             "app/solo: failed: moving it from web-2 to web-1: deploy cancelled",
             "app/db: stays: Volume data is on web-2",
         ]
+    );
+    let failed = |failure| {
+        line(
+            &ServiceDrain {
+                service: service("web"),
+                outcome: DrainOutcome::Failed {
+                    moves: Vec::new(),
+                    failure,
+                },
+            },
+            &drained.name,
+        )
+    };
+    let from = MachineRef::from(&drained);
+    let to = MachineRef::from(&server('a', "web-1"));
+    assert_eq!(
+        [
+            failed(MoveFailure::Cancelled {
+                from: from.clone(),
+                to: to.clone(),
+                replacement_removed: false,
+            }),
+            failed(MoveFailure::CancelledBeforeMove { from: from.clone() }),
+            failed(MoveFailure::OldNotRemoved {
+                from,
+                to,
+                detail: "remove failed".into(),
+                old_stopped: true,
+            }),
+        ],
+        [
+            "app/web: failed: moving it from web-2 to web-1: deploy cancelled",
+            "app/web: failed: cancelled before moving it off web-2",
+            "app/web: failed: moving it from web-2 to web-1: remove failed",
+        ],
+        "what a move now records about its Containers stays out of the line"
     );
     let report = |remaining| DrainReport {
         server: drained.clone(),

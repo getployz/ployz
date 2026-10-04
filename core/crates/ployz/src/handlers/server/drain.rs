@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use clap::ArgMatches;
-use ployz_core::{MachineName, MachineTarget, QualifiedService};
+use ployz_core::{MachineName, MachineTarget, QualifiedService, RpcError};
 use ployz_store::NamespacesQuery;
 use serde_json::{Map, Value, json};
 
@@ -71,13 +71,13 @@ fn scope(root: &ArgMatches) -> Result<DrainScope, Error> {
 
 fn refusal(error: DrainError) -> Error {
     match error {
+        // The CLI reports a connection failure with its own words.
         DrainError::Connect(error) => error.into(),
-        DrainError::Cordon(error) => error.into(),
-        error @ DrainError::NotFound(_) => Error::not_found(error.to_string()),
-        error @ DrainError::Ambiguous { .. } => Error::ambiguous(error.to_string()),
-        error @ (DrainError::RoleNotObserved
+        error @ (DrainError::Select(_)
+        | DrainError::Cordon(_)
+        | DrainError::RoleNotObserved
         | DrainError::Unobservable { .. }
-        | DrainError::Cancelled) => Error::unavailable(error.to_string()),
+        | DrainError::Cancelled) => RpcError::from(error).into(),
     }
 }
 

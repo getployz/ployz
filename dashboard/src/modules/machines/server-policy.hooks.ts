@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { toErrorMessage } from "#/lib/error-message";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { type BuildConcurrencyChange, policyChangeObserved, type ServerPolicyChange } from "./server-policy";
 import { requestServerPolicyChangeServerFn } from "./server-policy.functions";
@@ -33,9 +34,9 @@ export function useServerPolicy(machine: RuntimeMachineRecord, organizationSlug:
     setPending((current) => ({ ...current, ...change }));
     requestServerPolicyChangeServerFn({
       data: { organizationSlug, machineId: machine.id, change },
-    }).catch(() => {
+    }).catch((error: Error) => {
       setPending(null);
-      toast.error(`Could not change ${what} for ${machine.name}`);
+      toast.error(toErrorMessage(error, `Could not change ${what} for ${machine.name}`));
     });
   }
 

@@ -116,6 +116,7 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
   const { machine } = server;
   const drain = useServerDrain(organizationSlug, { id: machine.id, name: server.name }, servers);
   const strays = useStrayNamespaces(organizationSlug, server.services.flatMap((service) => service.namespace ?? []));
+  const dialog = drainDialogNames(server.services, strays);
   // A Drain cordons this Server and copies images from it: it needs the Server online, and the page to see it.
   const unavailable = stale
     ? "Drain needs Cloud to reach your servers."
@@ -136,12 +137,12 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
         last={servers.length === 1}
         hint={(
           <RemoveServerHint
-            hint={removeHint(drain.view, server.services)}
+            hint={removeHint(drain.view, server.services, strays)}
             drainButton={<DrainButton view={drain.view} onClick={drain.ask} size="sm" disabled={unavailable !== null} />}
           />
         )}
       />
-      <DrainDialog serverName={server.name} names={drainDialogNames(server.services, strays)} {...drain.dialog} />
+      <DrainDialog serverName={server.name} names={dialog.drainable} unowned={dialog.unowned} {...drain.dialog} />
     </>
   );
 }

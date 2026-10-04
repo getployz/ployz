@@ -10,27 +10,21 @@
 //! [`crate::sdk::Session::drain_machine`] (Cloud stores the final report).
 
 use std::fmt;
-use std::time::Duration;
 
 use ployz_core::{
-    EnvironmentValues, LiveServices, Machine, MachineId, MachineName, MachineObservation,
-    MachineTarget, MachineUpdate, NameMatches, Namespace, QualifiedService, RpcError, RpcErrorCode,
-    ServiceMode, UpdateMachineRequest, op,
+    EnvironmentValues, LiveServices, Machine, MachineId, MachineName, MachineTarget, MachineUpdate,
+    Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceMode, UpdateMachineRequest, op,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
+use crate::cluster::{RoleWaitError, visible_machine, wait_for_role};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 use crate::deploy::{Convergence, converge};
-use crate::global_catch_up::retire_globals;
+use crate::global_catch_up::{Retirement, retire_globals};
 
 pub use crate::deploy::{MachineRef, Move, MoveFailure, StayReason};
-
-/// How long the entry may take to observe the services role off before the Drain refuses.
-// ponytail: fixed 30 s bound, as `server set` uses; the role replicates within seconds.
-const ROLE_OBSERVED_WITHIN: Duration = Duration::from_secs(30);
-const ROLE_POLL: Duration = Duration::from_millis(250);
 
 /// Which user Namespaces a Drain acts on. Reserved Namespaces never are.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -130,9 +124,9 @@ pub enum DrainOutcome {
     },
     /// Replicated: nothing moved, and why.
     Stays { reason: StayReason },
-    /// Global: its Container on the Server is gone.
+    /// Global: its removal from the Server was acknowledged, or none of it was left there.
     Retired,
-    /// Global: it still runs on the Server.
+    /// Global: it may still run on the Server, and why.
     NotRetired { error: String },
     /// The Drain stopped before reaching it.
     NotAttempted,
@@ -196,10 +190,9 @@ pub enum Remaining {
 /// idempotent; a rerun finds it off.
 #[derive(Debug, thiserror::Error)]
 pub enum DrainError {
-    #[error("Server {0} was not found")]
-    NotFound(String),
-    #[error("Server name {name} is ambiguous: {ids}")]
-    Ambiguous { name: String, ids: String },
+    /// The target names no visible Server, or more than one.
+    #[error("{0}")]
+    Select(RpcError),
     /// Turning the services role off failed.
     #[error("{0}")]
     Cordon(RpcError),
@@ -221,10 +214,8 @@ impl From<DrainError> for RpcError {
             details: serde_json::Value::Null,
         };
         match error {
-            DrainError::Cordon(error) => error,
+            DrainError::Select(error) | DrainError::Cordon(error) => error,
             DrainError::Connect(error) => error.into(),
-            error @ DrainError::NotFound(_) => coded(RpcErrorCode::NotFound, &error),
-            error @ DrainError::Ambiguous { .. } => coded(RpcErrorCode::Ambiguous, &error),
             error @ (DrainError::RoleNotObserved
             | DrainError::Unobservable { .. }
             | DrainError::Cancelled) => coded(RpcErrorCode::Unavailable, &error),
@@ -273,7 +264,10 @@ async fn preflight(
     progress: &mut (dyn FnMut(DrainStep<'_>) + Send),
 ) -> Result<Ready, DrainError> {
     let machines = client.machines().await?;
-    let server = select(&machines, target)?.clone();
+    let server = visible_machine(target, &machines, "Server")
+        .map_err(DrainError::Select)?
+        .machine
+        .clone();
     if cancellation.is_cancelled() {
         return Err(DrainError::Cancelled);
     }
@@ -308,68 +302,96 @@ async fn preflight(
     })
 }
 
-fn select<'list>(
-    machines: &'list [MachineObservation],
-    target: &MachineTarget,
-) -> Result<&'list Machine, DrainError> {
-    match target.resolve(machines.iter().map(|entry| &entry.machine)) {
-        NameMatches::None => Err(DrainError::NotFound(
-            target.as_str().escape_debug().to_string(),
-        )),
-        NameMatches::One(machine) => Ok(machine),
-        matches @ NameMatches::Ambiguous { .. } => Err(DrainError::Ambiguous {
-            name: target.as_str().escape_debug().to_string(),
-            ids: matches
-                .iter()
-                .map(|machine| machine.id.as_str())
-                .collect::<Vec<_>>()
-                .join(", "),
-        }),
-    }
-}
-
 /// Turn the services role off on `id`, then wait until the entry observes it off.
 async fn cordon(
     client: &mut Client,
     id: &MachineId,
     cancellation: &CancellationToken,
 ) -> Result<(), DrainError> {
-    client
-        .invoke::<op::UpdateMachine>(
-            UpdateMachineRequest {
-                update: MachineUpdate {
-                    accepts_services: Some(false),
-                    ..MachineUpdate::default()
-                },
+    let target = MachineTarget::from(id);
+    let update = client.invoke::<op::UpdateMachine>(
+        UpdateMachineRequest {
+            update: MachineUpdate {
+                accepts_services: Some(false),
+                ..MachineUpdate::default()
             },
-            &MachineTarget::from(id),
-            Some(TARGET_RPC_TIMEOUT),
-        )
-        .await
-        .map_err(DrainError::Cordon)?;
-    let deadline = tokio::time::Instant::now() + ROLE_OBSERVED_WITHIN;
-    loop {
-        let machines = client.machines().await?;
-        if machines
-            .iter()
-            .any(|entry| entry.machine.id == *id && !entry.machine.accepts_services)
-        {
-            return Ok(());
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(DrainError::RoleNotObserved);
-        }
-        tokio::select! {
-            () = cancellation.cancelled() => return Err(DrainError::Cancelled),
-            () = tokio::time::sleep(ROLE_POLL) => {}
-        }
+        },
+        &target,
+        Some(TARGET_RPC_TIMEOUT),
+    );
+    tokio::select! {
+        biased;
+        () = cancellation.cancelled() => return Err(DrainError::Cancelled),
+        updated = update => updated.map_err(DrainError::Cordon)?,
+    };
+    wait_for_role(
+        client,
+        id,
+        "services",
+        |machine| !machine.accepts_services,
+        cancellation,
+    )
+    .await
+    .map_err(|error| match error {
+        RoleWaitError::NotObserved(_) => DrainError::RoleNotObserved,
+        RoleWaitError::Cancelled => DrainError::Cancelled,
+        RoleWaitError::Connect(error) => DrainError::Connect(error),
+    })
+}
+
+/// What a Drain's execution needs from a Cluster.
+trait DrainClient {
+    /// The Services with a Container on `id`, from a fresh observation.
+    async fn still_on(&mut self, id: &MachineId) -> Result<Vec<QualifiedService>, Lost>;
+    async fn retire(
+        &mut self,
+        server: &Machine,
+        globals: &[QualifiedService],
+        cancellation: &CancellationToken,
+    ) -> Vec<(QualifiedService, Retirement)>;
+    async fn converge(
+        &mut self,
+        service: &QualifiedService,
+        cancellation: &CancellationToken,
+    ) -> Convergence;
+}
+
+impl DrainClient for Client {
+    async fn still_on(&mut self, id: &MachineId) -> Result<Vec<QualifiedService>, Lost> {
+        let machines = self
+            .machines()
+            .await
+            .map_err(|error| Lost::Entry(error.to_string()))?;
+        let live = self
+            .live_services_from(&machines, EnvironmentValues::Redacted)
+            .await
+            .map_err(|error| Lost::Entry(error.to_string()))?;
+        observed(&live, id).map_err(Lost::Server)?;
+        Ok(services_on(id, &live))
+    }
+
+    async fn retire(
+        &mut self,
+        server: &Machine,
+        globals: &[QualifiedService],
+        cancellation: &CancellationToken,
+    ) -> Vec<(QualifiedService, Retirement)> {
+        retire_globals(self, server, globals, cancellation).await
+    }
+
+    async fn converge(
+        &mut self,
+        service: &QualifiedService,
+        cancellation: &CancellationToken,
+    ) -> Convergence {
+        converge(self, service, cancellation).await
     }
 }
 
 /// Globals, then each replicated Service, then what remains. Infallible: every problem
 /// here is recorded, never propagated.
-async fn execute(
-    client: &mut Client,
+async fn execute<C: DrainClient>(
+    client: &mut C,
     ready: Ready,
     cancellation: &CancellationToken,
     progress: &mut (dyn FnMut(DrainStep<'_>) + Send),
@@ -392,25 +414,29 @@ async fn execute(
                 record.stop(DrainStop::Cancelled, globals.iter().chain(&replicated));
                 break 'work;
             }
-            let unretired = retire_globals(client, &server, &globals).await;
-            let still = still_on(client, &server.id).await;
-            for global in &globals {
-                let outcome = match &still {
-                    Ok(still) if !still.contains(global) => DrainOutcome::Retired,
-                    Ok(_) => DrainOutcome::NotRetired {
-                        error: unretired
-                            .iter()
-                            .find(|(identity, _)| identity == global)
-                            .map_or_else(
-                                || format!("still running on {}", server.name),
-                                |(_, error)| error.clone(),
-                            ),
+            let retirements = client.retire(&server, &globals, cancellation).await;
+            let still = client.still_on(&server.id).await;
+            let cancelled = retirements
+                .iter()
+                .any(|(_, retirement)| *retirement == Retirement::NotAttempted);
+            for (global, retirement) in retirements {
+                let outcome = match retirement {
+                    // Only a fresh observation that still finds it undoes an acknowledged
+                    // retirement; a lost one leaves that to `remaining`.
+                    Retirement::Retired => match &still {
+                        Ok(still) if still.contains(&global) => DrainOutcome::NotRetired {
+                            error: format!("still running on {}", server.name),
+                        },
+                        Ok(_) | Err(_) => DrainOutcome::Retired,
                     },
-                    Err(Lost::Server(detail) | Lost::Entry(detail)) => DrainOutcome::NotRetired {
-                        error: detail.clone(),
-                    },
+                    Retirement::NotRetired(error) => DrainOutcome::NotRetired { error },
+                    Retirement::NotAttempted => DrainOutcome::NotAttempted,
                 };
-                record.push(global.clone(), outcome);
+                record.push(global, outcome);
+            }
+            if cancelled {
+                record.stop(DrainStop::Cancelled, &replicated);
+                break 'work;
             }
             if let Err(Lost::Entry(detail)) = still {
                 record.stop(DrainStop::EntryUnreachable { detail }, &replicated);
@@ -423,7 +449,7 @@ async fn execute(
                 record.stop(DrainStop::Cancelled, rest);
                 break 'work;
             }
-            let convergence = converge(client, service, cancellation).await;
+            let convergence = client.converge(service, cancellation).await;
             let lost = convergence.lost_entry().map(str::to_owned);
             record.push(service.clone(), convergence.into());
             if let Some(detail) = lost {
@@ -433,7 +459,7 @@ async fn execute(
             rest = after;
         }
     }
-    let remaining = match still_on(client, &server.id).await {
+    let remaining = match client.still_on(&server.id).await {
         Ok(services) => Remaining::Observed { services },
         Err(Lost::Server(error) | Lost::Entry(error)) => Remaining::Unobserved { error },
     };
@@ -484,20 +510,6 @@ impl Record<'_> {
 enum Lost {
     Entry(String),
     Server(String),
-}
-
-/// The Services with a Container on `id`, from a fresh observation.
-async fn still_on(client: &mut Client, id: &MachineId) -> Result<Vec<QualifiedService>, Lost> {
-    let machines = client
-        .machines()
-        .await
-        .map_err(|error| Lost::Entry(error.to_string()))?;
-    let live = client
-        .live_services_from(&machines, EnvironmentValues::Redacted)
-        .await
-        .map_err(|error| Lost::Entry(error.to_string()))?;
-    observed(&live, id).map_err(Lost::Server)?;
-    Ok(services_on(id, &live))
 }
 
 /// Whether `id` answered the Container listing; the detail when it didn't.

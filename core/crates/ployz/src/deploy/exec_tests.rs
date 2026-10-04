@@ -260,6 +260,8 @@ mod dispatch;
 mod health;
 #[path = "exec_tests/hooks.rs"]
 mod hooks;
+#[path = "exec_tests/moving.rs"]
+mod moving;
 #[path = "exec_tests/replacement.rs"]
 mod replacement;
 #[path = "exec_tests/restart.rs"]

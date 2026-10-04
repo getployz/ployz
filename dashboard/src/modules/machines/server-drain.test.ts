@@ -1,4 +1,4 @@
-import type { DrainReport, MachineRef, ServiceDrain } from "@ployz/sdk";
+import type { DrainReport, MachineRef, MoveFailure, ServiceDrain } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import {
   drainButtonLabel,
@@ -22,12 +22,16 @@ const web3 = ref("3", "web-3");
 const server = web2;
 const serverNames = new Map([web1, web2, web3].map(({ id, name }) => [id, name]));
 
-const report = (services: ServiceDrain[], stopped: DrainReport["stopped"] = null): DrainReport => ({
+const report = (
+  services: ServiceDrain[],
+  stopped: DrainReport["stopped"] = null,
+  remaining: DrainReport["remaining"] = { kind: "observed", services: [] },
+): DrainReport => ({
   server: runtimeWatchMachineFixture(web2.id, web2.name),
   services_role: "turned_off",
   services,
   stopped,
-  remaining: { kind: "observed", services: [] },
+  remaining,
 });
 const finished = (services: ServiceDrain[], stopped: DrainReport["stopped"] = null): LatestDrain => ({
   attemptId: "a1", state: "finished", endedAt: "2026-10-04T10:00:00.000Z", report: report(services, stopped),
@@ -48,6 +52,21 @@ describe("Drain result", () => {
     expect(drainSummary(report([{ service: "shop/api", result: "nothing_to_move" }]), "web-2")).toBe("Nothing needed to move");
   });
 
+  it("counts what it left alone and never says nothing ran here while something does", () => {
+    const left: DrainReport["remaining"] = { kind: "observed", services: ["left-behind/old", "ployz-system/dns", "shop/postgres"] };
+    expect(drainSummary(report([], null, left), "web-2")).toBe("2 left alone");
+    expect(drainSummary(report([moved, volume], null, left), "web-2")).toBe("1 moved, 1 stayed, 1 left alone");
+    expect(drainSummary(report([], null, { kind: "observed", services: ["ployz-system/dns"] }), "web-2")).toBe("Nothing was running here");
+  });
+
+  it("says when it couldn't check what's left, and offers Drain again", () => {
+    const unobserved = { kind: "unobserved", error: "timeout" } as const;
+    expect(drainSummary(report([], null, unobserved), "web-2")).toBe("Couldn't check what's left on web-2");
+    expect(drainSummary(report([moved], null, unobserved), "web-2")).toBe("1 moved; couldn't check what's left");
+    const own: LatestDrain = { attemptId: "a1", state: "finished", endedAt: "2026-10-04T10:00:00.000Z", report: report([moved], null, unobserved) };
+    expect(drainButtonLabel(view({ [web2.id]: own }))).toBe("Drain again");
+  });
+
   it("names each destination once, says why a Service stayed, and stops a Global here", () => {
     expect(drainRow(moved, web2.id)).toMatchObject({ name: "api", namespace: "shop", tone: "moved", label: "Moved to web-1 and web-3", reason: null });
     expect(drainRow(volume, web2.id)).toMatchObject({ tone: "stayed", label: "Stayed", reason: "Its volume pg-data is on this server", pinned: true });
@@ -60,21 +79,33 @@ describe("Drain result", () => {
       service: "shop/worker",
       result: "failed",
       moves: [{ from: web2, to: web1 }],
-      failure: { stage: "not_serving", from: web2, to: web3, detail: "health check timed out" },
+      failure: { stage: "not_serving", from: web2, to: web3, detail: "health check timed out", replacement_removed: true },
     };
     expect(drainRow(partial, web2.id)).toMatchObject({
       tone: "failed",
       label: "Failed",
       reason: "Its new container on web-3 didn't become healthy. It still runs here. Moved to web-1 before that.",
     });
-    const oldStays: ServiceDrain = {
-      service: "shop/worker", result: "failed", moves: [], failure: { stage: "old_not_removed", from: web2, to: web1, detail: "timeout" },
-    };
-    expect(drainRow(oldStays, web2.id).reason).toBe("It now runs on web-1 too, but its container here couldn't be removed.");
+    const failure = (failure: MoveFailure): ServiceDrain => ({ service: "shop/worker", result: "failed", moves: [], failure });
+    expect(drainRow(failure({ stage: "not_serving", from: web2, to: web3, detail: "timeout", replacement_removed: false }), web2.id).reason)
+      .toBe("Its new container on web-3 didn't become healthy, and may still be there. It still runs here.");
+    expect(drainRow(failure({ stage: "old_not_removed", from: web2, to: web1, detail: "timeout", old_stopped: false }), web2.id).reason)
+      .toBe("It now runs on web-1 too, but its container here couldn't be stopped.");
+    expect(drainRow(failure({ stage: "old_not_removed", from: web2, to: web1, detail: "timeout", old_stopped: true }), web2.id).reason)
+      .toBe("It now runs on web-1. Its container here stopped but couldn't be removed.");
     const refused: ServiceDrain = {
       service: "shop/worker", result: "failed", moves: [{ from: web2, to: web1 }], failure: { stage: "refused", reason: { kind: "mid_rollout" } },
     };
     expect(drainRow(refused, web2.id).reason).toBe("Stopped moving it. A deploy is in progress. Deploy it first. Moved to web-1 before that.");
+  });
+
+  it("says whether a cancelled Drain stopped before or during a move, and what a mid-move cancel may have left", () => {
+    const failure = (failure: MoveFailure): ServiceDrain => ({ service: "shop/worker", result: "failed", moves: [], failure });
+    expect(drainRow(failure({ stage: "cancelled_before_move", from: web2 }), web2.id).reason).toBe("The drain stopped before moving it.");
+    expect(drainRow(failure({ stage: "cancelled", from: web2, to: web1, replacement_removed: true }), web2.id).reason)
+      .toBe("The drain stopped mid-move. It still runs here.");
+    expect(drainRow(failure({ stage: "cancelled", from: web2, to: web1, replacement_removed: false }), web2.id).reason)
+      .toBe("The drain stopped mid-move. It still runs here. Its new container on web-1 may still be there.");
   });
 
   it("renders an outcome a newer Engine reports without crashing", () => {
@@ -120,27 +151,36 @@ describe("Drain view", () => {
 });
 
 describe("Drain hints", () => {
-  const running = [
-    { identity: "shop/postgres", name: "postgres" },
-    { identity: "shop/api", name: "api" },
-  ];
+  const postgres = { identity: "shop/postgres", name: "postgres", namespace: "shop" };
+  const running = [postgres, { identity: "shop/api", name: "api", namespace: "shop" }];
+  const stray = { identity: "left-behind/old", name: "old", namespace: "left-behind" };
+  const strays = new Set(["left-behind"]);
+  const none = new Set<string>();
 
   it("suggests draining while Services remain, and says nothing while a Drain runs", () => {
-    expect(removeHint(view({}), running)).toEqual({ kind: "drain", count: 2 });
-    expect(removeHint(view({}), [])).toEqual({ kind: "none" });
-    expect(removeHint(view({}, "a2"), running)).toEqual({ kind: "none" });
+    expect(removeHint(view({}), running, none)).toEqual({ kind: "drain", count: 2, unowned: [] });
+    expect(removeHint(view({}), [], none)).toEqual({ kind: "none", unowned: [] });
+    expect(removeHint(view({}, "a2"), running, none)).toEqual({ kind: "none", unowned: [] });
   });
 
   it("says why when only Services whose volume is here remain after a Drain", () => {
-    expect(removeHint(view({ [web2.id]: finished([moved, volume]) }), running.slice(0, 1))).toEqual({ kind: "pinned", names: ["postgres"] });
-    expect(removeHint(view({ [web2.id]: finished([moved, volume]) }), running)).toEqual({ kind: "drain", count: 2 });
+    expect(removeHint(view({ [web2.id]: finished([moved, volume]) }), [postgres], none))
+      .toEqual({ kind: "pinned", names: ["postgres"], unowned: [] });
+    expect(removeHint(view({ [web2.id]: finished([moved, volume]) }), running, none)).toEqual({ kind: "drain", count: 2, unowned: [] });
   });
 
-  it("lists what runs here by name for the dialog, leaving out Namespaces no Project owns", () => {
+  it("counts only what a Drain would move, and names apart what no Project owns", () => {
+    expect(removeHint(view({}), [...running, stray], strays)).toEqual({ kind: "drain", count: 2, unowned: ["old"] });
+    expect(removeHint(view({}), [stray], strays)).toEqual({ kind: "none", unowned: ["old"] });
+    expect(removeHint(view({ [web2.id]: finished([moved, volume]) }), [postgres, stray], strays))
+      .toEqual({ kind: "pinned", names: ["postgres"], unowned: ["old"] });
+  });
+
+  it("lists what runs here by name for the dialog, apart from what no Project owns", () => {
     expect(drainDialogNames([
-      { name: "api", namespace: "shop" },
-      { name: "api", namespace: "shop-staging" },
-      { name: "old", namespace: "left-behind" },
-    ], new Set(["left-behind"]))).toEqual(["api"]);
+      { identity: "shop/api", name: "api", namespace: "shop" },
+      { identity: "shop-staging/api", name: "api", namespace: "shop-staging" },
+      stray,
+    ], strays)).toEqual({ drainable: ["api"], unowned: ["old"] });
   });
 });

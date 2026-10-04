@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use ployz_core::{
-    DescribeContractRequest, Machine, MachineId, MachineName, MachineTarget, NameMatches,
-    QualifiedService, RpcError, RpcErrorCode, op,
+    DescribeContractRequest, Machine, MachineId, MachineName, MachineTarget, QualifiedService,
+    RpcError, RpcErrorCode, op,
 };
 
 use super::super::runtime;
@@ -356,22 +356,11 @@ pub(super) fn select_machine(
     selector: &str,
 ) -> Result<Machine, Error> {
     let selector = MachineTarget::parse(selector)?;
-    match selector.resolve(machines.iter().map(|entry| &entry.machine)) {
-        NameMatches::None => Err(Error::not_found(format!(
-            "Server {} was not found",
-            selector.as_str().escape_debug()
-        ))),
-        NameMatches::One(machine) => Ok(machine.clone()),
-        matches @ NameMatches::Ambiguous { .. } => Err(Error::ambiguous(format!(
-            "Server name {} is ambiguous: {}",
-            selector.as_str().escape_debug(),
-            matches
-                .iter()
-                .map(|machine| machine.id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))),
-    }
+    Ok(
+        crate::cluster::visible_machine(&selector, machines, "Server")?
+            .machine
+            .clone(),
+    )
 }
 
 fn machine_removal_refusal(error: RpcError) -> Error {

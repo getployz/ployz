@@ -85,7 +85,7 @@ function DrainLine({ view }: { view: DrainView }) {
     case "failed":
       return <>{view.words}{view.details === null ? null : <>: {view.details}</>}</>;
     case "cancelled":
-      return <>Drain was cancelled <RelativeTime date={new Date(view.at)} />. Running here shows what’s still on this server.</>;
+      return <>Drain was cancelled <RelativeTime date={new Date(view.at)} />, before it started.</>;
     case "unknown":
       return <>{view.words}</>;
   }

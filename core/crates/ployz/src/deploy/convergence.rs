@@ -128,7 +128,8 @@ impl fmt::Display for StayReason {
 }
 
 /// Where a move stopped. Every stage but `OldNotRemoved` leaves the Container being moved
-/// serving where it was; `OldNotRemoved` leaves it serving on both.
+/// serving where it was; `OldNotRemoved` leaves it serving on `to`, and on `from` too
+/// unless the old Container stopped.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "stage", rename_all = "snake_case")]
 pub enum MoveFailure {
@@ -148,24 +149,30 @@ pub enum MoveFailure {
         to: MachineRef,
         detail: String,
     },
-    /// The new Container on `to` never served; it was removed again.
+    /// The new Container on `to` never served. `replacement_removed` says none is left
+    /// there; otherwise it may still be.
     NotServing {
         from: MachineRef,
         to: MachineRef,
         detail: String,
+        replacement_removed: bool,
     },
-    /// The new Container serves on `to`, but the old one on `from` could not be removed.
+    /// The new Container serves on `to`, but the old one on `from` could not be stopped
+    /// (`old_stopped` false: both serve) or, once stopped, removed.
     OldNotRemoved {
         from: MachineRef,
         to: MachineRef,
         detail: String,
+        old_stopped: bool,
     },
-    /// Cancelled mid-move (`to` set; the new Container was removed again) or before the
-    /// next move.
+    /// Cancelled mid-move. `replacement_removed` says no new Container is left on `to`.
     Cancelled {
         from: MachineRef,
-        to: Option<MachineRef>,
+        to: MachineRef,
+        replacement_removed: bool,
     },
+    /// Cancelled before the next move began.
+    CancelledBeforeMove { from: MachineRef },
     /// The entry stopped answering before the next move.
     Unobservable { detail: String },
     /// A fresh observation before the next move refuses it.
@@ -182,15 +189,18 @@ impl fmt::Display for MoveFailure {
             ),
             Self::ReadImage { from, detail, .. } => write!(f, "inspecting it on {from}: {detail}"),
             Self::CopyImage { to, detail, .. } => write!(f, "copying its image to {to}: {detail}"),
-            Self::NotServing { from, to, detail } | Self::OldNotRemoved { from, to, detail } => {
-                write!(f, "moving it from {from} to {to}: {detail}")
+            Self::NotServing {
+                from, to, detail, ..
             }
-            Self::Cancelled { from, to: Some(to) } => write!(
+            | Self::OldNotRemoved {
+                from, to, detail, ..
+            } => write!(f, "moving it from {from} to {to}: {detail}"),
+            Self::Cancelled { from, to, .. } => write!(
                 f,
                 "moving it from {from} to {to}: {}",
                 ExecutionError::Cancelled
             ),
-            Self::Cancelled { from, to: None } => {
+            Self::CancelledBeforeMove { from } => {
                 write!(f, "cancelled before moving it off {from}")
             }
             Self::Unobservable { detail } => write!(f, "cannot observe the Cluster: {detail}"),
@@ -269,26 +279,34 @@ pub(crate) async fn converge<C: ConvergenceClient>(
                 }
             },
         };
+        // A snapshot missing a Server's listing can't tell a gone Container from an unlisted one.
+        if let Some(reason) = unobserved(&snapshot) {
+            return Convergence::Failed {
+                moves,
+                failure: MoveFailure::Refused { reason },
+            };
+        }
         let fresh = stranded(&snapshot, service);
+        // Gone, exited, or admitted again since the first snapshot: it stays put, whatever
+        // the rest would now refuse.
+        let Some(container) = fresh
+            .iter()
+            .copied()
+            .find(|container| container.container_id == id)
+        else {
+            continue;
+        };
         if let Some(reason) = refusal(&snapshot, service, &fresh) {
             return Convergence::Failed {
                 moves,
                 failure: MoveFailure::Refused { reason },
             };
         }
-        // Gone, exited, or admitted again since the first snapshot: it stays put.
-        let Some(container) = fresh
-            .into_iter()
-            .find(|container| container.container_id == id)
-        else {
-            continue;
-        };
         if cancellation.is_cancelled() {
             return Convergence::Failed {
                 moves,
-                failure: MoveFailure::Cancelled {
+                failure: MoveFailure::CancelledBeforeMove {
                     from: machine_ref(&snapshot, &container.machine_id),
-                    to: None,
                 },
             };
         }
@@ -311,16 +329,8 @@ fn refusal(
     service: &QualifiedService,
     stranded: &[&ContainerObservation],
 ) -> Option<StayReason> {
-    if let Some(id) = snapshot
-        .container_failures
-        .iter()
-        .map(|failure| &failure.machine_id)
-        .chain(&snapshot.container_omissions)
-        .next()
-    {
-        return Some(StayReason::Unobserved {
-            server: machine_ref(snapshot, id),
-        });
+    if let Some(reason) = unobserved(snapshot) {
+        return Some(reason);
     }
     let active = snapshot
         .containers
@@ -357,6 +367,19 @@ fn refusal(
         .err()
         .map(|error| StayReason::NoDestination {
             detail: error.to_string(),
+        })
+}
+
+/// The first Server whose Containers the snapshot could not list, if any.
+fn unobserved(snapshot: &DeploySnapshot) -> Option<StayReason> {
+    snapshot
+        .container_failures
+        .iter()
+        .map(|failure| &failure.machine_id)
+        .chain(&snapshot.container_omissions)
+        .next()
+        .map(|id| StayReason::Unobserved {
+            server: machine_ref(snapshot, id),
         })
 }
 
@@ -473,7 +496,7 @@ async fn move_one(
     let mut spec = spec.clone();
     spec.container.pull_policy = PullPolicy::Never;
     match super::exec::move_container(
-        client,
+        &*client,
         &container.namespace,
         &spec,
         &dest.id,
@@ -483,19 +506,31 @@ async fn move_one(
     .await
     {
         Ok(_) => Ok(Move { from, to }),
-        Err(MoveContainerError::NotServing(ExecutionError::Cancelled)) => {
-            Err(MoveFailure::Cancelled { from, to: Some(to) })
+        Err(MoveContainerError::NotServing {
+            error: ExecutionError::Cancelled,
+            replacement_removed,
+        }) => Err(MoveFailure::Cancelled {
+            from,
+            to,
+            replacement_removed,
+        }),
+        Err(MoveContainerError::NotServing {
+            error,
+            replacement_removed,
+        }) => Err(MoveFailure::NotServing {
+            from,
+            to,
+            detail: error.to_string(),
+            replacement_removed,
+        }),
+        Err(MoveContainerError::OldNotRemoved { error, old_stopped }) => {
+            Err(MoveFailure::OldNotRemoved {
+                from,
+                to,
+                detail: error.to_string(),
+                old_stopped,
+            })
         }
-        Err(MoveContainerError::NotServing(error)) => Err(MoveFailure::NotServing {
-            from,
-            to,
-            detail: error.to_string(),
-        }),
-        Err(MoveContainerError::OldNotRemoved(error)) => Err(MoveFailure::OldNotRemoved {
-            from,
-            to,
-            detail: error.to_string(),
-        }),
     }
 }
 
@@ -725,6 +760,45 @@ mod tests {
         assert_eq!(moves, &one_move());
         assert_eq!(failure.to_string(), "cannot observe machine-b");
         assert!(convergence.lost_entry().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_container_gone_since_the_first_snapshot_is_skipped_before_any_refusal() {
+        let service = QualifiedService::parse("app/api").unwrap();
+        let first = two_on_a();
+        let stateless = first.containers.first().unwrap().resolved_spec.clone();
+        // The moved Container now sits on machine-b, which takes nothing more: a refusal
+        // would read "no eligible Server", but the one left to move is gone.
+        let after = DeploySnapshot {
+            machines: vec![machine('a', false), machine('b', false)],
+            containers: vec![container('3', 'b', stateless)],
+            ..DeploySnapshot::default()
+        };
+        let mut client = Scripted {
+            snapshots: [Ok(first), Ok(after)].into(),
+        };
+        let convergence = converge(&mut client, &service, &CancellationToken::new()).await;
+        assert_eq!(convergence, Convergence::Moved { moves: one_move() });
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_convergence_says_it_stopped_before_moving() {
+        let service = QualifiedService::parse("app/api").unwrap();
+        let mut client = Scripted {
+            snapshots: [Ok(two_on_a())].into(),
+        };
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let convergence = converge(&mut client, &service, &cancelled).await;
+        assert_eq!(
+            convergence,
+            Convergence::Failed {
+                moves: Vec::new(),
+                failure: MoveFailure::CancelledBeforeMove {
+                    from: MachineRef::from(&machine('a', false).machine),
+                },
+            }
+        );
     }
 
     #[tokio::test]
