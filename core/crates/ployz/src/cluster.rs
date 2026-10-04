@@ -1348,18 +1348,17 @@ async fn change_container_rpc(
     if matches!(action, ContainerAction::Stop | ContainerAction::Remove) {
         accept_stop_result(
             action,
-            client
-                .invoke::<op::StopContainer>(
-                    StopContainerRequest {
-                        container_id: *container_id,
-                        signal,
-                        grace_period_seconds,
-                    },
-                    &target,
-                    stop_rpc_timeout(grace_period_seconds, queued),
-                )
-                .await
-                .map(|_| ()),
+            crate::ingress::stop_container(
+                client,
+                machine_id,
+                StopContainerRequest {
+                    container_id: *container_id,
+                    signal,
+                    grace_period_seconds,
+                },
+                stop_rpc_timeout(grace_period_seconds, queued),
+            )
+            .await,
         )?;
     }
     match action {

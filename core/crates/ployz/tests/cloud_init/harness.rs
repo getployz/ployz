@@ -679,6 +679,7 @@ impl MachineRpc for JoinDaemon {
         rpc_ok(ContainerDetails {
             container,
             environment: None,
+            image_id: None,
         })
     }
     async fn get_container_observations(
@@ -846,6 +847,12 @@ impl MachineRpc for JoinDaemon {
         rpc_ok(ContainerChanged {
             container_id: start.container_id,
         })
+    }
+    async fn mark_container_stopping(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
     }
     async fn stop_container(
         &self,

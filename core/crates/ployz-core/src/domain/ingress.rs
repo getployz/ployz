@@ -3,10 +3,11 @@
 use std::{collections::BTreeMap, num::NonZeroU16};
 
 use crate::{
-    ContainerPath, ContainerResources, HostBind, MachinePath, Placement, PlacementConstraint,
-    PortPublication, PullPolicy, QualifiedService, RawVolumeSource, RequestedServiceSpec,
-    ResolvedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceMode, ServiceMount,
-    ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol, UpdateConfig,
+    ContainerAddress, ContainerPath, ContainerResources, HostBind, MachinePath, Placement,
+    PlacementConstraint, PortPublication, PullPolicy, QualifiedService, RawVolumeSource,
+    RequestedServiceSpec, ResolvedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceMode,
+    ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, TransportProtocol,
+    UpdateConfig,
 };
 
 const CADDY_INGRESS_COMMAND: [&str; 4] = ["caddy", "run", "-c", "/config/caddy/Caddyfile"];
@@ -15,6 +16,12 @@ const CADDY_INGRESS_ADMIN: &str = "unix//run/ingress/caddy/admin.sock";
 pub const CADDY_ADMIN_ENV: &str = "CADDY_ADMIN";
 const INGRESS_PROXY_DATA_PATH: &str = "/var/lib/ployz/ingress";
 const INGRESS_PROXY_RUNTIME_PATH: &str = "/run/ployz/ingress";
+
+/// The `ip:port` token an Ingress Proxy config names one upstream by.
+#[must_use]
+pub fn ingress_upstream(address: ContainerAddress, port: NonZeroU16) -> String {
+    format!("{}:{port}", address.0)
+}
 
 /// Invalid wiring for the reserved Ingress Proxy Service.
 #[derive(Debug, thiserror::Error)]

@@ -239,6 +239,11 @@ pub(crate) fn holds_platform(store: &MachineImages, image: &str, platform: &str)
     })
 }
 
+/// Whether the store's `image` is exactly the image `image_id`.
+pub(super) fn holds_as(store: &MachineImages, image: &str, image_id: &str) -> bool {
+    stored(store, image).is_some_and(|summary| summary.id == image_id)
+}
+
 fn stored<'store>(store: &'store MachineImages, image: &str) -> Option<&'store ImageSummary> {
     if !store.containerd_store {
         return None;

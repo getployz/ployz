@@ -703,7 +703,7 @@ fn service(
         "mode": { "mode": "replicated", "replicas": 1 },
         "container": {
             "image": "alpine:3.23.3",
-            "command": ["sh", "-c", "while true; do printf 'HTTP/1.1 200 OK\\r\\nContent-Length: 3\\r\\n\\r\\nok\\n' | nc -l -p 8080; done"],
+            "command": ["sh", "-c", "nc -lk -p 8080 -e sh -c 'while read -r l && [ ${#l} -gt 1 ]; do :; done; printf \"HTTP/1.1 200 OK\\r\\nContent-Length: 3\\r\\n\\r\\nok\\n\"'"],
             "pull_policy": "missing"
         },
         "ports": [{

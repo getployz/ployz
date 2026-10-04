@@ -28,6 +28,12 @@ impl CatchUpError {
     }
 }
 
+impl std::fmt::Display for CatchUpError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.cause.fmt(formatter)
+    }
+}
+
 pub(crate) trait CatchUpClient {
     async fn live_services(&mut self) -> Result<LiveServices<RpcError>, Failure>;
     async fn bridge_capacity(
@@ -122,16 +128,17 @@ impl CatchUpClient for Client {
                         && container.namespace == request.namespace
                         && container.resolved_spec.name == request.resolved_spec.name
                 }) {
-                    self.call::<op::StopContainer>(
+                    crate::ingress::stop_container(
+                        self,
+                        machine_id,
                         ployz_core::StopContainerRequest {
                             container_id: container.container_id,
                             signal: None,
                             grace_period_seconds: None,
                         },
-                        Some(&target),
+                        None,
                     )
-                    .await
-                    .map_err(RpcError::from)?;
+                    .await?;
                     self.call::<op::RemoveContainer>(
                         ployz_core::RemoveContainerRequest {
                             container_id: container.container_id,

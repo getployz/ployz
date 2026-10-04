@@ -562,6 +562,7 @@ impl MachineRpc for DeployService {
             )
             .expect("volume graph is scoped");
         encoded(RpcResponse::from(ContainerDetails {
+            image_id: None,
             environment: Some(BTreeMap::from([
                 ("TOKEN".into(), "live-only-sentinel".into()),
                 ("PLAIN".into(), "from-docker".into()),
@@ -684,6 +685,12 @@ impl MachineRpc for DeployService {
             .unwrap()
             .retain(|volume| volume.id.machine_id != machine_id || volume.id.name != remove.name);
         encoded(RpcResponse::from(ployz_core::VolumeRemoved {}))
+    }
+    async fn mark_container_stopping(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
     }
     async fn stop_container(
         &self,

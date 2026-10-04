@@ -379,6 +379,8 @@ impl ContainerRuntime {
             .client
             .stop_container(container_id.as_str(), Some(options.build()))
             .await;
+        // Stopped, it is no longer routed; still running after a failed stop, it should be again.
+        self.clear_stopping(container_id);
         idempotent_lifecycle_result(container_id, result)
     }
 

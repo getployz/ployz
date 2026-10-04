@@ -1,13 +1,22 @@
 //! Ingress Proxy identity and deployment boundaries.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, time::Duration};
 
 use ployz_core::{
-    ContainerObservation, EnvironmentValues, PlacementConstraint, QualifiedService,
-    RequestedServiceSpec, caddy_service_spec,
+    ContainerId, ContainerObservation, EnvironmentValues, GetIngressProxyConfigRequest, MachineId,
+    MachineTarget, MarkContainerStoppingRequest, PlacementConstraint, PortPublication,
+    QualifiedService, RequestedServiceSpec, RpcError, RpcErrorCode, StopContainerRequest,
+    caddy_service_spec, ingress_upstream, op,
 };
 
-use crate::{connect::Client, deploy::Outcome, failure::Failure};
+use crate::{
+    connect::{Client, TARGET_RPC_TIMEOUT},
+    deploy::Outcome,
+    failure::Failure,
+};
+
+const WITHDRAW_POLL: Duration = Duration::from_millis(250);
+const WITHDRAW_CAP: Duration = Duration::from_secs(10);
 
 mod caddy;
 pub use caddy::IngressImageError;
@@ -104,6 +113,125 @@ fn desired(
         .map(|running| running.constraints.clone())
         .unwrap_or_default();
     Some((image, constraints))
+}
+
+/// Stop one Container, first taking it out of every Ingress Proxy so no request is routed
+/// to it while it shuts down. Every client path that stops a Container goes through here.
+pub(crate) async fn stop_container(
+    client: &Client,
+    machine_id: &MachineId,
+    request: StopContainerRequest,
+    timeout: Option<Duration>,
+) -> Result<(), RpcError> {
+    withdraw(client, machine_id, &request.container_id).await;
+    client
+        .invoke::<op::StopContainer>(request, &MachineTarget::from(machine_id), timeout)
+        .await
+        .map(|_| ())
+}
+
+/// Mark the Container stopping on its Server, then wait until no reachable ingress-role
+/// Server's loaded config routes to it. A proxy that cannot be read counts as still routing.
+/// After [`WITHDRAW_CAP`] the stop goes ahead with a warning naming the unconfirmed Servers.
+async fn withdraw(client: &Client, machine_id: &MachineId, container_id: &ContainerId) {
+    let details = match client
+        .invoke::<op::MarkContainerStopping>(
+            MarkContainerStoppingRequest {
+                container_id: *container_id,
+            },
+            &MachineTarget::from(machine_id),
+            Some(TARGET_RPC_TIMEOUT),
+        )
+        .await
+    {
+        Ok(details) => details,
+        // Already gone: nothing routes to it, and the stop reports the rest.
+        Err(error) if error.code == RpcErrorCode::NotFound => return,
+        Err(error) => {
+            crate::output::warn(format!(
+                "stopping Container {container_id} without taking it out of the Ingress Proxies first: {error}"
+            ));
+            return;
+        }
+    };
+    let upstreams = routed_upstreams(&details.container);
+    if upstreams.is_empty() {
+        return;
+    }
+    // `machines` needs `&mut`; a clone shares the connection.
+    let machines = match client.clone().machines().await {
+        Ok(machines) => machines,
+        Err(error) => {
+            crate::output::warn(format!(
+                "stopping Container {container_id} without confirming the Ingress Proxies stopped routing to it: {error}"
+            ));
+            return;
+        }
+    };
+    let upstreams = &upstreams;
+    let deadline = tokio::time::Instant::now() + WITHDRAW_CAP;
+    let unconfirmed = futures_util::future::join_all(
+        machines
+            .into_iter()
+            // A Server known down gets no config either; waiting on it only costs the cap.
+            .filter(|entry| entry.machine.accepts_ingress && entry.membership.invites_rpc())
+            .map(|entry| entry.machine)
+            .map(|machine| async move {
+                let confirmed = tokio::time::timeout_at(deadline, async {
+                    while still_routes(client, &machine.id, upstreams).await {
+                        tokio::time::sleep(WITHDRAW_POLL).await;
+                    }
+                })
+                .await;
+                confirmed.is_err().then_some(machine.name)
+            }),
+    )
+    .await
+    .into_iter()
+    .flatten()
+    .map(|name| name.to_string())
+    .collect::<Vec<_>>();
+    if !unconfirmed.is_empty() {
+        crate::output::warn(format!(
+            "stopping Container {container_id} before Ingress Proxies on {} confirmed they stopped routing to it",
+            unconfirmed.join(", ")
+        ));
+    }
+}
+
+/// True unless this Server's loaded Ingress Proxy config provably names none of `upstreams`.
+async fn still_routes(client: &Client, machine_id: &MachineId, upstreams: &[String]) -> bool {
+    client
+        .invoke::<op::GetIngressProxyConfig>(
+            GetIngressProxyConfigRequest {},
+            &MachineTarget::from(machine_id),
+            Some(WITHDRAW_POLL * 4),
+        )
+        .await
+        .map_or(true, |proxy| {
+            proxy
+                .config()
+                .split_whitespace()
+                .any(|token| upstreams.iter().any(|upstream| upstream == token))
+        })
+}
+
+/// The upstreams an Ingress Proxy would route to this Container.
+fn routed_upstreams(container: &ContainerObservation) -> Vec<String> {
+    let Some(address) = container.address else {
+        return Vec::new();
+    };
+    container
+        .resolved_spec
+        .ports
+        .iter()
+        .filter_map(|port| match port {
+            PortPublication::Ingress { container_port, .. } => {
+                Some(ingress_upstream(address, *container_port))
+            }
+            PortPublication::Host { .. } => None,
+        })
+        .collect()
 }
 
 /// True when this observation is the reserved Ingress Proxy Service.

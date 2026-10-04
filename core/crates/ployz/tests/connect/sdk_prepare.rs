@@ -89,6 +89,7 @@ async fn node_preparation_delivers_images_and_retains_them_through_confirmation(
         }
         service.inspect_container_result = Some(ployz_core::ContainerDetails {
             environment: None,
+            image_id: None,
             container: super::listing_container(
                 '1',
                 'a',

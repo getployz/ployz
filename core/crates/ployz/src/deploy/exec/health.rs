@@ -292,7 +292,7 @@ fn classify_health(
         }
         ContainerRuntimeObservation::Created
         | ContainerRuntimeObservation::Running {
-            health: HealthObservation::Unhealthy,
+            health: HealthObservation::Unhealthy | HealthObservation::Stopping,
         }
         | ContainerRuntimeObservation::Restarting
         | ContainerRuntimeObservation::Paused

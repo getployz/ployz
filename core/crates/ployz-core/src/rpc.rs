@@ -329,6 +329,13 @@ pub struct StopContainerRequest {
     pub grace_period_seconds: Option<i32>,
 }
 
+/// Report one local Container's health as `stopping` so the Ingress Proxies drop it
+/// before it stops. Answers the Container as now observed.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MarkContainerStoppingRequest {
+    pub container_id: ContainerId,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RemoveContainerRequest {
     pub container_id: ContainerId,
@@ -779,6 +786,9 @@ pub struct ContainerDetails {
     pub container: ContainerObservation,
     /// Fresh Docker Config.Env; never copied into replicated observations.
     pub environment: Option<BTreeMap<String, String>>,
+    /// Local image ID (`sha256:…`) the Container runs; `None` from older daemons.
+    #[serde(default)]
+    pub image_id: Option<String>,
 }
 
 /// Complete replicated observation map; `None` means the row is absent.

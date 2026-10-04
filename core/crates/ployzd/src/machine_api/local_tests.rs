@@ -786,6 +786,29 @@ async fn listed_containers_redact_environment_unless_requested() {
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
+#[tokio::test]
+async fn marking_an_unknown_container_stopping_is_not_found() {
+    let (data_dir, _store, service, _fake) = fake_docker_service("ployzd-mark-stopping").await;
+    let response = service
+        .mark_container_stopping(Request::new(
+            op::MarkContainerStopping::into_request(ployz_core::MarkContainerStoppingRequest {
+                container_id: ployz_core::ContainerId::parse("a".repeat(64)).unwrap(),
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+    let RpcResponseBody::Error(error) = response.body else {
+        panic!("marking an unknown Container must fail: {response:?}");
+    };
+    assert_eq!(error.code, RpcErrorCode::NotFound);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
 /// A Machine service on an initialized store, backed by a fake Docker that keeps named Containers.
 async fn fake_docker_service(
     prefix: &str,

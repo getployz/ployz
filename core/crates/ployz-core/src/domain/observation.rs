@@ -18,6 +18,8 @@ crate::value::open_string_enum!(HealthObservation, Unrecognized {
     Starting => "starting",
     Healthy => "healthy",
     Unhealthy => "unhealthy",
+    // Withdrawn from the Ingress Proxies ahead of a stop; never routed.
+    Stopping => "stopping",
 });
 
 /// Docker state as observed, including the untouched value of a future state.

@@ -1002,6 +1002,13 @@ impl MachineRpc for DiscoveryService {
         ))
     }
 
+    async fn mark_container_stopping(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
     async fn stop_container(
         &self,
         _request: Request<OpaquePayload>,

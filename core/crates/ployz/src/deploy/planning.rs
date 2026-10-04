@@ -727,6 +727,44 @@ fn eligible_machines<'snapshot>(
     Ok(machines)
 }
 
+/// The Machine for one more Container of a running replicated Service: eligible, with a
+/// free bridge endpoint and its host ports, holding the fewest of this Service's Containers.
+pub(super) fn place_one(
+    requested: &RequestedServiceSpec,
+    namespace: &Namespace,
+    snapshot: &DeploySnapshot,
+) -> Result<MachineId, PlanError> {
+    let machines = eligible_machines(requested, namespace, snapshot, &PlanOptions::default())?;
+    let fitting = machines
+        .iter()
+        .filter(|machine| placement::fits_one_more(snapshot, machine.machine.id, requested))
+        .collect::<Vec<_>>();
+    let occupancy = |machine: &MachineObservation| {
+        snapshot
+            .containers
+            .iter()
+            .filter(|container| {
+                container.kind == ployz_core::ContainerKind::ServiceContainer
+                    && container.machine_id == machine.machine.id
+                    && container.namespace == *namespace
+                    && container.resolved_spec.name == requested.name
+            })
+            .count()
+    };
+    if let Some(machine) = fitting.into_iter().min_by_key(|machine| occupancy(machine)) {
+        return Ok(machine.machine.id);
+    }
+    let budget = capacity::CapacityBudget::from_snapshot(snapshot);
+    let ids = machines.iter().map(|machine| &machine.machine.id);
+    if ids.clone().any(|id| budget.fits(id, 1)) {
+        Err(PlanError::HostPortConflict {
+            service: requested.name.clone(),
+        })
+    } else {
+        Err(budget.error_for(ids))
+    }
+}
+
 fn placement_candidates<'snapshot>(
     requested: &RequestedServiceSpec,
     namespace: &Namespace,
