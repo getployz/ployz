@@ -764,7 +764,7 @@ mod tests {
             io::ErrorKind::ConnectionRefused
         ))));
         assert!(!retry_local_connect(&ConnectError::AllFailed {
-            source: ConnectionSource::LocalSocket,
+            selection: ConnectionSource::LocalSocket,
             attempts: 1,
             setup_retryable: false,
             last: None,

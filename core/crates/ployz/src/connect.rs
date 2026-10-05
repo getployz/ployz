@@ -521,7 +521,7 @@ pub async fn connect_selected_with(
         }
     }
     Err(ConnectError::AllFailed {
-        source: selected.source,
+        selection: selected.source,
         attempts: selected.connections.len(),
         setup_retryable,
         last: last_error.map(Box::new),
@@ -667,9 +667,9 @@ pub enum ConnectError {
     Context(#[from] ContextError),
     #[error("Could not inspect {path}.")]
     Path { path: PathBuf, source: io::Error },
-    #[error("All {attempts} connections from {source} failed.")]
+    #[error("All {attempts} connections from {selection} failed.")]
     AllFailed {
-        source: ConnectionSource,
+        selection: ConnectionSource,
         attempts: usize,
         setup_retryable: bool,
         #[source]
@@ -801,6 +801,9 @@ pub struct TransportError {
     details: Value,
     /// The client produced this status: the daemon never answered.
     unanswered: bool,
+    /// Why the client's connection or stream failed, below tonic's own words.
+    #[source]
+    cause: Option<crate::failure::JoinedChain>,
 }
 
 impl TransportError {
@@ -849,10 +852,19 @@ impl From<tonic::Status> for TransportError {
     fn from(status: tonic::Status) -> Self {
         // Remote statuses cross the wire without a source. Tonic attaches one
         // only when the client connection or stream itself fails.
-        let unanswered =
-            status.code() == tonic::Code::Cancelled || std::error::Error::source(&status).is_some();
+        let source = std::error::Error::source(&status);
+        let unanswered = status.code() == tonic::Code::Cancelled || source.is_some();
+        let cause = source.and_then(|source| {
+            let mut lines: Vec<String> = std::iter::once(source.to_string())
+                .chain(crate::ui::causes(source))
+                .skip_while(|line| line == status.message())
+                .collect();
+            lines.dedup();
+            crate::failure::JoinedChain::of(lines)
+        });
         Self {
             unanswered,
+            cause,
             code: status.code(),
             message: status.message().to_owned(),
             details: if status.details().is_empty() {

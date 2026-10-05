@@ -640,7 +640,15 @@ mod tests {
         let mut command = command();
         let matches = command
             .clone()
-            .try_get_matches_from(["ployz", "server", "add", "--token", "pmet_test"])
+            .try_get_matches_from([
+                "ployz",
+                "server",
+                "add",
+                "--token",
+                "pmet_test",
+                "--cloud-url",
+                "http://127.0.0.1:9",
+            ])
             .unwrap();
         assert_eq!(
             dispatch(&matches, &mut command).unwrap_err().to_string(),

@@ -21,7 +21,7 @@ fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
         };
         assert_eq!(ssh_error.is_setup_retryable(), retry);
         let error = ConnectError::AllFailed {
-            source: ConnectionSource::Direct,
+            selection: ConnectionSource::Direct,
             attempts: 1,
             setup_retryable: retry,
             last: Some(Box::new(ssh_error)),
@@ -443,4 +443,20 @@ async fn local_socket_that_accepts_but_never_serves_fails_as_starting() {
     );
     assert!(!error.is_retryable(), "{error}");
     assert!(error.is_setup_retryable(), "{error}");
+}
+
+#[test]
+fn a_dropped_connection_keeps_the_network_reason_as_the_deepest_cause() {
+    #[derive(Debug, thiserror::Error)]
+    #[error("transport error")]
+    struct Transport(#[source] std::io::Error);
+
+    let mut status = tonic::Status::unavailable("transport error");
+    status.set_source(std::sync::Arc::new(Transport(std::io::Error::new(
+        std::io::ErrorKind::ConnectionReset,
+        "connection reset by peer",
+    ))));
+    let error = TransportError::from(status);
+    assert_eq!(error.to_string(), "transport error");
+    assert_eq!(crate::ui::causes(&error), ["connection reset by peer"]);
 }

@@ -49,6 +49,7 @@ uuid = { version = "1.24.0", features = ["v4"] }
 [dev-dependencies]
 base64 = "0.22.1"
 ployz-testkit.workspace = true
+syn = { version = "2.0.119", features = ["full", "visit"] }
 tokio-stream = { version = "0.1.19", features = ["net"] }
 tokio = { version = "1.53.1", features = ["test-util"] }
 

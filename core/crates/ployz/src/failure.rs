@@ -245,6 +245,19 @@ fn classify(error: &(dyn Error + Send + Sync + 'static)) -> (RpcErrorCode, Value
     if let Some(ConnectError::Remote(error)) = error.downcast_ref::<ConnectError>() {
         return (error.code.clone(), error.details.clone());
     }
+    if let Some(
+        failed @ ProvisionError::CleanupAfter {
+            cleanup, remove, ..
+        },
+    ) = error.downcast_ref::<ProvisionError>()
+    {
+        let mut cleanup_lines = vec![cleanup.to_string()];
+        cleanup_lines.extend(ui::causes(cleanup.as_ref()));
+        return (
+            provision_code(failed),
+            serde_json::json!({ "next": remove, "cleanup": cleanup_lines }),
+        );
+    }
     (code(error), Value::Null)
 }
 
@@ -634,8 +647,9 @@ impl Error for Failure {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct JoinedChain {
+/// Error lines kept as a source chain, when the errors themselves can't be kept.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JoinedChain {
     line: String,
     next: Option<Box<JoinedChain>>,
 }
@@ -647,16 +661,17 @@ impl JoinedChain {
             lines.push(error.to_string());
             lines.extend(ui::causes(error));
         }
-        lines
-            .into_iter()
-            .rev()
-            .fold(None, |next, line| {
-                Some(Self {
-                    line,
-                    next: next.map(Box::new),
-                })
+        Self::of(lines).expect("each error gives a line")
+    }
+
+    /// A chain of `lines`, outermost first; `None` when there are none.
+    pub(crate) fn of(lines: Vec<String>) -> Option<Self> {
+        lines.into_iter().rev().fold(None, |next, line| {
+            Some(Self {
+                line,
+                next: next.map(Box::new),
             })
-            .expect("each error gives a line")
+        })
     }
 }
 
@@ -934,7 +949,7 @@ mod tests {
     #[test]
     fn exhausted_connections_print_how_many_were_tried() {
         let failure = Failure::from(ConnectError::AllFailed {
-            source: crate::context::ConnectionSource::Context("prod".into()),
+            selection: crate::context::ConnectionSource::Context("prod".into()),
             attempts: 3,
             setup_retryable: true,
             last: Some(Box::new(ConnectError::Io(io::Error::from(

@@ -371,14 +371,18 @@ fn no_failure_message_flattens_a_cause() {
         ".context(",
         "#[error(",
     ];
-    const FLATTENERS: [&str; 8] = [
+    const FLATTENERS: [&str; 12] = [
         "inline(",
         "ui::row(",
         "error.to_string()",
         "{error}",
         "{error:",
         "{err}",
+        "{err:",
         "{e}",
+        "{e:",
+        "{source}",
+        "{source:",
         "{cause}",
     ];
     let src = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
@@ -765,4 +769,138 @@ fn up_resets_only_a_server_it_adds() {
     };
     assert!(parse(&["--server", "root@203.0.113.1", "--reset"]));
     assert!(!parse(&["--reset"]));
+}
+
+/// A thiserror message that interpolates its own source prints that cause
+/// twice: once in the message, once as the next link in the chain.
+#[test]
+fn no_error_derive_interpolates_its_source() {
+    use syn::visit::Visit;
+
+    struct Derives<'a> {
+        file: &'a std::path::Path,
+        found: Vec<String>,
+    }
+
+    impl Derives<'_> {
+        fn check(&mut self, item: &str, attrs: &[syn::Attribute], fields: &syn::Fields) {
+            let marked = |field: &syn::Field| {
+                field
+                    .attrs
+                    .iter()
+                    .any(|attr| attr.path().is_ident("source") || attr.path().is_ident("from"))
+            };
+            let explicit = fields.iter().any(marked);
+            let sources: Vec<String> = fields
+                .iter()
+                .enumerate()
+                .filter(|(_, field)| {
+                    marked(field)
+                        || (!explicit && field.ident.as_ref().is_some_and(|name| name == "source"))
+                })
+                .map(|(at, field)| {
+                    field
+                        .ident
+                        .as_ref()
+                        .map_or_else(|| at.to_string(), ToString::to_string)
+                })
+                .collect();
+            if sources.is_empty() {
+                return;
+            }
+            for attr in attrs.iter().filter(|attr| attr.path().is_ident("error")) {
+                let Ok(list) = attr.meta.require_list() else {
+                    continue;
+                };
+                let Some(Ok(message)) = list
+                    .tokens
+                    .clone()
+                    .into_iter()
+                    .next()
+                    .map(|first| syn::parse2::<syn::LitStr>(first.into()))
+                else {
+                    continue;
+                };
+                let text = list.tokens.to_string();
+                let arguments = &text[message.token().to_string().len().min(text.len())..];
+                let mut used = interpolated(&message.value());
+                used.extend(arguments.split('.').skip(1).map(|after| {
+                    after
+                        .trim_start()
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect::<String>()
+                }));
+                if let Some(source) = sources.iter().find(|source| used.contains(source)) {
+                    self.found.push(format!(
+                        "{}: {item} shows its source `{source}` in {:?}",
+                        self.file.display(),
+                        message.value()
+                    ));
+                }
+            }
+        }
+    }
+
+    impl<'ast> Visit<'ast> for Derives<'_> {
+        fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+            self.check(&item.ident.to_string(), &item.attrs, &item.fields);
+        }
+
+        fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
+            for variant in &item.variants {
+                let name = format!("{}::{}", item.ident, variant.ident);
+                self.check(&name, &variant.attrs, &variant.fields);
+            }
+        }
+    }
+
+    fn interpolated(message: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut rest = message.replace("{{", "");
+        while let Some(open) = rest.find('{') {
+            let tail = &rest[open + 1..];
+            let close = tail.find('}').unwrap_or(tail.len());
+            let name = tail[..close].split(':').next().unwrap_or("").trim();
+            names.push(name.to_owned());
+            rest = tail[close..].to_owned();
+        }
+        names
+    }
+
+    // ployzd's errors reach the CLI as RPC text, not as a chain it renders.
+    let crates = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let mut dirs: Vec<_> = std::fs::read_dir(crates)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|krate| !krate.ends_with("ployzd"))
+        .map(|krate| krate.join("src"))
+        .filter(|src| src.is_dir())
+        .collect();
+    let mut found = Vec::new();
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let file = syn::parse_file(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let mut derives = Derives {
+                file: &path,
+                found: Vec::new(),
+            };
+            derives.visit_file(&file);
+            found.append(&mut derives.found);
+        }
+    }
+    found.sort();
+    assert!(
+        found.is_empty(),
+        "the chain already prints the source; drop it from the message:\n{}",
+        found.join("\n")
+    );
 }

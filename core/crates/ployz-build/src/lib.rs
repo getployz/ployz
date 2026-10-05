@@ -182,10 +182,10 @@ pub struct ImageContext {
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum BuildError {
     /// The first phase proven to have failed, retained through cleanup.
-    #[error("{source}")]
+    #[error("{failure}")]
     AtStage {
         stage: Stage,
-        source: Box<BuildError>,
+        failure: Box<BuildError>,
     },
     /// Another attempt owns the retained builder state.
     #[error("the Machine builder is busy; retry after the active Build finishes")]
@@ -233,7 +233,7 @@ impl BuildError {
     /// Whether any owned process has unconfirmed termination.
     pub fn is_unknown(&self) -> bool {
         match self {
-            Self::AtStage { source, .. } => source.is_unknown(),
+            Self::AtStage { failure, .. } => failure.is_unknown(),
             Self::UncertainTermination(_) => true,
             Self::Busy
             | Self::Cancelled
@@ -254,7 +254,7 @@ impl BuildError {
     fn at(self, stage: Stage) -> Self {
         Self::AtStage {
             stage,
-            source: Box::new(self),
+            failure: Box::new(self),
         }
     }
 }

@@ -247,7 +247,7 @@ async fn exhausting_every_connection_reports_how_many_were_tried() {
             &error,
             ConnectError::AllFailed {
                 attempts: 2,
-                source: ConnectionSource::Context(name),
+                selection: ConnectionSource::Context(name),
                 ..
             } if name == "prod"
         ),

@@ -108,12 +108,17 @@ pub enum ProvisionError {
     /// Remote bootstrap cleanup exited unsuccessfully.
     #[error("remote bootstrap cleanup exited with {status}")]
     CleanupFailed { status: std::process::ExitStatus },
-    /// Setup failed and the subsequent remote cleanup also failed.
-    #[error("Machine setup failed and was not cleaned up.")]
+    /// Setup failed and the subsequent remote cleanup also failed. The causes
+    /// are the setup's; the cleanup's failure goes in `details.cleanup` and
+    /// `remove` becomes the `next:` line.
+    #[error("{}; the remote bootstrap was not cleaned up.", .primary.to_string().trim_end_matches('.'))]
     CleanupAfter {
         primary: Box<ProvisionError>,
         #[source]
-        both: Box<dyn std::error::Error + Send + Sync>,
+        causes: Option<crate::failure::JoinedChain>,
+        cleanup: Box<ProvisionError>,
+        /// The command that removes what was left behind.
+        remove: String,
     },
     /// Local Machine installation requires root privileges.
     #[error("run this command with sudo")]
@@ -422,7 +427,17 @@ impl Remote {
         // Host preparation may add the SSH user to the ployz group. A multiplexed
         // session authenticated before installation retains its old group list.
         self.close_control_master().await;
-        finish_remote(primary, cleanup)
+        let port = self
+            .destination
+            .port()
+            .map(|port| format!("-p {port} "))
+            .unwrap_or_default();
+        let remove = format!(
+            "ssh {port}{} rm -rf -- {}",
+            self.destination.target(),
+            shell_quote(&remote_directory)
+        );
+        finish_remote(primary, cleanup, remove)
     }
 }
 
@@ -479,14 +494,17 @@ fn installer_status(result: io::Result<std::process::ExitStatus>) -> Result<(), 
 fn finish_remote(
     primary: Result<(), ProvisionError>,
     cleanup: Result<(), ProvisionError>,
+    remove: String,
 ) -> Result<(), ProvisionError> {
     match (primary, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(primary), Ok(())) => Err(primary),
         (Ok(()), Err(cleanup)) => Err(cleanup),
         (Err(primary), Err(cleanup)) => Err(ProvisionError::CleanupAfter {
-            both: Box::new(crate::failure::JoinedChain::new(&cleanup, &primary)),
+            causes: crate::failure::JoinedChain::of(crate::ui::causes(&primary)),
             primary: Box::new(primary),
+            cleanup: Box::new(cleanup),
+            remove,
         }),
     }
 }
@@ -647,23 +665,48 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_failures_preserve_primary_evidence() {
-        let primary = ProvisionError::BootstrapVerification("bad version".into());
-        let cleanup = ProvisionError::Cleanup(io::Error::other("ssh failed"));
-        let error = finish_remote(Err(primary), Err(cleanup)).unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "Machine setup failed and was not cleaned up."
-        );
-        assert_eq!(
-            crate::ui::causes(&error),
-            [
-                "Could not remove the remote bootstrap.",
-                "ssh failed",
-                "bootstrap verification: bad version"
-            ]
-        );
+    fn a_failed_setup_heads_the_error_and_the_cleanup_names_what_to_remove() {
+        let remove = "ssh root@host rm -rf -- '/tmp/ployz-bootstrap-1'";
+        let cases = [
+            (
+                ProvisionError::Install(io::ErrorKind::BrokenPipe.into()),
+                "Could not run the Ployz installer; the remote bootstrap was not cleaned up.",
+                vec!["broken pipe"],
+            ),
+            (
+                ProvisionError::BootstrapIo {
+                    stage: "copy the bootstrap release",
+                    source: io::ErrorKind::StorageFull.into(),
+                },
+                "Could not copy the bootstrap release; the remote bootstrap was not cleaned up.",
+                vec!["no storage space"],
+            ),
+            (
+                ProvisionError::BootstrapVerification("bad version".into()),
+                "bootstrap verification: bad version; the remote bootstrap was not cleaned up.",
+                vec![],
+            ),
+        ];
+        for (primary, headline, causes) in cases {
+            let cleanup = ProvisionError::Cleanup(io::Error::other("ssh failed"));
+            let failure = crate::failure::Failure::from(
+                finish_remote(Err(primary), Err(cleanup), remove.into()).unwrap_err(),
+            );
+            assert_eq!(failure.to_string(), headline);
+            assert_eq!(failure.causes(), causes, "{headline}");
+            assert_eq!(
+                failure.hints(),
+                [crate::ui::Hint::Next(remove.into())],
+                "{headline}"
+            );
+            assert_eq!(
+                failure.json().pointer("/details/cleanup"),
+                Some(&serde_json::json!([
+                    "Could not remove the remote bootstrap.",
+                    "ssh failed"
+                ]))
+            );
+        }
     }
 
     #[test]
