@@ -471,7 +471,10 @@ async fn set_cloud_management_client(
         )
         .await?;
     let capability = response.capability.ok_or_else(|| {
-        Error::usage("Machine set the `cloud` Management Client without a Management Capability")
+        Error::coded(
+            ployz_core::RpcErrorCode::Internal,
+            "Machine set the `cloud` Management Client without a Management Capability",
+        )
     })?;
     if matches!(client.connection().transport(), Transport::Management(_)) {
         crate::context::Config::load(config_path(matches)?)?
@@ -535,7 +538,7 @@ async fn wait_matching_daemon(matches: &ArgMatches) -> Result<Client, Error> {
         .call_repeatable::<op::DescribeContract>(DescribeContractRequest {}, None)
         .await?;
     if daemon.daemon_version != env!("CARGO_PKG_VERSION") {
-        return Err(Error::usage(format!(
+        return Err(Error::unavailable(format!(
             "daemon version remained {} after installing CLI version {}",
             daemon.daemon_version,
             env!("CARGO_PKG_VERSION")
@@ -692,13 +695,14 @@ async fn wait_phase(
     )
     .await
     .map_err(|error| {
+        let error = crate::ui::inline(&error);
         Error::unavailable(if participating {
             format!(
                 "{}: {error}",
                 crate::handlers::server::readiness_timeout_message(timeout_message)
             )
         } else {
-            error.to_string()
+            error
         })
     })
 }

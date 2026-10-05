@@ -57,8 +57,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             )
             .await?;
         let history = config.path().with_extension("enrollment");
-        let resuming = crate::enrollment::local::has_assignment(&history, &snapshot, token.id)
-            .map_err(|error| Error::usage(error.to_string()))?
+        let resuming = crate::enrollment::local::has_assignment(&history, &snapshot, token.id)?
             || snapshot
                 .machines
                 .iter()
@@ -87,8 +86,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 runtime: token.runtime,
             },
             &snapshot,
-        )
-        .map_err(|error| Error::usage(error.to_string()))?;
+        )?;
         let assigned = assignment.machine.clone();
         let registration = crate::enrollment::publish_enrollment(&mut entry, &assignment).await?;
         helpers::join(

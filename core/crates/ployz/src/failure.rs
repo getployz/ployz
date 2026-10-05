@@ -13,6 +13,7 @@ use crate::{
     connect::{ConnectError, TransportError},
     context::{ConfigError, ConnectionError, ContextError},
     deploy::{DeployError, PlanError},
+    enrollment::local::Error as EnrollmentHistoryError,
     image::PushError,
     ingress::IngressImageError,
     namespace::NamespaceError,
@@ -320,9 +321,14 @@ fn code(error: &(dyn Error + 'static)) -> RpcErrorCode {
     if error.is::<IngressImageError>() {
         return RpcErrorCode::Unavailable;
     }
+    if let Some(error) = error.downcast_ref::<ConfigError>() {
+        return config_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<EnrollmentHistoryError>() {
+        return enrollment_history_code(error);
+    }
     if error.is::<ValueError>()
         || error.is::<ConnectionError>()
-        || error.is::<ConfigError>()
         || error.is::<NamespaceError>()
         || error.is::<std::num::ParseIntError>()
         || error.is::<shell_words::ParseError>()
@@ -541,6 +547,29 @@ fn io_code(error: &io::Error) -> RpcErrorCode {
     }
 }
 
+fn config_code(error: &ConfigError) -> RpcErrorCode {
+    match error {
+        ConfigError::Context(error) => context_code(error),
+        ConfigError::Parse { .. }
+        | ConfigError::PrivatePermissions(_)
+        | ConfigError::EmptyCurrentContext(_) => RpcErrorCode::InvalidArgument,
+        ConfigError::Read { .. }
+        | ConfigError::Write { .. }
+        | ConfigError::CreateDirectory { .. }
+        | ConfigError::Encode(_)
+        | ConfigError::ManagementConnectionMissing => RpcErrorCode::Internal,
+    }
+}
+
+fn enrollment_history_code(error: &EnrollmentHistoryError) -> RpcErrorCode {
+    match error {
+        EnrollmentHistoryError::Allocation(_) => RpcErrorCode::Conflict,
+        EnrollmentHistoryError::Io(_)
+        | EnrollmentHistoryError::Serialization(_)
+        | EnrollmentHistoryError::MissingScope => RpcErrorCode::Internal,
+    }
+}
+
 fn context_code(error: &ContextError) -> RpcErrorCode {
     match error {
         ContextError::NoConfig
@@ -638,6 +667,7 @@ from_error!(
     RpcError,
     NamespaceError,
     cloud_enroll::Error,
+    EnrollmentHistoryError,
 );
 
 impl From<ConnectError> for Failure {
@@ -707,9 +737,8 @@ impl From<LoginError> for Failure {
 fn login_code(error: &LoginError) -> RpcErrorCode {
     match error {
         LoginError::Unreachable { .. } => RpcErrorCode::Unavailable,
-        LoginError::Unsupported(_) | LoginError::TokenBound | LoginError::NoBilling(_) => {
-            RpcErrorCode::Unsupported
-        }
+        LoginError::Unsupported(_) | LoginError::NoBilling(_) => RpcErrorCode::Unsupported,
+        LoginError::TokenBound => RpcErrorCode::InvalidArgument,
         LoginError::Status { status, .. } => http_status_code(*status),
         LoginError::Reply(_) | LoginError::Store { .. } | LoginError::Corrupt { .. } => {
             RpcErrorCode::Internal
@@ -742,6 +771,56 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+
+    #[test]
+    fn a_failure_flattened_to_one_line_keeps_every_cause() {
+        let write = ConfigError::Write {
+            path: "/etc/ployz/config.yaml".into(),
+            source: io::Error::other("disk full"),
+        };
+        let failure = Failure::caused(RpcErrorCode::Internal, "Could not save the context.", write);
+        assert_eq!(
+            crate::ui::inline(&failure),
+            "Could not save the context: Could not write Ployz config /etc/ployz/config.yaml: disk full"
+        );
+    }
+
+    #[test]
+    fn failing_to_touch_the_config_is_internal_but_a_bad_config_is_the_readers() {
+        let io = || io::Error::other("disk full");
+        for (error, code) in [
+            (
+                ConfigError::Read {
+                    path: "c".into(),
+                    source: io(),
+                },
+                RpcErrorCode::Internal,
+            ),
+            (
+                ConfigError::Write {
+                    path: "c".into(),
+                    source: io(),
+                },
+                RpcErrorCode::Internal,
+            ),
+            (
+                ConfigError::CreateDirectory {
+                    path: "c".into(),
+                    source: io(),
+                },
+                RpcErrorCode::Internal,
+            ),
+            (
+                ConfigError::Parse {
+                    path: "c".into(),
+                    line: Some(1),
+                },
+                RpcErrorCode::InvalidArgument,
+            ),
+        ] {
+            assert_eq!(Failure::from(error).report().code, code);
+        }
+    }
 
     fn source<E: StdError + 'static>(failure: &Failure) -> &E {
         StdError::source(failure)

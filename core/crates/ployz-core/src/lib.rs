@@ -4,6 +4,7 @@ pub mod config;
 mod container_metadata;
 pub mod domain;
 mod enrollment;
+pub mod error_chain;
 pub mod framing;
 pub use enrollment::*;
 mod host_config;

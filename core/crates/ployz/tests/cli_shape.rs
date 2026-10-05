@@ -322,6 +322,10 @@ fn json_results_and_errors_are_one_stdout_object_with_distinct_exit_codes() {
 
 /// Run the binary for human output against an empty config home; returns (exit code, stderr).
 fn run_human(args: &[&str]) -> (Option<i32>, String) {
+    run_human_with(args, &[])
+}
+
+fn run_human_with(args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, String) {
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join("config.yaml");
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
@@ -335,6 +339,7 @@ fn run_human(args: &[&str]) -> (Option<i32>, String) {
         .env_remove("PLOYZ_STORE")
         .env_remove("NO_COLOR")
         .env_remove("CLICOLOR_FORCE")
+        .envs(env.iter().copied())
         .output()
         .unwrap();
     (
@@ -371,11 +376,26 @@ fn usage_errors_exit_2() {
 }
 
 #[test]
+fn a_cut_valid_list_still_names_the_closest_setting() {
+    let (code, stderr) = run_human(&["explain", "web.restart_policy"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(
+        stderr.contains("\nvalid: did you mean restartPolicy?\nvalid: "),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn color_never_emits_no_escapes() {
-    let (code, stderr) = run_human(&["ctx", "use", "missing", "--color", "never"]);
+    let (code, stderr) = run_human_with(
+        &["ctx", "use", "missing", "--color", "never"],
+        &[("CLICOLOR_FORCE", "1")],
+    );
     assert_eq!(code, Some(1), "{stderr}");
     assert!(stderr.starts_with("error: "), "{stderr}");
     assert!(!stderr.contains('\x1b'), "{stderr:?}");
+    let (_, forced) = run_human_with(&["ctx", "use", "missing"], &[("CLICOLOR_FORCE", "1")]);
+    assert!(forced.contains('\x1b'), "{forced:?}");
 
     let (code, stderr) = run_human(&["ctx", "use", "missing", "--color", "always"]);
     assert_eq!(code, Some(1), "{stderr}");
@@ -464,7 +484,7 @@ fn cloud_commands_act_with_ployz_token_or_the_signed_in_device() {
     assert_eq!(code, Some(2));
     assert_eq!(
         json.pointer("/error/code").unwrap(),
-        "unsupported",
+        "invalid_argument",
         "{json}"
     );
 

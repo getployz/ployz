@@ -1,13 +1,13 @@
 //! The error vocabulary: hints and the `error:` / `cause:` lines.
 
-use std::{error::Error, io};
+use std::io;
 
 use serde_json::{Map, Value};
 
 use super::Tone;
 
 /// Most choices a `valid:` line lists before it says how many more there are.
-const VALID_SHOWN: usize = 8;
+pub const VALID_SHOWN: usize = 8;
 
 /// One line telling the reader what they can do about an outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,6 +20,8 @@ pub enum Hint {
     Retry(String),
     /// The command that reverses what just happened.
     Undo(String),
+    /// The choice closest to what the input named.
+    Closest(String),
     /// The choices the input could have named.
     Valid(Vec<String>),
 }
@@ -39,6 +41,7 @@ impl Hint {
             (Self::Next(_), Self::Next(_))
             | (Self::Retry(_), Self::Retry(_))
             | (Self::Undo(_), Self::Undo(_))
+            | (Self::Closest(_), Self::Closest(_))
             | (Self::Valid(_), Self::Valid(_)) => true,
             _ => false,
         }
@@ -50,7 +53,7 @@ impl Hint {
             Self::Inspect(_) => "inspect:",
             Self::Retry(_) => "retry:",
             Self::Undo(_) => "undo:",
-            Self::Valid(_) => "valid:",
+            Self::Closest(_) | Self::Valid(_) => "valid:",
         }
     }
 
@@ -60,6 +63,7 @@ impl Hint {
             | Self::Inspect(command)
             | Self::Retry(command)
             | Self::Undo(command) => command.clone(),
+            Self::Closest(name) => format!("did you mean {name}?"),
             Self::Valid(names) => match names.split_at_checked(VALID_SHOWN) {
                 Some((shown, rest)) if !rest.is_empty() => {
                     format!("{}, and {} more", shown.join(", "), rest.len())
@@ -102,12 +106,13 @@ impl Hint {
             .chain(list("inspect").into_iter().map(Self::Inspect))
             .chain(text("retry").map(Self::Retry))
             .chain(text("undo").map(Self::Undo))
+            .chain(text("did_you_mean").map(Self::Closest))
             .chain((!valid.is_empty()).then_some(Self::Valid(valid)))
             .collect()
     }
 
     /// Write `hints` into `--json` `details`: `next`, `retry` and `undo` are one
-    /// command each, `inspect` and `valid_children` are arrays.
+    /// command each, `did_you_mean` one name, `inspect` and `valid_children` arrays.
     pub fn into_details(hints: &[Self], details: &mut Value) {
         if hints.is_empty() {
             return;
@@ -131,6 +136,9 @@ impl Hint {
                     fields.insert("undo".into(), command.as_str().into());
                 }
                 Self::Inspect(command) => inspect.push(Value::from(command.as_str())),
+                Self::Closest(name) => {
+                    fields.insert("did_you_mean".into(), name.as_str().into());
+                }
                 Self::Valid(names) => {
                     fields.insert("valid_children".into(), names.clone().into());
                 }
@@ -142,36 +150,7 @@ impl Hint {
     }
 }
 
-/// The `cause:` lines under an error: each `source()` below the top, raw, with
-/// a wrapper that only repeats the line above it dropped.
-#[must_use]
-pub fn causes(top: &(dyn Error + 'static)) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    let mut above = top.to_string();
-    let mut next = top.source();
-    while let Some(error) = next {
-        let line = error.to_string();
-        if line != above && !line.is_empty() {
-            lines.push(line.clone());
-        }
-        above = line;
-        next = error.source();
-    }
-    lines
-}
-
-/// An error and its causes on one line, for a place no `cause:` line can go:
-/// a warning, a per-Server failure, an RPC message.
-#[must_use]
-pub fn inline(error: &(dyn Error + 'static)) -> String {
-    let mut text = error.to_string();
-    for cause in causes(error) {
-        text.truncate(text.trim_end_matches('.').len());
-        text.push_str(": ");
-        text.push_str(&cause);
-    }
-    text
-}
+pub use ployz_core::error_chain::{causes, inline};
 
 /// Write the human error: `error:` with our sentence, a `cause:` line per source,
 /// then the hints.
@@ -227,6 +206,7 @@ mod tests {
             Hint::Inspect("ployz ps".into()),
             Hint::Retry("ployz project rm blog --confirm blog".into()),
             Hint::Undo("ployz env sync --undo s3".into()),
+            Hint::Closest("web".into()),
             Hint::valid(["web", "db"]),
         ];
         let mut details = serde_json::json!({ "deployment": "d1" });
@@ -239,9 +219,32 @@ mod tests {
                 "inspect": ["ployz logs web", "ployz ps"],
                 "retry": "ployz project rm blog --confirm blog",
                 "undo": "ployz env sync --undo s3",
+                "did_you_mean": "web",
                 "valid_children": ["web", "db"],
             })
         );
         assert_eq!(Hint::from_details(&details), hints);
+    }
+
+    #[test]
+    fn the_closest_name_shows_even_when_the_list_is_cut() {
+        let details = serde_json::json!({
+            "did_you_mean": "s11",
+            "valid_children": (1..=11).map(|n| format!("s{n}")).collect::<Vec<_>>(),
+        });
+        let mut out = anstream::StripStream::new(Vec::new());
+        write(
+            &mut out,
+            "No Setting s1l",
+            &[],
+            &Hint::from_details(&details),
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out.into_inner()).unwrap(),
+            "error: No Setting s1l\n\
+             valid: did you mean s11?\n\
+             valid: s1, s2, s3, s4, s5, s6, s7, s8, and 3 more\n"
+        );
     }
 }

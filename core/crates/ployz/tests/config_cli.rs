@@ -96,7 +96,7 @@ fn ok(store: &Target, args: &[&str]) -> Value {
 fn error(store: &Target, args: &[&str]) -> Value {
     let (code, json) = ployz(Some(store), args);
     let exit = match json["error"]["code"].as_str() {
-        Some("invalid_argument" | "confirmation_required" | "ambiguous" | "unsupported") => 2,
+        Some("invalid_argument" | "confirmation_required" | "ambiguous") => 2,
         _ => 1,
     };
     assert_eq!(code, Some(exit), "{args:?}: {json}");
@@ -1571,7 +1571,15 @@ fn the_catalog_describes_settings_without_a_store() {
         json.pointer("/error/details/did_you_mean"),
         Some(&json!("restartPolicy"))
     );
-    assert!(json.pointer("/error/details/valid_children").is_some());
+    let valid = json
+        .pointer("/error/details/valid_children")
+        .and_then(Value::as_array)
+        .unwrap();
+    let position = valid.iter().position(|name| name == "restartPolicy");
+    assert!(
+        position.is_some_and(|at| at >= ployz::ui::VALID_SHOWN),
+        "{valid:?}"
+    );
 }
 
 #[test]

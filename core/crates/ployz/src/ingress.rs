@@ -163,7 +163,8 @@ async fn withdraw(client: &Client, machine_id: &MachineId, container_id: &Contai
         Ok(machines) => machines,
         Err(error) => {
             crate::output::warn(format!(
-                "stopping Container {container_id} without confirming the Ingress Proxies stopped routing to it: {error}"
+                "stopping Container {container_id} without confirming the Ingress Proxies stopped routing to it: {}",
+                crate::ui::inline(&error)
             ));
             return;
         }

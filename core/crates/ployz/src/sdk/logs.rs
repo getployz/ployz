@@ -74,7 +74,7 @@ impl Session {
                             before_nanos,
                         })
                         .encode()
-                        .map_err(|error| invalid_argument(error.to_string()))?;
+                        .map_err(|error| invalid_argument(crate::ui::inline(&error)))?;
                     client.container_log_history_stream(&target, request).await
                 } else {
                     let request = op::ContainerLogs::into_request(ContainerLogsRequest {
@@ -87,7 +87,7 @@ impl Session {
                         },
                     })
                     .encode()
-                    .map_err(|error| invalid_argument(error.to_string()))?;
+                    .map_err(|error| invalid_argument(crate::ui::inline(&error)))?;
                     client.container_logs_stream(&target, request).await
                 };
                 result.map_err(|error| RpcError::from(ConnectError::Rpc(error)))
@@ -130,7 +130,8 @@ impl Drop for ContainerLogStream {
 }
 
 fn decode_record(payload: &OpaquePayload) -> Result<Option<ContainerLogRecord>, RpcError> {
-    let entry = LogEntry::decode(payload).map_err(|error| invalid_argument(error.to_string()))?;
+    let entry =
+        LogEntry::decode(payload).map_err(|error| invalid_argument(crate::ui::inline(&error)))?;
     let (channel, message) = match entry.body {
         LogBody::Stdout(bytes) => (
             LogChannel::Stdout,

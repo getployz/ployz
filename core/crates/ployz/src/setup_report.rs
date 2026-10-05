@@ -185,7 +185,11 @@ impl SetupReport {
     ///
     /// `error` is what failed the running step; `None` means the final callback succeeded,
     /// which finishes the running step.
-    pub(crate) async fn send<E: std::fmt::Display>(mut self, url: &str, error: Option<&E>) {
+    pub(crate) async fn send<E: std::error::Error + 'static>(
+        mut self,
+        url: &str,
+        error: Option<&E>,
+    ) {
         if do_not_track() {
             return;
         }
@@ -198,7 +202,7 @@ impl SetupReport {
             Some(error) => Outcome::Failed {
                 failed_step: step,
                 failed_step_seconds: since.elapsed().as_secs_f64(),
-                error: error.to_string(),
+                error: crate::ui::inline(error),
             },
         };
         let body = Body {

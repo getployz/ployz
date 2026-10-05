@@ -235,7 +235,7 @@ pub(crate) async fn converge<C: ConvergenceClient>(
     let entry_lost = |moves, error: ConnectError| Converged::Stopped {
         moves,
         stop: DrainStop::EntryUnreachable {
-            detail: error.to_string(),
+            detail: crate::ui::inline(&error),
         },
     };
     let failed = |moves, failure| Converged::Failed { moves, failure };
@@ -327,7 +327,7 @@ fn refusal(
     super::planning::place_one(&spec.to_requested(), &service.namespace, snapshot)
         .err()
         .map(|error| StayReason::NoDestination {
-            detail: error.to_string(),
+            detail: crate::ui::inline(&error),
         })
 }
 
@@ -431,7 +431,7 @@ async fn move_one(
     let dest = super::planning::place_one(&spec.to_requested(), &container.namespace, snapshot)
         .map_err(|error| MoveFailure::NoDestination {
             from: from.clone(),
-            detail: error.to_string(),
+            detail: crate::ui::inline(&error),
         })?;
     let dest = machine(snapshot, &dest);
     let to = MachineRef::from(dest);
@@ -441,7 +441,7 @@ async fn move_one(
         .map_err(|error| MoveFailure::CopyImage {
             from: from.clone(),
             to: to.clone(),
-            detail: error.to_string(),
+            detail: crate::ui::inline(&error),
         })?;
     // The image is on `dest` by now; a registry pull could fetch a different one.
     let mut spec = spec.clone();
@@ -471,14 +471,14 @@ async fn move_one(
         }) => Err(MoveFailure::NotServing {
             from,
             to,
-            detail: error.to_string(),
+            detail: crate::ui::inline(&error),
             replacement_removed,
         }),
         Err(MoveContainerError::OldNotRemoved { error, old_stopped }) => {
             Err(MoveFailure::OldNotRemoved {
                 from,
                 to,
-                detail: error.to_string(),
+                detail: crate::ui::inline(&error),
                 old_stopped,
             })
         }

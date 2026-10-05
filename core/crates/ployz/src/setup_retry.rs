@@ -17,9 +17,12 @@ pub(crate) enum Error<E> {
     Exhausted(String),
 }
 
-impl<E: std::error::Error + Send + Sync + 'static> From<Error<E>> for Failure {
+impl<E: Into<Failure>> From<Error<E>> for Failure {
     fn from(error: Error<E>) -> Self {
-        Self::caused(RpcErrorCode::InvalidArgument, error.to_string(), error)
+        match error {
+            Error::Permanent(error) => error.into(),
+            Error::Exhausted(message) => Self::coded(RpcErrorCode::Unavailable, message),
+        }
     }
 }
 
@@ -208,6 +211,18 @@ mod tests {
     #[derive(Debug, thiserror::Error)]
     #[error("{0}")]
     struct Probe(&'static str);
+
+    #[test]
+    fn a_timeout_is_unavailable_and_a_refusal_keeps_its_own_code() {
+        let timeout = Failure::from(Error::<crate::connect::ConnectError>::Exhausted(
+            "probe".into(),
+        ));
+        assert_eq!(timeout.report().code, RpcErrorCode::Unavailable);
+        let refused = Failure::from(Error::Permanent(
+            crate::connect::ConnectError::ClientRefused,
+        ));
+        assert_eq!(refused.report().code, RpcErrorCode::Unauthenticated);
+    }
 
     #[tokio::test(start_paused = true)]
     async fn retries_transient_failures_but_stops_on_permanent_errors_and_at_deadline() {

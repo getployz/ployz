@@ -312,7 +312,7 @@ fn a_cloud_without_cli_sign_in_is_unsupported() {
         &dir.path().join("config.yaml"),
         &["login", "--json", "--cloud-url", &cloud],
     );
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         json_of(&output).pointer("/error/code").unwrap(),
         "unsupported"

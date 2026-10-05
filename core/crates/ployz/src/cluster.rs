@@ -1203,7 +1203,8 @@ pub(crate) async fn evict_machine(
     {
         Ok(removed) => removed.reset_warning,
         Err(error) if error.is_unreachable() => Some(format!(
-            "target is unreachable; removing shared rows: {error}"
+            "target is unreachable; removing shared rows: {}",
+            crate::ui::inline(&error)
         )),
         Err(error) => return Err(error.into()),
     };

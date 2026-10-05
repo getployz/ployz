@@ -23,9 +23,9 @@ pub fn exit_code(code: &RpcErrorCode) -> u8 {
     match code {
         RpcErrorCode::InvalidArgument
         | RpcErrorCode::ConfirmationRequired
-        | RpcErrorCode::Ambiguous
-        | RpcErrorCode::Unsupported => USAGE_EXIT,
-        RpcErrorCode::NotFound
+        | RpcErrorCode::Ambiguous => USAGE_EXIT,
+        RpcErrorCode::Unsupported
+        | RpcErrorCode::NotFound
         | RpcErrorCode::Conflict
         | RpcErrorCode::Unauthenticated
         | RpcErrorCode::Unavailable
@@ -135,7 +135,7 @@ mod tests {
             (RpcErrorCode::InvalidArgument, 2),
             (RpcErrorCode::ConfirmationRequired, 2),
             (RpcErrorCode::Ambiguous, 2),
-            (RpcErrorCode::Unsupported, 2),
+            (RpcErrorCode::Unsupported, 1),
             (RpcErrorCode::NotFound, 1),
             (RpcErrorCode::Conflict, 1),
             (RpcErrorCode::Unauthenticated, 1),

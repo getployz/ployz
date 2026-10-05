@@ -91,8 +91,8 @@ Scripts can tell failures apart by exit code:
 | Exit | Meaning |
 | --- | --- |
 | 0 | Done. |
-| 1 | It failed: something wasn't found, a server couldn't be reached, or Ployz refused. |
-| 2 | Fix the command: a bad argument, a missing `--confirm`, or a name that matches more than one thing. |
+| 1 | It failed: something wasn't found, a server couldn't be reached, Ployz refused, or the server or Cloud doesn't support what you asked. |
+| 2 | Fix the command: a bad argument, a flag the command doesn't take, a missing `--confirm`, or a name that matches more than one thing. |
 | 3 | You got a result, but some servers didn't answer, so part of it is missing. Run it again once they're back. |
 
 `ployz exec` exits with your command's own exit code.

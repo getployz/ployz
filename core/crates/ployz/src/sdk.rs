@@ -927,7 +927,7 @@ impl Watch {
                     *guard = None;
                     Err(RpcError {
                         code: RpcErrorCode::Internal,
-                        message: error.to_string(),
+                        message: crate::ui::inline(&error),
                         details: Value::Null,
                     })
                 }

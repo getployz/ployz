@@ -131,7 +131,7 @@ impl CatchUpClient for Client {
             .await
             .map_err(|error| RpcError {
                 code: ployz_core::RpcErrorCode::Unavailable,
-                message: error.to_string(),
+                message: crate::ui::inline(&error),
                 details: serde_json::Value::Null,
             })?;
         if let Some(error) = endpoint_capacity_error(1, capacity.as_ref()) {
@@ -180,7 +180,7 @@ impl CatchUpClient for Client {
 pub(crate) fn joined_catch_up_error(error: CatchUpError, server: &Machine) -> String {
     let mut message = format!(
         "Server joined, but Global catch-up is incomplete; it remains a Cluster member. {}",
-        error.cause
+        crate::ui::inline(&error.cause)
     );
     if !error.unresolved.is_empty() {
         message.push_str("\nGlobals requiring attention:");

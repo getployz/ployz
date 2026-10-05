@@ -78,7 +78,7 @@ pub(crate) async fn retire_globals<C: RetireClient>(
     };
     let live = match client.live_services().await {
         Ok(live) => live,
-        Err(error) => return everyone(error.to_string()),
+        Err(error) => return everyone(crate::ui::inline(&error)),
     };
     if !live.containers.all_targets_succeeded() {
         return everyone(format!(
@@ -100,7 +100,7 @@ pub(crate) async fn retire_globals<C: RetireClient>(
                     ),
                     Some(slot) => match client.retire_slot(&server.id, &slot).await {
                         Ok(()) => Retirement::Retired,
-                        Err(error) => Retirement::NotRetired(error.to_string()),
+                        Err(error) => Retirement::NotRetired(crate::ui::inline(&error)),
                     },
                 },
             }

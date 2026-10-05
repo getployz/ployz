@@ -95,7 +95,7 @@ fn closing_failure(
     rows: &[OperationRow],
     live_shown: bool,
 ) -> Failure {
-    let text = report::paint_closing(outcome, rows, live_shown, &Ink::detect(io::stderr()));
+    let text = report::paint_closing(outcome, rows, live_shown, &Ink::detect(&io::stderr()));
     Failure::detailed(
         ployz_core::RpcErrorCode::Internal,
         text.trim().to_owned(),
@@ -265,6 +265,14 @@ mod tests {
         DeployOperation, FailedOperation, MachineAction, MachineId, PruneRefusal,
         RequestedServiceSpec, RpcError, RpcErrorCode,
     };
+
+    #[test]
+    fn the_color_flag_decides_the_deploy_ink() {
+        anstream::ColorChoice::Never.write_global();
+        assert_eq!(Ink::detect(&std::io::stderr()), Ink::plain());
+        anstream::ColorChoice::Always.write_global();
+        assert_eq!(Ink::detect(&std::io::stderr()), Ink::color());
+    }
 
     #[test]
     fn progress_frame_counts_soft_wrapped_terminal_rows() {
