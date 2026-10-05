@@ -226,7 +226,7 @@ fn ingress_challenge_ips(
     let ingress: BTreeSet<_> = observations
         .iter()
         .filter(|observation| {
-            crate::ingress::is_system_ingress(observation) && observation.runtime.is_healthy()
+            crate::ingress::is_system_ingress(observation) && observation.runtime.may_serve()
         })
         .map(|observation| observation.machine_id)
         .collect();

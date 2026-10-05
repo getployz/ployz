@@ -1491,7 +1491,7 @@ export type GithubTimestamp = string;
 
 export type HealthFailure = { "type": "cancelled" } | { "type": "timed_out" } | { "type": "runtime", observation: ContainerRuntimeObservation, };
 
-export type HealthObservation = "not_configured" | "starting" | "healthy" | "unhealthy" | "stopping" | string;
+export type HealthObservation = "not_configured" | "starting" | "healthy" | "unhealthy" | "failing" | "stopping" | string;
 
 export type HealthcheckCommand = [string, ...string[]];
 

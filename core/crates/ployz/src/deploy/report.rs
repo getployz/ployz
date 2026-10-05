@@ -188,6 +188,7 @@ enum RuntimeSummary {
     Dead,
     Unrecognized,
     ReportedHealthy,
+    ReportedFailing,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -442,6 +443,7 @@ impl RuntimeSummary {
             Self::Dead => "container is dead".into(),
             Self::Unrecognized => "container in an unrecognized state".into(),
             Self::ReportedHealthy => "monitor rejected a healthy observation".into(),
+            Self::ReportedFailing => "monitor rejected a failing observation".into(),
         }
     }
 }
@@ -717,6 +719,7 @@ fn runtime_summary(observation: &ContainerRuntimeObservation) -> RuntimeSummary 
             HealthObservation::Starting => RuntimeSummary::StillStarting,
             HealthObservation::NotConfigured => RuntimeSummary::NoHealthcheck,
             HealthObservation::Healthy => RuntimeSummary::ReportedHealthy,
+            HealthObservation::Failing => RuntimeSummary::ReportedFailing,
             HealthObservation::Unrecognized(_) => RuntimeSummary::Unrecognized,
             HealthObservation::Stopping => RuntimeSummary::Stopping,
         },

@@ -83,6 +83,29 @@ async fn dependency_gate_rejects_zero_service_containers_and_hooks() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn dependency_gate_accepts_a_container_that_passed_once_and_is_failing_now() {
+    let dependency = QualifiedService::parse("app/api").unwrap();
+    let id = container('a');
+    let mut observed = observation(&machine('1'), &id, failing());
+    observed
+        .try_update(|parts| parts.resolved_spec.container.healthcheck = Some(healthcheck()))
+        .unwrap();
+    let plan = vec![DeployOperation::WaitHealthy {
+        machine_id: machine('1'),
+        dependent: QualifiedService::parse("app/web").unwrap(),
+        dependency: dependency.clone(),
+    }];
+    let client = Scripted::new(vec![listed(&dependency, vec![observed])]);
+
+    let started = tokio::time::Instant::now();
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(matches!(outcome, DeployOutcome::Success { .. }));
+    assert_eq!(started.elapsed(), std::time::Duration::ZERO);
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
 async fn dependency_gate_uses_short_unhealthy_and_healthcheck_starting_deadlines() {
     let dependency = QualifiedService::parse("app/api").unwrap();
     for (runtime, deadline_millis, seconds, expected) in [
@@ -265,6 +288,28 @@ async fn health_monitor_succeeds_on_the_first_healthy_probe() {
         ok(Call::Start(machine, new)),
         observed(Call::Inspect(machine, new), starting()),
         observed(Call::Inspect(machine, new), healthy()),
+        serving(new),
+    ]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(matches!(outcome, DeployOutcome::Success { .. }));
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn health_monitor_completes_on_a_check_that_passed_once_and_is_failing_now() {
+    let machine = machine('1');
+    let new = container('a');
+    let plan = vec![run(
+        &machine,
+        spec(Some(1_000), Some(healthcheck()), None),
+        false,
+    )];
+    let client = Scripted::new(vec![
+        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+        ok(Call::Start(machine, new)),
+        observed(Call::Inspect(machine, new), failing()),
         serving(new),
     ]);
 

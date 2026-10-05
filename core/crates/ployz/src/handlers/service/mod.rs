@@ -152,7 +152,7 @@ fn health_rank(container: ContainerRef<'_>) -> u8 {
 fn runtime_health_rank(runtime: &ContainerRuntimeObservation) -> u8 {
     match runtime {
         ContainerRuntimeObservation::Running {
-            health: HealthObservation::Unhealthy,
+            health: HealthObservation::Unhealthy | HealthObservation::Failing,
         }
         | ContainerRuntimeObservation::Dead => 0,
         ContainerRuntimeObservation::Running {

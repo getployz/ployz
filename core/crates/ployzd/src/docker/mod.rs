@@ -354,7 +354,7 @@ fn withdrawn_hides_only_running_containers_marked_stopping() {
         health: HealthObservation::Stopping,
     };
     assert_eq!(withdrawn(healthy.clone(), true), stopping);
-    assert!(!withdrawn(healthy.clone(), true).is_healthy());
+    assert!(!withdrawn(healthy.clone(), true).may_serve());
     assert_eq!(withdrawn(healthy.clone(), false), healthy);
     assert_eq!(
         withdrawn(ContainerRuntimeObservation::Exited { code: 0 }, true),

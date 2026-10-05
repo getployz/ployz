@@ -380,7 +380,7 @@ pub fn select_proxy_container(
     service
         .containers
         .iter()
-        .find(|container| container.as_observation().runtime.is_healthy())
+        .find(|container| container.as_observation().runtime.may_serve())
         .ok_or(OperatorError::NoHealthyContainer)
 }
 

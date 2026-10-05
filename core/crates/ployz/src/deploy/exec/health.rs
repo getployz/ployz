@@ -257,7 +257,7 @@ fn classify_health(
 ) -> HealthPoll {
     match runtime {
         ContainerRuntimeObservation::Running {
-            health: HealthObservation::Healthy,
+            health: HealthObservation::Healthy | HealthObservation::Failing,
         } => HealthPoll::Complete,
         ContainerRuntimeObservation::Running {
             health: HealthObservation::NotConfigured,

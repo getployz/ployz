@@ -541,6 +541,8 @@ fn unknown_observation_variants_preserve_the_raw_value() {
 
     let health: HealthObservation = serde_json::from_str("\"degraded\"").unwrap();
     assert_eq!(health, HealthObservation::Unrecognized("degraded".into()));
+    let health: HealthObservation = serde_json::from_str("\"failing\"").unwrap();
+    assert_eq!(health, HealthObservation::Failing);
 
     // A known state with malformed fields is an error, not a future state.
     serde_json::from_value::<ContainerRuntimeObservation>(json!({ "state": "running" }))

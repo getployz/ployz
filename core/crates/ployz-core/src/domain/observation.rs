@@ -18,6 +18,8 @@ crate::value::open_string_enum!(HealthObservation, Unrecognized {
     Starting => "starting",
     Healthy => "healthy",
     Unhealthy => "unhealthy",
+    // Passed since its current start, failing now; still routed.
+    Failing => "failing",
     // Withdrawn from the Ingress Proxies ahead of a stop; never routed.
     Stopping => "stopping",
 });
@@ -110,13 +112,18 @@ impl<'de> Deserialize<'de> for ContainerRuntimeObservation {
 }
 
 impl ContainerRuntimeObservation {
-    /// Running with health Healthy or NotConfigured.
+    /// Eligible for traffic: Running with health Healthy, Failing or NotConfigured.
+    ///
+    /// A check gates a replica's first serve only. Once it has passed since its
+    /// current start, a later failure reports Failing and keeps it routed.
     #[must_use]
-    pub fn is_healthy(&self) -> bool {
+    pub fn may_serve(&self) -> bool {
         matches!(
             self,
             Self::Running {
-                health: HealthObservation::Healthy | HealthObservation::NotConfigured,
+                health: HealthObservation::Healthy
+                    | HealthObservation::Failing
+                    | HealthObservation::NotConfigured,
             }
         )
     }
@@ -330,14 +337,14 @@ impl ServiceContainer {
         self.observation
     }
 
-    /// Container Address when this Container is healthy and addressed.
+    /// Container Address when this Container may serve and is addressed.
     ///
     /// Presence is a per-Container runtime fact, not eligibility to receive
     /// traffic. Traffic also requires a selected Serving Shape.
     #[must_use]
     pub fn traffic_address(&self) -> Option<ContainerAddress> {
         let observation = self.as_observation();
-        observation.runtime.is_healthy().then_some(())?;
+        observation.runtime.may_serve().then_some(())?;
         observation.address
     }
 }
@@ -530,48 +537,54 @@ mod tests {
     use crate::{ContainerId, MachineId, Namespace, ResolvedServiceSpec, ServiceId, ServiceName};
 
     #[test]
-    fn is_healthy_is_running_with_healthy_or_not_configured() {
+    fn may_serve_is_running_with_healthy_failing_or_not_configured() {
         assert!(
             ContainerRuntimeObservation::Running {
                 health: HealthObservation::Healthy,
             }
-            .is_healthy()
+            .may_serve()
+        );
+        assert!(
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Failing,
+            }
+            .may_serve()
         );
         assert!(
             ContainerRuntimeObservation::Running {
                 health: HealthObservation::NotConfigured,
             }
-            .is_healthy()
+            .may_serve()
         );
         assert!(
             !ContainerRuntimeObservation::Running {
                 health: HealthObservation::Starting,
             }
-            .is_healthy()
+            .may_serve()
         );
         assert!(
             !ContainerRuntimeObservation::Running {
                 health: HealthObservation::Unhealthy,
             }
-            .is_healthy()
+            .may_serve()
         );
         assert!(
             !ContainerRuntimeObservation::Running {
                 health: HealthObservation::Unrecognized("degraded".into()),
             }
-            .is_healthy()
+            .may_serve()
         );
-        assert!(!ContainerRuntimeObservation::Created.is_healthy());
-        assert!(!ContainerRuntimeObservation::Paused.is_healthy());
-        assert!(!ContainerRuntimeObservation::Restarting.is_healthy());
-        assert!(!ContainerRuntimeObservation::Exited { code: 0 }.is_healthy());
-        assert!(!ContainerRuntimeObservation::Removing.is_healthy());
-        assert!(!ContainerRuntimeObservation::Dead.is_healthy());
+        assert!(!ContainerRuntimeObservation::Created.may_serve());
+        assert!(!ContainerRuntimeObservation::Paused.may_serve());
+        assert!(!ContainerRuntimeObservation::Restarting.may_serve());
+        assert!(!ContainerRuntimeObservation::Exited { code: 0 }.may_serve());
+        assert!(!ContainerRuntimeObservation::Removing.may_serve());
+        assert!(!ContainerRuntimeObservation::Dead.may_serve());
         assert!(
             !ContainerRuntimeObservation::Unknown {
                 raw: json!({ "state": "future" })
             }
-            .is_healthy()
+            .may_serve()
         );
     }
 
