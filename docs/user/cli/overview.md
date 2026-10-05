@@ -83,4 +83,19 @@ services. It expires after 90 days unless you pass `--expires-in` (1 to 365 days
 find its ID with `ployz token ls`, then run `ployz token rm ID`. If it names a server that's
 offline, run it again once that server is back.
 
-Add `--json` to any command to get one JSON object instead of text.
+Add `--json` to any command to get one JSON object instead of text. If the command fails, that
+object is `{"error": {...}}`, with the next command to run in `details` when there is one.
+
+Scripts can tell failures apart by exit code:
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Done. |
+| 1 | It failed: something wasn't found, a server couldn't be reached, or Ployz refused. |
+| 2 | Fix the command: a bad argument, a missing `--confirm`, or a name that matches more than one thing. |
+| 3 | You got a result, but some servers didn't answer, so part of it is missing. Run it again once they're back. |
+
+`ployz exec` exits with your command's own exit code.
+
+Ployz colors its output in a terminal. Set `NO_COLOR=1` or pass `--color never` to turn color
+off, or `--color always` to keep it when you pipe the output.
