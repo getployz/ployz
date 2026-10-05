@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 async fn hook_exit_zero_runs_suffix_nonzero_and_inspect_failure_retain_the_hook() {
     for reply in [
-        Reply::Observed(exited(7), None),
+        Reply::Observed(exited(7), None, None),
         Reply::Error(error("inspect")),
     ] {
         let machine = machine('1');

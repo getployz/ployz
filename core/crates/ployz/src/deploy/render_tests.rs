@@ -1,12 +1,13 @@
 use std::num::NonZeroU64;
 
 use ployz_core::{
-    ContainerId, DeployOperation, DockerVolumeId, DockerVolumeName, ExecutionError,
-    FailedOperation, HealthFailure, HookFailure, MachineAction, MachineId, MachineName, Namespace,
-    OperationPhase, OperationRow, OperationStatus, PreservedVolume, ProvisionedVolumeMaximumBytes,
-    PruneRefusal, QualifiedService, ReplacementCompensation, ReplacementOperation,
-    RequestedServiceSpec, ResolvedServiceSpec, RestartAttempt, RpcError, RpcErrorCode, ServiceName,
-    StopAttempt, UpdateOrder, VolumeToCreate,
+    ContainerId, ContainerRuntimeObservation, DeployOperation, DockerVolumeId, DockerVolumeName,
+    ExecutionError, FailedOperation, HealthFailure, HealthObservation, HookFailure,
+    LastHealthCheck, MachineAction, MachineId, MachineName, Namespace, OperationPhase,
+    OperationRow, OperationStatus, PreservedVolume, ProvisionedVolumeMaximumBytes, PruneRefusal,
+    QualifiedService, ReplacementCompensation, ReplacementOperation, RequestedServiceSpec,
+    ResolvedServiceSpec, RestartAttempt, RpcError, RpcErrorCode, ServiceName, StopAttempt,
+    UpdateOrder, VolumeToCreate,
 };
 
 use super::super::report::{self, Ink, Role};
@@ -666,32 +667,57 @@ fn wait_healthy_footer_omits_the_dependent_machine() {
 fn health_cause_is_english_without_id_or_debug() {
     let machine_id = MachineId::parse("d".repeat(32)).unwrap();
     let container_id = ContainerId::parse("c".repeat(64)).unwrap();
-    let spec = resolved("cashdash-frontend", "app:latest");
-    let row = OperationRow {
-        index: 0,
-        machine_id,
-        machine_name: Some(MachineName::parse("machine-2").unwrap()),
-        operation: DeployOperation::ReplaceContainer(ReplacementOperation {
+    let unhealthy = ContainerRuntimeObservation::Running {
+        health: HealthObservation::Unhealthy,
+    };
+    for (failure, cause) in [
+        (
+            HealthFailure::TimedOut { last_check: None },
+            "health check timed out\n",
+        ),
+        (
+            HealthFailure::TimedOut {
+                last_check: Some(LastHealthCheck::HttpStatus { status: 503 }),
+            },
+            "health check timed out; last check: HTTP 503\n",
+        ),
+        (
+            HealthFailure::Runtime {
+                observation: unhealthy,
+                last_check: Some(LastHealthCheck::exited(127, "sh: pg_isready: not found")),
+            },
+            "container reported unhealthy; last check exited 127: sh: pg_isready: not found\n",
+        ),
+    ] {
+        let row = OperationRow {
+            index: 0,
             machine_id,
-            old_container_id: ContainerId::parse("f".repeat(64)).unwrap(),
-            spec,
-            skip_health_monitor: false,
-        }),
-        display_name: None,
-        service_name: Some(ServiceName::parse("cashdash-frontend").unwrap()),
-        status: OperationStatus::Failed {
-            error: health_timeout(container_id),
-        },
-    };
-    let event = DeployEvent::Progress {
-        completed: 0,
-        total: 1,
-        rows: vec![row],
-    };
-    let text = progress_text(&event, "Deploying to default");
-    assert!(text.contains("health check timed out"), "{text}");
-    assert!(!text.contains(&"c".repeat(64)), "{text}");
-    assert!(!text.contains("TimedOut"), "{text}");
+            machine_name: Some(MachineName::parse("machine-2").unwrap()),
+            operation: DeployOperation::ReplaceContainer(ReplacementOperation {
+                machine_id,
+                old_container_id: ContainerId::parse("f".repeat(64)).unwrap(),
+                spec: resolved("cashdash-frontend", "app:latest"),
+                skip_health_monitor: false,
+            }),
+            display_name: None,
+            service_name: Some(ServiceName::parse("cashdash-frontend").unwrap()),
+            status: OperationStatus::Failed {
+                error: ExecutionError::Health {
+                    container_id,
+                    failure,
+                },
+            },
+        };
+        let event = DeployEvent::Progress {
+            completed: 0,
+            total: 1,
+            rows: vec![row],
+        };
+        let text = progress_text(&event, "Deploying to default");
+        assert!(text.contains(cause), "{text}");
+        assert!(!text.contains(&"c".repeat(64)), "{text}");
+        assert!(!text.contains("TimedOut"), "{text}");
+    }
 }
 
 #[test]
@@ -932,7 +958,7 @@ fn timed_out_create() -> ExecutionError {
 fn health_timeout(container_id: ContainerId) -> ExecutionError {
     ExecutionError::Health {
         container_id,
-        failure: HealthFailure::TimedOut,
+        failure: HealthFailure::TimedOut { last_check: None },
     }
 }
 

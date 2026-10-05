@@ -9,7 +9,8 @@ use ts_rs::TS;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ContainerRuntimeObservation, HealthObservation, RequestedServiceSpec, ResolvedServiceSpec,
+    ContainerRuntimeObservation, HealthObservation, LastHealthCheck, RequestedServiceSpec,
+    ResolvedServiceSpec,
 };
 use crate::{
     ContainerId, DockerVolumeId, DockerVolumeName, MachineId, MachineName, Namespace,
@@ -639,19 +640,39 @@ impl Display for MachineAction {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HealthFailure {
     Cancelled,
-    TimedOut,
+    TimedOut {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        last_check: Option<LastHealthCheck>,
+    },
     Runtime {
         observation: ContainerRuntimeObservation,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        last_check: Option<LastHealthCheck>,
     },
 }
 
 impl Display for HealthFailure {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Cancelled => f.write_str("cancelled"),
-            Self::TimedOut => f.write_str("timed out"),
-            Self::Runtime { observation } => Display::fmt(observation, f),
+        let last_check = match self {
+            Self::Cancelled => return f.write_str("cancelled"),
+            Self::TimedOut { last_check } => {
+                f.write_str("timed out")?;
+                last_check
+            }
+            Self::Runtime {
+                observation,
+                last_check,
+            } => {
+                Display::fmt(observation, f)?;
+                last_check
+            }
+        };
+        if let Some(last_check) = last_check {
+            write!(f, "; {last_check}")?;
         }
+        Ok(())
     }
 }
 

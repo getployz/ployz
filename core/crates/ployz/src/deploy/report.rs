@@ -7,7 +7,7 @@ use crossterm::style::Stylize as _;
 use ployz_core::{
     ContainerId, ContainerRuntimeObservation, DependencyHealthFailure, DeployOperation,
     DeployOutcome, ExecutionError, FailedOperation, HealthFailure, HealthObservation, HookFailure,
-    MachineAction, MachineName, OperationPhase, OperationRow, OperationStatus,
+    LastHealthCheck, MachineAction, MachineName, OperationPhase, OperationRow, OperationStatus,
     ReplacementCompensation, RestartAttempt, ServiceName, StopAttempt,
 };
 
@@ -134,10 +134,13 @@ enum Cause {
         action: ActionWord,
         message: String,
     },
-    HealthTimeout,
+    HealthTimeout {
+        last_check: Option<LastHealthCheck>,
+    },
     HealthCancelled,
     HealthRuntime {
         summary: RuntimeSummary,
+        last_check: Option<LastHealthCheck>,
     },
     HookTimeout {
         stop_message: Option<String>,
@@ -403,9 +406,14 @@ impl Cause {
     fn english(&self) -> String {
         match self {
             Self::Machine { action, message } => format!("{} failed: {message}", action.word()),
-            Self::HealthTimeout => "health check timed out".into(),
+            Self::HealthTimeout { last_check } => {
+                with_last_check("health check timed out".into(), last_check.as_ref())
+            }
             Self::HealthCancelled => "health check cancelled".into(),
-            Self::HealthRuntime { summary } => summary.english(),
+            Self::HealthRuntime {
+                summary,
+                last_check,
+            } => with_last_check(summary.english(), last_check.as_ref()),
             Self::HookTimeout { stop_message } => {
                 hook_line("pre-deploy hook timed out", stop_message)
             }
@@ -674,10 +682,16 @@ fn cause_from_error(error: &ExecutionError) -> Cause {
 
 fn cause_from_health(failure: &HealthFailure) -> Cause {
     match failure {
-        HealthFailure::TimedOut => Cause::HealthTimeout,
+        HealthFailure::TimedOut { last_check } => Cause::HealthTimeout {
+            last_check: last_check.clone(),
+        },
         HealthFailure::Cancelled => Cause::HealthCancelled,
-        HealthFailure::Runtime { observation } => Cause::HealthRuntime {
+        HealthFailure::Runtime {
+            observation,
+            last_check,
+        } => Cause::HealthRuntime {
             summary: runtime_summary(observation),
+            last_check: last_check.clone(),
         },
     }
 }
@@ -732,6 +746,13 @@ fn runtime_summary(observation: &ContainerRuntimeObservation) -> RuntimeSummary 
     }
 }
 
+fn with_last_check(base: String, last_check: Option<&LastHealthCheck>) -> String {
+    match last_check {
+        Some(last_check) => format!("{base}; {last_check}"),
+        None => base,
+    }
+}
+
 fn hook_line(base: &str, stop_message: &Option<String>) -> String {
     match stop_message {
         Some(message) => format!("{base}: stop also failed: {message}"),
@@ -741,7 +762,7 @@ fn hook_line(base: &str, stop_message: &Option<String>) -> String {
 
 fn wants_logs(cause: &Cause) -> bool {
     match cause {
-        Cause::HealthTimeout
+        Cause::HealthTimeout { .. }
         | Cause::HealthCancelled
         | Cause::HealthRuntime { .. }
         | Cause::HookTimeout { .. }

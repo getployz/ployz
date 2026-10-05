@@ -167,7 +167,7 @@ async fn dependency_gate_uses_short_unhealthy_and_healthcheck_starting_deadlines
         };
         assert_eq!(
             match failure {
-                HealthFailure::TimedOut => "timed_out",
+                HealthFailure::TimedOut { .. } => "timed_out",
                 HealthFailure::Runtime { .. } => "runtime",
                 HealthFailure::Cancelled => "cancelled",
             },
@@ -263,6 +263,7 @@ async fn health_monitor_fails_a_clean_exit_without_waiting_for_serving() {
                 error: ExecutionError::Health {
                     failure: HealthFailure::Runtime {
                         observation: ContainerRuntimeObservation::Exited { code: 0 },
+                        last_check: None,
                     },
                     ..
                 },
@@ -364,6 +365,7 @@ async fn health_monitor_fails_restarting_without_waiting_out_the_monitor_window(
                 error: ExecutionError::Health {
                     failure: HealthFailure::Runtime {
                         observation: ContainerRuntimeObservation::Restarting,
+                        last_check: None,
                     },
                     ..
                 },
@@ -398,6 +400,7 @@ async fn health_monitor_still_fails_a_restart_loop() {
                 error: ExecutionError::Health {
                     failure: HealthFailure::Runtime {
                         observation: ContainerRuntimeObservation::Restarting,
+                        last_check: None,
                     },
                     ..
                 },
@@ -504,5 +507,50 @@ async fn http_health_monitor_waits_for_a_successful_machine_probe() {
     ]);
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
     assert!(matches!(outcome, DeployOutcome::Success { .. }));
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn health_monitor_failure_quotes_the_last_check() {
+    let machine = machine('1');
+    let new = container('a');
+    let last_check = LastHealthCheck::exited(127, "sh: pg_isready: not found\n");
+    let plan = vec![run(
+        &machine,
+        spec(Some(0), Some(healthcheck()), None),
+        false,
+    )];
+    let client = Scripted::new(vec![
+        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+        ok(Call::Start(machine, new)),
+        Step(
+            Call::Inspect(machine, new),
+            Reply::Observed(unhealthy(), None, Some(last_check.clone())),
+        ),
+    ]);
+
+    let DeployOutcome::Failed {
+        failed: FailedOperation::Operation { error, .. },
+        ..
+    } = execute_with(&plan, &client, &CancellationToken::new()).await
+    else {
+        panic!("the deploy should fail");
+    };
+    assert_eq!(
+        error,
+        ExecutionError::Health {
+            container_id: new,
+            failure: HealthFailure::Runtime {
+                observation: unhealthy(),
+                last_check: Some(last_check),
+            },
+        }
+    );
+    assert!(
+        error.to_string().ends_with(
+            "running (health: unhealthy); last check exited 127: sh: pg_isready: not found"
+        ),
+        "{error}"
+    );
     client.assert_done();
 }
