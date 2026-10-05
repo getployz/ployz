@@ -1,4 +1,4 @@
-use std::{borrow::Cow, error::Error, fmt, io, process::ExitCode};
+use std::{borrow::Cow, error::Error, fmt, io};
 
 use ployz_core::{
     CodecError, ContainerSelectorError, DataLoss, MachineSelectorError, MachineUpdateError,
@@ -13,20 +13,16 @@ use crate::{
     connect::{ConnectError, TransportError},
     context::{ConfigError, ConnectionError, ContextError},
     deploy::{DeployError, PlanError},
+    enrollment::local::Error as EnrollmentHistoryError,
     image::PushError,
     ingress::IngressImageError,
     namespace::NamespaceError,
     operator::OperatorError,
     provisioning::ProvisionError,
+    ui::{self, Hint},
 };
 
-/// Exit code of a command that printed its result but did not fully succeed.
-pub const PARTIAL_EXIT: u8 = 3;
-
-/// Exit code of a rejected command line, as clap exits.
-pub const USAGE_EXIT: u8 = 2;
-
-/// CLI command outcome. `Display` is product stderr. `exit` is silent.
+/// CLI command outcome. `Display` is our sentence; `ui::exit` prints it.
 #[derive(Debug)]
 pub struct Failure {
     inner: Inner,
@@ -34,8 +30,14 @@ pub struct Failure {
 
 #[derive(Debug)]
 enum Inner {
-    /// A printed failure and the exit code it ends the process with.
-    Command(Box<dyn Error + Send + Sync>, u8),
+    /// An error to print, with what the reader can do about it.
+    Command {
+        error: Box<dyn Error + Send + Sync>,
+        hints: Vec<Hint>,
+    },
+    /// The result is printed, but some targets failed or never answered.
+    Partial,
+    /// `ployz exec` passing the remote command's exit code through.
     Exit(u8),
 }
 
@@ -46,6 +48,7 @@ struct Message {
     code: RpcErrorCode,
     text: Cow<'static, str>,
     details: Value,
+    source: Option<Box<dyn Error + Send + Sync>>,
 }
 
 impl fmt::Display for Message {
@@ -54,24 +57,34 @@ impl fmt::Display for Message {
     }
 }
 
-impl Error for Message {}
+impl Error for Message {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.source
+            .as_deref()
+            .map(|source| source as &(dyn Error + 'static))
+    }
+}
 
 impl Failure {
     pub(crate) fn command(error: impl Error + Send + Sync + 'static) -> Self {
         Self {
-            inner: Inner::Command(Box::new(error), 1),
+            inner: Inner::Command {
+                error: Box::new(error),
+                hints: Vec::new(),
+            },
         }
     }
 
-    /// End the process with `code` instead of 1 when this failure is printed.
+    /// Add a line telling the reader what to do about this failure.
     #[must_use]
-    pub fn with_exit(mut self, code: u8) -> Self {
-        if let Inner::Command(_, exit) = &mut self.inner {
-            *exit = code;
+    pub fn hint(mut self, hint: impl Into<Option<Hint>>) -> Self {
+        if let (Inner::Command { hints, .. }, Some(hint)) = (&mut self.inner, hint.into()) {
+            hints.push(hint);
         }
         self
     }
 
+    /// End the process with the remote command's exit code. Only `ployz exec` uses it.
     #[must_use]
     pub fn exit(code: u8) -> Self {
         Self {
@@ -82,7 +95,9 @@ impl Failure {
     /// The result is printed, but some targets failed or never answered.
     #[must_use]
     pub fn partial() -> Self {
-        Self::exit(PARTIAL_EXIT)
+        Self {
+            inner: Inner::Partial,
+        }
     }
 
     /// The input was wrong.
@@ -125,34 +140,98 @@ impl Failure {
             code,
             text: message.into(),
             details,
+            source: None,
         })
     }
 
-    /// This failure with a new message, keeping its `--json` code.
-    pub(crate) fn reworded(&self, message: impl Into<Cow<'static, str>>) -> Self {
-        Self::coded(self.report().code, message)
+    /// Our sentence over `cause`, which prints as its `cause:` line.
+    pub fn caused(
+        code: RpcErrorCode,
+        message: impl Into<Cow<'static, str>>,
+        cause: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::command(Message {
+            code,
+            text: message.into(),
+            details: Value::Null,
+            source: Some(Box::new(cause)),
+        })
     }
 
-    /// One product line for a follow-on failure. `terminate` prints it once.
-    pub fn warned(context: impl fmt::Display, cause: impl fmt::Display) -> Self {
-        Self::coded(
-            RpcErrorCode::Internal,
-            format!("WARNING: {context}: {cause}."),
-        )
+    #[must_use]
+    pub(crate) fn context(self, message: impl Into<Cow<'static, str>>) -> Self {
+        let RpcError { code, details, .. } = self.report();
+        Self::command(Message {
+            code,
+            text: message.into(),
+            details,
+            source: Some(Box::new(self)),
+        })
+    }
+
+    fn own_hints(&self) -> &[Hint] {
+        match &self.inner {
+            Inner::Command { hints, .. } => hints,
+            Inner::Partial | Inner::Exit(_) => &[],
+        }
+    }
+
+    /// What the reader can do: hints set here, then those an error from the wire
+    /// carried that no hint set here replaces.
+    #[must_use]
+    pub fn hints(&self) -> Vec<Hint> {
+        let mut hints = self.own_hints().to_vec();
+        if let Inner::Command { error, .. } = &self.inner {
+            for hint in Hint::from_details(&classify(error.as_ref()).1) {
+                if !hints.iter().any(|own| own.replaces(&hint)) {
+                    hints.push(hint);
+                }
+            }
+        }
+        hints
+    }
+
+    /// The `cause:` lines: each error below our sentence.
+    #[must_use]
+    pub fn causes(&self) -> Vec<String> {
+        match &self.inner {
+            Inner::Command { error, .. } => ui::causes(error.as_ref()),
+            Inner::Partial | Inner::Exit(_) => Vec::new(),
+        }
+    }
+
+    /// The exit code of a failure whose output is already printed: a partial
+    /// result, or `ployz exec` passing the remote code through.
+    #[must_use]
+    pub(crate) const fn printed_exit(&self) -> Option<u8> {
+        match self.inner {
+            Inner::Partial => Some(ui::PARTIAL_EXIT),
+            Inner::Exit(code) => Some(code),
+            Inner::Command { .. } => None,
+        }
     }
 
     /// The `--json` error object: the RPC error shape and vocabulary.
     #[must_use]
     pub fn report(&self) -> RpcError {
-        let (code, details) = match &self.inner {
-            Inner::Command(error, _) => classify(error.as_ref()),
-            Inner::Exit(_) => (RpcErrorCode::Internal, Value::Null),
+        let (code, mut details) = match &self.inner {
+            Inner::Command { error, .. } => classify(error.as_ref()),
+            Inner::Partial | Inner::Exit(_) => (RpcErrorCode::Internal, Value::Null),
         };
+        Hint::into_details(self.own_hints(), &mut details);
         RpcError {
             code,
             message: self.to_string(),
             details,
         }
+    }
+
+    pub(crate) fn json(&self) -> Value {
+        let mut error = serde_json::json!(self.report());
+        if let Some(fields) = error.as_object_mut() {
+            fields.insert("cause".into(), serde_json::json!(self.causes()));
+        }
+        error
     }
 }
 
@@ -165,6 +244,19 @@ fn classify(error: &(dyn Error + Send + Sync + 'static)) -> (RpcErrorCode, Value
     }
     if let Some(ConnectError::Remote(error)) = error.downcast_ref::<ConnectError>() {
         return (error.code.clone(), error.details.clone());
+    }
+    if let Some(
+        failed @ ProvisionError::CleanupAfter {
+            cleanup, remove, ..
+        },
+    ) = error.downcast_ref::<ProvisionError>()
+    {
+        let mut cleanup_lines = vec![cleanup.to_string()];
+        cleanup_lines.extend(ui::causes(cleanup.as_ref()));
+        return (
+            provision_code(failed),
+            serde_json::json!({ "next": remove, "cleanup": cleanup_lines }),
+        );
     }
     (code(error), Value::Null)
 }
@@ -214,6 +306,9 @@ fn code(error: &(dyn Error + 'static)) -> RpcErrorCode {
     if let Some(error) = error.downcast_ref::<cloud_enroll::Error>() {
         return cloud_enroll_code(error);
     }
+    if let Some(error) = error.downcast_ref::<LoginError>() {
+        return login_code(error);
+    }
     if let Some(error) = error.downcast_ref::<MachineUpdateError>() {
         return match error {
             MachineUpdateError::DuplicateName => RpcErrorCode::Conflict,
@@ -229,9 +324,24 @@ fn code(error: &(dyn Error + 'static)) -> RpcErrorCode {
     if error.is::<IngressImageError>() {
         return RpcErrorCode::Unavailable;
     }
+    if let Some(error) = error.downcast_ref::<ConfigError>() {
+        return config_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<EnrollmentHistoryError>() {
+        return enrollment_history_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<crate::cluster::RoleWaitError>() {
+        return match error {
+            crate::cluster::RoleWaitError::Connect(error) => connect_code(error),
+            crate::cluster::RoleWaitError::NotObserved(_)
+            | crate::cluster::RoleWaitError::Cancelled => RpcErrorCode::Unavailable,
+        };
+    }
+    if error.is::<UnconfirmedDataLoss>() {
+        return RpcErrorCode::InvalidArgument;
+    }
     if error.is::<ValueError>()
         || error.is::<ConnectionError>()
-        || error.is::<ConfigError>()
         || error.is::<NamespaceError>()
         || error.is::<std::num::ParseIntError>()
         || error.is::<shell_words::ParseError>()
@@ -251,9 +361,8 @@ fn connect_code(error: &ConnectError) -> RpcErrorCode {
             RpcErrorCode::Unsupported
         }
         ConnectError::Context(error) => context_code(error),
-        ConnectError::Config(_) | ConnectError::Connection(_) | ConnectError::Value(_) => {
-            RpcErrorCode::InvalidArgument
-        }
+        ConnectError::Config(error) => config_code(error),
+        ConnectError::Connection(_) | ConnectError::Value(_) => RpcErrorCode::InvalidArgument,
         ConnectError::Codec(error) => codec_code(error),
         // Every connection failed: the last one says why.
         ConnectError::AllFailed {
@@ -262,11 +371,12 @@ fn connect_code(error: &ConnectError) -> RpcErrorCode {
         ConnectError::Join(_) => RpcErrorCode::Internal,
         ConnectError::IdentityMismatch { .. } => RpcErrorCode::Unauthenticated,
         ConnectError::Attempt(_)
+        | ConnectError::Exhausted(_)
         | ConnectError::EntryNotReady
         | ConnectError::Io(_)
         | ConnectError::Dial(_)
         | ConnectError::MissingMachineDetails
-        | ConnectError::SshClientMissing(_)
+        | ConnectError::SshClientMissing
         | ConnectError::SshProbe { .. }
         | ConnectError::Routing(_)
         | ConnectError::Path { .. }
@@ -354,7 +464,7 @@ fn provision_code(error: &ProvisionError) -> RpcErrorCode {
         ProvisionError::UnsupportedOs | ProvisionError::UnsupportedArchitecture(_) => {
             RpcErrorCode::Unsupported
         }
-        ProvisionError::SshClientMissing(_)
+        ProvisionError::SshClientMissing
         | ProvisionError::Whoami(_)
         | ProvisionError::WhoamiFailed(_)
         | ProvisionError::Sudo(_)
@@ -450,6 +560,29 @@ fn io_code(error: &io::Error) -> RpcErrorCode {
     }
 }
 
+fn config_code(error: &ConfigError) -> RpcErrorCode {
+    match error {
+        ConfigError::Context(error) => context_code(error),
+        ConfigError::Parse { .. }
+        | ConfigError::PrivatePermissions(_)
+        | ConfigError::EmptyCurrentContext(_)
+        | ConfigError::Read { .. }
+        | ConfigError::Write { .. }
+        | ConfigError::CreateDirectory { .. }
+        | ConfigError::Encode(_)
+        | ConfigError::ManagementConnectionMissing => RpcErrorCode::Internal,
+    }
+}
+
+fn enrollment_history_code(error: &EnrollmentHistoryError) -> RpcErrorCode {
+    match error {
+        EnrollmentHistoryError::Allocation(_) => RpcErrorCode::Conflict,
+        EnrollmentHistoryError::Io(_)
+        | EnrollmentHistoryError::Serialization(_)
+        | EnrollmentHistoryError::MissingScope => RpcErrorCode::Internal,
+    }
+}
+
 fn context_code(error: &ContextError) -> RpcErrorCode {
     match error {
         ContextError::NoConfig
@@ -498,7 +631,8 @@ pub(crate) fn refusal_from_rpc(error: RpcError) -> Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.inner {
-            Inner::Command(error, _) => error.fmt(f),
+            Inner::Command { error, .. } => error.fmt(f),
+            Inner::Partial => f.write_str("partial result"),
             Inner::Exit(code) => write!(f, "exit {code}"),
         }
     }
@@ -507,58 +641,52 @@ impl fmt::Display for Failure {
 impl Error for Failure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match &self.inner {
-            Inner::Command(error, _) => Some(error.as_ref()),
-            Inner::Exit(_) => None,
+            Inner::Command { error, .. } => Some(error.as_ref()),
+            Inner::Partial | Inner::Exit(_) => None,
         }
     }
 }
 
-#[must_use]
-pub fn terminate(result: Result<(), Failure>) -> ExitCode {
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(Failure {
-            inner: Inner::Exit(code),
-        }) => ExitCode::from(code),
-        // A printed result stays the one stdout object; what failed after it is partial.
-        Err(error) if crate::output::emitted() => {
-            eprintln!("{error}");
-            ExitCode::from(PARTIAL_EXIT)
+/// Error lines kept as a source chain, when the errors themselves can't be kept.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JoinedChain {
+    line: String,
+    next: Option<Box<JoinedChain>>,
+}
+
+impl JoinedChain {
+    pub(crate) fn new(first: &(dyn Error + 'static), then: &(dyn Error + 'static)) -> Self {
+        let mut lines = Vec::new();
+        for error in [first, then] {
+            lines.push(error.to_string());
+            lines.extend(ui::causes(error));
         }
-        Err(error) => {
-            if crate::output::json() {
-                crate::output::error(&error.report());
-            } else {
-                let report = error.report();
-                eprintln!("{}", report.message);
-                for line in human_hints(&report) {
-                    eprintln!("{line}");
-                }
-            }
-            match error.inner {
-                Inner::Command(_, exit) | Inner::Exit(exit) => ExitCode::from(exit),
-            }
-        }
+        Self::of(lines).expect("each error gives a line")
+    }
+
+    /// A chain of `lines`, outermost first; `None` when there are none.
+    pub(crate) fn of(lines: Vec<String>) -> Option<Self> {
+        lines.into_iter().rev().fold(None, |next, line| {
+            Some(Self {
+                line,
+                next: next.map(Box::new),
+            })
+        })
     }
 }
 
-/// The `details` a person acts on, as the lines success output prints them; a
-/// `next` the message already spells out (as its `Retry:`) isn't repeated.
-fn human_hints(report: &RpcError) -> Vec<String> {
-    let details = &report.details;
-    let mut lines = Vec::new();
-    if let Some(children) = details.get("valid_children").and_then(Value::as_array) {
-        let names: Vec<&str> = children.iter().filter_map(Value::as_str).collect();
-        if !names.is_empty() {
-            lines.push(format!("valid: {}", names.join(", ")));
-        }
+impl fmt::Display for JoinedChain {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.line)
     }
-    if let Some(next) = details.get("next").and_then(Value::as_str)
-        && !report.message.contains(next)
-    {
-        lines.push(format!("next: {next}"));
+}
+
+impl Error for JoinedChain {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.next
+            .as_deref()
+            .map(|next| next as &(dyn Error + 'static))
     }
-    lines
 }
 
 macro_rules! from_error {
@@ -594,6 +722,9 @@ from_error!(
     RpcError,
     NamespaceError,
     cloud_enroll::Error,
+    EnrollmentHistoryError,
+    crate::cluster::RoleWaitError,
+    UnconfirmedDataLoss,
 );
 
 impl From<ConnectError> for Failure {
@@ -635,31 +766,51 @@ impl From<DeployError> for Failure {
 }
 
 impl From<LoginError> for Failure {
-    /// Sign-in failures carry the command that fixes them as `details.next`.
+    /// Sign-in failures name the command that fixes them.
     fn from(error: LoginError) -> Self {
-        let (code, next) = match &error {
-            LoginError::Unreachable { .. } => (RpcErrorCode::Unavailable, None),
-            LoginError::Unsupported(_) => (RpcErrorCode::Unsupported, None),
-            LoginError::Status { status, .. } => (http_status_code(*status), None),
-            LoginError::Reply(_) | LoginError::Store { .. } => (RpcErrorCode::Internal, None),
-            LoginError::Corrupt { .. } => (RpcErrorCode::Internal, Some("ployz logout")),
-            LoginError::OtherCloud { .. } => (RpcErrorCode::Conflict, Some("ployz logout")),
+        let next = match &error {
+            LoginError::Corrupt { .. } | LoginError::OtherCloud { .. } => Some("ployz logout"),
             LoginError::SignedOut
             | LoginError::Expired
             | LoginError::Denied
-            | LoginError::Ended => (RpcErrorCode::Unauthenticated, Some("ployz login")),
-            LoginError::AwaitingApproval { .. } => {
-                (RpcErrorCode::Unauthenticated, Some("ployz login --wait"))
-            }
-            LoginError::TokenRefused => (RpcErrorCode::Unauthenticated, Some("ployz token new")),
-            LoginError::NotMember(_) => (RpcErrorCode::Unauthenticated, Some("ployz org ls")),
-            LoginError::TokenBound | LoginError::NoBilling(_) => (RpcErrorCode::Unsupported, None),
-            LoginError::UnknownOrganization(_) => (RpcErrorCode::NotFound, Some("ployz org ls")),
-            LoginError::UnknownCredential(_) => (RpcErrorCode::NotFound, Some("ployz token ls")),
-            LoginError::AlreadyPro => (RpcErrorCode::Conflict, Some("ployz billing manage")),
+            | LoginError::Ended => Some("ployz login"),
+            LoginError::AwaitingApproval { .. } => Some("ployz login --wait"),
+            LoginError::TokenRefused => Some("ployz token new"),
+            LoginError::NotMember(_) | LoginError::UnknownOrganization(_) => Some("ployz org ls"),
+            LoginError::UnknownCredential(_) => Some("ployz token ls"),
+            LoginError::AlreadyPro => Some("ployz billing manage"),
+            LoginError::Unreachable { .. }
+            | LoginError::Unsupported(_)
+            | LoginError::Status { .. }
+            | LoginError::Reply(_)
+            | LoginError::Store { .. }
+            | LoginError::TokenBound
+            | LoginError::NoBilling(_) => None,
         };
-        let details = next.map_or(Value::Null, |next| serde_json::json!({ "next": next }));
-        Self::detailed(code, error.to_string(), details)
+        Self::command(error).hint(next.map(|next| Hint::Next(next.into())))
+    }
+}
+
+fn login_code(error: &LoginError) -> RpcErrorCode {
+    match error {
+        LoginError::Unreachable { .. } => RpcErrorCode::Unavailable,
+        LoginError::Unsupported(_) | LoginError::NoBilling(_) => RpcErrorCode::Unsupported,
+        LoginError::TokenBound => RpcErrorCode::InvalidArgument,
+        LoginError::Status { status, .. } => http_status_code(*status),
+        LoginError::Reply(_) | LoginError::Store { .. } | LoginError::Corrupt { .. } => {
+            RpcErrorCode::Internal
+        }
+        LoginError::OtherCloud { .. } | LoginError::AlreadyPro => RpcErrorCode::Conflict,
+        LoginError::SignedOut
+        | LoginError::Expired
+        | LoginError::Denied
+        | LoginError::Ended
+        | LoginError::AwaitingApproval { .. }
+        | LoginError::TokenRefused
+        | LoginError::NotMember(_) => RpcErrorCode::Unauthenticated,
+        LoginError::UnknownOrganization(_) | LoginError::UnknownCredential(_) => {
+            RpcErrorCode::NotFound
+        }
     }
 }
 
@@ -678,6 +829,69 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn context_keeps_the_inner_details_and_next() {
+        let inner = Failure::from(RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "Machine is starting".into(),
+            details: serde_json::json!({ "next": "ployz server ls", "machine": "alpha" }),
+        });
+        let outer = inner.context("Could not deploy.");
+        let report = outer.report();
+        assert_eq!(report.code, RpcErrorCode::Unavailable);
+        assert_eq!(report.details.get("next").unwrap(), "ployz server ls");
+        assert_eq!(report.details.get("machine").unwrap(), "alpha");
+        assert_eq!(outer.hints(), [Hint::Next("ployz server ls".into())]);
+        assert_eq!(outer.causes(), ["Machine is starting"]);
+    }
+
+    #[test]
+    fn a_failure_flattened_to_one_line_keeps_every_cause() {
+        let write = ConfigError::Write {
+            path: "/etc/ployz/config.yaml".into(),
+            source: io::Error::other("disk full"),
+        };
+        let failure = Failure::caused(RpcErrorCode::Internal, "Could not save the context.", write);
+        assert_eq!(
+            crate::ui::chain_text(&failure),
+            "Could not save the context: Could not write Ployz config /etc/ployz/config.yaml: disk full"
+        );
+    }
+
+    #[test]
+    fn a_config_file_problem_is_never_the_command_line_however_it_is_wrapped() {
+        let errors = || {
+            let io = || io::Error::other("disk full");
+            [
+                ConfigError::Read {
+                    path: "c".into(),
+                    source: io(),
+                },
+                ConfigError::Write {
+                    path: "c".into(),
+                    source: io(),
+                },
+                ConfigError::CreateDirectory {
+                    path: "c".into(),
+                    source: io(),
+                },
+                ConfigError::Parse {
+                    path: "c".into(),
+                    line: Some(1),
+                },
+                ConfigError::PrivatePermissions("c".into()),
+                ConfigError::EmptyCurrentContext("c".into()),
+            ]
+        };
+        for error in errors() {
+            assert_eq!(Failure::from(error).report().code, RpcErrorCode::Internal);
+        }
+        for error in errors() {
+            let wrapped = Failure::from(ConnectError::Config(error));
+            assert_eq!(wrapped.report().code, RpcErrorCode::Internal);
+        }
+    }
+
     fn source<E: StdError + 'static>(failure: &Failure) -> &E {
         StdError::source(failure)
             .and_then(|error| error.downcast_ref())
@@ -695,7 +909,6 @@ mod tests {
             source::<ContextError>(&failure),
             ContextError::NoConfig
         ));
-        assert_eq!(terminate(Err(failure)), ExitCode::FAILURE);
     }
 
     #[test]
@@ -710,7 +923,6 @@ mod tests {
             source::<ValueError>(&failure).to_string(),
             "invalid Machine Name \"BAD NAME\": a 1-63 character lowercase DNS label"
         );
-        assert_eq!(terminate(Err(failure)), ExitCode::FAILURE);
     }
 
     #[test]
@@ -732,13 +944,12 @@ mod tests {
                 .downcast_ref::<ConnectError>()
                 .is_none()
         );
-        assert_eq!(terminate(Err(from_connect)), ExitCode::FAILURE);
     }
 
     #[test]
     fn exhausted_connections_print_how_many_were_tried() {
         let failure = Failure::from(ConnectError::AllFailed {
-            source: crate::context::ConnectionSource::Context("prod".into()),
+            selection: crate::context::ConnectionSource::Context("prod".into()),
             attempts: 3,
             setup_retryable: true,
             last: Some(Box::new(ConnectError::Io(io::Error::from(
@@ -786,19 +997,6 @@ mod tests {
         let failure = Failure::usage("nope");
         assert_eq!(failure.to_string(), "nope");
         assert_eq!(source::<Message>(&failure).to_string(), "nope");
-        assert_eq!(terminate(Err(failure)), ExitCode::FAILURE);
-    }
-
-    #[test]
-    fn warned_follow_on_is_one_line_and_fails() {
-        let cause = "write context file: permission denied";
-        let remove = Failure::warned("local context cleanup failed after Machine removal", cause);
-        assert_eq!(
-            remove.to_string(),
-            "WARNING: local context cleanup failed after Machine removal: write context file: permission denied."
-        );
-        assert_eq!(remove.to_string().matches(cause).count(), 1);
-        assert_eq!(terminate(Err(remove)), ExitCode::FAILURE);
     }
 
     #[test]
@@ -859,46 +1057,21 @@ mod tests {
     }
 
     #[test]
-    fn human_errors_print_next_and_valid_children() {
-        let details = serde_json::json!({
-            "deployment": "d1",
-            "next": "ployz deployment show d1",
-            "valid_children": ["web", "db"],
-        });
-        let report = |message: &str, details: Value| RpcError {
-            code: RpcErrorCode::Conflict,
-            message: message.into(),
-            details,
-        };
-        assert_eq!(
-            human_hints(&report("already ended", details)),
-            ["valid: web, db", "next: ployz deployment show d1"]
-        );
-        assert!(human_hints(&report("boom", Value::Null)).is_empty());
-        let spelled = serde_json::json!({ "next": "ployz org rm acme --confirm acme" });
-        assert!(
-            human_hints(&report(
-                "No changes made.\nRetry: ployz org rm acme --confirm acme",
-                spelled
-            ))
-            .is_empty()
-        );
+    fn printed_exits_are_not_printed_command_failures() {
+        assert!(StdError::source(&Failure::exit(7)).is_none());
+        assert!(StdError::source(&Failure::partial()).is_none());
+        assert_eq!(Failure::exit(7).printed_exit(), Some(7));
+        assert_eq!(Failure::partial().printed_exit(), Some(3));
+        assert_eq!(Failure::usage("nope").printed_exit(), None);
     }
 
     #[test]
-    fn a_failure_after_a_result_is_partial() {
-        crate::output::emit(&"done").unwrap();
-        assert_eq!(
-            terminate(Err(Failure::usage("nope"))),
-            ExitCode::from(PARTIAL_EXIT)
-        );
-    }
-
-    #[test]
-    fn exit_is_not_a_printed_command_failure() {
-        assert!(StdError::source(&Failure::exit(3)).is_none());
-        assert_eq!(terminate(Err(Failure::exit(3))), ExitCode::from(3));
-        assert_eq!(terminate(Ok(())), ExitCode::SUCCESS);
-        assert_eq!(terminate(Err(Failure::usage("nope"))), ExitCode::FAILURE);
+    fn context_keeps_the_code_and_hints_and_chains_the_cause() {
+        let failure = Failure::not_found("No Service nope.")
+            .hint(Hint::valid(["web"]))
+            .context("Server initialized; startup incomplete.");
+        assert_eq!(failure.report().code, RpcErrorCode::NotFound);
+        assert_eq!(failure.hints(), [Hint::valid(["web"])]);
+        assert_eq!(failure.causes(), ["No Service nope."]);
     }
 }

@@ -24,11 +24,20 @@ pub mod env {
 #[must_use]
 pub fn command() -> Command {
     base("ployz", "Manage Ployz machines, services, and volumes")
+        .styles(crate::ui::clap_styles())
         .arg(switch("version", Some('V')).help("Print version"))
         .arg(
             switch("json", None)
                 .global(true)
                 .help("Print the result as one JSON object on stdout"),
+        )
+        .arg(
+            value("color", None)
+                .global(true)
+                .value_name("WHEN")
+                .value_parser(["auto", "always", "never"])
+                .default_value("auto")
+                .help("When to color output; overrides NO_COLOR and CLICOLOR"),
         )
         .subcommand(handlers::account::billing_command())
         .subcommand(handlers::build::command())

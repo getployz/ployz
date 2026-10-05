@@ -258,7 +258,11 @@ where
                         return;
                     }
                     Err(error) => {
-                        let _ = sender.send(Err(Status::internal(error.to_string()))).await;
+                        let _ = sender
+                            .send(Err(Status::internal(ployz_core::error_chain::inline(
+                                &error,
+                            ))))
+                            .await;
                         return;
                     }
                 };

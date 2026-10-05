@@ -288,7 +288,7 @@ async fn failed_unknown_and_cancelled_builds_leave_the_deploy_unattempted() {
         assert!(
             error
                 .message
-                .contains("No Service, hook, or volume change was attempted"),
+                .contains("no Service, hook, or volume change was attempted"),
             "{error:?}"
         );
         assert_eq!(error.details.pointer("/preparation/kind").unwrap(), kind);
@@ -498,12 +498,7 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
         failed.machine.id
     );
     assert!(
-        result
-            .failures
-            .first()
-            .unwrap()
-            .error
-            .to_string()
+        crate::ui::chain_text(&result.failures.first().unwrap().error)
             .contains("containerd image store")
     );
     let unserved = result.failures.get(1).unwrap();

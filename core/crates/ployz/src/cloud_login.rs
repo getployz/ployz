@@ -27,17 +27,21 @@ const SLOW_DOWN: Duration = Duration::from_secs(5);
 /// Failures signing in to Cloud or reading the stored sign-in.
 #[derive(Debug, Error)]
 pub(crate) enum LoginError {
-    #[error("could not reach Cloud at {cloud}: {detail}")]
-    Unreachable { cloud: String, detail: String },
+    #[error("Could not reach Cloud at {cloud}.")]
+    Unreachable {
+        cloud: String,
+        #[source]
+        error: reqwest::Error,
+    },
     #[error("Cloud at {0} does not offer CLI access")]
     Unsupported(String),
     #[error("Cloud answered HTTP {status}: {body}")]
     Status { status: u16, body: String },
     #[error("Cloud sent an unexpected reply: {0}")]
     Reply(String),
-    #[error("could not use the sign-in stored at {}: {source}", .path.display())]
+    #[error("Could not use the sign-in stored at {}.", .path.display())]
     Store { path: PathBuf, source: io::Error },
-    #[error("the sign-in stored at {} is unreadable: {source}", .path.display())]
+    #[error("The sign-in stored at {} is unreadable.", .path.display())]
     Corrupt {
         path: PathBuf,
         source: serde_json::Error,
@@ -595,7 +599,7 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(body: Vec<u8>) -> Result<T,
 pub(crate) fn unreachable(cloud: &str, error: reqwest::Error) -> LoginError {
     LoginError::Unreachable {
         cloud: cloud.to_owned(),
-        detail: crate::setup_retry::detail(&error.without_url()),
+        error: error.without_url(),
     }
 }
 

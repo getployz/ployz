@@ -28,6 +28,7 @@ use crate::{
 };
 
 use super::{Error, leaf_matches, string_values, with_client};
+use crate::ui::Hint;
 
 mod add;
 mod clean;
@@ -58,8 +59,13 @@ pub(super) fn clear_build_cache(matches: &ArgMatches) -> Result<(), Error> {
             "cache clearing runs on this execution host; run it there as the builder user without --connect or --context",
         ));
     }
-    ployz_build::clear_cache(&ployz_build::HostPolicy::default())
-        .map_err(|error| Error::coded(ployz_core::RpcErrorCode::Internal, error.to_string()))?;
+    ployz_build::clear_cache(&ployz_build::HostPolicy::default()).map_err(|error| {
+        Error::caused(
+            ployz_core::RpcErrorCode::Internal,
+            "Could not clear this host's build cache.",
+            error,
+        )
+    })?;
     output::finish(&json!({ "build_cache": { "cleared": true } }), || {
         say!("Cleared this host user's Ployz build cache.");
     })
@@ -110,11 +116,8 @@ async fn through_cloud(matches: &ArgMatches, credential: &Credential) -> Result<
 
 fn no_reachable_server(unreachable: Vec<ployz_core::MachineId>) -> Error {
     if unreachable.is_empty() {
-        return Error::detailed(
-            RpcErrorCode::NotFound,
-            "this Organization has no Servers",
-            json!({ "next": "ployz server add" }),
-        );
+        return Error::not_found("this Organization has no Servers")
+            .hint(Hint::Next("ployz server add".into()));
     }
     Error::detailed(
         RpcErrorCode::Unavailable,
@@ -237,7 +240,7 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
                 .map_err(|error| match error {
                     RoleWaitError::Connect(error) => Error::from(error),
                     error @ (RoleWaitError::NotObserved(_) | RoleWaitError::Cancelled) => {
-                        Error::unavailable(error.to_string())
+                        Error::from(error)
                     }
                 })?;
                 crate::ingress::follow_roles(client, ingress).await
@@ -247,7 +250,7 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
                 json!({ "server": server_json(&machine), "ingress": followed.as_ref().ok().and_then(Option::as_ref) }),
                 followed
                     .map(drop)
-                    .map_err(|error| ingress_incomplete("Server updated", &error, rerun)),
+                    .map_err(|error| ingress_incomplete("Server updated", error, rerun)),
             )
         })
     })
@@ -266,12 +269,10 @@ pub(super) fn rerun(matches: &ArgMatches, args: &[&str]) -> String {
 }
 
 /// A committed Server change whose Ingress Proxy follow-up failed: name it and the exact rerun.
-pub(super) fn ingress_incomplete(committed: &str, error: &Error, next: String) -> Error {
-    Error::detailed(
-        error.report().code,
-        format!("{committed}; the Ingress Proxy did not follow: {error}\nContinue with: {next}"),
-        json!({ "next": next }),
-    )
+pub(super) fn ingress_incomplete(committed: &str, error: Error, next: String) -> Error {
+    error
+        .context(format!("{committed}; the Ingress Proxy did not follow."))
+        .hint(Hint::Next(next))
 }
 
 fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {

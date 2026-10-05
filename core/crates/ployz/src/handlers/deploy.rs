@@ -21,7 +21,6 @@ use super::store::{Next, Store, environment, mint, next, scoped, store, with_ref
 use super::{Error, leaf_matches, required, runtime};
 use crate::cli::{base, positional, switch, value};
 use crate::cloud_account::StoreCallError;
-use crate::failure::USAGE_EXIT;
 use crate::output::say;
 
 pub(crate) fn deploy_command() -> Command {
@@ -275,8 +274,7 @@ pub(super) fn execute(
         Some(_) if matches.get_flag("detach") => {
             return Err(Error::usage(
                 "The hidden local Store runs Deployments in this process, so it can't detach",
-            )
-            .with_exit(USAGE_EXIT));
+            ));
         }
         Some(local) => Some(run_here(matches, local, admitted, source)?),
         None => None,
@@ -504,14 +502,15 @@ fn provenance(upload: &UploadedSource) -> String {
 /// directory is `not_found`; anything else is the CLI's own failure.
 pub(super) fn unreadable(dir: &Path) -> impl Fn(crate::build::Error) -> Error + '_ {
     move |error| {
-        let message = format!("Could not read {}: {error}", dir.display());
-        if matches!(error, crate::build::Error::Invalid(_)) {
-            Error::usage(message)
+        let message = format!("Could not read {}.", dir.display());
+        let code = if matches!(error, crate::build::Error::Invalid(_)) {
+            RpcErrorCode::InvalidArgument
         } else if !dir.exists() {
-            Error::not_found(message)
+            RpcErrorCode::NotFound
         } else {
-            Error::coded(RpcErrorCode::Internal, message)
-        }
+            RpcErrorCode::Internal
+        };
+        Error::caused(code, message, error)
     }
 }
 
@@ -593,7 +592,7 @@ pub(super) fn deployment_id(
     let given = required(matches, arg)?;
     let Ok(number) = given.trim_start_matches('#').parse::<u64>() else {
         return DeploymentId::parse(given)
-            .map_err(|_| Error::usage("Expected a Deployment ID or number").with_exit(USAGE_EXIT));
+            .map_err(|_| Error::usage("Expected a Deployment ID or number"));
     };
     let found = store.read(&ployz_store::NumberedDeploymentQuery {
         environment: environment(matches)?,

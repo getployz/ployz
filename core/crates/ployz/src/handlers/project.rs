@@ -14,6 +14,7 @@ use super::teardown::{confirmed, inventory, remove_all};
 use super::{Error, deploy, leaf_matches, required};
 use crate::cli::{base, positional, value};
 use crate::output::say;
+use crate::ui::Hint;
 
 pub(crate) fn command() -> Command {
     Command::new("project")
@@ -143,7 +144,7 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = ProjectName::parse(required(matches, "name")?)?;
     let store = store(root)?.args([name.as_str(), "--confirm", name.as_str()]);
-    if !confirmed(matches, name.as_str(), "Project")? {
+    if !confirmed(matches, name.as_str(), "Project", store.again(&[]))? {
         return Err(unconfirmed(&store, &name)?);
     }
     let remove = RemoveProject {
@@ -165,11 +166,8 @@ fn unconfirmed(store: &Store, project: &ProjectName) -> Result<Error, Error> {
         .iter()
         .find(|listing| &listing.name == project)
     else {
-        return Err(Error::detailed(
-            RpcErrorCode::NotFound,
-            format!("No Project named {project}"),
-            json!({ "next": "ployz project ls" }),
-        ));
+        return Err(Error::not_found(format!("No Project named {project}"))
+            .hint(Hint::Next("ployz project ls".into())));
     };
     let environments = listing
         .environments
@@ -188,11 +186,12 @@ fn unconfirmed(store: &Store, project: &ProjectName) -> Result<Error, Error> {
         format!(
             "Removing Project {project} deletes every Environment in it ({}) with its \
              configuration, history, Services and Volumes; this can't be undone. No changes \
-             made.\nRetry: {retry}",
+             made.",
             super::joined(&listing.environments)
         ),
-        json!({ "project": project, "environments": environments, "next": retry }),
-    ))
+        json!({ "project": project, "environments": environments }),
+    )
+    .hint(Hint::Retry(retry)))
 }
 
 fn finish(removed: &ProjectRemoved, ran: &[DeploymentSummary]) -> Result<(), Error> {

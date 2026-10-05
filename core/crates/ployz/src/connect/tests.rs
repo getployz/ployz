@@ -21,13 +21,13 @@ fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
         };
         assert_eq!(ssh_error.is_setup_retryable(), retry);
         let error = ConnectError::AllFailed {
-            source: ConnectionSource::Direct,
+            selection: ConnectionSource::Direct,
             attempts: 1,
             setup_retryable: retry,
             last: Some(Box::new(ssh_error)),
         };
         assert_eq!(error.is_setup_retryable(), retry);
-        assert!(error.to_string().contains(detail));
+        assert!(crate::ui::chain_text(&error).contains(detail));
     }
 }
 
@@ -54,7 +54,7 @@ async fn setup_retry_preserves_transient_failures_in_either_connection_order() {
         assert_eq!(error.is_setup_retryable(), retryable, "{error}");
         if !retryable {
             assert!(
-                error.to_string().contains("unlock your key with ssh-add"),
+                crate::ui::chain_text(&error).contains("unlock your key with ssh-add"),
                 "{error}"
             );
         }
@@ -167,7 +167,7 @@ fn machine_rpc_status_prints_the_message_not_transport_metadata() {
     let error = TransportError::from(status);
     assert_eq!(error.to_string(), "invalid log time \"notatime\"");
     assert_eq!(
-        ConnectError::Rpc(error).to_string(),
+        crate::ui::chain_text(&ConnectError::Rpc(error)),
         "Machine RPC failed: invalid log time \"notatime\""
     );
 }
@@ -279,7 +279,7 @@ async fn missing_ssh_program_names_the_local_client() {
         .await
         .expect_err("missing ssh program must fail");
     assert!(
-        matches!(message, ConnectError::SshClientMissing(_)),
+        matches!(message, ConnectError::SshClientMissing),
         "{message:?}"
     );
     assert_eq!(
@@ -305,10 +305,7 @@ async fn missing_ssh_client_survives_connection_selection() {
         Err(error) => error,
         Ok(_) => panic!("missing ssh program must fail"),
     };
-    assert!(
-        matches!(error, ConnectError::SshClientMissing(_)),
-        "{error:?}"
-    );
+    assert!(matches!(error, ConnectError::SshClientMissing), "{error:?}");
     let failure = crate::failure::Failure::from(error);
     assert_eq!(
         failure.to_string(),
@@ -441,9 +438,25 @@ async fn local_socket_that_accepts_but_never_serves_fails_as_starting() {
         Ok(_) => panic!("a daemon that never serves must not be confirmed"),
     };
     assert!(
-        error.to_string().contains("may still be starting"),
+        crate::ui::chain_text(&error).contains("may still be starting"),
         "{error}"
     );
     assert!(!error.is_retryable(), "{error}");
     assert!(error.is_setup_retryable(), "{error}");
+}
+
+#[test]
+fn a_dropped_connection_keeps_the_network_reason_as_the_deepest_cause() {
+    #[derive(Debug, thiserror::Error)]
+    #[error("transport error")]
+    struct Transport(#[source] std::io::Error);
+
+    let mut status = tonic::Status::unavailable("transport error");
+    status.set_source(std::sync::Arc::new(Transport(std::io::Error::new(
+        std::io::ErrorKind::ConnectionReset,
+        "connection reset by peer",
+    ))));
+    let error = TransportError::from(status);
+    assert_eq!(error.to_string(), "transport error");
+    assert_eq!(crate::ui::causes(&error), ["connection reset by peer"]);
 }

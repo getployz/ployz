@@ -10,12 +10,12 @@ use ployz_store::{
     EnvironmentRef, OrganizationId, ProjectName, RemovalsQuery, SealingKey, Tell, Trusted, View,
     VolumeObservation, Written,
 };
-use serde_json::json;
 
 use super::{Error, config_path, leaf_matches, runtime};
 use crate::cli::{env, value};
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{CredentialStore, LoginError};
+use crate::ui::Hint;
 
 impl From<StoreCallError> for Error {
     fn from(error: StoreCallError) -> Self {
@@ -219,15 +219,15 @@ impl<'m> Store<'m> {
 
     /// This command's failure for a Store error: an ambiguous Project is fixed by
     /// linking this directory to one, after which the same command runs as typed.
-    pub(crate) fn fail(&self, error: StoreCallError) -> Error {
-        with_next(
+    pub(crate) fn fail(&self, error: impl Into<Refusal>) -> Error {
+        let Refusal { error, hint } = with_next(
             error,
             |refusal| {
                 refusal.code == RpcErrorCode::Ambiguous && refusal.details.get("projects").is_some()
             },
             || next(self.matches, &["link", "--project", "PROJECT"]),
-        )
-        .into()
+        );
+        Error::from(error).hint(hint)
     }
 
     /// This command again with its [`Self::args`] and `extra`, in the same Project
@@ -241,11 +241,12 @@ impl<'m> Store<'m> {
     /// This command's failure for a Store error; a refusal to delete Volume data
     /// names this command again accepting each Volume it lists, at the version it
     /// reviewed.
-    pub(crate) fn accepting(&self, error: StoreCallError) -> Error {
-        let error = match error {
-            StoreCallError::Refused(mut error)
-                if error.code == RpcErrorCode::ConfirmationRequired =>
-            {
+    pub(crate) fn accepting(&self, error: impl Into<Refusal>) -> Error {
+        let refusal = match error.into() {
+            Refusal {
+                error: StoreCallError::Refused(error),
+                ..
+            } if error.code == RpcErrorCode::ConfirmationRequired => {
                 let text = |value: &serde_json::Value| value.as_str().map(str::to_owned);
                 let mut extra = Vec::new();
                 let accept = error
@@ -261,15 +262,14 @@ impl<'m> Store<'m> {
                     extra.extend(["--expect-version".to_owned(), version]);
                 }
                 let retry = self.again(&extra.iter().map(String::as_str).collect::<Vec<_>>());
-                error.message = format!("{}.\nRetry: {retry}", error.message);
-                if let Some(details) = error.details.as_object_mut() {
-                    details.insert("next".into(), json!(retry));
+                Refusal {
+                    error: StoreCallError::Refused(error),
+                    hint: Some(Hint::Retry(retry)),
                 }
-                StoreCallError::Refused(error)
             }
-            error @ (StoreCallError::Refused(_) | StoreCallError::Cloud(_)) => error,
+            refusal => refusal,
         };
-        self.fail(error)
+        self.fail(refusal)
     }
 }
 
@@ -372,12 +372,24 @@ pub(crate) fn next(matches: &ArgMatches, words: &[&str]) -> String {
     shell_words::join(next)
 }
 
+/// A Store error and the hint this command adds to it.
+pub(crate) struct Refusal {
+    error: StoreCallError,
+    hint: Option<Hint>,
+}
+
+impl From<StoreCallError> for Refusal {
+    fn from(error: StoreCallError) -> Self {
+        Self { error, hint: None }
+    }
+}
+
 /// A refused stale write names the `read` command that shows the fresh state.
 pub(crate) fn with_refresh_hint(
-    error: StoreCallError,
+    error: impl Into<Refusal>,
     matches: &ArgMatches,
     read: &str,
-) -> StoreCallError {
+) -> Refusal {
     with_next(
         error,
         // A conflict that already names its next step (no Server: `ployz server add`) keeps it.
@@ -386,21 +398,19 @@ pub(crate) fn with_refresh_hint(
     )
 }
 
-/// A refusal `when` picks names `next` as the command to run next.
+/// A refusal `when` picks, with no hint yet, names `next` as the command to run next.
 pub(crate) fn with_next(
-    error: StoreCallError,
+    error: impl Into<Refusal>,
     when: impl FnOnce(&ployz_core::RpcError) -> bool,
     next: impl FnOnce() -> String,
-) -> StoreCallError {
-    let StoreCallError::Refused(mut error) = error else {
-        return error;
-    };
-    if when(&error)
-        && let Some(details) = error.details.as_object_mut()
+) -> Refusal {
+    let mut refusal = error.into();
+    if let (None, StoreCallError::Refused(error)) = (&refusal.hint, &refusal.error)
+        && when(error)
     {
-        details.insert("next".into(), json!(next()));
+        refusal.hint = Some(Hint::Next(next()));
     }
-    StoreCallError::Refused(error)
+    refusal
 }
 
 /// A unit enum variant as a person reads it: its JSON word with spaces, such as `not applied` for `not_applied`.
@@ -433,7 +443,6 @@ pub(crate) fn service_name(
 ) -> Result<ployz_core::ServiceName, Error> {
     ployz_core::ServiceName::parse(super::required(matches, arg)?).map_err(|_| {
         Error::usage("Expected a Service name: up to 63 lowercase letters, digits and -, like web")
-            .with_exit(crate::failure::USAGE_EXIT)
     })
 }
 
@@ -477,7 +486,6 @@ fn names<T>(
                 Error::usage(format!(
                     "Expected {what} names: lowercase letters, digits and -"
                 ))
-                .with_exit(crate::failure::USAGE_EXIT)
             })
         })
         .collect()
@@ -490,12 +498,13 @@ pub(crate) fn volume_name(
 ) -> Result<ployz_store::VolumeName, Error> {
     ployz_store::VolumeName::parse(super::required(matches, arg)?).map_err(|_| {
         Error::usage("Expected a Volume name: up to 63 lowercase letters, digits and -, like data")
-            .with_exit(crate::failure::USAGE_EXIT)
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     #[test]
@@ -530,9 +539,13 @@ mod tests {
         };
         let error = store.accepting(StoreCallError::Refused(refused));
         let retry = "ployz deploy --accept-volume-loss data --expect-version 3:1:0.1 --env staging";
+        assert_eq!(error.hints(), [Hint::Retry(retry.into())]);
         let error = error.report();
-        assert_eq!(error.details.get("next"), Some(&json!(retry)));
-        assert!(error.message.ends_with(&format!("Retry: {retry}")));
+        assert_eq!(error.details.get("retry"), Some(&json!(retry)));
+        assert_eq!(
+            error.message,
+            "This Deploy permanently deletes the data of data"
+        );
     }
 
     #[test]
@@ -547,17 +560,17 @@ mod tests {
                 details,
             })
         };
-        let next_of = |error| match with_refresh_hint(error, leaf_matches(&root), "diff") {
-            StoreCallError::Refused(error) => error.details.get("next").cloned(),
-            _ => unreachable!(),
+        let next_of = |error| {
+            let refusal = with_refresh_hint(error, leaf_matches(&root), "diff");
+            Error::from(refusal.error).hint(refusal.hint).hints()
         };
         assert_eq!(
             next_of(refused(json!({ "next": "ployz server add" }))),
-            Some(json!("ployz server add"))
+            [Hint::Next("ployz server add".into())]
         );
         assert_eq!(
             next_of(refused(json!({}))),
-            Some(json!("ployz diff --env staging"))
+            [Hint::Next("ployz diff --env staging".into())]
         );
     }
 }

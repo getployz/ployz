@@ -239,7 +239,10 @@ fn ctx_use_rejects_an_unknown_connection_without_mutating() {
             .output()
             .unwrap();
         assert!(!output.status.success());
-        assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), expected);
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr).trim(),
+            format!("error: {expected}")
+        );
         assert_eq!(Config::load(&path).unwrap(), before);
     }
 
@@ -618,7 +621,7 @@ fn ctx_rm_rejects_a_direct_connection() {
     assert!(!output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stderr).trim(),
-        "context management is unavailable with a direct connection"
+        "error: context management is unavailable with a direct connection"
     );
     assert_eq!(Config::load(&path).unwrap(), before);
 

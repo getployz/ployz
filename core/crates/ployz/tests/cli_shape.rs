@@ -173,7 +173,7 @@ fn sessions_shell_code_and_build_refuse_json() {
         ],
     ] {
         let (code, json, stderr) = run_json(args);
-        assert_eq!(code, Some(1), "{args:?}: {stderr}");
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
         assert_eq!(
             json.pointer("/error/code").unwrap(),
             "invalid_argument",
@@ -284,7 +284,7 @@ fn run_json_with(args: &[&str], envs: &[(&str, &str)]) -> (Option<i32>, serde_js
         .env_remove("PLOYZ_CONTEXT")
         .env_remove("PLOYZ_CONNECT")
         .env_remove("PLOYZ_TOKEN")
-        .env_remove("PLOYZ_CLOUD_URL")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
         .env_remove("PLOYZ_STORE")
         .envs(envs.iter().copied())
         .output()
@@ -309,6 +309,11 @@ fn json_results_and_errors_are_one_stdout_object_with_distinct_exit_codes() {
     assert_eq!(code, Some(1));
     assert_eq!(json.pointer("/error/code").unwrap(), "not_found", "{json}");
     assert!(message(&json).contains("no contexts"), "{json}");
+    assert_eq!(
+        json.pointer("/error/cause").unwrap(),
+        &serde_json::json!([]),
+        "{json}"
+    );
 
     let (code, json, stderr) = run_json(&["volume", "ls", "--json", "--no-such-flag"]);
     assert_eq!(code, Some(2), "{stderr}");
@@ -318,6 +323,204 @@ fn json_results_and_errors_are_one_stdout_object_with_distinct_exit_codes() {
         "{json}"
     );
     assert!(message(&json).contains("--no-such-flag"), "{json}");
+}
+
+#[test]
+fn an_unreadable_config_fails_the_same_way_for_every_command() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.yaml");
+    std::fs::write(&config, "contexts: {}\n").unwrap();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(
+        std::fs::read(&config).is_err(),
+        "this user reads a mode 000 file; run the suite as a non-root user"
+    );
+    let run = |args: &[&str]| {
+        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+            .args(args)
+            .args(["--json", "--ployz-config", config.to_str().unwrap()])
+            .env("HOME", home.path())
+            .env_remove("PLOYZ_CONTEXT")
+            .env_remove("PLOYZ_CONNECT")
+            .env_remove("PLOYZ_TOKEN")
+            .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
+            .env_remove("PLOYZ_STORE")
+            .output()
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        (output.status.code(), json.pointer("/error/code").cloned())
+    };
+    let ps = run(&["ps"]);
+    assert_eq!(ps, (Some(1), Some(serde_json::json!("internal"))));
+    assert_eq!(run(&["ctx", "use", "prod"]), ps);
+    assert_eq!(run(&["server", "ls"]), ps);
+}
+
+#[test]
+fn no_failure_message_flattens_a_cause() {
+    const CONSTRUCTORS: [&str; 10] = [
+        "::usage(",
+        "::not_found(",
+        "::ambiguous(",
+        "::conflict(",
+        "::unavailable(",
+        "::coded(",
+        "::detailed(",
+        "::caused(",
+        ".context(",
+        "#[error(",
+    ];
+    const FLATTENERS: [&str; 12] = [
+        "inline(",
+        "ui::row(",
+        "error.to_string()",
+        "{error}",
+        "{error:",
+        "{err}",
+        "{err:",
+        "{e}",
+        "{e:",
+        "{source}",
+        "{source:",
+        "{cause}",
+    ];
+    let src = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+    let mut found = Vec::new();
+    let mut dirs = vec![src.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            for constructor in CONSTRUCTORS {
+                for (start, _) in source.match_indices(constructor) {
+                    let rest = &source[start + constructor.len()..];
+                    let mut depth = 1;
+                    let end = rest
+                        .char_indices()
+                        .find_map(|(at, c)| {
+                            depth += match c {
+                                '(' => 1,
+                                ')' => -1,
+                                _ => 0,
+                            };
+                            (depth == 0).then_some(at)
+                        })
+                        .unwrap_or(rest.len());
+                    let argument = &rest[..end];
+                    if FLATTENERS
+                        .iter()
+                        .any(|flattener| argument.contains(flattener))
+                    {
+                        found.push(format!("{}: {constructor}{argument}", path.display()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "use Failure::caused or .context:\n{}",
+        found.join("\n")
+    );
+}
+
+/// Run the binary for human output against an empty config home; returns (exit code, stderr).
+fn run_human(args: &[&str]) -> (Option<i32>, String) {
+    run_human_with(args, &[])
+}
+
+fn run_human_with(args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, String) {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.yaml");
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(args)
+        .args(["--ployz-config", config.to_str().unwrap()])
+        .env("HOME", home.path())
+        .env_remove("PLOYZ_CONTEXT")
+        .env_remove("PLOYZ_CONNECT")
+        .env_remove("PLOYZ_TOKEN")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
+        .env_remove("PLOYZ_STORE")
+        .env_remove("NO_COLOR")
+        .env_remove("CLICOLOR_FORCE")
+        .envs(env.iter().copied())
+        .output()
+        .unwrap();
+    (
+        output.status.code(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+#[test]
+fn usage_errors_exit_2() {
+    for args in [
+        &["explain", "web.restart_policy"][..],
+        &["cloud", "reset"],
+        &[
+            "build",
+            "--grant",
+            "x",
+            "--deployment",
+            "1",
+            "--commit",
+            "abc",
+            "--fingerprint",
+            "f",
+        ],
+        &["completion", "--json", "bash"],
+        &["exec", "--json", "api"],
+    ] {
+        let (code, stderr) = run_human(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        if !args.contains(&"--json") {
+            assert!(stderr.starts_with("error: "), "{args:?}: {stderr}");
+        }
+    }
+}
+
+#[test]
+fn a_cut_valid_list_still_names_the_closest_setting() {
+    let (code, stderr) = run_human(&["explain", "web.restart_policy"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(
+        stderr.contains("\nvalid: did you mean restartPolicy?\nvalid: "),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn color_never_emits_no_escapes() {
+    let (code, stderr) = run_human_with(
+        &["ctx", "use", "missing", "--color", "never"],
+        &[("CLICOLOR_FORCE", "1")],
+    );
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.starts_with("error: "), "{stderr}");
+    assert!(!stderr.contains('\x1b'), "{stderr:?}");
+    let (_, forced) = run_human_with(&["ctx", "use", "missing"], &[("CLICOLOR_FORCE", "1")]);
+    assert!(forced.contains('\x1b'), "{forced:?}");
+
+    let (code, stderr) = run_human(&["ctx", "use", "missing", "--color", "always"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains('\x1b'), "{stderr:?}");
+
+    let (_, forced) = run_human_with(&["ps", "--bogus"], &[("CLICOLOR_FORCE", "1")]);
+    assert!(forced.contains('\x1b'), "{forced:?}");
+    for args in [
+        &["-c", "prod", "--color", "never", "deploy", "--bogus"][..],
+        &["ps", "--color", "never", "--bogus"],
+    ] {
+        let (code, stderr) = run_human_with(args, &[("CLICOLOR_FORCE", "1")]);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains("--bogus"), "{args:?}: {stderr}");
+        assert!(!stderr.contains('\x1b'), "{args:?}: {stderr:?}");
+    }
 }
 
 #[test]
@@ -399,15 +602,60 @@ fn cloud_commands_act_with_ployz_token_or_the_signed_in_device() {
     assert!(!json.to_string().contains("ployz_secret"), "{json}");
 
     let (code, json, _) = run_json_with(&["org", "use", "acme", "--json"], &token);
-    assert_eq!(code, Some(1));
+    assert_eq!(code, Some(2));
     assert_eq!(
         json.pointer("/error/code").unwrap(),
-        "unsupported",
+        "invalid_argument",
         "{json}"
     );
 
     let (code, json, _) = run_json(&["token", "new", "ci", "--expires-in", "0", "--json"]);
     assert_eq!(code, Some(2), "{json}");
+}
+
+#[test]
+fn every_error_field_the_agent_skill_names_appears_in_real_output() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir(home.path().join(".claude")).unwrap();
+    let installed = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["setup", "agent", "--json"])
+        .env("HOME", home.path())
+        .env_remove("AI_AGENT")
+        .output()
+        .unwrap();
+    assert!(installed.status.success());
+    let skill = std::fs::read_to_string(home.path().join(".claude/skills/ployz/SKILL.md")).unwrap();
+    let line = skill
+        .lines()
+        .find(|line| line.contains(r#"{"error": {"#))
+        .unwrap();
+    let shape = &line[line.find(r#"{"error": {"#).unwrap() + 11..];
+    let mut named: Vec<String> = shape[..shape.find('}').unwrap()]
+        .split(", ")
+        .map(|field| format!("/error/{field}"))
+        .collect();
+    named.extend(skill.split('`').filter_map(|code| {
+        code.strip_prefix("details.")
+            .map(|key| format!("/error/details/{key}"))
+    }));
+    assert!(named.len() > 4, "{named:?}");
+
+    let store = tempfile::tempdir().unwrap();
+    let store = format!("sqlite:{}", store.path().join("store.db").display());
+    let with_store = [("PLOYZ_STORE", store.as_str())];
+    let (code, _, stderr) = run_json_with(&["project", "new", "blog", "--json"], &with_store);
+    assert_eq!(code, Some(0), "{stderr}");
+    let outputs = [
+        run_json(&["token", "ls", "--json"]).1,
+        run_json(&["explain", "web.restart_policy", "--json"]).1,
+        run_json_with(&["project", "rm", "blog", "--json"], &with_store).1,
+    ];
+    for field in named {
+        assert!(
+            outputs.iter().any(|json| json.pointer(&field).is_some()),
+            "{field} named by the skill appears in no output: {outputs:?}"
+        );
+    }
 }
 
 fn message(json: &serde_json::Value) -> &str {
@@ -521,4 +769,138 @@ fn up_resets_only_a_server_it_adds() {
     };
     assert!(parse(&["--server", "root@203.0.113.1", "--reset"]));
     assert!(!parse(&["--reset"]));
+}
+
+/// A thiserror message that interpolates its own source prints that cause
+/// twice: once in the message, once as the next link in the chain.
+#[test]
+fn no_error_derive_interpolates_its_source() {
+    use syn::visit::Visit;
+
+    struct Derives<'a> {
+        file: &'a std::path::Path,
+        found: Vec<String>,
+    }
+
+    impl Derives<'_> {
+        fn check(&mut self, item: &str, attrs: &[syn::Attribute], fields: &syn::Fields) {
+            let marked = |field: &syn::Field| {
+                field
+                    .attrs
+                    .iter()
+                    .any(|attr| attr.path().is_ident("source") || attr.path().is_ident("from"))
+            };
+            let explicit = fields.iter().any(marked);
+            let sources: Vec<String> = fields
+                .iter()
+                .enumerate()
+                .filter(|(_, field)| {
+                    marked(field)
+                        || (!explicit && field.ident.as_ref().is_some_and(|name| name == "source"))
+                })
+                .map(|(at, field)| {
+                    field
+                        .ident
+                        .as_ref()
+                        .map_or_else(|| at.to_string(), ToString::to_string)
+                })
+                .collect();
+            if sources.is_empty() {
+                return;
+            }
+            for attr in attrs.iter().filter(|attr| attr.path().is_ident("error")) {
+                let Ok(list) = attr.meta.require_list() else {
+                    continue;
+                };
+                let Some(Ok(message)) = list
+                    .tokens
+                    .clone()
+                    .into_iter()
+                    .next()
+                    .map(|first| syn::parse2::<syn::LitStr>(first.into()))
+                else {
+                    continue;
+                };
+                let text = list.tokens.to_string();
+                let arguments = &text[message.token().to_string().len().min(text.len())..];
+                let mut used = interpolated(&message.value());
+                used.extend(arguments.split('.').skip(1).map(|after| {
+                    after
+                        .trim_start()
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect::<String>()
+                }));
+                if let Some(source) = sources.iter().find(|source| used.contains(source)) {
+                    self.found.push(format!(
+                        "{}: {item} shows its source `{source}` in {:?}",
+                        self.file.display(),
+                        message.value()
+                    ));
+                }
+            }
+        }
+    }
+
+    impl<'ast> Visit<'ast> for Derives<'_> {
+        fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+            self.check(&item.ident.to_string(), &item.attrs, &item.fields);
+        }
+
+        fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
+            for variant in &item.variants {
+                let name = format!("{}::{}", item.ident, variant.ident);
+                self.check(&name, &variant.attrs, &variant.fields);
+            }
+        }
+    }
+
+    fn interpolated(message: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut rest = message.replace("{{", "");
+        while let Some(open) = rest.find('{') {
+            let tail = &rest[open + 1..];
+            let close = tail.find('}').unwrap_or(tail.len());
+            let name = tail[..close].split(':').next().unwrap_or("").trim();
+            names.push(name.to_owned());
+            rest = tail[close..].to_owned();
+        }
+        names
+    }
+
+    // ployzd's errors reach the CLI as RPC text, not as a chain it renders.
+    let crates = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let mut dirs: Vec<_> = std::fs::read_dir(crates)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|krate| !krate.ends_with("ployzd"))
+        .map(|krate| krate.join("src"))
+        .filter(|src| src.is_dir())
+        .collect();
+    let mut found = Vec::new();
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let file = syn::parse_file(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let mut derives = Derives {
+                file: &path,
+                found: Vec::new(),
+            };
+            derives.visit_file(&file);
+            found.append(&mut derives.found);
+        }
+    }
+    found.sort();
+    assert!(
+        found.is_empty(),
+        "the chain already prints the source; drop it from the message:\n{}",
+        found.join("\n")
+    );
 }

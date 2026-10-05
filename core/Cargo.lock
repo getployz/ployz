@@ -3390,6 +3390,8 @@ dependencies = [
 name = "ployz"
 version = "0.2.3"
 dependencies = [
+ "anstream",
+ "anstyle",
  "base64 0.22.1",
  "chrono",
  "clap",
@@ -3417,6 +3419,7 @@ dependencies = [
  "sha2",
  "shell-words",
  "sigpipe",
+ "syn 2.0.119",
  "tar",
  "tempfile",
  "thiserror 2.0.20",

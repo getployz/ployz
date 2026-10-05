@@ -163,10 +163,10 @@ fn validate_protocol_major(requested: u32) -> Result<(), CodecError> {
 
 #[derive(Debug, Error)]
 pub enum CodecError {
-    #[error("could not encode JSON payload: {0}")]
-    EncodeJson(serde_json::Error),
-    #[error("could not decode JSON payload: {0}")]
-    DecodeJson(serde_json::Error),
+    #[error("Could not encode the JSON payload.")]
+    EncodeJson(#[source] serde_json::Error),
+    #[error("Could not decode the JSON payload.")]
+    DecodeJson(#[source] serde_json::Error),
     #[error("unsupported RPC command {0:?}")]
     UnsupportedCommand(String),
     #[error("unsupported protocol major {requested}; this endpoint supports {supported}")]

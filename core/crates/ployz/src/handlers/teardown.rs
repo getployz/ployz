@@ -13,17 +13,22 @@ use serde_json::json;
 use super::Error;
 use super::deploy;
 use super::store::{self, Store, mint};
-use crate::failure::USAGE_EXIT;
+use crate::ui::Hint;
 
-/// Whether `--confirm` typed `name`; a different name is a usage error.
-pub(super) fn confirmed(matches: &ArgMatches, name: &str, what: &str) -> Result<bool, Error> {
+/// Whether `--confirm` typed `name`; a different name is a usage error naming `retry`.
+pub(super) fn confirmed(
+    matches: &ArgMatches,
+    name: &str,
+    what: &str,
+    retry: String,
+) -> Result<bool, Error> {
     match matches.get_one::<String>("confirm") {
         Some(typed) if typed == name => Ok(true),
         Some(typed) => Err(Error::usage(format!(
             "--confirm {} does not match {what} {name}. No changes made.",
             typed.escape_debug()
         ))
-        .with_exit(USAGE_EXIT)),
+        .hint(Hint::Retry(retry))),
         None => Ok(false),
     }
 }
@@ -99,9 +104,9 @@ where
                         json!({
                             "environment": environment,
                             "deployment": deployment,
-                            "next": deploy::show_hint(&deployment),
                         }),
-                    ));
+                    )
+                    .hint(Hint::Next(deploy::show_hint(&deployment))));
                 }
                 Teardown::NeedsRemoval { environment, .. } => environment,
             };

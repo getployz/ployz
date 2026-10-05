@@ -18,6 +18,7 @@ use crate::cli::{base, env, positional, switch, value};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::{CredentialStore, DEFAULT_CLOUD, LoginError, Organization};
 use crate::output::say;
+use crate::ui::Hint;
 
 const INSTALLER_URL: &str = "https://ployz.sh/";
 const JOIN_POLL: Duration = Duration::from_secs(2);
@@ -197,11 +198,11 @@ async fn wait_joined(acting: &Acting, enrollment: &str) -> Result<(), Error> {
         {
             Enrollment::Pending => tokio::time::sleep(JOIN_POLL).await,
             Enrollment::Expired => {
-                return Err(Error::detailed(
+                return Err(Error::coded(
                     RpcErrorCode::Conflict,
                     "the enrollment expired before a Server joined",
-                    json!({ "next": "ployz server add --command" }),
-                ));
+                )
+                .hint(Hint::Retry("ployz server add --command".into())));
             }
             Enrollment::Joined { machine_id } => {
                 say!("Server {machine_id} joined");

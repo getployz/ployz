@@ -971,8 +971,8 @@ fn respond(response: impl Into<RpcResponse>) -> Result<Response<OpaquePayload>, 
     ))
 }
 
-fn invalid_request(error: impl std::fmt::Display) -> Status {
-    Status::invalid_argument(error.to_string())
+fn invalid_request(error: impl std::error::Error + 'static) -> Status {
+    Status::invalid_argument(ployz_core::error_chain::inline(&error))
 }
 
 #[allow(clippy::result_large_err)]
@@ -989,8 +989,8 @@ fn expect<T: Rpc>(request: Request<OpaquePayload>) -> Result<T::Request, Status>
     T::from_request_body(request_body(request)?).map_err(invalid_request)
 }
 
-fn internal_response(error: impl std::fmt::Display) -> Status {
-    Status::internal(error.to_string())
+fn internal_response(error: impl std::error::Error + 'static) -> Status {
+    Status::internal(ployz_core::error_chain::inline(&error))
 }
 
 #[cfg(test)]

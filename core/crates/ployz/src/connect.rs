@@ -429,11 +429,12 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             details: Value::Null,
         },
         error @ (ConnectError::Attempt(_)
+        | ConnectError::Exhausted(_)
         | ConnectError::EntryNotReady
         | ConnectError::Io(_)
         | ConnectError::Dial(_)
         | ConnectError::MissingMachineDetails
-        | ConnectError::SshClientMissing(_)
+        | ConnectError::SshClientMissing
         | ConnectError::SshProbe { .. }
         | ConnectError::Routing(_)
         | ConnectError::Join(_)
@@ -446,11 +447,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         | ConnectError::AllFailed { .. }
         | ConnectError::Codec(_)
         | ConnectError::Framing(_)
-        | ConnectError::Value(_)) => RpcError {
-            code: RpcErrorCode::Internal,
-            message: error.to_string(),
-            details: Value::Null,
-        },
+        | ConnectError::Value(_)) => crate::ui::rpc_error(RpcErrorCode::Internal, &error),
     }
 }
 
@@ -508,7 +505,7 @@ pub async fn connect_selected_with(
         match connect_one(connection, &selected.source, &connector).await {
             Ok(client) => return Ok(client),
             Err(error)
-                if matches!(error, ConnectError::SshClientMissing(_))
+                if matches!(error, ConnectError::SshClientMissing)
                     && selected
                         .connections
                         .iter()
@@ -524,7 +521,7 @@ pub async fn connect_selected_with(
         }
     }
     Err(ConnectError::AllFailed {
-        source: selected.source,
+        selection: selected.source,
         attempts: selected.connections.len(),
         setup_retryable,
         last: last_error.map(Box::new),
@@ -628,15 +625,17 @@ pub enum ConnectError {
     },
     #[error("connection attempt failed: {0}")]
     Attempt(Cow<'static, str>),
+    #[error(transparent)]
+    Exhausted(Box<dyn std::error::Error + Send + Sync>),
     /// Not retried: a starting daemon costs one confirm timeout, not one per retry.
     #[error(
         "connection attempt failed: entry Machine daemon did not answer within {:?}; it may still be starting, retry shortly",
         CONNECT_CONFIRM_TIMEOUT
     )]
     EntryNotReady,
-    #[error("connection attempt failed: {0}")]
+    #[error("Could not connect to the Machine.")]
     Io(#[from] io::Error),
-    #[error("connection attempt failed: {0}")]
+    #[error("Could not connect to the Machine.")]
     Dial(#[from] tonic::transport::Error),
     #[error("connection attempt failed: inspect response omitted Machine details")]
     MissingMachineDetails,
@@ -645,16 +644,16 @@ pub enum ConnectError {
     #[error("Machine confirmed this Management Client was cleared")]
     ClientCleared,
     #[error("local ssh client not found; install an ssh client")]
-    SshClientMissing(#[source] io::Error),
+    SshClientMissing,
     #[error("connection attempt failed: SSH probe to {target} exited with {status}: {detail}")]
     SshProbe {
         target: String,
         status: std::process::ExitStatus,
         detail: String,
     },
-    #[error("connection attempt failed: {0}")]
+    #[error("Machine RPC routing metadata is invalid.")]
     Routing(#[from] RoutingMetadataError),
-    #[error("connection attempt failed: {0}")]
+    #[error("The connection task failed.")]
     Join(#[from] tokio::task::JoinError),
     #[error("proxy dialing is unsupported over {0}")]
     ProxyUnsupported(String),
@@ -666,25 +665,25 @@ pub enum ConnectError {
     Connection(#[from] ConnectionError),
     #[error(transparent)]
     Context(#[from] ContextError),
-    #[error("could not inspect {path}: {source}")]
+    #[error("Could not inspect {path}.")]
     Path { path: PathBuf, source: io::Error },
-    #[error("all {attempts} connections from {source} failed: {}", last.as_ref().map_or_else(|| "no connection available".to_owned(), ToString::to_string))]
+    #[error("All {attempts} connections from {selection} failed.")]
     AllFailed {
-        source: ConnectionSource,
+        selection: ConnectionSource,
         attempts: usize,
         setup_retryable: bool,
         #[source]
         last: Option<Box<ConnectError>>,
     },
-    #[error("Machine RPC failed: {0}")]
-    Rpc(TransportError),
-    #[error("Machine RPC payload failed: {0}")]
+    #[error("Machine RPC failed.")]
+    Rpc(#[source] TransportError),
+    #[error("Machine RPC payload failed.")]
     Codec(#[from] CodecError),
-    #[error("Machine RPC returned: {}", .0.message)]
+    #[error(transparent)]
     Remote(RpcError),
-    #[error("Machine RPC framing failed: {0}")]
+    #[error("Machine RPC framing failed.")]
     Framing(#[from] FramingError),
-    #[error("Machine RPC identity failed: {0}")]
+    #[error("Machine RPC identity failed.")]
     Value(#[from] ployz_core::ValueError),
 }
 
@@ -697,7 +696,7 @@ impl From<tonic::Status> for ConnectError {
 impl ConnectError {
     fn from_ssh_spawn(error: io::Error) -> Self {
         if error.kind() == io::ErrorKind::NotFound {
-            Self::SshClientMissing(error)
+            Self::SshClientMissing
         } else {
             Self::Io(error)
         }
@@ -706,6 +705,7 @@ impl ConnectError {
     pub(crate) fn is_retryable(&self) -> bool {
         match self {
             Self::Attempt(_)
+            | Self::Exhausted(_)
             | Self::Io(_)
             | Self::Dial(_)
             | Self::SshProbe { .. }
@@ -717,7 +717,7 @@ impl ConnectError {
             | Self::ClientRefused
             | Self::ClientCleared
             | Self::MissingMachineDetails
-            | Self::SshClientMissing(_)
+            | Self::SshClientMissing
             | Self::Routing(_)
             | Self::ProxyUnsupported(_)
             | Self::UnsupportedNetwork(_)
@@ -783,6 +783,7 @@ impl ConnectError {
         matches!(
             self,
             Self::Attempt(_)
+                | Self::Exhausted(_)
                 | Self::EntryNotReady
                 | Self::Io(_)
                 | Self::Dial(_)
@@ -800,6 +801,9 @@ pub struct TransportError {
     details: Value,
     /// The client produced this status: the daemon never answered.
     unanswered: bool,
+    /// Why the client's connection or stream failed, below tonic's own words.
+    #[source]
+    cause: Option<crate::failure::JoinedChain>,
 }
 
 impl TransportError {
@@ -848,10 +852,19 @@ impl From<tonic::Status> for TransportError {
     fn from(status: tonic::Status) -> Self {
         // Remote statuses cross the wire without a source. Tonic attaches one
         // only when the client connection or stream itself fails.
-        let unanswered =
-            status.code() == tonic::Code::Cancelled || std::error::Error::source(&status).is_some();
+        let source = std::error::Error::source(&status);
+        let unanswered = status.code() == tonic::Code::Cancelled || source.is_some();
+        let cause = source.and_then(|source| {
+            let mut lines: Vec<String> = std::iter::once(source.to_string())
+                .chain(crate::ui::causes(source))
+                .skip_while(|line| line == status.message())
+                .collect();
+            lines.dedup();
+            crate::failure::JoinedChain::of(lines)
+        });
         Self {
             unanswered,
+            cause,
             code: status.code(),
             message: status.message().to_owned(),
             details: if status.details().is_empty() {

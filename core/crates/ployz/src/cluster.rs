@@ -169,9 +169,7 @@ impl Client {
             .await
             .map_err(|error| match error {
                 crate::setup_retry::Error::Permanent(error) => error,
-                crate::setup_retry::Error::Exhausted(message) => {
-                    ConnectError::Attempt(message.into())
-                }
+                exhausted => ConnectError::Exhausted(Box::new(exhausted)),
             })
     }
 
@@ -1203,7 +1201,8 @@ pub(crate) async fn evict_machine(
     {
         Ok(removed) => removed.reset_warning,
         Err(error) if error.is_unreachable() => Some(format!(
-            "target is unreachable; removing shared rows: {error}"
+            "target is unreachable; removing shared rows: {}",
+            crate::ui::row(&error)
         )),
         Err(error) => return Err(error.into()),
     };

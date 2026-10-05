@@ -21,7 +21,6 @@ use crate::{
     cloud_account::StoreCallError,
     cloud_login::LoginError,
     context::Transport,
-    failure::USAGE_EXIT,
     operator::{
         ExecMode, ProxyPorts, ServiceArg, exec_options, merge_logs, open_exec, open_machine_logs,
         open_service_logs, parse_log_time, parse_proxy_ports, parse_service_args, parse_tail,
@@ -406,10 +405,10 @@ async fn run_port_forward(
                     match client.dial_proxy("tcp", &remote).await {
                         Ok(mut upstream) => {
                             if let Err(error) = copy_bidirectional(&mut local, &mut upstream).await {
-                                eprintln!("WARNING: port-forward connection to {remote} failed: {error}");
+                                crate::ui::warn(format_args!("port-forward connection to {remote} failed"), &error);
                             }
                         }
-                        Err(error) => eprintln!("WARNING: port-forward connection to {remote} failed: {error}"),
+                        Err(error) => crate::ui::warn(format_args!("port-forward connection to {remote} failed"), &error),
                     }
                 });
             }
@@ -437,12 +436,10 @@ fn log_options(matches: &ArgMatches) -> Result<LogsOptions, Error> {
     match (options.since_unix_seconds, options.until_unix_seconds) {
         (Some(since), Some(until)) if until < since => Err(Error::usage(
             "--until is before --since, so no line fits; swap them",
-        )
-        .with_exit(USAGE_EXIT)),
+        )),
         (Some(since), _) if !follow && since > Utc::now().timestamp() => Err(Error::usage(
             "--since is in the future, so no line fits yet; add --follow to wait for them",
-        )
-        .with_exit(USAGE_EXIT)),
+        )),
         _ => Ok(options),
     }
 }

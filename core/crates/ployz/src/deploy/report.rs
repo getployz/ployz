@@ -1,7 +1,7 @@
 //! CLI paint model for one Deploy. Human copy lives here, not on the wire types.
 
 use std::fmt::Write as _;
-use std::io::IsTerminal;
+use std::io;
 
 use crossterm::style::Stylize as _;
 use ployz_core::{
@@ -18,21 +18,21 @@ pub(crate) struct Ink {
 }
 
 impl Ink {
-    /// Color when `stream` is a TTY and `NO_COLOR` is unset.
     #[must_use]
-    pub(crate) fn detect(stream: impl IsTerminal) -> Self {
-        let no_color = std::env::var_os("NO_COLOR").is_some();
+    pub(crate) fn of(choice: anstream::ColorChoice) -> Self {
         Self {
-            color: stream.is_terminal() && !no_color,
+            color: choice != anstream::ColorChoice::Never,
         }
     }
 
     /// Color for the stream carrying human text.
     #[must_use]
     pub(crate) fn human() -> Self {
-        Self {
-            color: crate::output::human_is_terminal() && std::env::var_os("NO_COLOR").is_none(),
-        }
+        Self::of(if crate::output::json() {
+            anstream::AutoStream::choice(&io::stderr())
+        } else {
+            anstream::AutoStream::choice(&io::stdout())
+        })
     }
 
     /// No ANSI.

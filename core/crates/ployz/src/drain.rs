@@ -222,7 +222,7 @@ pub enum Remaining {
 pub enum DrainError {
     /// The target names no visible Server, or more than one, or turning its services role
     /// off failed.
-    #[error("{0}")]
+    #[error(transparent)]
     Refused(RpcError),
     /// The entry did not observe the services role off within 30 s.
     #[error("this entry Server has not yet observed the new services role")]
@@ -389,11 +389,11 @@ impl DrainClient for Client {
         let machines = self
             .machines()
             .await
-            .map_err(|error| Lost::Entry(error.to_string()))?;
+            .map_err(|error| Lost::Entry(crate::ui::row(&error)))?;
         let live = self
             .live_services_from(&machines, EnvironmentValues::Redacted)
             .await
-            .map_err(|error| Lost::Entry(error.to_string()))?;
+            .map_err(|error| Lost::Entry(crate::ui::row(&error)))?;
         observed(&live, id).map_err(Lost::Server)?;
         Ok(services_on(id, &live))
     }

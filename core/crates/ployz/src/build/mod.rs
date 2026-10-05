@@ -71,11 +71,11 @@ pub enum RemoteBuildFailure {
 /// Why a Build could not be captured, run, or bound to its Service.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum Error {
-    #[error("{outcome}")]
+    #[error(transparent)]
     RemoteBuild { outcome: Box<RemoteBuildFailure> },
     #[error("invalid Build: {0}")]
     Invalid(String),
-    #[error("building {service}: {source}")]
+    #[error("Could not build {service}.")]
     Build {
         service: ServiceName,
         #[source]

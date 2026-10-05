@@ -13,7 +13,6 @@ use super::super::config::expected;
 use super::super::store::{self, Next, mint, project, store};
 use super::super::{Error, leaf_matches, required};
 use crate::cloud_account::StoreCallError;
-use crate::failure::USAGE_EXIT;
 use crate::output::say;
 
 pub(super) fn branch(root: &ArgMatches) -> Result<(), Error> {
@@ -28,10 +27,8 @@ pub(super) fn branch(root: &ArgMatches) -> Result<(), Error> {
     let fix = matches
         .get_one::<String>("fix")
         .map(|id| {
-            DeploymentId::parse(id.as_str()).map_err(|_| {
-                Error::usage("Expected --fix DEPLOYMENT to be a Deployment ID")
-                    .with_exit(USAGE_EXIT)
-            })
+            DeploymentId::parse(id.as_str())
+                .map_err(|_| Error::usage("Expected --fix DEPLOYMENT to be a Deployment ID"))
         })
         .transpose()?;
     let create = CreateBranch {
@@ -154,8 +151,7 @@ fn secret_values(matches: &ArgMatches) -> Result<Vec<(String, String)>, Error> {
             Some(value) => Ok((row, value.to_owned())),
             None => Err(Error::usage(format!(
                 "Expected a line of stdin for each --value: none for {row}"
-            ))
-            .with_exit(USAGE_EXIT)),
+            ))),
         })
         .collect()
 }
@@ -164,9 +160,8 @@ fn secret_values(matches: &ArgMatches) -> Result<Vec<(String, String)>, Error> {
 fn undo(root: &ArgMatches, sync: &str) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let request = UndoSync {
-        sync: SyncId::parse(sync).map_err(|_| {
-            Error::usage("Expected --undo SYNC to be the ID a Sync printed").with_exit(USAGE_EXIT)
-        })?,
+        sync: SyncId::parse(sync)
+            .map_err(|_| Error::usage("Expected --undo SYNC to be the ID a Sync printed"))?,
     };
     let undone: Undone = store(root)?.write(&request)?;
     let into = &undone.into;
@@ -191,7 +186,6 @@ fn take(root: &ArgMatches, source: &str, into: EnvironmentRef) -> Result<(), Err
         .or_else(|_| EnvironmentName::parse(source).map(HintSource::Parent))
         .map_err(|_| {
             Error::usage("Expected --take ID to be the Parent's name or a Conditional Sync ID")
-                .with_exit(USAGE_EXIT)
         })?;
     let rows: Vec<RowRef> = super::super::string_values(matches, "only")
         .iter()
@@ -407,11 +401,11 @@ pub(super) fn keep(root: &ArgMatches) -> Result<(), Error> {
 
 /// A refused `--expect` names the read that shows the fresh revision; other
 /// conflicts keep the Store's own next step.
-fn stale(error: StoreCallError, matches: &ArgMatches) -> StoreCallError {
+fn stale(error: StoreCallError, matches: &ArgMatches) -> store::Refusal {
     if matches.get_one::<String>("expect").is_some() {
         store::with_refresh_hint(error, matches, "get")
     } else {
-        error
+        error.into()
     }
 }
 
@@ -453,7 +447,6 @@ pub(super) fn setups(values: &[String]) -> Result<Vec<SetupCommand>, Error> {
                 })
                 .ok_or_else(|| {
                     Error::usage("Expected --setup SERVICE=COMMAND, like web='pnpm db:seed'")
-                        .with_exit(USAGE_EXIT)
                 })
         })
         .collect()

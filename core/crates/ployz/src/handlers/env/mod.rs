@@ -25,6 +25,7 @@ use super::teardown::{Inventory, confirmed, inventory, remove_all};
 use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, repeated, switch, value};
 use crate::output::say;
+use crate::ui::Hint;
 
 pub(crate) fn command() -> Command {
     Command::new("env")
@@ -429,7 +430,7 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
     // Not removed yet (queued, failed, cancelled, or its outcome unknown): this same
     // command finishes it once the removal applied, or queues it again.
     let store = store.args(["--confirm", typed.as_str()]);
-    if !confirmed(matches, &typed, "Environment")? {
+    if !confirmed(matches, &typed, "Environment", store.again(&[]))? {
         return Err(unconfirmed(inventory, &store.again(&[])));
     }
     let project = inventory.environment.project.clone();
@@ -447,16 +448,16 @@ fn unconfirmed(inventory: Inventory, retry: &str) -> Error {
         RpcErrorCode::ConfirmationRequired,
         format!(
             "Removing Environment {} deletes its configuration, history and every Service \
-             and Volume in it; this can't be undone. No changes made.\nRetry: {retry}",
+             and Volume in it; this can't be undone. No changes made.",
             inventory.environment.name
         ),
         json!({
             "environment": inventory.environment,
             "services": inventory.services,
             "volumes": inventory.volumes,
-            "next": retry,
         }),
     )
+    .hint(Hint::Retry(retry.to_owned()))
 }
 
 fn finish_removal(

@@ -25,7 +25,7 @@ Every command goes through one module, `ployz::ui`. Handlers pass in values and 
 | Prompts | dialoguer | 1 | console-rs family |
 | Errors | hand-rolled `error:` / `cause:` / hint lines | 0 | uv, jj |
 
-anstream strips escape codes from any stream that isn't a color terminal. That fixes, in one place, the bug Uncloud has at every call site: colors leaking into pipes. It honors `NO_COLOR`, `CLICOLOR`, `CLICOLOR_FORCE` and `TERM=dumb`, and a new global `--color auto|always|never` flag overrides all of them.
+anstream strips escape codes from any stream that isn't a color terminal. That fixes, in one place, the bug Uncloud has at every call site: colors leaking into pipes. It honors `NO_COLOR`, `CLICOLOR`, `CLICOLOR_FORCE` and `TERM=dumb`, and a new global `--color auto|always|never` flag overrides all of them. Under `auto`, only Interactive output is colored; Plain and Json carry color only for `--color always` or `CLICOLOR_FORCE`. anstream on its own would also color whenever `CI` is set.
 
 ## 2. Three modes
 
@@ -55,7 +55,7 @@ stderr   everything else: progress, warnings, errors, prompts, notes
 | lists | aligned columns, bold header (when stdout is a TTY) | UPPERCASE-header TSV | `{noun: [...]}` |
 | progress | see section 5 | one line per state change, plus a heartbeat | human lines on stderr; `--events FILE` writes NDJSON |
 | prompts | yes | refuse, naming the flag | refuse, naming the flag |
-| hints | `next:` lines | the same lines | a `next` array |
+| hints | `next:` lines | the same lines | keys in `details` (see section 3) |
 
 ## 3. Vocabulary
 
@@ -79,8 +79,11 @@ next: ployz deploy --project shop      a command to run now
 inspect: ployz logs worker --machine beta   a read-only command that shows more
 retry: ployz project rm blog --confirm blog
 undo: ployz env sync --undo s3 --project shop
+valid: did you mean restartPolicy?     the closest choice, before the list
 valid: web, api, postgres, worker      choices, capped at 8 then "and 32 more"
 ```
+
+Under `--json` each hint is a key in the error's `details`: `next`, `retry` and `undo` are one command string each, `inspect` is an array of commands, `did_you_mean` is one name, and `valid_children` is the full, uncapped list.
 
 `next:` is reserved for the one obvious next step, so a command prints at most one. `inspect:` lines are extra, never instructions, and any number may print. Inline hints such as `; ployz ps lists what's running`, `Next:` and `Create one:` become one of these five lines. `; ployz ps lists what's running` becomes `inspect: ployz ps`.
 
@@ -135,18 +138,18 @@ Every fan-out uses this one line and exit 3. Under `--json` it goes into `omitte
 
 ```
 error: Could not reach Cloud at https://api.ployz.dev.
-  cause: tcp connect error: connection refused (os error 111)
+  cause: Connection refused (os error 111)
 next: ployz cloud status
 ```
 
 - The first line is ours, capitalized, and names the domain thing.
-- Each `cause:` line is one `Error::source()`, raw.
+- One `cause:` line follows: the deepest `Error::source()` in the chain, raw. The layers in between stay in JSON.
 - This needs one refactor: our `thiserror` types must stop interpolating `{source}` into `#[error]`, or the cause prints twice.
 - Raw HTTP bodies and Docker errors move into `cause:`, never the first line.
 
-JSON is unchanged except that it gains `cause`:
+JSON is unchanged except that it gains `cause`: every source in the chain, outermost first. It is always a list and is empty when there is none.
 
-`{"error":{"code":"unavailable","message":"…","cause":["…"],"details":{"next":[…]}}}`
+`{"error":{"code":"unavailable","message":"…","cause":["…"],"details":{"next":"ployz cloud status"}}}`
 
 ### Prompts
 
@@ -154,8 +157,10 @@ Prompts appear in Interactive mode only. In both other modes the command refuses
 
 ```
 error: Removing blog deletes 3 Services and the pg-data Volume.
-next: ployz project rm blog --confirm blog
+retry: ployz project rm blog --confirm blog
 ```
+
+The refusal is `confirmation_required`, and under `--json` the command to rerun is `details.retry`.
 
 Before a destructive prompt, the command shows what will be lost as a short tree. Declining prints what did *not* happen: `Cancelled. Nothing was removed.` and exits 130.
 
@@ -224,10 +229,12 @@ The code is decided in one place, from the error code. No handler sets it.
 | Exit | Meaning | Error codes |
 |---|---|---|
 | 0 | done, including a no-op | |
-| 1 | it ran and failed | not_found, conflict, unauthenticated, unavailable, internal, a failed Deployment |
-| 2 | your command line is wrong | invalid_argument, confirmation_required, ambiguous, unsupported (`--json` on a command without it), every clap error |
+| 1 | it ran and failed | not_found, conflict, unauthenticated, unavailable, unsupported, internal, a failed Deployment |
+| 2 | your command line is wrong | invalid_argument (including `--json` on a command without it), confirmation_required, ambiguous, every clap error |
 | 3 | partial: a result printed, but some Servers failed or didn't answer | |
 | 130 | cancelled: Ctrl-C or a declined prompt | |
+
+`unsupported` means this Server, Cloud or connection can't do what was asked: an OS, architecture, protocol version or image store we don't support, or a Cloud without CLI access. The command line was fine, so it exits 1.
 
 `ployz exec` still passes the remote exit code through. Its own failures before the remote command starts use the table above.
 

@@ -931,6 +931,12 @@ fn colored_failed_footer_does_not_color_the_service_name() {
         },
         unexecuted: Vec::new(),
     };
+    let failure = super::super::apply::closing_failure(&outcome, std::slice::from_ref(&row), true);
+    let message = failure.report().message;
+    assert!(
+        message.contains("Failed:") && !message.contains('\x1b'),
+        "{message:?}"
+    );
     let color = report::paint_closing(&outcome, &[row], true, &Ink::color());
     let ink = Ink::color();
     assert!(

@@ -117,6 +117,14 @@ fn ployz(config: &Path, args: &[&str]) -> Output {
         .args(["--ployz-config", config.to_str().unwrap()])
         .args(args)
         .env_remove("PLOYZ_CLOUD_URL")
+        .env("HTTPS_PROXY", "http://127.0.0.1:9")
+        .env("https_proxy", "http://127.0.0.1:9")
+        .env_remove("HTTP_PROXY")
+        .env_remove("http_proxy")
+        .env_remove("ALL_PROXY")
+        .env_remove("all_proxy")
+        .env("NO_PROXY", "127.0.0.1")
+        .env("no_proxy", "127.0.0.1")
         .output()
         .unwrap()
 }
@@ -287,6 +295,7 @@ fn a_denied_login_fails_with_the_command_to_start_over() {
             "code": "unauthenticated",
             "message": "the sign-in was denied in the browser",
             "details": { "next": "ployz login" },
+            "cause": [],
         } })
     );
 }

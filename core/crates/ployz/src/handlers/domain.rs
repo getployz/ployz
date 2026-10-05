@@ -13,7 +13,6 @@ use ployz_store::{
 use super::store::{self, Next};
 use super::{Error, leaf_matches, required};
 use crate::cli::{positional, value};
-use crate::failure::USAGE_EXIT;
 use crate::output::{self, say};
 
 pub(crate) fn command() -> Command {
@@ -83,9 +82,8 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("host")
         .map(|host| {
             // A rejected hostname is never echoed.
-            Hostname::parse(host.trim().to_ascii_lowercase()).map_err(|_| {
-                Error::usage("Expected a hostname like app.example.com").with_exit(USAGE_EXIT)
-            })
+            Hostname::parse(host.trim().to_ascii_lowercase())
+                .map_err(|_| Error::usage("Expected a hostname like app.example.com"))
         })
         .transpose()?;
     let add = AddDomain {
@@ -104,7 +102,7 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         service: store::service_name(matches, "service")?,
         prefix: DomainPrefix::parse(required(matches, "prefix")?.trim().to_ascii_lowercase())
-            .map_err(|_| Error::usage("Expected one DNS label, like shop").with_exit(USAGE_EXIT))?,
+            .map_err(|_| Error::usage("Expected one DNS label, like shop"))?,
         port: matches.get_one::<u16>("port").copied().map(Some),
     };
     let changed = store::store(root)?.write(&set)?;

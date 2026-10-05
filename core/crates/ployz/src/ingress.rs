@@ -162,9 +162,12 @@ async fn withdraw(client: &Client, machine_id: &MachineId, container_id: &Contai
     let machines = match client.clone().machines().await {
         Ok(machines) => machines,
         Err(error) => {
-            crate::output::warn(format!(
-                "stopping Container {container_id} without confirming the Ingress Proxies stopped routing to it: {error}"
-            ));
+            crate::ui::warn(
+                format_args!(
+                    "stopping Container {container_id} without confirming the Ingress Proxies stopped routing to it"
+                ),
+                &error,
+            );
             return;
         }
     };

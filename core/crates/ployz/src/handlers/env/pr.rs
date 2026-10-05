@@ -8,7 +8,6 @@ use super::super::deploy;
 use super::super::store::{self, project, store};
 use super::super::{Error, leaf_matches, required};
 use super::branch::setups;
-use crate::failure::USAGE_EXIT;
 use crate::handlers::teardown::{accepted, take_off, unfinished, with_accepted};
 use crate::output::say;
 
@@ -83,8 +82,7 @@ pub(super) fn pr(root: &ArgMatches) -> Result<(), Error> {
                         _ => {
                             return Err(Error::usage(
                                 "Name the repository: `ployz env pr` lists the Project's",
-                            )
-                            .with_exit(USAGE_EXIT));
+                            ));
                         }
                     }
                 }

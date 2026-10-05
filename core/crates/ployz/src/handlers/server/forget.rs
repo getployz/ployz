@@ -9,6 +9,7 @@ use crate::cli::value;
 use crate::cloud_account::{self, ForgetCheck};
 use crate::cloud_login::CredentialStore;
 use crate::output::say;
+use crate::ui::Hint;
 
 pub(super) fn command() -> Command {
     Command::new("forget")
@@ -74,7 +75,7 @@ fn unconfirmed(check: &ForgetCheck) -> Error {
         RpcErrorCode::ConfirmationRequired,
         format!(
             "Forgetting the Servers of Organization {slug} ({}) loses the data of its Volumes \
-             ({}); this can't be undone. No changes made.\nRetry: {retry}",
+             ({}); this can't be undone. No changes made.",
             server_names(check),
             volumes(check),
         ),
@@ -82,9 +83,9 @@ fn unconfirmed(check: &ForgetCheck) -> Error {
             "organization": slug,
             "servers": check.servers,
             "volumes": check.volumes,
-            "next": retry,
         }),
     )
+    .hint(Hint::Retry(retry))
 }
 
 fn server_names(check: &ForgetCheck) -> String {
@@ -131,7 +132,7 @@ mod tests {
         let error = unconfirmed(&check).report();
         assert_eq!(error.code, RpcErrorCode::ConfirmationRequired);
         assert_eq!(
-            error.details.get("next"),
+            error.details.get("retry"),
             Some(&serde_json::json!("ployz server forget --confirm acme"))
         );
         assert!(error.message.contains("web-1") && error.message.contains("shop/production/data"));

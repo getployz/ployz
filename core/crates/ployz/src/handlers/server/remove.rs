@@ -21,6 +21,7 @@ use ployz_store::{EnvironmentRef, NamespacesQuery, VolumesQuery, docker_volume};
 use serde_json::json;
 
 use crate::output::{self, say};
+use crate::ui::Hint;
 
 pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let options = ConnectionOptions::from_matches(root)?;
@@ -152,12 +153,12 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         }))?;
         // Cleanup failure must not leave the removed Machine named in the
         // context (#249); after the printed result it is partial, not a failed removal (#449).
-        let mut config = options.load_or_empty_config().map_err(|error| Error::warned("local context cleanup failed after Server removal", error))?;
+        let mut config = options.load_or_empty_config().map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;
         if let Some(context_name) = config.context_name(options.context()).map(str::to_owned)
             && let Some(context) = config.contexts.get_mut(&context_name)
         {
             context.drop_machine(&selected.id);
-            config.save().map_err(|error| Error::warned("local context cleanup failed after Server removal", error))?;
+            config.save().map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;
         }
         if reset_failure.is_some() {
             return Err(Error::partial());
@@ -184,15 +185,15 @@ async fn cloud_removal(
     let store = CredentialStore::beside(&crate::handlers::config_path(matches)?);
     match cloud_account::from_env(&store).await {
         Ok(credential) => Ok(credential),
-        Err(LoginError::SignedOut) => Err(Error::detailed(
+        Err(LoginError::SignedOut) => Err(Error::coded(
             RpcErrorCode::Conflict,
             format!(
                 "Cloud manages Server {}, so Cloud removes it and drops its hold on it. \
                  Sign in to Cloud first, or remove it from the dashboard. No changes made.",
                 selected.name
             ),
-            json!({ "next": "ployz login" }),
-        )),
+        )
+        .hint(Hint::Next("ployz login".into()))),
         Err(error) => Err(error.into()),
     }
 }
@@ -337,16 +338,16 @@ fn typed_confirmation(
             Err(Error::detailed(
                 RpcErrorCode::ConfirmationRequired,
                 format!(
-                    "Removing Server {} needs its name typed. No changes made.\nRetry: {retry}",
+                    "Removing Server {} needs its name typed. No changes made.",
                     selected.name
                 ),
                 json!({
                     "server": { "id": selected.id, "name": selected.name },
                     "services": services,
                     "data_loss": observed.data_loss,
-                    "next": retry,
                 }),
-            ))
+            )
+            .hint(Hint::Retry(retry)))
         }
     }
 }
@@ -363,9 +364,9 @@ pub(super) fn select_machine(
 
 fn machine_removal_refusal(error: RpcError) -> Error {
     if error.code == RpcErrorCode::Unavailable {
-        Error::unavailable(format!(
-            "{error}; use --no-reset to remove it from the Cluster without resetting"
-        ))
+        Error::from(error).context(
+            "The Server could not be reset; use --no-reset to remove it from the Cluster without resetting.",
+        )
     } else {
         error.into()
     }
@@ -458,10 +459,16 @@ mod tests {
             message: "Server aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond".into(),
             details: Value::Null,
         };
+        let refusal = machine_removal_refusal(error);
         assert_eq!(
-            machine_removal_refusal(error).to_string(),
-            "Server aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond; use --no-reset to remove it from the Cluster without resetting"
+            refusal.to_string(),
+            "The Server could not be reset; use --no-reset to remove it from the Cluster without resetting."
         );
+        assert_eq!(
+            refusal.causes(),
+            ["Server aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond"]
+        );
+        assert_eq!(refusal.report().code, RpcErrorCode::Unavailable);
     }
 
     #[test]

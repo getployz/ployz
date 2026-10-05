@@ -13,6 +13,7 @@ use super::super::{Error, leaf_matches, runtime, store};
 use crate::cli::{base, value};
 use crate::deploy::VolumeFate;
 use crate::output::{Gaps, say};
+use crate::ui::Hint;
 
 pub(super) fn command() -> Command {
     base(
@@ -55,10 +56,8 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
     let named = matches
         .get_one::<String>("namespace")
         .map(|name| {
-            Namespace::parse(name.as_str()).map_err(|_| {
-                Error::usage("Expected a Namespace: lowercase letters, digits and -")
-                    .with_exit(crate::failure::USAGE_EXIT)
-            })
+            Namespace::parse(name.as_str())
+                .map_err(|_| Error::usage("Expected a Namespace: lowercase letters, digits and -"))
         })
         .transpose()?;
     let store = store::store(root)?;
@@ -70,8 +69,7 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
     {
         return Err(Error::usage(
             "server clean reads your Organization's Servers; drop --context and --connect",
-        )
-        .with_exit(crate::failure::USAGE_EXIT));
+        ));
     }
     let owned = store.read(&NamespacesQuery {})?.namespaces;
     let runtime = runtime()?;
@@ -130,12 +128,16 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
                 "namespace": namespace,
                 "project": owner.project,
                 "environment": owner.environment,
-                "next": shell_words::join([
-                    "ployz", "env", "rm", owner.environment.as_str(),
-                    "--project", owner.project.as_str(),
-                ]),
             }),
-        ));
+        )
+        .hint(Hint::Next(shell_words::join([
+            "ployz",
+            "env",
+            "rm",
+            owner.environment.as_str(),
+            "--project",
+            owner.project.as_str(),
+        ]))));
     }
     let Some(found) = unowned
         .into_iter()
@@ -154,22 +156,22 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
             unanswered(&gaps);
         });
     };
-    if !confirmed(matches, namespace.as_str(), "Namespace")? {
-        let next = retry(matches, &namespace);
+    let next = retry(matches, &namespace);
+    if !confirmed(matches, namespace.as_str(), "Namespace", next.clone())? {
         return Err(Error::detailed(
             RpcErrorCode::ConfirmationRequired,
             format!(
                 "Removing Namespace {namespace} deletes its containers and the data of Volumes \
-                 {}; this can't be undone. No changes made.\nRetry: {next}",
+                 {}; this can't be undone. No changes made.",
                 volume_names(&found.volumes)
             ),
             json!({
                 "namespace": namespace,
                 "services": found.services,
                 "volumes": found.volumes,
-                "next": next,
             }),
-        ));
+        )
+        .hint(Hint::Retry(next)));
     }
     let (volumes, outcome) = runtime.block_on(async {
         let token = crate::cancellation::on_ctrl_c();

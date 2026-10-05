@@ -156,7 +156,10 @@ async fn open_and_admit(
         Ok(Err(error)) => {
             return Err(failed(
                 Stage::Admission,
-                format!("Machine {machine_id} cannot accept the Build: {error}"),
+                format!(
+                    "Machine {machine_id} cannot accept the Build: {}",
+                    crate::ui::row(&error)
+                ),
             ));
         }
         Err(_) => {

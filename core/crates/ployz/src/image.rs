@@ -42,16 +42,16 @@ pub enum PushError {
     InvalidReference { reference: String, message: String },
     #[error("image delivery cancelled")]
     Cancelled,
-    #[error("Machine target selection failed: {0}")]
+    #[error(transparent)]
     InvalidSelector(#[from] ployz_core::ValueError),
-    #[error("Machine target selection failed: {0}")]
+    #[error(transparent)]
     Selector(#[from] ployz_core::MachineSelectorError),
-    #[error("Cluster operation failed: {0}")]
+    #[error(transparent)]
     Cluster(#[from] crate::connect::ConnectError),
-    #[error("Cluster operation failed: image ingest: {0}")]
-    ImageIngest(RpcError),
-    #[error("Cluster operation failed: peer image pull: {0}")]
-    PeerPull(RpcError),
+    #[error("Could not ingest the image on the Machine.")]
+    ImageIngest(#[source] RpcError),
+    #[error("Could not pull the image from a peer Machine.")]
+    PeerPull(#[source] RpcError),
     #[error(
         "Docker on the target Machine is not using the required containerd image store; enable Docker's containerd image store on that Machine, then retry"
     )]
@@ -438,12 +438,13 @@ mod tests {
             }),
             PushError::ImageIngest(_)
         ));
+        let error = ingest_error(rpc_error(crate::connect::ConnectError::from(
+            tonic::Status::unavailable("transport error"),
+        )));
         assert_eq!(
-            ingest_error(rpc_error(crate::connect::ConnectError::from(
-                tonic::Status::unavailable("transport error")
-            )))
-            .to_string(),
-            "Cluster operation failed: image ingest: transport error"
+            error.to_string(),
+            "Could not ingest the image on the Machine."
         );
+        assert_eq!(crate::ui::causes(&error), ["transport error"]);
     }
 }

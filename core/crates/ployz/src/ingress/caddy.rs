@@ -9,10 +9,10 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum IngressImageError {
     /// Docker Hub tags could not be listed.
-    #[error("list Docker Hub Caddy tags: {}", crate::setup_retry::detail(.0))]
+    #[error("Could not list Caddy tags on Docker Hub.")]
     ListTags(#[from] OciDistributionError),
-    #[error("{0}")]
-    Timeout(String),
+    #[error(transparent)]
+    Timeout(Box<dyn std::error::Error + Send + Sync>),
 }
 
 /// Discover the latest stable Caddy 2 image used for ingress.
@@ -53,7 +53,7 @@ async fn discover_image(
     .await
     .map_err(|error| match error {
         crate::setup_retry::Error::Permanent(error) => IngressImageError::ListTags(error),
-        crate::setup_retry::Error::Exhausted(message) => IngressImageError::Timeout(message),
+        exhausted => IngressImageError::Timeout(Box::new(exhausted)),
     })?;
     Ok(select_image(&response.tags))
 }

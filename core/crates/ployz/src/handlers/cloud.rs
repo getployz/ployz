@@ -9,8 +9,7 @@ use ipnet::Ipv4Net;
 use ployz_core::{
     CloudEnrollToken, DescribeContractRequest, InitializeRequest, InspectRequest, JoinRequest,
     LocalMachinePhase, Machine, MachineDetails, MachineName, MachineToken, MachineTokenRequest,
-    ManagementCapability, ManagementClientLabel, RpcErrorCode, SetManagementClientRequest,
-    StorageChoice, op,
+    ManagementCapability, ManagementClientLabel, SetManagementClientRequest, StorageChoice, op,
 };
 
 use super::{Error, config_path, leaf_matches, required, runtime};
@@ -18,6 +17,7 @@ use crate::cloud_enroll::{self, CloudPairing, EnrollIdentity, InitializeMode, Jo
 use crate::connect::{Client, ConnectError};
 use crate::context::{Connection, ContextError, SelectedConnections, Transport};
 use crate::setup_report::{SetupReport, Step};
+use crate::ui::Hint;
 
 /// Enroll with `token`: over SSH to `DESTINATION`, or on the host this runs on.
 pub(super) fn enroll(
@@ -289,12 +289,7 @@ where
     // The join is committed; a catch-up failure makes it partial.
     Ok(crate::output::emit_committed(
         serde_json::json!({ "server": super::server::server_json(&assigned), "founded": false }),
-        catch_up.map_err(|error| {
-            Error::coded(
-                error.code(),
-                crate::global_catch_up::joined_catch_up_error(error, &assigned),
-            )
-        }),
+        catch_up.map_err(|error| crate::global_catch_up::joined_catch_up_error(error, &assigned)),
     ))
 }
 
@@ -411,13 +406,12 @@ where
     {
         // An interrupted Apply may have completed mutations. Do not replay it.
         let _ingress = crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
-            let error: Error = error.into();
-            error.reworded(format!("Server initialized; Ingress deployment incomplete: {error}; rerun the same ployz server add command without --reset (keep all other options) to reconcile the observed state"))
+            Error::from(error).context("Server initialized; Ingress deployment incomplete. Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it.")
         })?;
     }
     // Repeated Set stages a fresh capability; its first operational RPC completes rotation.
     let capability = set_cloud_management_client(matches, &mut ready).await
-        .map_err(|error| error.reworded(format!("Server initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz server add command without --reset (keep all other options)")))?;
+        .map_err(|error| error.context("Server initialized; Cloud Pairing publication incomplete. Rerun the same ployz server add command without --reset, keeping all other options."))?;
     cloud_enroll::publish(
         &cloud_enroll::callback_url(cloud_url, token),
         machine.id,
@@ -472,7 +466,10 @@ async fn set_cloud_management_client(
         )
         .await?;
     let capability = response.capability.ok_or_else(|| {
-        Error::usage("Machine set the `cloud` Management Client without a Management Capability")
+        Error::coded(
+            ployz_core::RpcErrorCode::Internal,
+            "Machine set the `cloud` Management Client without a Management Capability",
+        )
     })?;
     if matches!(client.connection().transport(), Transport::Management(_)) {
         crate::context::Config::load(config_path(matches)?)?
@@ -536,7 +533,7 @@ async fn wait_matching_daemon(matches: &ArgMatches) -> Result<Client, Error> {
         .call_repeatable::<op::DescribeContract>(DescribeContractRequest {}, None)
         .await?;
     if daemon.daemon_version != env!("CARGO_PKG_VERSION") {
-        return Err(Error::usage(format!(
+        return Err(Error::unavailable(format!(
             "daemon version remained {} after installing CLI version {}",
             daemon.daemon_version,
             env!("CARGO_PKG_VERSION")
@@ -653,7 +650,7 @@ async fn ensure_uninitialized(
     wait_phase(
         matches,
         LocalMachinePhase::Uninitialized,
-        "The Server did not reset",
+        "The Server did not reset.",
     )
     .await
 }
@@ -671,7 +668,7 @@ async fn wait_phase(
     };
     crate::setup_retry::run(
         &mut (),
-        timeout_message,
+        &format!("Waiting for the {} phase", phase.as_str()),
         wait,
         ConnectError::is_setup_retryable,
         async |_| {
@@ -693,13 +690,10 @@ async fn wait_phase(
     )
     .await
     .map_err(|error| {
-        Error::unavailable(if participating {
-            format!(
-                "{}: {error}",
-                crate::handlers::server::readiness_timeout_message(timeout_message)
-            )
+        Error::from(error).context(if participating {
+            crate::handlers::server::readiness_timeout_message(timeout_message)
         } else {
-            error.to_string()
+            timeout_message.to_owned()
         })
     })
 }
@@ -729,11 +723,10 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
 fn reset(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     if !matches.get_flag("yes") {
-        return Err(Error::detailed(
-            RpcErrorCode::InvalidArgument,
+        return Err(Error::usage(
             "cloud reset gives up the unfinished founding; stop or erase the founding Server, then confirm with --yes",
-            serde_json::json!({ "next": "ployz cloud reset --yes" }),
-        ));
+        )
+        .hint(Hint::Retry("ployz cloud reset --yes".into())));
     }
     let store = crate::cloud_login::CredentialStore::beside(&config_path(matches)?);
     runtime()?.block_on(async {
@@ -771,7 +764,7 @@ mod tests {
             io::ErrorKind::ConnectionRefused
         ))));
         assert!(!retry_local_connect(&ConnectError::AllFailed {
-            source: ConnectionSource::LocalSocket,
+            selection: ConnectionSource::LocalSocket,
             attempts: 1,
             setup_retryable: false,
             last: None,

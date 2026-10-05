@@ -18,6 +18,7 @@ use crate::cli::{positional, switch};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::LoginError;
 use crate::output::{say, say_inline};
+use crate::ui::Hint;
 
 /// How long `github connect` waits for the App to be installed.
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
@@ -135,19 +136,20 @@ fn connect(root: &ArgMatches) -> Result<(), Error> {
         Ok((before, None))
     })?;
     if !before.linked {
-        return Err(Error::detailed(
+        return Err(Error::coded(
             RpcErrorCode::Unsupported,
             "GitHub reports installs by GitHub account, and yours isn't linked: sign in to Ployz Cloud with GitHub once, then rerun",
-            json!({ "next": "ployz github connect" }),
-        ));
+        )
+        .hint(Hint::Next("ployz github connect".into())));
     }
     let Some(after) = after else {
         if wait {
             return Err(Error::detailed(
                 RpcErrorCode::Unavailable,
                 "GitHub hasn't reported the install yet",
-                json!({ "url": before.install_url, "next": "ployz github connect --wait" }),
-            ));
+                json!({ "url": before.install_url }),
+            )
+            .hint(Hint::Retry("ployz github connect --wait".into())));
         }
         let pending =
             json!({ "status": "pending", "url": before.install_url, "connection": before });
@@ -259,11 +261,7 @@ fn found<T>(reply: Result<T, LoginError>) -> Result<Option<T>, LoginError> {
 }
 
 fn not_found(message: &'static str) -> Error {
-    Error::detailed(
-        RpcErrorCode::NotFound,
-        message,
-        json!({ "next": "ployz github ls" }),
-    )
+    Error::not_found(message).hint(Hint::Next("ployz github ls".into()))
 }
 
 fn valid_repository(name: &str) -> bool {

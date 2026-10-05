@@ -17,7 +17,6 @@ use ployz_store::{
 use super::store::{self, Next};
 use super::{Error, leaf_matches};
 use crate::cli::{base, positional, switch, value};
-use crate::failure::USAGE_EXIT;
 use crate::output::{self, say};
 
 pub(crate) fn command() -> Command {
@@ -100,7 +99,6 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
                 .and_then(|(service, path)| Some((ServiceName::parse(service).ok()?, path)))
                 .ok_or_else(|| {
                     Error::usage("Expected --mount SERVICE:/PATH, like web:/var/lib/data")
-                        .with_exit(USAGE_EXIT)
                 })?;
             Ok(Mount {
                 service,

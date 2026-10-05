@@ -1,7 +1,8 @@
 //! Bounded retries for safe operations after setup has begun.
 
-use std::{fmt::Display, time::Duration};
+use std::time::Duration;
 
+use ployz_core::RpcErrorCode;
 use tokio::time::{Instant, sleep, timeout_at};
 
 use crate::failure::Failure;
@@ -10,15 +11,25 @@ pub(crate) const WAIT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error<E> {
-    #[error("{0}")]
+    #[error(transparent)]
     Permanent(E),
-    #[error("{0}")]
-    Exhausted(String),
+    #[error("{operation} did not recover within {}s.", wait.as_secs())]
+    Exhausted {
+        operation: String,
+        wait: Duration,
+        #[source]
+        last: Option<E>,
+    },
 }
 
-impl<E: Display> From<Error<E>> for Failure {
+impl<E: Into<Failure> + std::error::Error + Send + Sync + 'static> From<Error<E>> for Failure {
     fn from(error: Error<E>) -> Self {
-        Self::usage(error.to_string())
+        match error {
+            Error::Permanent(error) => error.into(),
+            exhausted @ Error::Exhausted { .. } => {
+                Self::caused(RpcErrorCode::Unavailable, exhausted.to_string(), exhausted)
+            }
+        }
     }
 }
 
@@ -28,7 +39,7 @@ pub(crate) struct Expected(pub(crate) &'static str);
 
 /// Only pass reads or operations known to be safe to repeat. The deadline also
 /// bounds any retries inside the operation; it must not wrap a whole setup flow.
-pub(crate) async fn run<C, T, E: Display>(
+pub(crate) async fn run<C, T, E: std::error::Error + 'static>(
     context: &mut C,
     operation: &str,
     wait: Duration,
@@ -40,7 +51,7 @@ pub(crate) async fn run<C, T, E: Display>(
 
 /// [`run`], announcing an anticipated outage, such as a daemon restart, in
 /// place of the connectivity warning.
-pub(crate) async fn run_expecting<C, T, E: Display>(
+pub(crate) async fn run_expecting<C, T, E: std::error::Error + 'static>(
     context: &mut C,
     operation: &str,
     expected: Option<Expected>,
@@ -60,13 +71,14 @@ pub(crate) async fn run_expecting<C, T, E: Display>(
                 if last.is_none() {
                     match expected {
                         Some(Expected(notice)) => eprintln!("{notice}"),
-                        None => eprintln!(
-                            "{operation}: {error}; retrying for up to {}s. Check outbound firewall access if this connection is blocked.",
-                            deadline.saturating_duration_since(Instant::now()).as_secs()
+                        None => crate::ui::retrying(
+                            operation,
+                            &error,
+                            deadline.saturating_duration_since(Instant::now()).as_secs(),
                         ),
                     }
                 }
-                last = Some(error.to_string());
+                last = Some(error);
             }
             Err(_) => break,
         }
@@ -77,11 +89,11 @@ pub(crate) async fn run_expecting<C, T, E: Display>(
             break;
         }
     }
-    Err(Error::Exhausted(format!(
-        "{operation} did not recover within {}s; last error: {}",
-        wait.as_secs(),
-        last.as_deref().unwrap_or("request timed out")
-    )))
+    Err(Error::Exhausted {
+        operation: operation.to_owned(),
+        wait,
+        last,
+    })
 }
 
 /// Reqwest categories also contain protocol and TLS failures. Retry only
@@ -116,17 +128,6 @@ pub(crate) fn temporary_dns(error: &std::io::Error) -> bool {
         "failed to lookup address information: Temporary failure in name resolution"
             | "failed to lookup address information: Try again"
     )
-}
-
-/// Include the transport cause, which reqwest's top-level Display omits.
-pub(crate) fn detail(error: &dyn std::error::Error) -> String {
-    let mut text = error.to_string();
-    let mut source = error.source();
-    while let Some(error) = source {
-        text.push_str(&format!(": {error}"));
-        source = error.source();
-    }
-    text
 }
 
 #[cfg(test)]
@@ -167,7 +168,12 @@ mod tests {
                 .send()
                 .await
                 .unwrap_err();
-            assert_eq!(transient_http(&error), retry, "{}", detail(&error));
+            assert_eq!(
+                transient_http(&error),
+                retry,
+                "{}",
+                crate::ui::chain_text(&error)
+            );
         }
     }
 
@@ -199,9 +205,37 @@ mod tests {
                 Ok(response) => response.bytes().await.unwrap_err(),
                 Err(error) => error,
             };
-            assert_eq!(transient_http(&error), retry, "{}", detail(&error));
+            assert_eq!(
+                transient_http(&error),
+                retry,
+                "{}",
+                crate::ui::chain_text(&error)
+            );
             server.await.unwrap();
         }
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("{0}")]
+    struct Probe(&'static str);
+
+    #[test]
+    fn a_timeout_is_unavailable_and_a_refusal_keeps_its_own_code() {
+        let timeout = Failure::from(Error::Exhausted {
+            operation: "Probe".into(),
+            wait: WAIT,
+            last: Some(crate::connect::ConnectError::EntryNotReady),
+        });
+        assert_eq!(timeout.report().code, RpcErrorCode::Unavailable);
+        assert_eq!(timeout.to_string(), "Probe did not recover within 60s.");
+        assert_eq!(
+            timeout.causes(),
+            [crate::connect::ConnectError::EntryNotReady.to_string()]
+        );
+        let refused = Failure::from(Error::Permanent(
+            crate::connect::ConnectError::ClientRefused,
+        ));
+        assert_eq!(refused.report().code, RpcErrorCode::Unauthenticated);
     }
 
     #[tokio::test(start_paused = true)]
@@ -215,7 +249,7 @@ mod tests {
             async |calls| {
                 *calls += 1;
                 if *calls < 3 {
-                    Err("connection refused")
+                    Err(Probe("connection refused"))
                 } else {
                     Ok(42)
                 }
@@ -233,7 +267,7 @@ mod tests {
             |_| false,
             async |calls| {
                 *calls += 1;
-                Err::<(), _>("wrong identity")
+                Err::<(), _>(Probe("wrong identity"))
             },
         )
         .await
@@ -247,12 +281,13 @@ mod tests {
             "probe",
             WAIT,
             |_| true,
-            async |_| Err::<(), _>("connection refused"),
+            async |_| Err::<(), _>(Probe("connection refused")),
         )
         .await
         .unwrap_err();
         assert_eq!(Instant::now() - started, WAIT);
-        assert!(error.to_string().contains("last error: connection refused"));
+        assert_eq!(error.to_string(), "probe did not recover within 60s.");
+        assert_eq!(crate::ui::causes(&error), ["connection refused"]);
 
         let started = Instant::now();
         let error = run(
@@ -260,11 +295,11 @@ mod tests {
             "probe",
             WAIT,
             |_| true,
-            async |_| std::future::pending::<Result<(), &str>>().await,
+            async |_| std::future::pending::<Result<(), Probe>>().await,
         )
         .await
         .unwrap_err();
         assert_eq!(Instant::now() - started, WAIT);
-        assert!(error.to_string().contains("request timed out"));
+        assert!(crate::ui::causes(&error).is_empty());
     }
 }

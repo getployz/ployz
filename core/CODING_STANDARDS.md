@@ -46,7 +46,13 @@ Every command that produces a result takes `--json` and prints it through `crate
 
 Human text goes through `say!`; clippy denies `print_stdout` in the CLI crate.
 
-A fan-out result carries its per-Machine `failures` and `omitted`; a per-Machine `not_found` is not a failure. A fan-out answers `not_found` only when every Machine answered; otherwise it prints the partial result (a null value plus `failures`/`omitted`). A printed result that did not fully succeed exits 3. A failure before any result prints `{"error": {code, message, details}}` in the RPC error vocabulary and exits 1, or 2 for a rejected command line. Give a `Failure` its real code (`not_found`, `ambiguous`, `conflict`, `unavailable`); `usage` means the input was wrong. Map CLI-owned error enums to codes with exhaustive matches over their variants, no `_ =>` arm, so a new variant must choose its code.
+A fan-out result carries its per-Machine `failures` and `omitted`; a per-Machine `not_found` is not a failure. A fan-out answers `not_found` only when every Machine answered; otherwise it prints the partial result (a null value plus `failures`/`omitted`). A printed result that did not fully succeed exits 3. A failure before any result prints `{"error": {code, message, details, cause}}` in the RPC error vocabulary. Give a `Failure` its real code (`not_found`, `ambiguous`, `conflict`, `unavailable`); `usage` means the input was wrong. Map CLI-owned error enums to codes with exhaustive matches over their variants, no `_ =>` arm, so a new variant must choose its code.
+
+The exit code comes from the code, through the one table in `ui::exit_code`: `invalid_argument`, `confirmation_required` and `ambiguous` exit 2, every other failure (`unsupported` included) exits 1. Handlers never pick an exit code; only `exec` passes its process's code through `Failure::exit`.
+
+A failure's first line is our sentence about the domain thing, capitalized and ending with a period. The raw cause (OS, HTTP, Docker text) is the error's `#[source]`. Human output prints the deepest source on one `cause:` line, and `--json` lists every source in `cause`, outermost first; never interpolate a source into `#[error]`, and never flatten an error with `to_string()` on its way to a `Failure`. Wrap a lower failure with `Failure::context` to keep its code and chain it as the cause.
+
+The command that fixes or follows a failure is a typed hint, `Failure::hint(Hint::Next | Inspect | Retry | Undo | Closest | Valid)`, never prose in the message. Human output prints it as a labelled line; JSON carries it in `details`.
 
 JSON fields are only added, never renamed or repurposed; before 0.2.0 a field may be renamed or reshaped outright, with no compatibility alias. A short flag has one meaning across the whole tree.
 

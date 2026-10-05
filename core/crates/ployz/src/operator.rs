@@ -36,9 +36,9 @@ const LOG_STALL_CHECK: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Error)]
 pub enum LogError {
-    #[error("{0}")]
+    #[error(transparent)]
     Transport(#[from] TransportError),
-    #[error("{0}")]
+    #[error(transparent)]
     Protocol(#[from] StreamProtocolError),
     #[error("{0}")]
     Message(Cow<'static, str>),
@@ -121,9 +121,9 @@ pub enum OperatorError {
     Container(#[from] ployz_core::ContainerSelectorError),
     #[error("Service has no regular containers")]
     NoRegularContainer,
-    #[error("Machine RPC failed: {0}")]
-    Rpc(TransportError),
-    #[error("stream protocol failed: {0}")]
+    #[error("Machine RPC failed.")]
+    Rpc(#[source] TransportError),
+    #[error("Stream protocol failed.")]
     Protocol(#[from] StreamProtocolError),
     #[error(transparent)]
     Codec(#[from] ployz_core::CodecError),
@@ -162,14 +162,14 @@ pub enum OperatorError {
         service: String,
         expected: &'static str,
     },
-    #[error("open logs for Container {container_id} on Machine {machine_id}: {source}")]
+    #[error("Could not open logs for Container {container_id} on Machine {machine_id}.")]
     OpenContainerLogs {
         container_id: ContainerId,
         machine_id: MachineId,
         #[source]
         source: Box<OperatorError>,
     },
-    #[error("open {service} logs on Machine {machine_name}: {source}")]
+    #[error("Could not open {service} logs on Machine {machine_name}.")]
     OpenMachineLogs {
         service: MachineLogService,
         machine_name: MachineName,

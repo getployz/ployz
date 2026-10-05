@@ -538,7 +538,12 @@ pub(super) async fn verify_daemon_contract(
         .map_err(|error| Error::Verification(format!("Machine API is not ready: {error}")))?;
     let payload = op::DescribeContract::into_request(DescribeContractRequest {})
         .encode()
-        .map_err(|error| Error::Verification(format!("encode readiness request: {error}")))?;
+        .map_err(|error| {
+            Error::Verification(format!(
+                "encode readiness request: {}",
+                ployz_core::error_chain::inline(&error)
+            ))
+        })?;
     let response = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         MachineRpcClient::new(channel).describe_contract(tonic::Request::new(payload)),
@@ -549,7 +554,12 @@ pub(super) async fn verify_daemon_contract(
     .into_inner()
     .decode_response()
     .and_then(|response| response.decode::<op::DescribeContract>())
-    .map_err(|error| Error::Verification(format!("decode readiness response: {error}")))?;
+    .map_err(|error| {
+        Error::Verification(format!(
+            "decode readiness response: {}",
+            ployz_core::error_chain::inline(&error)
+        ))
+    })?;
     require_running_version(&response.daemon_version, target)
 }
 

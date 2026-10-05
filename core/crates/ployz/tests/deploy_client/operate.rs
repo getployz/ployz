@@ -19,7 +19,7 @@ async fn ployz(store: Option<&std::path::Path>, address: &str, args: &[&str]) ->
         .env("PLOYZ_CONFIG", home.path().join("config.yaml"))
         .env_remove("PLOYZ_STORE")
         .env_remove("PLOYZ_TOKEN")
-        .env_remove("PLOYZ_CLOUD_URL")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
         .env_remove("PLOYZ_PROJECT")
         .env_remove("PLOYZ_ENV");
     if let Some(store) = store {
@@ -222,7 +222,7 @@ async fn server_clean_removes_only_a_namespace_no_environment_owns() {
         &["server", "clean", "--namespace", "left-over"],
     )
     .await;
-    assert_eq!(code, 1, "{unconfirmed}");
+    assert_eq!(code, 2, "{unconfirmed}");
     assert_eq!(
         unconfirmed["error"]["code"], "confirmation_required",
         "{unconfirmed}"

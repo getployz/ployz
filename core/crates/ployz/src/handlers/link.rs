@@ -26,6 +26,7 @@ use crate::cli::env;
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{Account, CredentialStore, Organization};
 use crate::output::say;
+use crate::ui::Hint;
 
 pub(crate) fn link_command() -> Command {
     scoped(Command::new("link").about("Link this directory to a Project and Environment"))
@@ -184,9 +185,10 @@ fn load(config: &Path) -> Result<BTreeMap<String, Link>, Error> {
     let path = links_path(config);
     match std::fs::read(&path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
-            Error::coded(
+            Error::caused(
                 RpcErrorCode::Internal,
-                format!("cannot read directory links {}: {error}", path.display()),
+                format!("Could not read directory links {}.", path.display()),
+                error,
             )
         }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
@@ -276,8 +278,9 @@ fn check_organization(config: &Path, directory: &str, link: &Link) -> Result<(),
             "{directory} is linked in Organization {}, but you are acting in {}",
             linked.slug, acting.slug
         ),
-        json!({ "link": directory, "linked": linked.slug, "acting": acting.slug, "next": next }),
-    ))
+        json!({ "link": directory, "linked": linked.slug, "acting": acting.slug }),
+    )
+    .hint(Hint::Next(next)))
 }
 
 #[derive(Serialize)]

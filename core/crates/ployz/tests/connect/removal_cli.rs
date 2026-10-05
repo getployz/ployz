@@ -62,7 +62,7 @@ async fn machine_removal_reports_complete_and_partial_results() {
         );
         if invalid_config {
             assert!(
-                stderr.contains("local context cleanup failed after Server removal"),
+                stderr.contains("error: Server removed; local context cleanup failed."),
                 "{stderr}"
             );
         }
@@ -135,13 +135,13 @@ async fn server_removal_without_the_typed_name_names_what_goes_and_the_retry() {
     };
 
     let output = run(&[]).await;
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
     let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let at = |pointer: &str| error.pointer(pointer).unwrap().clone();
     assert_eq!(at("/error/code"), "confirmation_required", "{error}");
     assert_eq!(at("/error/details/server/name"), "one", "{error}");
     assert_eq!(at("/error/details/data_loss/0/id/name"), "data", "{error}");
-    let next = at("/error/details/next");
+    let next = at("/error/details/retry");
     let next = next.as_str().unwrap();
     assert!(next.starts_with("ployz server rm one --connect"), "{next}");
     assert!(
@@ -183,7 +183,7 @@ async fn remove_cloud_server(
     let config = std::env::temp_dir().join(format!("ployz-last-{}.yaml", MachineId::random()));
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
         .env_remove("PLOYZ_TOKEN")
-        .env_remove("PLOYZ_CLOUD_URL")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
         .envs(env.iter().copied())
         .args([
             "--connect",
