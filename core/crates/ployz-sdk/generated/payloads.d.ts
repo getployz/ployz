@@ -899,6 +899,7 @@ export type DataLoss = { "kind": "docker_volume", id: DockerVolumeId, };
 export type DataLossConfirmation = { confirmed: Array<DataLoss>, };
 
 export type DeclareMirrorRequest = { switch: Switch, name: DockerVolumeName, refquota_bytes: number, };
+
 export type DeleteConfig = {
 /**
  * The Environment it is in.
@@ -1294,8 +1295,9 @@ export type Discard = {
  */
 environment: EnvironmentRef,
 /**
- * `SERVICE`, `volumes.VOLUME`, `SERVICE.SETTING`, `SERVICE.env.KEY` or
- * `SERVICE.mounts.VOLUME`; none discards everything.
+ * `SERVICE`, `volumes.VOLUME`, `configs.CONFIG`, `SERVICE.SETTING`,
+ * `SERVICE.env.KEY`, `SERVICE.mounts.VOLUME` or `SERVICE.configs.CONFIG`; none
+ * discards everything.
  */
 path: SettingPath | null,
 /**
@@ -1608,6 +1610,7 @@ export type ExtraHost = string;
 export type FailedOperation<E> = { "type": "operation", operation: DeployOperation, error: E, } | { "type": "replacement", operation: ReplacementOperation, error: E, compensation: ReplacementCompensation<E>, };
 
 export type FenceDecision = "admit" | "replay" | "adopt" | "refuse_stale_lease" | "refuse_stale_step";
+
 export type FileMode = string;
 
 export type FollowHint = {
@@ -1624,15 +1627,15 @@ value: JsonValue,
  */
 row: RowId,
 /**
- * Its Service or Volume.
+ * Its Service, Volume or Config.
  */
 node: NodeName,
 /**
- * Whether `node` is a Service or a Volume.
+ * Whether `node` is a Service, a Volume or a Config.
  */
 kind: EnvironmentNodeType,
 /**
- * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+ * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `files.PATH`, `name`; none for the
  * node itself.
  */
 name: string | null, };
@@ -1798,15 +1801,15 @@ from: EnvironmentName,
  */
 row: RowId,
 /**
- * Its Service or Volume.
+ * Its Service, Volume or Config.
  */
 node: NodeName,
 /**
- * Whether `node` is a Service or a Volume.
+ * Whether `node` is a Service, a Volume or a Config.
  */
 kind: EnvironmentNodeType,
 /**
- * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+ * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `files.PATH`, `name`; none for the
  * node itself.
  */
 name: string | null, };
@@ -2176,15 +2179,15 @@ export type NamedRow = {
  */
 row: RowId,
 /**
- * Its Service or Volume.
+ * Its Service, Volume or Config.
  */
 node: NodeName,
 /**
- * Whether `node` is a Service or a Volume.
+ * Whether `node` is a Service, a Volume or a Config.
  */
 kind: EnvironmentNodeType,
 /**
- * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+ * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `files.PATH`, `name`; none for the
  * node itself.
  */
 name: string | null, };
@@ -2243,15 +2246,15 @@ marks: Array<Mark>,
  */
 row: RowId,
 /**
- * Its Service or Volume.
+ * Its Service, Volume or Config.
  */
 node: NodeName,
 /**
- * Whether `node` is a Service or a Volume.
+ * Whether `node` is a Service, a Volume or a Config.
  */
 kind: EnvironmentNodeType,
 /**
- * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+ * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `files.PATH`, `name`; none for the
  * node itself.
  */
 name: string | null, };
@@ -2641,15 +2644,15 @@ landed: Landed,
  */
 row: RowId,
 /**
- * Its Service or Volume.
+ * Its Service, Volume or Config.
  */
 node: NodeName,
 /**
- * Whether `node` is a Service or a Volume.
+ * Whether `node` is a Service, a Volume or a Config.
  */
 kind: EnvironmentNodeType,
 /**
- * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+ * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `files.PATH`, `name`; none for the
  * node itself.
  */
 name: string | null, };
@@ -3682,15 +3685,15 @@ secret: SecretRow | null,
  */
 row: RowId,
 /**
- * Its Service or Volume.
+ * Its Service, Volume or Config.
  */
 node: NodeName,
 /**
- * Whether `node` is a Service or a Volume.
+ * Whether `node` is a Service, a Volume or a Config.
  */
 kind: EnvironmentNodeType,
 /**
- * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+ * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `files.PATH`, `name`; none for the
  * node itself.
  */
 name: string | null, };
