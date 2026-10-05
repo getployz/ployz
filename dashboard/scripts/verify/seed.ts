@@ -1,16 +1,19 @@
 // Seeds a verification database through the app's own Config Store commands. up.sh runs it with runner.mjs, so
 // `#/` imports resolve against this checkout. Typechecked with the app: a refactor that breaks it fails `pnpm typecheck`.
-// Prints one line, `VERIFY_SEED <json>`: the organization slug, the session cookie and every write's outcome.
+// Prints one line, `VERIFY_SEED <json>`: the organization slug, the session cookie, an Organization Token for the CLI
+// (`cliToken`), every write's outcome and what was skipped.
 //
 // Ada Lovelace's organization holds project `shop`:
 //   production  web, api, postgres (+ pg-data volume), worker; a domain on web; one queued Deploy; unpublished api edits
 //   fix-api     a Branch of production (api, web) with 2 changes to save; production moved on after it branched
-// A fake Server is paired so the Store admits Deploys; nothing answers it.
+// A fake Server is paired so the Store admits Deploys; nothing answers it. VERIFY_REAL_SERVERS=1 leaves pairing to the
+// real Servers that enroll next, so the queued Deploy is skipped: the Store admits none before a Server joins.
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Change, ConfigCommand } from "@ployz/sdk";
 import { callStore } from "#/modules/config-store/config-store.server";
+import { createOrganizationToken } from "#/modules/identity/organization-token.server";
 import { session, user } from "#/modules/identity/tables";
 import { organizationMachine } from "#/modules/machines/tables";
 import { ensurePersonalOrganizationForUser } from "#/modules/organization/organization-state.server";
@@ -39,13 +42,19 @@ const seed = Effect.gen(function* () {
 
   // A session better-auth accepts: its row plus the HMAC-signed `better-auth.session_token` cookie.
   const token = env("VERIFY_SESSION_TOKEN");
-  yield* drizzle.insert(session).values({
+  const [signedIn] = yield* drizzle.insert(session).values({
     userId: ada.id, token, expiresAt: new Date(Date.now() + 30 * 24 * 3600_000),
     activeOrganizationId: organizationId, activeOrganizationSlug: organizationSlug,
-  });
+  }).returning({ id: session.id });
+  if (!signedIn) return yield* Effect.die("No session.");
   const cookie = encodeURIComponent(`${token}.${createHmac("sha256", env("BETTER_AUTH_SECRET")).update(token).digest("base64")}`);
+  const { secret: cliToken } = yield* createOrganizationToken(
+    { userId: ada.id, organization: { id: organizationId, slug: organizationSlug }, credential: { kind: "session", id: signedIn.id } },
+    { name: "verify", expiresInDays: 30 },
+  );
 
   const writes: Record<string, string> = {};
+  const skipped: string[] = [];
   const write = (label: string, command: ConfigCommand) =>
     callStore(organizationId, ada.id, { operation: "write", command }).pipe(
       Effect.tap((r) => Effect.sync(() => { writes[label] = r.ok ? "ok" : `refused: ${r.refusal.code} ${r.refusal.message}`; })),
@@ -68,21 +77,25 @@ const seed = Effect.gen(function* () {
     { op: "set", path: "api.env.DATABASE_URL", value: "postgres://postgres@postgres:5432/shop" },
   ]);
 
-  // The fake Server: a pairing and one Machine row, so the Store admits Deploys.
-  const encryption = yield* SecretEncryption;
-  const pairingSecret = "ppair_verify";
-  yield* drizzle.insert(organizationPairing).values({
-    organizationId, encryptedPairingSecret: encryption.encrypt(pairingSecret),
-    founderClaimMachineId: MACHINE_ID as never, founderMachineId: MACHINE_ID as never,
-  });
-  yield* drizzle.insert(organizationMachine).values({
-    organizationId, machineId: MACHINE_ID as never, clusterKey: createHash("sha256").update(pairingSecret).digest("hex"),
-    encryptedCapability: encryption.encrypt("cap"),
-  });
-  yield* write("deploy production", {
-    command: "admit", admit: "deploy", id: randomUUID(), environment: at("production"),
-    services: [], version: null, accept_volume_loss: [], message: "Ship everything",
-  });
+  if (process.env["VERIFY_REAL_SERVERS"] === "1") {
+    skipped.push("deploy production: no Server has enrolled yet");
+  } else {
+    // The fake Server: a pairing and one Machine row, so the Store admits Deploys.
+    const encryption = yield* SecretEncryption;
+    const pairingSecret = "ppair_verify";
+    yield* drizzle.insert(organizationPairing).values({
+      organizationId, encryptedPairingSecret: encryption.encrypt(pairingSecret),
+      founderClaimMachineId: MACHINE_ID as never, founderMachineId: MACHINE_ID as never,
+    });
+    yield* drizzle.insert(organizationMachine).values({
+      organizationId, machineId: MACHINE_ID as never, clusterKey: createHash("sha256").update(pairingSecret).digest("hex"),
+      encryptedCapability: encryption.encrypt("cap"),
+    });
+    yield* write("deploy production", {
+      command: "admit", admit: "deploy", id: randomUUID(), environment: at("production"),
+      services: [], version: null, accept_volume_loss: [], message: "Ship everything",
+    });
+  }
 
   // A Branch with its own edits to save back; production then moves on, leaving unpublished edits on its canvas.
   yield* write("branch fix-api", {
@@ -98,7 +111,7 @@ const seed = Effect.gen(function* () {
     { op: "set", path: "api.env.FEATURE_SEARCH", value: "on" },
   ]);
 
-  return { organizationSlug, cookie, writes };
+  return { organizationSlug, cookie, cliToken, writes, skipped };
 });
 
 export async function run() {

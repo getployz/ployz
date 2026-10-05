@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Stops this checkout's verify instance: the vite dev server and Postgres container up.sh started, and its
-# agent-browser session (KEEP_BROWSER=1 keeps it). Keeps dashboard/.verify/evidence.
+# Stops this checkout's verify instance: the cluster, vite dev server and Postgres container up.sh started, and its
+# agent-browser session (KEEP_BROWSER=1 keeps it). Keeps dashboard/.verify/evidence and the cluster's evidence.
 # Usage: scripts/verify/down.sh
 set -uo pipefail
 dash=$(cd "$(dirname "$0")/../.." && pwd)
-name=ployz-verify-$(printf %s "$(dirname "$dash")" | sha1sum | cut -c1-10)
+wt=$(dirname "$dash")
+name=ployz-verify-$(printf %s "$wt" | sha1sum | cut -c1-10)
 run=$dash/.verify/run
+[ -f "$run/cluster" ] && "$wt/core/scripts/verify-cluster" down "$(cat "$run/cluster")"
 if [ -f "$run/vite.pid" ]; then
   pid=$(cat "$run/vite.pid")
   kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null

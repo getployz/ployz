@@ -2,11 +2,14 @@
 # Seeded, signed-in Ployz Cloud for this checkout: its own Postgres container and `vite dev`, side by side with
 # other checkouts. Re-running restarts from a fresh seed; the cookie stays valid.
 # Usage: scripts/verify/up.sh [port]      BILLING=1 turns billing on. State: dashboard/.verify/run (down.sh removes it).
+# SERVERS=N [DAEMON=stable|beta|checkout|<version>] also enrolls N real Machines through it (core/scripts/verify-cluster);
+# down.sh tears that cluster down too.
 set -euo pipefail
 dash=$(cd "$(dirname "$0")/../.." && pwd)
 wt=$(dirname "$dash")
 name=ployz-verify-$(printf %s "$wt" | sha1sum | cut -c1-10)
 run=$dash/.verify/run
+[ -n "${SERVERS:-}" ] && export VERIFY_REAL_SERVERS=1
 
 KEEP_BROWSER=1 "$dash/scripts/verify/down.sh" >/dev/null 2>&1 || true
 port=${1:-$(node -e 'const s=require("net").createServer().listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')}
@@ -96,7 +99,18 @@ Ployz Cloud verify: $base  (billing $([ "${BILLING:-0}" = 1 ] && echo on || echo
   projects    $base/cloud/$org/~
   production  $base/cloud/$org/shop/production
   branch      $base/cloud/$org/shop/fix-api
+  servers     $base/cloud/$org/~/servers
 browser:
   agent-browser --session $name cookies set better-auth.session_token '$cookie' --url $base --httpOnly --sameSite Lax
   agent-browser --session $name open $base/cloud/$org/shop/production
 EOF
+
+if [ -n "${SERVERS:-}" ]; then
+  echo "up.sh: enrolling $SERVERS Machines through Cloud (DAEMON=${DAEMON:-stable})"
+  cluster=$("$wt/core/scripts/verify-cluster" up --machines "$SERVERS" --daemon "${DAEMON:-stable}" --cloud-attach)
+  echo "$cluster" > "$run/cluster"
+  cat <<EOF | tee -a "$run/info"
+cluster: $cluster
+  $wt/core/scripts/verify-cluster cli $cluster -- --json server ls
+EOF
+fi
