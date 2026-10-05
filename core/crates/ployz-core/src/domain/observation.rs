@@ -802,14 +802,22 @@ mod tests {
 
         observed.redact_environment();
 
-        let configs = observed.resolved_spec.configs();
-        assert_eq!(configs.len(), 1);
-        assert_eq!(configs[0].name, "settings");
-        assert!(configs[0].content.is_empty());
+        assert_eq!(
+            observed.resolved_spec.configs(),
+            [crate::ConfigSpec {
+                name: "settings".into(),
+                content: Vec::new(),
+            }]
+        );
         assert_eq!(observed.resolved_spec.config_mounts(), mounts.as_slice());
         assert_eq!(
-            observed.resolved_spec.container.environment["TOKEN"],
-            crate::REDACTED_ENVIRONMENT_VALUE
+            observed
+                .resolved_spec
+                .container
+                .environment
+                .get("TOKEN")
+                .map(String::as_str),
+            Some(crate::REDACTED_ENVIRONMENT_VALUE)
         );
         let wire = serde_json::to_string(&observed).unwrap();
         assert!(!wire.contains("config-secret"));

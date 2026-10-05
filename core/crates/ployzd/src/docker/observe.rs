@@ -478,10 +478,13 @@ mod tests {
 
         let redacted = redacted_container(&observation);
 
-        let configs = redacted.resolved_spec.configs();
-        assert_eq!(configs.len(), 1);
-        assert_eq!(configs[0].name, "settings");
-        assert!(configs[0].content.is_empty());
+        assert_eq!(
+            redacted.resolved_spec.configs(),
+            [ployz_core::ConfigSpec {
+                name: "settings".into(),
+                content: Vec::new(),
+            }]
+        );
         assert_eq!(
             redacted.resolved_spec.config_mounts(),
             observation.resolved_spec.config_mounts()
@@ -492,8 +495,11 @@ mod tests {
                 .contains("config-secret")
         );
         assert_eq!(
-            observation.resolved_spec.configs()[0].content,
-            b"token=config-secret"
+            observation.resolved_spec.configs(),
+            [ployz_core::ConfigSpec {
+                name: "settings".into(),
+                content: b"token=config-secret".to_vec(),
+            }]
         );
     }
 
