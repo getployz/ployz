@@ -7,6 +7,7 @@ use std::{
     collections::BTreeMap,
     net::IpAddr,
     num::{NonZeroU16, NonZeroU32},
+    time::Duration,
 };
 
 use ipnet::IpNet;
@@ -120,6 +121,41 @@ impl HealthcheckSpec {
             Self::Disabled | Self::Http(_) => None,
         }
     }
+
+    /// How long after a start the first passing result is waited for; Disabled never waits.
+    #[must_use]
+    pub fn deadline(&self) -> Option<Duration> {
+        match self {
+            Self::Disabled => None,
+            Self::Configured(configured) => Some(healthcheck_deadline(Some(configured))),
+            Self::Http(check) => Some(Duration::from_secs(u64::from(check.timeout_seconds))),
+        }
+    }
+}
+
+/// How long after a start a Configured Healthcheck's first passing result is
+/// waited for: its own deadline, else start period plus retries of interval and
+/// timeout, plus a 5s margin. `None` is an image check with unknown timings,
+/// which gets Docker's defaults.
+#[must_use]
+pub fn healthcheck_deadline(healthcheck: Option<&ConfiguredHealthcheck>) -> Duration {
+    if let Some(deadline) = healthcheck.and_then(|check| check.deadline_millis) {
+        return Duration::from_millis(deadline);
+    }
+    let interval = healthcheck
+        .and_then(|check| check.interval_millis)
+        .unwrap_or(30_000);
+    let timeout = healthcheck
+        .and_then(|check| check.timeout_millis)
+        .unwrap_or(30_000);
+    let retries = u64::from(healthcheck.and_then(|check| check.retries).unwrap_or(3));
+    Duration::from_millis(
+        healthcheck
+            .and_then(|check| check.start_period_millis)
+            .unwrap_or_default()
+            .saturating_add(interval.saturating_add(timeout).saturating_mul(retries))
+            .saturating_add(5_000),
+    )
 }
 
 /// A bounded HTTP probe executed by the owning Machine, without image tooling.
