@@ -132,6 +132,7 @@ mod tests {
             code: RpcErrorCode::Unavailable,
             message: "inspect failed".into(),
             details: Value::Null,
+            cause: Vec::new(),
         };
 
         let failure = CreateVolumeReport::Unverified {

@@ -34,6 +34,7 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
                         code: ployz_core::RpcErrorCode::Unavailable,
                         message: "peer unavailable".into(),
                         details: serde_json::Value::Null,
+                        cause: Vec::new(),
                     },
                 }]
             } else {
@@ -323,6 +324,7 @@ async fn failed_placement_is_reported_even_if_final_observation_is_running() {
             code: ployz_core::RpcErrorCode::Conflict,
             message: "creation key conflict".into(),
             details: serde_json::Value::Null,
+            cause: Vec::new(),
         }),
         failures: Vec::new(),
         omissions: Vec::new(),

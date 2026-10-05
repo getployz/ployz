@@ -206,6 +206,7 @@ fn cancelled() -> RpcError {
         code: RpcErrorCode::Unavailable,
         message: "container observation wait cancelled".into(),
         details: Value::Null,
+        cause: Vec::new(),
     }
 }
 
@@ -221,6 +222,7 @@ fn timed_out(pending: &BTreeSet<ContainerId>) -> RpcError {
                 .join(", ")
         ),
         details: Value::Null,
+        cause: Vec::new(),
     }
 }
 
@@ -231,6 +233,7 @@ fn invalid_response(machine_id: MachineId) -> RpcError {
             "Machine {machine_id} returned an incomplete replicated Container Observation map"
         ),
         details: Value::Null,
+        cause: Vec::new(),
     }
 }
 
@@ -251,6 +254,7 @@ mod tests {
             code,
             message: "transient".into(),
             details: Value::Null,
+            cause: Vec::new(),
         }
     }
 

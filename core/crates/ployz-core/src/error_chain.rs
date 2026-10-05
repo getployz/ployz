@@ -1,21 +1,30 @@
 use std::error::Error;
 
+use crate::RpcError;
+
 /// Each `source()` below the top, raw, with a wrapper that only repeats the
-/// line above it dropped.
+/// line above it dropped. An [`RpcError`] contributes the causes its peer sent.
 #[must_use]
 pub fn causes(top: &(dyn Error + 'static)) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut above = top.to_string();
-    let mut next = top.source();
-    while let Some(error) = next {
-        let line = error.to_string();
-        if line != above && !line.is_empty() {
-            lines.push(line.clone());
+    let mut current = top;
+    loop {
+        let remote = current
+            .downcast_ref::<RpcError>()
+            .map_or(&[][..], |error| &error.cause[..]);
+        let below = current.source();
+        for line in remote.iter().cloned().chain(below.map(ToString::to_string)) {
+            if line != above && !line.is_empty() {
+                lines.push(line.clone());
+            }
+            above = line;
         }
-        above = line;
-        next = error.source();
+        let Some(below) = below else {
+            return lines;
+        };
+        current = below;
     }
-    lines
 }
 
 /// An error and its causes on one line, for a place no `cause:` line can go:
@@ -80,5 +89,26 @@ mod tests {
             "Could not deploy: Volume is full: os error 28"
         );
         assert_eq!(inline(&chain(&["Nothing below."])), "Nothing below.");
+    }
+
+    #[test]
+    fn an_rpc_error_lists_the_causes_its_peer_sent() {
+        let error = RpcError {
+            code: crate::RpcErrorCode::Internal,
+            message: "Could not create the Container.".into(),
+            details: serde_json::Value::Null,
+            cause: vec![
+                "Docker responded with status code 500".into(),
+                "denied".into(),
+            ],
+        };
+        assert_eq!(
+            causes(&error),
+            ["Docker responded with status code 500", "denied"]
+        );
+        assert_eq!(
+            inline(&error),
+            "Could not create the Container: Docker responded with status code 500: denied"
+        );
     }
 }

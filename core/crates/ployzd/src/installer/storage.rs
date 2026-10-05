@@ -779,16 +779,19 @@ fn validate_zfs_pool(stage: tempfile::TempDir) -> Result<(), Error> {
         .map_err(|error| {
             Error::Verification(format!(
                 "{error}; ZFS smoke backing directory retained at {} for inspection",
-                directory.display()
+                directory.display(),
+                error = ployz_core::error_chain::inline(&error),
             ))
         });
     match (result, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(error),
         (Ok(()), Err(error)) => Err(error),
-        (Err(error), Err(cleanup)) => {
-            Err(Error::Verification(format!("{cleanup} (after: {error})")))
-        }
+        (Err(error), Err(cleanup)) => Err(Error::Verification(format!(
+            "{cleanup} (after: {error})",
+            cleanup = ployz_core::error_chain::inline(&cleanup),
+            error = ployz_core::error_chain::inline(&error),
+        ))),
     }
 }
 

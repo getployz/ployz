@@ -91,6 +91,7 @@ fn observation_warnings_come_from_partial_result_failures_and_omissions() {
                 code: RpcErrorCode::Unavailable,
                 message: "offline".into(),
                 details: serde_json::Value::Null,
+                cause: Vec::new(),
             },
         }],
         omissions: vec![omitted_id],
@@ -181,6 +182,7 @@ fn action_result_keeps_machine_failures_apart_from_container_failures() {
         code: RpcErrorCode::Unavailable,
         message: "offline".into(),
         details: serde_json::Value::Null,
+        cause: Vec::new(),
     };
     let live = derive_live_services(PartialResult::<Vec<ployz_core::ContainerObservation>, _> {
         successes: Vec::new(),

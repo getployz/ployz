@@ -593,7 +593,7 @@ async fn list_returns_a_top_level_collection_error() {
         .await
         .unwrap_err();
 
-    assert!(error.to_string().contains("collection unavailable"));
+    assert!(ployz_core::error_chain::inline(&error).contains("collection unavailable"));
 }
 
 #[tokio::test]
@@ -619,7 +619,10 @@ async fn create_reports_mutation_success_separately_from_failed_verification() {
     };
     assert_eq!(id.machine_id, machine_id);
     assert_eq!(id.name.as_str(), "unavailable");
-    assert!(error.message.contains("detail unavailable"), "{error}");
+    assert!(
+        ployz_core::error_chain::inline(&error).contains("detail unavailable"),
+        "{error:?}"
+    );
     let requests = fake.requests.lock().unwrap();
     assert!(
         requests
@@ -650,7 +653,7 @@ async fn create_returns_docker_rejection_as_an_error() {
         .await
         .unwrap_err();
 
-    assert!(error.to_string().contains("create rejected"));
+    assert!(ployz_core::error_chain::inline(&error).contains("create rejected"));
 }
 
 #[tokio::test]

@@ -208,6 +208,7 @@ mod tests {
                         code: RpcErrorCode::Unavailable,
                         message: "inspect failed".into(),
                         details: serde_json::Value::Null,
+                        cause: Vec::new(),
                     },
                 }],
                 Vec::new(),

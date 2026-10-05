@@ -277,7 +277,7 @@ pub(crate) enum Error {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Http(#[from] reqwest::Error),
-    #[error("ACME: {0}")]
+    #[error("ACME request failed")]
     Acme(#[from] instant_acme::Error),
     #[error("certificate authority did not issue material")]
     MissingMaterial,
@@ -377,7 +377,10 @@ pub(crate) async fn run(
         {
             Ok(wait) => wait,
             Err(error) => {
-                eprintln!("failed to obtain certificates: {error}");
+                eprintln!(
+                    "failed to obtain certificates: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                );
                 RETRY_INTERVAL
             }
         };
@@ -484,7 +487,10 @@ async fn issue_wanted(
                         .record_certificate_failure(hostname, reason, clock)
                         .await
                     {
-                        eprintln!("failed to record certificate refusal for {hostname}: {error}");
+                        eprintln!(
+                            "failed to record certificate refusal for {hostname}: {error}",
+                            error = ployz_core::error_chain::inline(&error),
+                        );
                     }
                 }
                 continue;
@@ -511,7 +517,10 @@ async fn issue_wanted(
         .await;
         for ((hostname, _), result) in to_order.iter().zip(results) {
             if let Err(error) = result {
-                eprintln!("failed to obtain certificate for {hostname}: {error}");
+                eprintln!(
+                    "failed to obtain certificate for {hostname}: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                );
                 let clock = issuance_failure_clock(
                     rows.get(hostname.as_str()).and_then(CertificateRow::clock),
                     IssuanceFailure::Authority,
@@ -520,7 +529,11 @@ async fn issue_wanted(
                     policy.backoff_cap(),
                 );
                 if let Err(record_error) = store
-                    .record_certificate_failure(hostname, error.to_string(), clock)
+                    .record_certificate_failure(
+                        hostname,
+                        ployz_core::error_chain::inline(&error),
+                        clock,
+                    )
                     .await
                 {
                     eprintln!(
@@ -693,13 +706,13 @@ fn certificate_request(
             return Err(Error::UnsupportedKeyType(kind.clone()));
         }
     }
-    .map_err(|error| Error::Key(error.to_string()))?;
+    .map_err(|error| Error::Key(ployz_core::error_chain::inline(&error)))?;
     let mut params = rcgen::CertificateParams::new(vec![hostname.as_str().to_owned()])
-        .map_err(|error| Error::Key(error.to_string()))?;
+        .map_err(|error| Error::Key(ployz_core::error_chain::inline(&error)))?;
     params.distinguished_name = rcgen::DistinguishedName::new();
     let csr = params
         .serialize_request(&key)
-        .map_err(|error| Error::Key(error.to_string()))?;
+        .map_err(|error| Error::Key(ployz_core::error_chain::inline(&error)))?;
     Ok((key.serialize_pem(), csr.der().as_ref().to_vec()))
 }
 

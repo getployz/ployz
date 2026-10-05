@@ -191,6 +191,7 @@ fn reached_target_cleanup_rejections_are_not_unreachable_fallbacks() {
             code: RpcErrorCode::Unavailable,
             message: "Docker is unavailable".into(),
             details: serde_json::Value::Null,
+            cause: Vec::new(),
         })
         .is_unreachable()
     );

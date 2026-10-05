@@ -223,13 +223,16 @@ impl Failure {
             code,
             message: self.to_string(),
             details,
+            cause: self.causes(),
         }
     }
 
     pub(crate) fn json(&self) -> Value {
-        let mut error = serde_json::json!(self.report());
+        let report = self.report();
+        let cause = serde_json::json!(report.cause);
+        let mut error = serde_json::json!(report);
         if let Some(fields) = error.as_object_mut() {
-            fields.insert("cause".into(), serde_json::json!(self.causes()));
+            fields.insert("cause".into(), cause);
         }
         error
     }
@@ -599,7 +602,7 @@ pub(crate) fn partial_failure_details<T>(result: &PartialResult<T, RpcError>) ->
     result
         .failures
         .iter()
-        .map(|failure| format!("{}: {}", failure.machine_id, failure.error.message))
+        .map(|failure| format!("{}: {}", failure.machine_id, crate::ui::row(&failure.error)))
         .chain(
             result
                 .omissions
@@ -835,6 +838,7 @@ mod tests {
             code: RpcErrorCode::Unavailable,
             message: "Machine is starting".into(),
             details: serde_json::json!({ "next": "ployz server ls", "machine": "alpha" }),
+            cause: Vec::new(),
         });
         let outer = inner.context("Could not deploy.");
         let report = outer.report();
@@ -986,6 +990,7 @@ mod tests {
             code: RpcErrorCode::Internal,
             message: "boom".into(),
             details: Value::Null,
+            cause: Vec::new(),
         });
         assert_eq!(failure.to_string(), "boom");
         assert_eq!(source::<RpcError>(&failure).message, "boom");

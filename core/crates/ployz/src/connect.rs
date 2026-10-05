@@ -420,6 +420,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             code: RpcErrorCode::Unauthenticated,
             message: "Machine confirmed this Management Client was cleared".into(),
             details: json!({ "management_client": "cleared" }),
+            cause: Vec::new(),
         },
         ConnectError::Remote(error) => error,
         ConnectError::Rpc(error) => error.to_rpc_error(),
@@ -427,6 +428,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             code: RpcErrorCode::Unauthenticated,
             message: error.to_string(),
             details: Value::Null,
+            cause: Vec::new(),
         },
         error @ (ConnectError::Attempt(_)
         | ConnectError::Exhausted(_)
@@ -469,6 +471,7 @@ pub(crate) async fn apply_timeout<T>(
                     code: RpcErrorCode::Unavailable,
                     message: "target Machine RPC timed out".into(),
                     details: Value::Null,
+                    cause: Vec::new(),
                 });
             }
         },
@@ -844,6 +847,7 @@ impl TransportError {
             code: rpc_error_code(self.code),
             message: self.message.clone(),
             details: self.details.clone(),
+            cause: Vec::new(),
         }
     }
 }

@@ -102,7 +102,7 @@ pub enum Error {
     Verification(String),
     #[error("{stage}: {message}")]
     Command { stage: String, message: String },
-    #[error("{stage}: {source}")]
+    #[error("{stage}")]
     Io {
         stage: &'static str,
         #[source]
@@ -313,7 +313,7 @@ fn map_upgrade_reconciliation(error: upgrade::Error) -> Error {
     } else {
         Error::Command {
             stage: "reconcile previous Machine upgrade".into(),
-            message: error.to_string(),
+            message: ployz_core::error_chain::inline(&error),
         }
     }
 }

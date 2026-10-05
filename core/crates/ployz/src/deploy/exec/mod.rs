@@ -168,6 +168,7 @@ impl MachineOperations for Client {
                 code: RpcErrorCode::Unavailable,
                 message: format!("container observation omitted {machine_id}"),
                 details: serde_json::Value::Null,
+                cause: Vec::new(),
             });
         }
         Ok(listed

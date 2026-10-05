@@ -63,6 +63,7 @@ fn observation_warnings_keep_failures_and_omissions_distinct() {
                 code: RpcErrorCode::Unavailable,
                 message: "container listing failed".into(),
                 details: Value::Null,
+                cause: Vec::new(),
             },
         }],
         omissions: vec![MachineId::parse("c".repeat(32)).unwrap()],

@@ -130,6 +130,7 @@ impl CatchUpClient for Client {
                 code: ployz_core::RpcErrorCode::Conflict,
                 message: error.to_string(),
                 details: serde_json::Value::Null,
+                cause: Vec::new(),
             });
         }
         self.call::<op::CreateContainer>(request, Some(&target))

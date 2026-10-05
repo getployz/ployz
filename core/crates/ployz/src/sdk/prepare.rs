@@ -191,6 +191,7 @@ pub async fn select_build_machine(
             }
         ),
         details: serde_json::json!({"rejections": rejected}),
+        cause: Vec::new(),
     }))
 }
 

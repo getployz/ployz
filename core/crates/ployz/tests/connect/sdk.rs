@@ -123,6 +123,7 @@ async fn deploy_reports_volume_ensure_as_the_container_operation_failure() {
         code: RpcErrorCode::Unavailable,
         message: "Volume Ensure failed".into(),
         details: serde_json::Value::Null,
+        cause: Vec::new(),
     });
     let _machine = session.spawn_machine(description.machine_id, service).await;
     let client = unix_session::connect(&session.directory, description.machine_id.as_str())
@@ -506,6 +507,7 @@ async fn sdk_preview_recovers_pool_before_observing_existing_docker_volume() {
                 code: RpcErrorCode::Unavailable,
                 message: "Pool is not imported".into(),
                 details: serde_json::Value::Null,
+                cause: Vec::new(),
             },
         }],
     );

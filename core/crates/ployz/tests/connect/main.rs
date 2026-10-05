@@ -784,6 +784,7 @@ async fn unary_call_does_not_retry_remote_or_not_found() {
             code: RpcErrorCode::Conflict,
             message: "already a member".into(),
             details: Value::Null,
+            cause: Vec::new(),
         }));
     let error = client
         .call::<op::DescribeContract>(DescribeContractRequest {}, None)

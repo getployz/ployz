@@ -81,6 +81,7 @@ fn deploy_failures_keep_runtime_exit_and_secondary_stop_causes() {
         code: RpcErrorCode::Unavailable,
         message: "Machine unreachable".into(),
         details: json!(null),
+        cause: Vec::new(),
     };
     for failure in [
         HookFailure::Cancelled {
@@ -235,6 +236,7 @@ fn unconstrained_names_and_health_failures_escape_controls() {
                 code: RpcErrorCode::Unavailable,
                 message: raw.into(),
                 details: json!(null),
+                cause: Vec::new(),
             }),
         }
         .to_string(),

@@ -191,13 +191,13 @@ impl NetworkPlane {
     pub async fn cleanup(&mut self) -> Result<(), NetworkError> {
         let mut failures = Vec::new();
         if let Err(error) = remove_firewall_rules(self.machine.subnet) {
-            failures.push(error.to_string());
+            failures.push(ployz_core::error_chain::inline(&error));
         }
         if let Err(error) = self.remove_docker_network().await {
-            failures.push(error.to_string());
+            failures.push(ployz_core::error_chain::inline(&error));
         }
         if let Err(error) = self.wireguard.remove_interface() {
-            failures.push(error.to_string());
+            failures.push(ployz_core::error_chain::inline(&error));
         }
         if failures.is_empty() {
             Ok(())
@@ -295,7 +295,10 @@ impl NetworkPlane {
         let host = match self.wireguard.read_interface_data() {
             Ok(host) => host,
             Err(error) => {
-                eprintln!("failed to poll WireGuard device: {error}");
+                eprintln!(
+                    "failed to poll WireGuard device: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                );
                 return;
             }
         };
@@ -314,7 +317,10 @@ impl NetworkPlane {
                 .wireguard
                 .configure_peer(&wireguard_peer(peer, Some(endpoint)))
             {
-                eprintln!("failed to update WireGuard peer endpoint: {error}");
+                eprintln!(
+                    "failed to update WireGuard peer endpoint: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                );
                 continue;
             }
             persist_selection(local, peer.machine_id, endpoint).await;
@@ -359,7 +365,8 @@ impl NetworkPlane {
                                     &gateway,
                                     &required_options,
                                     format!(
-                                        "Docker refused to remove the network after inspection: {error}"
+                                        "Docker refused to remove the network after inspection: {error}",
+                                        error = ployz_core::error_chain::inline(&error),
                                     ),
                                 ));
                             }
@@ -567,7 +574,10 @@ async fn persist_selection(local: &RecordOwner, machine_id: MachineId, endpoint:
         .map_err(io::Error::other)
         .and_then(|persisted| persisted.map_err(io::Error::other));
     if let Err(error) = result {
-        eprintln!("failed to persist observer-local Selected Endpoint: {error}");
+        eprintln!(
+            "failed to persist observer-local Selected Endpoint: {error}",
+            error = ployz_core::error_chain::inline(&error),
+        );
     }
 }
 

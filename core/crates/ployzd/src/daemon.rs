@@ -135,7 +135,10 @@ impl Daemon {
         .await
         .map_err(io::Error::other)?;
         if let Err(error) = cleanup {
-            eprintln!("WARNING: abandoned Build cleanup: {error}");
+            eprintln!(
+                "WARNING: abandoned Build cleanup: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            );
         }
         let local_record = local.record();
         let local_id = local_record.id();
@@ -158,7 +161,10 @@ impl Daemon {
                 match LocalDocker::connect() {
                     Ok(docker) => Some(ContainerRuntime::new(docker, specs)),
                     Err(error) => {
-                        eprintln!("WARNING: local Docker is unavailable: {error}");
+                        eprintln!(
+                            "WARNING: local Docker is unavailable: {error}",
+                            error = ployz_core::error_chain::inline(&error),
+                        );
                         None
                     }
                 }
@@ -405,7 +411,7 @@ impl Daemon {
             changed = self.restart_requested.changed() => match changed {
                 Ok(()) => StopKind::Restart,
                 Err(error) => {
-                    errors.push(error.to_string());
+                    errors.push(ployz_core::error_chain::inline(&error));
                     StopKind::WatchFailed("restart")
                 }
             },
@@ -432,7 +438,7 @@ impl Daemon {
         )
         .await;
         if let Err(error) = server_result {
-            errors.push(error.to_string());
+            errors.push(ployz_core::error_chain::inline(&error));
         }
 
         if let Some(running) = &mut self.corrosion {
@@ -442,17 +448,17 @@ impl Daemon {
                 running.stop().await
             };
             if let Err(error) = result {
-                errors.push(error.to_string());
+                errors.push(ployz_core::error_chain::inline(&error));
             }
         }
         if let Err(error) = self.ingest.shutdown().await {
-            errors.push(error.to_string());
+            errors.push(ployz_core::error_chain::inline(&error));
         }
         if resetting {
             match self.local.mutate(|store| store.complete_reset()).await {
                 Ok(Ok(())) => {}
-                Ok(Err(error)) => errors.push(error.to_string()),
-                Err(error) => errors.push(error.to_string()),
+                Ok(Err(error)) => errors.push(ployz_core::error_chain::inline(&error)),
+                Err(error) => errors.push(ployz_core::error_chain::inline(&error)),
             }
         }
         // Admitted work is detached from its RPC and outlives the server drain. Give
@@ -462,7 +468,7 @@ impl Daemon {
         match tokio::time::timeout(SERVER_DRAIN, self.local.admission_lock().write_owned()).await {
             Ok(_admission) => {
                 if let Err(error) = self.local.close().await {
-                    errors.push(error.to_string());
+                    errors.push(ployz_core::error_chain::inline(&error));
                 }
             }
             Err(_) => tracing::warn!(
@@ -532,13 +538,19 @@ pub async fn wait_until_socket_accepts(
             Err(error) if socket_not_ready(&error) => {
                 return Err(io::Error::new(
                     error.kind(),
-                    format!("Machine API socket did not become ready: {error}"),
+                    format!(
+                        "Machine API socket did not become ready: {error}",
+                        error = ployz_core::error_chain::inline(&error),
+                    ),
                 ));
             }
             Err(error) => {
                 return Err(io::Error::new(
                     error.kind(),
-                    format!("could not connect to the Machine API socket: {error}"),
+                    format!(
+                        "could not connect to the Machine API socket: {error}",
+                        error = ployz_core::error_chain::inline(&error),
+                    ),
                 ));
             }
         }
@@ -636,7 +648,10 @@ enum StopKind {
 
 fn notify(state: NotifyState<'_>) {
     if let Err(error) = sd_notify::notify(&[state]) {
-        eprintln!("systemd notification failed: {error}");
+        eprintln!(
+            "systemd notification failed: {error}",
+            error = ployz_core::error_chain::inline(&error),
+        );
     }
 }
 
@@ -667,7 +682,10 @@ fn extend_systemd_start_timeout() -> SystemdStartTimeoutExtend {
                     return;
                 }
                 if let Err(error) = sd_notify::notify(&[NotifyState::ExtendTimeoutUsec(usec)]) {
-                    eprintln!("failed to extend the systemd start timeout: {error}");
+                    eprintln!(
+                        "failed to extend the systemd start timeout: {error}",
+                        error = ployz_core::error_chain::inline(&error),
+                    );
                     return;
                 }
                 tokio::time::sleep(SYSTEMD_START_TIMEOUT_EXTENSION).await;

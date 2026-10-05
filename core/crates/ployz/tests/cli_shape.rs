@@ -868,12 +868,10 @@ fn no_error_derive_interpolates_its_source() {
         names
     }
 
-    // ployzd's errors reach the CLI as RPC text, not as a chain it renders.
     let crates = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
     let mut dirs: Vec<_> = std::fs::read_dir(crates)
         .unwrap()
         .map(|entry| entry.unwrap().path())
-        .filter(|krate| !krate.ends_with("ployzd"))
         .map(|krate| krate.join("src"))
         .filter(|src| src.is_dir())
         .collect();

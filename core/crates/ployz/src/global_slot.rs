@@ -39,6 +39,7 @@ pub(crate) async fn slot_eligibility(
             code: RpcErrorCode::Conflict,
             message: "the Server does not observe itself participating".into(),
             details: serde_json::Value::Null,
+            cause: Vec::new(),
         })?;
     Ok(spec.placement_eligibility_in_namespace(namespace, &machine, details.storage.as_ref()))
 }
@@ -106,5 +107,6 @@ pub(crate) fn unknown_eligibility(reason: ServicePlacementUnknownReason) -> RpcE
         code: RpcErrorCode::Conflict,
         message: format!("eligibility on the Server is unknown: {why}"),
         details: serde_json::Value::Null,
+        cause: Vec::new(),
     }
 }

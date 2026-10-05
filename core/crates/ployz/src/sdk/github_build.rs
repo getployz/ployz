@@ -92,7 +92,10 @@ pub async fn github_start(
             },
         },
         Err(error) => GithubEnd::Skipped {
-            message: format!("Cloud couldn't read your Servers: {}", error.message),
+            message: format!(
+                "Cloud couldn't read your Servers: {}",
+                crate::ui::row(&error)
+            ),
         },
     };
     let start = match &end {
@@ -280,6 +283,7 @@ pub async fn github_report(
         code: RpcErrorCode::InvalidArgument,
         message: "The report is not Build Steps".to_owned(),
         details: Value::Null,
+        cause: Vec::new(),
     })?;
     let mut lines: Vec<String> = report
         .events
@@ -292,6 +296,7 @@ pub async fn github_report(
                 code: RpcErrorCode::InvalidArgument,
                 message: "A report ends a build or says ployz didn't install, not both".to_owned(),
                 details: Value::Null,
+                cause: Vec::new(),
             });
         }
         // No final report: GitHub failed it, so the next Builder takes it.
@@ -483,6 +488,7 @@ async fn session(connections: Vec<Connection>) -> Result<Session, RpcError> {
             code: RpcErrorCode::Unavailable,
             message: "No Server is enrolled in this Organization".to_owned(),
             details: Value::Null,
+            cause: Vec::new(),
         });
     }
     connect_connections(connections, Arc::new(SystemConnector::default())).await
@@ -493,6 +499,7 @@ fn conflict(message: &str) -> RpcError {
         code: RpcErrorCode::Conflict,
         message: message.to_owned(),
         details: Value::Null,
+        cause: Vec::new(),
     }
 }
 

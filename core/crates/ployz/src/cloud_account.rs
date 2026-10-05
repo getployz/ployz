@@ -651,6 +651,7 @@ pub(crate) async fn remove_server(
                         queued.id
                     ),
                     details: serde_json::Value::Null,
+                    cause: Vec::new(),
                 }));
             }
         }

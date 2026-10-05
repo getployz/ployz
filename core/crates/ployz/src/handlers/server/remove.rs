@@ -59,7 +59,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         let live = client.live_services_from(&machines, EnvironmentValues::Redacted).await?;
         if !no_reset {
             if let Some(failure) = live.containers.failures.iter().find(|failure| failure.machine_id == selected.id) {
-                return Err(Error::unavailable(format!("Cannot observe Services on Server {}: {}. No changes made.", selected.id, failure.error.message)));
+                return Err(Error::caused(RpcErrorCode::Unavailable, format!("Cannot observe Services on Server {}. No changes made.", selected.id), failure.error.clone()));
             }
             if live.containers.omissions.contains(&selected.id) {
                 return Err(Error::unavailable(format!("Cannot observe Services on Server {}: no terminal response. No changes made.", selected.id)));
@@ -210,10 +210,11 @@ async fn cloud_manages(client: &crate::connect::Client, entry: MachineId) -> Res
         )
         .await
         .map_err(|error| {
-            Error::unavailable(format!(
-                "Cannot read who manages Server {entry}: {}. No changes made.",
-                error.message
-            ))
+            Error::caused(
+                RpcErrorCode::Unavailable,
+                format!("Cannot read who manages Server {entry}. No changes made."),
+                error,
+            )
         })?;
     Ok(details
         .management_clients
@@ -458,6 +459,7 @@ mod tests {
             code: RpcErrorCode::Unavailable,
             message: "Server aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond".into(),
             details: Value::Null,
+            cause: Vec::new(),
         };
         let refusal = machine_removal_refusal(error);
         assert_eq!(
@@ -477,6 +479,7 @@ mod tests {
             code: RpcErrorCode::NotFound,
             message: "Server \"gone\" was not found".into(),
             details: Value::Null,
+            cause: Vec::new(),
         };
         assert_eq!(
             machine_removal_refusal(error).to_string(),

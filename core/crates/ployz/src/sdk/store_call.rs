@@ -61,6 +61,7 @@ fn unavailable(message: &str) -> RpcError {
         code: RpcErrorCode::Unavailable,
         message: message.to_owned(),
         details: serde_json::Value::Null,
+        cause: Vec::new(),
     }
 }
 

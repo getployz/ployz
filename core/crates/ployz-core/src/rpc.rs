@@ -417,6 +417,7 @@ impl ImageIngestReason {
             code: self.rpc_code(),
             message: message.into(),
             details: serde_json::json!({ "reason": self }),
+            cause: Vec::new(),
         }
     }
 
@@ -1104,6 +1105,57 @@ pub struct RpcError {
     pub message: String,
     #[serde(default)]
     pub details: Value,
+    /// Each source below `message` on the peer that failed, outermost first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<String>>", optional)]
+    pub cause: Vec<String>,
+}
+
+impl RpcError {
+    /// `error`'s own sentence as the message, and every source below it as a cause.
+    #[must_use]
+    pub fn caused(code: RpcErrorCode, error: &(dyn std::error::Error + 'static)) -> Self {
+        Self {
+            code,
+            message: error.to_string(),
+            details: Value::Null,
+            cause: crate::error_chain::causes(error),
+        }
+    }
+}
+
+#[cfg(test)]
+mod rpc_error_wire {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn rpc_error_round_trips_cause() {
+        let error = RpcError {
+            code: RpcErrorCode::Internal,
+            message: "Could not create the Container.".into(),
+            details: Value::Null,
+            cause: vec!["Docker responded with status code 500: denied".into()],
+        };
+        let wire = serde_json::to_value(&error).unwrap();
+        assert_eq!(
+            wire.get("cause"),
+            Some(&json!(["Docker responded with status code 500: denied"]))
+        );
+        assert_eq!(serde_json::from_value::<RpcError>(wire).unwrap(), error);
+    }
+
+    #[test]
+    fn rpc_error_without_cause_parses() {
+        let error = serde_json::from_value::<RpcError>(json!({
+            "code": "conflict",
+            "message": "busy",
+            "details": null,
+        }))
+        .unwrap();
+        assert!(error.cause.is_empty());
+        assert!(serde_json::to_value(&error).unwrap().get("cause").is_none());
+    }
 }
 
 #[cfg(test)]
