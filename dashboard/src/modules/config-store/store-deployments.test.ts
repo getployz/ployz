@@ -55,6 +55,11 @@ it("words a source change that moves only its root directory or its credentials"
   ]);
 });
 
+it("words a healthcheck by its path or command and timeout", () => {
+  expect(shownValue({ path: "/up", timeoutSeconds: 30 })).toBe("/up within 30s");
+  expect(shownValue({ command: "pg_isready -h 127.0.0.1", timeoutSeconds: 300 })).toBe("pg_isready -h 127.0.0.1 within 300s");
+});
+
 it("words a Volume's storage by its limit", () => {
   expect(shownValue({ kind: "provisioned", maximumBytes: 4_100_000_000 })).toBe("4.1 GB limit");
   expect(shownValue({ kind: "docker" })).toBe("Docker volume");

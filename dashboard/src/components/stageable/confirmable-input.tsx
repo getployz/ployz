@@ -24,6 +24,7 @@ export type ConfirmableInputProps = Omit<
   suffix?: React.ReactNode
   error?: React.ReactNode
   multiline?: boolean
+  startAddon?: React.ReactNode
   endAddon?: React.ReactNode
   renderInput?: (
     props: Omit<React.ComponentProps<typeof InputGroupInput>, "value" | "onChange">,
@@ -41,6 +42,7 @@ function ConfirmableInput({
   error,
   className,
   multiline = false,
+  startAddon,
   endAddon,
   renderInput,
   ...props
@@ -97,6 +99,7 @@ function ConfirmableInput({
   return (
     <div className={cn("flex flex-col gap-1", className)}>
       <InputGroup data-changed={isChanged || undefined}>
+        {startAddon ? <InputGroupAddon>{startAddon}</InputGroupAddon> : null}
         {multiline ? (
           <InputGroupTextarea
             {...props}

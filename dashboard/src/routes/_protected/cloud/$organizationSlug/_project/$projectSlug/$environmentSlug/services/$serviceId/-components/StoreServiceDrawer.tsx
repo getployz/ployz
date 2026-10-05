@@ -32,6 +32,7 @@ import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../
 import { RegistryCredentialsField } from "./ServiceRegistryCredentialsSection";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 import { ServiceCommandField } from "./ServiceCommandField";
+import { HealthcheckField } from "./HealthcheckField";
 import { StoreBranchField, StoreDockerfileField, StorePreferredBuilderField, useRepositoryRef } from "./StoreGitFields";
 import { RowWarning, SettingsSection, SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
@@ -168,7 +169,8 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
       <FieldGroup>
         {field("startCommand")}
         {field("preDeployCommand")}
-        <StoreHealthcheckField state={state} />
+        <HealthcheckField value={state.rows.get("healthcheck")?.value} change={state.changes.get("healthcheck")}
+          set={(value) => state.set("healthcheck", value)} />
         {field("restartPolicy")}
         {(restartPolicy?.value ?? restartPolicy?.default) === "on-failure" ? field("maxRetries") : null}
       </FieldGroup>
@@ -359,45 +361,9 @@ function StoreSettingField({ state, name, warning }: { state: StoreService; name
   );
 }
 
-const Healthcheck = Schema.Struct({ path: Schema.String, timeoutSeconds: Schema.Number });
 /** The first staged change among `names`, as the drawer keys them. */
 const changeOf = (changes: Map<string, ServiceSettingChange>, ...names: string[]) =>
   names.map((name) => changes.get(name)).find((change) => change !== undefined);
-
-/**
- * The HTTP check a new replica passes before it takes traffic: a path (a button until set; blank turns it off) and,
- * once on, how long it may take.
- */
-function StoreHealthcheckField({ state }: { state: StoreService }) {
-  const row = state.rows.get("healthcheck");
-  if (!row) return null;
-  const setting = serviceSetting("healthcheck");
-  const { path: pathSchema, timeoutSeconds } = setting.properties;
-  const on = Schema.is(Healthcheck)(row.value) ? row.value : null;
-  // One change, whichever part of it changed: it is one Setting.
-  const change = state.changes.get("healthcheck");
-  const shown = (value: JsonValue | undefined) => Schema.is(Healthcheck)(value) ? `${value.path}, ${value.timeoutSeconds}s`
-    : value === null || value === undefined ? "off" : settingText(value);
-  return (
-    <>
-      <ServiceCommandField label={setting.title} addLabel="Healthcheck path" description={undefined} placeholder="Off"
-        value={on?.path ?? null} {...changedProps(change, shown)}
-        validate={(raw) => settingError({ ...pathSchema, title: "path", description: "", type: "string" }, raw)
-          ?? (raw.startsWith("/") ? null : "Start the path with /.")}
-        onCommit={(next) => state.set("healthcheck", next)} />
-      {on ? (
-        <Field>
-          <FieldLabel>Healthcheck timeout</FieldLabel>
-          <FieldDescription>How long a new replica may take to pass it.</FieldDescription>
-          <ServiceSettingInput ariaLabel="Healthcheck timeout" inputMode="numeric" suffix="seconds" placeholder={String(timeoutSeconds.default)}
-            value={String(on.timeoutSeconds)} {...changedProps(change, shown)}
-            validate={(raw) => settingError({ ...timeoutSeconds, title: "timeout", description: "", type: "integer" }, raw)}
-            onCommit={(raw) => state.set("healthcheck", { path: on.path, timeoutSeconds: raw === "" ? timeoutSeconds.default : Number(raw) })} />
-        </Field>
-      ) : null}
-    </>
-  );
-}
 
 /** A Git Service's Dockerfile, with the repository's Dockerfiles as suggestions. */
 function StoreDockerfile({ state }: { state: StoreService }) {
