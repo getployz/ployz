@@ -230,13 +230,18 @@ pub(crate) fn put_file(
     let mut environment = scope::lock(tx, who, &put.environment)?;
     let names = environment.names();
     let content = parts(&put.file, &put.content, &names)?;
+    let config = environment.config_mut(&put.config)?;
+    // A rewrite keeps the mode and owner it doesn't name.
+    let old = config.files.get(&put.file);
     let file = SavedConfigFile {
         content,
-        mode: put.mode.unwrap_or(FileMode::READ_ONLY),
-        uid: put.uid.unwrap_or(0),
-        gid: put.gid.unwrap_or(0),
+        mode: put
+            .mode
+            .or(old.map(|old| old.mode))
+            .unwrap_or(FileMode::READ_ONLY),
+        uid: put.uid.or(old.map(|old| old.uid)).unwrap_or(0),
+        gid: put.gid.or(old.map(|old| old.gid)).unwrap_or(0),
     };
-    let config = environment.config_mut(&put.config)?;
     let changed = config.files.get(&put.file) != Some(&file);
     if changed {
         config.files.insert(put.file.clone(), file);
@@ -561,6 +566,14 @@ fn parts(
             json!({ "file": file }),
         ));
     }
+    if template.malformed {
+        return Err(error::invalid(
+            format!(
+                "{file}: a `${{{{ }}}}` is not a reference: write `${{{{ service.KEY }}}}`, or `$${{{{` for a literal `${{{{`"
+            ),
+            json!({ "file": file }),
+        ));
+    }
     if let Some(name) = template.unresolved.first() {
         return Err(error::invalid(
             format!("{file}: `${{{{ {name}.KEY }}}}` names no Service in this Environment"),
@@ -584,10 +597,6 @@ fn parts(
     Ok(template.parts)
 }
 
-/// `parts` as display text, references by Service name.
-pub(crate) fn display_text(parts: &[ValuePart], names: &BTreeMap<String, String>) -> String {
-    render_variable_parts(parts, names)
-}
 
 /// A Config file's row cell as reads show it: its text rendered, never its parts.
 pub(crate) fn shown_file(file: Value, names: &BTreeMap<String, String>) -> Value {
@@ -596,7 +605,7 @@ pub(crate) fn shown_file(file: Value, names: &BTreeMap<String, String>) -> Value
     };
     let parts: Vec<ValuePart> = serde_json::from_value(parts.clone()).unwrap_or_default();
     let mut shown = file;
-    shown["content"] = Value::String(display_text(&parts, names));
+    shown["content"] = Value::String(render_variable_parts(&parts, names));
     shown
 }
 
@@ -639,7 +648,7 @@ pub(crate) fn file_summary(
     references.dedup();
     ConfigFileSummary {
         name: name.clone(),
-        bytes: display_text(&file.content, names).len(),
+        bytes: render_variable_parts(&file.content, names).len(),
         mode: file.mode,
         uid: file.uid,
         gid: file.gid,

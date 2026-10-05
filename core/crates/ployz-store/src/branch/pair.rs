@@ -75,6 +75,8 @@ impl Move {
             .retain(|service| !copied.contains(&service.lineage_id));
         base.volumes
             .retain(|volume| !copied.contains(&volume.resource_lineage_id));
+        base.configs
+            .retain(|config| !copied.contains(&config.resource_lineage_id));
         let (from_marks, into_marks) = marks(tx, &owner.summary.id, &branch.summary.id)?;
         Ok(Self {
             source: owner.summary.id.clone(),
@@ -909,6 +911,16 @@ pub(crate) fn land(
                     .map_err(|_| error::corrupt("Volume name"))?,
             ));
             scope::introduce(tx, who, &id, scope::Node::Volume(volume))?;
+        }
+    }
+    for config in &branch.working.configs {
+        if !before
+            .configs
+            .iter()
+            .any(|old| old.resource_id == config.resource_id)
+        {
+            staged.push(NodeName::Config(config.name.clone()));
+            scope::introduce(tx, who, &id, scope::Node::Config(config))?;
         }
     }
     staged.sort();

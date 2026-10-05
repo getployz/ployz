@@ -216,7 +216,7 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
                     .working
                     .services
                     .iter()
-                    .filter(|service| references(service, lineage))
+                    .filter(|service| references(&branch.working, service, lineage))
                     .filter_map(|service| ServiceName::parse(service.slug.as_str()).ok())
                     .collect(),
             }
@@ -308,44 +308,69 @@ pub(super) fn live_producers(
     Ok(producers)
 }
 
-/// Whether any of `service`'s variables reads the Service of `lineage`.
-pub(super) fn references(service: &SavedServiceIntent, lineage: &str) -> bool {
-    service.variables.iter().any(|variable| {
-        matches!(&variable.value, ployz_core::config::SavedVariableValue::Template { parts }
-            if parts.iter().any(|part| matches!(part, ValuePart::Ref {
-                owner: ValuePartOwner::Service { lineage_id }, ..
-            } if lineage_id == lineage)))
-    })
+/// The template parts `service` reads: its variables and the files of the
+/// Configs it mounts.
+fn parts_read<'a>(
+    intent: &'a SavedEnvironmentIntent,
+    service: &'a SavedServiceIntent,
+) -> impl Iterator<Item = &'a ValuePart> {
+    let variables = service.variables.iter().flat_map(|variable| match &variable.value {
+        ployz_core::config::SavedVariableValue::Template { parts } => parts.as_slice(),
+        _ => &[],
+    });
+    let files = service.config_attachments.iter().flat_map(move |attachment| {
+        intent
+            .configs
+            .iter()
+            .filter(move |config| config.resource_id == attachment.config_resource_id)
+            .flat_map(|config| config.files.values())
+            .flat_map(|file| &file.content)
+    });
+    variables.chain(files)
 }
 
-/// Each Service lineage `intent`'s variables reference but it doesn't own, with the
-/// keys read from it: the nodes it uses live.
+/// Whether `service` reads the Service of `lineage`, from a variable or a file
+/// of a Config it mounts.
+pub(super) fn references(
+    intent: &SavedEnvironmentIntent,
+    service: &SavedServiceIntent,
+    lineage: &str,
+) -> bool {
+    parts_read(intent, service).any(|part| matches!(part, ValuePart::Ref {
+        owner: ValuePartOwner::Service { lineage_id }, ..
+    } if lineage_id == lineage))
+}
+
+/// Each Service lineage `intent`'s variables and Config files reference but it
+/// doesn't own, with the keys read from it: the nodes it uses live.
 pub(crate) fn used_live(intent: &SavedEnvironmentIntent) -> BTreeMap<String, BTreeSet<String>> {
     let owned: BTreeSet<&str> = intent
         .services
         .iter()
         .map(|service| service.lineage_id.as_str())
         .collect();
-    let mut uses: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for variable in intent
-        .services
+    let variables = intent.services.iter().flat_map(|service| &service.variables).flat_map(
+        |variable| match &variable.value {
+            ployz_core::config::SavedVariableValue::Template { parts } => parts.as_slice(),
+            _ => &[],
+        },
+    );
+    let files = intent
+        .configs
         .iter()
-        .flat_map(|service| &service.variables)
-    {
-        let ployz_core::config::SavedVariableValue::Template { parts } = &variable.value else {
-            continue;
-        };
-        for part in parts {
-            if let ValuePart::Ref {
-                owner: ValuePartOwner::Service { lineage_id },
-                key,
-            } = part
-                && !owned.contains(lineage_id.as_str())
-            {
-                uses.entry(lineage_id.clone())
-                    .or_default()
-                    .insert(key.clone());
-            }
+        .flat_map(|config| config.files.values())
+        .flat_map(|file| &file.content);
+    let mut uses: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for part in variables.chain(files) {
+        if let ValuePart::Ref {
+            owner: ValuePartOwner::Service { lineage_id },
+            key,
+        } = part
+            && !owned.contains(lineage_id.as_str())
+        {
+            uses.entry(lineage_id.clone())
+                .or_default()
+                .insert(key.clone());
         }
     }
     uses

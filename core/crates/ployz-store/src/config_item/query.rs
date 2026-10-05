@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::Actor;
-use crate::config_item::{ConfigMount, ConfigSummary, display_text, summary};
+use crate::config_item::{ConfigMount, ConfigSummary, summary};
 use crate::error;
 use crate::id::ConfigId;
 use crate::review;
@@ -116,7 +116,7 @@ pub(crate) fn config(
         contents: node
             .files
             .iter()
-            .map(|(name, file)| (name.clone(), display_text(&file.content, &names)))
+            .map(|(name, file)| (name.clone(), ployz_core::config::render_variable_parts(&file.content, &names)))
             .collect(),
         config: listing,
     })

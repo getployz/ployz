@@ -247,7 +247,7 @@ pub(crate) fn copy_node(
                 json!({ "node": copy.node }),
             )
         })?;
-    // An Own Copy is an introduction: neither it nor the Volumes it mounts that the
+    // An Own Copy is an introduction: neither it nor the Volumes and Configs it mounts that the
     // Branch lacks are in the base or provided live.
     let mut copied = BTreeSet::from([lineage]);
     if let Some(service) = owner
@@ -266,6 +266,18 @@ pub(crate) fn copy_node(
                 && !holds(&branch.working, &volume.resource_lineage_id)
             {
                 copied.insert(volume.resource_lineage_id.clone());
+            }
+        }
+        for mount in &service.config_attachments {
+            let config = owner
+                .applied
+                .configs
+                .iter()
+                .find(|config| config.resource_id == mount.config_resource_id);
+            if let Some(config) = config
+                && !holds(&branch.working, &config.resource_lineage_id)
+            {
+                copied.insert(config.resource_lineage_id.clone());
             }
         }
     }
