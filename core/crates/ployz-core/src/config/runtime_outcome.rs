@@ -117,6 +117,9 @@ fn redact_operation(operation: &mut DeployOperation) {
         | DeployOperation::RemoveVolume { .. } => return,
     };
     spec.container.environment.clear();
+    if let Some(hook) = &mut spec.pre_deploy {
+        hook.environment.clear();
+    }
     spec.mount_graph.redact_config_content();
 }
 

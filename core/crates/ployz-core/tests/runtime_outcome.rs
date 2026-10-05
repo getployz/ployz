@@ -6,6 +6,7 @@
 )]
 
 use ployz_core::config::{parse_runtime_preview, project_runtime_outcome};
+use ployz_core::{ConfigSpec, DeployOperation, DeployPreview, ResolvedServiceSpec};
 use serde_json::{Value, json};
 
 fn operation(id: &str) -> Value {
@@ -86,4 +87,80 @@ fn current_outcome_confirms_only_services_with_all_operations_completed() {
         json!({"version":2,"outcome":{"type":"success","completed":[]}}),
     );
     assert!(invalid.is_err());
+}
+
+fn run_container(spec: &Value) -> Value {
+    json!({"type":"run_container", "machine_id":"a".repeat(32), "spec":spec, "skip_health_monitor":false})
+}
+
+fn single_operation_preview(operation: &Value) -> Value {
+    json!({
+        "namespace":"production",
+        "operations":[{"index":0,"machine_id":"a".repeat(32),"service_name":"api","operation":operation,"status":{"type":"pending"}}],
+        "warnings":[]
+    })
+}
+
+fn previewed_spec(preview: &DeployPreview) -> &ResolvedServiceSpec {
+    let DeployOperation::RunContainer { spec, .. } = &preview.operations[0].operation else {
+        panic!("preview keeps the run_container operation");
+    };
+    spec
+}
+
+fn service_spec() -> Value {
+    json!({
+        "service_id":"c".repeat(32),
+        "name":"api",
+        "mode":{"mode":"replicated","replicas":1},
+        "container":{"image":"api:1","pull_policy":"missing","environment":{"TOKEN":"service-secret"}}
+    })
+}
+
+#[test]
+fn parse_runtime_preview_empties_config_content_and_keeps_mounts() {
+    let mut spec = service_spec();
+    spec["container"]["config_mounts"] =
+        json!([{"config_name":"settings","target":"/etc/settings.conf"}]);
+    spec["configs"] = json!([{"name":"settings","content":b"token=config-secret".to_vec()}]);
+    let submitted: ResolvedServiceSpec = serde_json::from_value(spec.clone()).unwrap();
+    let operation = run_container(&spec);
+
+    let preview = parse_runtime_preview(single_operation_preview(&operation)).unwrap();
+
+    let redacted = previewed_spec(&preview);
+    assert_eq!(
+        redacted.configs(),
+        [ConfigSpec {
+            name: "settings".into(),
+            content: Vec::new(),
+        }]
+    );
+    assert_eq!(redacted.config_mounts(), submitted.config_mounts());
+    assert!(redacted.container.environment.is_empty());
+    let projection = project_runtime_outcome(
+        &preview,
+        json!({"version":1,"outcome":{"type":"success","completed":[operation]}}),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(projection).unwrap()["confirmedServices"],
+        json!(["api"])
+    );
+}
+
+#[test]
+fn parse_runtime_preview_redacts_hook_environment() {
+    let mut spec = service_spec();
+    spec["pre_deploy"] =
+        json!({"command":["migrate"],"environment":{"DATABASE_URL":"hook-secret"}});
+
+    let preview = parse_runtime_preview(single_operation_preview(&run_container(&spec))).unwrap();
+
+    let hook = previewed_spec(&preview).pre_deploy.as_ref().unwrap();
+    assert!(hook.environment.is_empty());
+    assert_eq!(
+        serde_json::to_value(&hook.command).unwrap(),
+        json!(["migrate"])
+    );
 }
