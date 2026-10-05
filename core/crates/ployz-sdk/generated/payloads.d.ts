@@ -1489,7 +1489,7 @@ repository: RepositoryName, installation_id: number, };
 
 export type GithubTimestamp = string;
 
-export type HealthFailure = { "type": "cancelled" } | { "type": "timed_out" } | { "type": "runtime", observation: ContainerRuntimeObservation, };
+export type HealthFailure = { "type": "cancelled" } | { "type": "timed_out", last_check?: LastHealthCheck, } | { "type": "runtime", observation: ContainerRuntimeObservation, last_check?: LastHealthCheck, };
 
 export type HealthObservation = "not_configured" | "starting" | "healthy" | "unhealthy" | "failing" | "stopping" | string;
 
@@ -1524,6 +1524,8 @@ export type HookFailure = { "type": "cancelled", stop_error: RpcError | null, } 
 export type HostBind = { "kind": "all" } | { "kind": "address", address: string, } | { "kind": "prefix", prefix: string, };
 
 export type Hostname = string;
+
+export type HttpCheckError = "connection_refused" | "timed_out" | "other";
 
 export type HttpHealthcheck = { path: string, port: number, timeout_seconds: number, };
 
@@ -1601,6 +1603,8 @@ environment: EnvironmentRef,
 kept: boolean, };
 
 export type Landed = "staged" | "hint";
+
+export type LastHealthCheck = { "type": "exited", code: number, output: string, } | { "type": "http_status", status: number, } | { "type": "http_unreachable", error: HttpCheckError, };
 
 export type LiveLineageUse = { lineageId: string, keys: Array<string>, };
 

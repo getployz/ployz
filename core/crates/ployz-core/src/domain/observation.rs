@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::BTreeMap,
+    fmt::{self, Write as _},
+};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::Value;
@@ -23,6 +26,70 @@ crate::value::open_string_enum!(HealthObservation, Unrecognized {
     // Withdrawn from the Ingress Proxies ahead of a stop; never routed.
     Stopping => "stopping",
 });
+
+/// The newest healthcheck result a Machine saw for a Container. Inspection
+/// reports it fresh and it is never replicated; deploy failure reasons, which
+/// the whole Organization reads, quote it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LastHealthCheck {
+    Exited { code: i64, output: String },
+    HttpStatus { status: u16 },
+    HttpUnreachable { error: HttpCheckError },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpCheckError {
+    ConnectionRefused,
+    TimedOut,
+    Other,
+}
+
+const LAST_CHECK_OUTPUT_CHARS: usize = 120;
+
+impl LastHealthCheck {
+    /// Keeps only the first non-blank line of `output`, cut to a length a reason can quote.
+    #[must_use]
+    pub fn exited(code: i64, output: &str) -> Self {
+        let line = output
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or_default();
+        let mut output: String = line.chars().take(LAST_CHECK_OUTPUT_CHARS).collect();
+        if line.chars().nth(LAST_CHECK_OUTPUT_CHARS).is_some() {
+            output.push('…');
+        }
+        Self::Exited { code, output }
+    }
+}
+
+impl fmt::Display for LastHealthCheck {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Exited { code, output } if output.is_empty() => {
+                write!(f, "last check exited {code}")
+            }
+            Self::Exited { code, output } => {
+                write!(f, "last check exited {code}: ")?;
+                output.chars().try_for_each(|c| {
+                    if c.is_control() {
+                        write!(f, "{}", c.escape_default())
+                    } else {
+                        f.write_char(c)
+                    }
+                })
+            }
+            Self::HttpStatus { status } => write!(f, "last check: HTTP {status}"),
+            Self::HttpUnreachable { error } => f.write_str(match error {
+                HttpCheckError::ConnectionRefused => "last check: connection refused",
+                HttpCheckError::TimedOut => "last check: timed out",
+                HttpCheckError::Other => "last check: request failed",
+            }),
+        }
+    }
+}
 
 /// Docker state as observed, including the untouched value of a future state.
 ///

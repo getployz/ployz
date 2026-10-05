@@ -3,9 +3,10 @@
 use std::time::Duration;
 
 use ployz_core::{
-    ContainerId, ContainerObservation, ContainerRuntimeObservation, DependencyHealthFailure,
-    ExecutionError, HealthFailure, HealthObservation, HealthcheckSpec, MachineId, OperationPhase,
-    QualifiedService, ResolvedServiceSpec, healthcheck_deadline,
+    ContainerDetails, ContainerId, ContainerObservation, ContainerRuntimeObservation,
+    DependencyHealthFailure, ExecutionError, HealthFailure, HealthObservation, HealthcheckSpec,
+    LastHealthCheck, MachineId, OperationPhase, QualifiedService, ResolvedServiceSpec,
+    healthcheck_deadline,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -81,6 +82,7 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
             });
             let deadline = match classify_health(
                 &observed.runtime,
+                None,
                 now,
                 if matches!(
                     observed.resolved_spec.container.healthcheck,
@@ -202,7 +204,11 @@ pub(super) async fn monitor_container<C: MachineOperations>(
         if cancellation.is_cancelled() {
             return Err(health_error(container_id, HealthFailure::Cancelled));
         }
-        let observed = inspect(client, machine_id, container_id).await?;
+        let ContainerDetails {
+            container: observed,
+            last_check,
+            ..
+        } = inspect(client, machine_id, container_id).await?;
         let now = Instant::now();
         let health_deadline =
             health_deadline_for(spec.container.healthcheck.as_ref(), &observed, started);
@@ -226,6 +232,7 @@ pub(super) async fn monitor_container<C: MachineOperations>(
         );
         let wake_deadline = match classify_health(
             &observed.runtime,
+            last_check.as_ref(),
             now,
             if matches!(spec.container.healthcheck, Some(HealthcheckSpec::Http(_))) {
                 health_deadline.unwrap_or(monitor_deadline)
@@ -251,6 +258,7 @@ pub(super) async fn monitor_container<C: MachineOperations>(
 
 fn classify_health(
     runtime: &ContainerRuntimeObservation,
+    last_check: Option<&LastHealthCheck>,
     now: Instant,
     monitor_deadline: Instant,
     health_deadline: Option<Instant>,
@@ -274,10 +282,13 @@ fn classify_health(
             let Some(health_deadline) = health_deadline else {
                 return HealthPoll::Failed(HealthFailure::Runtime {
                     observation: runtime.clone(),
+                    last_check: last_check.cloned(),
                 });
             };
             if now >= health_deadline {
-                HealthPoll::Failed(HealthFailure::TimedOut)
+                HealthPoll::Failed(HealthFailure::TimedOut {
+                    last_check: last_check.cloned(),
+                })
             } else {
                 HealthPoll::PendingUntil(health_deadline)
             }
@@ -289,6 +300,7 @@ fn classify_health(
         {
             HealthPoll::Failed(HealthFailure::Runtime {
                 observation: runtime.clone(),
+                last_check: last_check.cloned(),
             })
         }
         ContainerRuntimeObservation::Created
@@ -304,6 +316,7 @@ fn classify_health(
             if now >= monitor_deadline {
                 HealthPoll::Failed(HealthFailure::Runtime {
                     observation: runtime.clone(),
+                    last_check: last_check.cloned(),
                 })
             } else {
                 HealthPoll::PendingUntil(monitor_deadline)

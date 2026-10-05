@@ -1,7 +1,7 @@
 use std::{future::Future, time::Duration};
 
 use ployz_core::{
-    ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
+    ContainerCreated, ContainerDetails, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, CreateContainerRequest, DeployEvent, DockerVolumeId,
     ExecutionError, FailedOperation, HookFailure, InspectContainerRequest, MachineAction,
     MachineId, MachineTarget, MembershipObservation, Namespace, OperationPhase, QualifiedService,
@@ -103,7 +103,7 @@ pub(super) trait MachineOperations {
         &self,
         machine_id: &MachineId,
         container_id: &ContainerId,
-    ) -> Result<ContainerObservation, RpcError>;
+    ) -> Result<ContainerDetails, RpcError>;
     async fn stop_container(
         &self,
         machine_id: &MachineId,
@@ -271,7 +271,7 @@ impl MachineOperations for Client {
         &self,
         machine_id: &MachineId,
         container_id: &ContainerId,
-    ) -> Result<ContainerObservation, RpcError> {
+    ) -> Result<ContainerDetails, RpcError> {
         self.invoke::<op::InspectContainer>(
             InspectContainerRequest {
                 container_id: *container_id,
@@ -280,7 +280,6 @@ impl MachineOperations for Client {
             Some(TARGET_RPC_TIMEOUT),
         )
         .await
-        .map(|details| details.container)
     }
 
     async fn stop_container(
@@ -420,7 +419,7 @@ impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
         &self,
         machine_id: &MachineId,
         container_id: &ContainerId,
-    ) -> Result<ContainerObservation, RpcError> {
+    ) -> Result<ContainerDetails, RpcError> {
         wait_out_restart(self.cancellation, || {
             self.inner.inspect_container(machine_id, container_id)
         })
@@ -945,7 +944,7 @@ async fn replace_container<C: MachineOperations>(
             .inspect_container(&operation.machine_id, &operation.old_container_id)
             .await
         {
-            Ok(old) => Some(old),
+            Ok(old) => Some(old.container),
             Err(error) if error.code == RpcErrorCode::NotFound => None,
             Err(error) => {
                 return Err(machine_error(MachineAction::InspectContainer, error).into());
@@ -1181,7 +1180,7 @@ async fn run_hook<C: MachineOperations>(
                     HookInterruption::TimedOut,
                 ).await);
             }
-            observed = inspect(client, machine_id, &container_id) => observed?,
+            observed = inspect(client, machine_id, &container_id) => observed?.container,
         };
         match observed.runtime {
             ContainerRuntimeObservation::Exited { code: 0 } => return Ok(()),
@@ -1247,7 +1246,7 @@ pub(super) async fn inspect<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
     container_id: &ContainerId,
-) -> Result<ContainerObservation, ExecutionError> {
+) -> Result<ContainerDetails, ExecutionError> {
     client
         .inspect_container(machine_id, container_id)
         .await

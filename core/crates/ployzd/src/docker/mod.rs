@@ -36,8 +36,9 @@ use ployz_core::{
     BridgeEndpointCapacity, ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, DiskSpace, DockerVolumeId, DockerVolumeName,
     HEALTHCHECK_DISABLE_SENTINEL, HealthObservation, HealthcheckCommand, HealthcheckSpec,
-    ImageSummary, MachineId, MachineImages, MachineTelemetry, Namespace, QualifiedService,
-    RpcError, RpcErrorCode, ServiceId, ServiceName, ValueError,
+    ImageSummary, LastHealthCheck, MachineId, MachineImages, MachineTelemetry, Namespace,
+    QualifiedService, RpcError, RpcErrorCode, ServiceId, ServiceName, ValueError,
+    healthcheck_deadline,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -309,23 +310,37 @@ impl ContainerRuntime {
         let address = container_address(&inspected);
         let mut runtime = runtime_observation(inspected.state.as_ref());
         let mut effective_check = effective_healthcheck(inspected.config.as_ref());
+        let mut last_check = last_docker_check(inspected.state.as_ref());
         if kind == ContainerKind::ServiceContainer
             && let Some(HealthcheckSpec::Http(check)) = &resolved_spec.container.healthcheck
         {
             effective_check = Some(HealthcheckSpec::Http(check.clone()));
             if matches!(runtime, ContainerRuntimeObservation::Running { .. }) {
-                runtime = ContainerRuntimeObservation::Running {
-                    health: http_health_probe(address, check).await,
-                };
+                let (health, probed) = http_health_probe(address, check).await;
+                runtime = ContainerRuntimeObservation::Running { health };
+                last_check = probed;
             }
         }
         if let ContainerRuntimeObservation::Running { health } = runtime {
+            let deadline = match &resolved_spec.container.healthcheck {
+                Some(spec) => spec.deadline(),
+                None => effective_check
+                    .as_ref()
+                    .and_then(HealthcheckSpec::as_configured)
+                    .map(|check| healthcheck_deadline(Some(check))),
+            };
             runtime = ContainerRuntimeObservation::Running {
                 health: self
                     .checks
                     .lock()
                     .expect("check records are never poisoned")
-                    .settle(container_id, started_at(inspected.state.as_ref()), health),
+                    .settle(
+                        container_id,
+                        started_at(inspected.state.as_ref()),
+                        deadline,
+                        chrono::Utc::now(),
+                        health,
+                    ),
             };
         }
         let runtime = withdrawn(runtime, self.stopping.borrow().contains(container_id));
@@ -350,6 +365,7 @@ impl ContainerRuntime {
             container,
             environment,
             image_id: inspected.image,
+            last_check,
         })
     }
 }
@@ -602,6 +618,28 @@ struct InspectState {
 #[serde(rename_all = "PascalCase")]
 struct InspectHealth {
     status: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct InspectHealthLog {
+    #[serde(default)]
+    start: String,
+    exit_code: i64,
+    #[serde(default)]
+    output: String,
+}
+
+fn last_docker_check(state: Option<&serde_json::Value>) -> Option<LastHealthCheck> {
+    let newest = state?.get("Health")?.get("Log")?.as_array()?.last()?;
+    let newest = InspectHealthLog::deserialize(newest).ok()?;
+    let checked = chrono::DateTime::parse_from_rfc3339(&newest.start).ok();
+    if let (Some(checked), Some(started)) = (checked, started_at(state))
+        && checked < started
+    {
+        return None;
+    }
+    Some(LastHealthCheck::exited(newest.exit_code, &newest.output))
 }
 
 fn runtime_observation(state: Option<&serde_json::Value>) -> ContainerRuntimeObservation {
@@ -1705,6 +1743,56 @@ mod tests {
             ContainerRuntimeObservation::Unknown { raw }
                 if raw.get("Health") == Some(&json!("future-health"))
         ));
+    }
+
+    #[test]
+    fn the_last_docker_check_is_the_newest_log_entry() {
+        let state = |health: serde_json::Value| json!({ "Status": "running", "ExitCode": 0, "Health": health });
+        let entry = |exit_code: i64, output: &str| {
+            json!({
+                "Start": "2026-10-05T10:00:00Z",
+                "End": "2026-10-05T10:00:01Z",
+                "ExitCode": exit_code,
+                "Output": output,
+            })
+        };
+        assert_eq!(
+            last_docker_check(Some(&state(json!({
+                "Status": "unhealthy",
+                "FailingStreak": 2,
+                "Log": [entry(0, "accepting connections\n"), entry(127, "sh: pg_isready: not found\nmore")],
+            })))),
+            Some(LastHealthCheck::Exited {
+                code: 127,
+                output: "sh: pg_isready: not found".into(),
+            })
+        );
+        for health in [
+            json!({ "Status": "starting", "Log": [] }),
+            json!({ "Status": "starting", "Log": null }),
+            json!({ "Status": "starting" }),
+        ] {
+            assert_eq!(last_docker_check(Some(&state(health))), None);
+        }
+        assert_eq!(
+            last_docker_check(Some(&json!({ "Status": "running" }))),
+            None
+        );
+        assert_eq!(
+            last_docker_check(Some(&state(
+                json!({ "Log": [{ "Output": "no exit code" }] })
+            ))),
+            None
+        );
+        assert_eq!(last_docker_check(None), None);
+        assert_eq!(
+            last_docker_check(Some(&json!({
+                "Status": "running",
+                "StartedAt": "2026-10-05T11:00:00Z",
+                "Health": { "Status": "starting", "Log": [entry(1, "from the previous start")] },
+            }))),
+            None
+        );
     }
 
     #[test]

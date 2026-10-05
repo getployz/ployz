@@ -2,7 +2,8 @@ use std::{collections::VecDeque, sync::Mutex};
 
 use ployz_core::{
     ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId, DockerVolumeName,
-    HealthFailure, HealthObservation, MembershipObservation, Namespace, RpcErrorCode, ServiceName,
+    HealthFailure, HealthObservation, LastHealthCheck, MembershipObservation, Namespace,
+    RpcErrorCode, ServiceName,
 };
 
 use crate::deploy::{DeployOutcome, FailedOperation};
@@ -61,6 +62,7 @@ enum Reply {
     Observed(
         ContainerRuntimeObservation,
         Option<ployz_core::HealthcheckSpec>,
+        Option<LastHealthCheck>,
     ),
     Pending,
     Error(RpcError),
@@ -135,7 +137,7 @@ impl MachineOperations for Scripted {
             Reply::Ok
             | Reply::Created(_)
             | Reply::CreatedLater(_)
-            | Reply::Observed(_, _)
+            | Reply::Observed(..)
             | Reply::Pending => {
                 panic!("scripted list requires Listed or Error")
             }
@@ -165,7 +167,7 @@ impl MachineOperations for Scripted {
             }
             Reply::Error(error) => Err(error),
             Reply::Pending => std::future::pending().await,
-            Reply::Ok | Reply::Listed(_) | Reply::Observed(_, _) => {
+            Reply::Ok | Reply::Listed(_) | Reply::Observed(..) => {
                 panic!("scripted create requires Created or Error")
             }
         }
@@ -183,14 +185,19 @@ impl MachineOperations for Scripted {
         &self,
         machine_id: &MachineId,
         container_id: &ContainerId,
-    ) -> Result<ContainerObservation, RpcError> {
+    ) -> Result<ContainerDetails, RpcError> {
         match self.next(Call::Inspect(*machine_id, *container_id)) {
-            Reply::Observed(runtime, healthcheck) => {
-                let mut observation = observation(machine_id, container_id, runtime);
-                observation
+            Reply::Observed(runtime, healthcheck, last_check) => {
+                let mut container = observation(machine_id, container_id, runtime);
+                container
                     .try_update(|parts| parts.effective_healthcheck = healthcheck)
                     .unwrap();
-                Ok(observation)
+                Ok(ContainerDetails {
+                    container,
+                    environment: None,
+                    image_id: None,
+                    last_check,
+                })
             }
             Reply::Pending => std::future::pending().await,
             Reply::Error(error) => Err(error),
@@ -233,7 +240,7 @@ fn unit(reply: Reply) -> Result<(), RpcError> {
         Reply::Listed(_)
         | Reply::Created(_)
         | Reply::CreatedLater(_)
-        | Reply::Observed(_, _)
+        | Reply::Observed(..)
         | Reply::Pending => {
             panic!("scripted mutation requires Ok or Error")
         }
@@ -445,7 +452,7 @@ fn created_later(call: Call, container_id: &ContainerId) -> Step {
 }
 
 fn observed(call: Call, runtime: ContainerRuntimeObservation) -> Step {
-    Step(call, Reply::Observed(runtime, None))
+    Step(call, Reply::Observed(runtime, None, None))
 }
 
 fn observed_with_healthcheck(
@@ -453,7 +460,7 @@ fn observed_with_healthcheck(
     runtime: ContainerRuntimeObservation,
     healthcheck: ployz_core::HealthcheckSpec,
 ) -> Step {
-    Step(call, Reply::Observed(runtime, Some(healthcheck)))
+    Step(call, Reply::Observed(runtime, Some(healthcheck), None))
 }
 
 fn listed(service: &QualifiedService, containers: Vec<ContainerObservation>) -> Step {

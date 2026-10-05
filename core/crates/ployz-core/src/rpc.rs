@@ -789,6 +789,9 @@ pub struct ContainerDetails {
     /// Local image ID (`sha256:…`) the Container runs; `None` from older daemons.
     #[serde(default)]
     pub image_id: Option<String>,
+    /// The newest healthcheck result; `None` without one, or from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_check: Option<crate::LastHealthCheck>,
 }
 
 /// Complete replicated observation map; `None` means the row is absent.

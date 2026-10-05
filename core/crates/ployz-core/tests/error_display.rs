@@ -2,8 +2,9 @@
 use ployz_core::{
     CodecError, ContainerAction, ContainerId, ContainerKind, ContainerRoleError,
     ContainerRuntimeObservation, ContainerSelector, ContainerSelectorError, DockerVolumeId,
-    DockerVolumeName, ExecutionError, HealthFailure, HealthObservation, HookFailure, MachineAction,
-    MachineId, MachineSelectorError, MachineTarget, RpcError, RpcErrorCode,
+    DockerVolumeName, ExecutionError, HealthFailure, HealthObservation, HookFailure,
+    HttpCheckError, LastHealthCheck, MachineAction, MachineId, MachineSelectorError, MachineTarget,
+    RpcError, RpcErrorCode,
     stream::{ExecRequestFrame, ExecResponseFrame},
 };
 use serde_json::json;
@@ -68,6 +69,7 @@ fn deploy_failures_keep_runtime_exit_and_secondary_stop_causes() {
         container_id,
         failure: HealthFailure::Runtime {
             observation: ContainerRuntimeObservation::Exited { code: 137 },
+            last_check: None,
         },
     }
     .to_string();
@@ -111,7 +113,10 @@ fn deploy_failures_keep_runtime_exit_and_secondary_stop_causes() {
         "exited with code 23"
     );
     assert_eq!(HealthFailure::Cancelled.to_string(), "cancelled");
-    assert_eq!(HealthFailure::TimedOut.to_string(), "timed out");
+    assert_eq!(
+        HealthFailure::TimedOut { last_check: None }.to_string(),
+        "timed out"
+    );
     assert_eq!(
         ContainerRuntimeObservation::Running {
             health: HealthObservation::Unhealthy
@@ -157,6 +162,7 @@ fn unknown_runtime_failure_retains_observed_evidence() {
         observation: ContainerRuntimeObservation::Unknown {
             raw: json!({"state": "future-state\u{009b}[2J", "reason": "waiting\u{007f}"}),
         },
+        last_check: None,
     }
     .to_string();
     assert!(
@@ -214,6 +220,14 @@ fn unconstrained_names_and_health_failures_escape_controls() {
             observation: ContainerRuntimeObservation::Running {
                 health: HealthObservation::Unrecognized(raw.into()),
             },
+            last_check: None,
+        }
+        .to_string(),
+        HealthFailure::TimedOut {
+            last_check: Some(LastHealthCheck::Exited {
+                code: 1,
+                output: raw.into(),
+            }),
         }
         .to_string(),
         HookFailure::TimedOut {
@@ -239,4 +253,105 @@ fn missing_selectors_preserve_argument_boundaries() {
     )
     .to_string();
     assert!(missing.contains(r#""east, west", "north""#), "{missing}");
+}
+
+#[test]
+fn health_failures_quote_the_last_check() {
+    let unhealthy = ContainerRuntimeObservation::Running {
+        health: HealthObservation::Unhealthy,
+    };
+    for (failure, expected) in [
+        (
+            HealthFailure::TimedOut {
+                last_check: Some(LastHealthCheck::exited(127, "sh: pg_isready: not found\n")),
+            },
+            "timed out; last check exited 127: sh: pg_isready: not found",
+        ),
+        (
+            HealthFailure::TimedOut {
+                last_check: Some(LastHealthCheck::exited(1, "")),
+            },
+            "timed out; last check exited 1",
+        ),
+        (
+            HealthFailure::Runtime {
+                observation: unhealthy.clone(),
+                last_check: Some(LastHealthCheck::HttpStatus { status: 503 }),
+            },
+            "running (health: unhealthy); last check: HTTP 503",
+        ),
+        (
+            HealthFailure::Runtime {
+                observation: unhealthy.clone(),
+                last_check: Some(LastHealthCheck::HttpUnreachable {
+                    error: HttpCheckError::ConnectionRefused,
+                }),
+            },
+            "running (health: unhealthy); last check: connection refused",
+        ),
+        (
+            HealthFailure::TimedOut {
+                last_check: Some(LastHealthCheck::HttpUnreachable {
+                    error: HttpCheckError::TimedOut,
+                }),
+            },
+            "timed out; last check: timed out",
+        ),
+        (
+            HealthFailure::TimedOut {
+                last_check: Some(LastHealthCheck::HttpUnreachable {
+                    error: HttpCheckError::Other,
+                }),
+            },
+            "timed out; last check: request failed",
+        ),
+    ] {
+        assert_eq!(failure.to_string(), expected);
+    }
+}
+
+#[test]
+fn a_last_check_keeps_the_first_line_of_output_cut_short() {
+    assert_eq!(
+        LastHealthCheck::exited(1, "\n  first line  \nPASSWORD=hunter2\n"),
+        LastHealthCheck::Exited {
+            code: 1,
+            output: "first line".into(),
+        }
+    );
+    let LastHealthCheck::Exited { output, .. } = LastHealthCheck::exited(1, &"é".repeat(500))
+    else {
+        unreachable!()
+    };
+    assert_eq!(output, format!("{}…", "é".repeat(120)));
+    assert_eq!(
+        LastHealthCheck::exited(1, &"é".repeat(120)),
+        LastHealthCheck::Exited {
+            code: 1,
+            output: "é".repeat(120),
+        }
+    );
+}
+
+#[test]
+fn health_failures_recorded_without_a_last_check_still_decode() {
+    assert_eq!(
+        serde_json::from_value::<HealthFailure>(json!({ "type": "timed_out" })).unwrap(),
+        HealthFailure::TimedOut { last_check: None }
+    );
+    let runtime = json!({
+        "type": "runtime",
+        "observation": { "state": "running", "health": "unhealthy" },
+    });
+    let decoded: HealthFailure = serde_json::from_value(runtime.clone()).unwrap();
+    assert_eq!(
+        decoded,
+        HealthFailure::Runtime {
+            observation: ContainerRuntimeObservation::Running {
+                health: HealthObservation::Unhealthy,
+            },
+            last_check: None,
+        }
+    );
+    assert_eq!(serde_json::to_value(&decoded).unwrap(), runtime);
 }
