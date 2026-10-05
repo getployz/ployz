@@ -71,7 +71,7 @@ scripts/verify/down.sh        # stops vite, Inngest, the worker and the cluster;
 ## Known gaps
 
 - Without `SERVERS`, no Server answers. Service nodes read **Queued · Can't reach servers**, Logs and runtime status stay empty, and Inngest points at a dead port, so anything that sends an Inngest event fails at that call.
-- Hosted DNS always points at a dead port. Creating a hosted domain fails at that call.
+- Hosted DNS is fake (`scripts/verify/hosted-dns.ts`, requests in `.verify/run/hosted-dns.log`). It grants `<org slug>.ployz.test` and signs certificates with a throwaway CA, so generated addresses deploy but resolve nowhere and fail TLS verification.
 - GitHub and Polar are fake. Connecting a repository or completing checkout cannot be verified here; `BILLING=1` only renders the billing UI.
 
 ## Behavior reference
