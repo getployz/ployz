@@ -37,7 +37,7 @@ use ployz_core::{
     ContainerObservation, ContainerRuntimeObservation, DiskSpace, DockerVolumeId, DockerVolumeName,
     HEALTHCHECK_DISABLE_SENTINEL, HealthObservation, HealthcheckCommand, HealthcheckSpec,
     ImageSummary, MachineId, MachineImages, MachineTelemetry, Namespace, QualifiedService,
-    RpcError, RpcErrorCode, ServiceId, ServiceName, ValueError,
+    RpcError, RpcErrorCode, ServiceId, ServiceName, ValueError, healthcheck_deadline,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -320,12 +320,25 @@ impl ContainerRuntime {
             }
         }
         if let ContainerRuntimeObservation::Running { health } = runtime {
+            let deadline = match &resolved_spec.container.healthcheck {
+                Some(spec) => spec.deadline(),
+                None => effective_check
+                    .as_ref()
+                    .and_then(HealthcheckSpec::as_configured)
+                    .map(|check| healthcheck_deadline(Some(check))),
+            };
             runtime = ContainerRuntimeObservation::Running {
                 health: self
                     .checks
                     .lock()
                     .expect("check records are never poisoned")
-                    .settle(container_id, started_at(inspected.state.as_ref()), health),
+                    .settle(
+                        container_id,
+                        started_at(inspected.state.as_ref()),
+                        deadline,
+                        chrono::Utc::now(),
+                        health,
+                    ),
             };
         }
         let runtime = withdrawn(runtime, self.stopping.borrow().contains(container_id));
