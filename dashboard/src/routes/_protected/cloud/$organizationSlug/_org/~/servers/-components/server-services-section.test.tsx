@@ -3,7 +3,7 @@ import type { DrainReport, MachineRef, ServiceDrain } from "@ployz/sdk";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LatestDrain } from "#/modules/machines/server-drain";
-import { drainView, removeHint, type DrainView } from "#/modules/machines/server-drain-view";
+import { drainView, removeHint, type DrainDialogRow, type DrainRow, type DrainView } from "#/modules/machines/server-drain-view";
 import { DrainDialog } from "./drain-dialog";
 import { RemoveServerHint } from "./remove-server-section";
 import { DrainButton, ServerServicesRows } from "./server-services-section";
@@ -31,7 +31,7 @@ const view = (latest: LatestDrain | null, requested: string | null = null) => dr
   serverNames: new Map([[web1.id, web1.name], [web2.id, web2.name]]),
   requested,
 });
-const rows = (input: { view: DrainView; acceptsServices?: boolean; unavailable?: string | null }) => {
+const rows = (input: { view: DrainView; left?: DrainRow[]; acceptsServices?: boolean; unavailable?: string | null }) => {
   const onDrain = vi.fn();
   const onAcceptsServices = vi.fn();
   render(
@@ -39,6 +39,7 @@ const rows = (input: { view: DrainView; acceptsServices?: boolean; unavailable?:
       acceptsServices={input.acceptsServices ?? true}
       onAcceptsServices={onAcceptsServices}
       view={input.view}
+      left={input.left ?? []}
       onDrain={onDrain}
       unavailable={input.unavailable ?? null}
     />,
@@ -60,7 +61,7 @@ const failed: ServiceDrain = {
 describe("Services section", () => {
   it("says what Drain does and drains on click", () => {
     const { onDrain, onAcceptsServices } = rows({ view: view(null) });
-    expect(screen.getByText("Move everything running here to your other servers.")).toBeTruthy();
+    expect(screen.getByText("Move all services to your other servers.")).toBeTruthy();
     expect(screen.queryByText(/Nothing new starts here/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Drain" }));
     expect(onDrain).toHaveBeenCalledTimes(1);
@@ -78,6 +79,17 @@ describe("Services section", () => {
     expect(screen.getByText("Starting…")).toBeTruthy();
     expect((screen.getByRole("button", { name: /Draining…/ }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByRole("switch").getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("lists what a running Drain still has to move, and counts it", () => {
+    const left: DrainRow = { key: "shop/postgres", name: "postgres", namespace: "shop", global: false, tone: "neutral", label: "Pending", reason: null, pinned: false };
+    rows({ view: view({ attemptId: "a1", state: "running", startedAt: at }), left: [left] });
+    expect(screen.getByText(/Draining · 1 left · Started/)).toBeTruthy();
+    expect(within(screen.getByLabelText("Left to move")).getByText("postgres")).toBeTruthy();
+    expect(screen.queryByLabelText("Drain result")).toBeNull();
+    cleanup();
+    rows({ view: view({ attemptId: "a1", state: "running", startedAt: at }) });
+    expect(screen.getByText(/Draining · Finishing up · Started/)).toBeTruthy();
   });
 
   it("shows the summary and each Service's outcome, and offers Drain again", () => {
@@ -109,8 +121,6 @@ describe("Services section", () => {
 });
 
 describe("Drain dialog", () => {
-  const LEAD = "Services turn off for web-2, and what runs here moves to your other servers one at a time.";
-  const NOTHING_BACK = "Turning services back on doesn’t move anything back.";
   const inOrder = (first: HTMLElement, ...rest: HTMLElement[]) => {
     let previous = first;
     for (const element of rest) {
@@ -120,43 +130,43 @@ describe("Drain dialog", () => {
     return true;
   };
 
-  it("leads with what Drain does, lists what runs here, then says what stays, and drains on confirm", () => {
+  const LEAD = "Moves every service to your other servers, one at a time. Nothing moves back on its own.";
+  const VOLUMES = "Services with a volume on web-2 stay.";
+  const row = (name: string, stays: DrainDialogRow["stays"] = null): DrainDialogRow => ({ key: `shop/${name}`, name, namespace: "shop", stays });
+  const dialog = (rows: DrainDialogRow[], onConfirm = () => {}) =>
+    render(<DrainDialog serverName="web-2" rows={rows} open onOpenChange={() => {}} onConfirm={onConfirm} />);
+  const listed = (key: string) => document.querySelector(`[data-row="${key}"]`) as HTMLElement;
+
+  it("leads with what Drain does, lists what runs here, and drains on confirm", () => {
     const onConfirm = vi.fn();
-    render(<DrainDialog serverName="web-2" names={["api", "postgres"]} unowned={[]} open onOpenChange={() => {}} onConfirm={onConfirm} />);
-    expect(screen.getByText("Drain web-2?")).toBeTruthy();
+    dialog([row("api"), row("worker")], onConfirm);
+    expect(screen.getByText("Drain web-2")).toBeTruthy();
     const list = screen.getByLabelText("Running on web-2");
     expect(within(list).getByText("api")).toBeTruthy();
-    expect(within(list).getByText("postgres")).toBeTruthy();
-    expect(inOrder(
-      screen.getByText(LEAD),
-      list,
-      screen.getByText("Services that use a volume here stay."),
-      screen.getByText(NOTHING_BACK),
-    )).toBe(true);
+    expect(inOrder(screen.getByText(LEAD), list, screen.getByText(VOLUMES))).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Drain" }));
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
-  it("is announced as one description: the lead, then the notes", () => {
-    render(<DrainDialog serverName="web-2" names={["api"]} unowned={["old"]} open onOpenChange={() => {}} onConfirm={() => {}} />);
-    const describedBy = screen.getByRole("alertdialog").getAttribute("aria-describedby") ?? "";
-    const description = document.getElementById(describedBy)?.textContent ?? "";
-    expect(description.startsWith(LEAD)).toBe(true);
-    expect(description).toContain("old stays: no project owns it. Services that use a volume here stay.");
-    expect(description.endsWith(NOTHING_BACK)).toBe(true);
+  it("badges each Service a Drain won't move, with why", () => {
+    dialog([row("api"), row("postgres", "data"), row("old", "unowned")]);
+    expect(within(listed("shop/api")).queryByText("Stays")).toBeNull();
+    expect(within(listed("shop/postgres")).getByText("Stays")).toBeTruthy();
+    expect(within(listed("shop/postgres")).getByText("Data on this server")).toBeTruthy();
+    expect(within(listed("shop/old")).getByText("Skipped")).toBeTruthy();
+    expect(within(listed("shop/old")).getByText("No project owns it")).toBeTruthy();
+    expect(screen.queryByText("Nothing to move.")).toBeNull();
   });
 
   it("says so when nothing runs here", () => {
-    render(<DrainDialog serverName="web-2" names={[]} unowned={[]} open onOpenChange={() => {}} onConfirm={() => {}} />);
-    expect(inOrder(screen.getByText(LEAD), screen.getByText("Nothing runs here now."), screen.getByText(NOTHING_BACK))).toBe(true);
+    dialog([]);
+    expect(screen.getByText("Nothing is running on web-2.")).toBeTruthy();
     expect(screen.queryByLabelText("Running on web-2")).toBeNull();
   });
 
-  it("names what stays because no Project owns it, and never says nothing runs here", () => {
-    render(<DrainDialog serverName="web-2" names={[]} unowned={["old"]} open onOpenChange={() => {}} onConfirm={() => {}} />);
-    expect(screen.getByText("Nothing here for Drain to move.")).toBeTruthy();
-    expect(screen.getByText("old stays: no project owns it. Services that use a volume here stay.")).toBeTruthy();
-    expect(screen.queryByText("Nothing runs here now.")).toBeNull();
+  it("says when nothing here will move", () => {
+    dialog([row("old", "unowned")]);
+    expect(screen.getByText("Nothing to move.")).toBeTruthy();
   });
 });
 

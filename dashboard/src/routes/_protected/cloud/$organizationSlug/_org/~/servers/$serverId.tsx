@@ -15,7 +15,7 @@ import { needsAttention } from "#/modules/machines/server-status";
 import { useServers, type Server } from "#/modules/machines/use-servers";
 import { latestServerUpgradesQueryOptions } from "#/modules/server-upgrade/server-upgrade.queries";
 import { useStrayNamespaces } from "#/modules/machines/namespace-cleanup.queries";
-import { drainDialogNames, removeHint } from "#/modules/machines/server-drain-view";
+import { drainDialogRows, drainLeftRows, removeHint } from "#/modules/machines/server-drain-view";
 import { useServerDrain } from "#/modules/machines/server-drain.hooks";
 import { latestServerDrainsQueryOptions } from "#/modules/machines/server-drain.queries";
 import { prefetchRemote } from "#/collections/route-data";
@@ -116,7 +116,6 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
   const { machine } = server;
   const drain = useServerDrain(organizationSlug, { id: machine.id, name: server.name }, servers);
   const strays = useStrayNamespaces(organizationSlug, server.services.flatMap((service) => service.namespace ?? []));
-  const dialog = drainDialogNames(server.services, strays);
   // A Drain cordons this Server and copies images from it: it needs the Server online, and the page to see it.
   const unavailable = stale
     ? "Drain needs Cloud to reach your servers."
@@ -127,6 +126,7 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
         machine={machine}
         organizationSlug={organizationSlug}
         view={drain.view}
+        left={drainLeftRows(server.services, strays)}
         onDrain={drain.ask}
         unavailable={unavailable}
       />
@@ -142,7 +142,7 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
           />
         )}
       />
-      <DrainDialog serverName={server.name} names={dialog.drainable} unowned={dialog.unowned} {...drain.dialog} />
+      <DrainDialog serverName={server.name} rows={drainDialogRows(drain.view, server.services, strays)} {...drain.dialog} />
     </>
   );
 }

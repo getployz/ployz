@@ -265,10 +265,41 @@ export function drainableServices<S extends RunningService>(services: readonly S
 
 const names = (services: ReadonlyArray<{ readonly name: string }>) => [...new Set(services.map((service) => service.name))];
 
-/** The confirm dialog's lists: what a Drain would move, and what it leaves because no Project owns it. */
-export function drainDialogNames(services: readonly RunningService[], strays: ReadonlySet<string>) {
+/** One Service in the confirm dialog. `stays` says why a Drain won't move it, when the page knows; null means it moves. */
+export type DrainDialogRow = {
+  /** The Qualified Service. */
+  readonly key: string;
+  readonly name: string;
+  readonly namespace: string | null;
+  /** `data`: the latest Drain left it for its volume or folder here. `unowned`: no Project owns it. */
+  readonly stays: "data" | "unowned" | null;
+};
+
+/** The confirm dialog's rows: what runs here, the ones a Drain won't move last. */
+export function drainDialogRows(view: DrainView, services: readonly RunningService[], strays: ReadonlySet<string>): DrainDialogRow[] {
+  const pinned = new Set(view.kind === "finished" ? view.rows.filter((row) => row.pinned).map((row) => row.key) : []);
   const split = drainableServices(services, strays);
-  return { drainable: names(split.drainable), unowned: names(split.unowned) };
+  const row = (service: RunningService, stays: DrainDialogRow["stays"]): DrainDialogRow =>
+    ({ key: service.identity, name: service.name, namespace: service.namespace, stays });
+  const rows = [
+    ...split.drainable.map((service) => row(service, pinned.has(service.identity) ? "data" : null)),
+    ...split.unowned.map((service) => row(service, "unowned")),
+  ];
+  return [...rows.filter((entry) => entry.stays === null), ...rows.filter((entry) => entry.stays !== null)];
+}
+
+/** What a Drain under way still has to move: what it acts on that runs here now, live from the Runtime watch. */
+export function drainLeftRows(running: readonly RunningService[], strays: ReadonlySet<string>): DrainRow[] {
+  return drainableServices(running, strays).drainable.map((service) => ({
+    key: service.identity,
+    name: service.name,
+    namespace: service.namespace,
+    global: false,
+    tone: "neutral",
+    label: "Pending",
+    reason: null,
+    pinned: false,
+  }));
 }
 
 /** What the Remove server row says about what still runs here. */

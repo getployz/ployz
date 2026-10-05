@@ -19,17 +19,17 @@ const TONE_ICON = {
 } satisfies Record<DrainTone, LucideIcon>;
 
 /**
- * Each Service and what the latest Drain did with it. Below the navigation breakpoint the outcome wraps onto its own
+ * Each Service and what the latest Drain did with it, or what the one under way still has to move. Below the navigation breakpoint the outcome wraps onto its own
  * line, so a long reason never squeezes it.
  */
-export function DrainResultList({ rows }: { rows: readonly DrainRow[] }) {
+export function DrainResultList({ rows, label = "Drain result" }: { rows: readonly DrainRow[]; label?: string }) {
   if (rows.length === 0) return null;
   return (
-    <ItemGroup aria-label="Drain result">
+    <ItemGroup aria-label={label}>
       {rows.map((row) => {
         const Icon = TONE_ICON[row.tone];
         return (
-          <Item key={row.key} variant="outline" size="sm" data-row={row.key}>
+          <Item key={row.key} variant="outline" size="xs" data-row={row.key}>
             <ItemMedia variant="icon" className="self-start">{row.global ? <GlobeIcon /> : <BoxIcon />}</ItemMedia>
             <ItemContent className="min-w-0">
               <ItemTitle>{row.name}</ItemTitle>

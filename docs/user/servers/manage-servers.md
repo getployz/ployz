@@ -50,13 +50,15 @@ Every server runs builds, runs services and takes web traffic. To turn one off, 
 Under **Services** on a server's page, turn off **Run services here** and nothing new starts on
 the server. What already runs there stays until you drain it. Your next deploy also moves it.
 
-To move everything off now, click **Drain** and confirm. The dialog lists what runs on the server,
-and names apart what no project owns: draining leaves that where it is. Draining turns services off for the server and stops its global services there. Then it moves
+To move everything off now, click **Drain** and confirm. The dialog lists what runs on the server and
+badges what won't move: **Skipped** when no project owns it, which draining leaves where it is,
+and **Stays** when the last drain left it because its data is on the server. Draining turns services off for the server and stops its global services there. Then it moves
 each replicated service's containers to your other servers one at a time. Each new container runs
 the same image, and each one starts and is healthy before the old container is removed.
 Pre-deploy commands don't run again, and nothing is deployed. Drains in one organization run one
-at a time: a second one reads **Waits for the drain on web-1 to finish**. You can leave the page
-while one runs.
+at a time: a second one reads **Queued · Waiting on web-1**. While a drain runs, the
+**Drain** row counts the services left to move and lists them as **Pending**; each one leaves the
+list as it leaves the server. You can leave the page while one runs.
 
 While a server drains, you can't turn **Run services here** back on for it: Cloud refuses the
 change until the drain ends. Turning services on for another server waits until

@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { LatestDrain, LatestDrains } from "#/modules/machines/server-drain";
 import {
   drainButtonLabel,
-  drainDialogNames,
+  drainDialogRows,
+  drainLeftRows,
   drainRow,
   drainSummary,
   drainView,
@@ -205,11 +206,18 @@ describe("Drain hints", () => {
       .toEqual({ kind: "pinned", names: ["postgres"], unowned: ["old"] });
   });
 
-  it("lists what runs here by name for the dialog, apart from what no Project owns", () => {
-    expect(drainDialogNames([
-      { identity: "shop/api", name: "api", namespace: "shop" },
-      { identity: "shop-staging/api", name: "api", namespace: "shop-staging" },
-      stray,
-    ], strays)).toEqual({ drainable: ["api"], unowned: ["old"] });
+  it("lists what runs here for the dialog, warning on what the latest Drain left for its volume and what no Project owns", () => {
+    const api = { identity: "shop/api", name: "api", namespace: "shop" };
+    const rows = drainDialogRows(view({ [web2.id]: finished([moved, volume]) }), [postgres, stray, api], strays);
+    expect(rows).toEqual([
+      { key: "shop/api", name: "api", namespace: "shop", stays: null },
+      { key: "shop/postgres", name: "postgres", namespace: "shop", stays: "data" },
+      { key: "left-behind/old", name: "old", namespace: "left-behind", stays: "unowned" },
+    ]);
+    expect(drainDialogRows(view({}), [postgres], none).map((row) => row.stays)).toEqual([null]);
+  });
+
+  it("lists what a Drain under way still has to move, without what no Project owns", () => {
+    expect(drainLeftRows([postgres, stray], strays).map((row) => [row.key, row.label])).toEqual([["shop/postgres", "Pending"]]);
   });
 });
