@@ -4,8 +4,9 @@ import { DEFAULT_VOLUME_GB } from "./store-volumes";
 
 /**
  * A Database Preset: a common database set up as Railway sets it up (image, data path, start command, variables),
- * created as an ordinary image Service with a Volume. Variables reference each other as Railway's do, with
- * `PLOYZ_PRIVATE_DOMAIN` for `RAILWAY_PRIVATE_DOMAIN`, and all are exported so other Services can reference them.
+ * created as an ordinary image Service with a Volume and a healthcheck that passes once the database answers.
+ * Variables reference each other as Railway's do, with `PLOYZ_PRIVATE_DOMAIN` for `RAILWAY_PRIVATE_DOMAIN`, and all
+ * are exported so other Services can reference them.
  */
 // ponytail: the password is only read when the database first initializes its Volume; changing it later needs the
 // database's own tooling too. No rotation.
@@ -15,6 +16,8 @@ export type DatabasePreset = {
   image: string;
   dataPath: string;
   startCommand?: string;
+  /** A command run in the container, where the preset's variables are set. */
+  healthcheck: string;
   env: (password: string) => Record<string, string>;
 };
 
@@ -24,6 +27,7 @@ export const DATABASE_PRESETS: readonly DatabasePreset[] = [
   {
     id: "postgres", label: "PostgreSQL",
     image: "ghcr.io/railwayapp-templates/postgres-ssl:18", dataPath: "/var/lib/postgresql/data",
+    healthcheck: "pg_isready -h 127.0.0.1 -p 5432",
     env: (password) => ({
       POSTGRES_USER: "postgres", POSTGRES_PASSWORD: password, POSTGRES_DB: "ployz",
       PGDATA: "/var/lib/postgresql/data/pgdata", SSL_CERT_DAYS: "820",
@@ -35,6 +39,7 @@ export const DATABASE_PRESETS: readonly DatabasePreset[] = [
   {
     id: "redis", label: "Redis", image: "redis:8.2", dataPath: "/data",
     startCommand: "docker-entrypoint.sh redis-server --requirepass \"$REDIS_PASSWORD\" --save 60 1 --dir /data",
+    healthcheck: "redis-cli -h 127.0.0.1 -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG",
     env: (password) => ({
       REDIS_PASSWORD: password, REDISUSER: "default", REDISPASSWORD: "${{ REDIS_PASSWORD }}", REDISHOST: HOST,
       REDISPORT: "6379", REDIS_URL: "redis://${{ REDISUSER }}:${{ REDIS_PASSWORD }}@${{ REDISHOST }}:${{ REDISPORT }}",
@@ -43,6 +48,7 @@ export const DATABASE_PRESETS: readonly DatabasePreset[] = [
   {
     id: "mongodb", label: "MongoDB", image: "mongo:8.0", dataPath: "/data/db",
     startCommand: "docker-entrypoint.sh mongod --ipv6 --bind_ip ::,0.0.0.0 --setParameter diagnosticDataCollectionEnabled=false",
+    healthcheck: "mongosh --quiet --host 127.0.0.1 --eval \"db.adminCommand('ping').ok\" | grep -q 1",
     env: (password) => ({
       MONGO_INITDB_ROOT_USERNAME: "mongo", MONGO_INITDB_ROOT_PASSWORD: password,
       MONGOUSER: "${{ MONGO_INITDB_ROOT_USERNAME }}", MONGOPASSWORD: "${{ MONGO_INITDB_ROOT_PASSWORD }}",
@@ -53,6 +59,7 @@ export const DATABASE_PRESETS: readonly DatabasePreset[] = [
   {
     id: "mysql", label: "MySQL", image: "mysql:9.4", dataPath: "/var/lib/mysql",
     startCommand: "docker-entrypoint.sh mysqld --innodb-use-native-aio=0 --disable-log-bin --performance_schema=0",
+    healthcheck: "mysqladmin ping -h 127.0.0.1 -uroot -p\"$MYSQL_ROOT_PASSWORD\" --silent",
     env: (password) => ({
       MYSQL_ROOT_PASSWORD: password, MYSQL_DATABASE: "ployz",
       MYSQLUSER: "root", MYSQLPASSWORD: "${{ MYSQL_ROOT_PASSWORD }}", MYSQLDATABASE: "${{ MYSQL_DATABASE }}",
@@ -72,7 +79,8 @@ export const randomPassword = () => randomText(LETTERS, 32);
 
 /**
  * One Batch that creates the preset's Service and its Volume (managed, at the default limit, like any new Volume)
- * mounted at its data path, then sets its start command and variables. All of it saves, or none.
+ * mounted at its data path, then sets its start command, healthcheck (at the default timeout) and variables. All of it
+ * saves, or none.
  */
 export function databaseCommand(preset: DatabasePreset, target: {
   service: string; volume: string; environment: EnvironmentRef; name: string; volumeName: string; password: string;
@@ -82,6 +90,7 @@ export function databaseCommand(preset: DatabasePreset, target: {
   // (DATABASE_URL and the like) still resolve when a Deploy claims it.
   const env = Object.fromEntries(Object.entries(preset.env(target.password))
     .map(([key, value]) => [key, { value: value === target.password ? { secret: value } : value, exported: true }]));
+  const settings = { healthcheck: { command: preset.healthcheck }, env };
   return {
     command: "batch",
     environment,
@@ -91,7 +100,7 @@ export function databaseCommand(preset: DatabasePreset, target: {
       { command: "create_volume", id: volume, environment, name: volumeName,
         storage: { kind: "provisioned", maximumBytes: Number(DEFAULT_VOLUME_GB) * 1_000_000_000 }, mounts: [{ service: name, path: preset.dataPath }] },
       { command: "edit", environment, expect: null, changes: [{ op: "patch", path: name,
-        value: preset.startCommand === undefined ? { env } : { startCommand: preset.startCommand, env } }] },
+        value: preset.startCommand === undefined ? settings : { startCommand: preset.startCommand, ...settings } }] },
     ],
   };
 }
