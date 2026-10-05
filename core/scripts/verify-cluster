@@ -19,6 +19,7 @@ import time
 import uuid
 
 CORE = Path(__file__).resolve().parents[1]
+DASHBOARD = CORE.parent / "dashboard"
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(CORE / "scripts" / "verify"))
 
@@ -118,12 +119,32 @@ def prepare_runtime(run, commands):
     save(run)
 
 
+def dashboard_state(dashboard):
+    state = dashboard / ".verify" / "run"
+    url = next(line.split("=", 1)[1] for line in (state / "env").read_text().splitlines() if line.startswith("APP_URL="))
+    return url, json.loads((state / "seed.json").read_text())
+
+
+def pair_cloud(private, commands, owns):
+    """Start this checkout's dashboard verify instance, or attach to the one that started this run."""
+    if owns:
+        environment = {key: value for key, value in os.environ.items() if key != "SERVERS"}
+        commands([DASHBOARD / "scripts" / "verify" / "up.sh"], env={**environment, "VERIFY_REAL_SERVERS": "1"}, timeout=1800)
+    url, seed = dashboard_state(DASHBOARD)
+    (private / "cloud-token").write_text(seed["cliToken"])
+    (private / "cloud-token").chmod(0o600)
+    return dict(dashboard=str(DASHBOARD), url=url, organization=seed["organizationSlug"], owns_dashboard=owns)
+
+
 def cli(run, commands, args, **kwargs):
     directory = Path(run["manifest"]).parent
     environment = {key: value for key, value in os.environ.items() if not key.startswith("PLOYZ_")}
     environment.update(PLOYZ_CONFIG=str(directory / "private" / "config.yaml"),
-                       PLOYZ_CONTEXT="verify", PLOYZ_STORE="sqlite:" + str(directory / "private" / "store.sqlite"),
                        PATH=str(directory / "private" / "bin") + os.pathsep + os.environ["PATH"])
+    if "cloud" in run:
+        environment.update(PLOYZ_TOKEN=(directory / "private" / "cloud-token").read_text(), PLOYZ_CLOUD_URL=run["cloud"]["url"])
+    else:
+        environment.update(PLOYZ_CONTEXT="verify", PLOYZ_STORE="sqlite:" + str(directory / "private" / "store.sqlite"))
     return commands([directory / "artifacts" / "ployz", *args],
                     cwd=directory / "workspace", env=environment, **kwargs)
 
@@ -174,6 +195,12 @@ zfs version
             raise RuntimeError(f"{node['name']}: expected {len(run['machines'])} reachable Machines")
         return {"machine": node["name"], "servers": servers, "running_daemon_sha256": expected}
     observations = parallel(inspect, run["machines"])
+    if "cloud" in run:
+        # Through Cloud's own Server Access, so Cloud must reach every Machine.
+        servers = json.loads(cli(run, commands, ["--json", "server", "ls"]).stdout)["servers"]
+        if {item["machine"]["id"] for item in servers} != {item["machine_id"] for item in run["machines"]}:
+            raise RuntimeError(f"Cloud {run['cloud']['url']} does not list exactly this run's Machines")
+        observations.append({"cloud": run["cloud"]["url"], "servers": servers})
     (commands.evidence / "doctor.json").write_text(json.dumps(observations, indent=2) + "\n")
     return observations
 
@@ -198,7 +225,17 @@ def teardown(run, commands, backend):
         except (RuntimeError, subprocess.TimeoutExpired):
             pass
     backend.destroy()
-    shutil.rmtree(Path(run["manifest"]).parent / "private", ignore_errors=True)
+    private = Path(run["manifest"]).parent / "private"
+    cloud = run.get("cloud", {})
+    if cloud.get("owns_dashboard") and (private / "cloud-token").exists():
+        # Only the instance this run started: a later up.sh reseeds with another token.
+        try:
+            started = dashboard_state(Path(cloud["dashboard"]))[1]["cliToken"] == (private / "cloud-token").read_text()
+        except (OSError, StopIteration, ValueError, KeyError):
+            started = False
+        if started:
+            commands([Path(cloud["dashboard"]) / "scripts" / "verify" / "down.sh"], check=False)
+    shutil.rmtree(private, ignore_errors=True)
     run["state"] = "removed"
     save(run)
 
@@ -217,11 +254,14 @@ def up(args):
     commands = Commands(run)
     backend = provider(run, commands)
     print(f"Preparing verification run: {run['manifest']}", file=sys.stderr)
+    paired = args.cloud or args.cloud_attach
     try:
         prepare_runtime(run, commands)
-        # The context joins compilation before failure cleanup can remove resources.
-        with ThreadPoolExecutor(max_workers=1) as builder:
+        # The context joins compilation and the dashboard before failure cleanup can remove resources.
+        with ThreadPoolExecutor(max_workers=2) as builder:
             binaries = builder.submit(build, run, commands, daemon=run["daemon"]["source"] == "checkout")
+            if paired:
+                cloud = builder.submit(pair_cloud, private, commands, owns=args.cloud)
             started = time.monotonic()
             backend.prepare()
             run["timings"]["prepare_image"] = round(time.monotonic() - started, 3)
@@ -250,12 +290,15 @@ def up(args):
                 node["address"] = backend.address(node)
             parallel(start, run["machines"])
             binaries.result()
+            if paired:
+                run["cloud"] = cloud.result()
         run["timings"]["boot_and_install"] = round(time.monotonic() - started, 3)
         save(run)
         started = time.monotonic()
         for node in run["machines"]:
+            # Cloud enrollment currently ignores --public-ip and --wg-endpoint; the Machine advertises the endpoints it discovers.
             result = cli(run, commands, ["--json", "server", "add", "root@" + node["address"],
-                               "--standalone", "--no-install", "--storage", "none", "--yes",
+                               *([] if "cloud" in run else ["--standalone"]), "--no-install", "--storage", "none", "--yes",
                                "--name", node["name"], "--ssh-key", str(private / "id_ed25519"),
                                "--public-ip", "none", "--wg-endpoint", node["address"] + ":51820", "--wg-mtu", "1420"], check=False)
             response = json.loads(result.stdout) if result.stdout else {}
@@ -291,6 +334,8 @@ def up(args):
     except BaseException:
         print(f"Setup failed; cleaning up. Evidence: {commands.evidence}", file=sys.stderr)
         teardown(run, commands, backend)
+        if args.cloud and "cloud" not in run:
+            commands([DASHBOARD / "scripts" / "verify" / "down.sh"], check=False)
         raise
 
 
@@ -311,6 +356,11 @@ def main():
     launch.add_argument("--provider", choices=["incus"], default="incus")
     launch.add_argument("--machines", type=int, choices=range(1, 9), default=2)
     launch.add_argument("--daemon", default="checkout", help="checkout (default), stable, beta or an exact release version")
+    pairing = launch.add_mutually_exclusive_group()
+    pairing.add_argument("--cloud", action="store_true",
+                         help="Start this checkout's dashboard verify instance and enroll through it; down stops it")
+    # dashboard/scripts/verify/up.sh started the dashboard and owns it.
+    pairing.add_argument("--cloud-attach", action="store_true", help=argparse.SUPPRESS)
     for action in ["doctor", "update", "down", "exec", "cli"]:
         command = actions.add_parser(action)
         command.add_argument("manifest", type=Path)
