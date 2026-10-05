@@ -10,8 +10,7 @@ use std::collections::BTreeMap;
 
 use ployz_core::config::{
     ConfigAttachment, FileMode, SavedConfigFile, SavedConfigIntent, SavedEnvironmentIntent,
-    SavedServiceIntent,
-    ValuePart, ValuePartOwner, parse_variable_template, render_variable_parts,
+    SavedServiceIntent, ValuePart, ValuePartOwner, parse_variable_template, render_variable_parts,
 };
 use ployz_core::{ConfigFileName, ConfigName, ContainerPath, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -41,13 +40,13 @@ pub struct CreateConfig {
     pub name: ConfigName,
     /// Where Services mount it.
     #[serde(default)]
-    pub mounts: Vec<ConfigMount>,
+    pub mounts: Vec<ConfigMountAt>,
 }
 
 /// One Service mounting a Config at a directory.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
-pub struct ConfigMount {
+pub struct ConfigMountAt {
     /// The Service, by name.
     pub service: ServiceName,
     /// The absolute directory in its containers where the Config's files appear.
@@ -351,7 +350,12 @@ pub(crate) fn detach_config(
         scope::save_working(tx, &mut environment)?;
     }
     let staged = changed
-        .then(|| SettingPath::at(&unmount.service, Target::ConfigMount(unmount.config.clone())))
+        .then(|| {
+            SettingPath::at(
+                &unmount.service,
+                Target::ConfigMount(unmount.config.clone()),
+            )
+        })
         .into_iter()
         .collect();
     Ok(ConfigStaged {
@@ -418,7 +422,9 @@ pub(crate) fn attach(
 ) -> Result<bool, RpcError> {
     let dir = ContainerPath::parse(dir).map_err(|_| {
         error::invalid(
-            format!("{service}.configs.{config}: expected an absolute directory without null characters"),
+            format!(
+                "{service}.configs.{config}: expected an absolute directory without null characters"
+            ),
             json!({ "example": "/etc/app" }),
         )
     })?;
@@ -498,8 +504,11 @@ fn collision(
         }
     }
     let nested = paths.iter().find_map(|(path, config)| {
-        path.match_indices('/')
-            .find_map(|(at, _)| paths.get(&path[..at]).map(|file| (path, config, &path[..at], file)))
+        path.match_indices('/').find_map(|(at, _)| {
+            paths
+                .get(&path[..at])
+                .map(|file| (path, config, &path[..at], file))
+        })
     });
     nested.map(|(path, config, file, other)| {
         error::conflict(
@@ -596,7 +605,6 @@ fn parts(
     }
     Ok(template.parts)
 }
-
 
 /// A Config file's row cell as reads show it: its text rendered, never its parts.
 pub(crate) fn shown_file(file: Value, names: &BTreeMap<String, String>) -> Value {

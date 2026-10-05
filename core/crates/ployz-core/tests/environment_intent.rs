@@ -138,9 +138,11 @@ fn configs_compile_with_references_written_by_service_name() {
         json!({"config.yml":file(reference),".htpasswd":file(json!([])),"conf.d/a.xml":file(json!([]))}),
         mount("/etc/sentry"),
     );
-    let compiled =
-        serde_json::to_value(compile_environment_intent("e", parse_environment_intent(value).unwrap()))
-            .unwrap();
+    let compiled = serde_json::to_value(compile_environment_intent(
+        "e",
+        parse_environment_intent(value).unwrap(),
+    ))
+    .unwrap();
     let config = compiled.pointer("/nodeSnapshots/2").unwrap();
     assert_eq!(config["nodeType"], "config");
     assert_eq!(config["config"]["name"], "sentry");
@@ -159,9 +161,8 @@ fn configs_refuse_bare_references_and_colliding_mounts() {
     assert_eq!(error.path, "configs.files.content");
 
     // A Config Mount may not share a Volume's mount path.
-    let error =
-        parse_environment_intent(with_config(json!({"a":file(json!([]))}), mount("/data")))
-            .unwrap_err();
+    let error = parse_environment_intent(with_config(json!({"a":file(json!([]))}), mount("/data")))
+        .unwrap_err();
     assert_eq!(error.path, "mountPath");
 
     // A file may not sit where another mounted file needs a directory.
@@ -173,7 +174,9 @@ fn configs_refuse_bare_references_and_colliding_mounts() {
         {"configResourceId":"00000000-0000-4000-8000-000000000010","mountDir":"/etc/a"}]);
     let error = parse_environment_intent(value.clone()).unwrap_err();
     assert_eq!(error.path, "configAttachments.mountDir");
-    *value.pointer_mut("/services/0/configAttachments/1/mountDir").unwrap() = json!("/etc/x");
+    *value
+        .pointer_mut("/services/0/configAttachments/1/mountDir")
+        .unwrap() = json!("/etc/x");
     parse_environment_intent(value).unwrap();
 
     for mode in ["1755", "4444", "0800", "x"] {

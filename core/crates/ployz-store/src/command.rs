@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
+pub use crate::config_item::{
+    AttachConfig, ConfigFileSummary, ConfigMountAt, ConfigStaged, ConfigSummary, CreateConfig,
+    DeleteConfig, DetachConfig, PutConfigFile, RemoveConfigFile, RenameConfig,
+};
 pub use crate::deployment::admit::{Admit, Cancel, Deploy, Removal, Retry, Start};
 pub use crate::project::{
     CreateEnvironment, CreateProject, EnvironmentCreated, ProjectCreated, ProjectSummary,
@@ -22,10 +26,6 @@ pub use crate::typed_address::Instead;
 pub use crate::volume::{
     CreateVolume, Mount, RemoveVolume, RenameVolume, SetVolumeSharedWrites, SetVolumeStorage,
     VolumeStaged, VolumeSummary,
-};
-pub use crate::config_item::{
-    AttachConfig, ConfigFileSummary, ConfigMount, ConfigStaged, ConfigSummary, CreateConfig,
-    DeleteConfig, DetachConfig, PutConfigFile, RemoveConfigFile, RenameConfig,
 };
 
 use crate::error;

@@ -181,7 +181,12 @@ fn problems(facts: Facts<'_>) -> BTreeSet<Problem> {
     });
     let variables = working.services.iter().flat_map(|referrer| {
         references(referrer).map(move |(key, owner, wanted)| {
-            ((referrer.lineage_id.as_str(), Some(referrer)), key, owner, wanted)
+            (
+                (referrer.lineage_id.as_str(), Some(referrer)),
+                key,
+                owner,
+                wanted,
+            )
         })
     });
     for ((referrer, own), key, owner, wanted) in variables.chain(configs) {

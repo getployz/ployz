@@ -314,18 +314,24 @@ fn parts_read<'a>(
     intent: &'a SavedEnvironmentIntent,
     service: &'a SavedServiceIntent,
 ) -> impl Iterator<Item = &'a ValuePart> {
-    let variables = service.variables.iter().flat_map(|variable| match &variable.value {
-        ployz_core::config::SavedVariableValue::Template { parts } => parts.as_slice(),
-        _ => &[],
-    });
-    let files = service.config_attachments.iter().flat_map(move |attachment| {
-        intent
-            .configs
-            .iter()
-            .filter(move |config| config.resource_id == attachment.config_resource_id)
-            .flat_map(|config| config.files.values())
-            .flat_map(|file| &file.content)
-    });
+    let variables = service
+        .variables
+        .iter()
+        .flat_map(|variable| match &variable.value {
+            ployz_core::config::SavedVariableValue::Template { parts } => parts.as_slice(),
+            _ => &[],
+        });
+    let files = service
+        .config_attachments
+        .iter()
+        .flat_map(move |attachment| {
+            intent
+                .configs
+                .iter()
+                .filter(move |config| config.resource_id == attachment.config_resource_id)
+                .flat_map(|config| config.files.values())
+                .flat_map(|file| &file.content)
+        });
     variables.chain(files)
 }
 
@@ -336,9 +342,11 @@ pub(super) fn references(
     service: &SavedServiceIntent,
     lineage: &str,
 ) -> bool {
-    parts_read(intent, service).any(|part| matches!(part, ValuePart::Ref {
+    parts_read(intent, service).any(|part| {
+        matches!(part, ValuePart::Ref {
         owner: ValuePartOwner::Service { lineage_id }, ..
-    } if lineage_id == lineage))
+    } if lineage_id == lineage)
+    })
 }
 
 /// Each Service lineage `intent`'s variables and Config files reference but it
@@ -349,12 +357,14 @@ pub(crate) fn used_live(intent: &SavedEnvironmentIntent) -> BTreeMap<String, BTr
         .iter()
         .map(|service| service.lineage_id.as_str())
         .collect();
-    let variables = intent.services.iter().flat_map(|service| &service.variables).flat_map(
-        |variable| match &variable.value {
+    let variables = intent
+        .services
+        .iter()
+        .flat_map(|service| &service.variables)
+        .flat_map(|variable| match &variable.value {
             ployz_core::config::SavedVariableValue::Template { parts } => parts.as_slice(),
             _ => &[],
-        },
-    );
+        });
     let files = intent
         .configs
         .iter()

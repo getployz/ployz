@@ -220,7 +220,14 @@ pub(crate) fn refuse_taken(
     // takes either name.
     if name.as_str() == "volumes" || name.as_str() == "configs" {
         return Err(error::invalid(
-            format!("{name} is reserved: paths name {} as {name}.NAME", if name.as_str() == "volumes" { "Volumes" } else { "Configs" }),
+            format!(
+                "{name} is reserved: paths name {} as {name}.NAME",
+                if name.as_str() == "volumes" {
+                    "Volumes"
+                } else {
+                    "Configs"
+                }
+            ),
             json!({ "service": name }),
         ));
     }

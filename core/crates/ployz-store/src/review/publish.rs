@@ -4,8 +4,8 @@
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    At, EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent,
-    ConfigAttachment, ServiceConfig, Setting, VolumeAttachment, canonicalize_environment_intent,
+    At, ConfigAttachment, EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent,
+    SavedVariableIntent, ServiceConfig, Setting, VolumeAttachment, canonicalize_environment_intent,
     compare_service_settings, parse_environment_intent, restore_environment_node,
 };
 use std::borrow::Cow;

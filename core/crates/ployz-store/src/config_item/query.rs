@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::Actor;
-use crate::config_item::{ConfigMount, ConfigSummary, summary};
+use crate::config_item::{ConfigMountAt, ConfigSummary, summary};
 use crate::error;
 use crate::id::ConfigId;
 use crate::review;
@@ -43,7 +43,7 @@ pub struct ConfigListing {
     #[serde(flatten)]
     pub config: ConfigSummary,
     /// The Services mounting it in Working State.
-    pub mounts: Vec<ConfigMount>,
+    pub mounts: Vec<ConfigMountAt>,
     /// Whether a Deploy applied it.
     pub deployed: bool,
     /// What the next Deploy does to it; none when it is deployed as it is.
@@ -53,7 +53,7 @@ pub struct ConfigListing {
 /// One Config by name, with its files' text.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
-pub struct ConfigQuery {
+pub struct ConfigItemQuery {
     /// The Environment it is in.
     #[serde(default)]
     pub environment: EnvironmentRef,
@@ -63,7 +63,7 @@ pub struct ConfigQuery {
 
 /// One Config.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-pub struct ConfigView {
+pub struct ConfigItemView {
     /// The Environment, at the revision read.
     pub environment: EnvironmentSummary,
     /// The Config.
@@ -94,8 +94,8 @@ pub(crate) fn configs(
 pub(crate) fn config(
     tx: &mut dyn Tx,
     who: &Actor,
-    query: &ConfigQuery,
-) -> Result<ConfigView, RpcError> {
+    query: &ConfigItemQuery,
+) -> Result<ConfigItemView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
     // A name deleted and created again lists twice; the one in Working State wins.
     let found = listed(tx, &environment)?
@@ -109,14 +109,19 @@ pub(crate) fn config(
             .unwrap_or_else(|| error::corrupt("Config listing")));
     };
     let names = environment.names();
-    Ok(ConfigView {
+    Ok(ConfigItemView {
         environment: environment.summary,
         lineage: ConfigId::parse(node.resource_lineage_id.as_str())
             .map_err(|_| error::corrupt("Config lineage"))?,
         contents: node
             .files
             .iter()
-            .map(|(name, file)| (name.clone(), ployz_core::config::render_variable_parts(&file.content, &names)))
+            .map(|(name, file)| {
+                (
+                    name.clone(),
+                    ployz_core::config::render_variable_parts(&file.content, &names),
+                )
+            })
             .collect(),
         config: listing,
     })
@@ -171,7 +176,7 @@ fn listed(
     Ok(listed)
 }
 
-fn mounts(working: &SavedEnvironmentIntent, config: &str) -> Result<Vec<ConfigMount>, RpcError> {
+fn mounts(working: &SavedEnvironmentIntent, config: &str) -> Result<Vec<ConfigMountAt>, RpcError> {
     let mut mounts = working
         .services
         .iter()
@@ -181,7 +186,7 @@ fn mounts(working: &SavedEnvironmentIntent, config: &str) -> Result<Vec<ConfigMo
                 .iter()
                 .filter(|mount| mount.config_resource_id == config)
                 .map(move |mount| {
-                    Ok(ConfigMount {
+                    Ok(ConfigMountAt {
                         service: ServiceName::parse(service.slug.as_str())
                             .map_err(|_| error::corrupt("Service name"))?,
                         dir: mount.mount_dir.to_string(),

@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
+pub use crate::config_item::query::{
+    ConfigItemQuery, ConfigItemView, ConfigListing, ConfigsQuery, ConfigsView,
+};
 pub use crate::deployment::query::{
     DeploymentQuery, DeploymentsQuery, DeploymentsView, NamespaceQuery, NamespaceView,
     NamespacesQuery, NamespacesView, NumberedDeploymentQuery, OwnedNamespace, PlanQuery, PlanView,
@@ -17,9 +20,6 @@ pub use crate::service::query::{
 pub use crate::settings::query::{EnvironmentQuery, EnvironmentView, SettingRow};
 pub use crate::volume::query::{
     RemovalsQuery, RemovalsView, VolumeListing, VolumeQuery, VolumeView, VolumesQuery, VolumesView,
-};
-pub use crate::config_item::query::{
-    ConfigListing, ConfigQuery, ConfigView, ConfigsQuery, ConfigsView,
 };
 
 use crate::Call;
@@ -171,7 +171,7 @@ queries! {
     /// An Environment's Configs.
     Configs(ConfigsQuery) -> ConfigsView => crate::config_item::query::configs(tx, who, q);
     /// One Config, with its files' text.
-    Config(ConfigQuery) -> ConfigView => crate::config_item::query::config(tx, who, q);
+    Config(ConfigItemQuery) -> ConfigItemView => crate::config_item::query::config(tx, who, q);
     /// A Branch: its Parent, Live Nodes and what it would sync into its Parent.
     Branch(crate::BranchQuery) -> crate::BranchView => crate::branch::branch(tx, who, q);
     /// What a Branch would copy and use live, before it is created.

@@ -86,7 +86,12 @@ pub fn plan_branch(
         .volumes
         .iter()
         .map(|v| v.resource_lineage_id.as_str())
-        .chain(parent.configs.iter().map(|c| c.resource_lineage_id.as_str()))
+        .chain(
+            parent
+                .configs
+                .iter()
+                .map(|c| c.resource_lineage_id.as_str()),
+        )
         .collect();
     let owned: BTreeSet<&str> = services
         .iter()
