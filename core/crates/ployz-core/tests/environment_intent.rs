@@ -90,3 +90,95 @@ fn authored_documents_reject_derived_service_fields() {
         .insert("env".to_owned(), json!({}));
     assert!(parse_environment_intent(value).is_err());
 }
+
+#[test]
+fn documents_from_before_configs_keep_their_shape() {
+    let parsed = parse_environment_intent(intent()).unwrap();
+    assert!(parsed.configs.is_empty());
+    let written = serde_json::to_value(&parsed).unwrap();
+    assert!(written.get("configs").is_none());
+    assert!(
+        written
+            .pointer("/services/0")
+            .unwrap()
+            .get("configAttachments")
+            .is_none()
+    );
+    assert_eq!(parse_environment_intent(written).unwrap(), parsed);
+}
+
+fn with_config(files: serde_json::Value, mounts: serde_json::Value) -> serde_json::Value {
+    let mut value = intent();
+    value.as_object_mut().unwrap().insert(
+        "configs".into(),
+        json!([{"resourceId":"00000000-0000-4000-8000-000000000008","resourceLineageId":"00000000-0000-4000-8000-000000000009","name":"sentry","files":files}]),
+    );
+    value
+        .pointer_mut("/services/0")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .insert("configAttachments".into(), mounts);
+    value
+}
+
+fn file(content: serde_json::Value) -> serde_json::Value {
+    json!({"content":content,"mode":"0444","uid":0,"gid":0})
+}
+
+fn mount(dir: &str) -> serde_json::Value {
+    json!([{"configResourceId":"00000000-0000-4000-8000-000000000008","mountDir":dir}])
+}
+
+#[test]
+fn configs_compile_with_references_written_by_service_name() {
+    let reference = json!([{"kind":"text","value":"host: "},
+        {"kind":"ref","owner":{"scope":"service","lineageId":"00000000-0000-4000-8000-000000000003"},"key":"HOST"}]);
+    let value = with_config(
+        json!({"config.yml":file(reference),".htpasswd":file(json!([])),"conf.d/a.xml":file(json!([]))}),
+        mount("/etc/sentry"),
+    );
+    let compiled =
+        serde_json::to_value(compile_environment_intent("e", parse_environment_intent(value).unwrap()))
+            .unwrap();
+    let config = compiled.pointer("/nodeSnapshots/2").unwrap();
+    assert_eq!(config["nodeType"], "config");
+    assert_eq!(config["config"]["name"], "sentry");
+    assert_eq!(
+        config["config"]["files"]["config.yml"]["content"],
+        "host: ${{ web.HOST }}"
+    );
+    assert_eq!(config["config"]["files"]["config.yml"]["mode"], "0444");
+}
+
+#[test]
+fn configs_refuse_bare_references_and_colliding_mounts() {
+    let bare = json!([{"kind":"ref","owner":{"scope":"self"},"key":"HOST"}]);
+    let error =
+        parse_environment_intent(with_config(json!({"a":file(bare)}), json!([]))).unwrap_err();
+    assert_eq!(error.path, "configs.files.content");
+
+    // A Config Mount may not share a Volume's mount path.
+    let error =
+        parse_environment_intent(with_config(json!({"a":file(json!([]))}), mount("/data")))
+            .unwrap_err();
+    assert_eq!(error.path, "mountPath");
+
+    // A file may not sit where another mounted file needs a directory.
+    let mut value = with_config(json!({"a":file(json!([]))}), json!([]));
+    let configs = value.get_mut("configs").unwrap().as_array_mut().unwrap();
+    configs.push(json!({"resourceId":"00000000-0000-4000-8000-000000000010","resourceLineageId":"00000000-0000-4000-8000-000000000011","name":"other","files":{"b":file(json!([]))}}));
+    *value.pointer_mut("/services/0/configAttachments").unwrap() = json!([
+        {"configResourceId":"00000000-0000-4000-8000-000000000008","mountDir":"/etc"},
+        {"configResourceId":"00000000-0000-4000-8000-000000000010","mountDir":"/etc/a"}]);
+    let error = parse_environment_intent(value.clone()).unwrap_err();
+    assert_eq!(error.path, "configAttachments.mountDir");
+    *value.pointer_mut("/services/0/configAttachments/1/mountDir").unwrap() = json!("/etc/x");
+    parse_environment_intent(value).unwrap();
+
+    for mode in ["1755", "4444", "0800", "x"] {
+        let mut value = with_config(json!({"a":file(json!([]))}), json!([]));
+        *value.pointer_mut("/configs/0/files/a/mode").unwrap() = json!(mode);
+        assert!(parse_environment_intent(value).is_err(), "{mode}");
+    }
+}

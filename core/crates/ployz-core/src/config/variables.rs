@@ -87,6 +87,8 @@ pub struct ParsedTemplate {
     pub unresolved: Vec<String>,
     /// Whether a `${{` (not `$${{`) has no `}}` after it.
     pub unterminated: bool,
+    /// Whether a closed `${{ … }}` is not a reference, such as `${{ a-b }}`; it stays text.
+    pub malformed: bool,
 }
 
 /// Parse display text into template parts: `${{ KEY }}` reads the owner's own
@@ -101,6 +103,7 @@ pub fn parse_variable_template(
     let mut parts = Vec::new();
     let mut unresolved = Vec::new();
     let mut unterminated = false;
+    let mut malformed = false;
     let mut pending = String::new();
     let mut rest = text;
     while !rest.is_empty() {
@@ -116,7 +119,9 @@ pub fn parse_variable_template(
             continue;
         };
         let Some((owner, key, after)) = template_token(after) else {
-            unterminated |= !after.contains("}}");
+            let closed = after.contains("}}");
+            unterminated |= !closed;
+            malformed |= closed;
             pending.push_str("${{");
             rest = after;
             continue;
@@ -151,6 +156,7 @@ pub fn parse_variable_template(
         parts,
         unresolved,
         unterminated,
+        malformed,
     }
 }
 
@@ -299,7 +305,13 @@ mod tests {
             "${{ a-b }}",
         ] {
             assert_eq!(parse(malformed).parts, [text(malformed)], "{malformed}");
+            assert_eq!(
+                parse(malformed).malformed,
+                malformed != "${{ not-valid",
+                "{malformed}"
+            );
         }
+        assert!(!parse("a ${{ db.USER }} $${{ b }}").malformed);
         assert!(parse("${{ db.URL").unterminated);
         assert!(!parse("${{ oops ${{ db.URL }}").unterminated);
         assert!(!parse("$${{ literal").unterminated);

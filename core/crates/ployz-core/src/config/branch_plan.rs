@@ -81,15 +81,17 @@ pub fn plan_branch(
         .iter()
         .map(|s| s.lineage_id.as_str())
         .collect();
-    let volumes: BTreeSet<&str> = parent
+    // A used Volume or Config is always an Own Copy, never live.
+    let resources: BTreeSet<&str> = parent
         .volumes
         .iter()
         .map(|v| v.resource_lineage_id.as_str())
+        .chain(parent.configs.iter().map(|c| c.resource_lineage_id.as_str()))
         .collect();
     let owned: BTreeSet<&str> = services
         .iter()
         .copied()
-        .chain(volumes.iter().copied())
+        .chain(resources.iter().copied())
         .collect();
     let links = links(parent);
     // Lineages the Parent itself uses live stay live in the Branch.
@@ -149,7 +151,7 @@ pub fn plan_branch(
         if !own || roles.get(used) != Some(&BranchNodeRole::LeftOut) {
             return false;
         }
-        let because = if volumes.contains(used) {
+        let because = if resources.contains(used) {
             BranchNodeReason::Used
         } else if deployed.contains(used) {
             roles.insert(used, BranchNodeRole::Live);
@@ -161,7 +163,7 @@ pub fn plan_branch(
         true
     });
 
-    // Owned nodes in document order (services, then volumes), then the Parent's live lineages.
+    // Owned nodes in document order (services, volumes, configs), then the Parent's live lineages.
     let typed = services
         .iter()
         .map(|id| (*id, EnvironmentNodeType::Service))
@@ -170,6 +172,12 @@ pub fn plan_branch(
                 .volumes
                 .iter()
                 .map(|v| (v.resource_lineage_id.as_str(), EnvironmentNodeType::Volume)),
+        )
+        .chain(
+            parent
+                .configs
+                .iter()
+                .map(|c| (c.resource_lineage_id.as_str(), EnvironmentNodeType::Config)),
         )
         .chain(
             parent_live
@@ -190,7 +198,8 @@ pub fn plan_branch(
     })
 }
 
-/// Every (user, used) lineage pair: variable references to other services, and mounts.
+/// Every (user, used) lineage pair: variable and Config references to other
+/// services, and mounts.
 fn links(parent: &SavedEnvironmentIntent) -> Vec<(&str, &str)> {
     let mut links = Vec::new();
     for service in &parent.services {
@@ -213,6 +222,25 @@ fn links(parent: &SavedEnvironmentIntent) -> Vec<(&str, &str)> {
                 links.push((user, volume.resource_lineage_id.as_str()));
             }
         }
+        for attachment in &service.config_attachments {
+            if let Some(config) = parent
+                .configs
+                .iter()
+                .find(|c| c.resource_id == attachment.config_resource_id)
+            {
+                links.push((user, config.resource_lineage_id.as_str()));
+            }
+        }
+    }
+    for config in &parent.configs {
+        let user = config.resource_lineage_id.as_str();
+        links.extend(
+            config
+                .files
+                .values()
+                .flat_map(|file| file.referenced_lineages())
+                .map(|used| (user, used)),
+        );
     }
     links
 }

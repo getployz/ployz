@@ -9,7 +9,8 @@ use serde_json::json;
 use super::*;
 use crate::config::service_changes::default_value;
 use crate::config::{
-    ConfigError, SavedEnvironmentIntent as Intent, SavedServiceIntent, SavedVolumeIntent,
+    ConfigAttachment, ConfigError, SavedConfigFile, SavedConfigIntent,
+    SavedEnvironmentIntent as Intent, SavedServiceIntent, SavedVolumeIntent,
     ServiceImageCredentials, ServiceSource, VolumeAttachment, parse_environment_intent,
     redact_environment_intent,
 };
@@ -559,6 +560,22 @@ impl Plan {
             next.volumes.push(copy);
             return Ok(());
         }
+        // Its files arrive as rows of their own, so a file left out stays out.
+        if let Some(source) = config(&self.from, lineage) {
+            if next.configs.iter().any(|c| c.name == source.name) {
+                return Err(clash());
+            }
+            let copy = SavedConfigIntent {
+                resource_id: uuid::Uuid::new_v4().to_string(),
+                files: BTreeMap::new(),
+                ..source.clone()
+            };
+            if let Some(base) = base {
+                base.configs.push(copy.clone());
+            }
+            next.configs.push(copy);
+            return Ok(());
+        }
         let source = service(&self.from, lineage).expect("node rows are nodes `from` has");
         if next
             .services
@@ -574,6 +591,7 @@ impl Plan {
             config: source.config.clone(),
             variables: Vec::new(),
             volume_attachments: Vec::new(),
+            config_attachments: Vec::new(),
         };
         for setting in Setting::ALL.into_iter().filter(|s| !s.carried()) {
             put_setting(&mut copy, setting, default_value(setting.path()))
@@ -661,13 +679,20 @@ pub fn unapply(intent: &Intent, suffix: &str, landed: &[Landed]) -> Result<Inten
     Ok(intent)
 }
 
-/// Where `row` lands in a landing: new Volumes before the Services that mount them,
-/// nodes before their rows. `env` holds the node.
+/// Where `row` lands in a landing: new Volumes and Configs before the Services that
+/// mount them, nodes before their rows. `env` holds the node.
 fn landing_order(env: &Intent, row: &RowId) -> u8 {
     match row.at {
-        At::Node if volume(env, &row.lineage).is_some() => 0,
+        At::Node if volume(env, &row.lineage).is_some() || config(env, &row.lineage).is_some() => 0,
         At::Node => 1,
-        At::Data | At::Name | At::Storage | At::Setting(_) | At::Mount(_) | At::Variable(_) => 2,
+        At::Data
+        | At::Name
+        | At::Storage
+        | At::File(_)
+        | At::Setting(_)
+        | At::Mount(_)
+        | At::ConfigMount(_)
+        | At::Variable(_) => 2,
     }
 }
 
@@ -689,14 +714,27 @@ fn uses(env: &Intent, lineage: &str) -> bool {
     env.services
         .iter()
         .flat_map(|s| &s.variables)
-        .any(|v| v.value.referenced_lineages().any(|used| used == lineage))
+        .flat_map(|v| v.value.referenced_lineages())
+        .chain(
+            env.configs
+                .iter()
+                .flat_map(|c| c.files.values())
+                .flat_map(SavedConfigFile::referenced_lineages),
+        )
+        .any(|used| used == lineage)
 }
 
 /// A base that predates a row's node (or the Volume it mounts) starts it from `into`'s.
 fn adopt(base: &mut Intent, into: &Intent, row: &RowId) {
     let mounted = match &row.at {
-        At::Mount(volume) => Some(volume.as_str()),
-        At::Node | At::Data | At::Name | At::Storage | At::Setting(_) | At::Variable(_) => None,
+        At::Mount(resource) | At::ConfigMount(resource) => Some(resource.as_str()),
+        At::Node
+        | At::Data
+        | At::Name
+        | At::Storage
+        | At::File(_)
+        | At::Setting(_)
+        | At::Variable(_) => None,
     };
     for lineage in [mounted, Some(row.lineage.as_str())].into_iter().flatten() {
         if nodes(base).contains_key(lineage) {
@@ -704,6 +742,8 @@ fn adopt(base: &mut Intent, into: &Intent, row: &RowId) {
         }
         if let Some(volume) = volume(into, lineage) {
             base.volumes.push(volume.clone());
+        } else if let Some(config) = config(into, lineage) {
+            base.configs.push(config.clone());
         } else if let Some(service) = service(into, lineage) {
             // Mounts on Volumes the base lacks stay out until a mount row lands them.
             let attachments = service
@@ -721,8 +761,24 @@ fn adopt(base: &mut Intent, into: &Intent, row: &RowId) {
                     })
                 })
                 .collect();
+            let config_attachments = service
+                .config_attachments
+                .iter()
+                .filter_map(|attachment| {
+                    let lineage = &into
+                        .configs
+                        .iter()
+                        .find(|c| c.resource_id == attachment.config_resource_id)?
+                        .resource_lineage_id;
+                    Some(ConfigAttachment {
+                        config_resource_id: config(base, lineage)?.resource_id.clone(),
+                        mount_dir: attachment.mount_dir.clone(),
+                    })
+                })
+                .collect();
             base.services.push(SavedServiceIntent {
                 volume_attachments: attachments,
+                config_attachments,
                 ..service.clone()
             });
         }
