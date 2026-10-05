@@ -28,7 +28,7 @@ pub(super) async fn probe(
         .await
     {
         Ok(response) if response.status().is_success() => HealthObservation::Healthy,
-        Ok(_) | Err(_) => HealthObservation::Unhealthy,
+        Ok(_) | Err(_) => HealthObservation::Starting,
     }
 }
 
@@ -48,8 +48,8 @@ mod tests {
     async fn http_probe_checks_status_without_following_redirects() {
         for (status, expected) in [
             (200, HealthObservation::Healthy),
-            (503, HealthObservation::Unhealthy),
-            (302, HealthObservation::Unhealthy),
+            (503, HealthObservation::Starting),
+            (302, HealthObservation::Starting),
         ] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let port = listener.local_addr().unwrap().port();

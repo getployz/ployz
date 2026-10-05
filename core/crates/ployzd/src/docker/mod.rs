@@ -1,3 +1,4 @@
+mod checks;
 mod create;
 mod http_health;
 mod images;
@@ -43,6 +44,7 @@ use serde_json::json;
 use thiserror::Error;
 use tokio::sync::{Mutex, watch};
 
+use checks::CheckRecords;
 use http_health::probe as http_health_probe;
 use observe::ObservationSink;
 
@@ -131,6 +133,7 @@ pub struct ContainerRuntime {
     sink: Option<ObservationSink>,
     // ponytail: in memory only; a daemon restart forgets marks, the client stops anyway.
     stopping: watch::Sender<BTreeSet<ContainerId>>,
+    checks: Arc<std::sync::Mutex<CheckRecords>>,
 }
 
 impl ContainerRuntime {
@@ -141,6 +144,7 @@ impl ContainerRuntime {
             specs,
             sink: None,
             stopping: watch::Sender::new(BTreeSet::new()),
+            checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
         }
     }
 
@@ -154,6 +158,13 @@ impl ContainerRuntime {
     fn clear_stopping(&self, container_id: &ContainerId) {
         self.stopping
             .send_if_modified(|stopping| stopping.remove(container_id));
+    }
+
+    fn forget_checks(&self, container_id: &ContainerId) {
+        self.checks
+            .lock()
+            .expect("check records are never poisoned")
+            .forget(container_id);
     }
 
     pub async fn open(spec_store: impl Into<PathBuf>) -> Result<Self, Error> {
@@ -308,6 +319,15 @@ impl ContainerRuntime {
                 };
             }
         }
+        if let ContainerRuntimeObservation::Running { health } = runtime {
+            runtime = ContainerRuntimeObservation::Running {
+                health: self
+                    .checks
+                    .lock()
+                    .expect("check records are never poisoned")
+                    .settle(container_id, started_at(inspected.state.as_ref()), health),
+            };
+        }
         let runtime = withdrawn(runtime, self.stopping.borrow().contains(container_id));
         let container =
             ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
@@ -350,11 +370,16 @@ fn withdrawn_hides_only_running_containers_marked_stopping() {
     let healthy = ContainerRuntimeObservation::Running {
         health: HealthObservation::Healthy,
     };
+    let failing = ContainerRuntimeObservation::Running {
+        health: HealthObservation::Failing,
+    };
     let stopping = ContainerRuntimeObservation::Running {
         health: HealthObservation::Stopping,
     };
     assert_eq!(withdrawn(healthy.clone(), true), stopping);
-    assert!(!withdrawn(healthy.clone(), true).is_healthy());
+    assert_eq!(withdrawn(failing.clone(), true), stopping);
+    assert!(!withdrawn(failing, true).may_serve());
+    assert!(!withdrawn(healthy.clone(), true).may_serve());
     assert_eq!(withdrawn(healthy.clone(), false), healthy);
     assert_eq!(
         withdrawn(ContainerRuntimeObservation::Exited { code: 0 }, true),
@@ -502,6 +527,12 @@ struct RawNetworkSettings {
 struct RawEndpointSettings {
     #[serde(rename = "IPAddress")]
     ip_address: Option<String>,
+}
+
+fn started_at(state: Option<&serde_json::Value>) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(state?.get("StartedAt")?.as_str()?)
+        .ok()
+        .map(Into::into)
 }
 
 fn created_at_unix_nanos(created: Option<&str>) -> i64 {
@@ -1886,4 +1917,77 @@ fn inspection_environment_reads_docker_values_and_rejects_malformed_entries() {
     let malformed: RawContainerConfig =
         serde_json::from_value(serde_json::json!({"Env": ["INVALID"]})).unwrap();
     assert!(inspected_environment(&malformed).is_none());
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn inspection_reports_failing_once_the_check_passed_since_this_start() {
+    use test_support::{FakeDocker, container_request, fake_runtime_with, machine};
+
+    let containers = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+    let (runtime, _fake) = fake_runtime_with(FakeDocker {
+        named_containers: Some(containers.clone()),
+        ..Default::default()
+    })
+    .await;
+    let machine = machine();
+    let namespace = Namespace::parse("app").unwrap();
+    let spec = test_support::spec_with_sources(Vec::new());
+    let created = runtime
+        .create_with_admission::<_, _, Error>(
+            &machine,
+            container_request(
+                ContainerKind::ServiceContainer,
+                &namespace,
+                &spec,
+                std::future::ready(None),
+            ),
+        )
+        .await
+        .unwrap();
+    let observe = async |started_at: &str, health: &str| {
+        for container in containers.lock().unwrap().values_mut() {
+            let container = container.as_object_mut().unwrap();
+            container
+                .get_mut("Config")
+                .and_then(serde_json::Value::as_object_mut)
+                .unwrap()
+                .insert("Healthcheck".into(), json!({ "Test": ["CMD", "true"] }));
+            container.insert(
+                "State".into(),
+                json!({
+                    "Status": "running",
+                    "StartedAt": started_at,
+                    "Health": { "Status": health },
+                }),
+            );
+        }
+        let observed = runtime
+            .inspect_managed(&created.container_id, &machine.id)
+            .await
+            .unwrap();
+        let ContainerRuntimeObservation::Running { health } = &observed.runtime else {
+            panic!("expected a running container, got {}", observed.runtime);
+        };
+        health.clone()
+    };
+    let first_start = chrono::Utc::now().to_rfc3339();
+    let second_start = (chrono::Utc::now() + chrono::Duration::seconds(1)).to_rfc3339();
+
+    assert_eq!(
+        observe(&first_start, "unhealthy").await,
+        HealthObservation::Unhealthy
+    );
+    assert_eq!(
+        observe(&first_start, "healthy").await,
+        HealthObservation::Healthy
+    );
+    assert_eq!(
+        observe(&first_start, "unhealthy").await,
+        HealthObservation::Failing
+    );
+    assert_eq!(
+        observe(&second_start, "unhealthy").await,
+        HealthObservation::Unhealthy
+    );
 }

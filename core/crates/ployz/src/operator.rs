@@ -145,8 +145,8 @@ pub enum OperatorError {
     InvalidLocalPort(String),
     #[error("invalid remote port {0:?}: expected 1-65535")]
     InvalidRemotePort(String),
-    #[error("no running healthy regular container found for Service")]
-    NoHealthyContainer,
+    #[error("no regular container of the Service may serve")]
+    NoServableContainer,
     #[error("no containers for Service \"{service}\" found on the selected Machines")]
     NoContainersOnMachines { service: ServiceSelector },
     #[error("no Machines found")]
@@ -380,8 +380,8 @@ pub fn select_proxy_container(
     service
         .containers
         .iter()
-        .find(|container| container.as_observation().runtime.is_healthy())
-        .ok_or(OperatorError::NoHealthyContainer)
+        .find(|container| container.as_observation().runtime.may_serve())
+        .ok_or(OperatorError::NoServableContainer)
 }
 
 pub struct ExecSession {

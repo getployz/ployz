@@ -394,6 +394,7 @@ impl ContainerRuntime {
         match self.ensure_managed(container_id).await {
             Ok(()) => {}
             Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {
+                self.forget_checks(container_id);
                 return Ok(());
             }
             Err(error) => return Err(error),
@@ -411,13 +412,12 @@ impl ContainerRuntime {
         {
             Ok(()) => {
                 config_operation.remove(container_id).await?;
-                Ok(())
             }
-            Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {
-                Ok(())
-            }
-            Err(error) => Err(error),
+            Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {}
+            Err(error) => return Err(error),
         }
+        self.forget_checks(container_id);
+        Ok(())
     }
 
     pub async fn remove_all_managed(&self) -> Result<(), Error> {
@@ -438,6 +438,7 @@ impl ContainerRuntime {
             }
             self.force_remove_container(&container_id).await?;
             config_operation.remove(&container_id).await?;
+            self.forget_checks(&container_id);
         }
         Ok(())
     }

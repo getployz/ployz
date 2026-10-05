@@ -414,6 +414,12 @@ fn unhealthy() -> ContainerRuntimeObservation {
     }
 }
 
+fn failing() -> ContainerRuntimeObservation {
+    ContainerRuntimeObservation::Running {
+        health: HealthObservation::Failing,
+    }
+}
+
 fn exited(code: i64) -> ContainerRuntimeObservation {
     ContainerRuntimeObservation::Exited { code }
 }

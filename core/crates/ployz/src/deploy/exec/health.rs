@@ -3,9 +3,9 @@
 use std::time::Duration;
 
 use ployz_core::{
-    ConfiguredHealthcheck, ContainerId, ContainerObservation, ContainerRuntimeObservation,
-    DependencyHealthFailure, ExecutionError, HealthFailure, HealthObservation, HealthcheckSpec,
-    MachineId, OperationPhase, QualifiedService, ResolvedServiceSpec,
+    ContainerId, ContainerObservation, ContainerRuntimeObservation, DependencyHealthFailure,
+    ExecutionError, HealthFailure, HealthObservation, HealthcheckSpec, MachineId, OperationPhase,
+    QualifiedService, ResolvedServiceSpec, healthcheck_deadline,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -77,7 +77,7 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
                             | HealthObservation::Unrecognized(_),
                     }
                 )
-                .then(|| started + healthcheck_timeout(None))
+                .then(|| started + healthcheck_deadline(None))
             });
             let deadline = match classify_health(
                 &observed.runtime,
@@ -152,12 +152,13 @@ pub(super) async fn monitor_container<C: MachineOperations>(
         .monitor_millis
         .map_or(DEFAULT_HEALTH_MONITOR, Duration::from_millis);
     let started = Instant::now();
-    let deadline_ms = match spec.container.healthcheck.as_ref() {
-        Some(HealthcheckSpec::Http(check)) => u64::from(check.timeout_seconds) * 1_000,
-        other => {
-            healthcheck_timeout(other.and_then(HealthcheckSpec::as_configured)).as_millis() as u64
-        }
-    };
+    let deadline_ms = spec
+        .container
+        .healthcheck
+        .as_ref()
+        .and_then(HealthcheckSpec::deadline)
+        .unwrap_or_else(|| healthcheck_deadline(None))
+        .as_millis() as u64;
     progress.set_running(
         index,
         OperationPhase::WaitingForHealth {
@@ -257,7 +258,7 @@ fn classify_health(
 ) -> HealthPoll {
     match runtime {
         ContainerRuntimeObservation::Running {
-            health: HealthObservation::Healthy,
+            health: HealthObservation::Healthy | HealthObservation::Failing,
         } => HealthPoll::Complete,
         ContainerRuntimeObservation::Running {
             health: HealthObservation::NotConfigured,
@@ -347,18 +348,12 @@ fn health_deadline_for(
     started: Instant,
 ) -> Option<Instant> {
     match spec {
-        Some(HealthcheckSpec::Configured(configured)) => {
-            Some(started + healthcheck_timeout(Some(configured)))
-        }
-        Some(HealthcheckSpec::Http(check)) => {
-            Some(started + Duration::from_secs(u64::from(check.timeout_seconds)))
-        }
-        Some(HealthcheckSpec::Disabled) => None,
+        Some(spec) => spec.deadline().map(|deadline| started + deadline),
         None => observed
             .effective_healthcheck
             .as_ref()
             .and_then(HealthcheckSpec::as_configured)
-            .map(|check| started + healthcheck_timeout(Some(check)))
+            .map(|check| started + healthcheck_deadline(Some(check)))
             .or_else(|| {
                 matches!(
                     &observed.runtime,
@@ -366,27 +361,7 @@ fn health_deadline_for(
                         health: HealthObservation::Starting | HealthObservation::Unrecognized(_),
                     }
                 )
-                .then(|| started + healthcheck_timeout(None))
+                .then(|| started + healthcheck_deadline(None))
             }),
     }
-}
-
-fn healthcheck_timeout(healthcheck: Option<&ConfiguredHealthcheck>) -> Duration {
-    if let Some(deadline) = healthcheck.and_then(|check| check.deadline_millis) {
-        return Duration::from_millis(deadline);
-    }
-    let interval = healthcheck
-        .and_then(|check| check.interval_millis)
-        .unwrap_or(30_000);
-    let timeout = healthcheck
-        .and_then(|check| check.timeout_millis)
-        .unwrap_or(30_000);
-    let retries = u64::from(healthcheck.and_then(|check| check.retries).unwrap_or(3));
-    Duration::from_millis(
-        healthcheck
-            .and_then(|check| check.start_period_millis)
-            .unwrap_or_default()
-            .saturating_add(interval.saturating_add(timeout).saturating_mul(retries))
-            .saturating_add(5_000),
-    )
 }

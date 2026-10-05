@@ -7,7 +7,7 @@ use crate::{
     ServiceContainer, ServingShape,
 };
 
-/// Proof that a Service Container is healthy, addressed, and of a selected Serving Shape.
+/// Proof that a Service Container may serve, is addressed, and is of a selected Serving Shape.
 ///
 /// Only [`serving_containers`] constructs this type.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -36,7 +36,7 @@ impl<'serving> ServingContainer<'serving> {
     }
 }
 
-/// Serving Containers for this observer: healthy, addressed, and of the newest
+/// Serving Containers for this observer: may serve, addressed, and of the newest
 /// traffic-eligible Serving Shape per Qualified Service.
 #[must_use]
 pub fn serving_containers<'serving>(
@@ -130,7 +130,7 @@ mod tests {
     };
 
     #[test]
-    fn serving_containers_are_healthy_addressed_service_containers() {
+    fn serving_containers_are_addressed_service_containers_that_may_serve() {
         let service_id = ServiceId::parse("a".repeat(32)).unwrap();
         let healthy = serving_observation(
             '1',
@@ -193,10 +193,20 @@ mod tests {
             ContainerRuntimeObservation::Exited { code: 0 },
             Some([10, 210, 1, 7]),
         );
+        let failing = serving_observation(
+            '8',
+            &service_id,
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Failing,
+            },
+            Some([10, 210, 1, 8]),
+        );
 
         let containers = service_containers([
             healthy.clone(),
             not_configured.clone(),
+            failing.clone(),
             hook,
             starting,
             unhealthy,
@@ -210,7 +220,7 @@ mod tests {
                 .into_iter()
                 .map(super::ServingContainer::as_observation)
                 .collect::<Vec<_>>(),
-            vec![&healthy, &not_configured]
+            vec![&healthy, &not_configured, &failing]
         );
     }
 
@@ -307,6 +317,49 @@ mod tests {
                 .map(super::ServingContainer::as_observation)
                 .collect::<Vec<_>>(),
             vec![&v3]
+        );
+    }
+
+    #[test]
+    fn serving_containers_keep_a_newer_shape_that_passed_once_and_is_failing_now() {
+        let service_id = ServiceId::parse("a".repeat(32)).unwrap();
+        let mut v3 = serving_observation(
+            '1',
+            &service_id,
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+            Some([10, 210, 1, 2]),
+        );
+        v3.try_update(|parts| {
+            parts.created_at_unix_nanos = 1;
+            parts.resolved_spec.container.image = "api:3".into();
+        })
+        .unwrap();
+        let mut failing_v4 = serving_observation(
+            '2',
+            &service_id,
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Failing,
+            },
+            Some([10, 210, 1, 3]),
+        );
+        failing_v4
+            .try_update(|parts| {
+                parts.created_at_unix_nanos = 2;
+                parts.resolved_spec.container.image = "api:4".into();
+            })
+            .unwrap();
+
+        let containers = service_containers([v3, failing_v4.clone()]);
+        assert_eq!(
+            serving_containers(&containers)
+                .into_iter()
+                .map(super::ServingContainer::as_observation)
+                .collect::<Vec<_>>(),
+            vec![&failing_v4]
         );
     }
 
