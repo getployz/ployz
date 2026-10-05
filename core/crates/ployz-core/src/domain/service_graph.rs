@@ -367,7 +367,7 @@ impl ResolvedServiceMountGraph {
             configs: self.configs.clone(),
         }
     }
-    /// Empty every Config's content, keeping names and mounts so the graph stays admitted.
+    /// Empty every Config's content, keeping names and mounts.
     pub fn redact_config_content(&mut self) {
         for config in &mut self.configs.configs {
             config.content.clear();
