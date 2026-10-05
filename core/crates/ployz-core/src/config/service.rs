@@ -155,7 +155,7 @@ pub enum ServiceImageCredentials {
     Configured { credential_id: String },
 }
 
-/// An authored HTTP or shell-command readiness check, or an explicitly disabled check.
+/// An authored HTTP or shell-command readiness check, or none, which also disables the image's own check.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(
     tag = "type",

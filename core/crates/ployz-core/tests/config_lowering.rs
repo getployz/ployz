@@ -137,6 +137,11 @@ fn lowering_retains_commands_limits_restart_and_network_ownership() {
         json!({"state":"http","path":"/health","port":8080,"timeout_seconds":10})
     );
     assert_eq!(
+        healthcheck(json!({"type":"none"})),
+        json!({"state":"disabled"}),
+        "an image's own HEALTHCHECK never runs under Cloud"
+    );
+    assert_eq!(
         healthcheck(
             json!({"type":"command","command":"pg_isready -h 127.0.0.1","timeoutSeconds":90})
         ),

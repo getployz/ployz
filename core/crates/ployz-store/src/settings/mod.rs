@@ -174,7 +174,7 @@ impl ServiceSetting {
         match self {
             Self::CpuLimit => "Most vCPUs each replica may use. Unset means no limit.",
             Self::Healthcheck => {
-                "A check a new replica must pass before it takes traffic: an HTTP path on the container PORT or a shell command, and how many seconds it may take (default 300). Text sets the path. Unset turns it off."
+                "A check a new replica must pass before it takes traffic: an HTTP path on the container PORT or a shell command, and how many seconds it may take (default 300). Text sets the path. Unset turns it off, along with the image's own check."
             }
             Self::Image => "The container image each replica runs.",
             Self::MaxRetries => "How often an on-failure restart policy restarts a replica.",

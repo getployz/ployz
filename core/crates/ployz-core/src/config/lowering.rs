@@ -124,7 +124,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             .entry("PORT".into())
             .or_insert_with(|| DEFAULT_SERVICE_PORT.to_string());
         let healthcheck = match &config.healthcheck {
-            ServiceHealthcheck::None => None,
+            ServiceHealthcheck::None => Some(HealthcheckSpec::Disabled),
             ServiceHealthcheck::Http {
                 path,
                 timeout_seconds,
