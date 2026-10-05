@@ -164,7 +164,11 @@ fn put(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let bytes = match matches.get_one::<String>("from") {
         Some(path) => std::fs::read(path)?,
-        None => std::io::read_to_string(std::io::stdin())?.into_bytes(),
+        None => {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut std::io::stdin(), &mut bytes)?;
+            bytes
+        }
     };
     let file = file_name(matches)?;
     let content = String::from_utf8(bytes).map_err(|_| {
