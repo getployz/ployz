@@ -38,8 +38,18 @@ docker run --detach --rm --name "$name" --label "ployz.verify.checkout=$wt" \
 pg_port=$(docker port "$name" 5432/tcp | head -1 | sed 's/.*://')
 for _ in $(seq 120); do docker exec "$name" pg_isready -q -h 127.0.0.1 -U postgres -d ployz_cloud && break; sleep 0.5; done
 
-# Secrets are stable per checkout, so the browser's cookie survives a restart. Dead URLs (port 9) keep Inngest
-# (without real Servers) and DNS clicks off shared services; the GitHub App and Polar are fake.
+# A fake Hosted DNS grants Cluster Domains, so generated https addresses deploy (log: $run/hosted-dns.log).
+cd "$dash"
+setsid nohup node scripts/verify/runner.mjs /scripts/verify/hosted-dns.ts > "$run/hosted-dns.log" 2>&1 < /dev/null &
+echo $! > "$run/hosted-dns.pid"
+hosted_dns=
+for _ in $(seq 120); do
+  hosted_dns=$(sed -n 's/^VERIFY_HOSTED_DNS //p' "$run/hosted-dns.log") && [ -n "$hosted_dns" ] && break; sleep 0.25
+done
+[ -n "$hosted_dns" ] || { echo "up.sh: the fake Hosted DNS did not start (see $run/hosted-dns.log)" >&2; cat "$run/hosted-dns.log" >&2; exit 1; }
+
+# Secrets are stable per checkout, so the browser's cookie survives a restart. A dead URL (port 9) keeps Inngest
+# off shared services without real Servers; the GitHub App and Polar are fake.
 secret=ployz-verify-$(printf 'secret:%s' "$wt" | sha256sum | cut -c1-24)
 key=$(node -e 'const {generateKeyPairSync:g}=require("crypto");process.stdout.write(g("rsa",{modulusLength:2048}).privateKey.export({type:"pkcs8",format:"pem"}).replace(/\n/g,"\\n"))')
 if [ "${BILLING:-0}" = 1 ]; then
@@ -80,7 +90,7 @@ POLAR_SERVER=sandbox
 INNGEST_EVENT_KEY=verify-event-key
 INNGEST_SIGNING_KEY=signkey-verify-00
 $inngest
-PLOYZ_HOSTED_DNS_URL=http://127.0.0.1:9/
+PLOYZ_HOSTED_DNS_URL=$hosted_dns
 APP_ENCRYPTION_SECRET=$secret-encryption
 VERIFY_SESSION_TOKEN=$(printf 'session:%s' "$wt" | sha256sum | cut -c1-32)
 EOF
@@ -127,7 +137,7 @@ curl -s -o /dev/null -H "Cookie: better-auth.session_token=$cookie" "$base/cloud
 
 cat <<EOF | tee "$run/info"
 Ployz Cloud verify: $base  (billing $([ "${BILLING:-0}" = 1 ] && echo on || echo off))
-  session $name, postgres 127.0.0.1:$pg_port, log $run/vite.log, evidence $dash/.verify/evidence, stop: scripts/verify/down.sh
+  session $name, postgres 127.0.0.1:$pg_port, hosted DNS $hosted_dns, log $run/vite.log, evidence $dash/.verify/evidence, stop: scripts/verify/down.sh
   projects    $base/cloud/$org/~
   production  $base/cloud/$org/shop/production
   branch      $base/cloud/$org/shop/fix-api
