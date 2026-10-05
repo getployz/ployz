@@ -23,7 +23,7 @@ The seed (`scripts/verify/seed.ts`) writes through the app's own Config Store co
 | Where | What |
 | --- | --- |
 | organization `ada`, project `shop` | |
-| `production` | services web, api, postgres (with volume pg-data), worker; domain acme.com on web; one queued Deploy "Ship everything"; unpublished api edits (image 1.5, `FEATURE_SEARCH`) |
+| `production` | services web, api, postgres (with volume pg-data), worker; domain acme.com on web; one queued Deploy "Ship everything"; unpublished api edits (image whoami v1.11.0, `FEATURE_SEARCH`) |
 | `fix-api` | a Branch of production holding api and web, with 2 changes to save |
 
 With `SERVERS`, the seed skips the fake Server and the queued Deploy, and `seed.json` lists them under `skipped`. To seed different state, add Config Store writes to `seed.ts`. It is typechecked with the app, so a domain refactor that breaks it fails `pnpm typecheck`.

@@ -21,7 +21,7 @@ agent-browser --session $S snapshot -c                # dialog "Environment chan
 agent-browser --session $S open http://localhost:<port>/cloud/ada/shop/production/deployments
 ```
 
-The seed leaves production with api changes (Container image 1.4 → 1.5, `FEATURE_SEARCH`), so Details has rows before you edit anything.
+The seed leaves production with api changes (Container image whoami v1.10.3 → v1.11.0, `FEATURE_SEARCH`), so Details has rows before you edit anything.
 
 ## Gotchas
 

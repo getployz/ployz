@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Stops this checkout's verify instance: the cluster, vite dev server, Inngest dev server and worker, and Postgres
-# container up.sh started, and its
-# agent-browser session (KEEP_BROWSER=1 keeps it). Keeps dashboard/.verify/evidence and the cluster's evidence.
+# container up.sh started, and its agent-browser session (KEEP_BROWSER=1 keeps it). Keeps dashboard/.verify/evidence
+# and the cluster's evidence.
 # Usage: scripts/verify/down.sh
 set -uo pipefail
 dash=$(cd "$(dirname "$0")/../.." && pwd)

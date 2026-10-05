@@ -3,7 +3,7 @@
 // Prints one line, `VERIFY_SEED <json>`: the organization slug, the session cookie, an Organization Token for the CLI
 // (`cliToken`), every write's outcome and what was skipped.
 //
-// Ada Lovelace's organization holds project `shop`:
+// Ada Lovelace's organization holds project `shop`, on public images so a real Server can run it:
 //   production  web, api, postgres (+ pg-data volume), worker; a domain on web; one queued Deploy; unpublished api edits
 //   fix-api     a Branch of production (api, web) with 2 changes to save; production moved on after it branched
 // A fake Server is paired so the Store admits Deploys; nothing answers it. VERIFY_REAL_SERVERS=1 leaves pairing to the
@@ -64,7 +64,7 @@ const seed = Effect.gen(function* () {
     write(label, { command: "edit", environment: at(environment), expect: null, changes });
 
   yield* write("project shop", { command: "create_project", id: randomUUID(), name: "shop", default_environment: randomUUID() });
-  for (const [name, image] of [["web", "nginx:1.27-alpine"], ["api", "ghcr.io/acme/api:1.4"], ["postgres", "postgres:16"], ["worker", "ghcr.io/acme/api:1.4"]] as const) {
+  for (const [name, image] of [["web", "nginx:1.27-alpine"], ["api", "traefik/whoami:v1.10.3"], ["postgres", "postgres:16"], ["worker", "traefik/whoami:v1.10.3"]] as const) {
     yield* write(`service ${name}`, { command: "create_service", id: randomUUID(), environment: at(null), name, image });
   }
   yield* write("volume pg-data", {
@@ -75,6 +75,7 @@ const seed = Effect.gen(function* () {
   yield* edit("production env", "production", [
     { op: "set", path: "api.env.LOG_LEVEL", value: "warn" },
     { op: "set", path: "api.env.DATABASE_URL", value: "postgres://postgres@postgres:5432/shop" },
+    { op: "set", path: "postgres.env.POSTGRES_PASSWORD", value: "postgres" },
   ]);
 
   if (process.env["VERIFY_REAL_SERVERS"] === "1") {
@@ -107,7 +108,7 @@ const seed = Effect.gen(function* () {
     { op: "set", path: "web.startCommand", value: "npm run serve" },
   ]);
   yield* edit("production moves on", "production", [
-    { op: "set", path: "api.image", value: "ghcr.io/acme/api:1.5" },
+    { op: "set", path: "api.image", value: "traefik/whoami:v1.11.0" },
     { op: "set", path: "api.env.FEATURE_SEARCH", value: "on" },
   ]);
 

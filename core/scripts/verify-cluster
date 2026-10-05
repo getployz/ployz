@@ -296,7 +296,7 @@ def up(args):
         save(run)
         started = time.monotonic()
         for node in run["machines"]:
-            # Through Cloud, the Machine discovers its own endpoints; --public-ip and --wg-endpoint are standalone-only.
+            # Cloud enrollment currently ignores --public-ip and --wg-endpoint; the Machine advertises the endpoints it discovers.
             result = cli(run, commands, ["--json", "server", "add", "root@" + node["address"],
                                *([] if "cloud" in run else ["--standalone"]), "--no-install", "--storage", "none", "--yes",
                                "--name", node["name"], "--ssh-key", str(private / "id_ed25519"),
