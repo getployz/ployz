@@ -121,6 +121,7 @@ _Avoid_: Container name as identity, replica identity
 **Container Runtime Observation**:
 A point-in-time Docker lifecycle observation such as created, running with health, paused, restarting, exited, removing, dead, or an unrecognized external state carried verbatim as its observed value. Container observations do not combine into an authoritative Service state.
 Running health `stopping` is the daemon's own overlay, not Docker's: a client marked the Container ahead of a stop so the Ingress Proxies drop it first. The mark lives in daemon memory and ends when the stop runs.
+Running health `failing` is also the daemon's: the Healthcheck passed since the Container's current start and fails now, so the Container keeps serving. `unhealthy` means it never passed since this start. The pass is remembered per start in daemon memory; a start the daemon first sees after the Healthcheck's deadline counts as passed.
 _Avoid_: Service state, desired state
 
 **Requested Service Spec**:
@@ -447,8 +448,8 @@ The address assigned to one container within its Machine Subnet. Its apparent cl
 _Avoid_: Management Address, globally unique container address
 
 **Serving Container**:
-A Service Container that is healthy, has a Container Address, and carries this observer's selected Serving Shape for its Qualified Service. It is observer-derived eligibility to receive traffic, not a replica identity.
-The selected shape is the newest traffic-eligible shape observed for that Qualified Service. A starting, unhealthy, or stopped replacement does not exclude healthy older Containers; once a newer shape can take traffic, only that shape serves.
+A Service Container that may serve (running with health `healthy`, `failing` or `not_configured`), has a Container Address, and carries this observer's selected Serving Shape for its Qualified Service. It is observer-derived eligibility to receive traffic, not a replica identity. A Healthcheck gates the first serve only: a Container that passed once keeps serving while its check fails.
+The selected shape is the newest traffic-eligible shape observed for that Qualified Service. A starting, unhealthy, or stopped replacement does not exclude healthy older Containers; once a newer shape can take traffic, only that shape serves, and it keeps serving while its check fails.
 _Avoid_: replica, endpoint, upstream
 
 **Serving Shape**:
