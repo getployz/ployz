@@ -367,6 +367,12 @@ impl ResolvedServiceMountGraph {
             configs: self.configs.clone(),
         }
     }
+    /// Empty every Config's content, keeping names and mounts so the graph stays admitted.
+    pub fn redact_config_content(&mut self) {
+        for config in &mut self.configs.configs {
+            config.content.clear();
+        }
+    }
     pub(crate) fn into_parts(self) -> (ResolvedServiceVolumeGraph, ServiceConfigGraph) {
         (self.volumes, self.configs)
     }
