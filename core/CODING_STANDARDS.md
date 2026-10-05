@@ -50,7 +50,7 @@ A fan-out result carries its per-Machine `failures` and `omitted`; a per-Machine
 
 The exit code comes from the code, through the one table in `ui::exit_code`: `invalid_argument`, `confirmation_required` and `ambiguous` exit 2, every other failure (`unsupported` included) exits 1. Handlers never pick an exit code; only `exec` passes its process's code through `Failure::exit`.
 
-A failure's first line is our sentence about the domain thing, capitalized and ending with a period. The raw cause (OS, HTTP, Docker text) is the error's `#[source]` and prints on its own `cause:` line; never interpolate a source into `#[error]`, and never flatten an error with `to_string()` on its way to a `Failure`. Wrap a lower failure with `Failure::context` to keep its code and chain it as the cause.
+A failure's first line is our sentence about the domain thing, capitalized and ending with a period. The raw cause (OS, HTTP, Docker text) is the error's `#[source]`. Human output prints the deepest source on one `cause:` line, and `--json` lists every source in `cause`, outermost first; never interpolate a source into `#[error]`, and never flatten an error with `to_string()` on its way to a `Failure`. Wrap a lower failure with `Failure::context` to keep its code and chain it as the cause.
 
 The command that fixes or follows a failure is a typed hint, `Failure::hint(Hint::Next | Inspect | Retry | Undo | Closest | Valid)`, never prose in the message. Human output prints it as a labelled line; JSON carries it in `details`.
 

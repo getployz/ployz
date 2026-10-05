@@ -138,16 +138,16 @@ Every fan-out uses this one line and exit 3. Under `--json` it goes into `omitte
 
 ```
 error: Could not reach Cloud at https://api.ployz.dev.
-  cause: tcp connect error: connection refused (os error 111)
+  cause: Connection refused (os error 111)
 next: ployz cloud status
 ```
 
 - The first line is ours, capitalized, and names the domain thing.
-- Each `cause:` line is one `Error::source()`, raw.
+- One `cause:` line follows: the deepest `Error::source()` in the chain, raw. The layers in between stay in JSON.
 - This needs one refactor: our `thiserror` types must stop interpolating `{source}` into `#[error]`, or the cause prints twice.
 - Raw HTTP bodies and Docker errors move into `cause:`, never the first line.
 
-JSON is unchanged except that it gains `cause`, always a list and empty when there is none:
+JSON is unchanged except that it gains `cause`: every source in the chain, outermost first. It is always a list and is empty when there is none.
 
 `{"error":{"code":"unavailable","message":"…","cause":["…"],"details":{"next":"ployz cloud status"}}}`
 

@@ -67,13 +67,27 @@ fn render(
     if mode == Mode::Json && !emitted {
         let _ = writeln!(stdout, "{}", json!({ "error": failure.json() }));
     } else {
-        let _ = error::write(stderr, &report.message, &failure.causes(), &failure.hints());
+        let causes = failure.causes();
+        let _ = error::write(
+            stderr,
+            &report.message,
+            causes.last().map(String::as_str),
+            &failure.hints(),
+        );
     }
     if emitted {
         PARTIAL_EXIT
     } else {
         exit_code(&report.code)
     }
+}
+
+/// What a person sees for `failure` in Plain mode.
+#[cfg(test)]
+pub(crate) fn plain(failure: &Failure) -> String {
+    let mut stderr = anstream::StripStream::new(Vec::new());
+    render(failure, Mode::Plain, false, &mut Vec::new(), &mut stderr);
+    String::from_utf8(stderr.into_inner()).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -151,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn a_two_level_chain_prints_two_cause_lines() {
+    fn human_output_prints_the_deepest_cause_and_json_keeps_every_one() {
         let failure = Failure::caused(
             RpcErrorCode::Unavailable,
             "Could not reach Cloud at http://127.0.0.1:9.",
@@ -162,7 +176,27 @@ mod tests {
         assert_eq!(ended.code, 1);
         assert_eq!(
             ended.stderr,
-            "error: Could not reach Cloud at http://127.0.0.1:9.\n  cause: tcp connect error\n  cause: connection refused (os error 111)\nnext: ployz cloud status\n"
+            "error: Could not reach Cloud at http://127.0.0.1:9.\n  cause: connection refused (os error 111)\nnext: ployz cloud status\n"
+        );
+
+        let failure = Failure::caused(
+            RpcErrorCode::Unavailable,
+            "Could not save the context.",
+            Tcp(Os),
+        )
+        .context("Server removed; local context cleanup failed.");
+        assert_eq!(
+            end(&failure, Mode::Plain, false).stderr,
+            "error: Server removed; local context cleanup failed.\n  cause: connection refused (os error 111)\n"
+        );
+        let object: Value = serde_json::from_str(&end(&failure, Mode::Json, false).stdout).unwrap();
+        assert_eq!(
+            object.pointer("/error/cause").unwrap(),
+            &json!([
+                "Could not save the context.",
+                "tcp connect error",
+                "connection refused (os error 111)"
+            ])
         );
     }
 
@@ -204,10 +238,12 @@ mod tests {
     fn a_wrapper_that_repeats_its_source_prints_once() {
         let inner = Failure::caused(RpcErrorCode::Internal, "Could not save the context.", Os);
         let failure = inner.context("Server removed; local context cleanup failed.");
-        let ended = end(&failure, Mode::Plain, false);
         assert_eq!(
-            ended.stderr,
-            "error: Server removed; local context cleanup failed.\n  cause: Could not save the context.\n  cause: connection refused (os error 111)\n"
+            failure.causes(),
+            [
+                "Could not save the context.",
+                "connection refused (os error 111)"
+            ]
         );
     }
 
@@ -233,11 +269,11 @@ mod tests {
     #[test]
     fn color_is_painted_and_stripped_by_the_stream() {
         let mut colored = Vec::new();
-        error::write(&mut colored, "Nope.", &["boom".into()], &[]).unwrap();
+        error::write(&mut colored, "Nope.", Some("boom"), &[]).unwrap();
         let colored = String::from_utf8(colored).unwrap();
         assert!(colored.contains("\u{1b}["), "{colored:?}");
         let mut plain = anstream::StripStream::new(Vec::new());
-        error::write(&mut plain, "Nope.", &["boom".into()], &[]).unwrap();
+        error::write(&mut plain, "Nope.", Some("boom"), &[]).unwrap();
         assert_eq!(
             String::from_utf8(plain.into_inner()).unwrap(),
             "error: Nope.\n  cause: boom\n"

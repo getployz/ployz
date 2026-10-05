@@ -83,8 +83,12 @@ services. It expires after 90 days unless you pass `--expires-in` (1 to 365 days
 find its ID with `ployz token ls`, then run `ployz token rm ID`. If it names a server that's
 offline, run it again once that server is back.
 
+When a command fails, Ployz prints what went wrong, then a `cause:` line with the underlying
+error, such as the operating system's or the server's own message.
+
 Add `--json` to any command to get one JSON object instead of text. If the command fails, that
-object is `{"error": {...}}`, with the next command to run in `details` when there is one.
+object is `{"error": {...}}`. Its `cause` lists every underlying error, outermost first, and
+`details` holds the next command to run when there is one.
 
 Scripts can tell failures apart by exit code:
 

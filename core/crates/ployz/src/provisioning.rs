@@ -485,7 +485,7 @@ fn finish_remote(
         (Err(primary), Ok(())) => Err(primary),
         (Ok(()), Err(cleanup)) => Err(cleanup),
         (Err(primary), Err(cleanup)) => Err(ProvisionError::CleanupAfter {
-            both: Box::new(crate::failure::JoinedChain::new(&primary, &cleanup)),
+            both: Box::new(crate::failure::JoinedChain::new(&cleanup, &primary)),
             primary: Box::new(primary),
         }),
     }
@@ -659,9 +659,9 @@ mod tests {
         assert_eq!(
             crate::ui::causes(&error),
             [
-                "bootstrap verification: bad version",
                 "Could not remove the remote bootstrap.",
-                "ssh failed"
+                "ssh failed",
+                "bootstrap verification: bad version"
             ]
         );
     }

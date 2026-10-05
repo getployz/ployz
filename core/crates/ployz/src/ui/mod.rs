@@ -10,6 +10,8 @@ mod tone;
 pub(crate) use error::chain_text;
 pub use error::{Hint, VALID_SHOWN, causes};
 pub(crate) use error::{retrying, row, rpc_error, warn};
+#[cfg(test)]
+pub(crate) use exit::plain;
 pub use exit::{PARTIAL_EXIT, exit, exit_code};
 pub use mode::{Mode, Surroundings, mode};
 pub use tone::{Painted, Tone, clap_styles};

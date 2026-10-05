@@ -367,6 +367,12 @@ mod tests {
         };
         assert!(at("timed out") < at("Could not confirm the resulting Server state."));
         assert!(at("Could not confirm the resulting Server state.") < at("unknown method Inspect"));
+        assert!(
+            crate::ui::plain(&failure)
+                .ends_with("\n  cause: unknown method Inspect for service ployz.machine.v1\n"),
+            "{}",
+            crate::ui::plain(&failure)
+        );
     }
 
     #[test]

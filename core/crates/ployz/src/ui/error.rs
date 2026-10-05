@@ -191,8 +191,8 @@ pub(crate) fn chain_text(error: Chain<'_>) -> String {
     inline(error)
 }
 
-/// Write the human error: `error:` with our sentence, a `cause:` line per source,
-/// then the hints.
+/// Write the human error: `error:` with our sentence, one `cause:` line with the
+/// deepest source, then the hints. `--json` keeps every cause.
 ///
 /// # Errors
 ///
@@ -200,7 +200,7 @@ pub(crate) fn chain_text(error: Chain<'_>) -> String {
 pub fn write(
     out: &mut dyn io::Write,
     message: &str,
-    causes: &[String],
+    cause: Option<&str>,
     hints: &[Hint],
 ) -> io::Result<()> {
     let mut lines = message.lines();
@@ -213,7 +213,7 @@ pub fn write(
     for line in lines {
         writeln!(out, "{line}")?;
     }
-    for cause in causes {
+    if let Some(cause) = cause {
         writeln!(out, "  {} {cause}", Tone::Bad.paint("cause:"))?;
     }
     for hint in hints {
@@ -275,7 +275,7 @@ mod tests {
         write(
             &mut out,
             "No Setting s1l",
-            &[],
+            None,
             &Hint::from_details(&details),
         )
         .unwrap();
