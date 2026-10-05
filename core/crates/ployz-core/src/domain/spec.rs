@@ -712,7 +712,7 @@ impl ResolvedServiceSpec {
 }
 
 mod serving_shape;
-pub use serving_shape::ServingShape;
+pub use serving_shape::{PublishedServingShape, ServingShape};
 
 mod comparison;
 pub use comparison::compare_specs;

@@ -16,6 +16,10 @@ use crate::{ServiceMount, ServiceName, ServiceVolume};
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ServingShape(u64);
 
+/// Serving Shape of a published observation, whose Config content is redacted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublishedServingShape(ServingShape);
+
 impl ServingShape {
     /// Shape of one observed Resolved Service Spec.
     #[must_use]
@@ -173,15 +177,12 @@ impl ResolvedServiceSpec {
         ServingShape::of_resolved(self)
     }
 
-    /// Serving Shape of this spec once published, with Config content redacted.
-    ///
-    /// Published rows from daemons that do and don't redact Config content compare
-    /// equal. Compare it only with other published shapes.
+    /// Serving Shape of this spec as a daemon publishes it.
     #[must_use]
-    pub fn published_serving_shape(&self) -> ServingShape {
+    pub fn published_serving_shape(&self) -> PublishedServingShape {
         let mut published = self.clone();
         published.mount_graph.redact_config_content();
-        ServingShape::of_resolved(&published)
+        PublishedServingShape(ServingShape::of_resolved(&published))
     }
 }
 
