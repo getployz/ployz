@@ -337,7 +337,7 @@ impl ContainerObservation {
 
     /// Replace every Service and pre-deploy hook environment value, keeping the keys,
     /// and empty every Config's content, keeping its name and mounts.
-    pub fn redact_environment(&mut self) {
+    pub fn redact_values(&mut self) {
         self.try_update(|parts| {
             let spec = &mut parts.resolved_spec;
             let hook = spec.pre_deploy.iter_mut().map(|hook| &mut hook.environment);
@@ -776,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn redact_environment_clears_config_content_and_keeps_mounts() {
+    fn redact_values_clears_config_content_and_keeps_mounts() {
         let mut observed: ContainerObservation = serde_json::from_value(serde_json::json!({
             "container_id": "a".repeat(64),
             "display_name": "api-test",
@@ -800,7 +800,7 @@ mod tests {
         .unwrap();
         let mounts = observed.resolved_spec.config_mounts().to_vec();
 
-        observed.redact_environment();
+        observed.redact_values();
 
         assert_eq!(
             observed.resolved_spec.configs(),
