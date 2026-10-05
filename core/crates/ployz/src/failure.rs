@@ -158,23 +158,15 @@ impl Failure {
         })
     }
 
-    /// Our sentence over this failure, which becomes its `cause:`. The code and
-    /// hints carry over.
     #[must_use]
     pub(crate) fn context(self, message: impl Into<Cow<'static, str>>) -> Self {
-        let code = self.report().code;
-        let hints = self.own_hints().to_vec();
-        Self {
-            inner: Inner::Command {
-                error: Box::new(Message {
-                    code,
-                    text: message.into(),
-                    details: Value::Null,
-                    source: Some(Box::new(self)),
-                }),
-                hints,
-            },
-        }
+        let RpcError { code, details, .. } = self.report();
+        Self::command(Message {
+            code,
+            text: message.into(),
+            details,
+            source: Some(Box::new(self)),
+        })
     }
 
     fn own_hints(&self) -> &[Hint] {
@@ -234,12 +226,10 @@ impl Failure {
         }
     }
 
-    /// The JSON error object: the report, plus `cause` when the chain has one.
     pub(crate) fn json(&self) -> Value {
         let mut error = serde_json::json!(self.report());
-        let causes = self.causes();
-        if let (false, Some(fields)) = (causes.is_empty(), error.as_object_mut()) {
-            fields.insert("cause".into(), serde_json::json!(causes));
+        if let Some(fields) = error.as_object_mut() {
+            fields.insert("cause".into(), serde_json::json!(self.causes()));
         }
         error
     }
@@ -348,9 +338,8 @@ fn connect_code(error: &ConnectError) -> RpcErrorCode {
             RpcErrorCode::Unsupported
         }
         ConnectError::Context(error) => context_code(error),
-        ConnectError::Config(_) | ConnectError::Connection(_) | ConnectError::Value(_) => {
-            RpcErrorCode::InvalidArgument
-        }
+        ConnectError::Config(error) => config_code(error),
+        ConnectError::Connection(_) | ConnectError::Value(_) => RpcErrorCode::InvalidArgument,
         ConnectError::Codec(error) => codec_code(error),
         // Every connection failed: the last one says why.
         ConnectError::AllFailed {
@@ -552,8 +541,8 @@ fn config_code(error: &ConfigError) -> RpcErrorCode {
         ConfigError::Context(error) => context_code(error),
         ConfigError::Parse { .. }
         | ConfigError::PrivatePermissions(_)
-        | ConfigError::EmptyCurrentContext(_) => RpcErrorCode::InvalidArgument,
-        ConfigError::Read { .. }
+        | ConfigError::EmptyCurrentContext(_)
+        | ConfigError::Read { .. }
         | ConfigError::Write { .. }
         | ConfigError::CreateDirectory { .. }
         | ConfigError::Encode(_)
@@ -773,6 +762,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn context_keeps_the_inner_details_and_next() {
+        let inner = Failure::from(RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "Machine is starting".into(),
+            details: serde_json::json!({ "next": "ployz server ls", "machine": "alpha" }),
+        });
+        let outer = inner.context("Could not deploy.");
+        let report = outer.report();
+        assert_eq!(report.code, RpcErrorCode::Unavailable);
+        assert_eq!(report.details.get("next").unwrap(), "ployz server ls");
+        assert_eq!(report.details.get("machine").unwrap(), "alpha");
+        assert_eq!(outer.hints(), [Hint::Next("ployz server ls".into())]);
+        assert_eq!(outer.causes(), ["Machine is starting"]);
+    }
+
+    #[test]
     fn a_failure_flattened_to_one_line_keeps_every_cause() {
         let write = ConfigError::Write {
             path: "/etc/ployz/config.yaml".into(),
@@ -786,39 +791,36 @@ mod tests {
     }
 
     #[test]
-    fn failing_to_touch_the_config_is_internal_but_a_bad_config_is_the_readers() {
-        let io = || io::Error::other("disk full");
-        for (error, code) in [
-            (
+    fn a_config_file_problem_is_never_the_command_line_however_it_is_wrapped() {
+        let errors = || {
+            let io = || io::Error::other("disk full");
+            [
                 ConfigError::Read {
                     path: "c".into(),
                     source: io(),
                 },
-                RpcErrorCode::Internal,
-            ),
-            (
                 ConfigError::Write {
                     path: "c".into(),
                     source: io(),
                 },
-                RpcErrorCode::Internal,
-            ),
-            (
                 ConfigError::CreateDirectory {
                     path: "c".into(),
                     source: io(),
                 },
-                RpcErrorCode::Internal,
-            ),
-            (
                 ConfigError::Parse {
                     path: "c".into(),
                     line: Some(1),
                 },
-                RpcErrorCode::InvalidArgument,
-            ),
-        ] {
-            assert_eq!(Failure::from(error).report().code, code);
+                ConfigError::PrivatePermissions("c".into()),
+                ConfigError::EmptyCurrentContext("c".into()),
+            ]
+        };
+        for error in errors() {
+            assert_eq!(Failure::from(error).report().code, RpcErrorCode::Internal);
+        }
+        for error in errors() {
+            let wrapped = Failure::from(ConnectError::Config(error));
+            assert_eq!(wrapped.report().code, RpcErrorCode::Internal);
         }
     }
 

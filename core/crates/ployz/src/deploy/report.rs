@@ -19,20 +19,20 @@ pub(crate) struct Ink {
 
 impl Ink {
     #[must_use]
-    pub(crate) fn detect(stream: &impl anstream::stream::RawStream) -> Self {
+    pub(crate) fn of(choice: anstream::ColorChoice) -> Self {
         Self {
-            color: anstream::AutoStream::choice(stream) != anstream::ColorChoice::Never,
+            color: choice != anstream::ColorChoice::Never,
         }
     }
 
     /// Color for the stream carrying human text.
     #[must_use]
     pub(crate) fn human() -> Self {
-        if crate::output::json() {
-            Self::detect(&io::stderr())
+        Self::of(if crate::output::json() {
+            anstream::AutoStream::choice(&io::stderr())
         } else {
-            Self::detect(&io::stdout())
-        }
+            anstream::AutoStream::choice(&io::stdout())
+        })
     }
 
     /// No ANSI.

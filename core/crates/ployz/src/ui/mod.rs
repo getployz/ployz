@@ -21,32 +21,35 @@ pub enum Color {
 }
 
 impl Color {
-    /// The `--color` value in `args`, read before clap so its own errors obey it.
-    /// The last one wins, as clap's would; a bad value is clap's to reject.
-    pub fn from_args<I: IntoIterator<Item = S>, S: AsRef<std::ffi::OsStr>>(args: I) -> Self {
+    pub fn before_subcommand<I: IntoIterator<Item = S>, S: AsRef<std::ffi::OsStr>>(
+        args: I,
+    ) -> Self {
         let mut color = Self::Auto;
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
-            let arg = arg.as_ref();
-            if arg == "--" {
+            let Some(arg) = arg.as_ref().to_str().filter(|arg| arg.starts_with('-')) else {
                 break;
-            }
-            let value = if arg == "--color" {
-                args.next().map(|value| value.as_ref().to_os_string())
-            } else {
-                arg.to_str()
-                    .and_then(|arg| arg.strip_prefix("--color="))
-                    .map(Into::into)
             };
-            if let Some(value) = value.as_deref().and_then(std::ffi::OsStr::to_str) {
-                color = match value {
-                    "always" => Self::Always,
-                    "never" => Self::Never,
-                    _ => Self::Auto,
-                };
+            let value = if arg == "--color" {
+                args.next()
+                    .and_then(|value| value.as_ref().to_str().map(str::to_owned))
+            } else {
+                arg.strip_prefix("--color=").map(str::to_owned)
+            };
+            if let Some(value) = value {
+                color = Self::named(&value);
             }
         }
         color
+    }
+
+    #[must_use]
+    pub fn named(value: &str) -> Self {
+        match value {
+            "always" => Self::Always,
+            "never" => Self::Never,
+            _ => Self::Auto,
+        }
     }
 
     /// Make every `anstream` writer, clap's included, obey this choice.
@@ -70,15 +73,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn color_is_read_before_clap_and_the_last_one_wins() {
-        assert_eq!(Color::from_args(["ps"]), Color::Auto);
-        assert_eq!(Color::from_args(["--color", "never", "ps"]), Color::Never);
+    fn color_is_read_only_before_the_subcommand() {
+        assert_eq!(Color::before_subcommand(["ps"]), Color::Auto);
         assert_eq!(
-            Color::from_args(["--color=never", "ps", "--color", "always"]),
+            Color::before_subcommand(["--color", "never", "ps"]),
+            Color::Never
+        );
+        assert_eq!(
+            Color::before_subcommand(["--color=never", "--color", "always", "ps"]),
             Color::Always
         );
         assert_eq!(
-            Color::from_args(["exec", "web", "--", "ls", "--color=always"]),
+            Color::before_subcommand(["--color=never", "ps", "--color", "always"]),
+            Color::Never
+        );
+        assert_eq!(
+            Color::before_subcommand(["exec", "web", "grep", "--color=always", "foo"]),
             Color::Auto
         );
     }

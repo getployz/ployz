@@ -287,6 +287,7 @@ fn a_denied_login_fails_with_the_command_to_start_over() {
             "code": "unauthenticated",
             "message": "the sign-in was denied in the browser",
             "details": { "next": "ployz login" },
+            "cause": [],
         } })
     );
 }

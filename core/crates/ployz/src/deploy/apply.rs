@@ -1,5 +1,3 @@
-use std::io;
-
 use ployz_core::{DeployEvent, DeployIntent, Namespace, OperationRow, RequestedServiceSpec};
 use tokio_util::sync::CancellationToken;
 use unicode_segmentation::UnicodeSegmentation as _;
@@ -90,12 +88,12 @@ impl From<ApplyError> for Failure {
 }
 
 /// The closing report of a failed execution, with its outcome as evidence.
-fn closing_failure(
+pub(super) fn closing_failure(
     outcome: &DeployOutcome<ExecutionError>,
     rows: &[OperationRow],
     live_shown: bool,
 ) -> Failure {
-    let text = report::paint_closing(outcome, rows, live_shown, &Ink::detect(&io::stderr()));
+    let text = report::paint_closing(outcome, rows, live_shown, &Ink::plain());
     Failure::detailed(
         ployz_core::RpcErrorCode::Internal,
         text.trim().to_owned(),
@@ -267,11 +265,10 @@ mod tests {
     };
 
     #[test]
-    fn the_color_flag_decides_the_deploy_ink() {
-        anstream::ColorChoice::Never.write_global();
-        assert_eq!(Ink::detect(&std::io::stderr()), Ink::plain());
-        anstream::ColorChoice::Always.write_global();
-        assert_eq!(Ink::detect(&std::io::stderr()), Ink::color());
+    fn the_resolved_color_choice_decides_the_deploy_ink() {
+        assert_eq!(Ink::of(anstream::ColorChoice::Never), Ink::plain());
+        assert_eq!(Ink::of(anstream::ColorChoice::Always), Ink::color());
+        assert_eq!(Ink::of(anstream::ColorChoice::AlwaysAnsi), Ink::color());
     }
 
     #[test]

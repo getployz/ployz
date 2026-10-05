@@ -695,14 +695,10 @@ async fn wait_phase(
     )
     .await
     .map_err(|error| {
-        let error = crate::ui::inline(&error);
-        Error::unavailable(if participating {
-            format!(
-                "{}: {error}",
-                crate::handlers::server::readiness_timeout_message(timeout_message)
-            )
+        Error::from(error).context(if participating {
+            crate::handlers::server::readiness_timeout_message(timeout_message)
         } else {
-            error
+            timeout_message.to_owned()
         })
     })
 }

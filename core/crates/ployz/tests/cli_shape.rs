@@ -309,6 +309,11 @@ fn json_results_and_errors_are_one_stdout_object_with_distinct_exit_codes() {
     assert_eq!(code, Some(1));
     assert_eq!(json.pointer("/error/code").unwrap(), "not_found", "{json}");
     assert!(message(&json).contains("no contexts"), "{json}");
+    assert_eq!(
+        json.pointer("/error/cause").unwrap(),
+        &serde_json::json!([]),
+        "{json}"
+    );
 
     let (code, json, stderr) = run_json(&["volume", "ls", "--json", "--no-such-flag"]);
     assert_eq!(code, Some(2), "{stderr}");
@@ -318,6 +323,93 @@ fn json_results_and_errors_are_one_stdout_object_with_distinct_exit_codes() {
         "{json}"
     );
     assert!(message(&json).contains("--no-such-flag"), "{json}");
+}
+
+#[test]
+fn an_unreadable_config_fails_the_same_way_for_every_command() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.yaml");
+    std::fs::write(&config, "contexts: {}\n").unwrap();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&config).is_ok() {
+        eprintln!("skipped: this user reads a mode 000 file");
+        return;
+    }
+    let run = |args: &[&str]| {
+        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+            .args(args)
+            .args(["--json", "--ployz-config", config.to_str().unwrap()])
+            .env("HOME", home.path())
+            .env_remove("PLOYZ_CONTEXT")
+            .env_remove("PLOYZ_CONNECT")
+            .env_remove("PLOYZ_TOKEN")
+            .env_remove("PLOYZ_CLOUD_URL")
+            .env_remove("PLOYZ_STORE")
+            .output()
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        (output.status.code(), json.pointer("/error/code").cloned())
+    };
+    let ps = run(&["ps"]);
+    assert_eq!(ps, (Some(1), Some(serde_json::json!("internal"))));
+    assert_eq!(run(&["ctx", "use", "prod"]), ps);
+}
+
+#[test]
+fn no_failure_message_flattens_a_cause() {
+    const CONSTRUCTORS: [&str; 9] = [
+        "::usage(",
+        "::not_found(",
+        "::ambiguous(",
+        "::conflict(",
+        "::unavailable(",
+        "::coded(",
+        "::detailed(",
+        "::caused(",
+        ".context(",
+    ];
+    let mut found = Vec::new();
+    let mut dirs = vec![std::path::PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src"
+    ))];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            for constructor in CONSTRUCTORS {
+                for (start, _) in source.match_indices(constructor) {
+                    let rest = &source[start + constructor.len()..];
+                    let mut depth = 1;
+                    let end = rest
+                        .char_indices()
+                        .find_map(|(at, c)| {
+                            depth += match c {
+                                '(' => 1,
+                                ')' => -1,
+                                _ => 0,
+                            };
+                            (depth == 0).then_some(at)
+                        })
+                        .unwrap_or(rest.len());
+                    let argument = &rest[..end];
+                    if argument.contains("inline(") {
+                        found.push(format!("{}: {constructor}{argument}", path.display()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "use Failure::caused or .context:\n{}",
+        found.join("\n")
+    );
 }
 
 /// Run the binary for human output against an empty config home; returns (exit code, stderr).

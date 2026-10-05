@@ -169,7 +169,7 @@ fn add_server(
     args.extend(["--", destination]);
     let add = crate::cli::command()
         .try_get_matches_from(args)
-        .map_err(|error| Error::usage(error.render().to_string()))?;
+        .map_err(|error| super::clap_usage(&error))?;
     let handler = super::handler_for("server add").expect("server add has a handler");
     let (added, server) = crate::output::captured(|| handler(&add));
     added?;

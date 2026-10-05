@@ -30,3 +30,55 @@ pub fn inline(error: &(dyn Error + 'static)) -> String {
     }
     text
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct Layer(&'static str, Option<Box<Layer>>);
+
+    impl std::fmt::Display for Layer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl Error for Layer {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            self.1
+                .as_deref()
+                .map(|layer| layer as &(dyn Error + 'static))
+        }
+    }
+
+    fn chain(lines: &[&'static str]) -> Layer {
+        lines
+            .iter()
+            .rev()
+            .fold(None, |below, line| Some(Layer(line, below.map(Box::new))))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_cause_that_repeats_the_line_above_is_skipped() {
+        let error = chain(&[
+            "Could not deploy.",
+            "disk full",
+            "disk full",
+            "",
+            "os error 28",
+        ]);
+        assert_eq!(causes(&error), ["disk full", "os error 28"]);
+    }
+
+    #[test]
+    fn inline_joins_the_chain_and_drops_each_trailing_period() {
+        let error = chain(&["Could not deploy.", "Volume is full.", "os error 28"]);
+        assert_eq!(
+            inline(&error),
+            "Could not deploy: Volume is full: os error 28"
+        );
+        assert_eq!(inline(&chain(&["Nothing below."])), "Nothing below.");
+    }
+}

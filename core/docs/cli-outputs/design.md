@@ -147,7 +147,7 @@ next: ployz cloud status
 - This needs one refactor: our `thiserror` types must stop interpolating `{source}` into `#[error]`, or the cause prints twice.
 - Raw HTTP bodies and Docker errors move into `cause:`, never the first line.
 
-JSON is unchanged except that it gains `cause`:
+JSON is unchanged except that it gains `cause`, always a list and empty when there is none:
 
 `{"error":{"code":"unavailable","message":"…","cause":["…"],"details":{"next":"ployz cloud status"}}}`
 
