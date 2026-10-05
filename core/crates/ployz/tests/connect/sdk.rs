@@ -358,6 +358,14 @@ async fn node_store_seams_refuse_malformed_input() {
         .await;
 }
 
+#[tokio::test]
+async fn node_configs_round_trip_through_the_store() {
+    UnixSession::start()
+        .await
+        .assert_sdk_script("node_configs.js", MachineId::random(), &[])
+        .await;
+}
+
 pub(super) fn advertised_description() -> ContractDescription {
     ContractDescription {
         machine_id: MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),

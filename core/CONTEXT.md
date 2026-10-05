@@ -210,7 +210,7 @@ A named group of Environments in one Config Store.
 _Avoid_: Namespace, app, stack
 
 **Environment**:
-One Project's authored configuration of Services and Volumes, with its own Working and Saved State, deployed to its own Namespace.
+One Project's authored configuration of Services, Volumes and Configs, with its own Working and Saved State, deployed to its own Namespace.
 _Avoid_: Namespace, stage, workspace
 
 **Default Environment**:
@@ -230,7 +230,7 @@ A deployable element of an Environment whose desired configuration participates 
 _Avoid_: Canvas node when referring to deployment identity
 
 **Environment Resource**:
-A non-Service Environment Node with stable identity and type-owned configuration and lifecycle behavior. Volumes are the current Environment Resource type; effects on a Service's container template remain Service-owned.
+A non-Service Environment Node with stable identity and type-owned configuration and lifecycle behavior. Volumes and Configs are the current Environment Resource types; effects on a Service's container template remain Service-owned.
 _Avoid_: Generic canvas item, Service subtype
 
 **Service Metadata**:
@@ -249,12 +249,20 @@ _Avoid_: Storage class, volume type dropdown
 A Volume's opt-in to more than one writer: several replicas of one Service, or several Services mounting it. Off by default; while off, the Config Store refuses a change that adds a second writer or turns it off over several. Working State that already had several writers keeps them and still deploys. It changes nothing that runs, so it applies at once and is no diff row; discarding the whole Volume or Environment returns it to the deployed value.
 _Avoid_: Multi-attach, ReadWriteMany, shared volume
 
+**Config**:
+A named Environment Resource holding text files for Services to mount read-only. Its name is a DNS label, unique in its Environment, and the Config is addressed `configs.NAME`, so no Service may be named `configs`. Each file has a relative path of one to four segments, such as `config.d/override.xml` or `.htpasswd`, at most 256 KB of UTF-8 text, a mode up to `0777` (default `0444`), and a uid and gid (default 0). A Config belongs to no Service, so its text references variables only as `${{ SERVICE.KEY }}`; a bare `${{ KEY }}` is refused. References are stored by Service lineage, so renaming the Service re-renders the file. Deleting a Service or variable a Config references is refused, as for a variable's references.
+_Avoid_: Config file (one file of a Config), ConfigMap, Config Store
+
+**Config Mount**:
+A Config attached to a Service at an absolute directory, the Setting `SERVICE.configs.CONFIG`. A Service mounts a Config at most once, and each of its directories holds one mount, a Volume's or a Config's. Several Services may mount one Config. Deleting a Config removes its mounts; unmounting keeps the Config and its files.
+_Avoid_: Config attachment, file mount, Bind Mount
+
 **Registry Credential**:
 Current encrypted authentication material owned by a Service identity, with a new revision on rotation. Deployable configuration contains only its stable credential reference. Connecting or disconnecting that reference is staged; rotating its contents is immediate. Admission freezes the credential revision and encrypted material with the deployment snapshots. Discard cannot undo a rotation.
 _Avoid_: Saved credential contents, credential revision as configuration
 
 **Working State**:
-The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment. Removing a Volume from Working State also deletes its draft identity and Node Introduction when no Saved revision, deployment snapshot, removal attempt, or other Node Introduction retains it. Retained identity alone does not make a Volume visible on the canvas; runtime connectivity does not determine draft retention. Every write keeps the Environment's rules: one writer per Volume without Shared Writes, references only to Services and variables that exist, no reference cycle, and Setup Commands only in Services it has. A write is refused only for a rule it breaks that neither the Working State it replaces nor what it copies or restores already broke, so older or inherited breaks keep editing and deploying.
+The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment. Removing a Volume from Working State also deletes its draft identity and Node Introduction when no Saved revision, deployment snapshot, removal attempt, or other Node Introduction retains it. Retained identity alone does not make a Volume visible on the canvas; runtime connectivity does not determine draft retention. Every write keeps the Environment's rules: one writer per Volume without Shared Writes, references in variables and Config files only to Services and variables that exist, no reference cycle among variables, and Setup Commands only in Services it has. A write is refused only for a rule it breaks that neither the Working State it replaces nor what it copies or restores already broke, so older or inherited breaks keep editing and deploying.
 _Avoid_: Saved State, deployable revision, client diff ledger
 
 **Saved State**:
@@ -302,7 +310,7 @@ The strictly versioned configuration an environment node had immediately after i
 _Avoid_: Initial diff, creation event log, default config
 
 **Derived Service Configuration**:
-The disposable compiler output produced from a complete Saved State authoring graph. It resolves attached Volumes into each Service's environment, mounts, and variable producer index. It belongs to an Attempt Target and is never independently edited or read as Saved authority.
+The disposable compiler output produced from a complete Saved State authoring graph. It resolves attached Volumes into each Service's environment, mounts, and variable producer index, and carries each Service's Config Mounts. It belongs to an Attempt Target and is never independently edited or read as Saved authority.
 At runtime lowering, Core supplies `PORT=8080` only when resolved authored variables omit `PORT`. The built-in `PORT` reference default uses the same value; authored variables override reference defaults. Built-in reference values do not by themselves add environment entries to containers. Generated and custom domains with a null target port follow this container `PORT`; explicit targets override routing only. HTTP healthchecks use the container `PORT`. Invalid authored values are not replaced by the default and fail lowering when a port is required.
 Authoring and runtime both require 1–50 replicas; zero is refused by the Setting validator.
 _Avoid_: Saved Service config, copied consumer snapshot, second source of truth
@@ -320,7 +328,7 @@ The Environment a Branch was made from, whose Namespace lends the Branch its Liv
 _Avoid_: Base, upstream
 
 **Own Copy**:
-A node a Branch deploys in its own Namespace, made from its Parent's configuration with the same lineage. An Own Copy of a Volume starts empty.
+A node a Branch deploys in its own Namespace, made from its Parent's configuration with the same lineage. An Own Copy of a Volume starts empty. A Config that an Own Copy mounts is always an Own Copy too, never a Live Node.
 _Avoid_: Clone (a copy of data)
 
 **Live Node**:
@@ -344,7 +352,7 @@ Where a Branch syncs its changes by default: its Parent, or for a PR Environment
 _Avoid_: Target, sync target
 
 **Sync**:
-Putting one Environment's changes, chosen change by change, into another Environment of the same Project as the receiver's changes to deploy. It takes the sender's Working State, deployed or not, and never deletes or deploys anything. It compares over what the two last shared, so a change left out, or discarded by the receiver before it deploys, is offered again; a change the receiver also made since then is flagged and, if synced, overwritten. Sizing, custom domains, generated addresses, the Git branch and Volume data never sync. A secret's value never syncs either: a secret the receiver has stays as it is, and one it lacks arrives without a value, which the receiver's Deploy refuses until it is set. Any two Environments of a Project sync: a Branch into its Parent, sideways or skipping a level, a root into a Branch or into another root. A pair that never synced compares over where the sending Branch was made, else where the receiving Branch was made, else the receiver itself. Unless a Branch syncs into its own Parent, what it only got from its Parent is left out unless picked.
+Putting one Environment's changes, chosen change by change, into another Environment of the same Project as the receiver's changes to deploy. It takes the sender's Working State, deployed or not, and never deletes or deploys anything. It compares over what the two last shared, so a change left out, or discarded by the receiver before it deploys, is offered again; a change the receiver also made since then is flagged and, if synced, overwritten. Sizing, custom domains, generated addresses, the Git branch and Volume data never sync. Each Config file is one setting, so syncing a conflict replaces the whole file; lines never merge. A secret's value never syncs either: a secret the receiver has stays as it is, and one it lacks arrives without a value, which the receiver's Deploy refuses until it is set. Any two Environments of a Project sync: a Branch into its Parent, sideways or skipping a level, a root into a Branch or into another root. A pair that never synced compares over where the sending Branch was made, else where the receiving Branch was made, else the receiver itself. Unless a Branch syncs into its own Parent, what it only got from its Parent is left out unless picked.
 _Avoid_: Save, push, promote, merge (a GitHub merge only), Publish
 
 **Follow**:
@@ -352,7 +360,7 @@ A Branch receiving what its Parent deploys, as staged changes in its Working Sta
 _Avoid_: Update, pull, rebase, inherit
 
 **Never sync**:
-A mark an Environment puts on one of its settings: Sync never carries it from that Environment and never changes it there. It joins sizing, custom domains, generated addresses, the Git branch and Volume data, none of which ever sync. A Branch of the Environment still gets the Environment's value; the mark doesn't carry into Branches.
+A mark an Environment puts on one of its settings: Sync never carries it from that Environment and never changes it there. It joins sizing, custom domains, generated addresses, the Git branch and Volume data, none of which ever sync. A Branch of the Environment still gets the Environment's value; the mark doesn't carry into Branches. A Config's marks are per file.
 _Avoid_: Pin, lock, local override
 
 **Deploy Snapshot**:
