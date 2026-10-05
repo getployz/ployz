@@ -25,7 +25,7 @@ Every command goes through one module, `ployz::ui`. Handlers pass in values and 
 | Prompts | dialoguer | 1 | console-rs family |
 | Errors | hand-rolled `error:` / `cause:` / hint lines | 0 | uv, jj |
 
-anstream strips escape codes from any stream that isn't a color terminal. That fixes, in one place, the bug Uncloud has at every call site: colors leaking into pipes. It honors `NO_COLOR`, `CLICOLOR`, `CLICOLOR_FORCE` and `TERM=dumb`, and a new global `--color auto|always|never` flag overrides all of them.
+anstream strips escape codes from any stream that isn't a color terminal. That fixes, in one place, the bug Uncloud has at every call site: colors leaking into pipes. It honors `NO_COLOR`, `CLICOLOR`, `CLICOLOR_FORCE` and `TERM=dumb`, and a new global `--color auto|always|never` flag overrides all of them. Under `auto`, only Interactive output is colored; Plain and Json carry color only for `--color always` or `CLICOLOR_FORCE`. anstream on its own would also color whenever `CI` is set.
 
 ## 2. Three modes
 

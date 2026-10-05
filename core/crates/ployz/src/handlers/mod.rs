@@ -43,9 +43,13 @@ pub fn run() -> Result<(), Error> {
     if args.is_empty() || args.iter().any(|arg| arg == "--help" || arg == "-h") {
         command = command.after_help(setup::help_footer());
     }
-    crate::ui::Color::requested(&command, &args).apply();
+    let before_parse = crate::ui::Mode::resolve(crate::ui::Surroundings::of_process(false));
+    crate::ui::Color::requested(&command, &args).apply(before_parse);
     let matches = command.clone().try_get_matches().map_err(usage_failure)?;
-    crate::ui::init(matches.get_flag("json"));
+    let color = matches
+        .get_one::<String>("color")
+        .map_or("", String::as_str);
+    crate::ui::init(matches.get_flag("json"), crate::ui::Color::named(color));
     dispatch(&matches, &mut command)
 }
 
@@ -63,7 +67,7 @@ fn usage_failure(error: clap::Error) -> Error {
     {
         error.exit();
     }
-    crate::ui::init(true);
+    crate::ui::init(true, crate::ui::Color::Auto);
     clap_usage(&error)
 }
 
