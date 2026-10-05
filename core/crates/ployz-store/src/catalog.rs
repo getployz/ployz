@@ -126,6 +126,20 @@ fn service() -> Value {
             "x-ployz-data-loss": false,
         }),
     );
+    properties.insert(
+        "configs".to_owned(),
+        json!({
+            "title": "Config mounts",
+            "description": "Where the Service mounts each Config, by Config name, each at SERVICE.configs.CONFIG. Create a Config with `ployz config create`. Unset unmounts it: the Config and its files stay.",
+            "type": "object",
+            "patternProperties": { NODE_NAME: config_mount() },
+            "additionalProperties": false,
+            "examples": [{ "sentry": "/etc/sentry" }],
+            "x-ployz-apply": "staged",
+            "x-ployz-secret": false,
+            "x-ployz-data-loss": false,
+        }),
+    );
     json!({
         "title": "Service",
         "description": "A Service's Settings. `get SERVICE --json` prints them as `values`; `set SERVICE --patch` takes the same shape.",
@@ -152,7 +166,7 @@ fn mount() -> Value {
 fn config_mount() -> Value {
     json!({
         "title": "Mount directory",
-        "description": "The absolute directory the Config's files appear in, in the Service's containers. Unset unmounts it: the Config and its files stay. Mount one with ployz config mount.",
+        "description": "The absolute directory the Config's files appear in, read-only, in the Service's containers. Unset unmounts it: the Config and its files stay.",
         "type": "string",
         "pattern": "^/",
         "minLength": 1,
@@ -238,6 +252,10 @@ mod tests {
             (
                 "web.mounts.data".to_owned(),
                 schema(Some("web.mounts.data")).unwrap(),
+            ),
+            (
+                "web.configs.sentry".to_owned(),
+                schema(Some("web.configs.sentry")).unwrap(),
             ),
         ];
         let properties = service["properties"].as_object().unwrap().clone();

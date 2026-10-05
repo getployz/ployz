@@ -1,7 +1,8 @@
 //! The rules an Environment's authored configuration keeps as a whole, which no
 //! single Setting can check alone: a Volume without Shared Writes has one writer, a
-//! variable references only Services and variables that exist, variables never
-//! reference each other in a cycle, and a Setup Command runs in a Service there is.
+//! variable or Config file references only Services and variables that exist,
+//! variables never reference each other in a cycle, and a Setup Command runs in a
+//! Service there is. A Config takes no part in cycles: nothing references a Config.
 //!
 //! Every write of Working State, and of an Environment's Setup Commands, passes
 //! [`check_write`]. It refuses only a problem the write adds: an Environment that
@@ -67,17 +68,20 @@ pub(crate) fn check_write(
     };
     Err(match first {
         Problem::Writers { volume, replicas } => refusing.writers(volume, *replicas),
-        Problem::Broken { service, wants, .. } => {
-            // Every variable the write breaks the same way, so one refusal names them all.
+        Problem::Broken {
+            referrer, wants, ..
+        } => {
+            // Every variable or file the write breaks the same way, so one refusal
+            // names them all.
             let keys: Vec<&str> = added
                 .iter()
                 .filter_map(|other| {
                     if let Problem::Broken {
-                        service: s,
+                        referrer: r,
                         key,
                         wants: w,
                     } = other
-                        && (s, w) == (service, wants)
+                        && (r, w) == (referrer, wants)
                     {
                         Some(key.as_str())
                     } else {
@@ -85,7 +89,7 @@ pub(crate) fn check_write(
                     }
                 })
                 .collect();
-            refusing.broken(service, &keys, wants)
+            refusing.broken(referrer, &keys, wants)
         }
         Problem::Cycle(members) => refusing.cycle(members),
         Problem::NoSetupService(service) => refusing.setup(service),
@@ -97,9 +101,10 @@ pub(crate) fn check_write(
 enum Problem {
     /// A Volume without Shared Writes, by lineage, and how many replicas write it.
     Writers { volume: String, replicas: u32 },
-    /// Variable `key` of Service `service` (a lineage) references what isn't there.
+    /// Variable `key` of Service `referrer`, or file `key` of Config `referrer` (a
+    /// lineage either way), references what isn't there.
     Broken {
-        service: String,
+        referrer: String,
         key: String,
         wants: Wants,
     },
@@ -161,37 +166,55 @@ fn problems(facts: Facts<'_>) -> BTreeSet<Problem> {
             });
         }
     }
-    for referrer in &working.services {
-        for (key, owner, wanted) in references(referrer) {
-            let mut broken = |wants| {
-                found.insert(Problem::Broken {
-                    service: referrer.lineage_id.clone(),
-                    key: key.to_owned(),
-                    wants,
-                });
-            };
-            let owner = match owner {
-                ValuePartOwner::Self_ => referrer,
-                ValuePartOwner::Service { lineage_id } => match service(working, lineage_id) {
-                    Some(owner) => owner,
-                    // A node used live: its owner provides its variables.
-                    None if live.contains_key(lineage_id) => continue,
-                    None => {
-                        broken(Wants::Service(lineage_id.clone()));
-                        continue;
-                    }
-                },
-            };
-            let has = owner
-                .variables
-                .iter()
-                .any(|variable| variable.key == wanted);
-            if !has && !BUILT_IN_VARIABLES.contains(&wanted) {
-                broken(Wants::Variable {
-                    owner: owner.lineage_id.clone(),
-                    key: wanted.to_owned(),
-                });
-            }
+    let configs = working.configs.iter().flat_map(|config| {
+        config.files.iter().flat_map(move |(file, content)| {
+            content.content.iter().filter_map(move |part| match part {
+                ValuePart::Ref { owner, key } => Some((
+                    (config.resource_lineage_id.as_str(), None),
+                    file.as_str(),
+                    owner,
+                    key.as_str(),
+                )),
+                ValuePart::Text { .. } => None,
+            })
+        })
+    });
+    let variables = working.services.iter().flat_map(|referrer| {
+        references(referrer).map(move |(key, owner, wanted)| {
+            ((referrer.lineage_id.as_str(), Some(referrer)), key, owner, wanted)
+        })
+    });
+    for ((referrer, own), key, owner, wanted) in variables.chain(configs) {
+        let mut broken = |wants| {
+            found.insert(Problem::Broken {
+                referrer: referrer.to_owned(),
+                key: key.to_owned(),
+                wants,
+            });
+        };
+        let owner = match (owner, own) {
+            (ValuePartOwner::Self_, Some(own)) => own,
+            // A Config's references always name a Service; parsing refuses others.
+            (ValuePartOwner::Self_, None) => continue,
+            (ValuePartOwner::Service { lineage_id }, _) => match service(working, lineage_id) {
+                Some(owner) => owner,
+                // A node used live: its owner provides its variables.
+                None if live.contains_key(lineage_id) => continue,
+                None => {
+                    broken(Wants::Service(lineage_id.clone()));
+                    continue;
+                }
+            },
+        };
+        let has = owner
+            .variables
+            .iter()
+            .any(|variable| variable.key == wanted);
+        if !has && !BUILT_IN_VARIABLES.contains(&wanted) {
+            broken(Wants::Variable {
+                owner: owner.lineage_id.clone(),
+                key: wanted.to_owned(),
+            });
         }
     }
     found.extend(cycles(working).into_iter().map(Problem::Cycle));
@@ -318,7 +341,8 @@ impl<'a> Refusing<'a> {
         format!("--env {name} --project {project}")
     }
 
-    /// A lineage's Service name, in `after` or, once removed, in `before`.
+    /// A lineage's Service name, or `Config NAME` for a Config, in `after` or, once
+    /// removed, in `before`.
     fn name(&self, lineage: &str) -> String {
         [self.after, self.before]
             .iter()
@@ -326,6 +350,12 @@ impl<'a> Refusing<'a> {
                 service(facts.working, lineage)
                     .map(|service| service.slug.clone())
                     .or_else(|| facts.live.get(lineage).cloned())
+                    .or_else(|| {
+                        let mut configs = facts.working.configs.iter();
+                        configs
+                            .find(|config| config.resource_lineage_id == lineage)
+                            .map(|config| format!("Config {}", config.name))
+                    })
             })
             .unwrap_or_else(|| "a removed Service".to_owned())
     }
@@ -382,7 +412,7 @@ impl<'a> Refusing<'a> {
         )
     }
 
-    /// Variables `keys` of `service` (a lineage) reference what isn't there:
+    /// Variables or files `keys` of `referrer` (a lineage) reference what isn't there:
     /// `conflict` once the write removed it, else `invalid_argument` for the value.
     fn broken(&self, referrer: &str, keys: &[&str], wants: &Wants) -> RpcError {
         let referrer = self.name(referrer);
