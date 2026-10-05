@@ -613,7 +613,9 @@ pub(crate) fn shown_file(file: Value, names: &BTreeMap<String, String>) -> Value
     };
     let parts: Vec<ValuePart> = serde_json::from_value(parts.clone()).unwrap_or_default();
     let mut shown = file;
-    shown["content"] = Value::String(render_variable_parts(&parts, names));
+    if let Some(content) = shown.get_mut("content") {
+        *content = Value::String(render_variable_parts(&parts, names));
+    }
     shown
 }
 

@@ -234,13 +234,18 @@ pub enum SavedVariableValue {
 }
 
 impl SavedVariableValue {
+    /// The template parts of this value; none unless it is a template.
+    #[must_use]
+    pub fn parts(&self) -> &[ValuePart] {
+        match self {
+            Self::Template { parts } => parts,
+            Self::Literal { .. } | Self::Secret { .. } | Self::SecretWithoutValue => &[],
+        }
+    }
+
     /// The service lineages this value reads through template references.
     pub fn referenced_lineages(&self) -> impl Iterator<Item = &str> {
-        let parts = match self {
-            Self::Template { parts } => parts.as_slice(),
-            Self::Literal { .. } | Self::Secret { .. } | Self::SecretWithoutValue => &[],
-        };
-        parts.iter().filter_map(|part| match part {
+        self.parts().iter().filter_map(|part| match part {
             ValuePart::Ref {
                 owner: ValuePartOwner::Service { lineage_id },
                 ..

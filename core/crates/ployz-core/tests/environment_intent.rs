@@ -169,14 +169,15 @@ fn configs_compile_with_references_kept_by_service_lineage() {
         parse_environment_intent(value).unwrap(),
     ))
     .unwrap();
-    let config = compiled.pointer("/nodeSnapshots/2").unwrap();
-    assert_eq!(config["nodeType"], "config");
-    assert_eq!(config["config"]["name"], "sentry");
-    assert_eq!(
-        config["config"]["files"]["config.yml"]["content"],
-        reference
-    );
-    assert_eq!(config["config"]["files"]["config.yml"]["mode"], "0444");
+    let at = |path: &str| {
+        compiled
+            .pointer(&format!("/nodeSnapshots/2{path}"))
+            .unwrap()
+    };
+    assert_eq!(at("/nodeType"), "config");
+    assert_eq!(at("/config/name"), "sentry");
+    assert_eq!(at("/config/files/config.yml/content"), &reference);
+    assert_eq!(at("/config/files/config.yml/mode"), "0444");
 }
 
 #[test]

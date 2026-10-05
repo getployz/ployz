@@ -317,10 +317,7 @@ fn parts_read<'a>(
     let variables = service
         .variables
         .iter()
-        .flat_map(|variable| match &variable.value {
-            ployz_core::config::SavedVariableValue::Template { parts } => parts.as_slice(),
-            _ => &[],
-        });
+        .flat_map(|variable| variable.value.parts());
     let files = service
         .config_attachments
         .iter()
@@ -361,10 +358,7 @@ pub(crate) fn used_live(intent: &SavedEnvironmentIntent) -> BTreeMap<String, BTr
         .services
         .iter()
         .flat_map(|service| &service.variables)
-        .flat_map(|variable| match &variable.value {
-            ployz_core::config::SavedVariableValue::Template { parts } => parts.as_slice(),
-            _ => &[],
-        });
+        .flat_map(|variable| variable.value.parts());
     let files = intent
         .configs
         .iter()
