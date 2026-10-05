@@ -487,7 +487,11 @@ export type ConfigView = { "view": "environment" } & EnvironmentView | { "view":
 
 export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "synced" } & Synced | { "written": "undone" } & Undone | { "written": "taken" } & Taken | { "written": "secret_held" } & SecretHeld | { "written": "never_synced" } & NeverSynced | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "environment_removed" } & Teardown<EnvironmentRemoved> | { "written": "project_removed" } & Teardown<ProjectRemoved> | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched;
 
-export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null, };
+export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null,
+/**
+ * How long a deploy waits for the first healthy result, overriding the timing-derived wait.
+ */
+deadline_millis?: number | null, };
 
 export type ContainerAddress = string;
 
@@ -2791,7 +2795,7 @@ export type ServiceGitAccess = { "type": "public" } | { "type": "github-installa
 
 export type ServiceGitBranch = { "type": "connected", name: string, } | { "type": "disconnected", previousName: string | null, };
 
-export type ServiceHealthcheck = { "type": "none" } | { "type": "http", path: string, timeoutSeconds: number, };
+export type ServiceHealthcheck = { "type": "none" } | { "type": "http", path: string, timeoutSeconds: number, } | { "type": "command", command: string, timeoutSeconds: number, };
 
 export type ServiceId = string & { readonly __brand: "ServiceId" };
 

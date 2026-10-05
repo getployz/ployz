@@ -174,7 +174,7 @@ impl ServiceSetting {
         match self {
             Self::CpuLimit => "Most vCPUs each replica may use. Unset means no limit.",
             Self::Healthcheck => {
-                "An HTTP check a new replica must pass before it takes traffic: a path on the container PORT, and how many seconds it may take (default 300). Text sets the path. Unset turns it off."
+                "A check a new replica must pass before it takes traffic: an HTTP path on the container PORT or a shell command, and how many seconds it may take (default 300). Text sets the path. Unset turns it off, along with the image's own check."
             }
             Self::Image => "The container image each replica runs.",
             Self::MaxRetries => "How often an on-failure restart policy restarts a replica.",
@@ -275,6 +275,12 @@ impl ServiceSetting {
                         "minLength": 1,
                         "maxLength": HEALTHCHECK_PATH_MAX,
                     },
+                    "command": {
+                        "type": "string",
+                        "pattern": "^[^\\u0000]*$",
+                        "minLength": 1,
+                        "maxLength": COMMAND_MAX,
+                    },
                     "timeoutSeconds": {
                         "type": "integer",
                         "minimum": 1,
@@ -282,7 +288,7 @@ impl ServiceSetting {
                         "default": HEALTHCHECK_TIMEOUT_DEFAULT,
                     },
                 },
-                "required": ["path"],
+                "oneOf": [{ "required": ["path"] }, { "required": ["command"] }],
                 "additionalProperties": false,
             }),
             Self::Image => {
@@ -326,7 +332,10 @@ impl ServiceSetting {
     pub(crate) fn examples(self) -> Value {
         match self {
             Self::CpuLimit => json!([0.5, 2]),
-            Self::Healthcheck => json!([{ "path": "/health", "timeoutSeconds": 30 }]),
+            Self::Healthcheck => json!([
+                { "path": "/health", "timeoutSeconds": 30 },
+                { "command": "pg_isready -h 127.0.0.1", "timeoutSeconds": 60 },
+            ]),
             Self::Image => json!(["nginx:1.27", "ghcr.io/acme/web:1.4.0"]),
             Self::MaxRetries => json!([3]),
             Self::MemLimit => json!([0.5, 4]),
@@ -402,10 +411,13 @@ impl ServiceSetting {
                 Some("configured") => json!({ "secret": true }),
                 _ => Value::Null,
             },
-            // Off reads as none; on, its path and timeout.
             Self::Healthcheck => match value.get("type").and_then(Value::as_str) {
                 Some("http") => json!({
                     "path": value.get("path"),
+                    "timeoutSeconds": value.get("timeoutSeconds"),
+                }),
+                Some("command") => json!({
+                    "command": value.get("command"),
                     "timeoutSeconds": value.get("timeoutSeconds"),
                 }),
                 _ => Value::Null,
@@ -463,43 +475,50 @@ impl ServiceSetting {
         self.store(config, value)
     }
 
-    /// A healthcheck's stored shape from `/path`, or `{"path", "timeoutSeconds"?}`
-    /// keeping `current`'s timeout when on.
     fn healthcheck(self, value: Value, current: &ServiceHealthcheck) -> Result<Value, RpcError> {
+        const EXPECTED: &str =
+            "expected a path, {\"path\", \"timeoutSeconds\"} or {\"command\", \"timeoutSeconds\"}";
         let timeout = match current {
             ServiceHealthcheck::Http {
+                timeout_seconds, ..
+            }
+            | ServiceHealthcheck::Command {
                 timeout_seconds, ..
             } => *timeout_seconds,
             ServiceHealthcheck::None => HEALTHCHECK_TIMEOUT_DEFAULT,
         };
-        let (path, timeout) = match value {
-            Value::String(path) => (path, timeout),
+        let healthcheck = match value {
+            Value::String(path) => ServiceHealthcheck::Http {
+                path,
+                timeout_seconds: timeout,
+            },
             Value::Object(mut fields)
                 if fields
                     .keys()
-                    .all(|key| key == "path" || key == "timeoutSeconds") =>
+                    .all(|key| matches!(key.as_str(), "path" | "command" | "timeoutSeconds")) =>
             {
-                let Some(Value::String(path)) = fields.remove("path") else {
-                    return Err(self.invalid("expected a path starting with /"));
-                };
-                let timeout = match fields.remove("timeoutSeconds") {
+                let timeout_seconds = match fields.remove("timeoutSeconds") {
                     None => timeout,
                     Some(given) => serde_json::from_value(self.coerce_number(given))
                         .map_err(|_| self.invalid("timeoutSeconds: expected whole seconds"))?,
                 };
-                (path, timeout)
+                match (fields.remove("path"), fields.remove("command")) {
+                    (Some(Value::String(path)), None) => ServiceHealthcheck::Http {
+                        path,
+                        timeout_seconds,
+                    },
+                    (None, Some(Value::String(command))) => ServiceHealthcheck::Command {
+                        command,
+                        timeout_seconds,
+                    },
+                    _ => return Err(self.invalid(EXPECTED)),
+                }
             }
             Value::Null
             | Value::Bool(_)
             | Value::Number(_)
             | Value::Array(_)
-            | Value::Object(_) => {
-                return Err(self.invalid("expected a path, or {\"path\", \"timeoutSeconds\"}"));
-            }
-        };
-        let healthcheck = ServiceHealthcheck::Http {
-            path,
-            timeout_seconds: timeout,
+            | Value::Object(_) => return Err(self.invalid(EXPECTED)),
         };
         Ok(serde_json::to_value(healthcheck).expect("a healthcheck is JSON"))
     }

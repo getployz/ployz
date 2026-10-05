@@ -349,6 +349,12 @@ fn an_agent_creates_and_edits_an_image_service() {
             value("web.healthcheck"),
             json!({ "path": "/up", "timeoutSeconds": 300 })
         );
+        let patch = json!({"healthcheck":{"command":"pg_isready","timeoutSeconds":60}}).to_string();
+        ok(store, &["set", "web", "--patch", &patch]);
+        assert_eq!(
+            value("web.healthcheck"),
+            json!({ "command": "pg_isready", "timeoutSeconds": 60 })
+        );
         ok(store, &["unset", "web.healthcheck"]);
         assert_eq!(value("web.healthcheck"), Value::Null);
         let before_invalid = ok(store, &["diff"]);

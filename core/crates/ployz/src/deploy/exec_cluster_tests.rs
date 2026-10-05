@@ -501,6 +501,7 @@ fn healthcheck(command: &str, retries: u32) -> ployz_core::HealthcheckSpec {
         start_period_millis: None,
         start_interval_millis: None,
         retries: Some(retries),
+        deadline_millis: None,
     })
 }
 

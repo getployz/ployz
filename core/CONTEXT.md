@@ -95,7 +95,7 @@ A managed Docker container carrying the Resolved Service Spec from its creation 
 _Avoid_: Replica, service record
 
 **Healthcheck**:
-A present probe declaration on a Service Container. It is Disabled or Configured. Absence means the image's probe is inherited or that no probe is available, not a third kind of Healthcheck.
+A present probe declaration on a Service Container. It is Disabled, Configured or HTTP. Absence means the image's probe is inherited or that no probe is available, not another kind of Healthcheck. A Cloud Service authors one of three kinds: `none`, an `http` path or a shell `command`. `none` lowers to Disabled, so Cloud never runs an image's own probe.
 _Avoid_: health check flag, disabled boolean plus command
 
 **Disabled Healthcheck**:

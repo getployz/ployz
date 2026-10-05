@@ -239,7 +239,17 @@ mod tests {
     /// The JSON Schema keywords the catalog emits.
     fn satisfies(value: &Value, schema: &Value) -> bool {
         if let Some(options) = schema.get("oneOf").and_then(Value::as_array) {
-            return options.iter().filter(|one| satisfies(value, one)).count() == 1;
+            let mut rest = schema.as_object().unwrap().clone();
+            rest.remove("oneOf");
+            return options
+                .iter()
+                .filter(|one| {
+                    let mut both = rest.clone();
+                    both.extend(one.as_object().unwrap().clone());
+                    satisfies(value, &Value::Object(both))
+                })
+                .count()
+                == 1;
         }
         if let Some(constant) = schema.get("const") {
             return value == constant;

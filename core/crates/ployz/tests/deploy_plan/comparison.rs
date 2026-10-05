@@ -189,6 +189,7 @@ fn spec_comparison_treats_all_disabled_healthchecks_as_identical() {
             start_period_millis: None,
             start_interval_millis: None,
             retries: None,
+            deadline_millis: None,
         },
     ));
     assert_eq!(

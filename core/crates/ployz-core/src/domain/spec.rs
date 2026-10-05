@@ -224,6 +224,9 @@ pub struct ConfiguredHealthcheck {
     pub start_interval_millis: Option<u64>,
     #[serde(default)]
     pub retries: Option<u32>,
+    /// How long a deploy waits for the first healthy result, overriding the timing-derived wait.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_millis: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -747,6 +750,7 @@ mod tests {
             start_period_millis: Some(3_000),
             start_interval_millis: Some(4_000),
             retries: Some(5),
+            deadline_millis: None,
         })
     }
 

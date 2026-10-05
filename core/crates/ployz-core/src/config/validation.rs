@@ -143,6 +143,13 @@ impl ServiceSettingInput {
                 healthcheck_path(path)?;
                 timeout(*timeout_seconds)
             }
+            Self::Healthcheck(ServiceHealthcheck::Command {
+                command,
+                timeout_seconds,
+            }) => {
+                trimmed(command, "healthcheck.command", COMMAND_MAX)?;
+                timeout(*timeout_seconds)
+            }
             Self::Healthcheck(ServiceHealthcheck::None)
             | Self::RestartPolicy(_)
             | Self::PrivateDns(_) => Ok(()),
