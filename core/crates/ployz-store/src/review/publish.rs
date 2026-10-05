@@ -62,8 +62,9 @@ pub struct Discard {
     /// The Environment to discard in.
     #[serde(default)]
     pub environment: EnvironmentRef,
-    /// `SERVICE`, `volumes.VOLUME`, `SERVICE.SETTING`, `SERVICE.env.KEY` or
-    /// `SERVICE.mounts.VOLUME`; none discards everything.
+    /// `SERVICE`, `volumes.VOLUME`, `configs.CONFIG`, `SERVICE.SETTING`,
+    /// `SERVICE.env.KEY`, `SERVICE.mounts.VOLUME` or `SERVICE.configs.CONFIG`; none
+    /// discards everything.
     #[serde(default)]
     pub path: Option<SettingPath>,
     /// Refuse with `conflict` unless this is still the latest `diff` version.
@@ -403,10 +404,21 @@ fn restore_part(
             let Some(config) = resource else {
                 return Err("no such Config".to_owned());
             };
+            // By ID: a renamed Config still mounts where it did.
+            let was = baseline
+                .services
+                .iter()
+                .find(|service| service.id == id)
+                .and_then(|service| {
+                    service
+                        .config_attachments
+                        .iter()
+                        .find(|mount| mount.config_resource_id == config)
+                });
             service
                 .config_attachments
                 .retain(|mount| mount.config_resource_id != config);
-            if let Some(Part::ConfigMount(mount)) = was {
+            if let Some(mount) = was {
                 service.config_attachments.push(mount.clone());
             }
         }

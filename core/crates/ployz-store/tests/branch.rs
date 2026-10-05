@@ -785,4 +785,41 @@ fn a_branch_owns_a_copy_of_the_config_a_copied_service_mounts() {
         item("production").contents[&file("conf.d/db.yml")],
         "host: ${{ db.PLOYZ_PRIVATE_DOMAIN }}"
     );
+
+    // Discarding the mount of the renamed copy restores where web mounted it.
+    store
+        .write(
+            &who,
+            &ployz_store::RenameConfig {
+                environment: at("fix-web"),
+                config: config("sentry"),
+                name: config("sentinel"),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::AttachConfig {
+                environment: at("fix-web"),
+                service: ServiceName::parse("web").unwrap(),
+                config: config("sentinel"),
+                dir: "/etc/moved".into(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::Discard {
+                environment: at("fix-web"),
+                path: Some(ployz_store::SettingPath::parse("web.configs.sentinel").unwrap()),
+                version: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        values(&store, &who, "fix-web", "web")["configs"],
+        json!({ "sentinel": "/etc/sentry" })
+    );
 }
