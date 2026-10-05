@@ -461,7 +461,7 @@ fn cloud_commands_act_with_ployz_token_or_the_signed_in_device() {
     assert!(!json.to_string().contains("ployz_secret"), "{json}");
 
     let (code, json, _) = run_json_with(&["org", "use", "acme", "--json"], &token);
-    assert_eq!(code, Some(1));
+    assert_eq!(code, Some(2));
     assert_eq!(
         json.pointer("/error/code").unwrap(),
         "unsupported",
