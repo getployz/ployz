@@ -1918,3 +1918,76 @@ fn inspection_environment_reads_docker_values_and_rejects_malformed_entries() {
         serde_json::from_value(serde_json::json!({"Env": ["INVALID"]})).unwrap();
     assert!(inspected_environment(&malformed).is_none());
 }
+
+#[cfg(test)]
+#[tokio::test]
+async fn inspection_reports_failing_once_the_check_passed_since_this_start() {
+    use test_support::{FakeDocker, container_request, fake_runtime_with, machine};
+
+    let containers = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+    let (runtime, _fake) = fake_runtime_with(FakeDocker {
+        named_containers: Some(containers.clone()),
+        ..Default::default()
+    })
+    .await;
+    let machine = machine();
+    let namespace = Namespace::parse("app").unwrap();
+    let spec = test_support::spec_with_sources(Vec::new());
+    let created = runtime
+        .create_with_admission::<_, _, Error>(
+            &machine,
+            container_request(
+                ContainerKind::ServiceContainer,
+                &namespace,
+                &spec,
+                std::future::ready(None),
+            ),
+        )
+        .await
+        .unwrap();
+    let observe = async |started_at: &str, health: &str| {
+        for container in containers.lock().unwrap().values_mut() {
+            let container = container.as_object_mut().unwrap();
+            container
+                .get_mut("Config")
+                .and_then(serde_json::Value::as_object_mut)
+                .unwrap()
+                .insert("Healthcheck".into(), json!({ "Test": ["CMD", "true"] }));
+            container.insert(
+                "State".into(),
+                json!({
+                    "Status": "running",
+                    "StartedAt": started_at,
+                    "Health": { "Status": health },
+                }),
+            );
+        }
+        let observed = runtime
+            .inspect_managed(&created.container_id, &machine.id)
+            .await
+            .unwrap();
+        let ContainerRuntimeObservation::Running { health } = &observed.runtime else {
+            panic!("expected a running container, got {}", observed.runtime);
+        };
+        health.clone()
+    };
+    let first_start = chrono::Utc::now().to_rfc3339();
+    let second_start = (chrono::Utc::now() + chrono::Duration::seconds(1)).to_rfc3339();
+
+    assert_eq!(
+        observe(&first_start, "unhealthy").await,
+        HealthObservation::Unhealthy
+    );
+    assert_eq!(
+        observe(&first_start, "healthy").await,
+        HealthObservation::Healthy
+    );
+    assert_eq!(
+        observe(&first_start, "unhealthy").await,
+        HealthObservation::Failing
+    );
+    assert_eq!(
+        observe(&second_start, "unhealthy").await,
+        HealthObservation::Unhealthy
+    );
+}
