@@ -106,6 +106,8 @@ pub fn parse_variable_template(
     let mut malformed = false;
     let mut pending = String::new();
     let mut rest = text;
+    // Found once: rescanning for a `}}` after every `${{` is quadratic in the text.
+    let last_close = text.rfind("}}");
     while !rest.is_empty() {
         if let Some(after) = rest.strip_prefix("$${{") {
             pending.push_str("${{");
@@ -119,7 +121,7 @@ pub fn parse_variable_template(
             continue;
         };
         let Some((owner, key, after)) = template_token(after) else {
-            let closed = after.contains("}}");
+            let closed = last_close.is_some_and(|at| at >= text.len() - after.len());
             unterminated |= !closed;
             malformed |= closed;
             pending.push_str("${{");
