@@ -156,7 +156,7 @@ pub(super) fn lower(
                     replicas: None,
                 },
             )),
-            CompiledNodeConfig::Volume(_) => None,
+            CompiledNodeConfig::Volume(_) | CompiledNodeConfig::Config(_) => None,
         })
         .collect();
     // Empty reconciles the whole Namespace; names deploy only those Services.

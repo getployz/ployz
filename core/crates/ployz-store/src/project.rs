@@ -159,6 +159,7 @@ pub(crate) fn insert_environment(
         environment_slug: name.to_string(),
         services: Vec::new(),
         volumes: Vec::new(),
+        configs: Vec::new(),
     };
     let revision = Revision(1);
     tx.execute(

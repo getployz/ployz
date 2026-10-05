@@ -983,11 +983,7 @@ fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcE
                     .map(scope::Node::Volume),
             };
             if let Some(applied) = applied {
-                let lineage = match applied {
-                    scope::Node::Service(service) => &service.lineage_id,
-                    scope::Node::Volume(volume) => &volume.resource_lineage_id,
-                };
-                deployed.insert(lineage.clone());
+                deployed.insert(applied.lineage().to_owned());
             }
             match applied {
                 Some(applied) => tx.execute(

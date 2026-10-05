@@ -506,7 +506,8 @@ fn cycle(compiled: &CompiledEnvironmentIntent, path: &[String]) -> RpcError {
                     ployz_core::config::CompiledNodeConfig::Service(config) => {
                         Some(config.settings.private_dns.to_string())
                     }
-                    ployz_core::config::CompiledNodeConfig::Volume(_) => None,
+                    ployz_core::config::CompiledNodeConfig::Volume(_)
+                    | ployz_core::config::CompiledNodeConfig::Config(_) => None,
                 })
                 .unwrap_or_default();
             format!("{service}.env.{key}")

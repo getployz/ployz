@@ -18,6 +18,9 @@ pub use crate::settings::query::{EnvironmentQuery, EnvironmentView, SettingRow};
 pub use crate::volume::query::{
     RemovalsQuery, RemovalsView, VolumeListing, VolumeQuery, VolumeView, VolumesQuery, VolumesView,
 };
+pub use crate::config_item::query::{
+    ConfigListing, ConfigQuery, ConfigView, ConfigsQuery, ConfigsView,
+};
 
 use crate::Call;
 use crate::storage::Tx;
@@ -165,6 +168,10 @@ queries! {
     Volume(VolumeQuery) -> VolumeView => crate::volume::query::volume(tx, who, q);
     /// The deployed Volumes a full Deploy would remove.
     Removals(RemovalsQuery) -> RemovalsView => crate::volume::query::removals(tx, who, q);
+    /// An Environment's Configs.
+    Configs(ConfigsQuery) -> ConfigsView => crate::config_item::query::configs(tx, who, q);
+    /// One Config, with its files' text.
+    Config(ConfigQuery) -> ConfigView => crate::config_item::query::config(tx, who, q);
     /// A Branch: its Parent, Live Nodes and what it would sync into its Parent.
     Branch(crate::BranchQuery) -> crate::BranchView => crate::branch::branch(tx, who, q);
     /// What a Branch would copy and use live, before it is created.

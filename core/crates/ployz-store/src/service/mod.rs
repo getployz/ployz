@@ -152,6 +152,7 @@ pub(crate) fn insert_service(
         config,
         variables: Vec::new(),
         volume_attachments: Vec::new(),
+        config_attachments: Vec::new(),
     };
     environment.working.services.push(node.clone());
     scope::save_working(tx, &mut environment)?;
@@ -215,10 +216,11 @@ pub(crate) fn refuse_taken(
     name: &ServiceName,
     except: Option<&str>,
 ) -> Result<(), RpcError> {
-    // `volumes.NAME` addresses a Volume, so no Service takes that name.
-    if name.as_str() == "volumes" {
+    // `volumes.NAME` addresses a Volume and `configs.NAME` a Config, so no Service
+    // takes either name.
+    if name.as_str() == "volumes" || name.as_str() == "configs" {
         return Err(error::invalid(
-            "volumes is reserved: paths name Volumes as volumes.NAME",
+            format!("{name} is reserved: paths name {} as {name}.NAME", if name.as_str() == "volumes" { "Volumes" } else { "Configs" }),
             json!({ "service": name }),
         ));
     }

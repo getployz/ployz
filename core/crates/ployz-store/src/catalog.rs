@@ -149,9 +149,24 @@ fn mount() -> Value {
     })
 }
 
+fn config_mount() -> Value {
+    json!({
+        "title": "Mount directory",
+        "description": "The absolute directory the Config's files appear in, in the Service's containers. Unset unmounts it: the Config and its files stay. Mount one with ployz config mount.",
+        "type": "string",
+        "pattern": "^/",
+        "minLength": 1,
+        "examples": ["/etc/app"],
+        "x-ployz-apply": "staged",
+        "x-ployz-secret": false,
+        "x-ployz-data-loss": false,
+    })
+}
+
 fn target(target: &Target) -> Value {
     match target {
         Target::Mount(_) => mount(),
+        Target::ConfigMount(_) => config_mount(),
         Target::Setting(one) => setting(*one),
         Target::Source => json!({
             "title": "Source",

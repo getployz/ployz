@@ -132,6 +132,11 @@ store_string!(
     VolumeId, "a Volume ID (a UUID)", is_uuid
 );
 store_string!(
+    /// A Config's durable identity, minted by the caller that creates it. It is also
+    /// the lineage of the Config it creates.
+    ConfigId, "a Config ID (a UUID)", is_uuid
+);
+store_string!(
     /// A Volume's name, unique in its Environment: a lowercase DNS label.
     VolumeName, "a Volume name: up to 63 lowercase letters, digits and -", is_name
 );

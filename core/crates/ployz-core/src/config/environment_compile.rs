@@ -259,6 +259,22 @@ pub fn compile_environment_intent(
                 }
             })
             .collect();
+        config.configs = service
+            .config_attachments
+            .iter()
+            .map(|a| {
+                let config = intent
+                    .configs
+                    .iter()
+                    .find(|c| c.resource_id == a.config_resource_id)
+                    .expect("validated attachment");
+                ServiceDeployConfig {
+                    config_resource_id: config.resource_id.clone(),
+                    config_name: config.name.to_string(),
+                    mount_dir: a.mount_dir.to_string(),
+                }
+            })
+            .collect();
         node_snapshots.push(CompiledEnvironmentNode {
             environment_id: environment_id.into(),
             node_id: service.id.clone(),

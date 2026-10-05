@@ -318,6 +318,10 @@ pub(crate) fn named(intents: &[&SavedEnvironmentIntent], row: &RowId) -> Option<
                 NodeName::Volume(VolumeName::parse(volume.name.as_str()).ok()?),
                 EnvironmentNodeType::Volume,
             ),
+            NodeRef::Config(config) => (
+                NodeName::Config(config.name.clone()),
+                EnvironmentNodeType::Config,
+            ),
         };
         let name = match row.at() {
             At::Node => None,
@@ -325,7 +329,9 @@ pub(crate) fn named(intents: &[&SavedEnvironmentIntent], row: &RowId) -> Option<
             At::Setting(setting) => {
                 Some(ServiceSetting::of(*setting).map_or(at, |setting| setting.name().to_owned()))
             }
-            At::Data | At::Name | At::Storage | At::Mount(_) => Some(at),
+            At::Data | At::Name | At::Storage | At::Mount(_) | At::File(_) | At::ConfigMount(_) => {
+                Some(at)
+            }
         };
         Some(NamedRow {
             row: row.clone(),
@@ -361,7 +367,16 @@ pub(crate) fn shown(
         Cell::SecretWithoutValue => json!({ "secret": false }),
         Cell::Value(value) => match row.at() {
             At::Variable(key) => Some(key),
-            At::Node | At::Data | At::Name | At::Storage | At::Setting(_) | At::Mount(_) => None,
+            At::File(_) => {
+                return crate::config_item::shown_file(value.clone(), names);
+            }
+            At::Node
+            | At::Data
+            | At::Name
+            | At::Storage
+            | At::Setting(_)
+            | At::Mount(_)
+            | At::ConfigMount(_) => None,
         }
         .and_then(|key| {
             intent

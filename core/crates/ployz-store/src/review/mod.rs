@@ -12,11 +12,11 @@ use ployz_core::RpcError;
 use ployz_core::config::{
     At, ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,
     ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId, SavedEnvironmentIntent,
-    ServiceSettingChange, canonicalize_environment_intent, compile_environment_intent,
+    ServiceSettingChange, ValuePart, canonicalize_environment_intent, compile_environment_intent,
     project_environment_changes,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::Actor;
@@ -142,6 +142,11 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                 .iter()
                 .find(|volume| volume.resource_id == node.id)
                 .map(|volume| volume.resource_lineage_id.clone()),
+            EnvironmentNodeType::Config => intent
+                .configs
+                .iter()
+                .find(|config| config.resource_id == node.id)
+                .map(|config| config.resource_lineage_id.clone()),
         })
     };
     let name = |node: &ReviewNodeIdentity| {
@@ -152,6 +157,7 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             .map(|service| service.slug.clone());
         services
             .or_else(|| volume_name(&intents, &node.id))
+            .or_else(|| config_name(&intents, &node.id))
             .unwrap_or_default()
     };
     let mut view = DiffView {
@@ -181,13 +187,18 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                     .settings
                     .into_iter()
                     .map(|(mut row, at)| {
-                        let at = match row.path.strip_prefix("mounts.") {
-                            Some(id) => every
+                        let at = match row.path.split_once('.') {
+                            Some(("mounts", id)) => every
                                 .iter()
                                 .flat_map(|intent| &intent.volumes)
                                 .find(|volume| volume.resource_id == id)
                                 .map(|volume| At::Mount(volume.resource_lineage_id.clone())),
-                            None => at,
+                            Some(("configs", id)) => every
+                                .iter()
+                                .flat_map(|intent| &intent.configs)
+                                .find(|config| config.resource_id == id)
+                                .map(|config| At::ConfigMount(config.resource_lineage_id.clone())),
+                            _ => at,
                         };
                         // A row's Setting is what Discard takes, whichever part of it changed.
                         let setting = match &at {
@@ -199,15 +210,28 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                             row.before = row.before.get("mountPath").cloned().unwrap_or_default();
                             row.after = row.after.get("mountPath").cloned().unwrap_or_default();
                         }
+                        if row.path.starts_with("configs.") {
+                            row.before = row.before.get("mountDir").cloned().unwrap_or_default();
+                            row.after = row.after.get("mountDir").cloned().unwrap_or_default();
+                        }
                         if group.node.node_type == EnvironmentNodeType::Volume {
                             row.path = format!("volumes.{name}.{}", row.path);
+                        } else if group.node.node_type == EnvironmentNodeType::Config {
+                            row.before = file_shown(row.before);
+                            row.after = file_shown(row.after);
+                            row.path = format!("configs.{name}.{}", row.path);
                         } else {
                             row.before = shown(&row.path, row.before);
                             row.after = shown(&row.path, row.after);
                             row.path = match setting {
                                 Some(setting) => format!("{name}.{}", setting.name()),
-                                None => SettingPath::from_core(&name, &row.path, |id| {
-                                    volume_name(&intents, id).unwrap_or_default()
+                                None => SettingPath::from_core(&name, &row.path, |family, id| {
+                                    if family == "configs" {
+                                        config_name(&intents, id)
+                                    } else {
+                                        volume_name(&intents, id)
+                                    }
+                                    .unwrap_or_default()
                                 }),
                             };
                         }
@@ -333,6 +357,26 @@ fn volume_name(intents: &[&SavedEnvironmentIntent; 2], id: &str) -> Option<Strin
         .map(|volume| volume.name.clone())
 }
 
+fn config_name(intents: &[&SavedEnvironmentIntent; 2], id: &str) -> Option<String> {
+    intents
+        .iter()
+        .flat_map(|intent| &intent.configs)
+        .find(|config| config.resource_id == id)
+        .map(|config| config.name.to_string())
+}
+
+/// A Config file's change row as reads show it: its content rendered as display
+/// text, never its parts.
+fn file_shown(file: Value) -> Value {
+    let Some(parts) = file.get("content") else {
+        return file;
+    };
+    let parts: Vec<ValuePart> = serde_json::from_value(parts.clone()).unwrap_or_default();
+    let mut shown = file.clone();
+    shown["content"] = Value::String(crate::config_item::display_text(&parts));
+    shown
+}
+
 /// A deployed Volume removed deletes data; a Service removed, or one of its mounts
 /// dropped, keeps the Volume.
 fn data_effect(
@@ -359,6 +403,7 @@ fn data_effect(
                     .any(|service| service.id == node.id && !service.volume_attachments.is_empty());
             (detached || removed_with_mounts).then_some(DataEffect::Kept)
         }
+        EnvironmentNodeType::Config => None,
     }
 }
 
