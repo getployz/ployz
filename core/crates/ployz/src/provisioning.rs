@@ -33,7 +33,7 @@ pub enum ProvisionError {
     Connection(#[from] ConnectionError),
     /// The local OpenSSH client is unavailable.
     #[error("local ssh client not found; install an ssh client")]
-    SshClientMissing(#[source] io::Error),
+    SshClientMissing,
     /// The initial remote identity command could not be run.
     #[error("Could not run ssh whoami on the Machine.")]
     Whoami(#[source] io::Error),
@@ -365,7 +365,7 @@ impl Remote {
             .await
             .map_err(|error| {
                 if error.kind() == io::ErrorKind::NotFound {
-                    ProvisionError::SshClientMissing(error)
+                    ProvisionError::SshClientMissing
                 } else {
                     ProvisionError::Whoami(error)
                 }

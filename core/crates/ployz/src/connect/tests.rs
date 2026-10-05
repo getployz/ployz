@@ -279,7 +279,7 @@ async fn missing_ssh_program_names_the_local_client() {
         .await
         .expect_err("missing ssh program must fail");
     assert!(
-        matches!(message, ConnectError::SshClientMissing(_)),
+        matches!(message, ConnectError::SshClientMissing),
         "{message:?}"
     );
     assert_eq!(
@@ -305,10 +305,7 @@ async fn missing_ssh_client_survives_connection_selection() {
         Err(error) => error,
         Ok(_) => panic!("missing ssh program must fail"),
     };
-    assert!(
-        matches!(error, ConnectError::SshClientMissing(_)),
-        "{error:?}"
-    );
+    assert!(matches!(error, ConnectError::SshClientMissing), "{error:?}");
     let failure = crate::failure::Failure::from(error);
     assert_eq!(
         failure.to_string(),

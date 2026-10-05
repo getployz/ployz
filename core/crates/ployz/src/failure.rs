@@ -357,7 +357,7 @@ fn connect_code(error: &ConnectError) -> RpcErrorCode {
         | ConnectError::Io(_)
         | ConnectError::Dial(_)
         | ConnectError::MissingMachineDetails
-        | ConnectError::SshClientMissing(_)
+        | ConnectError::SshClientMissing
         | ConnectError::SshProbe { .. }
         | ConnectError::Routing(_)
         | ConnectError::Path { .. }
@@ -445,7 +445,7 @@ fn provision_code(error: &ProvisionError) -> RpcErrorCode {
         ProvisionError::UnsupportedOs | ProvisionError::UnsupportedArchitecture(_) => {
             RpcErrorCode::Unsupported
         }
-        ProvisionError::SshClientMissing(_)
+        ProvisionError::SshClientMissing
         | ProvisionError::Whoami(_)
         | ProvisionError::WhoamiFailed(_)
         | ProvisionError::Sudo(_)

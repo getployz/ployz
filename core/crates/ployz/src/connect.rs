@@ -433,7 +433,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         | ConnectError::Io(_)
         | ConnectError::Dial(_)
         | ConnectError::MissingMachineDetails
-        | ConnectError::SshClientMissing(_)
+        | ConnectError::SshClientMissing
         | ConnectError::SshProbe { .. }
         | ConnectError::Routing(_)
         | ConnectError::Join(_)
@@ -508,7 +508,7 @@ pub async fn connect_selected_with(
         match connect_one(connection, &selected.source, &connector).await {
             Ok(client) => return Ok(client),
             Err(error)
-                if matches!(error, ConnectError::SshClientMissing(_))
+                if matches!(error, ConnectError::SshClientMissing)
                     && selected
                         .connections
                         .iter()
@@ -645,7 +645,7 @@ pub enum ConnectError {
     #[error("Machine confirmed this Management Client was cleared")]
     ClientCleared,
     #[error("local ssh client not found; install an ssh client")]
-    SshClientMissing(#[source] io::Error),
+    SshClientMissing,
     #[error("connection attempt failed: SSH probe to {target} exited with {status}: {detail}")]
     SshProbe {
         target: String,
@@ -697,7 +697,7 @@ impl From<tonic::Status> for ConnectError {
 impl ConnectError {
     fn from_ssh_spawn(error: io::Error) -> Self {
         if error.kind() == io::ErrorKind::NotFound {
-            Self::SshClientMissing(error)
+            Self::SshClientMissing
         } else {
             Self::Io(error)
         }
@@ -717,7 +717,7 @@ impl ConnectError {
             | Self::ClientRefused
             | Self::ClientCleared
             | Self::MissingMachineDetails
-            | Self::SshClientMissing(_)
+            | Self::SshClientMissing
             | Self::Routing(_)
             | Self::ProxyUnsupported(_)
             | Self::UnsupportedNetwork(_)
