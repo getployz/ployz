@@ -1,3 +1,4 @@
+mod checks;
 mod create;
 mod http_health;
 mod images;
@@ -43,7 +44,7 @@ use serde_json::json;
 use thiserror::Error;
 use tokio::sync::{Mutex, watch};
 
-use http_health::probe as http_health_probe;
+use checks::CheckRecords;
 use observe::ObservationSink;
 
 pub(crate) use lifecycle::{ContainerRequest, require_eligible};
@@ -131,6 +132,7 @@ pub struct ContainerRuntime {
     sink: Option<ObservationSink>,
     // ponytail: in memory only; a daemon restart forgets marks, the client stops anyway.
     stopping: watch::Sender<BTreeSet<ContainerId>>,
+    checks: Arc<std::sync::Mutex<CheckRecords>>,
 }
 
 impl ContainerRuntime {
@@ -141,6 +143,7 @@ impl ContainerRuntime {
             specs,
             sink: None,
             stopping: watch::Sender::new(BTreeSet::new()),
+            checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
         }
     }
 
@@ -154,6 +157,13 @@ impl ContainerRuntime {
     fn clear_stopping(&self, container_id: &ContainerId) {
         self.stopping
             .send_if_modified(|stopping| stopping.remove(container_id));
+    }
+
+    fn forget_checks(&self, container_id: &ContainerId) {
+        self.checks
+            .lock()
+            .expect("check records are never poisoned")
+            .forget(container_id);
     }
 
     pub async fn open(spec_store: impl Into<PathBuf>) -> Result<Self, Error> {
@@ -304,9 +314,24 @@ impl ContainerRuntime {
             effective_check = Some(HealthcheckSpec::Http(check.clone()));
             if matches!(runtime, ContainerRuntimeObservation::Running { .. }) {
                 runtime = ContainerRuntimeObservation::Running {
-                    health: http_health_probe(address, check).await,
+                    health: match http_health::probe(address, check).await {
+                        http_health::Outcome::Up => HealthObservation::Healthy,
+                        http_health::Outcome::Down => HealthObservation::Starting,
+                        http_health::Outcome::Unavailable(reason) => {
+                            HealthObservation::Unrecognized(reason.into())
+                        }
+                    },
                 };
             }
+        }
+        if let ContainerRuntimeObservation::Running { health } = runtime {
+            runtime = ContainerRuntimeObservation::Running {
+                health: self
+                    .checks
+                    .lock()
+                    .expect("check records are never poisoned")
+                    .settle(container_id, started_at(inspected.state.as_ref()), health),
+            };
         }
         let runtime = withdrawn(runtime, self.stopping.borrow().contains(container_id));
         let container =
@@ -350,10 +375,15 @@ fn withdrawn_hides_only_running_containers_marked_stopping() {
     let healthy = ContainerRuntimeObservation::Running {
         health: HealthObservation::Healthy,
     };
+    let failing = ContainerRuntimeObservation::Running {
+        health: HealthObservation::Failing,
+    };
     let stopping = ContainerRuntimeObservation::Running {
         health: HealthObservation::Stopping,
     };
     assert_eq!(withdrawn(healthy.clone(), true), stopping);
+    assert_eq!(withdrawn(failing.clone(), true), stopping);
+    assert!(!withdrawn(failing, true).may_serve());
     assert!(!withdrawn(healthy.clone(), true).may_serve());
     assert_eq!(withdrawn(healthy.clone(), false), healthy);
     assert_eq!(
@@ -502,6 +532,12 @@ struct RawNetworkSettings {
 struct RawEndpointSettings {
     #[serde(rename = "IPAddress")]
     ip_address: Option<String>,
+}
+
+fn started_at(state: Option<&serde_json::Value>) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(state?.get("StartedAt")?.as_str()?)
+        .ok()
+        .map(Into::into)
 }
 
 fn created_at_unix_nanos(created: Option<&str>) -> i64 {

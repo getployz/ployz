@@ -113,9 +113,6 @@ impl<'de> Deserialize<'de> for ContainerRuntimeObservation {
 
 impl ContainerRuntimeObservation {
     /// Eligible for traffic: Running with health Healthy, Failing or NotConfigured.
-    ///
-    /// A check gates a replica's first serve only. Once it has passed since its
-    /// current start, a later failure reports Failing and keeps it routed.
     #[must_use]
     pub fn may_serve(&self) -> bool {
         matches!(

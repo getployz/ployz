@@ -411,13 +411,12 @@ impl ContainerRuntime {
         {
             Ok(()) => {
                 config_operation.remove(container_id).await?;
-                Ok(())
             }
-            Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {
-                Ok(())
-            }
-            Err(error) => Err(error),
+            Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {}
+            Err(error) => return Err(error),
         }
+        self.forget_checks(container_id);
+        Ok(())
     }
 
     pub async fn remove_all_managed(&self) -> Result<(), Error> {

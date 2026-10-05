@@ -1,16 +1,25 @@
 //! HTTP health observations made directly against the inspected container.
 
-use ployz_core::{ContainerAddress, HealthObservation};
+use ployz_core::ContainerAddress;
 use std::time::Duration;
+
+/// What one probe saw.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Outcome {
+    Up,
+    /// The probe has no retries or start period, so before a first pass this is still startup.
+    Down,
+    Unavailable(&'static str),
+}
 
 /// One Machine-local probe per inspection. Redirects and ambient proxies cannot
 /// move the request away from the inspected container's bridge address.
 pub(super) async fn probe(
     address: Option<ContainerAddress>,
     check: &ployz_core::HttpHealthcheck,
-) -> HealthObservation {
+) -> Outcome {
     let Some(address) = address else {
-        return HealthObservation::Unrecognized("HTTP probe address unavailable".into());
+        return Outcome::Unavailable("HTTP probe address unavailable");
     };
     let client = match reqwest::Client::builder()
         .no_proxy()
@@ -20,15 +29,15 @@ pub(super) async fn probe(
         .build()
     {
         Ok(client) => client,
-        Err(_) => return HealthObservation::Unrecognized("HTTP probe unavailable".into()),
+        Err(_) => return Outcome::Unavailable("HTTP probe unavailable"),
     };
     match client
         .get(format!("http://{}:{}{}", address.0, check.port, check.path))
         .send()
         .await
     {
-        Ok(response) if response.status().is_success() => HealthObservation::Healthy,
-        Ok(_) | Err(_) => HealthObservation::Unhealthy,
+        Ok(response) if response.status().is_success() => Outcome::Up,
+        Ok(_) | Err(_) => Outcome::Down,
     }
 }
 
@@ -47,9 +56,9 @@ mod tests {
     #[tokio::test]
     async fn http_probe_checks_status_without_following_redirects() {
         for (status, expected) in [
-            (200, HealthObservation::Healthy),
-            (503, HealthObservation::Unhealthy),
-            (302, HealthObservation::Unhealthy),
+            (200, Outcome::Up),
+            (503, Outcome::Down),
+            (302, Outcome::Down),
         ] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -79,10 +88,7 @@ mod tests {
             );
             assert_eq!(requests.load(Ordering::SeqCst), 1);
             server.abort();
-            assert!(matches!(
-                probe(None, &check).await,
-                HealthObservation::Unrecognized(_)
-            ));
+            assert!(matches!(probe(None, &check).await, Outcome::Unavailable(_)));
             assert_eq!(
                 super::super::create::docker_healthcheck(&ployz_core::HealthcheckSpec::Http(check))
                     .unwrap()
