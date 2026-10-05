@@ -26,6 +26,7 @@ use tonic::transport::Channel;
 /// rotated away, and confirmed cleared.
 const CLIENT_REFUSED: VarInt = VarInt::from_u32(0x50);
 const CLIENT_CLEARED: VarInt = VarInt::from_u32(0x52);
+const TUNNEL_CLOSE_GRACE: Duration = Duration::from_secs(2);
 
 /// The relay the management transport dials through. Production uses the compiled
 /// [`DEFAULT_RELAY_URL`] with the embedded WebPKI roots; tests point at an in-process relay.
@@ -190,7 +191,12 @@ pub(super) async fn dial_tunnel(
             other => Err(io::Error::other(format!("unexpected tunnel reply {other}"))),
         }
     };
-    let (send, receive) = open.await.map_err(|error| {
+    let opened = open.await;
+    if opened.is_err() {
+        // The Machine finishes the stream before its close carries the refusal; wait for it.
+        let _ = tokio::time::timeout(TUNNEL_CLOSE_GRACE, session.connection.closed()).await;
+    }
+    let (send, receive) = opened.map_err(|error| {
         let Some(iroh::endpoint::ConnectionError::ApplicationClosed(close)) =
             session.connection.close_reason()
         else {
