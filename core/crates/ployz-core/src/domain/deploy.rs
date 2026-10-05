@@ -213,7 +213,7 @@ impl DeployIntent {
 pub enum DependencyCondition {
     /// Preserve dependency ordering only.
     ServiceStarted,
-    /// Wait for every observed dependency Service Container to be healthy.
+    /// Wait until every observed dependency Service Container may serve.
     ServiceHealthy,
 }
 

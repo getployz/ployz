@@ -449,7 +449,7 @@ _Avoid_: Management Address, globally unique container address
 
 **Serving Container**:
 A Service Container that may serve (running with health `healthy`, `failing` or `not_configured`), has a Container Address, and carries this observer's selected Serving Shape for its Qualified Service. It is observer-derived eligibility to receive traffic, not a replica identity. A Healthcheck gates the first serve only: a Container that passed once keeps serving while its check fails.
-The selected shape is the newest traffic-eligible shape observed for that Qualified Service. A starting, unhealthy, or stopped replacement does not exclude healthy older Containers; once a newer shape can take traffic, only that shape serves, and it keeps serving while its check fails.
+The selected shape is the newest traffic-eligible shape observed for that Qualified Service. A starting, unhealthy, or stopped replacement does not exclude older Containers that may serve; once a newer shape can take traffic, only that shape serves, and it keeps serving while its check fails.
 _Avoid_: replica, endpoint, upstream
 
 **Serving Shape**:

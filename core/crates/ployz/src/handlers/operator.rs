@@ -336,7 +336,7 @@ pub fn machine_logs(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// Forward a loopback port to a healthy container of the Service until interrupted.
+/// Forward a loopback port to a container of the Service that may serve, until interrupted.
 pub fn port_forward(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let service = ServiceSelector::parse(

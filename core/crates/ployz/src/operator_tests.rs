@@ -119,7 +119,7 @@ fn exec_mapping_and_container_selection_match_the_operator_contract() {
     ));
     assert!(matches!(
         select_proxy_container(&hook_only),
-        Err(OperatorError::NoHealthyContainer)
+        Err(OperatorError::NoServableContainer)
     ));
     let mut duplicate_names = service;
     if let Some(slot) = duplicate_names.containers.get_mut(1) {
