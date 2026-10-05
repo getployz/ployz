@@ -130,7 +130,7 @@ mod tests {
     };
 
     #[test]
-    fn serving_containers_are_healthy_addressed_service_containers() {
+    fn serving_containers_are_addressed_service_containers_that_may_serve() {
         let service_id = ServiceId::parse("a".repeat(32)).unwrap();
         let healthy = serving_observation(
             '1',
@@ -193,10 +193,20 @@ mod tests {
             ContainerRuntimeObservation::Exited { code: 0 },
             Some([10, 210, 1, 7]),
         );
+        let failing = serving_observation(
+            '8',
+            &service_id,
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Failing,
+            },
+            Some([10, 210, 1, 8]),
+        );
 
         let containers = service_containers([
             healthy.clone(),
             not_configured.clone(),
+            failing.clone(),
             hook,
             starting,
             unhealthy,
@@ -210,7 +220,7 @@ mod tests {
                 .into_iter()
                 .map(super::ServingContainer::as_observation)
                 .collect::<Vec<_>>(),
-            vec![&healthy, &not_configured]
+            vec![&healthy, &not_configured, &failing]
         );
     }
 
