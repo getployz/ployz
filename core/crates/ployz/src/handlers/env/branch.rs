@@ -401,11 +401,11 @@ pub(super) fn keep(root: &ArgMatches) -> Result<(), Error> {
 
 /// A refused `--expect` names the read that shows the fresh revision; other
 /// conflicts keep the Store's own next step.
-fn stale(error: StoreCallError, matches: &ArgMatches) -> StoreCallError {
+fn stale(error: StoreCallError, matches: &ArgMatches) -> store::Refusal {
     if matches.get_one::<String>("expect").is_some() {
         store::with_refresh_hint(error, matches, "get")
     } else {
-        error
+        error.into()
     }
 }
 

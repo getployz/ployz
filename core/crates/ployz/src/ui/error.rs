@@ -30,6 +30,20 @@ impl Hint {
         Self::Valid(names.into_iter().map(Into::into).collect())
     }
 
+    /// Whether `other` says nothing this one doesn't: the same hint, or another
+    /// of a kind a reader gets only one of.
+    #[must_use]
+    pub fn replaces(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Inspect(_), Self::Inspect(_)) => self == other,
+            (Self::Next(_), Self::Next(_))
+            | (Self::Retry(_), Self::Retry(_))
+            | (Self::Undo(_), Self::Undo(_))
+            | (Self::Valid(_), Self::Valid(_)) => true,
+            _ => false,
+        }
+    }
+
     const fn label(&self) -> &'static str {
         match self {
             Self::Next(_) => "next:",

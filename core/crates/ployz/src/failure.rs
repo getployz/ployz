@@ -76,8 +76,8 @@ impl Failure {
 
     /// Add a line telling the reader what to do about this failure.
     #[must_use]
-    pub fn hint(mut self, hint: Hint) -> Self {
-        if let Inner::Command { hints, .. } = &mut self.inner {
+    pub fn hint(mut self, hint: impl Into<Option<Hint>>) -> Self {
+        if let (Inner::Command { hints, .. }, Some(hint)) = (&mut self.inner, hint.into()) {
             hints.push(hint);
         }
         self
@@ -183,13 +183,14 @@ impl Failure {
         }
     }
 
-    /// What the reader can do: hints set here, then any an error from the wire carried.
+    /// What the reader can do: hints set here, then those an error from the wire
+    /// carried that no hint set here replaces.
     #[must_use]
     pub fn hints(&self) -> Vec<Hint> {
         let mut hints = self.own_hints().to_vec();
         if let Inner::Command { error, .. } = &self.inner {
             for hint in Hint::from_details(&classify(error.as_ref()).1) {
-                if !hints.contains(&hint) {
+                if !hints.iter().any(|own| own.replaces(&hint)) {
                     hints.push(hint);
                 }
             }
