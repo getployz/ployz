@@ -40,7 +40,7 @@ import { SERVICE_SETTINGS_SECTIONS, type ServiceSettingsSectionId } from "./serv
 import { useRemoveStoreService } from "./useDeleteService";
 import { StoreServiceVariablesTab } from "./ServiceVariablesTab";
 import { StoreNetworkingSection } from "./StoreNetworkingSection";
-import { ServiceSummary } from "./ServiceSummary";
+import { HealthcheckFailing, ServiceSummary } from "./ServiceSummary";
 import { ContainerLogs } from "#/components/container-logs";
 import { Skeleton } from "#/components/ui/skeleton";
 import { ItemGroup } from "#/components/ui/item";
@@ -193,6 +193,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
         <ServiceSummary state={state} namespace={namespace} />
       </CanvasInspectorHeader>
       <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
+        <div className="mx-auto mt-3 w-full max-w-2xl empty:hidden"><HealthcheckFailing state={state} namespace={namespace} /></div>
         <Tabs value={Schema.is(servicePageSchema)(tab) ? tab : "settings"}
           onValueChange={(value) => {
             if (Schema.is(servicePageSchema)(value)) void navigate({ search: (prev) => ({ ...prev, tab: value }), replace: true });

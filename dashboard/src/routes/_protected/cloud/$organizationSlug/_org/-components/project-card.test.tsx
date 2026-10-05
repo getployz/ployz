@@ -40,6 +40,13 @@ it("counts working services once, excluding stopped containers, hooks, and other
   expect(screen.queryByText(/online/)).toBeNull();
 });
 
+it("counts a service whose replica passed its healthcheck once and is failing it now as online", () => {
+  render(<ProjectCard name="Store" environment={environment} runtimeStatus="observed" runtimeServices={[
+    runtimeService("store-production/api", [container("api", "running", "failing")]),
+  ]} />);
+  expect(screen.getByText("1/3 services online")).toBeTruthy();
+});
+
 it("does not count unhealthy or starting containers as online", () => {
   render(<ProjectCard name="Store" environment={environment} runtimeStatus="observed" runtimeServices={[
     runtimeService("store-production/api", [container("api", "running", "unhealthy")]),
