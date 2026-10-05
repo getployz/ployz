@@ -197,7 +197,6 @@ pub(crate) fn create_config(
     taken(&environment, &create.name)?;
     let node = SavedConfigIntent {
         resource_id: create.id.to_string(),
-        // A new Config starts its own lineage; Branch copies keep it.
         resource_lineage_id: create.id.to_string(),
         name: create.name.clone(),
         files: BTreeMap::new(),
@@ -230,7 +229,6 @@ pub(crate) fn put_file(
     let names = environment.names();
     let content = parts(&put.file, &put.content, &names)?;
     let config = environment.config_mut(&put.config)?;
-    // A rewrite keeps the mode and owner it doesn't name.
     let old = config.files.get(&put.file);
     let file = SavedConfigFile {
         content,
@@ -241,7 +239,7 @@ pub(crate) fn put_file(
         uid: put.uid.or(old.map(|old| old.uid)).unwrap_or(0),
         gid: put.gid.or(old.map(|old| old.gid)).unwrap_or(0),
     };
-    let changed = config.files.get(&put.file) != Some(&file);
+    let changed = old != Some(&file);
     if changed {
         config.files.insert(put.file.clone(), file);
         if let Some((file, under)) = config.file_in_the_way() {
@@ -345,7 +343,7 @@ pub(crate) fn attach_config(
     if changed {
         scope::save_working(tx, &mut environment)?;
     }
-    mounted(environment, mount, changed)
+    mounted(environment, &mount.service, &mount.config, changed)
 }
 
 pub(crate) fn detach_config(
@@ -358,34 +356,22 @@ pub(crate) fn detach_config(
     if changed {
         scope::save_working(tx, &mut environment)?;
     }
-    let staged = changed
-        .then(|| {
-            SettingPath::at(
-                &unmount.service,
-                Target::ConfigMount(unmount.config.clone()),
-            )
-        })
-        .into_iter()
-        .collect();
-    Ok(ConfigStaged {
-        config: summary(environment.config(&unmount.config)?, &environment.names())?,
-        environment: environment.summary,
-        staged,
-    })
+    mounted(environment, &unmount.service, &unmount.config, changed)
 }
 
-/// What mounting a Config staged: the mount, when it changed.
+/// What mounting or unmounting a Config staged: the mount, when it changed.
 fn mounted(
     environment: Environment,
-    mount: &AttachConfig,
+    service: &ServiceName,
+    config: &ConfigName,
     changed: bool,
 ) -> Result<ConfigStaged, RpcError> {
     let staged = changed
-        .then(|| SettingPath::at(&mount.service, Target::ConfigMount(mount.config.clone())))
+        .then(|| SettingPath::at(service, Target::ConfigMount(config.clone())))
         .into_iter()
         .collect();
     Ok(ConfigStaged {
-        config: summary(environment.config(&mount.config)?, &environment.names())?,
+        config: summary(environment.config(config)?, &environment.names())?,
         environment: environment.summary,
         staged,
     })
@@ -451,7 +437,6 @@ pub(crate) fn attach(
     if node.config_attachments.contains(&mount) {
         return Ok(false);
     }
-    // One directory holds one thing: a Volume or a Config.
     let same_volume = node
         .volume_attachments
         .iter()
@@ -619,16 +604,12 @@ fn parts(
 }
 
 /// A Config file's row cell as reads show it: its text rendered, never its parts.
-pub(crate) fn shown_file(file: Value, names: &BTreeMap<String, String>) -> Value {
-    let Some(parts) = file.get("content") else {
-        return file;
-    };
-    let parts: Vec<ValuePart> = serde_json::from_value(parts.clone()).unwrap_or_default();
-    let mut shown = file;
-    if let Some(content) = shown.get_mut("content") {
+pub(crate) fn shown_file(mut file: Value, names: &BTreeMap<String, String>) -> Value {
+    if let Some(content) = file.get_mut("content") {
+        let parts: Vec<ValuePart> = serde_json::from_value(content.take()).unwrap_or_default();
         *content = Value::String(render_variable_parts(&parts, names));
     }
-    shown
+    file
 }
 
 /// Every Service name in `intents` by lineage, for rendering references; an earlier

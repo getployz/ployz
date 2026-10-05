@@ -187,7 +187,6 @@ fn configs_refuse_bare_references_and_colliding_mounts() {
         parse_environment_intent(with_config(json!({"a":file(bare)}), json!([]))).unwrap_err();
     assert_eq!(error.path, "configs.files.content");
 
-    // A Config Mount may not share a Volume's mount path.
     let error = parse_environment_intent(with_config(json!({"a":file(json!([]))}), mount("/data")))
         .unwrap_err();
     assert_eq!(error.path, "mountPath");
@@ -198,7 +197,6 @@ fn configs_refuse_bare_references_and_colliding_mounts() {
         assert_eq!(error.path, "configAttachments.mountDir", "{alias}");
     }
 
-    // A file may not sit where another mounted file needs a directory.
     let mut value = with_config(json!({"a":file(json!([]))}), json!([]));
     let configs = value.get_mut("configs").unwrap().as_array_mut().unwrap();
     configs.push(json!({"resourceId":"00000000-0000-4000-8000-000000000010","resourceLineageId":"00000000-0000-4000-8000-000000000011","name":"other","files":{"b":file(json!([]))}}));

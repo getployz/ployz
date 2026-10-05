@@ -210,14 +210,12 @@ pub(crate) fn remove_service(
 }
 
 /// A name is taken by another Service's name or Private DNS name: either would make
-/// `name` address two Services. `volumes` is never free.
+/// `name` address two Services. `volumes` and `configs` are never free.
 pub(crate) fn refuse_taken(
     environment: &scope::Environment,
     name: &ServiceName,
     except: Option<&str>,
 ) -> Result<(), RpcError> {
-    // `volumes.NAME` addresses a Volume and `configs.NAME` a Config, so no Service
-    // takes either name.
     if name.as_str() == "volumes" || name.as_str() == "configs" {
         return Err(error::invalid(
             format!(

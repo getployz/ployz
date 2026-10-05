@@ -489,7 +489,7 @@ fn mounted_files(
                     "Attachment must reference an authored resource",
                 )
             })?;
-        let dir = attachment.mount_dir.as_str().trim_end_matches('/');
+        let dir = attachment.mount_dir.as_str();
         for name in config.files.keys() {
             if !paths.insert(format!("{dir}/{name}")) {
                 return Err(ConfigError::at(

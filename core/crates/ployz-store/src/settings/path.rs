@@ -37,8 +37,6 @@ impl NodeName {
             return Ok(Self::Config(config_name(config)?));
         }
         match name {
-            // `volumes` addresses Volumes and `configs` Configs, never a Service, as in
-            // a Setting path.
             "volumes" => Err(name_a_volume()),
             "configs" => Err(name_a_config()),
             _ => ServiceName::parse(name).map(Self::Service).map_err(|_| {

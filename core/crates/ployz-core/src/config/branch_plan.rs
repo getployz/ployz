@@ -168,7 +168,6 @@ pub fn plan_branch(
         true
     });
 
-    // Owned nodes in document order (services, volumes, configs), then the Parent's live lineages.
     let typed = services
         .iter()
         .map(|id| (*id, EnvironmentNodeType::Service))

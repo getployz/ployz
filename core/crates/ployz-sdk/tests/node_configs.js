@@ -1,6 +1,5 @@
 "use strict";
 
-// Configs through the SDK's Config Store, as Cloud calls it.
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const fs = require("node:fs");

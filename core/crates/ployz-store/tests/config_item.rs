@@ -600,7 +600,6 @@ fn a_mount_directory_holds_one_volume_or_config() {
     assert_eq!(on_create.code, RpcErrorCode::Conflict);
     assert_eq!(listed(&store, &who).len(), 2);
 
-    // Another Service may use the same directory.
     attach(&store, &who, "other", "worker", "/etc/sentry").unwrap();
 
     for alias in [
@@ -633,7 +632,6 @@ fn two_mounts_may_not_land_files_on_one_path() {
 
     put(&store, &who, "inner", "other.conf", "b").unwrap();
 
-    // Mounted or not, one Config can't hold a file and a folder of the same name.
     create(&store, &who, 12, "loose", &[]).unwrap();
     put(&store, &who, "loose", "conf", "a").unwrap();
     let folder = refused(put(&store, &who, "loose", "conf/site.yml", "b"));
@@ -800,7 +798,6 @@ fn every_config_command_runs_inside_a_batch() {
     assert!(matches!(deleted.as_slice(), [Written::ConfigRemoved(_)]));
     assert!(listed(&store, &who).is_empty());
 
-    // One refused command leaves nothing of the batch.
     let failing = Batch {
         environment: EnvironmentRef::default(),
         commands: vec![

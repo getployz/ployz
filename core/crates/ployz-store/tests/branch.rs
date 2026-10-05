@@ -765,8 +765,6 @@ fn a_branch_owns_a_copy_of_the_config_a_copied_service_mounts() {
         json!({ "sentry": "/etc/sentry" })
     );
 
-    // The copy's reference follows db's lineage, so a rename in the Branch alone
-    // rewrites only the Branch's file.
     store
         .write(
             &who,
@@ -786,7 +784,6 @@ fn a_branch_owns_a_copy_of_the_config_a_copied_service_mounts() {
         "host: ${{ db.PLOYZ_PRIVATE_DOMAIN }}"
     );
 
-    // Discarding the mount of the renamed copy restores where web mounted it.
     store
         .write(
             &who,

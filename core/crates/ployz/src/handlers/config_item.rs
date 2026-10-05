@@ -177,9 +177,10 @@ fn put(root: &ArgMatches) -> Result<(), Error> {
         ))
         .with_exit(USAGE_EXIT)
     })?;
-    let mode = match matches.get_flag("executable") {
-        true => Some(FileMode::EXECUTABLE),
-        false => matches.get_one::<FileMode>("mode").copied(),
+    let mode = if matches.get_flag("executable") {
+        Some(FileMode::EXECUTABLE)
+    } else {
+        matches.get_one::<FileMode>("mode").copied()
     };
     let put = store::store(root)?.write(&PutConfigFile {
         environment: store::environment(matches)?,

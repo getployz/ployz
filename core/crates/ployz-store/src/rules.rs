@@ -356,8 +356,10 @@ impl<'a> Refusing<'a> {
                     .map(|service| service.slug.clone())
                     .or_else(|| facts.live.get(lineage).cloned())
                     .or_else(|| {
-                        let mut configs = facts.working.configs.iter();
-                        configs
+                        facts
+                            .working
+                            .configs
+                            .iter()
                             .find(|config| config.resource_lineage_id == lineage)
                             .map(|config| format!("Config {}", config.name))
                     })

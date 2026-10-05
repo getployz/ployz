@@ -1408,7 +1408,6 @@ fn a_config_file_syncs_as_one_row_and_a_conflict_replaces_the_whole_file() {
 
     put("fix-web", "a.yml", "one\ntwo\nthree\nfour\n");
     put("fix-web", "conf.d/b.yml", "b\n");
-    // production edits a different line of the same file.
     put("production", "a.yml", "zero\ntwo\nthree\n");
     let review = view(&store, &who);
     let mut rows: Vec<(String, SyncChange)> = review
