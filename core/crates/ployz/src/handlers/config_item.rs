@@ -25,7 +25,7 @@ pub(crate) fn command() -> Command {
     )
     .arg_required_else_help(true)
     .subcommand(
-        store::scoped(Command::new("create").about("Create a Config; staged until you deploy"))
+        store::scoped(Command::new("add").about("Add a Config; staged until you deploy"))
             .arg(positional("name", true).help("Config name, unique in the Environment"))
             .arg(
                 value("mount", None)
@@ -83,9 +83,7 @@ pub(crate) fn command() -> Command {
         .arg(positional("config", true)),
     )
     .subcommand(store::scoped(
-        Command::new("list")
-            .visible_alias("ls")
-            .about("List Configs and what the next Deploy does to them"),
+        Command::new("ls").about("List Configs and what the next Deploy does to them"),
     ))
     .subcommand(
         store::scoped(Command::new("rename").about("Rename a Config; its files and mounts stay"))
@@ -93,7 +91,7 @@ pub(crate) fn command() -> Command {
             .arg(positional("name", true)),
     )
     .subcommand(
-        store::scoped(Command::new("delete").about("Delete a Config and unmount it everywhere"))
+        store::scoped(Command::new("rm").about("Remove a Config and unmount it everywhere"))
             .arg(positional("config", true)),
     )
     .subcommand(
@@ -111,13 +109,13 @@ pub(crate) fn command() -> Command {
 
 pub(super) fn handler(path: &str) -> Option<super::Handler> {
     Some(match path {
-        "create" => create,
+        "add" => create,
         "put" => put,
         "rm-file" => remove_file,
         "inspect" => inspect,
-        "list" => list,
+        "ls" => list,
         "rename" => rename,
-        "delete" => delete,
+        "rm" => delete,
         "mount" => mount,
         "unmount" => unmount,
         _ => return None,

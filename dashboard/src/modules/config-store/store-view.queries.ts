@@ -37,6 +37,8 @@ const refreshedBy = {
   // Whether a Volume is deployed, and what a Deploy removes, come from Applied State.
   volumes: ["store_environment", "store_deployment"],
   volume: ["store_environment", "store_deployment"],
+  configs: ["store_environment", "store_deployment"],
+  config: ["store_environment", "store_deployment"],
   removals: ["store_environment", "store_deployment"],
   // A Branch's Live Nodes follow what its Parent and ancestors run; a PR Environment counts toward its pull
   // request's Destination.
