@@ -77,14 +77,16 @@ pub fn compare_resource_settings(
                 .flat_map(serde_json::Map::keys)
                 .collect();
             for name in names {
-                let (before, after) = (&then[name.as_str()], &now[name.as_str()]);
+                let entry =
+                    |files: &Value| files.get(name.as_str()).cloned().unwrap_or(Value::Null);
+                let (before, after) = (entry(&then), entry(&now));
                 if before != after {
                     let file = ConfigFileName::parse(name.clone())
                         .map_err(|_| ConfigError::at("config.files", "Invalid Config file name"))?;
                     changes.push(change(
                         (&format!("files.{name}"), Some(At::File(file))),
-                        before.clone(),
-                        after.clone(),
+                        before,
+                        after,
                         true,
                     ));
                 }
