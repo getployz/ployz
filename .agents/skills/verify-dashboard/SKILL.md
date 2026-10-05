@@ -11,7 +11,10 @@ One command gives this checkout its own Postgres, seed and `vite dev`, signed in
 
 ```bash
 scripts/verify/up.sh          # free port; BILLING=1 scripts/verify/up.sh turns billing on
+SERVERS=2 scripts/verify/up.sh   # also real Servers paired through Cloud; DAEMON=stable (default), beta, checkout or a version
 ```
+
+With `SERVERS`, `up.sh` also starts an Inngest dev server and the worker for this checkout, then runs `../core/scripts/verify-cluster` (see [verify-server](../verify-server/SKILL.md)). That command enrolls the Machines through this dashboard with an Organization Token. Deploys and enrollment follow-ups then really run. `.verify/run/info` adds the Inngest UI URL for function runs and the `verify-cluster cli` line for the cluster. Enrolling through Cloud needs the daemon version to equal this checkout's CLI version, so use `stable` on a release commit and `checkout` otherwise. The first run builds the shared VM image, which takes a few minutes.
 
 A fresh worktree is fine: `up.sh` installs `node_modules` and builds the native SDK when either is missing or stale. The SDK build is shared across worktrees through `~/.cache/ployz/sdk`, keyed by the committed Rust sources, so only the first checkout of a given commit compiles it (about 2 minutes). A warm run takes about 20 seconds. Rerunning it restarts from a fresh seed, and the cookie stays valid. It prints the URLs and the two `agent-browser` lines to run, and saves them to `.verify/run/info`.
 
@@ -23,7 +26,7 @@ The seed (`scripts/verify/seed.ts`) writes through the app's own Config Store co
 | `production` | services web, api, postgres (with volume pg-data), worker; domain acme.com on web; one queued Deploy "Ship everything"; unpublished api edits (image 1.5, `FEATURE_SEARCH`) |
 | `fix-api` | a Branch of production holding api and web, with 2 changes to save |
 
-To seed different state, add Config Store writes to `seed.ts`. It is typechecked with the app, so a domain refactor that breaks it fails `pnpm typecheck`.
+With `SERVERS`, the seed skips the fake Server and the queued Deploy, and `seed.json` lists them under `skipped`. To seed different state, add Config Store writes to `seed.ts`. It is typechecked with the app, so a domain refactor that breaks it fails `pnpm typecheck`.
 
 ## Doctor
 
@@ -31,7 +34,7 @@ To seed different state, add Config Store writes to `seed.ts`. It is typechecked
 scripts/verify/doctor.sh      # read-only; one line per check, exit 1 on any FAIL
 ```
 
-It checks `node_modules`, the SDK, the container, vite and a signed-in `/cloud` redirect. A FAIL names its fix. Read `.verify/run/vite.log` for server errors.
+It checks `node_modules`, the SDK, the container, vite and a signed-in `/cloud` redirect. With `SERVERS` it also checks Inngest, the worker and `verify-cluster doctor`. A FAIL names its fix. Read `.verify/run/vite.log` for server errors.
 
 ## Drive
 
@@ -62,13 +65,13 @@ Save evidence to `dashboard/.verify/evidence/`, which is gitignored and survives
 ## Cleanup
 
 ```bash
-scripts/verify/down.sh        # stops vite, removes the container and browser session; keeps .verify/evidence
+scripts/verify/down.sh        # stops vite, Inngest, the worker and the cluster; removes the container and browser session; keeps .verify/evidence
 ```
 
 ## Known gaps
 
-- No Server answers, so service nodes read **Queued · Can't reach servers**, and Logs and runtime status stay empty. For disposable real Machines, use [verify-server](../verify-server/SKILL.md) from `core/` with `--daemon stable` or `beta`; choose `checkout` when the feature needs daemon changes. That helper enrolls standalone; connecting the cluster to this dashboard still requires Cloud pairing.
-- Inngest and hosted DNS point at a dead port. Anything that sends an Inngest event or creates a hosted domain fails at that call.
+- Without `SERVERS`, no Server answers. Service nodes read **Queued · Can't reach servers**, Logs and runtime status stay empty, and Inngest points at a dead port, so anything that sends an Inngest event fails at that call.
+- Hosted DNS always points at a dead port. Creating a hosted domain fails at that call.
 - GitHub and Polar are fake. Connecting a repository or completing checkout cannot be verified here; `BILLING=1` only renders the billing UI.
 
 ## Behavior reference

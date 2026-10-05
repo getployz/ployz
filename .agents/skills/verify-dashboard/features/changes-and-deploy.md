@@ -25,5 +25,5 @@ The seed leaves production with api changes (Container image 1.4 → 1.5, `FEATU
 
 ## Gotchas
 
-- **Deploy changes** gets admitted (the seed pairs a fake Server), but the Deploy stays Queued forever. Prove it by the new row in Deployments, not by a running status.
+- Without `SERVERS`, **Deploy changes** gets admitted (the seed pairs a fake Server), but the Deploy stays Queued forever. Prove it by the new row in Deployments, not by a running status. With `SERVERS`, the Deploy runs on the real Servers.
 - Code: `ENV/-components/canvas/BottomBar.tsx`, `ENV/-components/canvas/EnvironmentChangesReview.tsx`, `ENV/_canvas/deployments/`.
