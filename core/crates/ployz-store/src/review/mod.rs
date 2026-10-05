@@ -12,11 +12,11 @@ use ployz_core::RpcError;
 use ployz_core::config::{
     At, ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,
     ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId, SavedEnvironmentIntent,
-    ServiceSettingChange, ValuePart, canonicalize_environment_intent, compile_environment_intent,
+    ServiceSettingChange, canonicalize_environment_intent, compile_environment_intent,
     project_environment_changes,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
@@ -130,6 +130,8 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             .as_ref()
             .map_or(&environment.working, |saved| &saved.intent),
     ];
+    let mut names = crate::config_item::names_in(&every);
+    names.extend(environment.names());
     let lineage = |node: &ReviewNodeIdentity| {
         every.iter().find_map(|intent| match node.node_type {
             EnvironmentNodeType::Service => intent
@@ -217,8 +219,8 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                         if group.node.node_type == EnvironmentNodeType::Volume {
                             row.path = format!("volumes.{name}.{}", row.path);
                         } else if group.node.node_type == EnvironmentNodeType::Config {
-                            row.before = file_shown(row.before);
-                            row.after = file_shown(row.after);
+                            row.before = crate::config_item::shown_file(row.before, &names);
+                            row.after = crate::config_item::shown_file(row.after, &names);
                             row.path = format!("configs.{name}.{}", row.path);
                         } else {
                             row.before = shown(&row.path, row.before);
@@ -363,18 +365,6 @@ fn config_name(intents: &[&SavedEnvironmentIntent; 2], id: &str) -> Option<Strin
         .flat_map(|intent| &intent.configs)
         .find(|config| config.resource_id == id)
         .map(|config| config.name.to_string())
-}
-
-/// A Config file's change row as reads show it: its content rendered as display
-/// text, never its parts.
-fn file_shown(file: Value) -> Value {
-    let Some(parts) = file.get("content") else {
-        return file;
-    };
-    let parts: Vec<ValuePart> = serde_json::from_value(parts.clone()).unwrap_or_default();
-    let mut shown = file.clone();
-    shown["content"] = Value::String(crate::config_item::display_text(&parts));
-    shown
 }
 
 /// A deployed Volume removed deletes data; a Service removed, or one of its mounts

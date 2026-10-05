@@ -600,10 +600,12 @@ pub(crate) fn shown_file(file: Value, names: &BTreeMap<String, String>) -> Value
     shown
 }
 
-/// Every Service name of `intent` by lineage, for rendering references.
+/// Every Service name in `intents` by lineage, for rendering references; an earlier
+/// intent's name wins.
 pub(crate) fn names_in(intents: &[&SavedEnvironmentIntent]) -> BTreeMap<String, String> {
     intents
         .iter()
+        .rev()
         .flat_map(|intent| &intent.services)
         .map(|service| (service.lineage_id.clone(), service.slug.clone()))
         .collect()

@@ -117,25 +117,15 @@ pub struct VolumeConfig {
     pub storage: VolumeKind,
 }
 
-/// The configuration of a Config node snapshot: its files with references
-/// written by the Service names they had when compiled.
+/// The configuration of a Config node snapshot: its files, references kept by
+/// Service lineage so renaming a Service changes no file.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigNodeConfig {
     #[ts(type = "1")]
     pub version: u8,
     pub name: ConfigName,
-    pub files: BTreeMap<ConfigFileName, CompiledConfigFile>,
-}
-
-/// One Config file as a snapshot shows it.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct CompiledConfigFile {
-    pub content: String,
-    pub mode: FileMode,
-    pub uid: u32,
-    pub gid: u32,
+    pub files: BTreeMap<ConfigFileName, SavedConfigFile>,
 }
 
 /// A variable value associated with its stable producer owner and lineage.
@@ -327,21 +317,7 @@ pub fn compile_environment_intent(
         snapshot: CompiledNodeSnapshot(CompiledNodeConfig::Config(ConfigNodeConfig {
             version: 1,
             name: c.name.clone(),
-            files: c
-                .files
-                .iter()
-                .map(|(name, file)| {
-                    (
-                        name.clone(),
-                        CompiledConfigFile {
-                            content: render_variable_parts(&file.content, &slugs),
-                            mode: file.mode,
-                            uid: file.uid,
-                            gid: file.gid,
-                        },
-                    )
-                })
-                .collect(),
+            files: c.files.clone(),
         })),
         encrypted_registry_username: None,
         encrypted_registry_secret: None,

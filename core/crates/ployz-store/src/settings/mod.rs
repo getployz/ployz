@@ -8,7 +8,7 @@ mod path;
 pub(crate) mod query;
 
 pub use path::{NodeName, SettingPath};
-pub(crate) use path::{Target, VolumeField, name_a_setting};
+pub(crate) use path::{Target, VolumeField, config_name, name_a_setting};
 
 use ployz_core::RpcError;
 use ployz_core::config::{
