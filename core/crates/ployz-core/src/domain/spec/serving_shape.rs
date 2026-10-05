@@ -172,6 +172,17 @@ impl ResolvedServiceSpec {
     pub fn serving_shape(&self) -> ServingShape {
         ServingShape::of_resolved(self)
     }
+
+    /// Serving Shape of this spec once published, with Config content redacted.
+    ///
+    /// Published rows from daemons that do and don't redact Config content compare
+    /// equal. Compare it only with other published shapes.
+    #[must_use]
+    pub fn published_serving_shape(&self) -> ServingShape {
+        let mut published = self.clone();
+        published.mount_graph.redact_config_content();
+        ServingShape::of_resolved(&published)
+    }
 }
 
 impl RequestedServiceSpec {
