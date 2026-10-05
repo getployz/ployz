@@ -92,8 +92,15 @@ fn ok(store: &Target, args: &[&str]) -> Value {
     json
 }
 
+/// A refusal, exiting 2 when the command must change and 1 otherwise.
 fn error(store: &Target, args: &[&str]) -> Value {
-    failed(store, args, 1)
+    let (code, json) = ployz(Some(store), args);
+    let exit = match json["error"]["code"].as_str() {
+        Some("invalid_argument" | "confirmation_required" | "ambiguous" | "unsupported") => 2,
+        _ => 1,
+    };
+    assert_eq!(code, Some(exit), "{args:?}: {json}");
+    json.get("error").cloned().unwrap()
 }
 
 fn failed(store: &Target, args: &[&str], exit: i32) -> Value {
@@ -558,7 +565,7 @@ fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
         assert_eq!(unconfirmed["code"], json!("confirmation_required"));
         assert_eq!(unconfirmed["details"]["services"], json!(["web"]));
         assert_eq!(
-            unconfirmed["details"]["next"],
+            unconfirmed["details"]["retry"],
             json!("ployz env rm production --confirm shop/production")
         );
         failed(
@@ -706,7 +713,7 @@ fn an_agent_lists_and_removes_a_project_without_servers() {
             json!(["web"])
         );
         assert_eq!(
-            unconfirmed["details"]["next"],
+            unconfirmed["details"]["retry"],
             json!("ployz project rm shop --confirm shop")
         );
         failed(store, &["project", "rm", "shop", "--confirm", "blog"], 2);
@@ -1467,8 +1474,8 @@ fn get_patch_get_round_trips_and_the_environment_shows_only_what_is_set() {
             12
         );
 
-        for (patch, exit) in [(r#"{"memLimit": null}"#, 1), ("not json", 2)] {
-            let refused = failed(store, &["set", "web", "--patch", patch], exit);
+        for patch in [r#"{"memLimit": null}"#, "not json"] {
+            let refused = failed(store, &["set", "web", "--patch", patch], 2);
             assert_eq!(
                 refused.get("code"),
                 Some(&json!("invalid_argument")),
@@ -1552,7 +1559,7 @@ fn the_catalog_describes_settings_without_a_store() {
     );
 
     let (code, json) = ployz(None, &["explain", "web.restart_policy"]);
-    assert_eq!(code, Some(1));
+    assert_eq!(code, Some(2));
     assert_eq!(
         json.pointer("/error/details/did_you_mean"),
         Some(&json!("restartPolicy"))
@@ -2149,7 +2156,7 @@ fn missing_ambiguous_and_foreign_scope_name_the_fix() {
             Some(&json!("ployz link --project PROJECT"))
         );
         let (code, refused) = run(&["link"]);
-        assert_eq!(code, Some(1));
+        assert_eq!(code, Some(2));
         assert_eq!(
             refused.pointer("/error/details/next"),
             Some(&json!("ployz link --project PROJECT"))
@@ -2261,7 +2268,7 @@ fn github_lists_branches_and_disconnects_in_cloud() {
     let missing = error(&cloud, &["github", "ls", "acme/nope"]);
     assert_eq!(missing["code"], "not_found");
     assert_eq!(
-        failed(&cloud, &["github", "ls", "not a repo"], 1)["code"],
+        failed(&cloud, &["github", "ls", "not a repo"], 2)["code"],
         "invalid_argument"
     );
     let removed = ok(&cloud, &["github", "disconnect", "7"]);

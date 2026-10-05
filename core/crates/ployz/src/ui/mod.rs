@@ -6,7 +6,7 @@ mod exit;
 mod mode;
 mod tone;
 
-pub use error::{Hint, causes};
+pub use error::{Hint, causes, inline};
 pub use exit::{PARTIAL_EXIT, exit, exit_code};
 pub use mode::{Mode, Surroundings, mode};
 pub use tone::{Painted, Tone, clap_styles};

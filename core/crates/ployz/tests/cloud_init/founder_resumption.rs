@@ -346,9 +346,11 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     };
     let first = command().arg("--reset").output().await.unwrap();
     assert!(!first.status.success());
-    assert!(String::from_utf8_lossy(&first.stderr).contains(
-        "rerun the same ployz server add command without --reset (keep all other options)"
-    ));
+    assert!(
+        String::from_utf8_lossy(&first.stderr).contains("without --reset"),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
     assert!(
         String::from_utf8_lossy(&first.stderr).contains("lost Ingress container creation reply")
     );

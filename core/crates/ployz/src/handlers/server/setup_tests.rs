@@ -131,11 +131,7 @@ async fn held_setup_rpcs_keep_the_mutation_and_read_deadlines() {
         .await
         .unwrap_err();
     assert_eq!(Instant::now() - started, Duration::from_secs(5));
-    assert!(
-        error
-            .to_string()
-            .contains("Machine setup mutation reply timed out")
-    );
+    assert!(crate::ui::inline(&error).contains("Machine setup mutation reply timed out"));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     let started = Instant::now();
     let error = client

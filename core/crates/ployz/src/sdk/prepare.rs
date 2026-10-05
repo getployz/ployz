@@ -163,9 +163,15 @@ pub async fn select_build_machine(
                             rejections: reasons,
                         });
                     }
-                    Err(error) => format!("Build capability could not be verified: {error}"),
+                    Err(error) => format!(
+                        "Build capability could not be verified: {}",
+                        crate::ui::inline(&error)
+                    ),
                 },
-                Err(error) => format!("Build capability could not be verified: {error}"),
+                Err(error) => format!(
+                    "Build capability could not be verified: {}",
+                    crate::ui::inline(&error)
+                ),
             }
         };
         *rejected.entry(category).or_default() += 1;
@@ -199,12 +205,12 @@ use tokio_util::sync::CancellationToken;
 /// Preparation failures never imply application confirmation.
 #[derive(Debug, thiserror::Error)]
 pub enum PreparationError {
-    #[error("{0}. No Service, hook, or volume change was attempted.")]
+    #[error("The Build failed, so no Service, hook, or volume change was attempted.")]
     Build(#[from] crate::build::Error),
     #[error(transparent)]
     Connect(#[from] ConnectError),
-    #[error("Build selection failed: {0}")]
-    Selection(ConnectError),
+    #[error("Could not select a Build Machine.")]
+    Selection(#[source] ConnectError),
     #[error(transparent)]
     Plan(#[from] DeployError),
     #[error("{0}")]

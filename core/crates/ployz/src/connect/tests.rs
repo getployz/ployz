@@ -27,7 +27,7 @@ fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
             last: Some(Box::new(ssh_error)),
         };
         assert_eq!(error.is_setup_retryable(), retry);
-        assert!(error.to_string().contains(detail));
+        assert!(crate::ui::inline(&error).contains(detail));
     }
 }
 
@@ -54,7 +54,7 @@ async fn setup_retry_preserves_transient_failures_in_either_connection_order() {
         assert_eq!(error.is_setup_retryable(), retryable, "{error}");
         if !retryable {
             assert!(
-                error.to_string().contains("unlock your key with ssh-add"),
+                crate::ui::inline(&error).contains("unlock your key with ssh-add"),
                 "{error}"
             );
         }
@@ -167,7 +167,7 @@ fn machine_rpc_status_prints_the_message_not_transport_metadata() {
     let error = TransportError::from(status);
     assert_eq!(error.to_string(), "invalid log time \"notatime\"");
     assert_eq!(
-        ConnectError::Rpc(error).to_string(),
+        crate::ui::inline(&ConnectError::Rpc(error)),
         "Machine RPC failed: invalid log time \"notatime\""
     );
 }
@@ -441,7 +441,7 @@ async fn local_socket_that_accepts_but_never_serves_fails_as_starting() {
         Ok(_) => panic!("a daemon that never serves must not be confirmed"),
     };
     assert!(
-        error.to_string().contains("may still be starting"),
+        crate::ui::inline(&error).contains("may still be starting"),
         "{error}"
     );
     assert!(!error.is_retryable(), "{error}");

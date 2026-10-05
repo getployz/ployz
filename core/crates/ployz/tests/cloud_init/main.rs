@@ -327,7 +327,8 @@ async fn caddy_lookup_failure_happens_before_initialize() {
     assert!(rejected.await.unwrap_err().is_cancelled());
     assert!(!output.status.success());
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("list Docker Hub Caddy tags"),
+        String::from_utf8_lossy(&output.stderr)
+            .contains("error: Could not list Caddy tags on Docker Hub."),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );

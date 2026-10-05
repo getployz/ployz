@@ -35,7 +35,7 @@ pub enum ProvisionError {
     #[error("local ssh client not found; install an ssh client")]
     SshClientMissing(#[source] io::Error),
     /// The initial remote identity command could not be run.
-    #[error("run ssh whoami: {0}")]
+    #[error("Could not run ssh whoami on the Machine.")]
     Whoami(#[source] io::Error),
     /// The initial remote identity command exited unsuccessfully.
     #[error("ssh whoami failed: {0}")]
@@ -47,13 +47,13 @@ pub enum ProvisionError {
     #[error("ssh whoami returned an empty user")]
     EmptyUser,
     /// The remote sudo preflight could not be run.
-    #[error("check remote sudo: {0}")]
+    #[error("Could not check sudo on the Machine.")]
     Sudo(#[source] io::Error),
     /// A non-root remote user could not authenticate with sudo.
     #[error("remote user {user} could not authenticate or obtain sudo privileges to install Ployz")]
     SudoRequired { user: String },
     /// The remote platform inspection command could not be run.
-    #[error("inspect remote Machine platform: {0}")]
+    #[error("Could not inspect the Machine platform.")]
     Platform(#[source] io::Error),
     /// The remote platform inspection command exited unsuccessfully.
     #[error("remote Machine platform inspection failed: {0}")]
@@ -68,7 +68,7 @@ pub enum ProvisionError {
     #[error("unsupported Machine architecture: {0}")]
     UnsupportedArchitecture(String),
     /// A bootstrap filesystem or process operation failed.
-    #[error("{stage}: {source}")]
+    #[error("Could not {stage}.")]
     BootstrapIo {
         stage: &'static str,
         #[source]
@@ -84,33 +84,37 @@ pub enum ProvisionError {
     #[error("bootstrap verification: {0}")]
     BootstrapVerification(String),
     /// A published bootstrap release could not be downloaded.
-    #[error("{stage}: {source}")]
+    #[error("Could not {stage}.")]
     BootstrapDownload {
         stage: &'static str,
         #[source]
         source: reqwest::Error,
     },
     /// The bootstrap or its local release files could not be copied to the Machine.
-    #[error("transfer bootstrap release: {0}")]
+    #[error("Could not transfer the bootstrap release to the Machine.")]
     Transfer(#[source] io::Error),
     /// Remote staging or transfer exited unsuccessfully.
     #[error("bootstrap release transfer exited with {status}")]
     TransferFailed { status: std::process::ExitStatus },
     /// The shared Machine installer could not be spawned.
-    #[error("run Ployz installer: {0}")]
+    #[error("Could not run the Ployz installer.")]
     Install(#[source] io::Error),
     /// The shared Machine installer exited unsuccessfully.
     #[error("Ployz installer exited with {status}")]
     InstallFailed { status: std::process::ExitStatus },
     /// Remote bootstrap cleanup could not be run.
-    #[error("remove remote bootstrap: {0}")]
+    #[error("Could not remove the remote bootstrap.")]
     Cleanup(#[source] io::Error),
     /// Remote bootstrap cleanup exited unsuccessfully.
     #[error("remote bootstrap cleanup exited with {status}")]
     CleanupFailed { status: std::process::ExitStatus },
     /// Setup failed and the subsequent remote cleanup also failed.
-    #[error("{primary}; cleanup: {cleanup}")]
+    #[error(
+        "Machine setup failed and was not cleaned up. {}",
+        crate::ui::inline(cleanup.as_ref())
+    )]
     CleanupAfter {
+        #[source]
         primary: Box<ProvisionError>,
         cleanup: Box<ProvisionError>,
     },
@@ -118,7 +122,7 @@ pub enum ProvisionError {
     #[error("run this command with sudo")]
     NotRoot,
     /// Reading an interactive storage selection failed.
-    #[error("read storage choice: {0}")]
+    #[error("Could not read the storage choice.")]
     StorageInput(#[source] io::Error),
     /// The selected storage value is invalid.
     #[error(transparent)]
@@ -653,7 +657,11 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "bootstrap verification: bad version; cleanup: remove remote bootstrap: ssh failed"
+            "Machine setup failed and was not cleaned up. Could not remove the remote bootstrap: ssh failed"
+        );
+        assert_eq!(
+            crate::ui::causes(&error),
+            ["bootstrap verification: bad version"]
         );
     }
 

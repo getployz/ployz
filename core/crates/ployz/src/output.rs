@@ -158,7 +158,7 @@ pub(crate) fn emit_committed(
     follow_up: Result<(), Failure>,
 ) -> Result<(), Failure> {
     if let (Err(error), Some(fields)) = (&follow_up, result.as_object_mut()) {
-        fields.insert("follow_up_error".into(), serde_json::json!(error.report()));
+        fields.insert("follow_up_error".into(), error.json());
     }
     emit(&result)?;
     follow_up

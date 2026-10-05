@@ -508,8 +508,11 @@ mod tests {
             ])
             .unwrap();
         assert_eq!(
-            dispatch(&matches, &mut command).unwrap_err().to_string(),
-            "all 1 connections from the explicit connection failed: connection attempt failed: transport error",
+            dispatch(&matches, &mut command)
+                .unwrap_err()
+                .causes()
+                .get(..2),
+            Some(&["Could not connect to the Machine.", "transport error"].map(String::from)[..]),
         );
     }
 
@@ -648,7 +651,7 @@ mod tests {
         assert_eq!(
             error
                 .details
-                .get("next")
+                .get("retry")
                 .and_then(serde_json::Value::as_str),
             Some("ployz cloud reset --yes")
         );

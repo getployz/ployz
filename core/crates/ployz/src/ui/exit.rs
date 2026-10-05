@@ -63,20 +63,11 @@ fn render(
         return code;
     }
     let report = failure.report();
-    let causes = failure.causes();
     // Nothing is left to report a failed write to.
     if mode == Mode::Json && !emitted {
-        let mut error = json!({
-            "code": report.code,
-            "message": report.message,
-            "details": report.details,
-        });
-        if !causes.is_empty() {
-            error["cause"] = json!(causes);
-        }
-        let _ = writeln!(stdout, "{}", json!({ "error": error }));
+        let _ = writeln!(stdout, "{}", json!({ "error": failure.json() }));
     } else {
-        let _ = error::write(stderr, &report.message, &causes, &failure.hints());
+        let _ = error::write(stderr, &report.message, &failure.causes(), &failure.hints());
     }
     if emitted {
         PARTIAL_EXIT

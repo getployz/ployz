@@ -255,7 +255,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
                 }
             }
             Ok(None) => {}
-            Err(error) => failures.push((identity, error.to_string())),
+            Err(error) => failures.push((identity, crate::ui::inline(&error))),
         }
     }
     let target_containers = client

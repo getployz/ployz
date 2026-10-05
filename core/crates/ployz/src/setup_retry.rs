@@ -1,7 +1,8 @@
 //! Bounded retries for safe operations after setup has begun.
 
-use std::{fmt::Display, time::Duration};
+use std::time::Duration;
 
+use ployz_core::RpcErrorCode;
 use tokio::time::{Instant, sleep, timeout_at};
 
 use crate::failure::Failure;
@@ -10,15 +11,15 @@ pub(crate) const WAIT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error<E> {
-    #[error("{0}")]
+    #[error(transparent)]
     Permanent(E),
     #[error("{0}")]
     Exhausted(String),
 }
 
-impl<E: Display> From<Error<E>> for Failure {
+impl<E: std::error::Error + Send + Sync + 'static> From<Error<E>> for Failure {
     fn from(error: Error<E>) -> Self {
-        Self::usage(error.to_string())
+        Self::caused(RpcErrorCode::InvalidArgument, error.to_string(), error)
     }
 }
 
@@ -28,7 +29,7 @@ pub(crate) struct Expected(pub(crate) &'static str);
 
 /// Only pass reads or operations known to be safe to repeat. The deadline also
 /// bounds any retries inside the operation; it must not wrap a whole setup flow.
-pub(crate) async fn run<C, T, E: Display>(
+pub(crate) async fn run<C, T, E: std::error::Error + 'static>(
     context: &mut C,
     operation: &str,
     wait: Duration,
@@ -40,7 +41,7 @@ pub(crate) async fn run<C, T, E: Display>(
 
 /// [`run`], announcing an anticipated outage, such as a daemon restart, in
 /// place of the connectivity warning.
-pub(crate) async fn run_expecting<C, T, E: Display>(
+pub(crate) async fn run_expecting<C, T, E: std::error::Error + 'static>(
     context: &mut C,
     operation: &str,
     expected: Option<Expected>,
@@ -61,12 +62,13 @@ pub(crate) async fn run_expecting<C, T, E: Display>(
                     match expected {
                         Some(Expected(notice)) => eprintln!("{notice}"),
                         None => eprintln!(
-                            "{operation}: {error}; retrying for up to {}s. Check outbound firewall access if this connection is blocked.",
+                            "{operation}: {}; retrying for up to {}s. Check outbound firewall access if this connection is blocked.",
+                            crate::ui::inline(&error),
                             deadline.saturating_duration_since(Instant::now()).as_secs()
                         ),
                     }
                 }
-                last = Some(error.to_string());
+                last = Some(crate::ui::inline(&error));
             }
             Err(_) => break,
         }
@@ -118,17 +120,6 @@ pub(crate) fn temporary_dns(error: &std::io::Error) -> bool {
     )
 }
 
-/// Include the transport cause, which reqwest's top-level Display omits.
-pub(crate) fn detail(error: &dyn std::error::Error) -> String {
-    let mut text = error.to_string();
-    let mut source = error.source();
-    while let Some(error) = source {
-        text.push_str(&format!(": {error}"));
-        source = error.source();
-    }
-    text
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,7 +158,12 @@ mod tests {
                 .send()
                 .await
                 .unwrap_err();
-            assert_eq!(transient_http(&error), retry, "{}", detail(&error));
+            assert_eq!(
+                transient_http(&error),
+                retry,
+                "{}",
+                crate::ui::inline(&error)
+            );
         }
     }
 
@@ -199,10 +195,19 @@ mod tests {
                 Ok(response) => response.bytes().await.unwrap_err(),
                 Err(error) => error,
             };
-            assert_eq!(transient_http(&error), retry, "{}", detail(&error));
+            assert_eq!(
+                transient_http(&error),
+                retry,
+                "{}",
+                crate::ui::inline(&error)
+            );
             server.await.unwrap();
         }
     }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("{0}")]
+    struct Probe(&'static str);
 
     #[tokio::test(start_paused = true)]
     async fn retries_transient_failures_but_stops_on_permanent_errors_and_at_deadline() {
@@ -215,7 +220,7 @@ mod tests {
             async |calls| {
                 *calls += 1;
                 if *calls < 3 {
-                    Err("connection refused")
+                    Err(Probe("connection refused"))
                 } else {
                     Ok(42)
                 }
@@ -233,7 +238,7 @@ mod tests {
             |_| false,
             async |calls| {
                 *calls += 1;
-                Err::<(), _>("wrong identity")
+                Err::<(), _>(Probe("wrong identity"))
             },
         )
         .await
@@ -247,7 +252,7 @@ mod tests {
             "probe",
             WAIT,
             |_| true,
-            async |_| Err::<(), _>("connection refused"),
+            async |_| Err::<(), _>(Probe("connection refused")),
         )
         .await
         .unwrap_err();
@@ -260,7 +265,7 @@ mod tests {
             "probe",
             WAIT,
             |_| true,
-            async |_| std::future::pending::<Result<(), &str>>().await,
+            async |_| std::future::pending::<Result<(), Probe>>().await,
         )
         .await
         .unwrap_err();

@@ -451,7 +451,7 @@ impl fmt::Display for EliminatingConstraints {
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum PlanError {
     /// Complete provisioned storage demand cannot be admitted on this Machine.
-    #[error("Machine {machine}: {source}")]
+    #[error("Storage on Machine {machine} cannot admit this Deploy.")]
     Storage {
         /// Durable identity of the Machine whose budget failed.
         machine_id: MachineId,
@@ -529,7 +529,7 @@ pub enum PlanError {
         /// Bound requested by this Deploy Intent.
         maximum_bytes: ProvisionedVolumeMaximumBytes,
     },
-    #[error("plan service '{service}': {source}")]
+    #[error("Could not plan Service {service}.")]
     Service {
         service: String,
         #[source]

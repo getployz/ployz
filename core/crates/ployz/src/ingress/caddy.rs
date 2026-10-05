@@ -9,7 +9,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum IngressImageError {
     /// Docker Hub tags could not be listed.
-    #[error("list Docker Hub Caddy tags: {}", crate::setup_retry::detail(.0))]
+    #[error("Could not list Caddy tags on Docker Hub.")]
     ListTags(#[from] OciDistributionError),
     #[error("{0}")]
     Timeout(String),

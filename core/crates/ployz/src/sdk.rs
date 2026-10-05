@@ -982,7 +982,7 @@ pub(crate) fn preparation_error(
     cancellation_requested: bool,
 ) -> RpcError {
     use crate::sdk::prepare::PreparationError;
-    let message = error.to_string();
+    let message = crate::ui::inline(&error);
     match error {
         PreparationError::Selection(error) => {
             let rejections = if let ConnectError::Remote(error) = &error {

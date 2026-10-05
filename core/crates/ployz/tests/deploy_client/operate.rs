@@ -222,7 +222,7 @@ async fn server_clean_removes_only_a_namespace_no_environment_owns() {
         &["server", "clean", "--namespace", "left-over"],
     )
     .await;
-    assert_eq!(code, 1, "{unconfirmed}");
+    assert_eq!(code, 2, "{unconfirmed}");
     assert_eq!(
         unconfirmed["error"]["code"], "confirmation_required",
         "{unconfirmed}"

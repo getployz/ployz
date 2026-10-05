@@ -21,6 +21,7 @@ use ployz_store::{EnvironmentRef, NamespacesQuery, VolumesQuery, docker_volume};
 use serde_json::json;
 
 use crate::output::{self, say};
+use crate::ui::Hint;
 
 pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let options = ConnectionOptions::from_matches(root)?;
@@ -184,15 +185,15 @@ async fn cloud_removal(
     let store = CredentialStore::beside(&crate::handlers::config_path(matches)?);
     match cloud_account::from_env(&store).await {
         Ok(credential) => Ok(credential),
-        Err(LoginError::SignedOut) => Err(Error::detailed(
+        Err(LoginError::SignedOut) => Err(Error::coded(
             RpcErrorCode::Conflict,
             format!(
                 "Cloud manages Server {}, so Cloud removes it and drops its hold on it. \
                  Sign in to Cloud first, or remove it from the dashboard. No changes made.",
                 selected.name
             ),
-            json!({ "next": "ployz login" }),
-        )),
+        )
+        .hint(Hint::Next("ployz login".into()))),
         Err(error) => Err(error.into()),
     }
 }
@@ -337,16 +338,16 @@ fn typed_confirmation(
             Err(Error::detailed(
                 RpcErrorCode::ConfirmationRequired,
                 format!(
-                    "Removing Server {} needs its name typed. No changes made.\nRetry: {retry}",
+                    "Removing Server {} needs its name typed. No changes made.",
                     selected.name
                 ),
                 json!({
                     "server": { "id": selected.id, "name": selected.name },
                     "services": services,
                     "data_loss": observed.data_loss,
-                    "next": retry,
                 }),
-            ))
+            )
+            .hint(Hint::Retry(retry)))
         }
     }
 }

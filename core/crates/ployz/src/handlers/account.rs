@@ -12,6 +12,7 @@ use ployz_core::RpcErrorCode;
 use crate::cloud_account::{self, BillingPage, Credential, ServerClears};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::output::say;
+use crate::ui::Hint;
 
 pub(crate) fn token_command() -> Command {
     Command::new("token")
@@ -315,10 +316,11 @@ fn org_remove(root: &ArgMatches) -> Result<(), Error> {
             RpcErrorCode::ConfirmationRequired,
             format!(
                 "Removing Organization {slug} deletes it with its tokens, Servers' pairing and \
-                 settings; this can't be undone. No changes made.\nRetry: {retry}"
+                 settings; this can't be undone. No changes made."
             ),
-            serde_json::json!({ "organization": slug, "next": retry }),
-        ));
+            serde_json::json!({ "organization": slug }),
+        )
+        .hint(Hint::Retry(retry)));
     }
     let store = CredentialStore::beside(&config_path(matches)?);
     let removal = runtime()?.block_on(async {

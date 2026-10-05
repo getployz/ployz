@@ -688,15 +688,17 @@ pub(in crate::deploy) enum MoveContainerError {
     /// error is [`ExecutionError::Cancelled`]). `old` keeps serving. `replacement_removed`
     /// says no new Container is left on `to`: none was made, or its removal was
     /// acknowledged.
-    #[error("the new Container did not serve: {error}")]
+    #[error("The new Container did not serve.")]
     NotServing {
+        #[source]
         error: ExecutionError,
         replacement_removed: bool,
     },
     /// The new Container serves on `to`, but `old` could not be stopped (both serve) or,
     /// once stopped, removed.
-    #[error("the old Container was not removed: {error}")]
+    #[error("The old Container was not removed.")]
     OldNotRemoved {
+        #[source]
         error: ExecutionError,
         old_stopped: bool,
     },

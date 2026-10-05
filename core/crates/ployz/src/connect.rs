@@ -448,7 +448,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         | ConnectError::Framing(_)
         | ConnectError::Value(_)) => RpcError {
             code: RpcErrorCode::Internal,
-            message: error.to_string(),
+            message: crate::ui::inline(&error),
             details: Value::Null,
         },
     }
@@ -634,9 +634,9 @@ pub enum ConnectError {
         CONNECT_CONFIRM_TIMEOUT
     )]
     EntryNotReady,
-    #[error("connection attempt failed: {0}")]
+    #[error("Could not connect to the Machine.")]
     Io(#[from] io::Error),
-    #[error("connection attempt failed: {0}")]
+    #[error("Could not connect to the Machine.")]
     Dial(#[from] tonic::transport::Error),
     #[error("connection attempt failed: inspect response omitted Machine details")]
     MissingMachineDetails,
@@ -652,9 +652,9 @@ pub enum ConnectError {
         status: std::process::ExitStatus,
         detail: String,
     },
-    #[error("connection attempt failed: {0}")]
+    #[error("Machine RPC routing metadata is invalid.")]
     Routing(#[from] RoutingMetadataError),
-    #[error("connection attempt failed: {0}")]
+    #[error("The connection task failed.")]
     Join(#[from] tokio::task::JoinError),
     #[error("proxy dialing is unsupported over {0}")]
     ProxyUnsupported(String),
@@ -666,9 +666,9 @@ pub enum ConnectError {
     Connection(#[from] ConnectionError),
     #[error(transparent)]
     Context(#[from] ContextError),
-    #[error("could not inspect {path}: {source}")]
+    #[error("Could not inspect {path}.")]
     Path { path: PathBuf, source: io::Error },
-    #[error("all {attempts} connections from {source} failed: {}", last.as_ref().map_or_else(|| "no connection available".to_owned(), ToString::to_string))]
+    #[error("All {attempts} connections from {source} failed.")]
     AllFailed {
         source: ConnectionSource,
         attempts: usize,
@@ -676,15 +676,15 @@ pub enum ConnectError {
         #[source]
         last: Option<Box<ConnectError>>,
     },
-    #[error("Machine RPC failed: {0}")]
-    Rpc(TransportError),
-    #[error("Machine RPC payload failed: {0}")]
+    #[error("Machine RPC failed.")]
+    Rpc(#[source] TransportError),
+    #[error("Machine RPC payload failed.")]
     Codec(#[from] CodecError),
-    #[error("Machine RPC returned: {}", .0.message)]
+    #[error(transparent)]
     Remote(RpcError),
-    #[error("Machine RPC framing failed: {0}")]
+    #[error("Machine RPC framing failed.")]
     Framing(#[from] FramingError),
-    #[error("Machine RPC identity failed: {0}")]
+    #[error("Machine RPC identity failed.")]
     Value(#[from] ployz_core::ValueError),
 }
 

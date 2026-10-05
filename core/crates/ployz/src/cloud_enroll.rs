@@ -20,11 +20,11 @@ const FOUNDER_WAIT: Duration = Duration::from_secs(15 * 60);
 /// Failures talking to Cloud enroll.
 #[derive(Debug, Error)]
 pub(crate) enum Error {
-    #[error("enroll timed out waiting for Cloud: {}", crate::setup_retry::detail(.0))]
+    #[error("Enrollment timed out waiting for Cloud.")]
     Timeout(#[source] reqwest::Error),
-    #[error("could not connect to Cloud: {}", crate::setup_retry::detail(.0))]
+    #[error("Could not connect to Cloud.")]
     Connect(#[source] reqwest::Error),
-    #[error("{}", crate::setup_retry::detail(.0))]
+    #[error("The Cloud enroll request failed.")]
     Http(#[source] reqwest::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
@@ -379,7 +379,7 @@ async fn post_callback(
     .await
     .map_err(|error| Error::RetrySameCommand {
         operation,
-        detail: error.to_string(),
+        detail: crate::ui::inline(&error),
     })
 }
 
@@ -389,7 +389,10 @@ fn retry_error(operation: &'static str, error: crate::setup_retry::Error<Error>)
             if matches!(error, Error::Timeout(_) | Error::Http(_)) {
                 Error::RetrySameCommand {
                     operation,
-                    detail: format!("response lost; enrollment outcome may be uncertain: {error}"),
+                    detail: format!(
+                        "response lost; enrollment outcome may be uncertain: {}",
+                        crate::ui::inline(&error)
+                    ),
                 }
             } else {
                 error
@@ -763,28 +766,21 @@ mod tests {
             .build()
             .unwrap();
         let timeout = post_json(&http, &hang, &identity()).await.unwrap_err();
-        assert!(
-            timeout
-                .to_string()
-                .starts_with("enroll timed out waiting for Cloud:")
+        assert_eq!(
+            timeout.to_string(),
+            "Enrollment timed out waiting for Cloud."
         );
-        assert!(!timeout.to_string().contains(&hang));
+        assert!(!crate::ui::inline(&timeout).contains(&hang));
 
         let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let refused = format!("http://{}", closed.local_addr().unwrap());
         drop(closed);
         let connect = post_json(&http, &refused, &identity()).await.unwrap_err();
-        assert!(
-            connect
-                .to_string()
-                .starts_with("could not connect to Cloud:")
-        );
+        assert_eq!(connect.to_string(), "Could not connect to Cloud.");
         assert_ne!(timeout.to_string(), connect.to_string());
-        assert!(
-            connect.to_string().contains("Connection refused"),
-            "{connect}"
-        );
-        assert!(!connect.to_string().contains(&refused));
+        let connect = crate::ui::inline(&connect);
+        assert!(connect.contains("Connection refused"), "{connect}");
+        assert!(!connect.contains(&refused));
     }
 
     #[tokio::test]

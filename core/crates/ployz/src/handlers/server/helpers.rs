@@ -274,7 +274,7 @@ async fn observe_mutation(
             let details = client.call_repeatable::<op::Inspect>(InspectRequest::default(), None).await?;
             if observed(&details) { Ok(details) } else { Err(ConnectError::Attempt(format!("Server phase is {}; expected {operation} outcome not yet observed", details.phase.as_str().escape_debug()).into())) }
         },
-    ).await.map_err(|error| Error::unavailable(format!("{operation} may have completed: {original}; could not confirm the resulting Server state: {error}; inspect the Server before retrying; do not reset it")))
+    ).await.map_err(|error| Error::caused(ployz_core::RpcErrorCode::Unavailable, format!("{operation} may have completed: {original}; could not confirm the resulting Server state. Inspect the Server before retrying; do not reset it."), error))
 }
 
 pub(in crate::handlers) fn readiness_timeout_message(message: &str) -> String {

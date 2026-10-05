@@ -796,7 +796,7 @@ pub enum ConfigError {
     ManagementConnectionMissing,
     #[error(transparent)]
     Context(#[from] ContextError),
-    #[error("could not read Ployz config {path}: {source}")]
+    #[error("Could not read Ployz config {path}.")]
     Read { path: PathBuf, source: io::Error },
     #[error(
         "could not parse Ployz config {path} (line {line:?}); check connection fields and YAML syntax"
@@ -806,11 +806,11 @@ pub enum ConfigError {
     PrivatePermissions(PathBuf),
     #[error("current context cannot be empty in Ployz config {0}")]
     EmptyCurrentContext(PathBuf),
-    #[error("could not encode Ployz config: {0}")]
-    Encode(serde_norway::Error),
-    #[error("could not create Ployz config directory {path}: {source}")]
+    #[error("Could not encode Ployz config.")]
+    Encode(#[source] serde_norway::Error),
+    #[error("Could not create Ployz config directory {path}.")]
     CreateDirectory { path: PathBuf, source: io::Error },
-    #[error("could not write Ployz config {path}: {source}")]
+    #[error("Could not write Ployz config {path}.")]
     Write { path: PathBuf, source: io::Error },
 }
 

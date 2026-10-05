@@ -173,7 +173,7 @@ fn sessions_shell_code_and_build_refuse_json() {
         ],
     ] {
         let (code, json, stderr) = run_json(args);
-        assert_eq!(code, Some(1), "{args:?}: {stderr}");
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
         assert_eq!(
             json.pointer("/error/code").unwrap(),
             "invalid_argument",
@@ -318,6 +318,68 @@ fn json_results_and_errors_are_one_stdout_object_with_distinct_exit_codes() {
         "{json}"
     );
     assert!(message(&json).contains("--no-such-flag"), "{json}");
+}
+
+/// Run the binary for human output against an empty config home; returns (exit code, stderr).
+fn run_human(args: &[&str]) -> (Option<i32>, String) {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.yaml");
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(args)
+        .args(["--ployz-config", config.to_str().unwrap()])
+        .env("HOME", home.path())
+        .env_remove("PLOYZ_CONTEXT")
+        .env_remove("PLOYZ_CONNECT")
+        .env_remove("PLOYZ_TOKEN")
+        .env_remove("PLOYZ_CLOUD_URL")
+        .env_remove("PLOYZ_STORE")
+        .env_remove("NO_COLOR")
+        .env_remove("CLICOLOR_FORCE")
+        .output()
+        .unwrap();
+    (
+        output.status.code(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+#[test]
+fn usage_errors_exit_2() {
+    for args in [
+        &["explain", "web.restart_policy"][..],
+        &["cloud", "reset"],
+        &[
+            "build",
+            "--grant",
+            "x",
+            "--deployment",
+            "1",
+            "--commit",
+            "abc",
+            "--fingerprint",
+            "f",
+        ],
+        &["completion", "--json", "bash"],
+        &["exec", "--json", "api"],
+    ] {
+        let (code, stderr) = run_human(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        if !args.contains(&"--json") {
+            assert!(stderr.starts_with("error: "), "{args:?}: {stderr}");
+        }
+    }
+}
+
+#[test]
+fn color_never_emits_no_escapes() {
+    let (code, stderr) = run_human(&["ctx", "use", "missing", "--color", "never"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.starts_with("error: "), "{stderr}");
+    assert!(!stderr.contains('\x1b'), "{stderr:?}");
+
+    let (code, stderr) = run_human(&["ctx", "use", "missing", "--color", "always"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains('\x1b'), "{stderr:?}");
 }
 
 #[test]

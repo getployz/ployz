@@ -502,14 +502,15 @@ fn provenance(upload: &UploadedSource) -> String {
 /// directory is `not_found`; anything else is the CLI's own failure.
 pub(super) fn unreadable(dir: &Path) -> impl Fn(crate::build::Error) -> Error + '_ {
     move |error| {
-        let message = format!("Could not read {}: {error}", dir.display());
-        if matches!(error, crate::build::Error::Invalid(_)) {
-            Error::usage(message)
+        let message = format!("Could not read {}.", dir.display());
+        let code = if matches!(error, crate::build::Error::Invalid(_)) {
+            RpcErrorCode::InvalidArgument
         } else if !dir.exists() {
-            Error::not_found(message)
+            RpcErrorCode::NotFound
         } else {
-            Error::coded(RpcErrorCode::Internal, message)
-        }
+            RpcErrorCode::Internal
+        };
+        Error::caused(code, message, error)
     }
 }
 

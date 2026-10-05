@@ -173,7 +173,7 @@ async fn run_all(
     });
     let outcome = moved
         .map(drop)
-        .map_err(|error| super::ingress_incomplete("Servers upgraded", &error, rerun));
+        .map_err(|error| super::ingress_incomplete("Servers upgraded", error, rerun));
     (Some(result), outcome)
 }
 
@@ -478,17 +478,14 @@ mod tests {
         )
         .await;
 
-        let error = outcome.unwrap_err().report();
-        assert!(
-            error.message.contains("Servers upgraded"),
-            "{}",
-            error.message
+        let failure = outcome.unwrap_err();
+        assert_eq!(failure.causes(), ["caddy image pull failed"]);
+        let error = failure.report();
+        assert_eq!(
+            error.message,
+            "Servers upgraded; the Ingress Proxy did not follow."
         );
-        assert!(
-            error.message.contains("caddy image pull failed"),
-            "{}",
-            error.message
-        );
+        assert_eq!(error.code, RpcErrorCode::Unavailable);
         assert_eq!(error.details["next"], "ployz server upgrade 1.2.3 a b");
         let result = result.unwrap();
         assert_eq!(result["attempts"].as_array().unwrap().len(), 2);
@@ -693,8 +690,8 @@ mod tests {
             &mut seen,
         )
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+        let error = crate::ui::inline(&error);
         daemon.shutdown_background();
         assert!(error.contains("upgrade record is unreadable"), "{error}");
         // The accepted attempt survives the failed poll as committed evidence.

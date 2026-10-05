@@ -10,6 +10,7 @@ use std::{
 };
 
 use crate::output::{self, say};
+use crate::ui::Hint;
 
 #[derive(Clone, Copy)]
 pub(super) enum VolumeEffect {
@@ -147,10 +148,10 @@ fn confirm_with(
             command.extend(["--accept-volume-loss".into(), (*name).into()]);
         }
         return Err(Error::usage(format!(
-            "Missing volume acceptance: {}. No changes made.\nRetry: {}",
-            missing.join(", "),
-            shell_words::join(command)
-        )));
+            "Missing volume acceptance: {}. No changes made.",
+            missing.join(", ")
+        ))
+        .hint(Hint::Retry(shell_words::join(command))));
     }
     // Past the checks above every observed loss is accepted, by whichever name.
     let confirmation = || {
@@ -164,10 +165,10 @@ fn confirm_with(
     if !tty {
         let mut command = retry.to_vec();
         command.push("--yes".into());
-        return Err(Error::usage(format!(
-            "Confirmation requires a terminal; pass --yes. No changes made.\nRetry: {}",
-            shell_words::join(command)
-        )));
+        return Err(
+            Error::usage("Confirmation requires a terminal; pass --yes. No changes made.")
+                .hint(Hint::Retry(shell_words::join(command))),
+        );
     }
     if prompt(
         if names.is_empty() { &[] } else { targets },
@@ -359,8 +360,11 @@ mod tests {
             &mut output,
             |_| panic!("no tty"),
         )
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+        let hints = missing.hints();
+        let [Hint::Retry(missing)] = hints.as_slice() else {
+            panic!("{hints:?}");
+        };
         assert!(
             missing.contains("--accept-volume-loss pgdata --accept-volume-loss stray"),
             "{missing}"
@@ -458,13 +462,15 @@ mod tests {
                     &mut Vec::new(),
                     |_| panic!("must not read stdin"),
                 )
-                .unwrap_err()
-                .to_string();
+                .unwrap_err();
+                let hints = error.hints();
+                let [Hint::Retry(command)] = hints.as_slice() else {
+                    panic!("{hints:?}");
+                };
                 assert!(
-                    error.contains("--accept-volume-loss data --accept-volume-loss logs"),
-                    "{error}"
+                    command.contains("--accept-volume-loss data --accept-volume-loss logs"),
+                    "{command}"
                 );
-                let command = error.split("Retry: ").nth(1).unwrap();
                 assert!(
                     shell_words::split(command)
                         .unwrap()

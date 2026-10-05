@@ -232,6 +232,16 @@ impl Failure {
             details,
         }
     }
+
+    /// The JSON error object: the report, plus `cause` when the chain has one.
+    pub(crate) fn json(&self) -> Value {
+        let mut error = serde_json::json!(self.report());
+        let causes = self.causes();
+        if let (false, Some(fields)) = (causes.is_empty(), error.as_object_mut()) {
+            fields.insert("cause".into(), serde_json::json!(causes));
+        }
+        error
+    }
 }
 
 fn classify(error: &(dyn Error + Send + Sync + 'static)) -> (RpcErrorCode, Value) {
@@ -291,6 +301,9 @@ fn code(error: &(dyn Error + 'static)) -> RpcErrorCode {
     }
     if let Some(error) = error.downcast_ref::<cloud_enroll::Error>() {
         return cloud_enroll_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<LoginError>() {
+        return login_code(error);
     }
     if let Some(error) = error.downcast_ref::<MachineUpdateError>() {
         return match error {
@@ -666,31 +679,52 @@ impl From<DeployError> for Failure {
 }
 
 impl From<LoginError> for Failure {
-    /// Sign-in failures carry the command that fixes them as `details.next`.
+    /// Sign-in failures name the command that fixes them.
     fn from(error: LoginError) -> Self {
-        let (code, next) = match &error {
-            LoginError::Unreachable { .. } => (RpcErrorCode::Unavailable, None),
-            LoginError::Unsupported(_) => (RpcErrorCode::Unsupported, None),
-            LoginError::Status { status, .. } => (http_status_code(*status), None),
-            LoginError::Reply(_) | LoginError::Store { .. } => (RpcErrorCode::Internal, None),
-            LoginError::Corrupt { .. } => (RpcErrorCode::Internal, Some("ployz logout")),
-            LoginError::OtherCloud { .. } => (RpcErrorCode::Conflict, Some("ployz logout")),
+        let next = match &error {
+            LoginError::Corrupt { .. } | LoginError::OtherCloud { .. } => Some("ployz logout"),
             LoginError::SignedOut
             | LoginError::Expired
             | LoginError::Denied
-            | LoginError::Ended => (RpcErrorCode::Unauthenticated, Some("ployz login")),
-            LoginError::AwaitingApproval { .. } => {
-                (RpcErrorCode::Unauthenticated, Some("ployz login --wait"))
-            }
-            LoginError::TokenRefused => (RpcErrorCode::Unauthenticated, Some("ployz token new")),
-            LoginError::NotMember(_) => (RpcErrorCode::Unauthenticated, Some("ployz org ls")),
-            LoginError::TokenBound | LoginError::NoBilling(_) => (RpcErrorCode::Unsupported, None),
-            LoginError::UnknownOrganization(_) => (RpcErrorCode::NotFound, Some("ployz org ls")),
-            LoginError::UnknownCredential(_) => (RpcErrorCode::NotFound, Some("ployz token ls")),
-            LoginError::AlreadyPro => (RpcErrorCode::Conflict, Some("ployz billing manage")),
+            | LoginError::Ended => Some("ployz login"),
+            LoginError::AwaitingApproval { .. } => Some("ployz login --wait"),
+            LoginError::TokenRefused => Some("ployz token new"),
+            LoginError::NotMember(_) | LoginError::UnknownOrganization(_) => Some("ployz org ls"),
+            LoginError::UnknownCredential(_) => Some("ployz token ls"),
+            LoginError::AlreadyPro => Some("ployz billing manage"),
+            LoginError::Unreachable { .. }
+            | LoginError::Unsupported(_)
+            | LoginError::Status { .. }
+            | LoginError::Reply(_)
+            | LoginError::Store { .. }
+            | LoginError::TokenBound
+            | LoginError::NoBilling(_) => None,
         };
-        let details = next.map_or(Value::Null, |next| serde_json::json!({ "next": next }));
-        Self::detailed(code, error.to_string(), details)
+        Self::command(error).hint(next.map(|next| Hint::Next(next.into())))
+    }
+}
+
+fn login_code(error: &LoginError) -> RpcErrorCode {
+    match error {
+        LoginError::Unreachable { .. } => RpcErrorCode::Unavailable,
+        LoginError::Unsupported(_) | LoginError::TokenBound | LoginError::NoBilling(_) => {
+            RpcErrorCode::Unsupported
+        }
+        LoginError::Status { status, .. } => http_status_code(*status),
+        LoginError::Reply(_) | LoginError::Store { .. } | LoginError::Corrupt { .. } => {
+            RpcErrorCode::Internal
+        }
+        LoginError::OtherCloud { .. } | LoginError::AlreadyPro => RpcErrorCode::Conflict,
+        LoginError::SignedOut
+        | LoginError::Expired
+        | LoginError::Denied
+        | LoginError::Ended
+        | LoginError::AwaitingApproval { .. }
+        | LoginError::TokenRefused
+        | LoginError::NotMember(_) => RpcErrorCode::Unauthenticated,
+        LoginError::UnknownOrganization(_) | LoginError::UnknownCredential(_) => {
+            RpcErrorCode::NotFound
+        }
     }
 }
 

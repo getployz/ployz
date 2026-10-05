@@ -81,27 +81,34 @@ pub fn mode() -> Mode {
 mod tests {
     use super::*;
 
-    fn around(json: bool, stderr_is_terminal: bool, term_is_dumb: bool, ci: bool) -> Surroundings {
-        Surroundings {
-            json,
-            stderr_is_terminal,
-            term_is_dumb,
-            ci,
-        }
-    }
+    const PERSON: Surroundings = Surroundings {
+        json: false,
+        stderr_is_terminal: true,
+        term_is_dumb: false,
+        ci: false,
+    };
 
     #[test]
     fn json_wins_then_a_real_terminal_is_interactive() {
-        assert_eq!(Mode::resolve(around(true, true, false, false)), Mode::Json);
+        let resolve = Mode::resolve;
         assert_eq!(
-            Mode::resolve(around(false, true, false, false)),
-            Mode::Interactive
+            resolve(Surroundings {
+                json: true,
+                ..PERSON
+            }),
+            Mode::Json
         );
-        assert_eq!(
-            Mode::resolve(around(false, false, false, false)),
-            Mode::Plain
-        );
-        assert_eq!(Mode::resolve(around(false, true, true, false)), Mode::Plain);
-        assert_eq!(Mode::resolve(around(false, true, false, true)), Mode::Plain);
+        assert_eq!(resolve(PERSON), Mode::Interactive);
+        let piped = Surroundings {
+            stderr_is_terminal: false,
+            ..PERSON
+        };
+        assert_eq!(resolve(piped), Mode::Plain);
+        let dumb = Surroundings {
+            term_is_dumb: true,
+            ..PERSON
+        };
+        assert_eq!(resolve(dumb), Mode::Plain);
+        assert_eq!(resolve(Surroundings { ci: true, ..PERSON }), Mode::Plain);
     }
 }

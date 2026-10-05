@@ -9,8 +9,7 @@ use ipnet::Ipv4Net;
 use ployz_core::{
     CloudEnrollToken, DescribeContractRequest, InitializeRequest, InspectRequest, JoinRequest,
     LocalMachinePhase, Machine, MachineDetails, MachineName, MachineToken, MachineTokenRequest,
-    ManagementCapability, ManagementClientLabel, RpcErrorCode, SetManagementClientRequest,
-    StorageChoice, op,
+    ManagementCapability, ManagementClientLabel, SetManagementClientRequest, StorageChoice, op,
 };
 
 use super::{Error, config_path, leaf_matches, required, runtime};
@@ -18,6 +17,7 @@ use crate::cloud_enroll::{self, CloudPairing, EnrollIdentity, InitializeMode, Jo
 use crate::connect::{Client, ConnectError};
 use crate::context::{Connection, ContextError, SelectedConnections, Transport};
 use crate::setup_report::{SetupReport, Step};
+use crate::ui::Hint;
 
 /// Enroll with `token`: over SSH to `DESTINATION`, or on the host this runs on.
 pub(super) fn enroll(
@@ -728,11 +728,10 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
 fn reset(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     if !matches.get_flag("yes") {
-        return Err(Error::detailed(
-            RpcErrorCode::InvalidArgument,
+        return Err(Error::usage(
             "cloud reset gives up the unfinished founding; stop or erase the founding Server, then confirm with --yes",
-            serde_json::json!({ "next": "ployz cloud reset --yes" }),
-        ));
+        )
+        .hint(Hint::Retry("ployz cloud reset --yes".into())));
     }
     let store = crate::cloud_login::CredentialStore::beside(&config_path(matches)?);
     runtime()?.block_on(async {

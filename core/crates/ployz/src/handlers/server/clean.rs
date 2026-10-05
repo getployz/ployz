@@ -13,6 +13,7 @@ use super::super::{Error, leaf_matches, runtime, store};
 use crate::cli::{base, value};
 use crate::deploy::VolumeFate;
 use crate::output::{Gaps, say};
+use crate::ui::Hint;
 
 pub(super) fn command() -> Command {
     base(
@@ -127,12 +128,16 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
                 "namespace": namespace,
                 "project": owner.project,
                 "environment": owner.environment,
-                "next": shell_words::join([
-                    "ployz", "env", "rm", owner.environment.as_str(),
-                    "--project", owner.project.as_str(),
-                ]),
             }),
-        ));
+        )
+        .hint(Hint::Next(shell_words::join([
+            "ployz",
+            "env",
+            "rm",
+            owner.environment.as_str(),
+            "--project",
+            owner.project.as_str(),
+        ]))));
     }
     let Some(found) = unowned
         .into_iter()
@@ -157,16 +162,16 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
             RpcErrorCode::ConfirmationRequired,
             format!(
                 "Removing Namespace {namespace} deletes its containers and the data of Volumes \
-                 {}; this can't be undone. No changes made.\nRetry: {next}",
+                 {}; this can't be undone. No changes made.",
                 volume_names(&found.volumes)
             ),
             json!({
                 "namespace": namespace,
                 "services": found.services,
                 "volumes": found.volumes,
-                "next": next,
             }),
-        ));
+        )
+        .hint(Hint::Retry(next)));
     }
     let (volumes, outcome) = runtime.block_on(async {
         let token = crate::cancellation::on_ctrl_c();

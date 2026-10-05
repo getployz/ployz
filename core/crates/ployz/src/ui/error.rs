@@ -60,12 +60,12 @@ impl Hint {
             | Self::Inspect(command)
             | Self::Retry(command)
             | Self::Undo(command) => command.clone(),
-            Self::Valid(names) if names.len() > VALID_SHOWN => format!(
-                "{}, and {} more",
-                names[..VALID_SHOWN].join(", "),
-                names.len() - VALID_SHOWN
-            ),
-            Self::Valid(names) => names.join(", "),
+            Self::Valid(names) => match names.split_at_checked(VALID_SHOWN) {
+                Some((shown, rest)) if !rest.is_empty() => {
+                    format!("{}, and {} more", shown.join(", "), rest.len())
+                }
+                _ => names.join(", "),
+            },
         }
     }
 
@@ -158,6 +158,19 @@ pub fn causes(top: &(dyn Error + 'static)) -> Vec<String> {
         next = error.source();
     }
     lines
+}
+
+/// An error and its causes on one line, for a place no `cause:` line can go:
+/// a warning, a per-Server failure, an RPC message.
+#[must_use]
+pub fn inline(error: &(dyn Error + 'static)) -> String {
+    let mut text = error.to_string();
+    for cause in causes(error) {
+        text.truncate(text.trim_end_matches('.').len());
+        text.push_str(": ");
+        text.push_str(&cause);
+    }
+    text
 }
 
 /// Write the human error: `error:` with our sentence, a `cause:` line per source,

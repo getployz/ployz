@@ -222,7 +222,7 @@ pub enum Remaining {
 pub enum DrainError {
     /// The target names no visible Server, or more than one, or turning its services role
     /// off failed.
-    #[error("{0}")]
+    #[error(transparent)]
     Refused(RpcError),
     /// The entry did not observe the services role off within 30 s.
     #[error("this entry Server has not yet observed the new services role")]

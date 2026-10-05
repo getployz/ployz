@@ -13,6 +13,7 @@ use serde_json::json;
 use super::Error;
 use super::deploy;
 use super::store::{self, Store, mint};
+use crate::ui::Hint;
 
 /// Whether `--confirm` typed `name`; a different name is a usage error.
 pub(super) fn confirmed(matches: &ArgMatches, name: &str, what: &str) -> Result<bool, Error> {
@@ -97,9 +98,9 @@ where
                         json!({
                             "environment": environment,
                             "deployment": deployment,
-                            "next": deploy::show_hint(&deployment),
                         }),
-                    ));
+                    )
+                    .hint(Hint::Next(deploy::show_hint(&deployment))));
                 }
                 Teardown::NeedsRemoval { environment, .. } => environment,
             };
