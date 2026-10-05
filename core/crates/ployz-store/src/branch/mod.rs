@@ -157,11 +157,11 @@ pub enum When {
 pub struct NamedRow {
     /// What commands name it by; stable across renames.
     pub(crate) row: RowId,
-    /// Its Service or Volume.
+    /// Its Service, Volume or Config.
     pub(crate) node: NodeName,
-    /// Whether `node` is a Service or a Volume.
+    /// Whether `node` is a Service, a Volume or a Config.
     pub(crate) kind: EnvironmentNodeType,
-    /// Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+    /// Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `files.PATH`, `name`; none for the
     /// node itself.
     pub(crate) name: Option<String>,
 }
@@ -258,6 +258,10 @@ pub(crate) fn resolve(asked: &RowRef, rows: &[NamedRow]) -> Result<BTreeSet<RowI
         .collect();
     if exact.len() > 1 {
         return Err(several(asked, &exact, rows));
+    }
+    // A file's name may hold dots, so `a.conf` names that file and not `a.conf.bak`.
+    if exact.iter().any(|row| matches!(row.at(), At::File(_))) {
+        return Ok(exact);
     }
     let under = format!("{name}.");
     let found: BTreeSet<RowId> = rows

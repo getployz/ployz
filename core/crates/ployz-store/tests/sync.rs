@@ -1440,3 +1440,77 @@ fn a_config_file_syncs_as_one_row_and_a_conflict_replaces_the_whole_file() {
     assert_eq!(contents[&file("conf.d/b.yml")], "b\n");
     assert!(view(&store, &who).rows.is_empty());
 }
+
+#[test]
+fn picking_a_config_file_by_name_picks_that_file_and_not_one_its_name_prefixes() {
+    let store = backend::open();
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse(uuid(1)).unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+            },
+        )
+        .unwrap();
+    service(&store, &who, "production", 3, "web", "web:1");
+    let config = || ployz_core::ConfigName::parse("sentry").unwrap();
+    let file = |name: &str| ployz_core::ConfigFileName::parse(name).unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateConfig {
+                id: ployz_store::ConfigId::parse(uuid(10)).unwrap(),
+                environment: at("production"),
+                name: config(),
+                mounts: vec![ployz_store::ConfigMountAt {
+                    service: ServiceName::parse("web").unwrap(),
+                    dir: "/etc/sentry".into(),
+                }],
+            },
+        )
+        .unwrap();
+    let put = |environment: &str, path: &str, content: &str| {
+        store
+            .write(
+                &who,
+                &ployz_store::PutConfigFile {
+                    environment: at(environment),
+                    config: config(),
+                    file: file(path),
+                    content: content.into(),
+                    mode: None,
+                    uid: None,
+                    gid: None,
+                },
+            )
+            .unwrap();
+    };
+    put("production", "app.conf", "old\n");
+    branch(&store, &who, 9, "production", "fix-web");
+    put("fix-web", "app.conf", "new\n");
+    put("fix-web", "app.conf.bak", "backup\n");
+
+    sync_into(
+        &store,
+        &who,
+        ("fix-web", "production"),
+        Some(&["configs.sentry.files.app.conf"]),
+    );
+    let contents = store
+        .read(
+            &who,
+            &ployz_store::ConfigItemQuery {
+                environment: at("production"),
+                config: config(),
+            },
+        )
+        .unwrap()
+        .contents;
+    assert_eq!(
+        contents.into_iter().collect::<Vec<_>>(),
+        [(file("app.conf"), "new\n".to_owned())]
+    );
+}
