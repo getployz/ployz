@@ -156,8 +156,8 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
             unanswered(&gaps);
         });
     };
-    if !confirmed(matches, namespace.as_str(), "Namespace")? {
-        let next = retry(matches, &namespace);
+    let next = retry(matches, &namespace);
+    if !confirmed(matches, namespace.as_str(), "Namespace", next.clone())? {
         return Err(Error::detailed(
             RpcErrorCode::ConfirmationRequired,
             format!(

@@ -430,7 +430,7 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
     // Not removed yet (queued, failed, cancelled, or its outcome unknown): this same
     // command finishes it once the removal applied, or queues it again.
     let store = store.args(["--confirm", typed.as_str()]);
-    if !confirmed(matches, &typed, "Environment")? {
+    if !confirmed(matches, &typed, "Environment", store.again(&[]))? {
         return Err(unconfirmed(inventory, &store.again(&[])));
     }
     let project = inventory.environment.project.clone();

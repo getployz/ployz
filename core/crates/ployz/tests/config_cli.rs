@@ -568,10 +568,13 @@ fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
             unconfirmed["details"]["retry"],
             json!("ployz env rm production --confirm shop/production")
         );
-        failed(
+        let mistyped = error(
             store,
             &["env", "rm", "production", "--confirm", "production"],
-            2,
+        );
+        assert_eq!(
+            mistyped["details"]["retry"],
+            json!("ployz env rm production --confirm shop/production")
         );
         let default = error(
             store,
@@ -716,7 +719,11 @@ fn an_agent_lists_and_removes_a_project_without_servers() {
             unconfirmed["details"]["retry"],
             json!("ployz project rm shop --confirm shop")
         );
-        failed(store, &["project", "rm", "shop", "--confirm", "blog"], 2);
+        let mistyped = error(store, &["project", "rm", "shop", "--confirm", "blog"]);
+        assert_eq!(
+            mistyped["details"]["retry"],
+            json!("ployz project rm shop --confirm shop")
+        );
 
         // Nothing of it ever ran, so it goes at once, with no Server.
         let removed = ok(store, &["project", "rm", "shop", "--confirm", "shop"]);

@@ -144,7 +144,7 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = ProjectName::parse(required(matches, "name")?)?;
     let store = store(root)?.args([name.as_str(), "--confirm", name.as_str()]);
-    if !confirmed(matches, name.as_str(), "Project")? {
+    if !confirmed(matches, name.as_str(), "Project", store.again(&[]))? {
         return Err(unconfirmed(&store, &name)?);
     }
     let remove = RemoveProject {
