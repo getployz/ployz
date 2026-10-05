@@ -7,16 +7,17 @@
 
 use ployz_core::config::ReviewLifecycleKind;
 use ployz_core::{
-    DeployOutcome, DeployPreview, ExecutionError, OperationRow, RpcError, RpcErrorCode, ServiceName,
+    ConfigFileName, ConfigName, DeployOutcome, DeployPreview, ExecutionError, OperationRow,
+    RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::{
-    Actor, Admit, Cancel, Change, Command, ConfigStore, CreateProject, CreateService, Deploy,
-    DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView,
-    Discard, Edit, EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId,
-    PlanQuery, Principal, ProjectId, ProjectName, Query, RemoveService, RenameService, Retry,
-    Revision, RowPhase, RowState, RowTracker, RunEvidence, RunnerId, ServerRow, ServiceLineageId,
-    ServiceQuery, ServicesQuery, SettingPath, Start, Trusted, UploadBase, UploadedSource, View,
-    Written,
+    Actor, Admit, Cancel, Change, Command, ConfigId, ConfigMountAt, ConfigStore, ConfigsQuery,
+    CreateConfig, CreateProject, CreateService, Deploy, DeploymentId, DeploymentStatus,
+    DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView, Discard, Edit, EnvironmentId,
+    EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId, PlanQuery, Principal, ProjectId,
+    ProjectName, PutConfigFile, Query, RemoveService, RenameService, Retry, Revision, RowPhase,
+    RowState, RowTracker, RunEvidence, RunnerId, ServerRow, ServiceLineageId, ServiceQuery,
+    ServicesQuery, SettingPath, Start, Trusted, UploadBase, UploadedSource, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -258,6 +259,60 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
             ("api".to_owned(), NodeStatus::Unchanged)
         ]
     );
+}
+
+#[test]
+fn a_deployed_service_leaves_its_config_mount_staged() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateConfig {
+                id: ConfigId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("sentry").unwrap(),
+                mounts: vec![ConfigMountAt {
+                    service: ServiceName::parse("web").unwrap(),
+                    dir: "/etc/sentry".into(),
+                }],
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &PutConfigFile {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("sentry").unwrap(),
+                file: ConfigFileName::parse("a.yml").unwrap(),
+                content: "url: http://${{ api.PORT }}\n".into(),
+                mode: None,
+                uid: None,
+                gid: None,
+            },
+        )
+        .unwrap();
+
+    admit(&store, &who, 1, &[], None).unwrap();
+    assert_eq!(changed(&store, &who), ["sentry", "web"]);
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    assert_eq!(changed(&store, &who), ["sentry", "web"]);
+    let configs = store
+        .read(
+            &who,
+            &ConfigsQuery {
+                environment: EnvironmentRef::default(),
+            },
+        )
+        .unwrap();
+    assert_eq!(configs.configs[0].mounts.len(), 1);
 }
 
 #[test]

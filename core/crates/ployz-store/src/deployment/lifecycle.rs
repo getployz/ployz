@@ -970,12 +970,13 @@ fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcE
         let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
         let mut deployed = std::collections::BTreeSet::new();
         for node in advanced {
+            let service = saved
+                .services
+                .iter()
+                .find(|service| service.id == node.id())
+                .map(as_deployed);
             let applied = match node {
-                TargetNode::Service { .. } => saved
-                    .services
-                    .iter()
-                    .find(|service| service.id == node.id())
-                    .map(scope::Node::Service),
+                TargetNode::Service { .. } => service.as_ref().map(scope::Node::Service),
                 TargetNode::Volume { .. } => saved
                     .volumes
                     .iter()

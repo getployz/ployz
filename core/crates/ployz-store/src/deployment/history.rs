@@ -80,7 +80,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
                     .services
                     .iter()
                     .filter(|service| service.id == node.id())
-                    .cloned(),
+                    .map(as_deployed),
             ),
             // A Volume the Deployment removes isn't in Head.
             TargetNode::Volume {
@@ -100,6 +100,15 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
         intent,
         applied,
     })
+}
+
+/// `service` as a Deployment runs it. Configs don't deploy yet, so it runs without
+/// its Config Mounts, and neither Head nor Applied State holds one.
+pub(crate) fn as_deployed(service: &SavedServiceIntent) -> SavedServiceIntent {
+    SavedServiceIntent {
+        config_attachments: Vec::new(),
+        ..service.clone()
+    }
 }
 
 /// `environment`'s Deployment that may still run, if any: queued, or claimed by a
