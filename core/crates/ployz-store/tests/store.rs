@@ -552,10 +552,7 @@ fn wrong_paths_and_values_name_the_fix() {
     let error = store
         .write(&who, &edit(None, vec![set("api.replicas", json!(2))]))
         .unwrap_err();
-    assert_eq!(
-        error.details,
-        json!({ "did_you_mean": null, "valid_children": ["web"] })
-    );
+    assert_eq!(error.details, json!({ "valid_children": ["web"] }));
     let error = store
         .write(&who, &edit(None, vec![set("wbe.replicas", json!(2))]))
         .unwrap_err();

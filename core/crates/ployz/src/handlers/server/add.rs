@@ -116,12 +116,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             let mut entry = super::super::reconnect_client(matches, options.context()).await?;
             Ok::<_, Error>(crate::global_catch_up::catch_up_globals(&mut entry, &assigned).await)
         })?;
-        catch_up.map_err(|error| {
-            Error::coded(
-                error.code(),
-                crate::global_catch_up::joined_catch_up_error(error, &assigned),
-            )
-        })
+        catch_up.map_err(|error| crate::global_catch_up::joined_catch_up_error(error, &assigned))
     })();
     output::emit_committed(
         json!({ "server": super::server_json(&assigned) }),
@@ -160,30 +155,32 @@ mod tests {
     #[test]
     fn catch_up_failure_after_add_reports_joined_membership() {
         let assigned = assigned_machine("edge", 'a');
-        let error = crate::global_catch_up::joined_catch_up_error(
+        let failure = crate::global_catch_up::joined_catch_up_error(
             crate::global_catch_up::CatchUpError::new(
-                crate::failure::Failure::usage("deploy timed out".to_owned()),
+                crate::failure::Failure::usage("deploy timed out".to_owned())
+                    .hint(crate::ui::Hint::Next("ployz deploy".into())),
                 vec![ployz_core::QualifiedService::system_ingress()],
             ),
             &assigned,
         );
-        assert!(error.contains("Server joined"));
-        assert!(error.contains("remains a Cluster member"));
+        let message = failure.to_string();
+        assert!(message.starts_with("Server joined"), "{message}");
+        assert!(message.contains("remains a Cluster member"), "{message}");
         assert!(
-            error.contains(&format!(
+            message.contains(&format!(
                 "`ployz server set {} --accepts-ingress=true`",
                 assigned.id
             )),
-            "failure must tell the operator how the Ingress Proxy follows the role, got {error:?}"
+            "failure must tell the operator how the Ingress Proxy follows the role, got {message:?}"
         );
-        assert!(
-            error.contains("deploy timed out"),
-            "failure must include the follow-on error, got {error:?}"
+        assert_eq!(failure.causes(), ["deploy timed out"]);
+        assert_eq!(
+            failure.report().code,
+            ployz_core::RpcErrorCode::InvalidArgument
         );
         assert_eq!(
-            error.matches("deploy timed out").count(),
-            1,
-            "failure must report the error once, got {error:?}"
+            failure.hints(),
+            [crate::ui::Hint::Next("ployz deploy".into())]
         );
     }
 

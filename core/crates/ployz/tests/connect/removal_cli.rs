@@ -183,7 +183,7 @@ async fn remove_cloud_server(
     let config = std::env::temp_dir().join(format!("ployz-last-{}.yaml", MachineId::random()));
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
         .env_remove("PLOYZ_TOKEN")
-        .env_remove("PLOYZ_CLOUD_URL")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
         .envs(env.iter().copied())
         .args([
             "--connect",

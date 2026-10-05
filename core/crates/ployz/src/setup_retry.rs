@@ -13,15 +13,22 @@ pub(crate) const WAIT: Duration = Duration::from_secs(60);
 pub(crate) enum Error<E> {
     #[error(transparent)]
     Permanent(E),
-    #[error("{0}")]
-    Exhausted(String),
+    #[error("{operation} did not recover within {}s.", wait.as_secs())]
+    Exhausted {
+        operation: String,
+        wait: Duration,
+        #[source]
+        last: Option<E>,
+    },
 }
 
-impl<E: Into<Failure>> From<Error<E>> for Failure {
+impl<E: Into<Failure> + std::error::Error + Send + Sync + 'static> From<Error<E>> for Failure {
     fn from(error: Error<E>) -> Self {
         match error {
             Error::Permanent(error) => error.into(),
-            Error::Exhausted(message) => Self::coded(RpcErrorCode::Unavailable, message),
+            exhausted @ Error::Exhausted { .. } => {
+                Self::caused(RpcErrorCode::Unavailable, exhausted.to_string(), exhausted)
+            }
         }
     }
 }
@@ -64,14 +71,14 @@ pub(crate) async fn run_expecting<C, T, E: std::error::Error + 'static>(
                 if last.is_none() {
                     match expected {
                         Some(Expected(notice)) => eprintln!("{notice}"),
-                        None => eprintln!(
-                            "{operation}: {}; retrying for up to {}s. Check outbound firewall access if this connection is blocked.",
-                            crate::ui::inline(&error),
-                            deadline.saturating_duration_since(Instant::now()).as_secs()
+                        None => crate::ui::retrying(
+                            operation,
+                            &error,
+                            deadline.saturating_duration_since(Instant::now()).as_secs(),
                         ),
                     }
                 }
-                last = Some(crate::ui::inline(&error));
+                last = Some(error);
             }
             Err(_) => break,
         }
@@ -82,11 +89,11 @@ pub(crate) async fn run_expecting<C, T, E: std::error::Error + 'static>(
             break;
         }
     }
-    Err(Error::Exhausted(format!(
-        "{operation} did not recover within {}s; last error: {}",
-        wait.as_secs(),
-        last.as_deref().unwrap_or("request timed out")
-    )))
+    Err(Error::Exhausted {
+        operation: operation.to_owned(),
+        wait,
+        last,
+    })
 }
 
 /// Reqwest categories also contain protocol and TLS failures. Retry only
@@ -165,7 +172,7 @@ mod tests {
                 transient_http(&error),
                 retry,
                 "{}",
-                crate::ui::inline(&error)
+                crate::ui::chain_text(&error)
             );
         }
     }
@@ -202,7 +209,7 @@ mod tests {
                 transient_http(&error),
                 retry,
                 "{}",
-                crate::ui::inline(&error)
+                crate::ui::chain_text(&error)
             );
             server.await.unwrap();
         }
@@ -214,10 +221,17 @@ mod tests {
 
     #[test]
     fn a_timeout_is_unavailable_and_a_refusal_keeps_its_own_code() {
-        let timeout = Failure::from(Error::<crate::connect::ConnectError>::Exhausted(
-            "probe".into(),
-        ));
+        let timeout = Failure::from(Error::Exhausted {
+            operation: "Probe".into(),
+            wait: WAIT,
+            last: Some(crate::connect::ConnectError::EntryNotReady),
+        });
         assert_eq!(timeout.report().code, RpcErrorCode::Unavailable);
+        assert_eq!(timeout.to_string(), "Probe did not recover within 60s.");
+        assert_eq!(
+            timeout.causes(),
+            [crate::connect::ConnectError::EntryNotReady.to_string()]
+        );
         let refused = Failure::from(Error::Permanent(
             crate::connect::ConnectError::ClientRefused,
         ));
@@ -272,7 +286,8 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(Instant::now() - started, WAIT);
-        assert!(error.to_string().contains("last error: connection refused"));
+        assert_eq!(error.to_string(), "probe did not recover within 60s.");
+        assert_eq!(crate::ui::causes(&error), ["connection refused"]);
 
         let started = Instant::now();
         let error = run(
@@ -285,6 +300,6 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(Instant::now() - started, WAIT);
-        assert!(error.to_string().contains("request timed out"));
+        assert!(crate::ui::causes(&error).is_empty());
     }
 }

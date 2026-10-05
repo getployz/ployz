@@ -158,7 +158,7 @@ async fn open_and_admit(
                 Stage::Admission,
                 format!(
                     "Machine {machine_id} cannot accept the Build: {}",
-                    crate::ui::inline(&error)
+                    crate::ui::row(&error)
                 ),
             ));
         }

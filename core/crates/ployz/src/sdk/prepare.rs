@@ -165,12 +165,12 @@ pub async fn select_build_machine(
                     }
                     Err(error) => format!(
                         "Build capability could not be verified: {}",
-                        crate::ui::inline(&error)
+                        crate::ui::row(&error)
                     ),
                 },
                 Err(error) => format!(
                     "Build capability could not be verified: {}",
-                    crate::ui::inline(&error)
+                    crate::ui::row(&error)
                 ),
             }
         };

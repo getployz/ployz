@@ -72,10 +72,15 @@ pub(crate) fn suggest<'a>(
     input: &str,
     names: impl IntoIterator<Item = &'a str> + Clone,
 ) -> serde_json::Value {
-    serde_json::json!({
-        "did_you_mean": did_you_mean(input, names.clone()),
-        "valid_children": names.into_iter().collect::<Vec<_>>(),
-    })
+    let mut details = serde_json::Map::new();
+    if let Some(closest) = did_you_mean(input, names.clone()) {
+        details.insert("did_you_mean".into(), closest.into());
+    }
+    details.insert(
+        "valid_children".into(),
+        names.into_iter().collect::<Vec<_>>().into(),
+    );
+    details.into()
 }
 
 /// Levenshtein distance.

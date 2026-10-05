@@ -1,0 +1,3 @@
+disallowed-methods = [
+    { path = "ployz_core::error_chain::inline", reason = "keep the cause chain: Failure::caused or .context, or a crate::ui one-line sink" },
+]

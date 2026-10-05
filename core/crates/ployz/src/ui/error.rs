@@ -150,7 +150,46 @@ impl Hint {
     }
 }
 
-pub use ployz_core::error_chain::{causes, inline};
+pub use ployz_core::error_chain::causes;
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the one-line sinks below are the only callers"
+)]
+fn inline(error: Chain<'_>) -> String {
+    ployz_core::error_chain::inline(error)
+}
+
+type Chain<'a> = &'a (dyn std::error::Error + 'static);
+
+/// A per-Server row, record or report field.
+pub(crate) fn row(error: Chain<'_>) -> String {
+    inline(error)
+}
+
+pub(crate) fn warn(what: impl std::fmt::Display, error: Chain<'_>) {
+    crate::output::warn(format!("{what}: {}", inline(error)));
+}
+
+pub(crate) fn retrying(operation: &str, error: Chain<'_>, seconds: u64) {
+    eprintln!(
+        "{operation}: {}; retrying for up to {seconds}s. Check outbound firewall access if this connection is blocked.",
+        inline(error)
+    );
+}
+
+pub(crate) fn rpc_error(code: ployz_core::RpcErrorCode, error: Chain<'_>) -> ployz_core::RpcError {
+    ployz_core::RpcError {
+        code,
+        message: inline(error),
+        details: Value::Null,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn chain_text(error: Chain<'_>) -> String {
+    inline(error)
+}
 
 /// Write the human error: `error:` with our sentence, a `cause:` line per source,
 /// then the hints.

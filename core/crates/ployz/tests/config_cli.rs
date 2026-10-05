@@ -47,7 +47,7 @@ fn isolated(home: &std::path::Path) -> Command {
         .env("PLOYZ_CONFIG", home.join("config.yaml"))
         .env_remove("PLOYZ_STORE")
         .env_remove("PLOYZ_TOKEN")
-        .env_remove("PLOYZ_CLOUD_URL")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
         .env_remove("PLOYZ_PROJECT")
         .env_remove("PLOYZ_ENV");
     command

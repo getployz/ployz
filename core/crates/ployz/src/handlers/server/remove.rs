@@ -364,9 +364,9 @@ pub(super) fn select_machine(
 
 fn machine_removal_refusal(error: RpcError) -> Error {
     if error.code == RpcErrorCode::Unavailable {
-        Error::unavailable(format!(
-            "{error}; use --no-reset to remove it from the Cluster without resetting"
-        ))
+        Error::from(error).context(
+            "The Server could not be reset; use --no-reset to remove it from the Cluster without resetting.",
+        )
     } else {
         error.into()
     }
@@ -459,10 +459,16 @@ mod tests {
             message: "Server aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond".into(),
             details: Value::Null,
         };
+        let refusal = machine_removal_refusal(error);
         assert_eq!(
-            machine_removal_refusal(error).to_string(),
-            "Server aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond; use --no-reset to remove it from the Cluster without resetting"
+            refusal.to_string(),
+            "The Server could not be reset; use --no-reset to remove it from the Cluster without resetting."
         );
+        assert_eq!(
+            refusal.causes(),
+            ["Server aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond"]
+        );
+        assert_eq!(refusal.report().code, RpcErrorCode::Unavailable);
     }
 
     #[test]

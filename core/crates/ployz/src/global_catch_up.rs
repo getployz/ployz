@@ -18,11 +18,6 @@ pub(crate) struct CatchUpError {
 }
 
 impl CatchUpError {
-    /// The `--json` code of the underlying failure.
-    pub(crate) fn code(&self) -> ployz_core::RpcErrorCode {
-        self.cause.report().code
-    }
-
     /// Record the failure and Globals whose eligibility or running slot is unresolved.
     pub(crate) fn new(cause: Failure, unresolved: Vec<QualifiedService>) -> Self {
         Self { cause, unresolved }
@@ -129,11 +124,7 @@ impl CatchUpClient for Client {
         let capacity = self
             .bridge_capacity(machine_id)
             .await
-            .map_err(|error| RpcError {
-                code: ployz_core::RpcErrorCode::Unavailable,
-                message: crate::ui::inline(&error),
-                details: serde_json::Value::Null,
-            })?;
+            .map_err(|error| crate::ui::rpc_error(ployz_core::RpcErrorCode::Unavailable, &error))?;
         if let Some(error) = endpoint_capacity_error(1, capacity.as_ref()) {
             return Err(RpcError {
                 code: ployz_core::RpcErrorCode::Conflict,
@@ -177,10 +168,9 @@ impl CatchUpClient for Client {
     }
 }
 
-pub(crate) fn joined_catch_up_error(error: CatchUpError, server: &Machine) -> String {
-    let mut message = format!(
-        "Server joined, but Global catch-up is incomplete; it remains a Cluster member. {}",
-        crate::ui::inline(&error.cause)
+pub(crate) fn joined_catch_up_error(error: CatchUpError, server: &Machine) -> Failure {
+    let mut message = String::from(
+        "Server joined, but Global catch-up is incomplete; it remains a Cluster member.",
     );
     if !error.unresolved.is_empty() {
         message.push_str("\nGlobals requiring attention:");
@@ -197,7 +187,7 @@ pub(crate) fn joined_catch_up_error(error: CatchUpError, server: &Machine) -> St
             }
         }
     }
-    message
+    error.cause.context(message)
 }
 
 /// Copy every observed eligible Global onto `this_machine` only.
@@ -255,7 +245,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
                 }
             }
             Ok(None) => {}
-            Err(error) => failures.push((identity, crate::ui::inline(&error))),
+            Err(error) => failures.push((identity, crate::ui::row(&error))),
         }
     }
     let target_containers = client

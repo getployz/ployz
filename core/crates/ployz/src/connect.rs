@@ -429,6 +429,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
             details: Value::Null,
         },
         error @ (ConnectError::Attempt(_)
+        | ConnectError::Exhausted(_)
         | ConnectError::EntryNotReady
         | ConnectError::Io(_)
         | ConnectError::Dial(_)
@@ -446,11 +447,7 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         | ConnectError::AllFailed { .. }
         | ConnectError::Codec(_)
         | ConnectError::Framing(_)
-        | ConnectError::Value(_)) => RpcError {
-            code: RpcErrorCode::Internal,
-            message: crate::ui::inline(&error),
-            details: Value::Null,
-        },
+        | ConnectError::Value(_)) => crate::ui::rpc_error(RpcErrorCode::Internal, &error),
     }
 }
 
@@ -628,6 +625,8 @@ pub enum ConnectError {
     },
     #[error("connection attempt failed: {0}")]
     Attempt(Cow<'static, str>),
+    #[error(transparent)]
+    Exhausted(Box<dyn std::error::Error + Send + Sync>),
     /// Not retried: a starting daemon costs one confirm timeout, not one per retry.
     #[error(
         "connection attempt failed: entry Machine daemon did not answer within {:?}; it may still be starting, retry shortly",
@@ -706,6 +705,7 @@ impl ConnectError {
     pub(crate) fn is_retryable(&self) -> bool {
         match self {
             Self::Attempt(_)
+            | Self::Exhausted(_)
             | Self::Io(_)
             | Self::Dial(_)
             | Self::SshProbe { .. }
@@ -783,6 +783,7 @@ impl ConnectError {
         matches!(
             self,
             Self::Attempt(_)
+                | Self::Exhausted(_)
                 | Self::EntryNotReady
                 | Self::Io(_)
                 | Self::Dial(_)

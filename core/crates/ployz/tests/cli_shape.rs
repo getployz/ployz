@@ -284,7 +284,7 @@ fn run_json_with(args: &[&str], envs: &[(&str, &str)]) -> (Option<i32>, serde_js
         .env_remove("PLOYZ_CONTEXT")
         .env_remove("PLOYZ_CONNECT")
         .env_remove("PLOYZ_TOKEN")
-        .env_remove("PLOYZ_CLOUD_URL")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
         .env_remove("PLOYZ_STORE")
         .envs(envs.iter().copied())
         .output()
@@ -332,10 +332,10 @@ fn an_unreadable_config_fails_the_same_way_for_every_command() {
     let config = home.path().join("config.yaml");
     std::fs::write(&config, "contexts: {}\n").unwrap();
     std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o000)).unwrap();
-    if std::fs::read(&config).is_ok() {
-        eprintln!("skipped: this user reads a mode 000 file");
-        return;
-    }
+    assert!(
+        std::fs::read(&config).is_err(),
+        "this user reads a mode 000 file; run the suite as a non-root user"
+    );
     let run = |args: &[&str]| {
         let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
             .args(args)
@@ -344,7 +344,7 @@ fn an_unreadable_config_fails_the_same_way_for_every_command() {
             .env_remove("PLOYZ_CONTEXT")
             .env_remove("PLOYZ_CONNECT")
             .env_remove("PLOYZ_TOKEN")
-            .env_remove("PLOYZ_CLOUD_URL")
+            .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
             .env_remove("PLOYZ_STORE")
             .output()
             .unwrap();
@@ -354,11 +354,12 @@ fn an_unreadable_config_fails_the_same_way_for_every_command() {
     let ps = run(&["ps"]);
     assert_eq!(ps, (Some(1), Some(serde_json::json!("internal"))));
     assert_eq!(run(&["ctx", "use", "prod"]), ps);
+    assert_eq!(run(&["server", "ls"]), ps);
 }
 
 #[test]
 fn no_failure_message_flattens_a_cause() {
-    const CONSTRUCTORS: [&str; 9] = [
+    const CONSTRUCTORS: [&str; 10] = [
         "::usage(",
         "::not_found(",
         "::ambiguous(",
@@ -368,12 +369,21 @@ fn no_failure_message_flattens_a_cause() {
         "::detailed(",
         "::caused(",
         ".context(",
+        "#[error(",
     ];
+    const FLATTENERS: [&str; 8] = [
+        "inline(",
+        "ui::row(",
+        "error.to_string()",
+        "{error}",
+        "{error:",
+        "{err}",
+        "{e}",
+        "{cause}",
+    ];
+    let src = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
     let mut found = Vec::new();
-    let mut dirs = vec![std::path::PathBuf::from(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src"
-    ))];
+    let mut dirs = vec![src.to_path_buf()];
     while let Some(dir) = dirs.pop() {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
@@ -398,7 +408,10 @@ fn no_failure_message_flattens_a_cause() {
                         })
                         .unwrap_or(rest.len());
                     let argument = &rest[..end];
-                    if argument.contains("inline(") {
+                    if FLATTENERS
+                        .iter()
+                        .any(|flattener| argument.contains(flattener))
+                    {
                         found.push(format!("{}: {constructor}{argument}", path.display()));
                     }
                 }
@@ -427,7 +440,7 @@ fn run_human_with(args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, String) 
         .env_remove("PLOYZ_CONTEXT")
         .env_remove("PLOYZ_CONNECT")
         .env_remove("PLOYZ_TOKEN")
-        .env_remove("PLOYZ_CLOUD_URL")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
         .env_remove("PLOYZ_STORE")
         .env_remove("NO_COLOR")
         .env_remove("CLICOLOR_FORCE")
@@ -492,6 +505,18 @@ fn color_never_emits_no_escapes() {
     let (code, stderr) = run_human(&["ctx", "use", "missing", "--color", "always"]);
     assert_eq!(code, Some(1), "{stderr}");
     assert!(stderr.contains('\x1b'), "{stderr:?}");
+
+    let (_, forced) = run_human_with(&["ps", "--bogus"], &[("CLICOLOR_FORCE", "1")]);
+    assert!(forced.contains('\x1b'), "{forced:?}");
+    for args in [
+        &["-c", "prod", "--color", "never", "deploy", "--bogus"][..],
+        &["ps", "--color", "never", "--bogus"],
+    ] {
+        let (code, stderr) = run_human_with(args, &[("CLICOLOR_FORCE", "1")]);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains("--bogus"), "{args:?}: {stderr}");
+        assert!(!stderr.contains('\x1b'), "{args:?}: {stderr:?}");
+    }
 }
 
 #[test]
@@ -582,6 +607,51 @@ fn cloud_commands_act_with_ployz_token_or_the_signed_in_device() {
 
     let (code, json, _) = run_json(&["token", "new", "ci", "--expires-in", "0", "--json"]);
     assert_eq!(code, Some(2), "{json}");
+}
+
+#[test]
+fn every_error_field_the_agent_skill_names_appears_in_real_output() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir(home.path().join(".claude")).unwrap();
+    let installed = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["setup", "agent", "--json"])
+        .env("HOME", home.path())
+        .env_remove("AI_AGENT")
+        .output()
+        .unwrap();
+    assert!(installed.status.success());
+    let skill = std::fs::read_to_string(home.path().join(".claude/skills/ployz/SKILL.md")).unwrap();
+    let line = skill
+        .lines()
+        .find(|line| line.contains(r#"{"error": {"#))
+        .unwrap();
+    let shape = &line[line.find(r#"{"error": {"#).unwrap() + 11..];
+    let mut named: Vec<String> = shape[..shape.find('}').unwrap()]
+        .split(", ")
+        .map(|field| format!("/error/{field}"))
+        .collect();
+    named.extend(skill.split('`').filter_map(|code| {
+        code.strip_prefix("details.")
+            .map(|key| format!("/error/details/{key}"))
+    }));
+    assert!(named.len() > 4, "{named:?}");
+
+    let store = tempfile::tempdir().unwrap();
+    let store = format!("sqlite:{}", store.path().join("store.db").display());
+    let with_store = [("PLOYZ_STORE", store.as_str())];
+    let (code, _, stderr) = run_json_with(&["project", "new", "blog", "--json"], &with_store);
+    assert_eq!(code, Some(0), "{stderr}");
+    let outputs = [
+        run_json(&["token", "ls", "--json"]).1,
+        run_json(&["explain", "web.restart_policy", "--json"]).1,
+        run_json_with(&["project", "rm", "blog", "--json"], &with_store).1,
+    ];
+    for field in named {
+        assert!(
+            outputs.iter().any(|json| json.pointer(&field).is_some()),
+            "{field} named by the skill appears in no output: {outputs:?}"
+        );
+    }
 }
 
 fn message(json: &serde_json::Value) -> &str {

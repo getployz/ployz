@@ -42,7 +42,7 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
             omissions: if failed { Vec::new() } else { vec![peer.id] },
         };
         let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
-        let message = joined_catch_up_error(error, &joiner);
+        let message = crate::ui::chain_text(&joined_catch_up_error(error, &joiner));
         assert!(
             message.contains("partial Service observations"),
             "{message}"
@@ -328,7 +328,10 @@ async fn failed_placement_is_reported_even_if_final_observation_is_running() {
         omissions: Vec::new(),
     };
     let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
-    assert!(joined_catch_up_error(error, &joiner).contains("creation key conflict"));
+    assert!(
+        crate::ui::chain_text(&joined_catch_up_error(error, &joiner))
+            .contains("creation key conflict")
+    );
 }
 
 fn created() -> ployz_core::ContainerCreated {

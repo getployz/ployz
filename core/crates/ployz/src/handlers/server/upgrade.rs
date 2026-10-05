@@ -221,9 +221,7 @@ async fn run_one(
     {
         Ok(accepted) => accepted,
         Err(crate::setup_retry::Error::Permanent(error)) => return Err(error.into()),
-        Err(crate::setup_retry::Error::Exhausted(error)) => {
-            return Err(uncertain(machine, attempt_id, error));
-        }
+        Err(exhausted) => return Err(uncertain(machine, attempt_id, exhausted)),
     };
     print_attempt(machine, &accepted);
     *seen = Some(accepted.clone());
@@ -249,9 +247,7 @@ async fn run_one(
             .await
             .map_err(|error| match error {
                 crate::setup_retry::Error::Permanent(error) => error.into(),
-                crate::setup_retry::Error::Exhausted(error) => {
-                    uncertain(machine, attempt_id, error)
-                }
+                exhausted => uncertain(machine, attempt_id, exhausted),
             })?;
         if observed.is_terminal() {
             return Ok(observed);
@@ -324,15 +320,19 @@ fn journal_hint(attempt_id: MachineUpgradeAttemptId) -> String {
 fn uncertain(
     machine: &Machine,
     attempt_id: MachineUpgradeAttemptId,
-    error: impl std::fmt::Display,
+    error: crate::setup_retry::Error<ConnectError>,
 ) -> Error {
-    Error::unavailable(format!(
-        "Server {} ({}) upgrade {attempt_id} outcome is uncertain: {error}; reconnect and run `ployz server inspect {}` and compare its upgrade attempt; {}",
-        machine.name,
-        machine.id,
-        machine.id,
-        journal_hint(attempt_id)
-    ))
+    Error::caused(
+        ployz_core::RpcErrorCode::Unavailable,
+        format!(
+            "Server {} ({}) upgrade {attempt_id} outcome is uncertain; reconnect and run `ployz server inspect {}` and compare its upgrade attempt; {}",
+            machine.name,
+            machine.id,
+            machine.id,
+            journal_hint(attempt_id)
+        ),
+        error,
+    )
 }
 
 fn uncertain_timeout(machine: &Machine, attempt_id: MachineUpgradeAttemptId) -> Error {
@@ -540,9 +540,11 @@ mod tests {
         let machine = machine('b', 2);
         let attempt_id = MachineUpgradeAttemptId::parse("2".repeat(32)).unwrap();
         let mut client = FakeRequests {
-            request: Some(Err(crate::setup_retry::Error::Exhausted(
-                "request reply was lost".into(),
-            ))),
+            request: Some(Err(crate::setup_retry::Error::Exhausted {
+                operation: "RequestUpgrade".into(),
+                wait: crate::setup_retry::WAIT,
+                last: Some(ConnectError::EntryNotReady),
+            })),
             seen: Vec::new(),
         };
 
@@ -691,7 +693,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        let error = crate::ui::inline(&error);
+        let error = crate::ui::chain_text(&error);
         daemon.shutdown_background();
         assert!(error.contains("upgrade record is unreadable"), "{error}");
         // The accepted attempt survives the failed poll as committed evidence.

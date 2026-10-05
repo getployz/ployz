@@ -229,7 +229,7 @@ esac
     let error = run_remote(&remote, &release).await.unwrap_err();
 
     assert!(
-        crate::ui::inline(&error).contains("timed out after 10 seconds"),
+        crate::ui::chain_text(&error).contains("timed out after 10 seconds"),
         "{error}"
     );
     let log = fs::read_to_string(log).unwrap();

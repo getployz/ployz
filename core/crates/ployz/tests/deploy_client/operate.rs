@@ -19,7 +19,7 @@ async fn ployz(store: Option<&std::path::Path>, address: &str, args: &[&str]) ->
         .env("PLOYZ_CONFIG", home.path().join("config.yaml"))
         .env_remove("PLOYZ_STORE")
         .env_remove("PLOYZ_TOKEN")
-        .env_remove("PLOYZ_CLOUD_URL")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
         .env_remove("PLOYZ_PROJECT")
         .env_remove("PLOYZ_ENV");
     if let Some(store) = store {

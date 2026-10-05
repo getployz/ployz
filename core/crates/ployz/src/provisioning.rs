@@ -109,14 +109,11 @@ pub enum ProvisionError {
     #[error("remote bootstrap cleanup exited with {status}")]
     CleanupFailed { status: std::process::ExitStatus },
     /// Setup failed and the subsequent remote cleanup also failed.
-    #[error(
-        "Machine setup failed and was not cleaned up. {}",
-        crate::ui::inline(cleanup.as_ref())
-    )]
+    #[error("Machine setup failed and was not cleaned up.")]
     CleanupAfter {
-        #[source]
         primary: Box<ProvisionError>,
-        cleanup: Box<ProvisionError>,
+        #[source]
+        both: Box<dyn std::error::Error + Send + Sync>,
     },
     /// Local Machine installation requires root privileges.
     #[error("run this command with sudo")]
@@ -488,8 +485,8 @@ fn finish_remote(
         (Err(primary), Ok(())) => Err(primary),
         (Ok(()), Err(cleanup)) => Err(cleanup),
         (Err(primary), Err(cleanup)) => Err(ProvisionError::CleanupAfter {
+            both: Box::new(crate::failure::JoinedChain::new(&primary, &cleanup)),
             primary: Box::new(primary),
-            cleanup: Box::new(cleanup),
         }),
     }
 }
@@ -657,11 +654,15 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "Machine setup failed and was not cleaned up. Could not remove the remote bootstrap: ssh failed"
+            "Machine setup failed and was not cleaned up."
         );
         assert_eq!(
             crate::ui::causes(&error),
-            ["bootstrap verification: bad version"]
+            [
+                "bootstrap verification: bad version",
+                "Could not remove the remote bootstrap.",
+                "ssh failed"
+            ]
         );
     }
 

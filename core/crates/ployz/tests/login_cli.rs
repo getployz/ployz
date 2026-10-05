@@ -117,6 +117,7 @@ fn ployz(config: &Path, args: &[&str]) -> Output {
         .args(["--ployz-config", config.to_str().unwrap()])
         .args(args)
         .env_remove("PLOYZ_CLOUD_URL")
+        .env("HTTPS_PROXY", "http://127.0.0.1:9")
         .output()
         .unwrap()
 }

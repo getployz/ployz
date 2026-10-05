@@ -389,11 +389,11 @@ impl DrainClient for Client {
         let machines = self
             .machines()
             .await
-            .map_err(|error| Lost::Entry(crate::ui::inline(&error)))?;
+            .map_err(|error| Lost::Entry(crate::ui::row(&error)))?;
         let live = self
             .live_services_from(&machines, EnvironmentValues::Redacted)
             .await
-            .map_err(|error| Lost::Entry(crate::ui::inline(&error)))?;
+            .map_err(|error| Lost::Entry(crate::ui::row(&error)))?;
         observed(&live, id).map_err(Lost::Server)?;
         Ok(services_on(id, &live))
     }

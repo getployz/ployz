@@ -317,6 +317,16 @@ fn code(error: &(dyn Error + 'static)) -> RpcErrorCode {
     if let Some(error) = error.downcast_ref::<EnrollmentHistoryError>() {
         return enrollment_history_code(error);
     }
+    if let Some(error) = error.downcast_ref::<crate::cluster::RoleWaitError>() {
+        return match error {
+            crate::cluster::RoleWaitError::Connect(error) => connect_code(error),
+            crate::cluster::RoleWaitError::NotObserved(_)
+            | crate::cluster::RoleWaitError::Cancelled => RpcErrorCode::Unavailable,
+        };
+    }
+    if error.is::<UnconfirmedDataLoss>() {
+        return RpcErrorCode::InvalidArgument;
+    }
     if error.is::<ValueError>()
         || error.is::<ConnectionError>()
         || error.is::<NamespaceError>()
@@ -348,6 +358,7 @@ fn connect_code(error: &ConnectError) -> RpcErrorCode {
         ConnectError::Join(_) => RpcErrorCode::Internal,
         ConnectError::IdentityMismatch { .. } => RpcErrorCode::Unauthenticated,
         ConnectError::Attempt(_)
+        | ConnectError::Exhausted(_)
         | ConnectError::EntryNotReady
         | ConnectError::Io(_)
         | ConnectError::Dial(_)
@@ -623,6 +634,46 @@ impl Error for Failure {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct JoinedChain {
+    line: String,
+    next: Option<Box<JoinedChain>>,
+}
+
+impl JoinedChain {
+    pub(crate) fn new(first: &(dyn Error + 'static), then: &(dyn Error + 'static)) -> Self {
+        let mut lines = Vec::new();
+        for error in [first, then] {
+            lines.push(error.to_string());
+            lines.extend(ui::causes(error));
+        }
+        lines
+            .into_iter()
+            .rev()
+            .fold(None, |next, line| {
+                Some(Self {
+                    line,
+                    next: next.map(Box::new),
+                })
+            })
+            .expect("each error gives a line")
+    }
+}
+
+impl fmt::Display for JoinedChain {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.line)
+    }
+}
+
+impl Error for JoinedChain {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.next
+            .as_deref()
+            .map(|next| next as &(dyn Error + 'static))
+    }
+}
+
 macro_rules! from_error {
     ($($t:ty),+ $(,)?) => {
         $(impl From<$t> for Failure {
@@ -657,6 +708,8 @@ from_error!(
     NamespaceError,
     cloud_enroll::Error,
     EnrollmentHistoryError,
+    crate::cluster::RoleWaitError,
+    UnconfirmedDataLoss,
 );
 
 impl From<ConnectError> for Failure {
@@ -785,7 +838,7 @@ mod tests {
         };
         let failure = Failure::caused(RpcErrorCode::Internal, "Could not save the context.", write);
         assert_eq!(
-            crate::ui::inline(&failure),
+            crate::ui::chain_text(&failure),
             "Could not save the context: Could not write Ployz config /etc/ployz/config.yaml: disk full"
         );
     }

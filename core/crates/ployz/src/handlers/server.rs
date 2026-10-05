@@ -240,7 +240,7 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
                 .map_err(|error| match error {
                     RoleWaitError::Connect(error) => Error::from(error),
                     error @ (RoleWaitError::NotObserved(_) | RoleWaitError::Cancelled) => {
-                        Error::unavailable(error.to_string())
+                        Error::from(error)
                     }
                 })?;
                 crate::ingress::follow_roles(client, ingress).await

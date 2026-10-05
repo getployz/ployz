@@ -289,12 +289,7 @@ where
     // The join is committed; a catch-up failure makes it partial.
     Ok(crate::output::emit_committed(
         serde_json::json!({ "server": super::server::server_json(&assigned), "founded": false }),
-        catch_up.map_err(|error| {
-            Error::coded(
-                error.code(),
-                crate::global_catch_up::joined_catch_up_error(error, &assigned),
-            )
-        }),
+        catch_up.map_err(|error| crate::global_catch_up::joined_catch_up_error(error, &assigned)),
     ))
 }
 
@@ -655,7 +650,7 @@ async fn ensure_uninitialized(
     wait_phase(
         matches,
         LocalMachinePhase::Uninitialized,
-        "The Server did not reset",
+        "The Server did not reset.",
     )
     .await
 }
@@ -673,7 +668,7 @@ async fn wait_phase(
     };
     crate::setup_retry::run(
         &mut (),
-        timeout_message,
+        &format!("Waiting for the {} phase", phase.as_str()),
         wait,
         ConnectError::is_setup_retryable,
         async |_| {

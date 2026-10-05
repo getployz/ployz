@@ -43,14 +43,8 @@ pub fn run() -> Result<(), Error> {
     if args.is_empty() || args.iter().any(|arg| arg == "--help" || arg == "-h") {
         command = command.after_help(setup::help_footer());
     }
-    crate::ui::Color::before_subcommand(&args).apply();
+    crate::ui::Color::requested(&command, &args).apply();
     let matches = command.clone().try_get_matches().map_err(usage_failure)?;
-    let leaf = leaf_matches(&matches);
-    if leaf.value_source("color") == Some(clap::parser::ValueSource::CommandLine)
-        && let Some(color) = leaf.get_one::<String>("color")
-    {
-        crate::ui::Color::named(color).apply();
-    }
     crate::ui::init(matches.get_flag("json"));
     dispatch(&matches, &mut command)
 }

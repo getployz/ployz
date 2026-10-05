@@ -405,10 +405,10 @@ async fn run_port_forward(
                     match client.dial_proxy("tcp", &remote).await {
                         Ok(mut upstream) => {
                             if let Err(error) = copy_bidirectional(&mut local, &mut upstream).await {
-                                eprintln!("WARNING: port-forward connection to {remote} failed: {}", crate::ui::inline(&error));
+                                crate::ui::warn(format_args!("port-forward connection to {remote} failed"), &error);
                             }
                         }
-                        Err(error) => eprintln!("WARNING: port-forward connection to {remote} failed: {}", crate::ui::inline(&error)),
+                        Err(error) => crate::ui::warn(format_args!("port-forward connection to {remote} failed"), &error),
                     }
                 });
             }

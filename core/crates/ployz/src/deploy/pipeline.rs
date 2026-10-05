@@ -314,9 +314,7 @@ pub(crate) async fn push_namespace_images(
                 }
                 failures.extend(service_failures);
             }
-            Err(error) => {
-                failures.push(format!("{}: {}", service.image, crate::ui::inline(&error)))
-            }
+            Err(error) => failures.push(format!("{}: {}", service.image, crate::ui::row(&error))),
         }
     }
     Ok(failures)
@@ -496,7 +494,7 @@ async fn push_image(
                 "{} on {}: {}",
                 service.image,
                 failure.machine_id,
-                crate::ui::inline(&failure.error)
+                crate::ui::row(&failure.error)
             )
         })
         .chain(

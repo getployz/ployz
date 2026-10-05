@@ -925,11 +925,7 @@ impl Watch {
                 }
                 Err(error) => {
                     *guard = None;
-                    Err(RpcError {
-                        code: RpcErrorCode::Internal,
-                        message: crate::ui::inline(&error),
-                        details: Value::Null,
-                    })
+                    Err(crate::ui::rpc_error(RpcErrorCode::Internal, &error))
                 }
             },
             Some(Err(_)) if self.cancel.is_cancelled() => {
@@ -982,7 +978,7 @@ pub(crate) fn preparation_error(
     cancellation_requested: bool,
 ) -> RpcError {
     use crate::sdk::prepare::PreparationError;
-    let message = crate::ui::inline(&error);
+    let message = crate::ui::rpc_error(RpcErrorCode::Internal, &error).message;
     match error {
         PreparationError::Selection(error) => {
             let rejections = if let ConnectError::Remote(error) = &error {

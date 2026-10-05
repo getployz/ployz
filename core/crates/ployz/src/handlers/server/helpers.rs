@@ -263,30 +263,49 @@ async fn observe_mutation(
     wait: std::time::Duration,
     observed: impl Fn(&ployz_core::MachineDetails) -> bool,
 ) -> Result<ployz_core::MachineDetails, Error> {
-    crate::setup_retry::run(client, &format!("Checking {operation} outcome"), wait,
+    crate::setup_retry::run(
+        client,
+        &format!("Checking {operation} outcome"),
+        wait,
         ConnectError::is_setup_retryable,
         async |client| {
-            let details = client.call_repeatable::<op::Inspect>(InspectRequest::default(), None).await?;
-            if observed(&details) { Ok(details) } else { Err(ConnectError::Attempt(format!("Server phase is {}; expected {operation} outcome not yet observed", details.phase.as_str().escape_debug()).into())) }
+            let details = client
+                .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+                .await?;
+            if observed(&details) {
+                Ok(details)
+            } else {
+                Err(ConnectError::Attempt(
+                    format!(
+                        "Server phase is {}; expected {operation} outcome not yet observed",
+                        details.phase.as_str().escape_debug()
+                    )
+                    .into(),
+                ))
+            }
         },
     )
     .await
-    .map_err(|error| {
-        Error::caused(
-            ployz_core::RpcErrorCode::Unavailable,
-            format!("{operation} may have completed; could not confirm the resulting Server state. Inspect the Server before retrying; do not reset it."),
-            Unconfirmed { observation: error.into(), original },
-        )
-    })
+    .map_err(|observation| unconfirmed(operation, &original, observation))
+}
+
+fn unconfirmed(
+    operation: &str,
+    original: &ConnectError,
+    observation: crate::setup_retry::Error<ConnectError>,
+) -> Error {
+    Error::caused(
+        ployz_core::RpcErrorCode::Unavailable,
+        format!(
+            "{operation} may have completed. Inspect the Server before retrying; do not reset it."
+        ),
+        crate::failure::JoinedChain::new(original, &Unconfirmed(observation)),
+    )
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("{observation}")]
-struct Unconfirmed {
-    observation: Error,
-    #[source]
-    original: ConnectError,
-}
+#[error("Could not confirm the resulting Server state.")]
+struct Unconfirmed(#[source] crate::setup_retry::Error<ConnectError>);
 
 pub(in crate::handlers) fn readiness_timeout_message(message: &str) -> String {
     format!(
@@ -326,6 +345,29 @@ mod tests {
     use ployz_core::{DOCKER_NETWORK_CONFLICT_RECOVERY, MACHINE_API_PORT, MachineToken};
 
     use super::*;
+
+    #[test]
+    fn an_unconfirmed_mutation_keeps_the_lost_reply_and_the_daemon_answer() {
+        let original = ConnectError::Io(std::io::ErrorKind::TimedOut.into());
+        let observation = crate::setup_retry::Error::Permanent(ConnectError::from(
+            tonic::Status::unimplemented("unknown method Inspect for service ployz.machine.v1"),
+        ));
+        let failure = unconfirmed("Initialization", &original, observation);
+        assert_eq!(failure.report().code, ployz_core::RpcErrorCode::Unavailable);
+        assert_eq!(
+            failure.to_string(),
+            "Initialization may have completed. Inspect the Server before retrying; do not reset it."
+        );
+        let causes = failure.causes();
+        let at = |text: &str| {
+            causes
+                .iter()
+                .position(|cause| cause.contains(text))
+                .unwrap_or_else(|| panic!("{text:?} missing from {causes:?}"))
+        };
+        assert!(at("timed out") < at("Could not confirm the resulting Server state."));
+        assert!(at("Could not confirm the resulting Server state.") < at("unknown method Inspect"));
+    }
 
     #[test]
     fn machine_add_only_configures_keys_for_ssh_connections() {

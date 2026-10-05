@@ -202,7 +202,7 @@ impl SetupReport {
             Some(error) => Outcome::Failed {
                 failed_step: step,
                 failed_step_seconds: since.elapsed().as_secs_f64(),
-                error: crate::ui::inline(error),
+                error: crate::ui::row(error),
             },
         };
         let body = Body {

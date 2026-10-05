@@ -36,13 +36,18 @@ pub(crate) enum Error {
     )]
     FounderWait,
     #[error(
-        "Cloud {operation} failed: {detail}; rerun the same ployz server add command without --reset (keep all other options)"
+        "Cloud {operation} failed; rerun the same ployz server add command without --reset (keep all other options)."
     )]
     RetrySameCommand {
         operation: &'static str,
-        detail: String,
+        #[source]
+        cause: Box<dyn std::error::Error + Send + Sync>,
     },
 }
+
+#[derive(Debug, Error)]
+#[error("The response was lost; the enrollment outcome may be uncertain.")]
+struct ResponseLost(#[source] Error);
 
 impl Error {
     fn is_transport(&self) -> bool {
@@ -379,7 +384,7 @@ async fn post_callback(
     .await
     .map_err(|error| Error::RetrySameCommand {
         operation,
-        detail: crate::ui::inline(&error),
+        cause: Box::new(error),
     })
 }
 
@@ -389,18 +394,16 @@ fn retry_error(operation: &'static str, error: crate::setup_retry::Error<Error>)
             if matches!(error, Error::Timeout(_) | Error::Http(_)) {
                 Error::RetrySameCommand {
                     operation,
-                    detail: format!(
-                        "response lost; enrollment outcome may be uncertain: {}",
-                        crate::ui::inline(&error)
-                    ),
+                    cause: Box::new(ResponseLost(error)),
                 }
             } else {
                 error
             }
         }
-        crate::setup_retry::Error::Exhausted(detail) => {
-            Error::RetrySameCommand { operation, detail }
-        }
+        exhausted => Error::RetrySameCommand {
+            operation,
+            cause: Box::new(exhausted),
+        },
     }
 }
 
@@ -770,7 +773,7 @@ mod tests {
             timeout.to_string(),
             "Enrollment timed out waiting for Cloud."
         );
-        assert!(!crate::ui::inline(&timeout).contains(&hang));
+        assert!(!crate::ui::chain_text(&timeout).contains(&hang));
 
         let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let refused = format!("http://{}", closed.local_addr().unwrap());
@@ -778,7 +781,7 @@ mod tests {
         let connect = post_json(&http, &refused, &identity()).await.unwrap_err();
         assert_eq!(connect.to_string(), "Could not connect to Cloud.");
         assert_ne!(timeout.to_string(), connect.to_string());
-        let connect = crate::ui::inline(&connect);
+        let connect = crate::ui::chain_text(&connect);
         assert!(connect.contains("Connection refused"), "{connect}");
         assert!(!connect.contains(&refused));
     }
@@ -806,7 +809,8 @@ mod tests {
                 .await
                 .expect("lost response must return without retrying")
                 .unwrap_err();
-            assert!(error.to_string().contains("uncertain"), "{error}");
+            let rendered = crate::ui::chain_text(&error);
+            assert!(rendered.contains("uncertain"), "{rendered}");
             assert!(error.to_string().contains("without --reset"), "{error}");
             server.await.unwrap();
         }
@@ -896,14 +900,12 @@ mod tests {
                 )
             };
             let error = result.unwrap_err();
-            for rendered in [error.to_string(), format!("{error:?}")] {
+            for rendered in [crate::ui::chain_text(&error), format!("{error:?}")] {
                 assert!(!rendered.contains(&secret));
                 assert!(!rendered.contains(pairing));
             }
             assert!(
-                error
-                    .to_string()
-                    .contains(&format!("HTTP 400: {operation} rejected"))
+                crate::ui::chain_text(&error).contains(&format!("HTTP 400: {operation} rejected"))
             );
             assert!(error.to_string().contains("without --reset"));
         }

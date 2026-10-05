@@ -157,7 +157,7 @@ fn confirm_with(
     let confirmation = || {
         observed
             .confirm_names(observed.data_loss.iter().map(DataLoss::name))
-            .map_err(|error| Error::usage(error.to_string()))
+            .map_err(Error::from)
     };
     if !named.is_empty() || (names.is_empty() && yes) {
         return confirmation().map(Some);

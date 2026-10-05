@@ -498,7 +498,7 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
         failed.machine.id
     );
     assert!(
-        crate::ui::inline(&result.failures.first().unwrap().error)
+        crate::ui::chain_text(&result.failures.first().unwrap().error)
             .contains("containerd image store")
     );
     let unserved = result.failures.get(1).unwrap();
