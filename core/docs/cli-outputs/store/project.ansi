@@ -1,0 +1,34 @@
+=== project ls (empty Store) :: $ ployz project ls
+No Projects yet. Create one: ployz project new NAME
+
+=== project ls --json (empty Store) :: $ ployz --json project ls
+{
+  "projects": []
+}
+
+=== project ls :: $ ployz project ls
+blog	production*
+shop	production*
+
+=== project ls --json :: $ ployz --json project ls
+{
+  "projects": [
+    {
+      "default_environment": "production",
+      "environments": [
+        "production"
+      ],
+      "id": "5df58a9e-97ce-4e7f-a880-e1cabf93265d",
+      "name": "blog"
+    },
+    {
+      "default_environment": "production",
+      "environments": [
+        "production"
+      ],
+      "id": "3ea2c806-0c15-4d5a-9470-6476f06412d2",
+      "name": "shop"
+    }
+  ]
+}
+

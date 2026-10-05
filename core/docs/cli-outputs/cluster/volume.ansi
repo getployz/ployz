@@ -1,0 +1,91 @@
+=== volume ls :: $ ployz volume ls
+VOLUME	STORAGE	SHARED WRITES	MOUNTS	DEPLOYED	NEXT DEPLOY
+cache	Managed volume (1 GB limit)	off	api:/cache	no	create
+data	Docker volume (no size limit)	off	api:/data	no	create
+
+=== volume ls --json :: $ ployz volume ls --json
+{
+  "environment": {
+    "id": "52712cb1-5621-43aa-987b-900e655738a0",
+    "name": "production",
+    "project": "shop",
+    "revision": 12
+  },
+  "volumes": [
+    {
+      "change": "create",
+      "deployed": false,
+      "id": "b403d017-1d63-491c-8264-19180119b004",
+      "mounts": [
+        {
+          "path": "/cache",
+          "service": "api"
+        }
+      ],
+      "name": "cache",
+      "shared_writes": false,
+      "storage": {
+        "kind": "provisioned",
+        "maximumBytes": 1000000000
+      },
+      "storage_locked": true
+    },
+    {
+      "change": "create",
+      "deployed": false,
+      "id": "fb5fbf41-f4eb-4151-a3b5-2158bb829dc4",
+      "mounts": [
+        {
+          "path": "/data",
+          "service": "api"
+        }
+      ],
+      "name": "data",
+      "shared_writes": false,
+      "storage": {
+        "kind": "docker"
+      },
+      "storage_locked": true
+    }
+  ]
+}
+
+=== volume inspect :: $ ployz volume inspect data
+Volume data (fb5fbf41-f4eb-4151-a3b5-2158bb829dc4)
+Storage: Docker volume (no size limit)
+Storage settings: locked after deployment was requested
+Shared writes: off
+Deployed: no
+Next Deploy: create
+Mounted by api at /data
+
+=== volume inspect --json :: $ ployz volume inspect data --json
+{
+  "change": "create",
+  "deployed": false,
+  "environment": {
+    "id": "52712cb1-5621-43aa-987b-900e655738a0",
+    "name": "production",
+    "project": "shop",
+    "revision": 12
+  },
+  "id": "fb5fbf41-f4eb-4151-a3b5-2158bb829dc4",
+  "lineage": "fb5fbf41-f4eb-4151-a3b5-2158bb829dc4",
+  "mounts": [
+    {
+      "path": "/data",
+      "service": "api"
+    }
+  ],
+  "name": "data",
+  "shared_writes": false,
+  "storage": {
+    "kind": "docker"
+  },
+  "storage_locked": true
+}
+
+=== volume ls after deploy :: $ ployz volume ls
+VOLUME	STORAGE	SHARED WRITES	MOUNTS	DEPLOYED	NEXT DEPLOY
+store	Docker volume (no size limit)	on	api:/data	yes	-
+

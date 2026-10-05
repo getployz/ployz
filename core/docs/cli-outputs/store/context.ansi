@@ -1,0 +1,229 @@
+=== status (no Project yet) :: $ ployz status
+Organization local (local).
+Needs attention: This Organization has no Project yet
+next: ployz project new NAME
+
+=== status --json (no Project yet) :: $ ployz --json status
+{
+  "attention": [
+    {
+      "message": "This Organization has no Project yet",
+      "next": "ployz project new NAME",
+      "reason": "not_found"
+    }
+  ],
+  "deploying": [],
+  "environment": null,
+  "identity": {
+    "credential": "local",
+    "organization": {
+      "id": "local",
+      "slug": "local"
+    }
+  },
+  "next": "ployz project new NAME",
+  "scope": {
+    "environment": null,
+    "link": null,
+    "project": null
+  },
+  "staged": null
+}
+
+=== status (staged changes) :: $ ployz status
+Organization local (local).
+Environment shop/production.
+11 staged changes.
+next: ployz diff --project shop
+
+=== status --json (staged changes) :: $ ployz --json status
+{
+  "attention": [],
+  "deploying": [],
+  "environment": {
+    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "name": "production",
+    "project": "shop",
+    "revision": 21
+  },
+  "identity": {
+    "credential": "local",
+    "organization": {
+      "id": "local",
+      "slug": "local"
+    }
+  },
+  "next": "ployz diff --project shop",
+  "scope": {
+    "environment": null,
+    "link": null,
+    "project": {
+      "name": "shop",
+      "source": "env"
+    }
+  },
+  "staged": {
+    "changes": 11,
+    "published": false,
+    "version": "21:0:0.0"
+  }
+}
+
+=== status (two Projects, no link) :: $ ployz status
+Organization local (local).
+Needs attention: Name a Project: this Organization has more than one
+next: ployz link --project PROJECT
+
+=== status (linked, staged changes) :: $ ployz status
+Organization local (local).
+Environment shop/production.
+Linked from /tmp/ployz-cli-outputs-store/work.
+10 staged changes.
+next: ployz diff
+
+=== status --json (linked) :: $ ployz --json status
+{
+  "attention": [],
+  "deploying": [],
+  "environment": {
+    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "name": "production",
+    "project": "shop",
+    "revision": 34
+  },
+  "identity": {
+    "credential": "local",
+    "organization": {
+      "id": "local",
+      "slug": "local"
+    }
+  },
+  "next": "ployz diff",
+  "scope": {
+    "environment": {
+      "name": "production",
+      "source": "link"
+    },
+    "link": "/tmp/ployz-cli-outputs-store/work",
+    "project": {
+      "name": "shop",
+      "source": "link"
+    }
+  },
+  "staged": {
+    "changes": 10,
+    "published": false,
+    "version": "34:4:0.0"
+  }
+}
+
+=== status with --env override :: $ ployz status --env staging
+Organization local (local).
+Environment shop/staging.
+Linked from /tmp/ployz-cli-outputs-store/work.
+0 staged changes.
+
+=== status with PLOYZ_ENV :: $ env PLOYZ_ENV=fix-web ployz status
+Organization local (local).
+Environment shop/fix-web.
+Linked from /tmp/ployz-cli-outputs-store/work.
+6 staged changes.
+next: ployz diff --env fix-web
+
+=== ctx (no contexts) :: $ ployz ctx
+Organization: local
+Project: shop (link)
+Environment: production (link)
+Servers: via local
+
+=== ctx --json (no contexts) :: $ ployz --json ctx
+{
+  "environment": {
+    "name": "production",
+    "source": "link"
+  },
+  "link": "/tmp/ployz-cli-outputs-store/work",
+  "organization": {
+    "id": "local",
+    "slug": "local"
+  },
+  "project": {
+    "name": "shop",
+    "source": "link"
+  },
+  "servers": {
+    "via": "local"
+  }
+}
+
+=== ctx ls (no contexts) :: $ ployz ctx ls
+No contexts found
+
+=== ctx ls --json (no contexts) :: $ ployz --json ctx ls
+{
+  "contexts": []
+}
+
+=== ctx ls :: $ ployz ctx ls
+NAME	CURRENT	DEFAULT	CONNECTIONS
+dev		unix:///tmp/dev.sock	1
+prod	*	unix:///tmp/prod.sock	2
+
+=== ctx ls --json :: $ ployz --json ctx ls
+{
+  "contexts": [
+    {
+      "connections": [
+        "unix:///tmp/dev.sock"
+      ],
+      "current": false,
+      "name": "dev"
+    },
+    {
+      "connections": [
+        "unix:///tmp/prod.sock",
+        "ssh://root@203.0.113.7"
+      ],
+      "current": true,
+      "name": "prod"
+    }
+  ]
+}
+
+=== ctx :: $ ployz ctx
+Organization: local
+Project: shop (link)
+Environment: production (link)
+Servers: via context prod
+
+=== ctx --json :: $ ployz --json ctx
+{
+  "environment": {
+    "name": "production",
+    "source": "link"
+  },
+  "link": "/tmp/ployz-cli-outputs-store/work",
+  "organization": {
+    "id": "local",
+    "slug": "local"
+  },
+  "project": {
+    "name": "shop",
+    "source": "link"
+  },
+  "servers": {
+    "context": "prod",
+    "via": "context"
+  }
+}
+
+=== ctx ls (all removed) :: $ ployz ctx ls
+No contexts found
+
+=== status (with a context removed) :: $ ployz status
+Organization local (local).
+Environment shop/production.
+Linked from /tmp/ployz-cli-outputs-store/work.
+10 staged changes.
+next: ployz diff
+

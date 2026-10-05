@@ -1,0 +1,515 @@
+=== get (no Services) :: $ ployz get
+No Services in shop/production.
+
+=== get (all Services) :: $ ployz get
+db.image = postgres:16
+db.mounts.pgdata = /var/lib/postgresql/data
+web.healthcheck = {"path":"/healthz","timeoutSeconds":300}
+web.image = nginx:1.27
+web.replicas = 2
+web.env.A = 1
+web.env.API_KEY = {"secret":true}
+web.env.API_KEY2 = {"secret":true}
+web.env.B = two
+web.env.DB_URL = postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app
+web.env.LOG_LEVEL = info
+web.env.PORT = 8080
+
+=== get --json (all Services) :: $ ployz --json get
+{
+  "environment": {
+    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "name": "production",
+    "project": "shop",
+    "revision": 19
+  },
+  "settings": [
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "db.image",
+      "value": "postgres:16"
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "db.mounts.pgdata",
+      "value": "/var/lib/postgresql/data"
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.healthcheck",
+      "value": {
+        "path": "/healthz",
+        "timeoutSeconds": 300
+      }
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.image",
+      "value": "nginx:1.27"
+    },
+    {
+      "apply": "staged",
+      "default": 1,
+      "path": "web.replicas",
+      "value": 2
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.env.A",
+      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.A",
+      "value": "1"
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.env.API_KEY",
+      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.API_KEY",
+      "value": {
+        "secret": true
+      }
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.env.API_KEY2",
+      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.API_KEY2",
+      "value": {
+        "secret": true
+      }
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.env.B",
+      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.B",
+      "value": "two"
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.env.DB_URL",
+      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.DB_URL",
+      "value": "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.env.LOG_LEVEL",
+      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.LOG_LEVEL",
+      "value": "info"
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.env.PORT",
+      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.PORT",
+      "value": "8080"
+    }
+  ]
+}
+
+=== get --all :: $ ployz get --all
+db.cpuLimit = - (default)
+db.healthcheck = - (default)
+db.image = postgres:16
+db.maxRetries = 10 (default)
+db.memLimit = - (default)
+db.preDeployCommand = - (default)
+db.privateDns = db (default)
+db.registryCredential = - (default)
+db.replicas = 1 (default)
+db.restartPolicy = unless-stopped (default)
+db.startCommand = - (default)
+db.template = - (default)
+db.mounts.pgdata = /var/lib/postgresql/data
+web.cpuLimit = - (default)
+web.healthcheck = {"path":"/healthz","timeoutSeconds":300}
+web.image = nginx:1.27
+web.maxRetries = 10 (default)
+web.memLimit = - (default)
+web.preDeployCommand = - (default)
+web.privateDns = web (default)
+web.registryCredential = - (default)
+web.replicas = 2
+web.restartPolicy = unless-stopped (default)
+web.startCommand = - (default)
+web.template = - (default)
+web.env.A = 1
+web.env.A.exported = false (default)
+web.env.API_KEY = {"secret":true}
+web.env.API_KEY.exported = false (default)
+web.env.API_KEY2 = {"secret":true}
+web.env.API_KEY2.exported = false (default)
+web.env.B = two
+web.env.B.exported = false (default)
+web.env.DB_URL = postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app
+web.env.DB_URL.exported = false (default)
+web.env.LOG_LEVEL = info
+web.env.LOG_LEVEL.exported = false (default)
+web.env.PORT = 8080
+web.env.PORT.exported = false (default)
+
+=== get one Service :: $ ployz get web
+web.cpuLimit = - (default)
+web.healthcheck = {"path":"/healthz","timeoutSeconds":300}
+web.image = nginx:1.27
+web.maxRetries = 10 (default)
+web.memLimit = - (default)
+web.preDeployCommand = - (default)
+web.privateDns = web (default)
+web.registryCredential = - (default)
+web.replicas = 2
+web.restartPolicy = unless-stopped (default)
+web.startCommand = - (default)
+web.template = - (default)
+web.env.A = 1
+web.env.A.exported = false (default)
+web.env.API_KEY = {"secret":true}
+web.env.API_KEY.exported = false (default)
+web.env.API_KEY2 = {"secret":true}
+web.env.API_KEY2.exported = false (default)
+web.env.B = two
+web.env.B.exported = false (default)
+web.env.DB_URL = postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app
+web.env.DB_URL.exported = false (default)
+web.env.LOG_LEVEL = info
+web.env.LOG_LEVEL.exported = false (default)
+web.env.PORT = 8080
+web.env.PORT.exported = false (default)
+
+=== get --json one Service :: $ ployz --json get web
+{
+  "environment": {
+    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "name": "production",
+    "project": "shop",
+    "revision": 19
+  },
+  "settings": [
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.cpuLimit",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.healthcheck",
+      "value": {
+        "path": "/healthz",
+        "timeoutSeconds": 300
+      }
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.image",
+      "value": "nginx:1.27"
+    },
+    {
+      "apply": "staged",
+      "default": 10,
+      "path": "web.maxRetries",
+      "value": 10
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.memLimit",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.preDeployCommand",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": "web",
+      "path": "web.privateDns",
+      "value": "web"
+    },
+    {
+      "apply": "immediate",
+      "default": null,
+      "path": "web.registryCredential",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": 1,
+      "path": "web.replicas",
+      "value": 2
+    },
+    {
+      "apply": "staged",
+      "default": "unless-stopped",
+      "path": "web.restartPolicy",
+      "value": "unless-stopped"
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.startCommand",
+      "value": null
+    },
+    {
+      "apply": "immediate",
+      "default": null,
+      "path": "web.template",
+      "value": null
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.env.A",
+      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.A",
+      "value": "1"
+    },
+    {
+      "apply": "staged",
+      "default": false,
+      "path": "web.env.A.exported",
+      "value": false
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.env.API_KEY",
+      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.API_KEY",
+      "value": {
+        "secret": true
+      }
+    },
+    {
+      "apply": "staged",
+      "default": false,
+      "path": "web.env.API_KEY.exported",
+      "value": false
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.env.API_KEY2",
+      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.API_KEY2",
+      "value": {
+        "secret": true
+      }
+    },
+    {
+      "apply": "staged",
+      "default": false,
+      "path": "web.env.API_KEY2.exported",
+      "value": false
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.env.B",
+      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.B",
+      "value": "two"
+    },
+    {
+      "apply": "staged",
+      "default": false,
+      "path": "web.env.B.exported",
+      "value": false
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.env.DB_URL",
+      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.DB_URL",
+      "value": "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
+    },
+    {
+      "apply": "staged",
+      "default": false,
+      "path": "web.env.DB_URL.exported",
+      "value": false
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.env.LOG_LEVEL",
+      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.LOG_LEVEL",
+      "value": "info"
+    },
+    {
+      "apply": "staged",
+      "default": false,
+      "path": "web.env.LOG_LEVEL.exported",
+      "value": false
+    },
+    {
+      "apply": "staged",
+      "default": null,
+      "path": "web.env.PORT",
+      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.PORT",
+      "value": "8080"
+    },
+    {
+      "apply": "staged",
+      "default": false,
+      "path": "web.env.PORT.exported",
+      "value": false
+    }
+  ],
+  "values": {
+    "env": {
+      "A": "1",
+      "API_KEY": {
+        "secret": true
+      },
+      "API_KEY2": {
+        "secret": true
+      },
+      "B": "two",
+      "DB_URL": "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app",
+      "LOG_LEVEL": "info",
+      "PORT": "8080"
+    },
+    "healthcheck": {
+      "path": "/healthz",
+      "timeoutSeconds": 300
+    },
+    "image": "nginx:1.27",
+    "maxRetries": 10,
+    "privateDns": "web",
+    "replicas": 2,
+    "restartPolicy": "unless-stopped"
+  }
+}
+
+=== get one Setting :: $ ployz get web.replicas
+web.replicas = 2
+
+=== get --json one Setting :: $ ployz --json get web.replicas
+{
+  "environment": {
+    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "name": "production",
+    "project": "shop",
+    "revision": 19
+  },
+  "settings": [
+    {
+      "apply": "staged",
+      "default": 1,
+      "path": "web.replicas",
+      "value": 2
+    }
+  ]
+}
+
+=== get one env var :: $ ployz get web.env.LOG_LEVEL
+web.env.LOG_LEVEL = info
+
+=== get a secret env var :: $ ployz get web.env.API_KEY
+web.env.API_KEY = {"secret":true}
+
+=== get: unknown Service :: $ ployz get nope
+No Service named nope in Environment production
+valid: web, db
+
+=== get --json: unknown Service :: $ ployz --json get nope
+{"error":{"code":"not_found","details":{"did_you_mean":null,"valid_children":["web","db"]},"message":"No Service named nope in Environment production"}}
+
+=== get: unknown Setting :: $ ployz get web.replicaz
+Unknown Service Setting
+valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, replicas, restartPolicy, startCommand, template, repository, branch, rootDir, buildMethod, dockerfilePath, buildCommand, autoDeploy, waitForCi, watchPaths, preferredBuilder, env, mounts
+
+=== get: unset env var :: $ ployz get web.env.MISSING
+web has no variable MISSING
+valid: LOG_LEVEL, PORT, DB_URL, API_KEY, API_KEY2, A, B
+
+=== explain :: $ ployz explain web.replicas
+web.replicas — Replicas
+How many copies of the Service run.
+Type: integer
+Range: at least 1, at most 50
+Default: 1
+Applies: staged
+Example: ployz set 'web.replicas=3'
+
+=== explain --json :: $ ployz --json explain web.replicas
+{
+  "example": "ployz set 'web.replicas=3'",
+  "path": "web.replicas",
+  "schema": {
+    "default": 1,
+    "description": "How many copies of the Service run.",
+    "examples": [
+      3
+    ],
+    "maximum": 50,
+    "minimum": 1,
+    "title": "Replicas",
+    "type": "integer",
+    "x-ployz-apply": "staged",
+    "x-ployz-data-loss": false,
+    "x-ployz-secret": false
+  }
+}
+
+=== explain env :: $ ployz explain web.env
+Name a variable: SERVICE.env.KEY
+
+=== explain: unknown Setting :: $ ployz explain web.replicaz
+Unknown Service Setting
+valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, replicas, restartPolicy, startCommand, template, repository, branch, rootDir, buildMethod, dockerfilePath, buildCommand, autoDeploy, waitForCi, watchPaths, preferredBuilder, env, mounts
+
+=== explain --json: unknown Setting :: $ ployz --json explain web.replicaz
+{"error":{"code":"invalid_argument","details":{"did_you_mean":"replicas","example":3,"expected":{"maximum":50,"minimum":1,"type":"integer"},"valid_children":["cpuLimit","healthcheck","image","maxRetries","memLimit","preDeployCommand","privateDns","registryCredential","replicas","restartPolicy","startCommand","template","repository","branch","rootDir","buildMethod","dockerfilePath","buildCommand","autoDeploy","waitForCi","watchPaths","preferredBuilder","env","mounts"]},"message":"Unknown Service Setting"}}
+
+=== explain: Service only :: $ ployz explain web
+Name a Setting: SERVICE.SETTING
+valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, replicas, restartPolicy, startCommand, template, repository, branch, rootDir, buildMethod, dockerfilePath, buildCommand, autoDeploy, waitForCi, watchPaths, preferredBuilder
+
+=== schema one Setting :: $ ployz schema web.replicas
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "default": 1,
+  "description": "How many copies of the Service run.",
+  "examples": [
+    3
+  ],
+  "maximum": 50,
+  "minimum": 1,
+  "title": "Replicas",
+  "type": "integer",
+  "x-ployz-apply": "staged",
+  "x-ployz-data-loss": false,
+  "x-ployz-secret": false,
+  "x-ployz-version": 1
+}
+
+=== schema --json one Setting :: $ ployz --json schema web.replicas
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "default": 1,
+  "description": "How many copies of the Service run.",
+  "examples": [
+    3
+  ],
+  "maximum": 50,
+  "minimum": 1,
+  "title": "Replicas",
+  "type": "integer",
+  "x-ployz-apply": "staged",
+  "x-ployz-data-loss": false,
+  "x-ployz-secret": false,
+  "x-ployz-version": 1
+}
+
+=== schema: unknown path :: $ ployz schema web.replicaz
+Unknown Service Setting. `ployz schema` takes SERVICE or SERVICE.SETTING; `ployz schema web` lists its Settings
+valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, replicas, restartPolicy, startCommand, template, repository, branch, rootDir, buildMethod, dockerfilePath, buildCommand, autoDeploy, waitForCi, watchPaths, preferredBuilder, env, mounts
+

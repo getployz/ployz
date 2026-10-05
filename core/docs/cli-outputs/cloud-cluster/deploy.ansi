@@ -1,0 +1,680 @@
+=== deploy --plan, nothing staged :: $ ployz deploy --plan
+No authored changes to deploy in shop/production.
+Decided by the Servers when it runs: operations.
+next: ployz deploy --expect-version 26:16:0.32
+
+=== deploy --plan --json, nothing staged :: $ ployz --json deploy --plan
+{
+  "changes": [],
+  "environment": {
+    "id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+    "name": "production",
+    "project": "shop",
+    "revision": 26
+  },
+  "namespace": "shop-production",
+  "next": "ployz deploy --expect-version 26:16:0.32",
+  "unresolved": [
+    "operations"
+  ],
+  "version": "26:16:0.32"
+}
+
+=== diff :: $ ployz diff
+web (update)
+  web.env.GREETING: null -> "hello"
+next: ployz deploy --expect-version 27:16:0.34
+
+=== deploy --plan with a staged change :: $ ployz deploy --plan
+web (update)
+  web.env.GREETING: null -> "hello"
+Decided by the Servers when it runs: operations.
+next: ployz deploy --expect-version 27:16:0.34
+
+=== deploy --plan --json with a staged change :: $ ployz --json deploy --plan
+{
+  "changes": [
+    {
+      "comparison": "head",
+      "data": null,
+      "id": "8cb17782-fd07-45b5-9009-992bb7f6f24d",
+      "lifecycle": "update",
+      "name": "web",
+      "row": "8cb17782-fd07-45b5-9009-992bb7f6f24d:node",
+      "settings": [
+        {
+          "after": "hello",
+          "before": null,
+          "canRestore": true,
+          "kind": "add",
+          "path": "web.env.GREETING",
+          "row": "8cb17782-fd07-45b5-9009-992bb7f6f24d:variables.GREETING"
+        }
+      ],
+      "type": "service"
+    }
+  ],
+  "environment": {
+    "id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+    "name": "production",
+    "project": "shop",
+    "revision": 27
+  },
+  "namespace": "shop-production",
+  "next": "ployz deploy --expect-version 27:16:0.34",
+  "unresolved": [
+    "operations"
+  ],
+  "version": "27:16:0.34"
+}
+
+=== deploy a staged change (live follower) :: $ ployz deploy
+Following Deployment #38; stopping this leaves it running.
+queued: web pending, api pending, postgres pending, worker pending, pg-data pending
+running: web pending, api pending, postgres pending, worker pending, pg-data pending
+running: web pending, api unchanged, postgres unchanged, worker unchanged, pg-data unchanged
+applied: web deployed, api unchanged, postgres unchanged, worker unchanged, pg-data unchanged
+Deployment #38 of shop/production: applied
+  web: deployed
+  api: unchanged
+  postgres: unchanged
+  worker: unchanged
+  pg-data: unchanged
+# exit 0
+
+
+=== deployment ls :: $ ployz deployment ls --limit 5
+#42 applied Saved revision 21 e400c76f-1d28-443f-a5e9-ae4338441650
+#41 applied Saved revision 20 bb9f7265-3fb0-4c65-9783-3a8884c30ad5
+#40 applied Saved revision 19 24dbeed8-8db1-410a-96c7-4f54da96189e
+#39 applied Saved revision 18 620449c2-5985-4654-a6df-d9e13cd36102
+#38 applied Saved revision 17 23b4fc49-3059-4b60-951f-dabad70a4cc4
+next: ployz deployment ls --cursor 38 --limit 5
+
+=== deployment ls --json :: $ ployz --json deployment ls --limit 2
+{
+  "deployments": [
+    {
+      "admitted_at": 1791166936,
+      "admitted_by": "Ada Lovelace",
+      "ended_at": 1791166944,
+      "environment_id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+      "id": "e400c76f-1d28-443f-a5e9-ae4338441650",
+      "in_flight": false,
+      "message": null,
+      "number": 42,
+      "outcome": {
+        "reason": null,
+        "summary": {
+          "completed": 1,
+          "type": "success"
+        },
+        "type": "executed"
+      },
+      "remove": false,
+      "runner": "cloud-01M44XWXGC5TDPSXQYJYY7Y1SA",
+      "saved": 21,
+      "services": [],
+      "started_at": 1791166936,
+      "status": "applied",
+      "upload": null
+    },
+    {
+      "admitted_at": 1791166927,
+      "admitted_by": "Ada Lovelace",
+      "ended_at": 1791166934,
+      "environment_id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+      "id": "bb9f7265-3fb0-4c65-9783-3a8884c30ad5",
+      "in_flight": false,
+      "message": null,
+      "number": 41,
+      "outcome": {
+        "reason": null,
+        "summary": {
+          "completed": 1,
+          "type": "success"
+        },
+        "type": "executed"
+      },
+      "remove": false,
+      "runner": "cloud-01M44XWMEHYH4Y0DASQ127NJ0V",
+      "saved": 20,
+      "services": [],
+      "started_at": 1791166927,
+      "status": "applied",
+      "upload": null
+    }
+  ],
+  "environment": {
+    "id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+    "name": "production",
+    "project": "shop",
+    "revision": 31
+  },
+  "next": "ployz deployment ls --cursor 41 --limit 2",
+  "next_cursor": "41"
+}
+
+=== deployment show by id :: $ ployz deployment show e400c76f-1d28-443f-a5e9-ae4338441650
+Deployment #42 of shop/production: applied
+  web: deployed
+  api: unchanged
+  postgres: unchanged
+  worker: unchanged
+  pg-data: unchanged
+
+=== deployment show by number :: $ ployz deployment show 42
+Deployment #42 of shop/production: applied
+  web: deployed
+  api: unchanged
+  postgres: unchanged
+  worker: unchanged
+  pg-data: unchanged
+
+=== deployment show --json :: $ ployz --json deployment show e400c76f-1d28-443f-a5e9-ae4338441650
+{
+  "admitted_at": 1791166936,
+  "admitted_by": "Ada Lovelace",
+  "builds": [],
+  "ended_at": 1791166944,
+  "environment": {
+    "id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+    "name": "production",
+    "project": "shop",
+    "revision": 31
+  },
+  "environment_id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+  "id": "e400c76f-1d28-443f-a5e9-ae4338441650",
+  "in_flight": false,
+  "message": null,
+  "namespace": "shop-production",
+  "nodes": [
+    {
+      "id": "8cb17782-fd07-45b5-9009-992bb7f6f24d",
+      "name": "web",
+      "outcome": "deployed",
+      "type": "service"
+    },
+    {
+      "id": "a48be9de-5046-4ce1-ac09-736234a707d0",
+      "name": "api",
+      "outcome": "unchanged",
+      "type": "service"
+    },
+    {
+      "id": "bee1160e-e2bd-442a-b0ef-e98dc4debcdc",
+      "name": "postgres",
+      "outcome": "unchanged",
+      "type": "service"
+    },
+    {
+      "id": "e45be4e1-f130-4720-a996-db5c0aaa9e0e",
+      "name": "worker",
+      "outcome": "unchanged",
+      "type": "service"
+    },
+    {
+      "id": "71802251-dbfa-42fa-9bc9-895e8385ece6",
+      "name": "pg-data",
+      "outcome": "unchanged",
+      "type": "volume"
+    }
+  ],
+  "number": 42,
+  "outcome": {
+    "reason": null,
+    "summary": {
+      "completed": 1,
+      "type": "success"
+    },
+    "type": "executed"
+  },
+  "preview": {
+    "namespace": "shop-production",
+    "operations": [
+      {
+        "display_name": "web-db73",
+        "index": 0,
+        "machine_id": "7784f1a17df144728819cecf47282904",
+        "machine_name": "machine-1",
+        "operation": {
+          "machine_id": "7784f1a17df144728819cecf47282904",
+          "old_container_id": "7c142aebd841e677489175ffa0c1a34099e5b8309315416ff9e2b771fbe09e9f",
+          "skip_health_monitor": false,
+          "spec": {
+            "configs": [],
+            "container": {
+              "cap_add": [],
+              "cap_drop": [],
+              "command": [],
+              "config_mounts": [],
+              "entrypoint": [],
+              "environment": {},
+              "extra_hosts": [],
+              "healthcheck": null,
+              "hostname": null,
+              "image": "nginx:1.27-alpine",
+              "init": null,
+              "labels": {
+                "cloud.ployz.service.id": "8cb17782-fd07-45b5-9009-992bb7f6f24d"
+              },
+              "log_driver": null,
+              "open_stdin": false,
+              "pid_mode": null,
+              "privileged": false,
+              "pull_policy": "missing",
+              "resources": {
+                "cpu_nanos": null,
+                "device_reservations": [],
+                "devices": [],
+                "memory_bytes": null,
+                "memory_reservation_bytes": null,
+                "shared_memory_bytes": null,
+                "ulimits": {}
+              },
+              "restart": {
+                "name": "unless-stopped"
+              },
+              "stop_timeout_secs": null,
+              "sysctls": {},
+              "tty": false,
+              "user": null,
+              "working_directory": null
+            },
+            "mode": {
+              "mode": "replicated",
+              "replicas": 1
+            },
+            "mounts": [],
+            "name": "web",
+            "placement": {
+              "constraints": []
+            },
+            "ports": [
+              {
+                "container_port": 8080,
+                "hostname": "acme.com",
+                "http_protocol": "https",
+                "load_balancer_port": 443,
+                "mode": "ingress"
+              },
+              {
+                "container_port": 80,
+                "hostname": "web.ada.ployz.test",
+                "http_protocol": "https",
+                "load_balancer_port": 443,
+                "mode": "ingress"
+              }
+            ],
+            "pre_deploy": null,
+            "service_id": "6d5c9a3fb9d647d9a81bfe273e48dde6",
+            "update": {
+              "monitor_millis": null,
+              "order": "start_first"
+            },
+            "volumes": []
+          },
+          "type": "replace_container"
+        },
+        "service_name": "web",
+        "status": {
+          "type": "pending"
+        }
+      }
+    ],
+    "preserved_volumes": [],
+    "prune_refusal": null,
+    "storage": [],
+    "volumes_to_create": [],
+    "warnings": [
+      {
+        "message": "acme.com answers from another server. Point it at 203.0.113.10. A certificate cannot be issued until then.",
+        "type": "ingress_hostname"
+      },
+      {
+        "message": "web.ada.ployz.test does not resolve. Add a DNS record pointing at 203.0.113.10. A certificate cannot be issued until then.",
+        "type": "ingress_hostname"
+      }
+    ],
+    "would_remove": []
+  },
+  "remove": false,
+  "runner": "cloud-01M44XWXGC5TDPSXQYJYY7Y1SA",
+  "runtime_names": {
+    "api": "api",
+    "postgres": "postgres",
+    "web": "web",
+    "worker": "worker"
+  },
+  "saved": 21,
+  "services": [],
+  "started_at": 1791166936,
+  "status": "applied",
+  "upload": null
+}
+
+=== deploy that fails (live follower) :: $ ployz deploy
+Following Deployment #44; stopping this leaves it running.
+queued: web pending, api pending, postgres pending, worker pending, pg-data pending
+running: web unchanged, api unchanged, postgres unchanged, worker pending, pg-data unchanged
+failed: web unchanged, api unchanged, postgres unchanged, worker failed, pg-data unchanged
+Deployment #44 of shop/production: failed
+  worker: create Container failed: Docker operation failed: Docker responded with status code 500: error from registry: denied
+denied
+  web: unchanged
+  api: unchanged
+  postgres: unchanged
+  worker: failed
+  pg-data: unchanged
+# exit 3
+
+
+=== deployment show of the failed Deployment :: $ ployz deployment show c405d65a-c1f7-4ea9-9fa4-d1286e12dfc9
+Deployment #45 of shop/production: failed
+  worker: create Container failed: Docker operation failed: Docker responded with status code 500: error from registry: denied
+denied
+  web: unchanged
+  api: unchanged
+  postgres: unchanged
+  worker: failed
+  pg-data: unchanged
+
+=== deployment show --json of the failed Deployment :: $ ployz --json deployment show c405d65a-c1f7-4ea9-9fa4-d1286e12dfc9
+{
+  "admitted_at": 1791166953,
+  "admitted_by": "Ada Lovelace",
+  "builds": [],
+  "ended_at": 1791166955,
+  "environment": {
+    "id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+    "name": "production",
+    "project": "shop",
+    "revision": 32
+  },
+  "environment_id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+  "id": "c405d65a-c1f7-4ea9-9fa4-d1286e12dfc9",
+  "in_flight": false,
+  "message": null,
+  "namespace": "shop-production",
+  "nodes": [
+    {
+      "id": "8cb17782-fd07-45b5-9009-992bb7f6f24d",
+      "name": "web",
+      "outcome": "unchanged",
+      "type": "service"
+    },
+    {
+      "id": "a48be9de-5046-4ce1-ac09-736234a707d0",
+      "name": "api",
+      "outcome": "unchanged",
+      "type": "service"
+    },
+    {
+      "id": "bee1160e-e2bd-442a-b0ef-e98dc4debcdc",
+      "name": "postgres",
+      "outcome": "unchanged",
+      "type": "service"
+    },
+    {
+      "id": "e45be4e1-f130-4720-a996-db5c0aaa9e0e",
+      "name": "worker",
+      "outcome": "failed",
+      "type": "service"
+    },
+    {
+      "id": "71802251-dbfa-42fa-9bc9-895e8385ece6",
+      "name": "pg-data",
+      "outcome": "unchanged",
+      "type": "volume"
+    }
+  ],
+  "number": 45,
+  "outcome": {
+    "reason": "worker: create Container failed: Docker operation failed: Docker responded with status code 500: error from registry: denied\ndenied",
+    "summary": {
+      "completed": 0,
+      "reason": "machine",
+      "type": "failed",
+      "unexecuted": 0
+    },
+    "type": "executed"
+  },
+  "preview": {
+    "namespace": "shop-production",
+    "operations": [
+      {
+        "display_name": "worker-949b",
+        "index": 0,
+        "machine_id": "7784f1a17df144728819cecf47282904",
+        "machine_name": "machine-1",
+        "operation": {
+          "machine_id": "7784f1a17df144728819cecf47282904",
+          "old_container_id": "5e3a54fc5f3df78c04a03d5bd77d14908241dd0a1b928df895d1854959149878",
+          "skip_health_monitor": false,
+          "spec": {
+            "configs": [],
+            "container": {
+              "cap_add": [],
+              "cap_drop": [],
+              "command": [],
+              "config_mounts": [],
+              "entrypoint": [],
+              "environment": {},
+              "extra_hosts": [],
+              "healthcheck": null,
+              "hostname": null,
+              "image": "ghcr.io/getployz/does-not-exist:nope",
+              "init": null,
+              "labels": {
+                "cloud.ployz.service.id": "e45be4e1-f130-4720-a996-db5c0aaa9e0e"
+              },
+              "log_driver": null,
+              "open_stdin": false,
+              "pid_mode": null,
+              "privileged": false,
+              "pull_policy": "missing",
+              "resources": {
+                "cpu_nanos": null,
+                "device_reservations": [],
+                "devices": [],
+                "memory_bytes": null,
+                "memory_reservation_bytes": null,
+                "shared_memory_bytes": null,
+                "ulimits": {}
+              },
+              "restart": {
+                "name": "unless-stopped"
+              },
+              "stop_timeout_secs": null,
+              "sysctls": {},
+              "tty": false,
+              "user": null,
+              "working_directory": null
+            },
+            "mode": {
+              "mode": "replicated",
+              "replicas": 1
+            },
+            "mounts": [],
+            "name": "worker",
+            "placement": {
+              "constraints": []
+            },
+            "ports": [],
+            "pre_deploy": null,
+            "service_id": "ec02437ef76a4d11a5af850934be313e",
+            "update": {
+              "monitor_millis": null,
+              "order": "start_first"
+            },
+            "volumes": []
+          },
+          "type": "replace_container"
+        },
+        "service_name": "worker",
+        "status": {
+          "type": "pending"
+        }
+      }
+    ],
+    "preserved_volumes": [],
+    "prune_refusal": null,
+    "storage": [],
+    "volumes_to_create": [],
+    "warnings": [],
+    "would_remove": []
+  },
+  "remove": false,
+  "runner": "cloud-01M44XXED0JG224VBS7Q90C50E",
+  "runtime_names": {
+    "api": "api",
+    "postgres": "postgres",
+    "web": "web",
+    "worker": "worker"
+  },
+  "saved": 22,
+  "services": [],
+  "started_at": 1791166953,
+  "status": "failed",
+  "upload": null
+}
+
+=== deployment ls with queued Deployments :: $ ployz deployment ls --limit 4
+#51 queued Saved revision 25 a2533d8b-825c-44bf-afdd-50bcd714a426
+#50 superseded Saved revision 25 b72485ba-95a0-429d-8eb8-1780fa6d6b5c
+#49 running Saved revision 24 6a57912d-e0da-4603-a9cb-7dc872197099
+#48 applied Saved revision 23 cc3a6d7a-f272-4a47-8ad4-d7939cbc9793
+next: ployz deployment ls --cursor 48 --limit 4
+
+=== deployment show of a cancelled Deployment :: $ ployz deployment show 172c95d8-2a76-4faf-adc6-b56faf8ffe54
+Deployment #58 of shop/production: cancelled
+  Cancelled before it executed
+  web: not attempted
+  api: unchanged
+  postgres: unchanged
+  worker: unchanged
+  pg-data: unchanged
+
+=== up --help :: $ ployz up --help
+Deploy this directory: create and link its Project if needed, upload, build and deploy it
+
+Usage: ployz up [OPTIONS]
+
+Options:
+      --connect <connect>
+          [env: PLOYZ_CONNECT=]
+
+      --ssh-timeout <SECONDS>
+          SSH setup timeout in seconds. Management commands use noninteractive authentication. During provisioning, only the network connection is timed; SSH/sudo authentication and installer execution have no deadline.
+          
+          [default: 20]
+
+      --ployz-config <ployz-config>
+          [env: PLOYZ_CONFIG=<run-dir>/private/config.yaml]
+          [default: ~/.config/ployz/config.yaml]
+
+  -c, --context <context>
+          [env: PLOYZ_CONTEXT=]
+
+      --project <project>
+          Project [default: the only Project]
+          
+          [env: PLOYZ_PROJECT=]
+
+      --env <env>
+          Environment [default: the Project's Default Environment]
+          
+          [env: PLOYZ_ENV=]
+
+      --json
+          Print the result as one JSON object on stdout
+
+      --events <FILE>
+          Also write progress to FILE as NDJSON
+
+      --detach
+          Return the queued Deployment at once instead of following it
+
+      --server <USER@HOST>
+          First add this Server over SSH, as `ployz server add` does; the first founds the Cluster
+
+      --reset
+          Reset the --server if it already runs Ployz, before adding it
+
+      --accept-volume-loss <name>
+          Accept permanent deletion: repeat once per exact volume name in the full deletion list; --yes cannot bypass this
+
+      --expect-version <VERSION>
+          Refuse unless this is still the reviewed version; a data-loss refusal names it
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+=== up after a change (live follower) :: $ ployz up
+Following Deployment #2; stopping this leaves it running.
+queued: workspace pending
+running: workspace pending
+applied: workspace deployed
+Deployment #2 of workspace/production: applied
+  uploaded by Ada Lovelace, base 5a3ec95
+  workspace: deployed
+  build workspace from the upload: built 
+Open https://workspace.ada.ployz.test
+Dashboard: http://localhost:44581/cloud/ada/workspace/production
+# exit 0
+
+
+=== status after up (two Projects) :: $ ployz status
+Cloud: http://localhost:44581
+Organization ada (token).
+Environment workspace/production.
+Linked from <run-dir>/workspace.
+0 staged changes.
+
+=== service ls after up (two Projects, no --project, linked directory) :: $ ployz service ls
+SERVICE	PRIVATE DNS	SOURCE	NEXT DEPLOY
+workspace	workspace	uploaded	-
+
+=== deployment ls after up :: $ ployz deployment ls
+#3 applied Saved revision 1 96812240-9c93-4eea-b78c-ac7826d364ce
+#2 applied Saved revision 1 f5f3b219-f317-450f-aab9-7eb6b36580fc
+#1 applied Saved revision 1 b7baead9-dcef-439d-b2f4-48833055d56c
+
+=== status with the directory still linked to the removed Project :: $ ployz status
+Cloud: http://localhost:44581
+Organization ada (token).
+Linked from <run-dir>/workspace.
+Needs attention: No Project named workspace
+
+=== status --json with the directory still linked to the removed Project :: $ ployz --json status
+{
+  "attention": [
+    {
+      "message": "No Project named workspace",
+      "reason": "not_found"
+    }
+  ],
+  "deploying": [],
+  "environment": null,
+  "identity": {
+    "cloud": "http://localhost:44581",
+    "credential": "token",
+    "organization": {
+      "id": "eccc0cff-2641-4745-8dac-fdee92352300",
+      "slug": "ada"
+    }
+  },
+  "scope": {
+    "environment": {
+      "name": "production",
+      "source": "link"
+    },
+    "link": "<run-dir>/workspace",
+    "project": {
+      "name": "workspace",
+      "source": "link"
+    }
+  },
+  "staged": null
+}
+

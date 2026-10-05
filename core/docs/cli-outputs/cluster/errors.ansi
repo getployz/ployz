@@ -1,0 +1,369 @@
+=== server inspect unknown :: $ ployz server inspect nope
+No Server named "nope"; ployz server ls lists them
+
+=== service inspect unknown :: $ ployz service inspect nope
+No Service named nope in Environment production
+valid: web, api
+
+=== server rm without --confirm :: $ ployz server rm gamma
+WARNING: Server gamma is running Services: ployz-system/ingress, shop-production/web. Move them off first: ployz server drain gamma
+Removing Server gamma needs its name typed. No changes made.
+Retry: ployz server rm gamma --ployz-config '~/.config/ployz/config.yaml' --context default --confirm gamma
+
+=== server drain unknown :: $ ployz server drain nope
+Server nope was not found
+
+=== server ls (gamma stopped) :: $ ployz server ls
+ID	NAME	MEMBERSHIP	STORAGE	SUBNET	GATEWAY	PUBLIC IP	ENDPOINTS	HOSTNAME	DAEMON	DOCKER	OS	KERNEL	ARCH
+d7bb999f0d454dbcacc63d085021de34	alpha	up	Docker only	10.210.0.0/24	10.210.0.1	203.0.113.10	172.19.0.2:51820,203.0.113.10:51820	284d51ed2410	0.2.3	29.1.3	Ubuntu 24.04.5 LTS	6.8.0-138-generic	x86_64
+3ba1dcbd6b854ea699b76f6ef296576d	beta	up	Docker only	10.210.1.0/24	10.210.1.1	203.0.113.10	172.19.0.3:51820,203.0.113.10:51820	037d3af757b3	0.2.3	29.1.3	Ubuntu 24.04.5 LTS	6.8.0-138-generic	x86_64
+0523a6681d894d128f69ea28b7ed62d5	gamma	up	Volume support unknown	10.210.2.0/24	10.210.2.1	203.0.113.10	172.19.0.4:51820,203.0.113.10:51820	5cfa19714dbf	0.2.3	29.1.3	Ubuntu 24.04.5 LTS	6.8.0-138-generic	x86_64
+
+=== server ls --json (gamma stopped) :: $ ployz server ls --json
+{
+  "failures": [
+    {
+      "error": {
+        "code": "unavailable",
+        "details": null,
+        "message": "transport error"
+      },
+      "machine_id": "0523a6681d894d128f69ea28b7ed62d5"
+    }
+  ],
+  "omitted": [],
+  "servers": [
+    {
+      "gateway": "10.210.0.1",
+      "machine": {
+        "accepts_builds": true,
+        "accepts_ingress": true,
+        "accepts_services": true,
+        "advertised_endpoints": [
+          "172.19.0.2:51820",
+          "203.0.113.10:51820"
+        ],
+        "build_concurrency": null,
+        "id": "d7bb999f0d454dbcacc63d085021de34",
+        "labels": {},
+        "name": "alpha",
+        "public_ip": "203.0.113.10",
+        "public_key": "XZYeqOGDcGr+dhj2HX53vN6PYb45cSU7+GWYyw1Tqhg=",
+        "runtime": {
+          "architecture": "x86_64",
+          "daemon_version": "0.2.3",
+          "docker_version": "29.1.3",
+          "hostname": "284d51ed2410",
+          "kernel_version": "6.8.0-138-generic",
+          "memory_total_bytes": 33649131520,
+          "os_pretty_name": "Ubuntu 24.04.5 LTS",
+          "running_builds": 0
+        },
+        "subnet": "10.210.0.0/24"
+      },
+      "membership": "up",
+      "rtt": null,
+      "selected_endpoint": null,
+      "storage": {
+        "state": "stateless"
+      }
+    },
+    {
+      "gateway": "10.210.1.1",
+      "machine": {
+        "accepts_builds": true,
+        "accepts_ingress": true,
+        "accepts_services": true,
+        "advertised_endpoints": [
+          "172.19.0.3:51820",
+          "203.0.113.10:51820"
+        ],
+        "build_concurrency": null,
+        "id": "3ba1dcbd6b854ea699b76f6ef296576d",
+        "labels": {},
+        "name": "beta",
+        "public_ip": "203.0.113.10",
+        "public_key": "hvumNXIGZh+QDRSl/ZES4V3SmdyO7G9OTtskLU1esTY=",
+        "runtime": {
+          "architecture": "x86_64",
+          "daemon_version": "0.2.3",
+          "docker_version": "29.1.3",
+          "hostname": "037d3af757b3",
+          "kernel_version": "6.8.0-138-generic",
+          "memory_total_bytes": 33649131520,
+          "os_pretty_name": "Ubuntu 24.04.5 LTS",
+          "running_builds": 0
+        },
+        "subnet": "10.210.1.0/24"
+      },
+      "membership": "up",
+      "rtt": null,
+      "selected_endpoint": "172.19.0.3:51820",
+      "storage": {
+        "state": "stateless"
+      }
+    },
+    {
+      "gateway": "10.210.2.1",
+      "machine": {
+        "accepts_builds": true,
+        "accepts_ingress": true,
+        "accepts_services": true,
+        "advertised_endpoints": [
+          "172.19.0.4:51820",
+          "203.0.113.10:51820"
+        ],
+        "build_concurrency": null,
+        "id": "0523a6681d894d128f69ea28b7ed62d5",
+        "labels": {},
+        "name": "gamma",
+        "public_ip": "203.0.113.10",
+        "public_key": "Xxp4vxAgIulypSLB5IiNDhd4x4T69qEDJnKzCiwpbkY=",
+        "runtime": {
+          "architecture": "x86_64",
+          "daemon_version": "0.2.3",
+          "docker_version": "29.1.3",
+          "hostname": "5cfa19714dbf",
+          "kernel_version": "6.8.0-138-generic",
+          "memory_total_bytes": 33649131520,
+          "os_pretty_name": "Ubuntu 24.04.5 LTS",
+          "running_builds": 0
+        },
+        "subnet": "10.210.2.0/24"
+      },
+      "membership": "suspect",
+      "rtt": null,
+      "selected_endpoint": "172.19.0.4:51820",
+      "storage": null
+    }
+  ]
+}
+
+=== server inspect gamma (stopped) :: $ ployz server inspect gamma
+transport error
+
+=== ps (gamma stopped) :: $ ployz ps
+WARNING: Live Observation is observer-relative and not globally complete
+WARNING: Machine 0523a6681d894d128f69ea28b7ed62d5 failed: target Machine RPC timed out
+CONTAINER ID	SERVICE	KIND	MACHINE	STATE
+9174adadd118	api	service	d7bb999f0d454dbcacc63d085021de34	running
+e7023f44bd98	web	service	d7bb999f0d454dbcacc63d085021de34	running
+
+=== ps --json (gamma stopped) :: $ ployz ps --json
+WARNING: Live Observation is observer-relative and not globally complete
+WARNING: Machine 0523a6681d894d128f69ea28b7ed62d5 was omitted
+{
+  "containers": [
+    {
+      "address": "10.210.0.4",
+      "container_id": "9174adadd1187eebb2bbbfd29844be1dfbfee0481dbbe15a492a94ea4667d330",
+      "created_at_unix_nanos": 1791164478338117856,
+      "display_name": "api-fcd6",
+      "effective_healthcheck": null,
+      "kind": "service_container",
+      "labels": {
+        "cloud.ployz.service.id": "df2493a4-6fa5-4eb2-a66d-c198a6232238",
+        "ployz.deployment.id": "871a0d34-1859-435d-a7db-d02d680dcdfd",
+        "ployz.managed": "",
+        "ployz.namespace": "shop-production",
+        "ployz.service.id": "dde2a84f73154cb189130b13832bb93c",
+        "ployz.service.name": "api"
+      },
+      "machine_id": "d7bb999f0d454dbcacc63d085021de34",
+      "namespace": "shop-production",
+      "resolved_spec": {
+        "configs": [],
+        "container": {
+          "cap_add": [],
+          "cap_drop": [],
+          "command": [
+            "/bin/sh",
+            "-c",
+            "sh -c 'echo api up; sleep 100000'"
+          ],
+          "config_mounts": [],
+          "entrypoint": [],
+          "environment": {
+            "MODE": "<redacted>",
+            "PORT": "<redacted>"
+          },
+          "extra_hosts": [],
+          "healthcheck": null,
+          "hostname": null,
+          "image": "alpine:3.23.3",
+          "init": null,
+          "labels": {
+            "cloud.ployz.service.id": "df2493a4-6fa5-4eb2-a66d-c198a6232238"
+          },
+          "log_driver": null,
+          "open_stdin": false,
+          "pid_mode": null,
+          "privileged": false,
+          "pull_policy": "missing",
+          "resources": {
+            "cpu_nanos": null,
+            "device_reservations": [],
+            "devices": [],
+            "memory_bytes": null,
+            "memory_reservation_bytes": null,
+            "shared_memory_bytes": null,
+            "ulimits": {}
+          },
+          "restart": {
+            "name": "unless-stopped"
+          },
+          "stop_timeout_secs": null,
+          "sysctls": {},
+          "tty": false,
+          "user": null,
+          "working_directory": null
+        },
+        "mode": {
+          "mode": "replicated",
+          "replicas": 1
+        },
+        "mounts": [
+          {
+            "no_copy": false,
+            "read_only": false,
+            "subpath": null,
+            "target": "/data",
+            "volume": "vol-fb5fbf41-f4eb-4151-a3b5-2158bb829dc4"
+          }
+        ],
+        "name": "api",
+        "placement": {
+          "constraints": []
+        },
+        "ports": [],
+        "pre_deploy": null,
+        "service_id": "dde2a84f73154cb189130b13832bb93c",
+        "update": {
+          "monitor_millis": null,
+          "order": "stop_first"
+        },
+        "volumes": [
+          {
+            "reference": "vol-fb5fbf41-f4eb-4151-a3b5-2158bb829dc4",
+            "source": {
+              "driver": {
+                "name": "local",
+                "options": {}
+              },
+              "kind": "ordinary",
+              "labels": {},
+              "name": "shop-production_vol-fb5fbf41-f4eb-4151-a3b5-2158bb829dc4",
+              "scope": {
+                "logical_name": "vol-fb5fbf41-f4eb-4151-a3b5-2158bb829dc4",
+                "namespace": "shop-production"
+              }
+            }
+          }
+        ]
+      },
+      "runtime": {
+        "health": "not_configured",
+        "state": "running"
+      }
+    },
+    {
+      "address": "10.210.0.3",
+      "container_id": "e7023f44bd985200f7822f44a7f596008fa76e14e01a94449b790961f9bc3ac9",
+      "created_at_unix_nanos": 1791164382115175085,
+      "display_name": "web-6b97",
+      "effective_healthcheck": null,
+      "kind": "service_container",
+      "labels": {
+        "cloud.ployz.service.id": "a085f2f9-e4df-439e-9d34-99e5b3ee7405",
+        "ployz.deployment.id": "f79c05bd-bd81-4927-850a-bb78255fa76b",
+        "ployz.managed": "",
+        "ployz.namespace": "shop-production",
+        "ployz.service.id": "e6b6cf18dc0346968d1ac00e03fd1af5",
+        "ployz.service.name": "web"
+      },
+      "machine_id": "d7bb999f0d454dbcacc63d085021de34",
+      "namespace": "shop-production",
+      "resolved_spec": {
+        "configs": [],
+        "container": {
+          "cap_add": [],
+          "cap_drop": [],
+          "command": [
+            "/bin/sh",
+            "-c",
+            "sh -c 'echo started; while true; do echo tick; sleep 2; done'"
+          ],
+          "config_mounts": [],
+          "entrypoint": [],
+          "environment": {
+            "GREETING": "<redacted>",
+            "PORT": "<redacted>"
+          },
+          "extra_hosts": [],
+          "healthcheck": null,
+          "hostname": null,
+          "image": "alpine:3.23.3",
+          "init": null,
+          "labels": {
+            "cloud.ployz.service.id": "a085f2f9-e4df-439e-9d34-99e5b3ee7405"
+          },
+          "log_driver": null,
+          "open_stdin": false,
+          "pid_mode": null,
+          "privileged": false,
+          "pull_policy": "missing",
+          "resources": {
+            "cpu_nanos": null,
+            "device_reservations": [],
+            "devices": [],
+            "memory_bytes": null,
+            "memory_reservation_bytes": null,
+            "shared_memory_bytes": null,
+            "ulimits": {}
+          },
+          "restart": {
+            "name": "unless-stopped"
+          },
+          "stop_timeout_secs": null,
+          "sysctls": {},
+          "tty": false,
+          "user": null,
+          "working_directory": null
+        },
+        "mode": {
+          "mode": "replicated",
+          "replicas": 2
+        },
+        "mounts": [],
+        "name": "web",
+        "placement": {
+          "constraints": []
+        },
+        "ports": [],
+        "pre_deploy": null,
+        "service_id": "e6b6cf18dc0346968d1ac00e03fd1af5",
+        "update": {
+          "monitor_millis": null,
+          "order": "start_first"
+        },
+        "volumes": []
+      },
+      "runtime": {
+        "health": "not_configured",
+        "state": "running"
+      }
+    }
+  ],
+  "failures": [],
+  "omitted": [
+    "0523a6681d894d128f69ea28b7ed62d5"
+  ]
+}
+
+=== logs (gamma stopped) :: $ ployz logs web -n 1
+2026-10-05T01:42:26.272721759+00:00 alpha web/e7023f44bd98 | tick
+
+=== server logs (gamma stopped) :: $ ployz server logs -n 1
+2026-10-05T01:42:26+00:00 alpha ployz | ployz testkit journal entry
+2026-10-05T01:42:26+00:00 beta ployz | ployz testkit journal entry
+

@@ -1,0 +1,122 @@
+=== get: two Projects, none chosen :: $ ployz get
+Name a Project: this Organization has more than one
+next: ployz link --project PROJECT
+
+=== get --json: two Projects, none chosen :: $ ployz --json get
+{"error":{"code":"ambiguous","details":{"next":"ployz link --project PROJECT","projects":["blog","shop"]},"message":"Name a Project: this Organization has more than one"}}
+
+=== service ls: unknown --project :: $ ployz service ls --project nope
+No Project named nope
+
+=== service ls --json: unknown --project :: $ ployz --json service ls --project nope
+{"error":{"code":"not_found","details":{},"message":"No Project named nope"}}
+
+=== get: unknown --env :: $ ployz get --project shop --env nope
+No Environment named nope in Project shop
+next: ployz env new nope --project shop
+
+=== completion: unknown shell :: $ ployz completion tcsh
+error: invalid value 'tcsh' for '<shell>'
+  [possible values: bash, elvish, fish, powershell, zsh]
+
+  tip: a similar value exists: 'zsh'
+
+For more information, try '--help'.
+
+=== missing required arg (project new) :: $ ployz project new
+error: the following required arguments were not provided:
+  <name>
+
+Usage: ployz project new --ployz-config <ployz-config> <name>
+
+For more information, try '--help'.
+
+=== missing required arg --json (project new) :: $ ployz --json project new
+{"error":{"code":"invalid_argument","details":null,"message":"the following required arguments were not provided:\n  <name>\n\nUsage: ployz project new --ployz-config <ployz-config> <name>\n\nFor more information, try '--help'."}}
+
+=== unknown flag :: $ ployz get --bogus
+error: unexpected argument '--bogus' found
+
+  tip: to pass '--bogus' as a value, use '-- --bogus'
+
+Usage: ployz get [OPTIONS] [path]
+
+For more information, try '--help'.
+
+=== unknown flag --json :: $ ployz --json get --bogus
+{"error":{"code":"invalid_argument","details":null,"message":"unexpected argument '--bogus' found\n\n  tip: to pass '--bogus' as a value, use '-- --bogus'\n\nUsage: ployz get [OPTIONS] [path]\n\nFor more information, try '--help'."}}
+
+=== unknown subcommand :: $ ployz project frobnicate
+error: unrecognized subcommand 'frobnicate'
+
+Usage: ployz project [OPTIONS] [COMMAND]
+
+For more information, try '--help'.
+
+=== typo'd top-level command :: $ ployz stauts
+error: unrecognized subcommand 'stauts'
+
+  tip: some similar subcommands exist: 'setup', 'status'
+
+Usage: ployz [OPTIONS] [COMMAND]
+
+For more information, try '--help'.
+
+=== conflicting flags (env sync --plan --close) :: $ ployz env sync --to --plan --close
+error: the argument '--plan' cannot be used with '--close'
+
+Usage: ployz env sync --to [<ENV>] --plan --ployz-config <ployz-config>
+
+For more information, try '--help'.
+
+=== missing positional (set --secret --from-env-file without SERVICE) :: $ ployz set --secret --from-env-file x
+error: the following required arguments were not provided:
+  <PATH=VALUE>...
+
+Usage: ployz set --secret --from-env-file <FILE> --ployz-config <ployz-config> <PATH=VALUE>...
+
+For more information, try '--help'.
+
+=== invalid enum value :: $ ployz env pr --bots maybe
+error: invalid value 'maybe' for '--bots <BOOL>'
+  [possible values: true, false]
+
+For more information, try '--help'.
+
+=== store unreachable (bad PLOYZ_STORE) :: $ env PLOYZ_STORE=sqlite:/nonexistent/dir/x.db ployz project ls
+The Config Store's key file can't be read or created
+
+=== store unreachable --json :: $ env PLOYZ_STORE=sqlite:/nonexistent/dir/x.db ployz --json project ls
+{"error":{"code":"unavailable","details":null,"message":"The Config Store's key file can't be read or created"}}
+
+=== bad PLOYZ_STORE scheme :: $ env PLOYZ_STORE=postgres://x ployz project ls
+The Config Store is unavailable; retry the command
+
+=== no Store, no sign-in (no PLOYZ_STORE) :: $ env -u PLOYZ_STORE ployz project ls
+not signed in to Cloud
+next: ployz login
+
+=== no Store, no sign-in --json :: $ env -u PLOYZ_STORE ployz --json project ls
+{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
+
+=== cluster command against no cluster (ps) :: $ timeout 30 ployz ps --project shop
+no contexts found in Ployz config /tmp/ployz-cli-outputs-store/home/config.yaml
+
+=== cluster command --json (ps) :: $ timeout 30 ployz --json ps --project shop
+{"error":{"code":"not_found","details":null,"message":"no contexts found in Ployz config /tmp/ployz-cli-outputs-store/home/config.yaml"}}
+
+=== deploy without a cluster :: $ timeout 30 ployz deploy --project shop
+queued: web pending, db pending, pgdata pending
+failed: web not attempted, db not attempted, pgdata not attempted
+Deployment #2 of shop/production: failed
+  No Server is enrolled in this Organization
+  web: not attempted
+  db: not attempted
+  pgdata: not attempted
+
+=== service restart without a cluster :: $ timeout 30 ployz service restart web --project shop
+no contexts found in Ployz config /tmp/ployz-cli-outputs-store/home/config.yaml
+
+=== logs without a cluster :: $ timeout 30 ployz logs web --project shop
+no contexts found in Ployz config /tmp/ployz-cli-outputs-store/home/config.yaml
+
