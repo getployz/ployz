@@ -4,17 +4,19 @@ import { Button } from "#/components/ui/button";
 import { Field, FieldContent, FieldDescription, FieldLabel, FieldTitle } from "#/components/ui/field";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
-import { drainBusy, drainButtonLabel, type DrainView } from "#/modules/machines/server-drain-view";
+import { drainBusy, drainButtonLabel, type DrainRow, type DrainView } from "#/modules/machines/server-drain-view";
 import { useServerPolicy } from "#/modules/machines/server-policy.hooks";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { DrainResultList } from "./drain-result";
 
 /** Whether this Server takes Services, and Drain. Off alone is a cordon: nothing new lands here, nothing moves. */
-export function ServerServicesSection({ machine, organizationSlug, view, onDrain, unavailable }: {
+export function ServerServicesSection({ machine, organizationSlug, view, left, onDrain, unavailable }: {
   machine: RuntimeMachineRecord;
   organizationSlug: string;
   view: DrainView;
+  /** What a Drain would still move off here (`drainLeftRows`). */
+  left: readonly DrainRow[];
   onDrain: () => void;
   /** Why Drain can't run now (the Server is offline, or the page can't see it); null when it can. */
   unavailable: string | null;
@@ -26,17 +28,22 @@ export function ServerServicesSection({ machine, organizationSlug, view, onDrain
       acceptsServices={policy.acceptsServices}
       onAcceptsServices={(acceptsServices) => policy.request({ acceptsServices })}
       view={view}
+      left={left}
       onDrain={onDrain}
       unavailable={busy ? null : unavailable}
     />
   );
 }
 
-/** The Services section as it renders: the switch, the Drain row, and the latest Drain's result. */
-export function ServerServicesRows({ acceptsServices, onAcceptsServices, view, onDrain, unavailable }: {
+/**
+ * The Services section as it renders: the switch, the Drain row, and the latest Drain's result. While a Drain is under
+ * way it lists what it still has to move, each Service leaving the list as it leaves this Server.
+ */
+export function ServerServicesRows({ acceptsServices, onAcceptsServices, view, left, onDrain, unavailable }: {
   acceptsServices: boolean;
   onAcceptsServices: (acceptsServices: boolean) => void;
   view: DrainView;
+  left: readonly DrainRow[];
   onDrain: () => void;
   unavailable: string | null;
 }) {
@@ -57,29 +64,29 @@ export function ServerServicesRows({ acceptsServices, onAcceptsServices, view, o
       <Field orientation="responsive">
         <FieldContent>
           <FieldTitle>Drain</FieldTitle>
-          <FieldDescription>{unavailable ?? <DrainLine view={view} />}</FieldDescription>
+          <FieldDescription>{unavailable ?? <DrainLine view={view} left={left.length} />}</FieldDescription>
           {view.kind === "finished" && view.stoppedEarly !== null ? (
             <FieldDescription className="text-warning">It stopped early: {view.stoppedEarly}.</FieldDescription>
           ) : null}
         </FieldContent>
         <DrainButton view={view} onClick={onDrain} disabled={unavailable !== null} />
       </Field>
-      {view.kind === "finished" ? <DrainResultList rows={view.rows} /> : null}
+      {busy ? <DrainResultList rows={left} label="Left to move" /> : view.kind === "finished" ? <DrainResultList rows={view.rows} /> : null}
     </SettingsSection>
   );
 }
 
 /** The Drain row's words: what it does, or how the latest one went. */
-function DrainLine({ view }: { view: DrainView }) {
+function DrainLine({ view, left }: { view: DrainView; left: number }) {
   switch (view.kind) {
     case "idle":
-      return <>Move everything running here to your other servers.</>;
+      return <>Move all services to your other servers.</>;
     case "starting":
       return <>Starting…</>;
     case "queued":
-      return view.behind === null ? <>Waiting to start…</> : <>Waits for the drain on {view.behind} to finish</>;
+      return view.behind === null ? <>Queued</> : <>Queued · Waiting on {view.behind}</>;
     case "running":
-      return <>Draining · one service at a time, started <RelativeTime date={new Date(view.since)} /></>;
+      return <>Draining · {left === 0 ? "Finishing up" : `${left} left`} · Started <RelativeTime date={new Date(view.since)} /></>;
     case "finished":
       return <>Drained <RelativeTime date={new Date(view.at)} /> · {view.summary}</>;
     case "failed":
