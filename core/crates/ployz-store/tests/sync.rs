@@ -1354,3 +1354,89 @@ fn a_synced_source_brings_its_credential_only_where_it_turns_credentials_on() {
     assert_eq!(values(&store, &who, "production", "web")["image"], "web:2");
     assert_eq!(pulls_with(2), ["own-token"]);
 }
+
+#[test]
+fn a_config_file_syncs_as_one_row_and_a_conflict_replaces_the_whole_file() {
+    let store = backend::open();
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse(uuid(1)).unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+            },
+        )
+        .unwrap();
+    service(&store, &who, "production", 3, "web", "web:1");
+    let config = |name: &str| ployz_core::ConfigName::parse(name).unwrap();
+    let file = |name: &str| ployz_core::ConfigFileName::parse(name).unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateConfig {
+                id: ployz_store::ConfigId::parse(uuid(10)).unwrap(),
+                environment: at("production"),
+                name: config("sentry"),
+                mounts: vec![ployz_store::ConfigMountAt {
+                    service: ServiceName::parse("web").unwrap(),
+                    dir: "/etc/sentry".into(),
+                }],
+            },
+        )
+        .unwrap();
+    let put = |environment: &str, path: &str, content: &str| {
+        store
+            .write(
+                &who,
+                &ployz_store::PutConfigFile {
+                    environment: at(environment),
+                    config: config("sentry"),
+                    file: file(path),
+                    content: content.into(),
+                    mode: None,
+                    uid: None,
+                    gid: None,
+                },
+            )
+            .unwrap();
+    };
+    put("production", "a.yml", "one\ntwo\nthree\n");
+    branch(&store, &who, 9, "production", "fix-web");
+    assert!(view(&store, &who).rows.is_empty());
+
+    put("fix-web", "a.yml", "one\ntwo\nthree\nfour\n");
+    put("fix-web", "conf.d/b.yml", "b\n");
+    // production edits a different line of the same file.
+    put("production", "a.yml", "zero\ntwo\nthree\n");
+    let review = view(&store, &who);
+    let mut rows: Vec<(String, SyncChange)> = review
+        .rows
+        .iter()
+        .map(|row| (row.at.row().to_string(), row.change))
+        .collect();
+    rows.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        rows,
+        [
+            (format!("{}:files.a.yml", uuid(10)), SyncChange::Conflict),
+            (format!("{}:files.conf.d/b.yml", uuid(10)), SyncChange::New),
+        ]
+    );
+
+    store.write(&who, &sync(&review, None)).unwrap();
+    let contents = store
+        .read(
+            &who,
+            &ployz_store::ConfigItemQuery {
+                environment: at("production"),
+                config: config("sentry"),
+            },
+        )
+        .unwrap()
+        .contents;
+    assert_eq!(contents[&file("a.yml")], "one\ntwo\nthree\nfour\n");
+    assert_eq!(contents[&file("conf.d/b.yml")], "b\n");
+    assert!(view(&store, &who).rows.is_empty());
+}

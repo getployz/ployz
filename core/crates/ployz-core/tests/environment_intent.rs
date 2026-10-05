@@ -107,6 +107,32 @@ fn documents_from_before_configs_keep_their_shape() {
     assert_eq!(parse_environment_intent(written).unwrap(), parsed);
 }
 
+#[test]
+fn a_document_from_before_configs_writes_the_same_bytes_as_one_with_empty_configs() {
+    let canonical = serde_json::to_vec(&parse_environment_intent(intent()).unwrap()).unwrap();
+    let text = String::from_utf8(canonical.clone()).unwrap();
+    assert!(
+        !text.contains("configs") && !text.contains("configAttachments"),
+        "{text}"
+    );
+    let reparsed = parse_environment_intent(serde_json::from_slice(&canonical).unwrap()).unwrap();
+    assert_eq!(serde_json::to_vec(&reparsed).unwrap(), canonical);
+
+    let mut empty = intent();
+    empty
+        .as_object_mut()
+        .unwrap()
+        .insert("configs".into(), json!([]));
+    empty
+        .pointer_mut("/services/0")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .insert("configAttachments".into(), json!([]));
+    let written = serde_json::to_vec(&parse_environment_intent(empty).unwrap()).unwrap();
+    assert_eq!(written, canonical);
+}
+
 fn with_config(files: serde_json::Value, mounts: serde_json::Value) -> serde_json::Value {
     let mut value = intent();
     value.as_object_mut().unwrap().insert(
@@ -131,11 +157,11 @@ fn mount(dir: &str) -> serde_json::Value {
 }
 
 #[test]
-fn configs_compile_with_references_written_by_service_name() {
+fn configs_compile_with_references_kept_by_service_lineage() {
     let reference = json!([{"kind":"text","value":"host: "},
         {"kind":"ref","owner":{"scope":"service","lineageId":"00000000-0000-4000-8000-000000000003"},"key":"HOST"}]);
     let value = with_config(
-        json!({"config.yml":file(reference),".htpasswd":file(json!([])),"conf.d/a.xml":file(json!([]))}),
+        json!({"config.yml":file(reference.clone()),".htpasswd":file(json!([])),"conf.d/a.xml":file(json!([]))}),
         mount("/etc/sentry"),
     );
     let compiled = serde_json::to_value(compile_environment_intent(
@@ -148,7 +174,7 @@ fn configs_compile_with_references_written_by_service_name() {
     assert_eq!(config["config"]["name"], "sentry");
     assert_eq!(
         config["config"]["files"]["config.yml"]["content"],
-        "host: ${{ web.HOST }}"
+        reference
     );
     assert_eq!(config["config"]["files"]["config.yml"]["mode"], "0444");
 }
