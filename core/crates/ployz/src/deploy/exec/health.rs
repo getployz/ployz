@@ -372,6 +372,9 @@ fn health_deadline_for(
 }
 
 fn healthcheck_timeout(healthcheck: Option<&ConfiguredHealthcheck>) -> Duration {
+    if let Some(deadline) = healthcheck.and_then(|check| check.deadline_millis) {
+        return Duration::from_millis(deadline);
+    }
     let interval = healthcheck
         .and_then(|check| check.interval_millis)
         .unwrap_or(30_000);

@@ -85,11 +85,12 @@ async fn dependency_gate_rejects_zero_service_containers_and_hooks() {
 #[tokio::test(start_paused = true)]
 async fn dependency_gate_uses_short_unhealthy_and_healthcheck_starting_deadlines() {
     let dependency = QualifiedService::parse("app/api").unwrap();
-    for (runtime, seconds, expected) in [
-        (unhealthy(), 5, "runtime"),
-        (starting(), 7, "timed_out"),
-        (running(), 7, "timed_out"),
-        (ContainerRuntimeObservation::Restarting, 5, "runtime"),
+    for (runtime, deadline_millis, seconds, expected) in [
+        (unhealthy(), None, 5, "runtime"),
+        (starting(), None, 7, "timed_out"),
+        (running(), None, 7, "timed_out"),
+        (ContainerRuntimeObservation::Restarting, None, 5, "runtime"),
+        (starting(), Some(3_000), 3, "timed_out"),
     ] {
         let id = container('a');
         let mut observed = observation(&machine('1'), &id, runtime);
@@ -100,6 +101,7 @@ async fn dependency_gate_uses_short_unhealthy_and_healthcheck_starting_deadlines
                         interval_millis: Some(1_000),
                         timeout_millis: Some(1_000),
                         retries: Some(1),
+                        deadline_millis,
                         ..configured_healthcheck()
                     }),
                 )

@@ -610,6 +610,7 @@ fn effective_healthcheck(config: Option<&RawContainerConfig>) -> Option<Healthch
             .retries
             .filter(|retries| *retries > 0)
             .and_then(|retries| u32::try_from(retries).ok()),
+        deadline_millis: None,
     }))
 }
 
@@ -1713,6 +1714,7 @@ mod tests {
                 start_period_millis: Some(301),
                 start_interval_millis: Some(4),
                 retries: Some(4),
+                deadline_millis: None,
             }))
         );
 
@@ -1798,6 +1800,7 @@ mod tests {
                 start_period_millis: Some(301),
                 start_interval_millis: Some(4),
                 retries: Some(4),
+                deadline_millis: None,
             })),
             Some(ContainerAddress(Ipv4Addr::new(10, 210, 0, 5))),
         )
