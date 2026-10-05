@@ -45,6 +45,7 @@ use thiserror::Error;
 use tokio::sync::{Mutex, watch};
 
 use checks::CheckRecords;
+use http_health::probe as http_health_probe;
 use observe::ObservationSink;
 
 pub(crate) use lifecycle::{ContainerRequest, require_eligible};
@@ -314,13 +315,7 @@ impl ContainerRuntime {
             effective_check = Some(HealthcheckSpec::Http(check.clone()));
             if matches!(runtime, ContainerRuntimeObservation::Running { .. }) {
                 runtime = ContainerRuntimeObservation::Running {
-                    health: match http_health::probe(address, check).await {
-                        http_health::Outcome::Up => HealthObservation::Healthy,
-                        http_health::Outcome::Down => HealthObservation::Starting,
-                        http_health::Outcome::Unavailable(reason) => {
-                            HealthObservation::Unrecognized(reason.into())
-                        }
-                    },
+                    health: http_health_probe(address, check).await,
                 };
             }
         }

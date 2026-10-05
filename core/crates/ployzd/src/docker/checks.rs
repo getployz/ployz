@@ -23,10 +23,6 @@ impl CheckRecords {
         }
     }
 
-    /// Health of a Running Container once its checks since this start are applied:
-    /// `Starting` or `Unhealthy` after a pass since this start reports `Failing`.
-    ///
-    /// A start from before this daemon started counts as passed.
     pub(super) fn settle(
         &mut self,
         container_id: &ContainerId,
