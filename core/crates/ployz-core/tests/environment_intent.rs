@@ -191,6 +191,12 @@ fn configs_refuse_bare_references_and_colliding_mounts() {
     let error = parse_environment_intent(with_config(json!({"a":file(json!([]))}), mount("/data")))
         .unwrap_err();
     assert_eq!(error.path, "mountPath");
+    for alias in ["/data/", "/etc//a", "/etc/./a", "/etc/x/../a", "/"] {
+        let error =
+            parse_environment_intent(with_config(json!({"a":file(json!([]))}), mount(alias)))
+                .unwrap_err();
+        assert_eq!(error.path, "configAttachments.mountDir", "{alias}");
+    }
 
     // A file may not sit where another mounted file needs a directory.
     let mut value = with_config(json!({"a":file(json!([]))}), json!([]));

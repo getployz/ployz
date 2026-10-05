@@ -602,6 +602,17 @@ fn a_mount_directory_holds_one_volume_or_config() {
 
     // Another Service may use the same directory.
     attach(&store, &who, "other", "worker", "/etc/sentry").unwrap();
+
+    for alias in [
+        "/etc/sentry/",
+        "/etc//sentry",
+        "/etc/./sentry",
+        "/etc/x/../sentry",
+        "/",
+    ] {
+        let refused = refused(attach(&store, &who, "other", "web", alias));
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{alias}");
+    }
 }
 
 #[test]
@@ -621,6 +632,17 @@ fn two_mounts_may_not_land_files_on_one_path() {
     assert!(item(&store, &who, "inner").unwrap().contents.is_empty());
 
     put(&store, &who, "inner", "other.conf", "b").unwrap();
+
+    // Mounted or not, one Config can't hold a file and a folder of the same name.
+    create(&store, &who, 12, "loose", &[]).unwrap();
+    put(&store, &who, "loose", "conf", "a").unwrap();
+    let folder = refused(put(&store, &who, "loose", "conf/site.yml", "b"));
+    assert_eq!(folder.code, RpcErrorCode::InvalidArgument);
+    assert!(
+        folder.message.contains("conf/site.yml"),
+        "{}",
+        folder.message
+    );
 }
 
 #[test]

@@ -244,6 +244,15 @@ pub(crate) fn put_file(
     let changed = config.files.get(&put.file) != Some(&file);
     if changed {
         config.files.insert(put.file.clone(), file);
+        if let Some((file, under)) = config.file_in_the_way() {
+            return Err(error::invalid(
+                format!(
+                    "Config {} has a file {file}, so {under} has no directory to sit in; remove one",
+                    put.config
+                ),
+                json!({ "config": put.config, "file": file, "under": under }),
+            ));
+        }
         let configs = &environment.working.configs;
         for node in &environment.working.services {
             let service =
@@ -420,14 +429,17 @@ pub(crate) fn attach(
     config: &ConfigName,
     dir: &str,
 ) -> Result<bool, RpcError> {
-    let dir = ContainerPath::parse(dir).map_err(|_| {
-        error::invalid(
-            format!(
-                "{service}.configs.{config}: expected an absolute directory without null characters"
-            ),
-            json!({ "example": "/etc/app" }),
-        )
-    })?;
+    let dir = ContainerPath::parse(dir)
+        .ok()
+        .filter(|dir| ConfigAttachment::is_canonical_dir(dir.as_str()))
+        .ok_or_else(|| {
+            error::invalid(
+                format!(
+                    "{service}.configs.{config}: expected an absolute directory without . or .. segments or a trailing /"
+                ),
+                json!({ "example": "/etc/app" }),
+            )
+        })?;
     let id = environment.config(config)?.resource_id.clone();
     let volumes = environment.working.volumes.clone();
     let configs = environment.working.configs.clone();
@@ -443,7 +455,7 @@ pub(crate) fn attach(
     let same_volume = node
         .volume_attachments
         .iter()
-        .filter(|held| held.mount_path == dir.as_str())
+        .filter(|held| held.mount_path.as_str().trim_end_matches('/') == dir.as_str())
         .find_map(|held| {
             volumes
                 .iter()

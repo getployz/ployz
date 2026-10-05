@@ -53,6 +53,19 @@ pub struct ConfigAttachment {
     pub mount_dir: ContainerPath,
 }
 
+impl ConfigAttachment {
+    /// Whether `dir` names one directory one way: absolute, below `/`, with no
+    /// empty, `.` or `..` segment and no trailing `/`, so equal directories compare
+    /// equal.
+    #[must_use]
+    pub fn is_canonical_dir(dir: &str) -> bool {
+        dir.strip_prefix('/').is_some_and(|rest| {
+            rest.split('/')
+                .all(|segment| !matches!(segment, "" | "." | ".."))
+        })
+    }
+}
+
 /// A named folder of text files that Services mount read-only.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -61,6 +74,25 @@ pub struct SavedConfigIntent {
     pub resource_lineage_id: String,
     pub name: ConfigName,
     pub files: BTreeMap<ConfigFileName, SavedConfigFile>,
+}
+
+impl SavedConfigIntent {
+    /// A file at a path another file needs as its directory, with that other file:
+    /// `a` beside `a/b`. No folder holds both.
+    #[must_use]
+    pub fn file_in_the_way(&self) -> Option<(&ConfigFileName, &ConfigFileName)> {
+        let names: BTreeMap<&str, &ConfigFileName> = self
+            .files
+            .keys()
+            .map(|name| (name.as_str(), name))
+            .collect();
+        self.files.keys().find_map(|name| {
+            name.as_str()
+                .match_indices('/')
+                .find_map(|(at, _)| names.get(&name.as_str()[..at]))
+                .map(|file| (*file, name))
+        })
+    }
 }
 
 /// One file of a Config. Its content is template parts whose references always
@@ -328,6 +360,12 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
         "configs.name",
         false,
     )?;
+    if intent.configs.iter().any(|c| c.file_in_the_way().is_some()) {
+        return Err(ConfigError::at(
+            "configs.files",
+            "A Config file sits where another file needs a directory",
+        ));
+    }
     if intent
         .configs
         .iter()
@@ -387,20 +425,34 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
             "configAttachments",
             true,
         )?;
+        if service
+            .config_attachments
+            .iter()
+            .any(|a| !ConfigAttachment::is_canonical_dir(a.mount_dir.as_str()))
+        {
+            return Err(ConfigError::at(
+                "configAttachments.mountDir",
+                "Expected an absolute directory like /etc/app, without . or .. segments or a trailing /",
+            ));
+        }
         unique(
             service
-                .volume_attachments
+                .config_attachments
                 .iter()
-                .map(|a| a.mount_path.as_str())
-                .chain(
-                    service
-                        .config_attachments
-                        .iter()
-                        .map(|a| a.mount_dir.as_str()),
-                ),
-            "mountPath",
+                .map(|a| a.mount_dir.as_str()),
+            "configAttachments.mountDir",
             false,
         )?;
+        if service.config_attachments.iter().any(|config| {
+            service.volume_attachments.iter().any(|volume| {
+                volume.mount_path.as_str().trim_end_matches('/') == config.mount_dir.as_str()
+            })
+        }) {
+            return Err(ConfigError::at(
+                "mountPath",
+                "A Volume and a Config share one directory",
+            ));
+        }
         mounted_files(service, &intent.configs)?;
         if service.volume_attachments.iter().any(|a| {
             !intent
