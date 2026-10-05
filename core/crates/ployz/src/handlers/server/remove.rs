@@ -152,12 +152,12 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         }))?;
         // Cleanup failure must not leave the removed Machine named in the
         // context (#249); after the printed result it is partial, not a failed removal (#449).
-        let mut config = options.load_or_empty_config().map_err(|error| Error::warned("local context cleanup failed after Server removal", error))?;
+        let mut config = options.load_or_empty_config().map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;
         if let Some(context_name) = config.context_name(options.context()).map(str::to_owned)
             && let Some(context) = config.contexts.get_mut(&context_name)
         {
             context.drop_machine(&selected.id);
-            config.save().map_err(|error| Error::warned("local context cleanup failed after Server removal", error))?;
+            config.save().map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;
         }
         if reset_failure.is_some() {
             return Err(Error::partial());

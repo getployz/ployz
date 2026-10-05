@@ -21,7 +21,6 @@ use super::store::{Next, Store, environment, mint, next, scoped, store, with_ref
 use super::{Error, leaf_matches, required, runtime};
 use crate::cli::{base, positional, switch, value};
 use crate::cloud_account::StoreCallError;
-use crate::failure::USAGE_EXIT;
 use crate::output::say;
 
 pub(crate) fn deploy_command() -> Command {
@@ -275,8 +274,7 @@ pub(super) fn execute(
         Some(_) if matches.get_flag("detach") => {
             return Err(Error::usage(
                 "The hidden local Store runs Deployments in this process, so it can't detach",
-            )
-            .with_exit(USAGE_EXIT));
+            ));
         }
         Some(local) => Some(run_here(matches, local, admitted, source)?),
         None => None,
@@ -593,7 +591,7 @@ pub(super) fn deployment_id(
     let given = required(matches, arg)?;
     let Ok(number) = given.trim_start_matches('#').parse::<u64>() else {
         return DeploymentId::parse(given)
-            .map_err(|_| Error::usage("Expected a Deployment ID or number").with_exit(USAGE_EXIT));
+            .map_err(|_| Error::usage("Expected a Deployment ID or number"));
     };
     let found = store.read(&ployz_store::NumberedDeploymentQuery {
         environment: environment(matches)?,

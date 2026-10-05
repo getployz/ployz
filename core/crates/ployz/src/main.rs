@@ -14,5 +14,5 @@ fn main() -> ExitCode {
     if !std::io::stdout().is_terminal() {
         sigpipe::reset();
     }
-    ployz::failure::terminate(ployz::handlers::run())
+    ployz::ui::exit(ployz::handlers::run())
 }

@@ -13,7 +13,6 @@ use serde_json::json;
 use super::Error;
 use super::deploy;
 use super::store::{self, Store, mint};
-use crate::failure::USAGE_EXIT;
 
 /// Whether `--confirm` typed `name`; a different name is a usage error.
 pub(super) fn confirmed(matches: &ArgMatches, name: &str, what: &str) -> Result<bool, Error> {
@@ -22,8 +21,7 @@ pub(super) fn confirmed(matches: &ArgMatches, name: &str, what: &str) -> Result<
         Some(typed) => Err(Error::usage(format!(
             "--confirm {} does not match {what} {name}. No changes made.",
             typed.escape_debug()
-        ))
-        .with_exit(USAGE_EXIT)),
+        ))),
         None => Ok(false),
     }
 }

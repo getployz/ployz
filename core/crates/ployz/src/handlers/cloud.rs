@@ -411,13 +411,12 @@ where
     {
         // An interrupted Apply may have completed mutations. Do not replay it.
         let _ingress = crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
-            let error: Error = error.into();
-            error.reworded(format!("Server initialized; Ingress deployment incomplete: {error}; rerun the same ployz server add command without --reset (keep all other options) to reconcile the observed state"))
+            Error::from(error).context("Server initialized; Ingress deployment incomplete. Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it.")
         })?;
     }
     // Repeated Set stages a fresh capability; its first operational RPC completes rotation.
     let capability = set_cloud_management_client(matches, &mut ready).await
-        .map_err(|error| error.reworded(format!("Server initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz server add command without --reset (keep all other options)")))?;
+        .map_err(|error| error.context("Server initialized; Cloud Pairing publication incomplete. Rerun the same ployz server add command without --reset, keeping all other options."))?;
     cloud_enroll::publish(
         &cloud_enroll::callback_url(cloud_url, token),
         machine.id,

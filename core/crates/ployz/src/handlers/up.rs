@@ -20,7 +20,6 @@ use super::deploy::{Request, open_events, say_view, upload_and_ship};
 use super::store::{mint, scoped, store};
 use super::{Error, config_path, leaf_matches};
 use crate::cli::{base, value};
-use crate::failure::USAGE_EXIT;
 use crate::output::say;
 
 pub(crate) fn command() -> Command {
@@ -170,7 +169,7 @@ fn add_server(
     args.extend(["--", destination]);
     let add = crate::cli::command()
         .try_get_matches_from(args)
-        .map_err(|error| Error::usage(error.render().to_string()).with_exit(USAGE_EXIT))?;
+        .map_err(|error| Error::usage(error.render().to_string()))?;
     let handler = super::handler_for("server add").expect("server add has a handler");
     let (added, server) = crate::output::captured(|| handler(&add));
     added?;

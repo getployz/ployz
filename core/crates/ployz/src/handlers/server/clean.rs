@@ -55,10 +55,8 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
     let named = matches
         .get_one::<String>("namespace")
         .map(|name| {
-            Namespace::parse(name.as_str()).map_err(|_| {
-                Error::usage("Expected a Namespace: lowercase letters, digits and -")
-                    .with_exit(crate::failure::USAGE_EXIT)
-            })
+            Namespace::parse(name.as_str())
+                .map_err(|_| Error::usage("Expected a Namespace: lowercase letters, digits and -"))
         })
         .transpose()?;
     let store = store::store(root)?;
@@ -70,8 +68,7 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
     {
         return Err(Error::usage(
             "server clean reads your Organization's Servers; drop --context and --connect",
-        )
-        .with_exit(crate::failure::USAGE_EXIT));
+        ));
     }
     let owned = store.read(&NamespacesQuery {})?.namespaces;
     let runtime = runtime()?;

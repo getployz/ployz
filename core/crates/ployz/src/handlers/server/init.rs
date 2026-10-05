@@ -10,6 +10,7 @@ use crate::{
     context::{Connection, Context},
     handlers::{Error, leaf_matches},
     output::{self, say},
+    ui::Hint,
 };
 use serde_json::json;
 
@@ -131,18 +132,33 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         &["server", "inspect", machine.name.as_str()],
     );
     let ingress = runtime.block_on(async {
-        let mut ready =
-            helpers::wait_direct_participating(matches, &connection, "initial Server did not become ready")
-                .await.map_err(|error| error.reworded(format!("Server initialized; startup incomplete: {error}\nInspect with: {inspect_recovery}")))?;
+        let mut ready = helpers::wait_direct_participating(
+            matches,
+            &connection,
+            "initial Server did not become ready",
+        )
+        .await
+        .map_err(|error| {
+            error
+                .context("Server initialized; startup incomplete.")
+                .hint(Hint::Inspect(inspect_recovery.clone()))
+        })?;
         if machine.accepts_ingress {
-            let requested = crate::ingress::service_spec(None, Default::default()).await.map_err(|error| {
-                let error = Error::from(error);
-                error.reworded(format!("Server initialized; ingress image discovery failed: {error}\nContinue with: {ingress_recovery}"))
-            })?;
-            let outcome = crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
-                let error: Error = error.into();
-                error.reworded(format!("Server initialized; ingress deployment incomplete: {error}\nContinue with: {ingress_recovery}"))
-            })?;
+            let requested = crate::ingress::service_spec(None, Default::default())
+                .await
+                .map_err(|error| {
+                    Error::from(error)
+                        .context("Server initialized; ingress image discovery failed.")
+                        .hint(Hint::Next(ingress_recovery.clone()))
+                })?;
+            let outcome =
+                crate::deploy::apply_requested(&mut ready, &requested, false, false, "default")
+                    .await
+                    .map_err(|error| {
+                        Error::from(error)
+                            .context("Server initialized; ingress deployment incomplete.")
+                            .hint(Hint::Next(ingress_recovery.clone()))
+                    })?;
             return Ok(Some(outcome));
         }
         Ok::<_, Error>(None)

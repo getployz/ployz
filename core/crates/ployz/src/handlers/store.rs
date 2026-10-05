@@ -433,7 +433,6 @@ pub(crate) fn service_name(
 ) -> Result<ployz_core::ServiceName, Error> {
     ployz_core::ServiceName::parse(super::required(matches, arg)?).map_err(|_| {
         Error::usage("Expected a Service name: up to 63 lowercase letters, digits and -, like web")
-            .with_exit(crate::failure::USAGE_EXIT)
     })
 }
 
@@ -477,7 +476,6 @@ fn names<T>(
                 Error::usage(format!(
                     "Expected {what} names: lowercase letters, digits and -"
                 ))
-                .with_exit(crate::failure::USAGE_EXIT)
             })
         })
         .collect()
@@ -490,7 +488,6 @@ pub(crate) fn volume_name(
 ) -> Result<ployz_store::VolumeName, Error> {
     ployz_store::VolumeName::parse(super::required(matches, arg)?).map_err(|_| {
         Error::usage("Expected a Volume name: up to 63 lowercase letters, digits and -, like data")
-            .with_exit(crate::failure::USAGE_EXIT)
     })
 }
 

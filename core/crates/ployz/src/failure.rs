@@ -1,4 +1,4 @@
-use std::{borrow::Cow, error::Error, fmt, io, process::ExitCode};
+use std::{borrow::Cow, error::Error, fmt, io};
 
 use ployz_core::{
     CodecError, ContainerSelectorError, DataLoss, MachineSelectorError, MachineUpdateError,
@@ -18,15 +18,10 @@ use crate::{
     namespace::NamespaceError,
     operator::OperatorError,
     provisioning::ProvisionError,
+    ui::{self, Hint},
 };
 
-/// Exit code of a command that printed its result but did not fully succeed.
-pub const PARTIAL_EXIT: u8 = 3;
-
-/// Exit code of a rejected command line, as clap exits.
-pub const USAGE_EXIT: u8 = 2;
-
-/// CLI command outcome. `Display` is product stderr. `exit` is silent.
+/// CLI command outcome. `Display` is our sentence; `ui::exit` prints it.
 #[derive(Debug)]
 pub struct Failure {
     inner: Inner,
@@ -34,8 +29,14 @@ pub struct Failure {
 
 #[derive(Debug)]
 enum Inner {
-    /// A printed failure and the exit code it ends the process with.
-    Command(Box<dyn Error + Send + Sync>, u8),
+    /// An error to print, with what the reader can do about it.
+    Command {
+        error: Box<dyn Error + Send + Sync>,
+        hints: Vec<Hint>,
+    },
+    /// The result is printed, but some targets failed or never answered.
+    Partial,
+    /// `ployz exec` passing the remote command's exit code through.
     Exit(u8),
 }
 
@@ -46,6 +47,7 @@ struct Message {
     code: RpcErrorCode,
     text: Cow<'static, str>,
     details: Value,
+    source: Option<Box<dyn Error + Send + Sync>>,
 }
 
 impl fmt::Display for Message {
@@ -54,24 +56,34 @@ impl fmt::Display for Message {
     }
 }
 
-impl Error for Message {}
+impl Error for Message {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.source
+            .as_deref()
+            .map(|source| source as &(dyn Error + 'static))
+    }
+}
 
 impl Failure {
     pub(crate) fn command(error: impl Error + Send + Sync + 'static) -> Self {
         Self {
-            inner: Inner::Command(Box::new(error), 1),
+            inner: Inner::Command {
+                error: Box::new(error),
+                hints: Vec::new(),
+            },
         }
     }
 
-    /// End the process with `code` instead of 1 when this failure is printed.
+    /// Add a line telling the reader what to do about this failure.
     #[must_use]
-    pub fn with_exit(mut self, code: u8) -> Self {
-        if let Inner::Command(_, exit) = &mut self.inner {
-            *exit = code;
+    pub fn hint(mut self, hint: Hint) -> Self {
+        if let Inner::Command { hints, .. } = &mut self.inner {
+            hints.push(hint);
         }
         self
     }
 
+    /// End the process with the remote command's exit code. Only `ployz exec` uses it.
     #[must_use]
     pub fn exit(code: u8) -> Self {
         Self {
@@ -82,7 +94,9 @@ impl Failure {
     /// The result is printed, but some targets failed or never answered.
     #[must_use]
     pub fn partial() -> Self {
-        Self::exit(PARTIAL_EXIT)
+        Self {
+            inner: Inner::Partial,
+        }
     }
 
     /// The input was wrong.
@@ -125,29 +139,92 @@ impl Failure {
             code,
             text: message.into(),
             details,
+            source: None,
         })
     }
 
-    /// This failure with a new message, keeping its `--json` code.
-    pub(crate) fn reworded(&self, message: impl Into<Cow<'static, str>>) -> Self {
-        Self::coded(self.report().code, message)
+    /// Our sentence over `cause`, which prints as its `cause:` line.
+    pub fn caused(
+        code: RpcErrorCode,
+        message: impl Into<Cow<'static, str>>,
+        cause: impl Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::command(Message {
+            code,
+            text: message.into(),
+            details: Value::Null,
+            source: Some(Box::new(cause)),
+        })
     }
 
-    /// One product line for a follow-on failure. `terminate` prints it once.
-    pub fn warned(context: impl fmt::Display, cause: impl fmt::Display) -> Self {
-        Self::coded(
-            RpcErrorCode::Internal,
-            format!("WARNING: {context}: {cause}."),
-        )
+    /// Our sentence over this failure, which becomes its `cause:`. The code and
+    /// hints carry over.
+    #[must_use]
+    pub(crate) fn context(self, message: impl Into<Cow<'static, str>>) -> Self {
+        let code = self.report().code;
+        let hints = self.own_hints().to_vec();
+        Self {
+            inner: Inner::Command {
+                error: Box::new(Message {
+                    code,
+                    text: message.into(),
+                    details: Value::Null,
+                    source: Some(Box::new(self)),
+                }),
+                hints,
+            },
+        }
+    }
+
+    fn own_hints(&self) -> &[Hint] {
+        match &self.inner {
+            Inner::Command { hints, .. } => hints,
+            Inner::Partial | Inner::Exit(_) => &[],
+        }
+    }
+
+    /// What the reader can do: hints set here, then any an error from the wire carried.
+    #[must_use]
+    pub fn hints(&self) -> Vec<Hint> {
+        let mut hints = self.own_hints().to_vec();
+        if let Inner::Command { error, .. } = &self.inner {
+            for hint in Hint::from_details(&classify(error.as_ref()).1) {
+                if !hints.contains(&hint) {
+                    hints.push(hint);
+                }
+            }
+        }
+        hints
+    }
+
+    /// The `cause:` lines: each error below our sentence.
+    #[must_use]
+    pub fn causes(&self) -> Vec<String> {
+        match &self.inner {
+            Inner::Command { error, .. } => ui::causes(error.as_ref()),
+            Inner::Partial | Inner::Exit(_) => Vec::new(),
+        }
+    }
+
+    /// The exit code of a failure whose output is already printed: a partial
+    /// result, or `ployz exec` passing the remote code through.
+    #[must_use]
+    pub(crate) const fn printed_exit(&self) -> Option<u8> {
+        match self.inner {
+            Inner::Partial => Some(ui::PARTIAL_EXIT),
+            Inner::Exit(code) => Some(code),
+            Inner::Command { .. } => None,
+        }
     }
 
     /// The `--json` error object: the RPC error shape and vocabulary.
     #[must_use]
     pub fn report(&self) -> RpcError {
-        let (code, details) = match &self.inner {
-            Inner::Command(error, _) => classify(error.as_ref()),
-            Inner::Exit(_) => (RpcErrorCode::Internal, Value::Null),
+        let (code, mut details) = match &self.inner {
+            Inner::Command { error, .. } => classify(error.as_ref()),
+            Inner::Partial | Inner::Exit(_) => (RpcErrorCode::Internal, Value::Null),
         };
+        Hint::into_details(self.own_hints(), &mut details);
         RpcError {
             code,
             message: self.to_string(),
@@ -498,7 +575,8 @@ pub(crate) fn refusal_from_rpc(error: RpcError) -> Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.inner {
-            Inner::Command(error, _) => error.fmt(f),
+            Inner::Command { error, .. } => error.fmt(f),
+            Inner::Partial => f.write_str("partial result"),
             Inner::Exit(code) => write!(f, "exit {code}"),
         }
     }
@@ -507,58 +585,10 @@ impl fmt::Display for Failure {
 impl Error for Failure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match &self.inner {
-            Inner::Command(error, _) => Some(error.as_ref()),
-            Inner::Exit(_) => None,
+            Inner::Command { error, .. } => Some(error.as_ref()),
+            Inner::Partial | Inner::Exit(_) => None,
         }
     }
-}
-
-#[must_use]
-pub fn terminate(result: Result<(), Failure>) -> ExitCode {
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(Failure {
-            inner: Inner::Exit(code),
-        }) => ExitCode::from(code),
-        // A printed result stays the one stdout object; what failed after it is partial.
-        Err(error) if crate::output::emitted() => {
-            eprintln!("{error}");
-            ExitCode::from(PARTIAL_EXIT)
-        }
-        Err(error) => {
-            if crate::output::json() {
-                crate::output::error(&error.report());
-            } else {
-                let report = error.report();
-                eprintln!("{}", report.message);
-                for line in human_hints(&report) {
-                    eprintln!("{line}");
-                }
-            }
-            match error.inner {
-                Inner::Command(_, exit) | Inner::Exit(exit) => ExitCode::from(exit),
-            }
-        }
-    }
-}
-
-/// The `details` a person acts on, as the lines success output prints them; a
-/// `next` the message already spells out (as its `Retry:`) isn't repeated.
-fn human_hints(report: &RpcError) -> Vec<String> {
-    let details = &report.details;
-    let mut lines = Vec::new();
-    if let Some(children) = details.get("valid_children").and_then(Value::as_array) {
-        let names: Vec<&str> = children.iter().filter_map(Value::as_str).collect();
-        if !names.is_empty() {
-            lines.push(format!("valid: {}", names.join(", ")));
-        }
-    }
-    if let Some(next) = details.get("next").and_then(Value::as_str)
-        && !report.message.contains(next)
-    {
-        lines.push(format!("next: {next}"));
-    }
-    lines
 }
 
 macro_rules! from_error {
@@ -695,7 +725,6 @@ mod tests {
             source::<ContextError>(&failure),
             ContextError::NoConfig
         ));
-        assert_eq!(terminate(Err(failure)), ExitCode::FAILURE);
     }
 
     #[test]
@@ -710,7 +739,6 @@ mod tests {
             source::<ValueError>(&failure).to_string(),
             "invalid Machine Name \"BAD NAME\": a 1-63 character lowercase DNS label"
         );
-        assert_eq!(terminate(Err(failure)), ExitCode::FAILURE);
     }
 
     #[test]
@@ -732,7 +760,6 @@ mod tests {
                 .downcast_ref::<ConnectError>()
                 .is_none()
         );
-        assert_eq!(terminate(Err(from_connect)), ExitCode::FAILURE);
     }
 
     #[test]
@@ -786,19 +813,6 @@ mod tests {
         let failure = Failure::usage("nope");
         assert_eq!(failure.to_string(), "nope");
         assert_eq!(source::<Message>(&failure).to_string(), "nope");
-        assert_eq!(terminate(Err(failure)), ExitCode::FAILURE);
-    }
-
-    #[test]
-    fn warned_follow_on_is_one_line_and_fails() {
-        let cause = "write context file: permission denied";
-        let remove = Failure::warned("local context cleanup failed after Machine removal", cause);
-        assert_eq!(
-            remove.to_string(),
-            "WARNING: local context cleanup failed after Machine removal: write context file: permission denied."
-        );
-        assert_eq!(remove.to_string().matches(cause).count(), 1);
-        assert_eq!(terminate(Err(remove)), ExitCode::FAILURE);
     }
 
     #[test]
@@ -859,46 +873,21 @@ mod tests {
     }
 
     #[test]
-    fn human_errors_print_next_and_valid_children() {
-        let details = serde_json::json!({
-            "deployment": "d1",
-            "next": "ployz deployment show d1",
-            "valid_children": ["web", "db"],
-        });
-        let report = |message: &str, details: Value| RpcError {
-            code: RpcErrorCode::Conflict,
-            message: message.into(),
-            details,
-        };
-        assert_eq!(
-            human_hints(&report("already ended", details)),
-            ["valid: web, db", "next: ployz deployment show d1"]
-        );
-        assert!(human_hints(&report("boom", Value::Null)).is_empty());
-        let spelled = serde_json::json!({ "next": "ployz org rm acme --confirm acme" });
-        assert!(
-            human_hints(&report(
-                "No changes made.\nRetry: ployz org rm acme --confirm acme",
-                spelled
-            ))
-            .is_empty()
-        );
+    fn printed_exits_are_not_printed_command_failures() {
+        assert!(StdError::source(&Failure::exit(7)).is_none());
+        assert!(StdError::source(&Failure::partial()).is_none());
+        assert_eq!(Failure::exit(7).printed_exit(), Some(7));
+        assert_eq!(Failure::partial().printed_exit(), Some(3));
+        assert_eq!(Failure::usage("nope").printed_exit(), None);
     }
 
     #[test]
-    fn a_failure_after_a_result_is_partial() {
-        crate::output::emit(&"done").unwrap();
-        assert_eq!(
-            terminate(Err(Failure::usage("nope"))),
-            ExitCode::from(PARTIAL_EXIT)
-        );
-    }
-
-    #[test]
-    fn exit_is_not_a_printed_command_failure() {
-        assert!(StdError::source(&Failure::exit(3)).is_none());
-        assert_eq!(terminate(Err(Failure::exit(3))), ExitCode::from(3));
-        assert_eq!(terminate(Ok(())), ExitCode::SUCCESS);
-        assert_eq!(terminate(Err(Failure::usage("nope"))), ExitCode::FAILURE);
+    fn context_keeps_the_code_and_hints_and_chains_the_cause() {
+        let failure = Failure::not_found("No Service nope.")
+            .hint(Hint::valid(["web"]))
+            .context("Server initialized; startup incomplete.");
+        assert_eq!(failure.report().code, RpcErrorCode::NotFound);
+        assert_eq!(failure.hints(), [Hint::valid(["web"])]);
+        assert_eq!(failure.causes(), ["No Service nope."]);
     }
 }

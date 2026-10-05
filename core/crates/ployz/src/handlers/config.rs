@@ -17,7 +17,6 @@ use serde_json::{Value, json};
 use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
-use crate::failure::USAGE_EXIT;
 use crate::output::say;
 
 pub(crate) fn get_command() -> Command {
@@ -88,7 +87,6 @@ pub(super) fn expected(matches: &ArgMatches) -> Result<Option<Revision>, Error> 
         .map(|revision| {
             revision.parse().map(Revision).map_err(|_| {
                 Error::usage("Expected --expect REVISION to be a revision number, for example 3")
-                    .with_exit(USAGE_EXIT)
             })
         })
         .transpose()
@@ -142,7 +140,6 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         };
         let value: Value = serde_json::from_str(&patch).map_err(|_| {
             Error::usage("--patch expects a JSON object, for example '{\"replicas\":3}'")
-                .with_exit(USAGE_EXIT)
         })?;
         // A new secret on the command line would land in shell history.
         let sealing = |variable: &Value| {
@@ -159,8 +156,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         if inline_secret && inline {
             return Err(Error::usage(
                 "A new secret never goes on the command line: use --patch -, --secret or --from-env-file",
-            )
-            .with_exit(USAGE_EXIT));
+            ));
         }
         return edit(
             matches,
@@ -178,8 +174,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         if path.contains('=') {
             return Err(Error::usage(
                 "--secret reads the value from stdin, never the command line: set web.env.KEY --secret",
-            )
-            .with_exit(USAGE_EXIT));
+            ));
         }
         let mut secret = std::io::read_to_string(std::io::stdin())?;
         // `echo VALUE |` ends it with a newline that is not part of the secret.
@@ -205,10 +200,9 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         .into_iter()
         .flatten()
         .map(|assignment| {
-            let (path, value) = assignment.split_once('=').ok_or_else(|| {
-                Error::usage("Expected PATH=VALUE, for example web.replicas=3")
-                    .with_exit(USAGE_EXIT)
-            })?;
+            let (path, value) = assignment
+                .split_once('=')
+                .ok_or_else(|| Error::usage("Expected PATH=VALUE, for example web.replicas=3"))?;
             Ok(Change::Set {
                 path: SettingPath::parse(path)?,
                 value: Value::String(value.to_owned()),
@@ -216,9 +210,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         })
         .collect::<Result<Vec<_>, Error>>()?;
     if let Some(path) = repeated(&changes) {
-        return Err(
-            Error::usage(format!("{path} is given twice; set it once")).with_exit(USAGE_EXIT)
-        );
+        return Err(Error::usage(format!("{path} is given twice; set it once")));
     }
     edit(root, changes)
 }
@@ -238,7 +230,7 @@ fn one_service(matches: &ArgMatches, usage: &'static str) -> Result<String, Erro
         Some(mut paths) if paths.len() == 1 => paths.next().cloned(),
         Some(_) | None => None,
     }
-    .ok_or_else(|| Error::usage(usage).with_exit(USAGE_EXIT))
+    .ok_or_else(|| Error::usage(usage))
 }
 
 /// `set SERVICE --from-env-file FILE [--secret]`: every variable in the file, in one
@@ -254,8 +246,7 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
     let text = if file == "-" {
         std::io::read_to_string(std::io::stdin())?
     } else {
-        std::fs::read_to_string(file)
-            .map_err(|_| Error::usage("Can't read the env file").with_exit(USAGE_EXIT))?
+        std::fs::read_to_string(file).map_err(|_| Error::usage("Can't read the env file"))?
     };
     let variables = env_file(&text)?;
     let seal_all = matches.get_flag("secret");
@@ -292,7 +283,7 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
         })
         .collect::<Result<Vec<_>, Error>>()?;
     if changes.is_empty() {
-        return Err(Error::usage("The env file sets no variables").with_exit(USAGE_EXIT));
+        return Err(Error::usage("The env file sets no variables"));
     }
     edit(root, changes)
 }
@@ -307,10 +298,7 @@ fn env_file(text: &str) -> Result<Vec<(String, String)>, Error> {
                 .map(|entry| (entry.key, entry.value))
                 .collect()
         })
-        .map_err(|error| {
-            Error::usage(format!("Env file {}", lowercase_first(&error.message)))
-                .with_exit(USAGE_EXIT)
-        })
+        .map_err(|error| Error::usage(format!("Env file {}", lowercase_first(&error.message))))
 }
 
 fn lowercase_first(text: &str) -> String {
@@ -381,7 +369,6 @@ fn hold(root: &ArgMatches, number: &str, asked: &str, secret: String) -> Result<
         .and_then(|number| PullRequestNumber::parse(number).ok())
         .ok_or_else(|| {
             Error::usage("Expected --at-merge PR to be a pull request number, for example 142")
-                .with_exit(USAGE_EXIT)
         })?;
     let environment = environment(matches)?;
     let store = store(root)?;

@@ -5,7 +5,7 @@ use clap::{ArgMatches, Command};
 use clap_complete::Shell;
 use clap_complete::env::Shells;
 
-use crate::failure::{Failure, USAGE_EXIT};
+use crate::failure::Failure;
 
 pub(crate) mod account;
 pub(crate) mod build;
@@ -43,8 +43,9 @@ pub fn run() -> Result<(), Error> {
     if args.is_empty() || args.iter().any(|arg| arg == "--help" || arg == "-h") {
         command = command.after_help(setup::help_footer());
     }
+    crate::ui::Color::from_args(&args).apply();
     let matches = command.clone().try_get_matches().map_err(usage_failure)?;
-    crate::output::set_json(matches.get_flag("json"));
+    crate::ui::init(matches.get_flag("json"));
     dispatch(&matches, &mut command)
 }
 
@@ -62,10 +63,9 @@ fn usage_failure(error: clap::Error) -> Error {
     {
         error.exit();
     }
-    crate::output::set_json(true);
+    crate::ui::init(true);
     let message = error.render().to_string();
     Error::usage(message.trim().trim_start_matches("error: ").to_owned())
-        .with_exit(u8::try_from(error.exit_code()).unwrap_or(USAGE_EXIT))
 }
 
 fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
@@ -77,7 +77,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     }
     if matches.subcommand().is_none() {
         if matches.get_flag("json") {
-            return Err(Error::usage("a command is required").with_exit(USAGE_EXIT));
+            return Err(Error::usage("a command is required"));
         }
         command.print_help()?;
         crate::output::say!();
@@ -85,9 +85,8 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     }
     let path = command_path(matches);
     // Every leaf has a handler, so a missing one means a group without its subcommand.
-    let handler = handler_for(&path).ok_or_else(|| {
-        Error::usage(format!("ployz {path} requires a subcommand")).with_exit(USAGE_EXIT)
-    })?;
+    let handler = handler_for(&path)
+        .ok_or_else(|| Error::usage(format!("ployz {path} requires a subcommand")))?;
     if json_refused(&path) && matches.get_flag("json") {
         return Err(Error::usage(format!(
             "ployz {path} does not support --json"
@@ -102,8 +101,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
             format!("--context goes after the command: ployz {path} --context NAME")
         } else {
             format!("ployz {path} doesn't use a context; it takes --project and --env")
-        })
-        .with_exit(USAGE_EXIT));
+        }));
     }
     handler(matches)
 }

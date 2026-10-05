@@ -8,17 +8,12 @@
 use std::{
     cell::{Cell, RefCell},
     io::{self, IsTerminal, Write},
-    sync::atomic::{AtomicBool, Ordering},
 };
 
 use ployz_core::{MachineFailure, MachineId, PartialResult, RpcError};
 use serde::Serialize;
 
 use crate::failure::Failure;
-
-// `JSON` is process config: set once before dispatch, read from any thread (the
-// deploy renderer and spawned tasks included).
-static JSON: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     // `EMITTED` is per-execution state. Results are printed on the handler's thread,
@@ -47,14 +42,10 @@ pub(crate) fn captured<R>(step: impl FnOnce() -> R) -> (R, Option<serde_json::Va
     (result, CAPTURED.take().flatten())
 }
 
-pub(crate) fn set_json(json: bool) {
-    JSON.store(json, Ordering::Relaxed);
-}
-
 /// Whether this command writes its result as JSON.
 #[must_use]
 pub fn json() -> bool {
-    JSON.load(Ordering::Relaxed)
+    crate::ui::mode() == crate::ui::Mode::Json
 }
 
 /// Whether the command may prompt: a terminal on both ends and no `--json`.
@@ -187,16 +178,6 @@ pub(crate) fn emit_line<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure>
     }
     EMITTED.set(true);
     Ok(())
-}
-
-/// Print the `--json` error object on one stdout line.
-pub(crate) fn error(error: &RpcError) {
-    // Nothing is left to report a failed write to.
-    let _ = writeln!(
-        io::stdout().lock(),
-        "{}",
-        serde_json::json!({ "error": error })
-    );
 }
 
 /// Whether the command already produced its result, so a later failure is partial.
