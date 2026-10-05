@@ -509,6 +509,19 @@ fn mounted_files(
             "A mounted Config file sits where another needs a directory",
         ));
     }
+    let volume_on_file = service.volume_attachments.iter().any(|volume| {
+        let at = volume.mount_path.trim_end_matches('/');
+        paths.contains(at)
+            || at
+                .match_indices('/')
+                .any(|(end, _)| paths.contains(&at[..end]))
+    });
+    if volume_on_file {
+        return Err(ConfigError::at(
+            "mountPath",
+            "A Volume mounts where a Config file sits",
+        ));
+    }
     Ok(())
 }
 

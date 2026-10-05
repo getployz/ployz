@@ -210,6 +210,22 @@ fn configs_refuse_bare_references_and_colliding_mounts() {
         .unwrap() = json!("/etc/x");
     parse_environment_intent(value).unwrap();
 
+    for (volume, refused) in [
+        ("/etc/a", true),
+        ("/etc/a/", true),
+        ("/etc/a/b", true),
+        ("/etc/b", false),
+    ] {
+        let mut value = with_config(json!({"a":file(json!([]))}), mount("/etc"));
+        *value
+            .pointer_mut("/services/0/volumeAttachments/0/mountPath")
+            .unwrap() = json!(volume);
+        match parse_environment_intent(value) {
+            Err(error) => assert!(refused && error.path == "mountPath", "{volume}: {error:?}"),
+            Ok(_) => assert!(!refused, "{volume} mounted over a Config file"),
+        }
+    }
+
     for mode in ["1755", "4444", "0800", "x"] {
         let mut value = with_config(json!({"a":file(json!([]))}), json!([]));
         *value.pointer_mut("/configs/0/files/a/mode").unwrap() = json!(mode);
