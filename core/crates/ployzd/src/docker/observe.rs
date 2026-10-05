@@ -489,10 +489,11 @@ mod tests {
             redacted.resolved_spec.config_mounts(),
             observation.resolved_spec.config_mounts()
         );
-        assert!(
-            !serde_json::to_string(&redacted)
+        assert_eq!(
+            serde_json::to_value(&redacted)
                 .unwrap()
-                .contains("config-secret")
+                .pointer("/resolved_spec/configs"),
+            Some(&json!([{ "name": "settings", "content": [] }]))
         );
         assert_eq!(
             observation.resolved_spec.configs(),

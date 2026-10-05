@@ -819,10 +819,13 @@ mod tests {
                 .map(String::as_str),
             Some(crate::REDACTED_ENVIRONMENT_VALUE)
         );
-        let wire = serde_json::to_string(&observed).unwrap();
-        assert!(!wire.contains("config-secret"));
+        let wire = serde_json::to_value(&observed).unwrap();
         assert_eq!(
-            serde_json::from_str::<ContainerObservation>(&wire).unwrap(),
+            wire.pointer("/resolved_spec/configs"),
+            Some(&serde_json::json!([{ "name": "settings", "content": [] }]))
+        );
+        assert_eq!(
+            serde_json::from_value::<ContainerObservation>(wire).unwrap(),
             observed
         );
     }
