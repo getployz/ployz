@@ -297,6 +297,8 @@ def up(args):
         started = time.monotonic()
         for node in run["machines"]:
             # Cloud enrollment currently ignores --public-ip and --wg-endpoint; the Machine advertises the endpoints it discovers.
+            # --no-install requires --storage none, yet managed Volumes work: the image ran `ployzd install --storage zfs`,
+            # and the daemon creates the Machine Pool on the first Volume, as on a real Server.
             result = cli(run, commands, ["--json", "server", "add", "root@" + node["address"],
                                *([] if "cloud" in run else ["--standalone"]), "--no-install", "--storage", "none", "--yes",
                                "--name", node["name"], "--ssh-key", str(private / "id_ed25519"),
