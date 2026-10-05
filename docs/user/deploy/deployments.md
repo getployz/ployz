@@ -88,17 +88,19 @@ ready, then stops an old one, so your app keeps serving. Before any replica stop
 taking web traffic stops sending it requests. If a server can't confirm that within 10 seconds,
 the replica stops anyway and the deploy warns which server didn't answer.
 
-- **Set a health check.** Under **Settings → Deploy**, set **Healthcheck** to a path like `/up`.
-  A new replica is ready when that path answers with a 2xx status. A redirect, to `https://` or
-  `/login` for example, fails the check. Without a health check, the old replica stops a few
-  seconds after the new one starts, ready or not.
+- **Set a health check.** Under **Settings → Deploy**, set **Healthcheck** to an HTTP path like
+  `/up` or a command like `pg_isready -h 127.0.0.1`. A new replica is ready when the path answers
+  with a 2xx status or the command exits 0. A redirect, to `https://` or `/login` for example,
+  fails the check. Without a health check, the old replica stops a few seconds after the new one
+  starts, ready or not. The databases Ployz creates come with one.
 - **A service with a [volume](../services/volumes.md) has a short gap.** Its old replica stops
   first, so two never write the same files.
 - **Migrations run first.** A **Pre-deploy command**, like `npm run migrate`, runs once with the
   new code before any replica is replaced. If it fails or runs past 5 minutes, the deployment
   fails and the old version keeps running.
 - **Services start in order.** If `web`'s [variables](../services/variables.md) reference
-  `${{ postgres.DATABASE_URL }}`, `postgres` comes up first.
+  `${{ postgres.DATABASE_URL }}`, `postgres` comes up first, and passes its health check first if
+  it has one.
 
 ## When a deploy fails
 
