@@ -1,0 +1,87 @@
+=== org ls :: $ ployz org ls
+ORGANIZATION	NAME
+ada *	Ada Lovelace's Projects
+babbage	Babbage Labs
+
+=== org ls --json :: $ ployz org ls --json
+{
+  "organizations": [
+    {
+      "current": true,
+      "id": "a52ce0da-943d-4bfb-adfb-9da76e128533",
+      "name": "Ada Lovelace's Projects",
+      "slug": "ada"
+    },
+    {
+      "current": false,
+      "id": "d3d09d4f-a5b4-488c-8718-8a743f985dc8",
+      "name": "Babbage Labs",
+      "slug": "babbage"
+    }
+  ]
+}
+
+=== org (bare) :: $ ployz org
+List or switch Organizations
+
+Usage: ployz org [OPTIONS] [COMMAND]
+
+Commands:
+  ls           List the Organizations you can act in
+  use          Act in another of your Organizations from this device
+  build-order  Show or set which Builders build Git Services, in turn
+  rm           Delete the Organization you act in, once it has no Project
+  help         Print this message or the help of the given subcommand(s)
+
+Options:
+      --connect <connect>            [env: PLOYZ_CONNECT=]
+      --ssh-timeout <SECONDS>        SSH setup timeout in seconds (provisioning: network connection only) [default: 20]
+      --ployz-config <ployz-config>  [env: PLOYZ_CONFIG=] [default: ~/.config/ployz/config.yaml]
+      --json                         Print the result as one JSON object on stdout
+  -h, --help                         Print help (see more with '--help')
+
+=== org use unknown :: $ ployz org use nope
+no Organization nope of yours
+next: ployz org ls
+
+=== org use unknown --json :: $ ployz org use nope --json
+{"error":{"code":"not_found","details":{"next":"ployz org ls"},"message":"no Organization nope of yours"}}
+
+=== org build-order (show) :: $ ployz org build-order
+Auto: builds try GitHub, then your servers.
+
+=== org build-order --json :: $ ployz org build-order --json
+{
+  "build_order": null,
+  "builders": [
+    "github",
+    "servers"
+  ]
+}
+
+=== org rm ada without --confirm :: $ ployz org rm ada
+Removing Organization ada deletes it with its tokens, Servers' pairing and settings; this can't be undone. No changes made.
+Retry: ployz org rm ada --confirm ada
+
+=== org rm ada --confirm wrong :: $ ployz org rm ada --confirm wrong
+--confirm wrong does not match Organization ada. No changes made.
+
+=== org rm ada --confirm ada (has Projects) :: $ ployz org rm ada --confirm ada
+This Organization still has Projects (shop). Remove them first
+next: ployz project rm shop --confirm shop
+
+=== org rm ada --confirm ada --json (has Projects) :: $ ployz org rm ada --confirm ada --json
+{"error":{"code":"conflict","details":{"next":"ployz project rm shop --confirm shop","projects":["shop"]},"message":"This Organization still has Projects (shop). Remove them first"}}
+
+=== org rm babbage while acting in ada :: $ ployz org rm babbage --confirm babbage
+This credential acts in Organization ada, not babbage. No changes made.
+next: ployz org use babbage
+
+=== org ls after removal :: $ ployz org ls
+this sign-in's Organization babbage is no longer one of yours
+next: ployz org ls
+
+=== status after removing the acting Organization :: $ ployz status
+this sign-in's Organization babbage is no longer one of yours
+next: ployz org ls
+

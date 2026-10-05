@@ -1,0 +1,64 @@
+=== service ls (no Services) :: $ ployz service ls
+SERVICE	PRIVATE DNS	SOURCE	NEXT DEPLOY
+
+=== service ls --json (no Services) :: $ ployz --json service ls
+{
+  "environment": {
+    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "name": "production",
+    "project": "shop",
+    "revision": 1
+  },
+  "services": []
+}
+
+=== service ls :: $ ployz service ls
+SERVICE	PRIVATE DNS	SOURCE	NEXT DEPLOY
+db	db	image	create
+web	web	image	create
+worker	worker	empty	create
+
+=== service ls --json :: $ ployz --json service ls
+{
+  "environment": {
+    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "name": "production",
+    "project": "shop",
+    "revision": 4
+  },
+  "services": [
+    {
+      "change": "create",
+      "id": "49f3ad59-318d-4262-b5a4-9fac1564ef0f",
+      "name": "db",
+      "private_dns": "db",
+      "row": "49f3ad59-318d-4262-b5a4-9fac1564ef0f:node",
+      "source": "image",
+      "template": null
+    },
+    {
+      "change": "create",
+      "id": "4dfec997-f0c6-428f-9c6c-476adb6724c1",
+      "name": "web",
+      "private_dns": "web",
+      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:node",
+      "source": "image",
+      "template": null
+    },
+    {
+      "change": "create",
+      "id": "9341f07f-a7bb-499e-9b81-8a88de41dd48",
+      "name": "worker",
+      "private_dns": "worker",
+      "row": "9341f07f-a7bb-499e-9b81-8a88de41dd48:node",
+      "source": "empty",
+      "template": null
+    }
+  ]
+}
+
+=== service ls (after rm) :: $ ployz service ls
+SERVICE	PRIVATE DNS	SOURCE	NEXT DEPLOY
+db	db	image	create
+web	web	image	create
+

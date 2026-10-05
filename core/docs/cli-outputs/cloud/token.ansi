@@ -1,0 +1,139 @@
+=== token new bad --expires-in :: $ ployz token new x --expires-in soon
+error: invalid value 'soon' for '--expires-in <DAYS>': invalid digit found in string
+
+For more information, try '--help'.
+
+=== token ls :: $ ployz token ls
+KIND	ID	NAME	EXPIRES
+token	a261eda1-8592-433b-b55f-21aaad1f75cf	ci	2027-01-03T01:12:26.123Z
+token	3b320fee-0a08-47d8-b8d9-a6b9eb4a4d31	deploy	2026-10-12T01:12:26.241Z
+device	54b92009-ff80-402e-a3a0-25cf1b1c702d	- *	2026-10-12T01:12:24.965Z
+
+=== token ls --json :: $ ployz token ls --json
+{
+  "devices": [
+    {
+      "created_at": "2026-10-05T01:12:24.965Z",
+      "current": true,
+      "expires_at": "2026-10-12T01:12:24.965Z",
+      "id": "54b92009-ff80-402e-a3a0-25cf1b1c702d"
+    }
+  ],
+  "revoking": [],
+  "tokens": [
+    {
+      "created_at": "2026-10-05T01:12:26.124Z",
+      "current": false,
+      "expired": false,
+      "expires_at": "2027-01-03T01:12:26.123Z",
+      "id": "a261eda1-8592-433b-b55f-21aaad1f75cf",
+      "name": "ci"
+    },
+    {
+      "created_at": "2026-10-05T01:12:26.242Z",
+      "current": false,
+      "expired": false,
+      "expires_at": "2026-10-12T01:12:26.241Z",
+      "id": "3b320fee-0a08-47d8-b8d9-a6b9eb4a4d31",
+      "name": "deploy"
+    }
+  ]
+}
+
+=== token rm, already revoked ID :: $ ployz token rm a261eda1-8592-433b-b55f-21aaad1f75cf
+no token or signed-in device a261eda1-8592-433b-b55f-21aaad1f75cf in this Organization
+next: ployz token ls
+
+=== token rm, unknown ID :: $ ployz token rm 00000000-0000-0000-0000-000000000000
+no token or signed-in device 00000000-0000-0000-0000-000000000000 in this Organization
+next: ployz token ls
+
+=== token rm, unknown ID --json :: $ ployz token rm 00000000-0000-0000-0000-000000000000 --json
+{"error":{"code":"not_found","details":{"next":"ployz token ls"},"message":"no token or signed-in device 00000000-0000-0000-0000-000000000000 in this Organization"}}
+
+=== token rm, not a UUID :: $ ployz token rm ci
+no token or signed-in device ci in this Organization
+next: ployz token ls
+
+=== status with PLOYZ_TOKEN :: $ ployz status
+Cloud: http://localhost:34733
+Organization ada (token).
+Environment shop/production.
+2 staged changes.
+Deployment 1 is queued.
+next: ployz diff
+
+=== status with PLOYZ_TOKEN --json :: $ ployz status --json
+{
+  "attention": [],
+  "deploying": [
+    {
+      "admitted_at": 1791162709,
+      "admitted_by": "Ada Lovelace",
+      "ended_at": null,
+      "environment_id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
+      "id": "939f4f20-8e4a-40a5-a812-52c2c614d9f6",
+      "in_flight": true,
+      "message": "Ship everything",
+      "number": 1,
+      "outcome": null,
+      "remove": false,
+      "runner": null,
+      "saved": 1,
+      "services": [],
+      "started_at": null,
+      "status": "queued",
+      "upload": null
+    }
+  ],
+  "environment": {
+    "id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
+    "name": "production",
+    "project": "shop",
+    "revision": 9
+  },
+  "identity": {
+    "cloud": "http://localhost:34733",
+    "credential": "token",
+    "organization": {
+      "id": "a52ce0da-943d-4bfb-adfb-9da76e128533",
+      "slug": "ada"
+    }
+  },
+  "next": "ployz diff",
+  "scope": {
+    "environment": null,
+    "link": null,
+    "project": null
+  },
+  "staged": {
+    "changes": 2,
+    "published": false,
+    "version": "9:1:1.0"
+  }
+}
+
+=== token ls with PLOYZ_TOKEN :: $ ployz token ls
+KIND	ID	NAME	EXPIRES
+token	3d4d8a57-5de6-4a3a-b01e-eb0083a224f1	env-test *	2027-01-03T01:12:27.992Z
+device	54b92009-ff80-402e-a3a0-25cf1b1c702d	-	2026-10-12T01:12:24.965Z
+
+=== org ls with PLOYZ_TOKEN :: $ ployz org ls
+ORGANIZATION	NAME
+ada *	Ada Lovelace's Projects
+
+=== org use with PLOYZ_TOKEN (refused) :: $ ployz org use babbage
+PLOYZ_TOKEN acts only in the Organization it was made in
+
+=== token new with PLOYZ_TOKEN :: $ ployz token new nested
+Made token nested (419206c5-9ddb-4c52-b69c-b2c3135a4ac0) in Organization ada, expiring 2027-01-03T01:12:29.675Z.
+Its secret is shown only now; set it as PLOYZ_TOKEN:
+ployz_<redacted>
+
+=== status with a revoked PLOYZ_TOKEN :: $ ployz status
+Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization
+next: ployz token new
+
+=== token ls with a revoked PLOYZ_TOKEN --json :: $ ployz token ls --json
+{"error":{"code":"unauthenticated","details":{"next":"ployz token new"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"}}
+

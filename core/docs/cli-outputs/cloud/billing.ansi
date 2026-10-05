@@ -1,0 +1,24 @@
+=== billing (billing off) :: $ ployz billing
+Organization ada: self-hosted, no billing; custom domains allowed.
+
+=== billing --json (billing off) :: $ ployz billing --json
+{
+  "billing": {
+    "custom_domains": true,
+    "organization": "ada",
+    "plan": "self_hosted"
+  }
+}
+
+=== billing upgrade (billing off) :: $ ployz billing upgrade
+Cloud at http://localhost:34733 has no billing: it is self-hosted
+
+=== billing upgrade --json (billing off) :: $ ployz billing upgrade --json
+{"error":{"code":"unsupported","details":null,"message":"Cloud at http://localhost:34733 has no billing: it is self-hosted"}}
+
+=== billing manage (billing off) :: $ ployz billing manage
+Cloud at http://localhost:34733 has no billing: it is self-hosted
+
+=== billing manage --json (billing off) :: $ ployz billing manage --json
+{"error":{"code":"unsupported","details":null,"message":"Cloud at http://localhost:34733 has no billing: it is self-hosted"}}
+

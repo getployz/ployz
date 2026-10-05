@@ -1,0 +1,83 @@
+=== domain ls :: $ ployz domain ls
+acme.com	web → PORT	Setting up · Deploying
+
+=== domain ls --json :: $ ployz domain ls --json
+{
+  "domains": [
+    {
+      "action": null,
+      "hostname": "acme.com",
+      "kind": "custom",
+      "port": null,
+      "reason": "Deploying",
+      "service": "web",
+      "status": "setting_up"
+    }
+  ],
+  "environment": {
+    "id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
+    "name": "production",
+    "project": "shop",
+    "revision": 9
+  }
+}
+
+=== domain add, duplicate host :: $ ployz domain add web shop.example.org
+Staged domain shop.example.org on web in shop/production (revision 13).
+
+=== domain add, unknown service :: $ ployz domain add nosuch
+No Service named nosuch in Environment production
+valid: web, api, postgres, worker
+
+=== domain add, unknown service --json :: $ ployz domain add nosuch --json
+{"error":{"code":"not_found","details":{"did_you_mean":null,"valid_children":["web","api","postgres","worker"]},"message":"No Service named nosuch in Environment production"}}
+
+=== domain add, bad host :: $ ployz domain add web not\ a\ host
+Expected a hostname like app.example.com
+
+=== domain set, prefix with a dot :: $ ployz domain set api my.api
+Expected one DNS label, like shop
+
+=== domain ls after changes :: $ ployz domain ls
+acme.com	web → PORT	Setting up · Deploying
+shop.example.org	web → PORT	Setting up · Live after your next deploy
+docs.example.org	web → 8080	Setting up · Live after your next deploy
+myapi	api → PORT	Setting up · Live after your next deploy
+myworker	worker → PORT	Setting up · Live after your next deploy
+
+=== domain check acme.com :: $ ployz domain check acme.com
+acme.com	web → PORT	Setting up · Deploying
+
+=== domain check acme.com --json :: $ ployz domain check acme.com --json
+{
+  "domain": {
+    "action": null,
+    "hostname": "acme.com",
+    "kind": "custom",
+    "port": null,
+    "reason": "Deploying",
+    "service": "web",
+    "status": "setting_up"
+  },
+  "environment": {
+    "id": "9d524a17-4056-47c0-9fc8-c7329841a90b",
+    "name": "production",
+    "project": "shop",
+    "revision": 15
+  }
+}
+
+=== domain check unknown :: $ ployz domain check nope.example.org
+No such domain in Environment production
+valid: acme.com, shop.example.org, docs.example.org, myapi, myworker
+
+=== domain rm unknown :: $ ployz domain rm nope.example.org
+No such domain in Environment production
+valid: acme.com, myapi, myworker
+
+=== domain rm unknown --json :: $ ployz domain rm nope.example.org --json
+{"error":{"code":"not_found","details":{"valid_children":["acme.com","myapi","myworker"]},"message":"No such domain in Environment production"}}
+
+=== domain ls --project nosuch :: $ ployz domain ls --project nosuch
+No Project named nosuch
+

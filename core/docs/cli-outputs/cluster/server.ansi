@@ -1,0 +1,380 @@
+=== server add: join a second Server :: $ ployz server add --standalone --no-install root@172.19.0.3 --name beta
+Storage preparation [zfs/none] (none is Docker only, not recommended): WARNING: Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.
+Added Server beta (3ba1dcbd6b854ea699b76f6ef296576d)
+Waiting for ssh://root@172.19.0.3 to participate: connection attempt failed: Server phase is joining; retrying for up to 299s. Check outbound firewall access if this connection is blocked.
+# exit 0
+
+
+=== server add: found a second, separate Cluster (rich ingress progress) :: $ ployz server add --standalone --no-install root@172.19.0.5 --name solo --ployz-config /tmp/ployz-cap-home/solo.yaml
+Storage preparation [zfs/none] (none is Docker only, not recommended): WARNING: Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.
+Switched context to 'default'
+Initialised Server solo (11b07efcce8e4822b59ca72d20433f1a)
+Waiting for ssh://root@172.19.0.5 to participate: connection attempt failed: Server is not yet published in the Cluster store; retrying for up to 298s. Check outbound firewall access if this connection is blocked.
+[1m[+][0m Running service ingress 0/1
+ [2m•[0m Container ingress on solo  [2mPending[0m
+[68F[J[1m[+][0m Running service ingress 0/1
+ [38;5;14m…[39m Container ingress on solo  [38;5;14mRunning[39m
+[68F[J[1m[+][0m Running service ingress 0/1
+ [38;5;14m…[39m Container ingress on solo  [38;5;14mRunning[39m
+[68F[J[1m[+][0m Running service ingress 0/1
+ [38;5;14m…[39m Container ployz-create-86a1a036bca580635a80fea26c3310d748a16c3ee85dbabb61290021bd8f4f51 on solo  [38;5;14mRunning[39m
+[138F[J[1m[+][0m Running service ingress 0/1
+ [38;5;14m…[39m Container ployz-create-86a1a036bca580635a80fea26c3310d748a16c3ee85dbabb61290021bd8f4f51 on solo  [38;5;14mwaiting for health[39m  0.0s
+[155F[J[1m[+][0m Running service ingress 0/1
+ [38;5;14m…[39m Container ployz-create-86a1a036bca580635a80fea26c3310d748a16c3ee85dbabb61290021bd8f4f51 on solo  [38;5;14mwaiting for health[39m  1.0s
+[155F[J[1m[+][0m Running service ingress 0/1
+ [38;5;14m…[39m Container ployz-create-86a1a036bca580635a80fea26c3310d748a16c3ee85dbabb61290021bd8f4f51 on solo  [38;5;14mwaiting for health[39m  2.0s
+[155F[J[1m[+][0m Running service ingress 0/1
+ [38;5;14m…[39m Container ployz-create-86a1a036bca580635a80fea26c3310d748a16c3ee85dbabb61290021bd8f4f51 on solo  [38;5;14mwaiting for health[39m  3.0s
+[155F[J[1m[+][0m Running service ingress 0/1
+ [38;5;14m…[39m Container ployz-create-86a1a036bca580635a80fea26c3310d748a16c3ee85dbabb61290021bd8f4f51 on solo  [38;5;14mwaiting for health[39m  4.0s
+[155F[J[1m[+][0m Running service ingress 0/1
+ [38;5;14m…[39m Container ployz-create-86a1a036bca580635a80fea26c3310d748a16c3ee85dbabb61290021bd8f4f51 on solo  [38;5;14mwaiting for health[39m  5.0s
+[155F[J[1m[+][0m Running service ingress 0/1
+ [38;5;14m…[39m Container ployz-create-86a1a036bca580635a80fea26c3310d748a16c3ee85dbabb61290021bd8f4f51 on solo  [38;5;14mwaiting for health[39m  5.0s
+[155F[J[1m[+][0m Running service ingress 1/1
+ [38;5;10m✔[39m Container ployz-create-86a1a036bca580635a80fea26c3310d748a16c3ee85dbabb61290021bd8f4f51 on solo  [38;5;10mHealthy[39m
+[138F[J✓ Deployed to default
+  1 ready · 1 created · 1 machine
+# exit 0
+
+
+=== server ls :: $ ployz server ls
+ID	NAME	MEMBERSHIP	STORAGE	SUBNET	GATEWAY	PUBLIC IP	ENDPOINTS	HOSTNAME	DAEMON	DOCKER	OS	KERNEL	ARCH
+d7bb999f0d454dbcacc63d085021de34	alpha	up	Docker only	10.210.0.0/24	10.210.0.1	203.0.113.10	172.19.0.2:51820,203.0.113.10:51820	284d51ed2410	0.2.3	29.1.3	Ubuntu 24.04.5 LTS	6.8.0-138-generic	x86_64
+3ba1dcbd6b854ea699b76f6ef296576d	beta	up	Docker only	10.210.1.0/24	10.210.1.1	203.0.113.10	172.19.0.3:51820,203.0.113.10:51820	037d3af757b3	0.2.3	29.1.3	Ubuntu 24.04.5 LTS	6.8.0-138-generic	x86_64
+0523a6681d894d128f69ea28b7ed62d5	gamma	up	Docker only	10.210.2.0/24	10.210.2.1	203.0.113.10	172.19.0.4:51820,203.0.113.10:51820	5cfa19714dbf	0.2.3	29.1.3	Ubuntu 24.04.5 LTS	6.8.0-138-generic	x86_64
+
+=== server ls --json :: $ ployz server ls --json
+{
+  "failures": [],
+  "omitted": [],
+  "servers": [
+    {
+      "gateway": "10.210.0.1",
+      "machine": {
+        "accepts_builds": true,
+        "accepts_ingress": true,
+        "accepts_services": true,
+        "advertised_endpoints": [
+          "172.19.0.2:51820",
+          "203.0.113.10:51820"
+        ],
+        "build_concurrency": null,
+        "id": "d7bb999f0d454dbcacc63d085021de34",
+        "labels": {},
+        "name": "alpha",
+        "public_ip": "203.0.113.10",
+        "public_key": "XZYeqOGDcGr+dhj2HX53vN6PYb45cSU7+GWYyw1Tqhg=",
+        "runtime": {
+          "architecture": "x86_64",
+          "daemon_version": "0.2.3",
+          "docker_version": "29.1.3",
+          "hostname": "284d51ed2410",
+          "kernel_version": "6.8.0-138-generic",
+          "memory_total_bytes": 33649131520,
+          "os_pretty_name": "Ubuntu 24.04.5 LTS",
+          "running_builds": 0
+        },
+        "subnet": "10.210.0.0/24"
+      },
+      "membership": "up",
+      "rtt": null,
+      "selected_endpoint": null,
+      "storage": {
+        "state": "stateless"
+      }
+    },
+    {
+      "gateway": "10.210.1.1",
+      "machine": {
+        "accepts_builds": true,
+        "accepts_ingress": true,
+        "accepts_services": true,
+        "advertised_endpoints": [
+          "172.19.0.3:51820",
+          "203.0.113.10:51820"
+        ],
+        "build_concurrency": null,
+        "id": "3ba1dcbd6b854ea699b76f6ef296576d",
+        "labels": {},
+        "name": "beta",
+        "public_ip": "203.0.113.10",
+        "public_key": "hvumNXIGZh+QDRSl/ZES4V3SmdyO7G9OTtskLU1esTY=",
+        "runtime": {
+          "architecture": "x86_64",
+          "daemon_version": "0.2.3",
+          "docker_version": "29.1.3",
+          "hostname": "037d3af757b3",
+          "kernel_version": "6.8.0-138-generic",
+          "memory_total_bytes": 33649131520,
+          "os_pretty_name": "Ubuntu 24.04.5 LTS",
+          "running_builds": 0
+        },
+        "subnet": "10.210.1.0/24"
+      },
+      "membership": "up",
+      "rtt": null,
+      "selected_endpoint": "172.19.0.3:51820",
+      "storage": {
+        "state": "stateless"
+      }
+    },
+    {
+      "gateway": "10.210.2.1",
+      "machine": {
+        "accepts_builds": true,
+        "accepts_ingress": true,
+        "accepts_services": true,
+        "advertised_endpoints": [
+          "172.19.0.4:51820",
+          "203.0.113.10:51820"
+        ],
+        "build_concurrency": null,
+        "id": "0523a6681d894d128f69ea28b7ed62d5",
+        "labels": {},
+        "name": "gamma",
+        "public_ip": "203.0.113.10",
+        "public_key": "Xxp4vxAgIulypSLB5IiNDhd4x4T69qEDJnKzCiwpbkY=",
+        "runtime": {
+          "architecture": "x86_64",
+          "daemon_version": "0.2.3",
+          "docker_version": "29.1.3",
+          "hostname": "5cfa19714dbf",
+          "kernel_version": "6.8.0-138-generic",
+          "memory_total_bytes": 33649131520,
+          "os_pretty_name": "Ubuntu 24.04.5 LTS",
+          "running_builds": 0
+        },
+        "subnet": "10.210.2.0/24"
+      },
+      "membership": "up",
+      "rtt": null,
+      "selected_endpoint": "172.19.0.4:51820",
+      "storage": {
+        "state": "stateless"
+      }
+    }
+  ]
+}
+
+=== server inspect :: $ ployz server inspect alpha
+{
+  "server": {
+    "advertised_endpoints": [
+      "172.19.0.2:51820",
+      "203.0.113.10:51820"
+    ],
+    "id": "d7bb999f0d454dbcacc63d085021de34",
+    "machine": {
+      "accepts_builds": true,
+      "accepts_ingress": true,
+      "accepts_services": true,
+      "advertised_endpoints": [
+        "172.19.0.2:51820",
+        "203.0.113.10:51820"
+      ],
+      "build_concurrency": null,
+      "id": "d7bb999f0d454dbcacc63d085021de34",
+      "labels": {},
+      "name": "alpha",
+      "public_ip": "203.0.113.10",
+      "public_key": "XZYeqOGDcGr+dhj2HX53vN6PYb45cSU7+GWYyw1Tqhg=",
+      "runtime": {
+        "architecture": "x86_64",
+        "daemon_version": "0.2.3",
+        "docker_version": "29.1.3",
+        "hostname": "284d51ed2410",
+        "kernel_version": "6.8.0-138-generic",
+        "memory_total_bytes": 33649131520,
+        "os_pretty_name": "Ubuntu 24.04.5 LTS",
+        "running_builds": 0
+      },
+      "subnet": "10.210.0.0/24"
+    },
+    "management_clients": [],
+    "phase": "participating",
+    "public_key": "XZYeqOGDcGr+dhj2HX53vN6PYb45cSU7+GWYyw1Tqhg=",
+    "rtts": [
+      {
+        "address": "[fdcc:5f1a:78bf:1020:22e9:72a5:22c1:e488]:7570",
+        "machine": {
+          "id": "0523a6681d894d128f69ea28b7ed62d5",
+          "name": "gamma"
+        },
+        "peer_id": "26a2dca4-54a5-48a0-91d8-acf1afdedf9b",
+        "statistics": {
+          "median_ns": 0,
+          "population_stddev_ns": 0
+        }
+      },
+      {
+        "address": "[fdcc:86fb:a635:7206:661f:900d:14a5:fd91]:7570",
+        "machine": {
+          "id": "3ba1dcbd6b854ea699b76f6ef296576d",
+          "name": "beta"
+        },
+        "peer_id": "a6483bf3-e451-407e-961c-04b875d92b23",
+        "statistics": {
+          "median_ns": 0,
+          "population_stddev_ns": 0
+        }
+      }
+    ],
+    "storage": {
+      "state": "stateless"
+    },
+    "store_version": {
+      "26a2dca454a548a091d8acf1afdedf9b": 1,
+      "a6483bf3e451407e961c04b875d92b23": 1,
+      "ce58aa53622f45e6a1f5219f50054827": 5
+    },
+    "telemetry": {
+      "bridge": {
+        "bridge_attached_endpoints": 1,
+        "bridge_free_endpoints": 252,
+        "bridge_usable_endpoints": 253
+      },
+      "host": {
+        "cpu_count": 24,
+        "docker_root_free_bytes": 256068263936,
+        "docker_root_total_bytes": 778964144128,
+        "load_average_milli": 1200,
+        "managed_containers": 1,
+        "memory_available_bytes": 18448465920,
+        "memory_total_bytes": 33649131520,
+        "observed_at_unix_seconds": 1791164346
+      },
+      "scope": "full"
+    }
+  },
+  "upgrade": null
+}
+
+=== server inspect --json :: $ ployz server inspect alpha --json
+{
+  "server": {
+    "advertised_endpoints": [
+      "172.19.0.2:51820",
+      "203.0.113.10:51820"
+    ],
+    "id": "d7bb999f0d454dbcacc63d085021de34",
+    "machine": {
+      "accepts_builds": true,
+      "accepts_ingress": true,
+      "accepts_services": true,
+      "advertised_endpoints": [
+        "172.19.0.2:51820",
+        "203.0.113.10:51820"
+      ],
+      "build_concurrency": null,
+      "id": "d7bb999f0d454dbcacc63d085021de34",
+      "labels": {},
+      "name": "alpha",
+      "public_ip": "203.0.113.10",
+      "public_key": "XZYeqOGDcGr+dhj2HX53vN6PYb45cSU7+GWYyw1Tqhg=",
+      "runtime": {
+        "architecture": "x86_64",
+        "daemon_version": "0.2.3",
+        "docker_version": "29.1.3",
+        "hostname": "284d51ed2410",
+        "kernel_version": "6.8.0-138-generic",
+        "memory_total_bytes": 33649131520,
+        "os_pretty_name": "Ubuntu 24.04.5 LTS",
+        "running_builds": 0
+      },
+      "subnet": "10.210.0.0/24"
+    },
+    "management_clients": [],
+    "phase": "participating",
+    "public_key": "XZYeqOGDcGr+dhj2HX53vN6PYb45cSU7+GWYyw1Tqhg=",
+    "rtts": [
+      {
+        "address": "[fdcc:5f1a:78bf:1020:22e9:72a5:22c1:e488]:7570",
+        "machine": {
+          "id": "0523a6681d894d128f69ea28b7ed62d5",
+          "name": "gamma"
+        },
+        "peer_id": "26a2dca4-54a5-48a0-91d8-acf1afdedf9b",
+        "statistics": {
+          "median_ns": 0,
+          "population_stddev_ns": 0
+        }
+      },
+      {
+        "address": "[fdcc:86fb:a635:7206:661f:900d:14a5:fd91]:7570",
+        "machine": {
+          "id": "3ba1dcbd6b854ea699b76f6ef296576d",
+          "name": "beta"
+        },
+        "peer_id": "a6483bf3-e451-407e-961c-04b875d92b23",
+        "statistics": {
+          "median_ns": 0,
+          "population_stddev_ns": 0
+        }
+      }
+    ],
+    "storage": {
+      "state": "stateless"
+    },
+    "store_version": {
+      "26a2dca454a548a091d8acf1afdedf9b": 1,
+      "a6483bf3e451407e961c04b875d92b23": 1,
+      "ce58aa53622f45e6a1f5219f50054827": 5
+    },
+    "telemetry": {
+      "bridge": {
+        "bridge_attached_endpoints": 1,
+        "bridge_free_endpoints": 252,
+        "bridge_usable_endpoints": 253
+      },
+      "host": {
+        "cpu_count": 24,
+        "docker_root_free_bytes": 256068263936,
+        "docker_root_total_bytes": 778964144128,
+        "load_average_milli": 1200,
+        "managed_containers": 1,
+        "memory_available_bytes": 18440765440,
+        "memory_total_bytes": 33649131520,
+        "observed_at_unix_seconds": 1791164346
+      },
+      "scope": "full"
+    }
+  },
+  "upgrade": null
+}
+
+=== server logs -n 5 :: $ ployz server logs -n 5
+2026-10-05T01:39:06+00:00 alpha ployz | ployz testkit journal entry
+2026-10-05T01:39:06+00:00 beta ployz | ployz testkit journal entry
+2026-10-05T01:39:06+00:00 gamma ployz | ployz testkit journal entry
+
+=== server clean (list orphan Namespaces) :: $ ployz server clean
+Every Namespace on the Servers that answered is in a Project.
+
+=== server clean --json :: $ ployz server clean --json
+{
+  "failures": [],
+  "namespaces": [],
+  "next": null,
+  "omitted": []
+}
+
+=== server build-cache-clear :: $ ployz server build-cache-clear
+build resource cleanup could not be confirmed: retained builder state is quarantined; confirm builder ployz-1000 and its host processes have stopped before clearing /var/tmp/ployz-build-1000/ployz-1000.lock
+
+=== server build-cache-clear --json :: $ ployz server build-cache-clear --json
+{"error":{"code":"internal","details":null,"message":"build resource cleanup could not be confirmed: retained builder state is quarantined; confirm builder ployz-1000 and its host processes have stopped before clearing /var/tmp/ployz-build-1000/ployz-1000.lock"}}
+
+=== server drain (live) :: $ ployz server drain beta
+Server beta no longer accepts Services.
+Still on beta: ployz-system/ingress
+Turning the services role back on does not move anything back.
+# exit 0
+
+
+=== server ls after rm :: $ ployz server ls
+ID	NAME	MEMBERSHIP	STORAGE	SUBNET	GATEWAY	PUBLIC IP	ENDPOINTS	HOSTNAME	DAEMON	DOCKER	OS	KERNEL	ARCH
+d7bb999f0d454dbcacc63d085021de34	alpha	up	Docker only	10.210.0.0/24	10.210.0.1	203.0.113.10	172.19.0.2:51820,203.0.113.10:51820	284d51ed2410	0.2.3	29.1.3	Ubuntu 24.04.5 LTS	6.8.0-138-generic	x86_64
+3ba1dcbd6b854ea699b76f6ef296576d	beta	up	Docker only	10.210.1.0/24	10.210.1.1	203.0.113.10	172.19.0.3:51820,203.0.113.10:51820	037d3af757b3	0.2.3	29.1.3	Ubuntu 24.04.5 LTS	6.8.0-138-generic	x86_64
+

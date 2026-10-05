@@ -1,0 +1,12 @@
+[package]
+name = "ployz-ui-prototype"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+anstream = "1"
+anstyle = "1"
+indicatif = { version = "0.18", default-features = false, features = ["unicode-width"] }

@@ -1,0 +1,101 @@
+=== domain ls :: $ ployz domain ls
+acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
+web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+
+=== domain ls --json :: $ ployz --json domain ls
+{
+  "domains": [
+    {
+      "action": null,
+      "hostname": "acme.com",
+      "kind": "custom",
+      "port": null,
+      "reason": "Port 80 is closed on 203.0.113.10",
+      "service": "web",
+      "status": "needs_attention"
+    },
+    {
+      "action": null,
+      "hostname": "web.ada.ployz.test",
+      "kind": "generated",
+      "port": 80,
+      "prefix": "web",
+      "reason": "Port 80 is closed on 203.0.113.10",
+      "service": "web",
+      "status": "needs_attention"
+    }
+  ],
+  "environment": {
+    "id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+    "name": "production",
+    "project": "shop",
+    "revision": 38
+  }
+}
+
+=== domain check the generated domain :: $ ployz domain check web.ada.ployz.test
+web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+
+=== domain check --json the generated domain :: $ ployz --json domain check web.ada.ployz.test
+{
+  "domain": {
+    "action": null,
+    "hostname": "web.ada.ployz.test",
+    "kind": "generated",
+    "port": 80,
+    "prefix": "web",
+    "reason": "Port 80 is closed on 203.0.113.10",
+    "service": "web",
+    "status": "needs_attention"
+  },
+  "environment": {
+    "id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+    "name": "production",
+    "project": "shop",
+    "revision": 38
+  }
+}
+
+=== domain check a custom domain :: $ ployz domain check acme.com
+acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
+
+=== domain check --json a custom domain :: $ ployz --json domain check acme.com
+{
+  "domain": {
+    "action": null,
+    "hostname": "acme.com",
+    "kind": "custom",
+    "port": null,
+    "reason": "Port 80 is closed on 203.0.113.10",
+    "service": "web",
+    "status": "needs_attention"
+  },
+  "environment": {
+    "id": "4b4e5354-8834-4aea-a807-e65f832680bc",
+    "name": "production",
+    "project": "shop",
+    "revision": 38
+  }
+}
+
+=== domain ls with a staged change :: $ ployz domain ls
+acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
+shopweb.ada.ployz.test	web → 80	Setting up · Live after your next deploy
+
+=== diff :: $ ployz diff
+web (update)
+  web.managedHostnames: [{"prefix":"web","targetPort":80}] -> [{"prefix":"shopweb","targetPort":80}]
+next: ployz deploy --expect-version 39:27:0.54
+
+=== domain ls after deploy :: $ ployz domain ls
+acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
+shopweb.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+
+=== domain ls with two generated domains :: $ ployz domain ls
+acme.com	web → PORT	Needs attention · Port 80 is closed on 203.0.113.10
+web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+api.ada.ployz.test	api → PORT	Needs attention · Port 80 is closed on 203.0.113.10
+
+=== domain ls with a staged removal :: $ ployz domain ls
+web.ada.ployz.test	web → 80	Needs attention · Port 80 is closed on 203.0.113.10
+

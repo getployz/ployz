@@ -1,0 +1,47 @@
+=== service ls :: $ ployz service ls
+SERVICE	PRIVATE DNS	SOURCE	NEXT DEPLOY
+api	api	image	-
+web	web	image	-
+
+=== service inspect :: $ ployz service inspect web
+Service web (a085f2f9-e4df-439e-9d34-99e5b3ee7405)
+Private DNS: web
+Source: image
+env={"GREETING":"hello"}
+image="alpine:3.23.3"
+maxRetries=10
+privateDns="web"
+replicas=2
+restartPolicy="unless-stopped"
+startCommand="sh -c 'echo started; while true; do echo tick; sleep 2; done'"
+
+=== service inspect --json :: $ ployz service inspect web --json
+{
+  "change": null,
+  "changes": [],
+  "environment": {
+    "id": "52712cb1-5621-43aa-987b-900e655738a0",
+    "name": "production",
+    "project": "shop",
+    "revision": 10
+  },
+  "id": "a085f2f9-e4df-439e-9d34-99e5b3ee7405",
+  "lineage": "a085f2f9-e4df-439e-9d34-99e5b3ee7405",
+  "name": "web",
+  "private_dns": "web",
+  "row": "a085f2f9-e4df-439e-9d34-99e5b3ee7405:node",
+  "source": "image",
+  "template": null,
+  "values": {
+    "env": {
+      "GREETING": "hello"
+    },
+    "image": "alpine:3.23.3",
+    "maxRetries": 10,
+    "privateDns": "web",
+    "replicas": 2,
+    "restartPolicy": "unless-stopped",
+    "startCommand": "sh -c 'echo started; while true; do echo tick; sleep 2; done'"
+  }
+}
+

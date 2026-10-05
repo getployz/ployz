@@ -1,0 +1,176 @@
+=== not signed in: status :: $ ployz status
+not signed in to Cloud
+next: ployz login
+
+=== not signed in: status --json :: $ ployz status --json
+{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
+
+=== not signed in: token ls :: $ ployz token ls
+not signed in to Cloud
+next: ployz login
+
+=== not signed in: token ls --json :: $ ployz token ls --json
+{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
+
+=== not signed in: org ls :: $ ployz org ls
+not signed in to Cloud
+next: ployz login
+
+=== not signed in: org ls --json :: $ ployz org ls --json
+{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
+
+=== not signed in: billing :: $ ployz billing
+not signed in to Cloud
+next: ployz login
+
+=== not signed in: billing --json :: $ ployz billing --json
+{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
+
+=== not signed in: github ls :: $ ployz github ls
+not signed in to Cloud
+next: ployz login
+
+=== not signed in: github ls --json :: $ ployz github ls --json
+{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
+
+=== not signed in: domain ls :: $ ployz domain ls
+not signed in to Cloud
+next: ployz login
+
+=== not signed in: domain ls --json :: $ ployz domain ls --json
+{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
+
+=== not signed in: deployment ls :: $ ployz deployment ls
+not signed in to Cloud
+next: ployz login
+
+=== not signed in: deployment ls --json :: $ ployz deployment ls --json
+{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
+
+=== not signed in: deploy --plan :: $ ployz deploy --plan
+not signed in to Cloud
+next: ployz login
+
+=== not signed in: deploy --plan --json :: $ ployz deploy --plan --json
+{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
+
+=== not signed in: logs :: $ ployz logs
+could not inspect /run/ployz/ployz.sock: Permission denied (os error 13)
+
+=== not signed in: logs --json :: $ ployz logs --json
+{"error":{"code":"unavailable","details":null,"message":"could not inspect /run/ployz/ployz.sock: Permission denied (os error 13)"}}
+
+=== not signed in: ps :: $ ployz ps
+could not inspect /run/ployz/ployz.sock: Permission denied (os error 13)
+
+=== not signed in: ps --json :: $ ployz ps --json
+{"error":{"code":"unavailable","details":null,"message":"could not inspect /run/ployz/ployz.sock: Permission denied (os error 13)"}}
+
+=== not signed in: cloud reset -y :: $ ployz cloud reset -y
+not signed in to Cloud
+next: ployz login
+
+=== not signed in: cloud reset -y --json :: $ ployz cloud reset -y --json
+{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
+
+=== logout when not signed in :: $ ployz logout
+Not signed in.
+
+=== logout when not signed in --json :: $ ployz logout --json
+{
+  "cloud": null,
+  "device": null,
+  "servers": null,
+  "signed_out": false
+}
+
+=== login, Cloud unreachable :: $ ployz login
+could not reach Cloud at http://127.0.0.1:9: error sending request: client error (Connect): tcp connect error: Connection refused (os error 111)
+
+=== login, Cloud unreachable --json :: $ ployz login --json
+{"error":{"code":"unavailable","details":null,"message":"could not reach Cloud at http://127.0.0.1:9: error sending request: client error (Connect): tcp connect error: Connection refused (os error 111)"}}
+
+=== token ls, token against unreachable Cloud :: $ ployz token ls
+could not reach Cloud at http://127.0.0.1:9: error sending request: client error (Connect): tcp connect error: Connection refused (os error 111)
+
+=== token ls, token against unreachable Cloud --json :: $ ployz token ls --json
+{"error":{"code":"unavailable","details":null,"message":"could not reach Cloud at http://127.0.0.1:9: error sending request: client error (Connect): tcp connect error: Connection refused (os error 111)"}}
+
+=== login --json, URL that is not a Ployz Cloud :: $ ployz login --json
+{"error":{"code":"invalid_argument","details":null,"message":"Cloud answered HTTP 405: <!doctype html><html lang=\"en\"><head><title>Example Domain</title><link rel=\"icon\" href=\"data:,\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href=\"https://iana.org/domains/example\">Learn more</a></p></div></body></html>"}}
+
+=== bogus PLOYZ_TOKEN: status :: $ ployz status
+Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization
+next: ployz token new
+
+=== bogus PLOYZ_TOKEN: status --json :: $ ployz status --json
+{"error":{"code":"unauthenticated","details":{"next":"ployz token new"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"}}
+
+=== bogus PLOYZ_TOKEN: token ls :: $ ployz token ls
+Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization
+next: ployz token new
+
+=== bogus PLOYZ_TOKEN: token ls --json :: $ ployz token ls --json
+{"error":{"code":"unauthenticated","details":{"next":"ployz token new"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"}}
+
+=== bogus PLOYZ_TOKEN: org ls :: $ ployz org ls
+Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization
+next: ployz token new
+
+=== bogus PLOYZ_TOKEN: org ls --json :: $ ployz org ls --json
+{"error":{"code":"unauthenticated","details":{"next":"ployz token new"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"}}
+
+=== bogus PLOYZ_TOKEN: billing :: $ ployz billing
+Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization
+next: ployz token new
+
+=== bogus PLOYZ_TOKEN: billing --json :: $ ployz billing --json
+{"error":{"code":"unauthenticated","details":{"next":"ployz token new"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"}}
+
+=== bogus PLOYZ_TOKEN: deployment ls :: $ ployz deployment ls
+Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization
+next: ployz token new
+
+=== bogus PLOYZ_TOKEN: deployment ls --json :: $ ployz deployment ls --json
+{"error":{"code":"unauthenticated","details":{"next":"ployz token new"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"}}
+
+=== token new without a name :: $ ployz token new
+error: the following required arguments were not provided:
+  <name>
+
+Usage: ployz token new <name>
+
+For more information, try '--help'.
+
+=== token new without a name --json :: $ ployz token new --json
+{"error":{"code":"invalid_argument","details":null,"message":"the following required arguments were not provided:\n  <name>\n\nUsage: ployz token new --json <name>\n\nFor more information, try '--help'."}}
+
+=== org use without a slug :: $ ployz org use
+error: the following required arguments were not provided:
+  <organization>
+
+Usage: ployz org use <organization>
+
+For more information, try '--help'.
+
+=== unknown subcommand :: $ ployz org frobnicate
+error: unrecognized subcommand 'frobnicate'
+
+Usage: ployz org [OPTIONS] [COMMAND]
+
+For more information, try '--help'.
+
+=== bad build-order value :: $ ployz org build-order sideways
+error: invalid value 'sideways' for '[order]'
+  [possible values: auto, servers-only, github-then-servers, servers-then-github, github-only]
+
+For more information, try '--help'.
+
+=== domain add without a service :: $ ployz domain add
+error: the following required arguments were not provided:
+  <service>
+
+Usage: ployz domain add <service> [host]
+
+For more information, try '--help'.
+

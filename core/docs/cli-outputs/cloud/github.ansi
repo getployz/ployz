@@ -1,0 +1,50 @@
+=== github (bare) :: $ ployz github
+Connect GitHub so Services can build your repositories
+
+Usage: ployz github [OPTIONS] [COMMAND]
+
+Commands:
+  connect     Print the GitHub App install link and wait until it is installed
+  ls          List your GitHub installations and repositories, or one repository's branches
+  disconnect  Forget one of your GitHub installations; uninstall the App on GitHub
+  help        Print this message or the help of the given subcommand(s)
+
+Options:
+      --connect <connect>            [env: PLOYZ_CONNECT=]
+      --ssh-timeout <SECONDS>        SSH setup timeout in seconds (provisioning: network connection only) [default: 20]
+      --ployz-config <ployz-config>  [env: PLOYZ_CONFIG=] [default: ~/.config/ployz/config.yaml]
+      --json                         Print the result as one JSON object on stdout
+  -h, --help                         Print help (see more with '--help')
+
+=== github ls :: $ ployz github ls
+INSTALLATION	ACCOUNT	REPOSITORIES
+No repositories yet. Next: ployz github connect
+
+=== github ls --json :: $ ployz github ls --json
+{
+  "install_url": "https://github.com/apps/ployz-verify/installations/new",
+  "installations": [],
+  "linked": false,
+  "next": "ployz github connect",
+  "ready": false,
+  "repositories": []
+}
+
+=== github connect --json (no --wait) :: $ ployz github connect --json
+{"error":{"code":"unsupported","details":{"next":"ployz github connect"},"message":"GitHub reports installs by GitHub account, and yours isn't linked: sign in to Ployz Cloud with GitHub once, then rerun"}}
+
+=== github connect (waits; timed out by the capture) :: $ ployz github connect
+GitHub reports installs by GitHub account, and yours isn't linked: sign in to Ployz Cloud with GitHub once, then rerun
+next: ployz github connect
+
+=== github disconnect unknown :: $ ployz github disconnect 12345
+No such GitHub installation of yours
+next: ployz github ls
+
+=== github disconnect unknown --json :: $ ployz github disconnect 12345 --json
+{"error":{"code":"not_found","details":{"next":"ployz github ls"},"message":"No such GitHub installation of yours"}}
+
+=== github ls REPO (unknown repository) :: $ ployz github ls acme/shop
+No repository by that name that this Organization can read
+next: ployz github ls
+
