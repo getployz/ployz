@@ -67,6 +67,17 @@ pub fn resolve_route(
     }
 }
 
+/// An unknown Server is `not_found` only when this daemon can see the members;
+/// callers read `not_found` as already gone, which an empty view cannot prove.
+fn route_status(error: &TargetResolutionError, visible: &[Machine]) -> Status {
+    let message = ployz_core::error_chain::inline(error);
+    if matches!(error, TargetResolutionError::NotFound(_)) && !visible.is_empty() {
+        Status::not_found(message)
+    } else {
+        Status::invalid_argument(message)
+    }
+}
+
 #[derive(Clone)]
 pub struct MachineProxy {
     local: Routes,
@@ -131,10 +142,7 @@ impl MachineProxy {
         }
         let route = match resolve_route(routing, visible) {
             Ok(route) => route,
-            Err(error) => {
-                return Status::invalid_argument(ployz_core::error_chain::inline(&error))
-                    .into_http();
-            }
+            Err(error) => return route_status(&error, visible).into_http(),
         };
         match route {
             ProxyRoute::Local => self.call_local(request).await,
