@@ -688,7 +688,7 @@ fn only_postgres_and_sqlite_urls_open() {
 }
 
 #[test]
-fn a_healthcheck_sets_by_path_or_object_and_unsets_to_none() {
+fn a_healthcheck_sets_by_path_command_or_object_and_unsets_to_none() {
     let (store, who) = shop();
     let write = |change: Change| store.write(&who, &edit(None, vec![change]));
     write(set("web.healthcheck", json!("/up"))).unwrap();
@@ -707,10 +707,29 @@ fn a_healthcheck_sets_by_path_or_object_and_unsets_to_none() {
         value(&store, &who, "web.healthcheck"),
         json!({ "path": "/live", "timeoutSeconds": 30 })
     );
+    write(set("web.healthcheck", json!({ "command": " pg_isready " }))).unwrap();
+    assert_eq!(
+        value(&store, &who, "web.healthcheck"),
+        json!({ "command": "pg_isready", "timeoutSeconds": 30 })
+    );
+    write(set(
+        "web.healthcheck",
+        json!({ "command": "redis-cli ping", "timeoutSeconds": 45 }),
+    ))
+    .unwrap();
+    write(set("web.healthcheck", json!("/up"))).unwrap();
+    assert_eq!(
+        value(&store, &who, "web.healthcheck"),
+        json!({ "path": "/up", "timeoutSeconds": 45 })
+    );
     for bad in [
         json!("up"),
         json!({ "path": "/x", "timeoutSeconds": 0 }),
         json!(3),
+        json!({ "command": " " }),
+        json!({ "command": "true", "timeoutSeconds": 301 }),
+        json!({ "command": "true", "path": "/up" }),
+        json!({ "timeoutSeconds": 30 }),
     ] {
         let error = write(set("web.healthcheck", bad.clone())).unwrap_err();
         assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{bad}");

@@ -155,7 +155,7 @@ pub enum ServiceImageCredentials {
     Configured { credential_id: String },
 }
 
-/// An authored HTTP readiness check or an explicitly disabled check.
+/// An authored HTTP or shell-command readiness check, or an explicitly disabled check.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(
     tag = "type",
@@ -165,7 +165,14 @@ pub enum ServiceImageCredentials {
 )]
 pub enum ServiceHealthcheck {
     None,
-    Http { path: String, timeout_seconds: u16 },
+    Http {
+        path: String,
+        timeout_seconds: u16,
+    },
+    Command {
+        command: String,
+        timeout_seconds: u16,
+    },
 }
 
 /// Cloud's retry count is authored separately; parsing reuses Docker policy admission.

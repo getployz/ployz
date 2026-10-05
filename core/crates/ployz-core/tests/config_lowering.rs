@@ -127,11 +127,24 @@ fn lowering_retains_commands_limits_restart_and_network_ownership() {
         "vol-00000000-0000-4000-8000-000000000002"
     );
     assert_eq!(intent["options"]["selected"], json!([{"name":"api"}]));
-    let mut http = config;
-    http["healthcheck"] = json!({"type":"http","path":"/health","timeoutSeconds":10});
+    let healthcheck = |authored: Value| {
+        let mut config = config.clone();
+        config["healthcheck"] = authored;
+        lower(config).unwrap()["target"][0]["container"]["healthcheck"].take()
+    };
     assert_eq!(
-        lower(http).unwrap()["target"][0]["container"]["healthcheck"],
+        healthcheck(json!({"type":"http","path":"/health","timeoutSeconds":10})),
         json!({"state":"http","path":"/health","port":8080,"timeout_seconds":10})
+    );
+    assert_eq!(
+        healthcheck(
+            json!({"type":"command","command":"pg_isready -h 127.0.0.1","timeoutSeconds":90})
+        ),
+        json!({
+            "state":"configured","test":["CMD-SHELL","pg_isready -h 127.0.0.1"],
+            "interval_millis":10_000,"timeout_millis":5_000,"start_period_millis":90_000,
+            "start_interval_millis":1_000,"retries":3,"deadline_millis":90_000
+        })
     );
 }
 
@@ -296,6 +309,12 @@ fn frozen_references_order_the_deploy_by_identity_not_display_text() {
     );
     input["snapshots"][1]["config"]["healthcheck"] =
         json!({"type":"http","path":"/health","timeoutSeconds":10});
+    assert_eq!(
+        dependencies(&input)["app"],
+        json!([{"service":"postgres","condition":"service_healthy"}])
+    );
+    input["snapshots"][1]["config"]["healthcheck"] =
+        json!({"type":"command","command":"pg_isready","timeoutSeconds":10});
     assert_eq!(
         dependencies(&input)["app"],
         json!([{"service":"postgres","condition":"service_healthy"}])

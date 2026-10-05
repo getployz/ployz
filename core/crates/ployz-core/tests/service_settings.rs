@@ -186,6 +186,32 @@ fn service_validation_normalizes_input_and_rejects_invalid_settings() {
 }
 
 #[test]
+fn command_healthchecks_are_trimmed_and_bounded() {
+    let check = |command: Value, timeout: Value| {
+        let mut input = config();
+        input["healthcheck"] =
+            json!({"type":"command", "command":command, "timeoutSeconds":timeout});
+        parse_service_config(input)
+            .map(|config| serde_json::to_value(config).unwrap()["healthcheck"].take())
+    };
+    assert_eq!(
+        check(json!("  pg_isready -h 127.0.0.1\n"), json!(300)).unwrap(),
+        json!({"type":"command", "command":"pg_isready -h 127.0.0.1", "timeoutSeconds":300})
+    );
+    for (command, timeout) in [
+        (json!(" "), json!(30)),
+        (json!("private\0value"), json!(30)),
+        (json!("x".repeat(2001)), json!(30)),
+        (json!("true"), json!(0)),
+        (json!("true"), json!(301)),
+    ] {
+        let error = check(command.clone(), timeout.clone()).unwrap_err();
+        assert!(!error.message.contains("private"), "{error}");
+    }
+    assert!(check(json!("x".repeat(2000)), json!(1)).is_ok());
+}
+
+#[test]
 fn related_settings_preserve_ownership_redact_secrets_and_restore_stable_routes() {
     let mut before = config();
     before["env"] = json!({"TOKEN": {"kind":"secret","fingerprint":"before-private-fingerprint","encryptedValue":{"version":1,"iv":"iv","tag":"tag","ciphertext":"private-ciphertext"}}});

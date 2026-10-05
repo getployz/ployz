@@ -10,11 +10,12 @@ use super::{
     ValuePartOwner, VolumeKind, parse_service_config,
 };
 use crate::{
-    ByteQuantity, ContainerResources, CpuNanos, DependencyCondition, DeployIntent, HealthcheckSpec,
-    HttpHealthcheck, HttpProtocol, IngressHost, Namespace, PlanOptions, PortPublication,
-    PreDeployCommand, PreDeployHook, PullPolicy, RawVolumeSource, RequestedServiceSpec,
-    RestartPolicy, ServiceAttempt, ServiceContainerSpec, ServiceDependency, ServiceMode,
-    ServiceMount, ServiceName, ServiceVolume, ServiceVolumeGraph, VolumeDriver,
+    ByteQuantity, ConfiguredHealthcheck, ContainerResources, CpuNanos, DependencyCondition,
+    DeployIntent, HealthcheckCommand, HealthcheckSpec, HttpHealthcheck, HttpProtocol, IngressHost,
+    Namespace, PlanOptions, PortPublication, PreDeployCommand, PreDeployHook, PullPolicy,
+    RawVolumeSource, RequestedServiceSpec, RestartPolicy, ServiceAttempt, ServiceContainerSpec,
+    ServiceDependency, ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeGraph,
+    VolumeDriver,
 };
 
 /// Injected into a Cloud-authored service only when it has no authored PORT.
@@ -135,6 +136,10 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                     timeout_seconds: *timeout_seconds,
                 }))
             }
+            ServiceHealthcheck::Command {
+                command,
+                timeout_seconds,
+            } => Some(command_healthcheck(command, *timeout_seconds)),
         };
         let replicas = snapshot.replicas.unwrap_or(config.replicas);
         if replicas == 0 || replicas > 50 {
@@ -349,8 +354,23 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
     .with_dependencies(dependencies))
 }
 
+fn command_healthcheck(command: &str, timeout_seconds: u16) -> HealthcheckSpec {
+    let timeout = u64::from(timeout_seconds) * 1_000;
+    HealthcheckSpec::Configured(ConfiguredHealthcheck {
+        test: HealthcheckCommand::parse(["CMD-SHELL", command])
+            .expect("a CMD-SHELL test never begins with NONE"),
+        interval_millis: Some(10_000),
+        timeout_millis: Some(5_000),
+        start_period_millis: Some(timeout),
+        start_interval_millis: Some(1_000),
+        retries: Some(3),
+        deadline_millis: Some(timeout),
+    })
+}
+
 /// A deployed Service waits for every deployed Service its variables reference, except that
-/// edges inside a reference cycle are dropped. An HTTP healthcheck makes the wait for health.
+/// edges inside a reference cycle are dropped. An HTTP or command healthcheck makes the wait for
+/// health.
 fn deployment_dependencies(
     snapshots: &[(ServiceConfig, LowerDeploymentSnapshot)],
     lineages: &BTreeMap<String, String>,
@@ -413,16 +433,18 @@ fn deployment_dependencies(
                 .filter(|dependency| !reaches(dependency, name))
                 .map(|dependency| ServiceDependency {
                     service: (*dependency).clone(),
-                    // Normal startup already monitors Docker health. An explicit HTTP check
-                    // also gates unchanged dependencies.
+                    // Normal startup already monitors Docker health. An authored check also
+                    // gates unchanged dependencies.
                     condition: match graph
                         .get(dependency)
                         .map(|(config, _)| &config.settings.healthcheck)
                     {
-                        Some(ServiceHealthcheck::Http { .. }) => {
-                            DependencyCondition::ServiceHealthy
+                        Some(
+                            ServiceHealthcheck::Http { .. } | ServiceHealthcheck::Command { .. },
+                        ) => DependencyCondition::ServiceHealthy,
+                        Some(ServiceHealthcheck::None) | None => {
+                            DependencyCondition::ServiceStarted
                         }
-                        _ => DependencyCondition::ServiceStarted,
                     },
                 })
                 .collect();

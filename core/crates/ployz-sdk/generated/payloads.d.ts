@@ -2795,7 +2795,7 @@ export type ServiceGitAccess = { "type": "public" } | { "type": "github-installa
 
 export type ServiceGitBranch = { "type": "connected", name: string, } | { "type": "disconnected", previousName: string | null, };
 
-export type ServiceHealthcheck = { "type": "none" } | { "type": "http", path: string, timeoutSeconds: number, };
+export type ServiceHealthcheck = { "type": "none" } | { "type": "http", path: string, timeoutSeconds: number, } | { "type": "command", command: string, timeoutSeconds: number, };
 
 export type ServiceId = string & { readonly __brand: "ServiceId" };
 
