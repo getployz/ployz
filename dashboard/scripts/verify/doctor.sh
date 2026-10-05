@@ -14,6 +14,13 @@ check "native SDK built" "[ -f '$wt/core/crates/ployz-sdk/ployz-sdk.node' ]" "up
 check "instance started" "[ -f '$run/seed.json' ] && [ -f '$run/env' ]" "run scripts/verify/up.sh"
 check "postgres container up" "[ \"\$(docker inspect -f '{{.State.Running}}' $name)\" = true ]" "run scripts/verify/up.sh"
 check "vite running" "kill -0 \$(cat '$run/vite.pid')" "see $run/vite.log"
+if [ -f "$run/inngest.pid" ]; then
+  check "inngest dev running" "kill -0 \$(cat '$run/inngest.pid')" "see $run/inngest.log"
+  check "worker connected to inngest" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:\$(cat '$run/worker.port')/ready)\" = 200 ]" "see $run/worker.log"
+fi
+if [ -f "$run/cluster" ]; then
+  check "cluster ready (verify-cluster doctor)" "'$wt/core/scripts/verify-cluster' doctor \$(cat '$run/cluster')" "see the cluster's evidence/"
+fi
 if [ -f "$run/env" ]; then
   port=$(sed -n 's/^PORT=//p' "$run/env")
   cookie=$(node -e 'console.log(require(process.argv[1]).cookie)' "$run/seed.json" 2>/dev/null)
