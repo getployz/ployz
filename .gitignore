@@ -7,4 +7,5 @@ node_modules/
 !/docs/user/**
 /.claude/*
 !/.claude/skills/
+!/.claude/settings.json
 /.scratch/
