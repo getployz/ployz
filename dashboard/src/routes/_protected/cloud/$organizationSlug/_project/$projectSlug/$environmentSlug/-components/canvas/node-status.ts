@@ -15,10 +15,11 @@ export type Tone = "ok" | "warn" | "bad" | "crashed" | "quiet" | "idle" | "pendi
 /**
  * What runs now, in one word. `down`: it should serve and doesn't, which turns the card's border red.
  * `since`: when the evidence behind a grey word was current ("Online 2 minutes ago").
+ * `checkFailing`: a replica that passed its healthcheck is failing it now, and still serves.
  */
-export type RuntimeLine = { word: string; tone: Tone; down: boolean; since: Date | null };
+export type RuntimeLine = { word: string; tone: Tone; down: boolean; since: Date | null; checkFailing: boolean };
 
-const line = (word: string, tone: Tone, down = false): RuntimeLine => ({ word, tone, down, since: null });
+const line = (word: string, tone: Tone, down = false): RuntimeLine => ({ word, tone, down, since: null, checkFailing: false });
 
 /** No Service is configured to mount the Volume; deployed containers may still use it. */
 export const NO_MOUNTS_CONFIGURED = line("No mounts configured", "idle");
@@ -31,11 +32,11 @@ function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, 
   if (running.length === 0) return runtime.containers.every((container) => container.runtime?.state === "exited" && container.runtime.code === 0)
     ? line("Stopped", "bad", true) : line("Crashed", "crashed", true);
   const serving = running.filter(containerServing).length;
-  // None serves yet: Unhealthy once a health check fails, else still Starting.
-  if (serving === 0) return running.some((container) => container.runtime?.health === "unhealthy") ? line("Unhealthy", "warn") : line("Starting", "quiet");
+  if (serving === 0) return line("Starting", "quiet");
+  const checkFailing = running.some((container) => container.runtime?.health === "failing");
   // A replica missing from partial evidence may be healthy on the Server that didn't report.
-  if (whole && !deploying && desiredReplicas !== null && serving < desiredReplicas) return line("Degraded", "warn");
-  return line("Online", "ok");
+  if (whole && !deploying && desiredReplicas !== null && serving < desiredReplicas) return { ...line("Degraded", "warn"), checkFailing };
+  return { ...line("Online", "ok"), checkFailing };
 }
 
 /**
@@ -68,7 +69,7 @@ export function runtimeLine(
     case "unavailable":
       // The connection dropped: retain the last evidence, or explain why none is available.
       return lens.observedAt === null ? line("Status unavailable", "quiet")
-        : { ...evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying), tone: "quiet", down: false, since: new Date(lens.observedAt) };
+        : { ...evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying), tone: "quiet", down: false, since: new Date(lens.observedAt), checkFailing: false };
     case "observed":
       return evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying);
   }
@@ -77,9 +78,10 @@ export function runtimeLine(
 /** A node's ⚠ N: how many things on it the user can fix, red when one is its Service being down. */
 export type NodeIssues = { count: number; tone: "bad" | "warn" };
 
-/** What on a node the user can fix: a Service that's down or struggling, and domains that need them. */
+/** What on a node the user can fix: a Service that's down or struggling, a failing healthcheck, and domains that need them. */
 export function nodeIssues(status: RuntimeLine, domains: readonly Pick<DomainRow, "status">[]): NodeIssues | null {
-  const count = (status.down || status.tone === "warn" ? 1 : 0) + domains.filter((domain) => domain.status === "needs_attention").length;
+  const count = (status.down || status.tone === "warn" ? 1 : 0) + (status.checkFailing ? 1 : 0)
+    + domains.filter((domain) => domain.status === "needs_attention").length;
   return count === 0 ? null : { count, tone: status.down ? "bad" : "warn" };
 }
 

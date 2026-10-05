@@ -12,16 +12,16 @@ export function useRuntimeServices(organizationSlug: string) {
   return { runtimeServices, runtimeStatus };
 }
 
-/** A container serves when it runs and is healthy or has no health check. */
+/** A container serves when it runs and is healthy, has no health check, or passed its check once and is failing it now. */
 export const containerServing = (container: RuntimeServiceRecord["containers"][number]) => container.runtime?.state === "running" &&
-  (container.runtime.health === "healthy" || container.runtime.health === "not_configured");
+  (container.runtime.health === "healthy" || container.runtime.health === "not_configured" || container.runtime.health === "failing");
 
 /** A Service is online when one of its containers serves. */
 export const serviceOnline = (runtime: Pick<RuntimeServiceRecord, "containers"> | null | undefined) =>
   runtime?.containers.some(containerServing) ?? false;
 
 /**
- * `2/3 services online`: a Service counts once when a running container is healthy or has no health check; hooks never count.
+ * `2/3 services online`: a Service counts once when a running container serves; hooks never count.
  * `online` is null when runtime evidence is not observed, and the label then shows only the service count.
  */
 export function servicesOnline(

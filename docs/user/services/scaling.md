@@ -21,8 +21,10 @@ flowchart LR
 
 ![Settings → Scale: Replicas, CPU limit and Memory limit](../images/service-settings-scale.png)
 
-Ployz gives each server one replica before any server gets a second. A replica that crashes or
-fails its [health check](settings.md#healthcheck) gets no traffic until it recovers.
+Ployz gives each server one replica before any server gets a second. A replica that crashes gets
+no traffic until it recovers. A new replica gets none until it passes its
+[health check](settings.md#healthcheck); once it has, it keeps getting traffic if the check fails
+later, and the dashboard warns.
 
 **CPU limit** and **Memory limit** in the same section cap what each replica can use. Ployz
 doesn't check that a server has room for them, so leave some headroom.

@@ -41,6 +41,11 @@ describe("databaseCommand", () => {
     expect(patch.value).not.toHaveProperty("startCommand");
   });
 
+  it.each(DATABASE_PRESETS.map((preset) => [preset.id, preset]))("checks %s's health with a command, at the default timeout", (_, preset) => {
+    const { patch } = parts(databaseCommand(preset, { ...ids, environment, name: preset.id, password: "p" }));
+    expect(patch.value).toHaveProperty("healthcheck", { command: preset.healthcheck });
+  });
+
   it("starts Redis with its password", () => {
     const { patch } = parts(databaseCommand(preset("redis"), { ...ids, environment, name: "redis", password: "p" }));
     expect(patch.value).toMatchObject({ startCommand: expect.stringContaining("--requirepass \"$REDIS_PASSWORD\"") });

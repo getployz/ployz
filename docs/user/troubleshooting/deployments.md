@@ -17,12 +17,15 @@ service's **Build** log and read the end of it: the failing step is there.
 
 ## My new version never becomes healthy
 
-`container … failed health monitoring: running (health: unhealthy)`, or ending in `timed out`
+`container … failed health monitoring: timed out; last check: HTTP 503`, or
+`running (health: unhealthy); last check exited 127: sh: pg_isready: not found`
 
-A new replica didn't answer its **Healthcheck** path in time. Ployz stopped it and kept the old
-version serving. A running service that fails its health check shows
-**Unhealthy**.
+A new replica didn't pass its **Healthcheck** in time. Ployz stopped it and kept the old version
+serving. The message ends with what the last check said: a status code, `connection refused`,
+or a command's exit code and output.
 
+- **Check the command.** Exit code 127 means the shell didn't find it in the image. Run it in
+  the image yourself, and use `127.0.0.1` to reach the service from inside its container.
 - **Listen on `PORT`.** The health check calls the `PORT` variable, `8080` unless you set it.
   Make your app listen on it, or set `PORT` under **Variables** to the port it uses.
 - **Listen on `0.0.0.0`**, not `127.0.0.1`. See
@@ -31,6 +34,15 @@ version serving. A running service that fails its health check shows
   [Deployments](../deploy/deployments.md).
 - **Give it time to boot.** If you lowered **Healthcheck timeout** under **Settings → Deploy**,
   raise it. Otherwise make your app start faster.
+
+## My service shows Healthcheck failing
+
+A replica passed its **Healthcheck** once and fails it now. It keeps getting traffic, so the
+service stays **Online**, with an amber **⚠** on its card and **Healthcheck failing** in its panel
+over the check that runs.
+
+- Read the service's **Logs** for what changed: a dependency down, a full disk, a slow request.
+- If the check is wrong, fix it under **Settings → Deploy** and click **Deploy**.
 
 ## My app exits as soon as it starts
 

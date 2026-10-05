@@ -4,6 +4,7 @@ import type {
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { settingTitle } from "./catalog";
+import { healthcheckOf } from "./healthcheck";
 import { sourceText } from "./store-branches";
 import { volumeStorageText } from "./store-volumes";
 
@@ -93,7 +94,6 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
 /** The diff values a cell words: text, a sealed value (the Store never sends its plaintext), a route. */
 const decodeShown = Schema.decodeUnknownOption(Schema.Union([
   Schema.String, Schema.Struct({ secret: Schema.Literal(true) }), Schema.Struct({ hostname: Schema.String }),
-  Schema.Struct({ path: Schema.String, timeoutSeconds: Schema.Number }),
   Schema.Array(Schema.Struct({ prefix: Schema.String, targetPort: Schema.NullOr(Schema.Number) })),
   // A Volume's storage.
   Schema.Struct({ kind: Schema.Literal("provisioned"), maximumBytes: Schema.Number }), Schema.Struct({ kind: Schema.Literal("docker") }),
@@ -101,17 +101,18 @@ const decodeShown = Schema.decodeUnknownOption(Schema.Union([
 
 /**
  * A diff value as a cell shows it: text as is, a sealed one as Sealed, a route by its hostname, a healthcheck by its
- * path and timeout, generated domains by name and port, a Volume's storage by its limit; else its JSON.
+ * path or command and timeout, generated domains by name and port, a Volume's storage by its limit; else its JSON.
  */
 export function shownValue(value: JsonValue): string {
   if (value === null) return "";
+  const check = healthcheckOf(value);
+  if (check) return `${check.text} within ${check.timeoutSeconds}s`;
   return Option.match(decodeShown(value), {
     onNone: () => JSON.stringify(value),
     onSome: (shown) => {
       if (Schema.is(Schema.String)(shown)) return shown;
       if ("hostname" in shown) return shown.hostname;
       if ("secret" in shown) return "Sealed";
-      if ("path" in shown) return `${shown.path} within ${shown.timeoutSeconds}s`;
       if ("kind" in shown) return volumeStorageText(shown);
       return shown.map(({ prefix, targetPort }) => targetPort === null ? prefix : `${prefix} → port ${targetPort}`).join(", ");
     },

@@ -30,7 +30,7 @@ flowchart LR
 ```
 
 When `web` connects to `postgres.internal`, a DNS server on web's own server answers with the
-private addresses of postgres's healthy replicas, wherever they run. The connection then goes
+private addresses of postgres's ready replicas, wherever they run. The connection then goes
 straight to postgres, through the tunnel if it's on another server. With several replicas, each
 answer lists them in a different order, so connections spread across them.
 
@@ -86,7 +86,9 @@ page shows how to point it at your project and environment.
 
 - **Names stay inside one environment.** In staging, `postgres.internal` is staging's
   `postgres`.
-- **A name finds only healthy replicas.** While no replica of a service is healthy, its name
+- **A name finds only ready replicas.** A replica is ready once it runs, or once it passes its
+  [health check](settings.md#healthcheck) if it has one. One that passed stays even if its check
+  fails later, and its service shows **Healthcheck failing**. While no replica is ready, the name
   doesn't resolve. Check that service's **Logs**.
 - **Names are scoped to an environment; addresses aren't.** Projects and environments on
   your servers share one private network. A container that knows another environment's

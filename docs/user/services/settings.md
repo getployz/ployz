@@ -170,16 +170,26 @@ doesn't undo what it changed. See
 
 ### Healthcheck
 
-Off by default, so an old replica stops a few seconds after the new one starts, ready or not.
-Click **Healthcheck path** and enter a path like `/up` that answers with a 2xx status on `PORT`; a
-redirect fails the check. See
+A new replica must pass it before it takes traffic. Off by default, so an old replica stops a few
+seconds after the new one starts, ready or not. Off also ignores a `HEALTHCHECK` in the image.
+
+- **HTTP path.** Enter a path like `/up`. It passes when that path answers on `PORT` with a 2xx
+  status; a redirect fails it.
+- **Command.** Enter a command like `pg_isready -h 127.0.0.1`. It runs in a shell inside the
+  container and passes when it exits 0. The databases Ployz creates come with one.
+
+Services whose variables reference this one wait until it passes. Click **×** to turn it off. See
 [Deploy without downtime](../deploy/deployments.md#deploy-without-downtime).
 
 ### Healthcheck timeout
 
-Shown once you set a healthcheck path. 300 seconds by default, which is also the most. A replica
-that doesn't pass in time is stopped, and the old version keeps serving. See
+Shown once a healthcheck is on. 300 seconds by default, which is also the most. A replica that
+doesn't pass in time is stopped, and the old version keeps serving. See
 [My new version never becomes healthy](../troubleshooting/deployments.md#my-new-version-never-becomes-healthy).
+
+A replica that passed keeps getting traffic if its check fails later, and its service shows
+**Healthcheck failing**. See
+[My service shows Healthcheck failing](../troubleshooting/deployments.md#my-service-shows-healthcheck-failing).
 
 ### Restart policy
 

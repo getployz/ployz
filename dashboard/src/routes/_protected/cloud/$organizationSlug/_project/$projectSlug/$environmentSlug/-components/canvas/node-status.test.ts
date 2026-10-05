@@ -15,13 +15,20 @@ const watch = (lens: Partial<RuntimeLens>) => ({ ...seen, lens: { ...observed, .
 describe("runtimeLine", () => {
   it("says what runs now in one word", () => {
     expect(runtimeLine(service, runtime(container("running", "healthy")), seen).word).toBe("Online");
-    expect(runtimeLine(service, runtime(container("running", "unhealthy")), seen)).toMatchObject({ word: "Unhealthy", tone: "warn" });
     expect(runtimeLine(service, runtime(container("exited"), container("restarting")), seen)).toMatchObject({ word: "Crashed", tone: "crashed", down: true });
     expect(runtimeLine(service, runtime(), seen)).toMatchObject({ word: "Not running", tone: "bad", down: true });
   });
 
-  it("says a grey Starting while its containers run but none serves or fails a health check yet", () => {
+  it("says a grey Starting while its containers run but none has passed its healthcheck yet", () => {
     expect(runtimeLine(service, runtime(container("running", "starting")), seen)).toMatchObject({ word: "Starting", tone: "quiet", down: false });
+    expect(runtimeLine(service, runtime(container("running", "unhealthy")), seen)).toMatchObject({ word: "Starting", tone: "quiet", down: false, checkFailing: false });
+  });
+
+  it("stays Online with its check failing while a replica that passed it once fails it now", () => {
+    expect(runtimeLine(service, runtime(container("running", "failing")), seen)).toMatchObject({ word: "Online", tone: "ok", checkFailing: true });
+    expect(runtimeLine(service, runtime(container("running", "healthy"), container("running", "failing")), seen))
+      .toMatchObject({ word: "Online", checkFailing: true });
+    expect(runtimeLine(service, runtime(container("running", "healthy")), seen).checkFailing).toBe(false);
   });
 
   it("distinguishes clean exits from failure exits and crash loops without hiding downtime", () => {
@@ -40,9 +47,9 @@ describe("runtimeLine", () => {
   it("never guesses without current evidence: it waits, greys the last word with its age, or says why", () => {
     const since = new Date("2026-09-30T10:00:00Z");
     expect(runtimeLine(service, null, watch({ status: "connecting", observedAt: null })).tone).toBe("pending");
-    expect(runtimeLine(service, runtime(container("exited")), watch({ status: "unavailable" }))).toEqual({ word: "Crashed", tone: "quiet", down: false, since });
-    expect(runtimeLine(service, null, watch({ status: "unavailable" }))).toEqual({ word: "Not running", tone: "quiet", down: false, since });
-    expect(runtimeLine(service, null, watch({ status: "unavailable", observedAt: null }))).toEqual({ word: "Status unavailable", tone: "quiet", down: false, since: null });
+    expect(runtimeLine(service, runtime(container("exited")), watch({ status: "unavailable" }))).toEqual({ word: "Crashed", tone: "quiet", down: false, since, checkFailing: false });
+    expect(runtimeLine(service, null, watch({ status: "unavailable" }))).toEqual({ word: "Not running", tone: "quiet", down: false, since, checkFailing: false });
+    expect(runtimeLine(service, null, watch({ status: "unavailable", observedAt: null }))).toEqual({ word: "Status unavailable", tone: "quiet", down: false, since: null, checkFailing: false });
     expect(runtimeLine(service, null, watch({ status: "unreachable" }))).toMatchObject({ word: "Can't reach servers", tone: "unreachable" });
     expect(runtimeLine(service, null, watch({ status: "no_connection", noServers: true }))).toMatchObject({ word: "Needs a server", down: false });
   });
@@ -74,6 +81,13 @@ describe("nodeIssues", () => {
     expect(nodeIssues(runtimeLine(service, runtime(), seen), [])).toEqual({ count: 1, tone: "bad" });
     expect(nodeIssues(runtimeLine(service, runtime(container("running", "healthy")), seen), [domain("needs_attention"), domain("setting_up")]))
       .toEqual({ count: 1, tone: "warn" });
+  });
+
+  it("counts one amber warning for a failing healthcheck, however many replicas fail it", () => {
+    const failing = runtime(container("running", "failing"), container("running", "failing"));
+    expect(nodeIssues(runtimeLine(service, failing, seen), [])).toEqual({ count: 1, tone: "warn" });
+    expect(nodeIssues(runtimeLine(service, failing, seen), [domain("needs_attention")])).toEqual({ count: 2, tone: "warn" });
+    expect(nodeIssues(runtimeLine(service, failing, watch({ status: "unavailable" })), [])).toBeNull();
   });
 
   it("counts nothing for a healthy, starting, new or empty Service, nor a grey word", () => {
