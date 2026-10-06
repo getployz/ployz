@@ -3,7 +3,7 @@ use tokio_util::sync::CancellationToken;
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
-use crate::{connect::Client, failure::Failure, output::say_inline};
+use crate::{connect::Client, failure::Failure};
 
 use super::{
     DeployError, DeployOutcome, DeployPlan, DeployPreview, ExecutionError,
@@ -39,7 +39,7 @@ pub(crate) async fn apply_requested(
     .map_err(|error| ApplyError::Prepare(error.into()))?;
     print_warnings(&preview);
     if preview.noop() {
-        say_inline!("{}", render::plan_text(&preview, context));
+        crate::ui::note_inline(format_args!("{}", render::plan_text(&preview, context)));
         return Ok(nothing_done());
     }
     let cancellation = crate::cancellation::on_ctrl_c();
@@ -161,16 +161,16 @@ impl ProgressPrinter {
             return;
         };
         let signature = progress_signature(event);
-        let tty = crate::output::human_is_terminal();
+        let tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
         if !tty && self.last_signature.as_ref() == Some(&signature) {
             return;
         }
         self.last_rows = rows.clone();
         let text = report::paint_live(&self.title, *completed, *total, rows, &self.ink);
         if tty && self.last_terminal_rows > 0 {
-            say_inline!("\x1b[{}F\x1b[J", self.last_terminal_rows);
+            crate::ui::note_inline(format_args!("\x1b[{}F\x1b[J", self.last_terminal_rows));
         }
-        say_inline!("{text}");
+        crate::ui::note_inline(format_args!("{text}"));
         if tty {
             let columns = crossterm::terminal::size().map_or(80, |(columns, _)| columns);
             let plain = report::paint_live(&self.title, *completed, *total, rows, &Ink::plain());
@@ -218,7 +218,7 @@ fn progress_signature(event: &DeployEvent) -> String {
 
 fn print_warnings(preview: &DeployPreview) {
     for warning in &preview.warnings {
-        eprintln!("WARNING: {warning}");
+        crate::ui::warn(warning.to_string());
     }
 }
 
@@ -239,10 +239,12 @@ fn finish(
     match outcome {
         DeployOutcome::Success { completed } => {
             let text = render::success_text(&completed, success_title);
-            if crate::output::human_is_terminal() && printer.last_terminal_rows > 0 {
-                say_inline!("\x1b[{}F\x1b[J", printer.last_terminal_rows);
+            if std::io::IsTerminal::is_terminal(&std::io::stderr())
+                && printer.last_terminal_rows > 0
+            {
+                crate::ui::note_inline(format_args!("\x1b[{}F\x1b[J", printer.last_terminal_rows));
             }
-            say_inline!("{text}");
+            crate::ui::note_inline(format_args!("{text}"));
             Ok(DeployOutcome::Success { completed })
         }
         failed @ DeployOutcome::Failed { .. } => Err(ApplyError::Execute {
@@ -340,18 +342,18 @@ mod tests {
             preview
                 .warnings
                 .iter()
-                .map(|warning| format!("WARNING: {warning}"))
+                .map(ToString::to_string)
                 .collect::<Vec<_>>(),
             [
-                "WARNING: app.example.com answers from another server. Point it at 192.0.2.1. A certificate cannot be issued until then.",
-                "WARNING: plain.example.com does not resolve. Add a DNS record pointing at 192.0.2.1.",
+                "app.example.com answers from another server. Point it at 192.0.2.1. A certificate cannot be issued until then.",
+                "plain.example.com does not resolve. Add a DNS record pointing at 192.0.2.1.",
             ]
         );
         assert!(
             !preview
                 .warnings
                 .iter()
-                .map(|warning| format!("WARNING: {warning}"))
+                .map(ToString::to_string)
                 .any(|line| line.contains("plain.example.com")
                     && line.to_ascii_lowercase().contains("certificate"))
         );

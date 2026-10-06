@@ -138,11 +138,11 @@ pub enum ProvisionError {
 pub(crate) fn resolve_storage(matches: &ArgMatches) -> Result<StorageChoice, ProvisionError> {
     let storage = match matches.get_one::<StorageChoice>("storage").copied() {
         Some(storage) => storage,
-        None if matches.get_flag("yes") || !crate::output::interactive() => StorageChoice::None,
+        None if matches.get_flag("yes") || !crate::ui::interactive() => StorageChoice::None,
         None => {
-            crate::output::say_inline!(
+            crate::ui::note_inline(format_args!(
                 "Storage preparation [zfs/none] (none is Docker only, not recommended): "
-            );
+            ));
             let mut answer = String::new();
             io::stdin()
                 .read_line(&mut answer)
@@ -167,7 +167,7 @@ const DOCKER_ONLY: &str = "Docker only (not recommended): Volumes on this Server
 
 pub(crate) fn announce_storage(storage: StorageChoice) {
     if storage == StorageChoice::None {
-        crate::output::warn(DOCKER_ONLY);
+        crate::ui::warn(DOCKER_ONLY);
     }
 }
 

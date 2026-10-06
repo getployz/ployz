@@ -154,12 +154,13 @@ fn token_names_cannot_inject_terminal_controls_but_json_preserves_them() {
     for args in [vec!["token", "new", TOKEN_NAME], vec!["token", "ls"]] {
         let human = ployz(&config, &args);
         assert!(human.status.success());
-        let stdout = String::from_utf8(human.stdout).unwrap();
+        let shown = [human.stdout, human.stderr].concat();
+        let shown = String::from_utf8(shown).unwrap();
         assert!(
-            stdout.contains(&TOKEN_NAME.escape_debug().to_string()),
-            "{stdout:?}"
+            shown.contains(&TOKEN_NAME.escape_debug().to_string()),
+            "{shown:?}"
         );
-        assert!(!stdout.contains('\u{1b}'), "{stdout:?}");
+        assert!(!shown.contains('\u{1b}'), "{shown:?}");
         let json = ployz(&config, &[args.as_slice(), &["--json"]].concat());
         assert!(json.status.success());
         let pointer = if args.get(1) == Some(&"new") {
@@ -252,12 +253,7 @@ fn wait_and_human_login_block_until_the_browser_decides() {
 
         let output = ployz(&config, &[args, &["--cloud-url", &cloud]].concat());
         assert!(output.status.success(), "{args:?}");
-        let human = String::from_utf8_lossy(if args.contains(&"--json") {
-            &output.stderr
-        } else {
-            &output.stdout
-        })
-        .into_owned();
+        let human = String::from_utf8_lossy(&output.stderr).into_owned();
         assert!(
             human.contains("http://cloud/device?user_code=ABCD2345"),
             "{human}"
@@ -269,9 +265,10 @@ fn wait_and_human_login_block_until_the_browser_decides() {
                 "dev@example.test"
             );
         } else {
+            let result = String::from_utf8_lossy(&output.stdout);
             assert!(
-                human.contains("as dev@example.test in Organization acme"),
-                "{human}"
+                result.contains("as dev@example.test in Organization acme"),
+                "{result}"
             );
         }
     }

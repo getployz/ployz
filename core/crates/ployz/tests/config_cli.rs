@@ -414,7 +414,7 @@ fn an_agent_adds_lists_renames_and_removes_services() {
         ok(store, &["project", "new", "shop"]);
         ok(store, &["service", "add", "web", "--image", "nginx:1"]);
         let empty = ok(store, &["service", "add", "worker"]);
-        assert_eq!(empty.pointer("/next"), Some(&json!("ployz diff")));
+        assert_eq!(empty.pointer("/next"), Some(&json!("ployz deploy")));
 
         let renamed = ok(store, &["service", "rename", "web", "frontend"]);
         assert_eq!(
@@ -424,7 +424,7 @@ fn an_agent_adds_lists_renames_and_removes_services() {
             )
         );
         assert_eq!(renamed.get("staged"), Some(&json!(["frontend"])));
-        assert_eq!(renamed.get("next"), Some(&json!("ployz diff")));
+        assert_eq!(renamed.get("next"), Some(&json!("ployz deploy")));
         let taken = error(store, &["service", "rename", "worker", "web"]);
         assert_eq!(taken["code"], json!("conflict"));
 
@@ -1171,7 +1171,7 @@ fn an_agent_adds_mounts_detaches_and_removes_volumes() {
             &["volume", "add", "data", "--mount", "db:/var/lib/postgresql"],
         );
         assert_eq!(added["staged"], json!(["volumes.data", "db.mounts.data"]));
-        assert_eq!(added["next"], json!("ployz diff"));
+        assert_eq!(added["next"], json!("ployz deploy"));
         let bad = failed(store, &["volume", "add", "logs", "--mount", "db"], 2);
         assert!(bad["message"].as_str().unwrap().contains("SERVICE:/PATH"));
 
@@ -1376,9 +1376,9 @@ fn an_agent_reviews_publishes_and_discards() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
         let added = ok(store, &["service", "add", "web", "--image", "nginx:1"]);
-        assert_eq!(added.get("next"), Some(&json!("ployz diff")));
+        assert_eq!(added.get("next"), Some(&json!("ployz deploy")));
         let set = ok(store, &["set", "web.replicas=3"]);
-        assert_eq!(set.get("next"), Some(&json!("ployz diff")));
+        assert_eq!(set.get("next"), Some(&json!("ployz deploy")));
 
         let diff = ok(store, &["diff"]);
         let version = diff
@@ -1728,7 +1728,7 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
         let id = deployed["id"].as_str().unwrap().to_owned();
         assert_eq!(
             deployed["next"],
-            json!(format!("ployz deployment show {id}"))
+            json!(format!("ployz deployment show {}", deployed["number"]))
         );
 
         let shown = ok(store, &["deployment", "show", &id]);
@@ -1737,7 +1737,7 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
 
         // `status` says what is deploying, or what needs attention.
         let status = ok(store, &["status"]);
-        let show = json!(format!("ployz deployment show {id}"));
+        let show = json!(format!("ployz deployment show {}", deployed["number"]));
         assert_eq!(status["next"], show);
         assert_eq!(status["deploying"], json!([]));
         assert_eq!(status["attention"][0]["reason"], json!("deployment_failed"));
@@ -1764,13 +1764,9 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
                     store,
                     &["deploy", "--detach", "--message", "Ship the header"],
                 );
-                let id = detached["id"].as_str().unwrap();
                 assert_eq!(detached["number"], json!(2));
                 assert_eq!(detached["message"], json!("Ship the header"));
-                assert_eq!(
-                    detached["next"],
-                    json!(format!("ployz deployment show {id}"))
-                );
+                assert_eq!(detached["next"], json!("ployz deployment show 2"));
             }
         }
     }
@@ -1862,13 +1858,10 @@ fn an_agent_retries_a_failed_deployment_and_reads_its_logs() {
         );
         let id = retried["id"].as_str().unwrap();
         assert_ne!(id, failed_id);
-        assert_eq!(
-            retried["next"],
-            json!(format!("ployz deployment show {id}"))
-        );
+        assert_eq!(retried["next"], json!("ployz deployment show 2"));
 
         // An ended Deployment can't start or be cancelled; the refusal shows it.
-        let show = json!(format!("ployz deployment show {failed_id}"));
+        let show = json!("ployz deployment show 1");
         for verb in ["start", "cancel"] {
             let refused = error(store, &["deployment", verb, &failed_id]);
             assert_eq!(refused["code"], json!("conflict"));
@@ -1958,7 +1951,10 @@ fn up_ships_a_directory_without_git() {
         assert_eq!(deployment["environment"]["name"], json!("production"));
         assert_eq!(deployment["upload"]["base"], json!(null), "{up}");
         let id = deployment["id"].as_str().unwrap();
-        assert_eq!(up["next"], json!(format!("ployz deployment show {id}")));
+        assert_eq!(
+            up["next"],
+            json!(format!("ployz deployment show {}", deployment["number"]))
+        );
         match store {
             Target::Local(_) => {
                 assert_eq!(up["urls"], json!([]));
@@ -2157,9 +2153,9 @@ fn missing_ambiguous_and_foreign_scope_name_the_fix() {
         let human = String::from_utf8(human.stdout).unwrap();
         match store {
             Target::Cloud { url, .. } => {
-                assert!(human.contains(&format!("Cloud: {url}")), "{human}")
+                assert!(human.contains(&format!("cloud = {url}")), "{human}")
             }
-            Target::Local(_) => assert!(!human.contains("Cloud:"), "{human}"),
+            Target::Local(_) => assert!(!human.contains("cloud ="), "{human}"),
         }
         let (code, refused) = run(&["link"]);
         assert_eq!(code, Some(1));
@@ -2354,7 +2350,7 @@ fn secrets_arrive_on_stdin_or_an_env_file_and_never_print() {
             ],
         );
         assert_eq!(set["staged"], json!(["web.env.DB_HOST", "api.env.URL"]));
-        assert_eq!(set["next"], json!("ployz diff"));
+        assert_eq!(set["next"], json!("ployz deploy"));
         let (code, sealed) = piped(store, &["set", "web.env.TOKEN", "--secret"], "s3cr3t\n");
         assert_eq!(code, Some(0), "{sealed}");
         assert!(!sealed.contains("s3cr3t"));

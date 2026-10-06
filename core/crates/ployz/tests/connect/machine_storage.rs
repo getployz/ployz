@@ -87,7 +87,7 @@ async fn machine_ls_warns_without_failing_when_one_daemon_version_differs() {
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
         format!(
-            "WARNING: 1 Server runs a daemon version different from CLI {}.\n",
+            "! 1 Server runs a daemon version different from CLI {}.\n",
             env!("CARGO_PKG_VERSION")
         )
     );

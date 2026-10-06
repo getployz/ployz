@@ -35,7 +35,7 @@ mod enabled {
         cli::{base, positional},
         connect::TARGET_RPC_TIMEOUT,
         handlers::{Error, leaf_matches, with_client},
-        output,
+        ui,
     };
 
     pub(super) fn command() -> Command {
@@ -81,7 +81,7 @@ mod enabled {
                 if let RpcResponseBody::Error(error) = response.body {
                     return Err(Error::from(error));
                 }
-                output::emit(&json!({ "response": response }))
+                ui::show(&json!({ "response": response }))
             })
         })
     }
