@@ -443,6 +443,7 @@ fn plan_code(error: &PlanError) -> RpcErrorCode {
         | PlanError::ProvisionedVolumeStorageUnavailable
         | PlanError::ExistingPlainVolume { .. }
         | PlanError::ExistingProvisionedVolumeMismatch { .. }
+        | PlanError::NoWriter { .. }
         | PlanError::HostnameConflict { .. } => RpcErrorCode::Conflict,
         PlanError::CapacityUnknown
         | PlanError::ProvisionedVolumeStorageUnknown { .. }

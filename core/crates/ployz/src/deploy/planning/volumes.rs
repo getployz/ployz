@@ -7,10 +7,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, MachineId,
-    MachineObservation, Namespace, PlacementConstraint, PreservedVolume, RequestedServiceSpec,
-    ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility, ServiceStorageSpec,
-    ServiceVolume, ServiceVolumeGraph, VolumeSource, owned_volume_namespace,
+    CopyRole, DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, KnownCopy,
+    MachineId, MachineObservation, Namespace, PlacementConstraint, PreservedVolume,
+    RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation,
+    ServicePlacementEligibility, ServiceStorageSpec, ServiceVolume, ServiceVolumeGraph,
+    VolumeSource, owned_volume_namespace,
 };
 
 use crate::deploy::{
@@ -139,6 +140,9 @@ impl<'snapshot> VolumePlan<'snapshot> {
         let mut locations = if assigned.is_empty() {
             self.observed_locations()
                 .filter(|located| located.matches(volume))
+                .filter(|located| {
+                    self.copy_role(located.machine_id, located.name) == CopyRole::Writer
+                })
                 .map(|located| located.machine_id)
                 .collect::<BTreeSet<_>>()
         } else {
@@ -154,11 +158,55 @@ impl<'snapshot> VolumePlan<'snapshot> {
             volume.source.kind(),
             ployz_core::RawVolumeSource::Provisioned { .. }
         ) {
+            if let Some(name) = managed_volume_name(volume) {
+                let copies = self.copies_without_writer(name);
+                if !copies.is_empty() {
+                    return Err(PlanError::NoWriter {
+                        name: name.clone(),
+                        copies,
+                    });
+                }
+            }
             for machine in &self.snapshot.machines {
                 super::storage::capacity(self.snapshot, machine)?;
             }
         }
         Ok(VolumeLocality::Absent)
+    }
+
+    /// The role a Machine's storage gives `name`. A Machine that reports no copies, or
+    /// a Docker Volume its storage does not list, holds the writer.
+    fn copy_role(&self, machine_id: MachineId, name: &DockerVolumeName) -> CopyRole {
+        self.snapshot
+            .storage_capacity
+            .get(&machine_id)
+            .and_then(|capacity| capacity.as_ref().ok())
+            .and_then(|capacity| capacity.copies.get(name))
+            .map_or(CopyRole::Writer, |copy| copy.role)
+    }
+
+    /// Every copy of `name` that is not a writer, by Machine name.
+    fn copies_without_writer(&self, name: &DockerVolumeName) -> Vec<KnownCopy> {
+        self.snapshot
+            .storage_capacity
+            .iter()
+            .filter_map(|(machine_id, capacity)| Some((machine_id, capacity.as_ref().ok()?)))
+            .filter_map(|(machine_id, capacity)| {
+                let copy = capacity.copies.get(name)?;
+                if copy.role == CopyRole::Writer {
+                    return None;
+                }
+                let machine = self
+                    .snapshot
+                    .machines
+                    .iter()
+                    .find(|machine| machine.machine.id == *machine_id)?;
+                Some(KnownCopy {
+                    machine: machine.machine.name.clone(),
+                    role: copy.role,
+                })
+            })
+            .collect()
     }
 
     fn observed_locations(&self) -> impl Iterator<Item = VolumePresence<'_>> {
@@ -179,7 +227,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
                         Some((machine_id, capacity.as_ref().ok()?))
                     })
                     .flat_map(|(machine_id, capacity)| {
-                        capacity.volumes.keys().map(move |name| VolumePresence {
+                        capacity.roles().map(move |(name, _)| VolumePresence {
                             machine_id: *machine_id,
                             name,
                             shape: VolumePresenceShape::ProvisionedDataset,
