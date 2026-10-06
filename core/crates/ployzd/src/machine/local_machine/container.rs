@@ -66,14 +66,67 @@ impl LocalMachine {
             containers
                 .validate_provisioned_volumes(&machine.id, &specs)
                 .await?;
+            for name in requested.keys() {
+                local.admit_plain_mount(&machine.id, name).await?;
+            }
             let names: Vec<ployz_core::DockerVolumeName> =
-                crate::storage::plugin("Storage.Prepare", &requested).await?;
+                local.plugin().call("Storage.Prepare", &requested).await?;
             containers
                 .ensure_provisioned_volumes(&machine.id, &specs)
                 .await?;
             Ok(ployz_core::PreparedVolumes { names })
         })
         .await
+    }
+
+    /// A plain Deploy mounts `name` only on its writer: a root nothing holds, or nothing at
+    /// all while no Machine holds a copy and this Machine never recorded a run for it.
+    async fn admit_plain_mount(
+        &self,
+        me: &ployz_core::MachineId,
+        name: &DockerVolumeName,
+    ) -> Result<(), Error> {
+        use ployz_core::{DockerVolumeStorageObservation, KnownCopy, SwitchError};
+        let held: ployz_core::VolumeCopyView = self
+            .plugin()
+            .call(
+                "Volume.Inspect",
+                &ployz_core::InspectVolumeCopyRequest { name: name.clone() },
+            )
+            .await?;
+        let replicated = self.replicated()?;
+        let machines = replicated.machines().await?.observations;
+        let elsewhere: Vec<KnownCopy> = replicated
+            .volumes()
+            .await?
+            .observations
+            .into_iter()
+            .filter(|volume| volume.id.machine_id != *me && volume.id.name == *name)
+            .filter_map(|volume| {
+                let DockerVolumeStorageObservation::Provisioned { role, .. } = volume.storage
+                else {
+                    return None;
+                };
+                let machine = machines
+                    .iter()
+                    .find(|machine| machine.id == volume.id.machine_id)?;
+                Some(KnownCopy {
+                    machine: machine.name.clone(),
+                    role: role.unwrap_or(ployz_core::CopyRole::Writer),
+                })
+            })
+            .collect();
+        match ployz_core::admit_plain_mount(&held, &elsewhere) {
+            Ok(()) => Ok(()),
+            Err(SwitchError::NoWriter) => Err(SwitchError::NoWriter
+                .rpc_error(ployz_core::no_writer_message(name, &elsewhere))
+                .into()),
+            Err(reason) => Err(reason
+                .rpc_error(format!(
+                    "Volume {name} is mid-run on this Machine; wait for the run to finish"
+                ))
+                .into()),
+        }
     }
 
     /// Create a container after storage admission and deferred Machine-local validation.

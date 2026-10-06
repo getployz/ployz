@@ -23,6 +23,7 @@ struct ClusterKv {
     network: String,
     machines: BTreeMap<String, String>,
     containers: BTreeMap<String, (String, String)>,
+    volumes: BTreeMap<(String, String), String>,
     container_changes: broadcast::Sender<()>,
     machine_changes: broadcast::Sender<()>,
     subscriptions: bool,
@@ -52,6 +53,7 @@ async fn bind(with_subscriptions: bool) -> (ReplicatedStore, tokio::task::JoinHa
         network: "10.210.0.0/16".into(),
         machines: BTreeMap::new(),
         containers: BTreeMap::new(),
+        volumes: BTreeMap::new(),
         container_changes,
         machine_changes,
         subscriptions: with_subscriptions,
@@ -153,6 +155,22 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Bytes {
                     .map(|(_, container)| vec![json!(container)]),
             )
         }
+        "SELECT machine_id, name, volume FROM volumes ORDER BY machine_id, name" => events(
+            &["machine_id", "name", "volume"],
+            kv.volumes.iter().map(|((machine_id, name), volume)| {
+                vec![json!(machine_id), json!(name), json!(volume)]
+            }),
+        ),
+        "SELECT volume FROM volumes WHERE machine_id = ? AND name = ?" => {
+            let key = (
+                text_param(&statement.params, 0).to_owned(),
+                text_param(&statement.params, 1).to_owned(),
+            );
+            events(
+                &["volume"],
+                kv.volumes.get(&key).map(|volume| vec![json!(volume)]),
+            )
+        }
         "SELECT value FROM cluster WHERE key = 'network'" => {
             events(&["value"], vec![vec![json!(kv.network)]])
         }
@@ -173,6 +191,15 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                     text_param(&statement.params, 1).to_owned(),
                 );
                 let _ = kv.machine_changes.send(());
+            }
+            query if query.starts_with("INSERT INTO volumes (machine_id, name, volume)") => {
+                kv.volumes.insert(
+                    (
+                        text_param(&statement.params, 0).to_owned(),
+                        text_param(&statement.params, 1).to_owned(),
+                    ),
+                    text_param(&statement.params, 2).to_owned(),
+                );
             }
             query if query.starts_with("INSERT INTO containers (id, container,") => {
                 kv.containers.insert(

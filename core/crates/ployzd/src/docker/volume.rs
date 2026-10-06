@@ -227,6 +227,19 @@ impl ContainerRuntime {
         docker_volume(machine_id, volume)
     }
 
+    /// Drop Docker's record of a Volume the plugin no longer serves. A name Docker
+    /// never had is already forgotten.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker keeps the name, including when a Container still mounts it.
+    pub async fn forget_volume(&self, name: &DockerVolumeName) -> Result<(), Error> {
+        match self.remove_volume(name, false).await {
+            Err(error) if volume_not_found(&error) => Ok(()),
+            result => result,
+        }
+    }
+
     /// Remove a named Docker Volume.
     ///
     /// `force` is Docker's force flag: it does not evict holders. An in-use
@@ -437,6 +450,7 @@ fn docker_volume(machine_id: &MachineId, volume: RawVolume) -> Result<DockerVolu
             mountpoint,
             bound_bytes,
             used_bytes: status.used_bytes,
+            role: None,
         }
     } else {
         DockerVolumeStorageObservation::Plain {

@@ -244,7 +244,8 @@ impl Daemon {
                     async {
                         management::serve(
                             management_endpoint,
-                            crate::machine::LocalMachine::new(local.clone()),
+                            crate::machine::LocalMachine::new(local.clone())
+                                .with_containers(containers.clone()),
                             machine_api.clone(),
                             grants,
                             shutdown.clone(),

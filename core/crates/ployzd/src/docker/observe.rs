@@ -6,8 +6,8 @@ use std::{
 use bollard::query_parameters::EventsOptionsBuilder;
 use futures_util::StreamExt;
 use ployz_core::{
-    CADDY_ADMIN_ENV, ContainerId, ContainerObservation, DockerVolume, DockerVolumeName,
-    LocalMachinePhase, VolumeInventory,
+    CADDY_ADMIN_ENV, ContainerId, ContainerObservation, CopyRole, DockerVolume, DockerVolumeName,
+    DockerVolumeStorageObservation, LocalMachinePhase, MIRROR_ROOT, VolumeInventory,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -22,6 +22,7 @@ const EVENT_DEBOUNCE: Duration = Duration::from_millis(100);
 pub(super) struct ObservationSink {
     replicated: ReplicatedStore,
     local: RecordOwner,
+    plugin: crate::storage::Plugin,
     rescan_interval: Duration,
 }
 
@@ -31,6 +32,7 @@ impl ContainerRuntime {
         self.sink = Some(ObservationSink {
             replicated,
             local,
+            plugin: crate::storage::Plugin::default(),
             rescan_interval: RESCAN_INTERVAL,
         });
         self
@@ -228,7 +230,20 @@ impl ContainerRuntime {
 
     async fn sync_volume_observations(&self, sink: &ObservationSink) -> Result<(), Error> {
         let machine_id = sink.local.record().id();
-        let VolumeInventory { volumes, failures } = self.list_volumes(&machine_id).await?;
+        let VolumeInventory {
+            mut volumes,
+            failures,
+        } = self.list_volumes(&machine_id).await?;
+        match sink
+            .plugin
+            .call::<ployz_core::StorageCapacity>("Storage.Inspect", &())
+            .await
+        {
+            Ok(capacity) => observe_copies(&machine_id, &mut volumes, &capacity.copies),
+            Err(error) => {
+                eprintln!("Volume copies unobserved, Docker Volumes stay writers: {error}")
+            }
+        }
         let mut live = LocalVolumeSnapshot::from_inventory(
             failures.into_iter().map(|failure| failure.id.name),
         );
@@ -251,6 +266,45 @@ impl ContainerRuntime {
             )
             .await
             .map_err(Error::from)
+    }
+}
+
+/// Every Docker Volume the plugin holds carries its role, and every slot, which Docker
+/// never lists, joins the observation as a read-only copy under the mirror root.
+fn observe_copies(
+    machine_id: &ployz_core::MachineId,
+    volumes: &mut Vec<DockerVolume>,
+    copies: &std::collections::BTreeMap<DockerVolumeName, ployz_core::ProvisionedCopy>,
+) {
+    for volume in volumes.iter_mut() {
+        if let DockerVolumeStorageObservation::Provisioned { role, .. } = &mut volume.storage {
+            *role = copies.get(&volume.id.name).map(|copy| copy.role);
+        }
+    }
+    for (name, copy) in copies {
+        if copy.role != CopyRole::Slot || volumes.iter().any(|volume| volume.id.name == *name) {
+            continue;
+        }
+        let (Ok(mountpoint), Some(bound_bytes)) = (
+            ployz_core::MachinePath::parse(format!("/var/lib/{MIRROR_ROOT}/{name}/fs")),
+            std::num::NonZeroU64::new(copy.maximum_bytes.get()),
+        ) else {
+            continue;
+        };
+        volumes.push(DockerVolume {
+            id: ployz_core::DockerVolumeId {
+                machine_id: *machine_id,
+                name: name.clone(),
+            },
+            options: Default::default(),
+            labels: Default::default(),
+            storage: DockerVolumeStorageObservation::Provisioned {
+                mountpoint,
+                bound_bytes,
+                used_bytes: copy.used_bytes,
+                role: Some(CopyRole::Slot),
+            },
+        });
     }
 }
 
@@ -331,10 +385,12 @@ fn local_volume_changes(
 mod tests {
     use std::collections::BTreeMap;
 
-    use ployz_core::{ContainerId, ContainerObservation, DockerVolume, DockerVolumeName};
+    use ployz_core::{ContainerId, ContainerObservation, CopyRole, DockerVolume, DockerVolumeName};
     use serde_json::json;
 
-    use super::{local_container_changes, local_volume_changes, redacted_container};
+    use super::{
+        local_container_changes, local_volume_changes, observe_copies, redacted_container,
+    };
     use crate::corrosion::{LocalContainerSnapshot, LocalVolumeSnapshot};
 
     #[test]
@@ -542,6 +598,7 @@ mod tests {
                 mountpoint: ployz_core::MachinePath::parse("/var/lib/ployz-volumes/data").unwrap(),
                 bound_bytes: std::num::NonZeroU64::new(1024).unwrap(),
                 used_bytes: 512,
+                role: None,
             },
         };
         let mut existing = LocalVolumeSnapshot::default();
@@ -553,5 +610,68 @@ mod tests {
         assert!(changes.deletions.is_empty());
         assert!(changes.upserts.is_empty());
         assert_eq!(changes.incomplete, vec![name]);
+    }
+
+    #[test]
+    fn copies_give_docker_volumes_their_role_and_add_each_unlisted_slot() {
+        let machine_id = ployz_core::MachineId::parse("b".repeat(32)).unwrap();
+        let name = |name: &str| DockerVolumeName::parse(name).unwrap();
+        let provisioned = |volume: &str, role| DockerVolume {
+            id: ployz_core::DockerVolumeId {
+                machine_id,
+                name: name(volume),
+            },
+            options: BTreeMap::new(),
+            labels: BTreeMap::new(),
+            storage: ployz_core::DockerVolumeStorageObservation::Provisioned {
+                mountpoint: ployz_core::MachinePath::parse(format!(
+                    "/var/lib/ployz-volumes/{volume}"
+                ))
+                .unwrap(),
+                bound_bytes: std::num::NonZeroU64::new(1024).unwrap(),
+                used_bytes: 512,
+                role,
+            },
+        };
+        let plain = DockerVolume {
+            id: ployz_core::DockerVolumeId {
+                machine_id,
+                name: name("plain"),
+            },
+            options: BTreeMap::new(),
+            labels: BTreeMap::new(),
+            storage: ployz_core::DockerVolumeStorageObservation::Plain {
+                driver: "local".into(),
+            },
+        };
+        let copy = |role, used_bytes| ployz_core::ProvisionedCopy {
+            role,
+            maximum_bytes: ployz_core::ProvisionedVolumeMaximumBytes::new(
+                std::num::NonZeroU64::new(1024).unwrap(),
+            ),
+            used_bytes,
+        };
+        let copies = BTreeMap::from([
+            (name("data"), copy(CopyRole::Switching, 512)),
+            (name("mirror"), copy(CopyRole::Slot, 300)),
+        ]);
+        let mut volumes = vec![provisioned("data", None), plain.clone()];
+
+        observe_copies(&machine_id, &mut volumes, &copies);
+
+        let mut slot = provisioned("mirror", Some(CopyRole::Slot));
+        slot.storage = ployz_core::DockerVolumeStorageObservation::Provisioned {
+            mountpoint: ployz_core::MachinePath::parse("/var/lib/ployz-mirror/mirror/fs").unwrap(),
+            bound_bytes: std::num::NonZeroU64::new(1024).unwrap(),
+            used_bytes: 300,
+            role: Some(CopyRole::Slot),
+        };
+        assert_eq!(
+            volumes,
+            vec![provisioned("data", Some(CopyRole::Switching)), plain, slot]
+        );
+
+        observe_copies(&machine_id, &mut volumes, &copies);
+        assert_eq!(volumes.len(), 3, "a listed slot is not added twice");
     }
 }

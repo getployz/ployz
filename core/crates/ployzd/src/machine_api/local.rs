@@ -154,7 +154,7 @@ impl MachineService {
             return respond(error);
         }
         crate::faults::apply(verb).await;
-        match crate::storage::plugin::<T>(route, request).await {
+        match self.local.plugin().call::<T>(route, request).await {
             Ok(reply) => respond(reply),
             Err(error) => respond(error),
         }
@@ -412,7 +412,12 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         expect::<op::InspectStorage>(request)?;
-        match crate::storage::plugin::<ployz_core::StorageCapacity>("Storage.Inspect", &()).await {
+        match self
+            .local
+            .plugin()
+            .call::<ployz_core::StorageCapacity>("Storage.Inspect", &())
+            .await
+        {
             Ok(capacity) => respond(capacity),
             Err(error) => respond(error),
         }

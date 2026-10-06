@@ -8,13 +8,13 @@ use std::{
 };
 
 use ployz_core::{
-    InitializeRequest, Initialized, InspectRequest, JoinAccepted, JoinRequest, LocalMachinePhase,
-    LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineIdentity, MachineList,
-    MachineObservation, MachineRemoved, MachineToken, MachineTokenRequest, MachineUpdated,
-    ManagementAddress, MembershipObservation, PublicIpDiscovery, RegisterRequest, Registered,
-    RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, RttObservation, RttStatistics,
-    SelectedEndpoint, UpdateMachineRequest, WireGuardInspected, associate_wireguard_peers,
-    synthesize_membership,
+    DockerVolumeName, InitializeRequest, Initialized, InspectRequest, JoinAccepted, JoinRequest,
+    LocalMachinePhase, LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineIdentity,
+    MachineList, MachineObservation, MachineRemoved, MachineToken, MachineTokenRequest,
+    MachineUpdated, ManagementAddress, MembershipObservation, PublicIpDiscovery, RegisterRequest,
+    Registered, RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, RttObservation,
+    RttStatistics, SelectedEndpoint, UpdateMachineRequest, WireGuardInspected,
+    associate_wireguard_peers, synthesize_membership,
 };
 use thiserror::Error;
 
@@ -37,6 +37,7 @@ pub struct LocalMachine {
     management_client: Option<[u8; 32]>,
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
+    plugin: crate::storage::Plugin,
 }
 
 mod container;
@@ -135,7 +136,20 @@ impl LocalMachine {
             management_client: None,
             cluster: None,
             containers: None,
+            plugin: crate::storage::Plugin::default(),
         }
+    }
+
+    /// Reach the volume plugin at another socket; tests serve a fake there.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_plugin(mut self, plugin: crate::storage::Plugin) -> Self {
+        self.plugin = plugin;
+        self
+    }
+
+    pub(crate) fn plugin(&self) -> &crate::storage::Plugin {
+        &self.plugin
     }
 
     /// Bind subsequent mutation admission to this authenticated management client.
@@ -397,6 +411,7 @@ impl LocalMachine {
     /// Returns [`Error::RecordOwner`] when the record owner has stopped and
     /// [`Error::Store`] when initialize is not legal in the current phase.
     async fn initialize_admitted(&self, request: InitializeRequest) -> Result<Initialized, Error> {
+        self.depart_storage().await?;
         let machine = self
             .owner
             .mutate(move |store| store.initialize(request))
@@ -498,6 +513,7 @@ impl LocalMachine {
     /// Returns [`Error::RecordOwner`] when the record owner has stopped
     /// and [`Error::Store`] when join is not legal in the current phase.
     async fn join_admitted(&self, request: JoinRequest) -> Result<JoinAccepted, Error> {
+        self.depart_storage().await?;
         let already_accepted = self
             .owner
             .mutate(move |store| {
@@ -690,6 +706,7 @@ impl LocalMachine {
         if let Err(error) = containers.remove_all_managed().await {
             return Err(Error::Cleanup(error.to_string()));
         }
+        self.depart_storage().await?;
         if let Some(prepared_reset) = prepared_reset {
             self.owner
                 .mutate(move |store| prepared_reset.commit(store))
@@ -726,9 +743,37 @@ impl LocalMachine {
         if let Some(containers) = &self.containers {
             containers.remove_all_managed().await?;
         }
+        self.depart_storage().await?;
         self.owner.mutate(LocalMachineStore::begin_reset).await??;
         self.owner.request_restart();
         Ok(ResetAccepted {})
+    }
+}
+
+impl LocalMachine {
+    /// Departure: every root this Machine holds becomes a slot and every lease record
+    /// moves on, so nothing left here can be taken for the writer by the next identity
+    /// or by a restore elsewhere. Docker forgets each demoted name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Cleanup`] when the plugin cannot demote or Docker keeps a name.
+    async fn depart_storage(&self) -> Result<(), Error> {
+        let demoted: Vec<DockerVolumeName> = self
+            .plugin
+            .call("Storage.Demote", &())
+            .await
+            .map_err(|error| Error::Cleanup(format!("storage departure failed: {error}")))?;
+        let Some(containers) = &self.containers else {
+            return Ok(());
+        };
+        for name in &demoted {
+            containers
+                .forget_volume(name)
+                .await
+                .map_err(|error| Error::Cleanup(format!("Docker kept Volume {name}: {error}")))?;
+        }
+        Ok(())
     }
 }
 
@@ -840,6 +885,10 @@ fn local_removal_response(
     }
     LocalMachineRemoved { reset_warning }
 }
+
+#[cfg(test)]
+#[path = "local_machine/departure_tests.rs"]
+mod departure_tests;
 
 #[cfg(test)]
 mod tests {
