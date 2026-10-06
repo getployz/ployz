@@ -1683,6 +1683,101 @@ fn cloud_answers_only_a_credential_in_its_own_organization() {
 }
 
 #[test]
+fn deployment_text_shows_the_deepest_cause_and_json_keeps_the_chain() {
+    fn worker(store: &std::sync::Arc<ConfigStore>, written: &Written) {
+        let Written::Deployment(admitted) = written else {
+            return;
+        };
+        let runner = RunnerId::parse("failing-worker").unwrap();
+        let claimed = store.claim(&admitted.id, &runner).unwrap();
+        let cause = match admitted.number {
+            3 => json!([]),
+            _ => json!(["Writing Docker metadata failed", "No space left on device"]),
+        };
+        let evidence = if admitted.number == 2 {
+            let operation = json!({
+                "type": "remove_container", "machine_id": "a".repeat(32),
+                "container_id": "b".repeat(64)
+            });
+            let preview = serde_json::from_value(json!({
+                "namespace": claimed.intent.namespace,
+                "operations": [{"index": 0, "machine_id": "a".repeat(32),
+                    "service_name": "web", "operation": operation,
+                    "status": {"type": "pending"}}],
+                "warnings": [], "would_remove": [], "preserved_volumes": []
+            }))
+            .unwrap();
+            store
+                .record(
+                    &admitted.id,
+                    &runner,
+                    ployz_store::RunEvidence::Prepared(preview),
+                )
+                .unwrap();
+            let outcome = serde_json::from_value(json!({
+                "type": "failed", "completed": [], "unexecuted": [],
+                "failed": {"type": "operation", "operation": operation, "error": {
+                    "type": "machine", "action": "RemoveContainer", "error": {
+                        "code": "internal", "message": "Docker storage operation failed",
+                        "details": {}, "cause": cause
+                    }
+                }}
+            }))
+            .unwrap();
+            ployz_store::RunEvidence::Executed {
+                outcome: Box::new(outcome),
+                progress: Vec::new(),
+                removed: Vec::new(),
+            }
+        } else {
+            serde_json::from_value(json!({"evidence": "not_executed", "value": {
+                "reason": "Preparing storage failed", "cause": cause
+            }}))
+            .unwrap()
+        };
+        store.record(&admitted.id, &runner, evidence).unwrap();
+    }
+    let cloud = Target::Cloud {
+        url: fake_cloud_with_dispatch(worker),
+        token: "ployz_alice",
+    };
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["service", "add", "web", "--image", "nginx:1"]);
+    for number in 1..=3 {
+        let (code, deployed) = ployz(Some(&cloud), &["deploy"]);
+        assert_eq!(code, Some(3), "{deployed}");
+        let id = deployed["id"].as_str().unwrap();
+        let shown = ok(&cloud, &["deployment", "show", id]);
+        assert_eq!(shown["outcome"], deployed["outcome"]);
+        let cause = shown["outcome"]["cause"].as_array().unwrap();
+        let reason = shown["outcome"]["reason"].as_str().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let output = cloud
+            .command(home.path())
+            .args(["deployment", "show", id])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains(reason), "{text}");
+        if number == 3 {
+            assert!(cause.is_empty());
+            assert!(!text.contains("cause:"), "{text}");
+        } else {
+            assert!(cause.len() >= 2, "{shown}");
+            assert_eq!(cause.last(), Some(&json!("No space left on device")));
+            assert!(cause.contains(&json!("Writing Docker metadata failed")));
+            assert_eq!(text.matches("cause:").count(), 1, "{text}");
+            assert_eq!(text.matches("No space left on device").count(), 1, "{text}");
+            for wrapper in cause.iter().take(cause.len() - 1) {
+                assert!(!text.contains(wrapper.as_str().unwrap()), "{text}");
+            }
+        }
+    }
+}
+
+#[test]
 fn an_agent_plans_deploys_and_reads_the_deployment() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);

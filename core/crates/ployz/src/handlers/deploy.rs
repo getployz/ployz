@@ -758,7 +758,7 @@ pub(super) fn say_view(view: &DeploymentView) {
     ) = &view.deployment.outcome
     {
         crate::ui::stream(format_args!("  {reason}"));
-        for cause in cause {
+        if let Some(cause) = cause.last() {
             crate::ui::stream(format_args!("    cause: {cause}"));
         }
     }
