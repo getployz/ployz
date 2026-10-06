@@ -70,7 +70,8 @@ pub enum Cycle {
 
 /// One Machine's admission record for one Volume name.
 ///
-/// Stored as the ZFS user property `ployz:lease.<name>` on the managed root, value
+/// Stored as the ZFS user property `ployz:lease.<name>` on the managed root (an uppercase
+/// letter in `<name>` written as `:` and its lowercase), value
 /// `<lease>:<seq>.<round>.<sub>:<open|closed>`, so it outlives every copy of the Volume.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct LeaseRecord {

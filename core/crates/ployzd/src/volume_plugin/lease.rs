@@ -14,6 +14,20 @@ const LEASE_PROPERTY_PREFIX: &str = "ployz:lease.";
 const WRITER_PROPERTY: &str = "ployz:writer";
 const MIRROR_PROPERTY: &str = "ployz:mirror";
 
+/// `ployz:lease.<name>`, each uppercase letter written as `:` and its lowercase. ZFS refuses
+/// uppercase in a user property name, and a Docker Volume name never holds `:`, so the
+/// escape keeps `Data` and `data` apart.
+fn lease_property(name: &DockerVolumeName) -> String {
+    let mut property = LEASE_PROPERTY_PREFIX.to_owned();
+    for character in name.0.chars() {
+        if character.is_ascii_uppercase() {
+            property.push(':');
+        }
+        property.push(character.to_ascii_lowercase());
+    }
+    property
+}
+
 pub(super) fn fence(
     recorded: Option<LeaseRecord>,
     request: &Switch,
@@ -95,10 +109,7 @@ impl VolumeStorage {
         if !datasets.iter().any(|dataset| dataset.name == root) {
             return Ok(None);
         }
-        let Some(value) = self
-            .property(&root, &format!("{LEASE_PROPERTY_PREFIX}{name}"))
-            .await?
-        else {
+        let Some(value) = self.property(&root, &lease_property(name)).await? else {
             return Ok(None);
         };
         value
@@ -118,12 +129,8 @@ impl VolumeStorage {
         if !datasets.iter().any(|dataset| dataset.name == root) {
             self.create_root(&root).await?;
         }
-        self.zfs(&[
-            "set",
-            &format!("{LEASE_PROPERTY_PREFIX}{name}={record}"),
-            &root,
-        ])
-        .await?;
+        self.zfs(&["set", &format!("{}={record}", lease_property(name)), &root])
+            .await?;
         Ok(())
     }
 

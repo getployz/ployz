@@ -39,6 +39,12 @@ if [ "$name" = zpool ]; then
   printf '{pools}'
   exit 0
 fi
+# ZFS refuses a user property (a name with a colon) holding anything but a-z, 0-9 and :._-
+check_property() {{
+  case "$1" in *:*) case "$1" in *[!abcdefghijklmnopqrstuvwxyz0123456789:._-]*)
+    echo "invalid property '$1'" >&2; exit 1 ;;
+  esac ;; esac
+}}
 case "$*" in
   'list -Hp -o name,refquota,used,usedbydataset,mountpoint,mounted,readonly -r tank')
     if [ -e '{list_fails}' ]; then echo 'pool is busy' >&2; exit 1; fi
@@ -72,10 +78,12 @@ case "$*" in
     [ ! -e "$f" ] || cat "$f"
     ;;
   'get -H -o value '*)
+    check_property "$5"
     f='{props}'/"$6/$5"
     if [ -e "$f" ]; then cat "$f"; else echo '-'; fi
     ;;
   'set '*)
+    check_property "${{2%%=*}}"
     f='{props}'/"$3/${{2%%=*}}"
     mkdir -p "${{f%/*}}"
     printf '%s\n' "${{2#*=}}" > "$f"

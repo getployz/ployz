@@ -148,6 +148,38 @@ async fn adopt_lease_records_its_own_step_whatever_position_the_caller_sends() {
 }
 
 #[tokio::test]
+async fn lease_records_keep_apart_names_that_differ_only_in_case() {
+    let test = TestDir::new();
+    let (socket, server) = start(&test, USABLE_POOL, &["root"]);
+    let names = [("data", 1), ("Data", 2), ("DATA", 3), ("dAta-B_1.x", 4)];
+
+    for (name, lease) in names {
+        let response = post(
+            &socket,
+            "/Volume.AdoptLease",
+            adopt(name, lease, FAR_FUTURE),
+        )
+        .await;
+        assert_eq!(
+            response.pointer("/Ok/decision"),
+            Some(&json!("adopt")),
+            "{name}: {response}"
+        );
+    }
+    for (name, lease) in names {
+        let response = post(&socket, "/Volume.Inspect", json!({"name": name})).await;
+        assert_eq!(
+            response.pointer("/Ok/lease"),
+            Some(
+                &json!({"lease": lease, "pos": {"seq": 2, "round": 0, "sub": 0}, "cycle": "closed"})
+            ),
+            "{name}: {response}"
+        );
+    }
+    server.abort();
+}
+
+#[tokio::test]
 async fn inspect_reports_a_root_with_its_marker_and_newest_snapshot() {
     let test = TestDir::new();
     set_property(&test, "tank/ployz/data", "ployz:writer", "frozen:42");
