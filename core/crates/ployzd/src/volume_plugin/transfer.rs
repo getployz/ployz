@@ -26,6 +26,10 @@ use super::{
 /// On the slot parent: `<lease>:<seq>.<round>.<sub>:<target>` of the receive last started.
 pub(super) const RECEIVE_PROPERTY: &str = "ployz:receive";
 
+/// `kill-daemon:StartReceive` fires once this much of the stream is in, so ZFS holds a
+/// partial receive to resume.
+const KILL_AFTER_BYTES: u64 = 1 << 20;
+
 /// Which receive a slot last admitted. Outlives the plugin process, unlike the task.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ReceiveRecord {
@@ -131,8 +135,9 @@ impl VolumeStorage {
 
     async fn start_receive(&self, request: &StartReceiveRequest) -> Result<SwitchReply, RpcError> {
         let name = name(&request.name)?;
-        let scope = self.leased(&name, &request.switch).await?;
+        let mut scope = self.leased(&name, &request.switch).await?;
         let slot = scope.require_slot(&name)?;
+        let (slot, bound) = (slot.name.clone(), slot.refquota);
         self.require_no_receive(&name)?;
         let fs = slot_fs(&scope.pool, &name);
         if scope.replayed()
@@ -141,16 +146,19 @@ impl VolumeStorage {
         {
             return self.reply(&scope.pool, &name, scope.admitted).await;
         }
-        if slot.refquota == 0 {
-            return Err(SwitchError::Precondition
-                .rpc_error(format!("mirror slot {} carries no bound", slot.name)));
+        if bound == 0 {
+            return Err(
+                SwitchError::Precondition.rpc_error(format!("mirror slot {slot} carries no bound"))
+            );
         }
         let record = ReceiveRecord {
             lease: request.switch.lease,
             pos: request.switch.pos,
             target: request.target.clone(),
         };
-        self.zfs(&["set", &format!("{RECEIVE_PROPERTY}={record}"), &slot.name])
+        self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
+            .await?;
+        self.zfs(&["set", &format!("{RECEIVE_PROPERTY}={record}"), &slot])
             .await
             .map_err(internal)?;
         let source = match (&request.resume_token, request.base) {
@@ -172,7 +180,6 @@ impl VolumeStorage {
         let outcome = self.receives.start(&name);
         let storage = self.clone();
         let from = request.from;
-        let bound = slot.refquota;
         tokio::spawn(async move {
             let result = storage.receive(from, &stream, &fs, bound).await;
             if let Err(error) = &result {
@@ -231,7 +238,11 @@ impl VolumeStorage {
                     if stdin.write_all(&bytes).await.is_err() {
                         break;
                     }
+                    let before = received;
                     received += bytes.len() as u64;
+                    if before < KILL_AFTER_BYTES && received >= KILL_AFTER_BYTES {
+                        ployzd::faults::kill_inside("StartReceive");
+                    }
                 }
                 Err(error) => {
                     broke = Some(error.to_string());

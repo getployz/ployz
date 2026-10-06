@@ -203,6 +203,33 @@ async fn begin_round_needs_a_declared_slot() {
 }
 
 #[tokio::test]
+async fn a_refused_verb_leaves_the_record_and_its_retry_is_admitted() {
+    let test = TestDir::new();
+    set_property(&test, "tank/ployz", "ployz:lease.data", "1:4.0.5:closed");
+    let (socket, server) = start(&test, USABLE_POOL, &["root"]);
+    for refused in [at(1, 4, 1, 0, json!({})), at(2, 4, 1, 0, json!({}))] {
+        let response = post(&socket, "/Volume.BeginRound", refused).await;
+        assert_eq!(
+            response.pointer("/Err/details/reason").unwrap(),
+            "precondition"
+        );
+        assert_eq!(
+            property(&test, "tank/ployz", "ployz:lease.data").as_deref(),
+            Some("1:4.0.5:closed")
+        );
+    }
+
+    fs::write(test.0.join("mirror"), "").unwrap();
+    let response = post(&socket, "/Volume.BeginRound", at(1, 4, 1, 0, json!({}))).await;
+    assert_eq!(response.pointer("/Ok/decision").unwrap(), "admit");
+    assert_eq!(
+        property(&test, "tank/ployz", "ployz:lease.data").as_deref(),
+        Some("1:4.1.0:closed")
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn commit_keeps_the_mirror_newest_and_destroys_older_run_snapshots() {
     let test = TestDir::new();
     set_property(

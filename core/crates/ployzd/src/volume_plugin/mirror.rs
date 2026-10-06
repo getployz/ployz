@@ -95,7 +95,7 @@ impl VolumeStorage {
         request: &DeclareMirrorRequest,
     ) -> Result<SwitchReply, RpcError> {
         let name = name(&request.name)?;
-        let scope = self.leased(&name, &request.switch).await?;
+        let mut scope = self.leased(&name, &request.switch).await?;
         if scope.slot(&name).is_some() {
             if scope.replayed() {
                 return self.reply(&scope.pool, &name, scope.admitted).await;
@@ -112,6 +112,8 @@ impl VolumeStorage {
         self.ensure_commitment(&scope.pool, &scope.datasets, request.refquota_bytes)
             .await
             .map_err(internal)?;
+        self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
+            .await?;
         let mirror_root = format!("{}/{MIRROR_ROOT}", scope.pool.name());
         if !scope
             .datasets
@@ -156,9 +158,12 @@ impl VolumeStorage {
 
     async fn begin_round(&self, request: &MirrorRequest) -> Result<SwitchReply, RpcError> {
         let name = name(&request.name)?;
-        let scope = self.leased(&name, &request.switch).await?;
-        let slot = scope.require_slot(&name)?;
+        let mut scope = self.leased(&name, &request.switch).await?;
+        scope.require_slot(&name)?;
         self.require_no_receive(&name)?;
+        self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
+            .await?;
+        let slot = scope.require_slot(&name)?;
         if let Some(fs) = scope.fs(&name)
             && self
                 .property(&fs.name, RESUME_TOKEN_PROPERTY)
@@ -196,7 +201,7 @@ impl VolumeStorage {
 
     async fn commit_snapshots(&self, request: &CommitRequest) -> Result<SwitchReply, RpcError> {
         let name = name(&request.name)?;
-        let scope = self.leased(&name, &request.switch).await?;
+        let mut scope = self.leased(&name, &request.switch).await?;
         let root = scope.require_root(&name)?;
         let snapshots = self.snapshots(&root).await.map_err(internal)?;
         let Some(held) = snapshots
@@ -208,6 +213,8 @@ impl VolumeStorage {
                 request.mirror_newest
             )));
         };
+        self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
+            .await?;
         self.destroy_snapshots(&root, snapshots.get(held + 1..).unwrap_or(&[]))
             .await?;
         self.reply(&scope.pool, &name, scope.admitted).await
@@ -215,7 +222,7 @@ impl VolumeStorage {
 
     async fn warm_snapshot(&self, request: &WarmRequest) -> Result<SwitchReply, RpcError> {
         let name = name(&request.name)?;
-        let scope = self.leased(&name, &request.switch).await?;
+        let mut scope = self.leased(&name, &request.switch).await?;
         let root = scope.require_root(&name)?;
         if scope.replayed() {
             return self.reply(&scope.pool, &name, scope.admitted).await;
@@ -245,6 +252,8 @@ impl VolumeStorage {
                 .max()
                 .map_or(1, |index| index + 1);
             let target = SnapshotName::warm(request.switch.lease, index);
+            self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
+                .await?;
             self.zfs(&["snapshot", &format!("{root}@{target}")])
                 .await
                 .map_err(internal)?;
@@ -254,29 +263,33 @@ impl VolumeStorage {
 
     async fn prune_mirror(&self, request: &MirrorRequest) -> Result<SwitchReply, RpcError> {
         let name = name(&request.name)?;
-        let scope = self.leased(&name, &request.switch).await?;
+        let mut scope = self.leased(&name, &request.switch).await?;
         let slot = scope.require_slot(&name)?;
         self.require_no_receive(&name)?;
-        if let Some(fs) = scope.fs(&name) {
+        if let Some(fs) = scope.fs(&name).map(|fs| fs.name.clone()) {
             let in_flight = self.receive_record(slot).await?.map(|record| record.target);
-            let snapshots = self.snapshots(&fs.name).await.map_err(internal)?;
+            let snapshots = self.snapshots(&fs).await.map_err(internal)?;
             let stale: Vec<Snapshot> = snapshots
                 .iter()
                 .skip(1)
                 .filter(|snapshot| Some(&snapshot.name) != in_flight.as_ref())
                 .cloned()
                 .collect();
-            self.destroy_snapshots(&fs.name, &stale).await?;
+            self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
+                .await?;
+            self.destroy_snapshots(&fs, &stale).await?;
         }
         self.reply(&scope.pool, &name, scope.admitted).await
     }
 
     async fn destroy_mirror(&self, request: &MirrorRequest) -> Result<SwitchReply, RpcError> {
         let name = name(&request.name)?;
-        let scope = self.leased(&name, &request.switch).await?;
-        if let Some(slot) = scope.slot(&name) {
+        let mut scope = self.leased(&name, &request.switch).await?;
+        if let Some(slot) = scope.slot(&name).map(|slot| slot.name.clone()) {
             self.require_no_receive(&name)?;
-            self.zfs(&["destroy", "-r", &slot.name])
+            self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
+                .await?;
+            self.zfs(&["destroy", "-r", &slot])
                 .await
                 .map_err(internal)?;
         }
@@ -285,9 +298,11 @@ impl VolumeStorage {
 
     async fn forget_snapshots(&self, request: &MirrorRequest) -> Result<SwitchReply, RpcError> {
         let name = name(&request.name)?;
-        let scope = self.leased(&name, &request.switch).await?;
+        let mut scope = self.leased(&name, &request.switch).await?;
         let root = scope.require_root(&name)?;
         let snapshots = self.snapshots(&root).await.map_err(internal)?;
+        self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
+            .await?;
         self.destroy_snapshots(&root, &snapshots).await?;
         self.reply(&scope.pool, &name, scope.admitted).await
     }

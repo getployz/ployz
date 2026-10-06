@@ -1,10 +1,19 @@
 //! Fault injection for verify-cluster.
 
 #[cfg(feature = "verify-faults")]
+pub use enabled::kill_inside;
+#[cfg(feature = "verify-faults")]
 pub(crate) use enabled::{apply, check_env};
+
+/// Verbs whose effect outlives the RPC; `kill-daemon` fires inside them, from [`kill_inside`].
+#[cfg_attr(not(feature = "verify-faults"), allow(dead_code))]
+const LONG_EFFECTS: [&str; 1] = ["StartReceive"];
 
 #[cfg(not(feature = "verify-faults"))]
 pub(crate) async fn apply(_verb: &'static str) {}
+
+#[cfg(not(feature = "verify-faults"))]
+pub fn kill_inside(_verb: &'static str) {}
 
 #[cfg(not(feature = "verify-faults"))]
 pub(crate) fn check_env() -> std::io::Result<()> {
@@ -78,7 +87,9 @@ mod enabled {
                 tracing::warn!(verb, secs, "fault: delaying switch verb");
                 tokio::time::sleep(Duration::from_secs(secs)).await;
             }
-            FaultPoint::KillDaemon { verb: wanted } if wanted == verb => {
+            FaultPoint::KillDaemon { verb: wanted }
+                if wanted == verb && !super::LONG_EFFECTS.contains(&verb) =>
+            {
                 tracing::warn!(verb, "fault: killing daemon");
                 std::process::abort();
             }
@@ -87,6 +98,16 @@ mod enabled {
                 std::future::pending::<()>().await;
             }
             FaultPoint::DelayRpc { .. } | FaultPoint::KillDaemon { .. } => {}
+        }
+    }
+
+    /// Aborts the process running `verb`'s effect when `kill-daemon:<verb>` names it.
+    pub fn kill_inside(verb: &'static str) {
+        if let Ok(Some(FaultPoint::KillDaemon { verb: wanted })) = FaultPoint::from_env()
+            && wanted == verb
+        {
+            tracing::warn!(verb, "fault: killing daemon inside the effect");
+            std::process::abort();
         }
     }
 

@@ -249,8 +249,8 @@ impl VolumeStorage {
         datasets.iter().find(|dataset| dataset.name == fs)
     }
 
-    /// Fences `request` for `name` and records the admitted position. The caller holds
-    /// the mutation lock; the effect runs after this returns.
+    /// Fences `request` for `name`. The caller holds the mutation lock and calls
+    /// [`Self::record`] once its preconditions pass, so a refusal leaves the record as it was.
     pub(super) async fn admit(
         &self,
         pool: &MachinePool,
@@ -272,23 +272,40 @@ impl VolumeStorage {
             pos: request.pos,
             cycle: recorded.map_or(Cycle::Closed, |record| record.cycle),
         };
-        if recorded != Some(lease) {
-            self.write_lease_record(datasets, pool, name, lease)
+        Ok(Admitted {
+            decision,
+            lease,
+            recorded,
+        })
+    }
+
+    /// Records the admitted position as the effect begins; a no-op once recorded.
+    pub(super) async fn record(
+        &self,
+        pool: &MachinePool,
+        datasets: &[Dataset],
+        name: &DockerVolumeName,
+        admitted: &mut Admitted,
+    ) -> std::result::Result<(), RpcError> {
+        if admitted.recorded != Some(admitted.lease) {
+            self.write_lease_record(datasets, pool, name, admitted.lease)
                 .await
                 .map_err(internal)?;
+            admitted.recorded = Some(admitted.lease);
         }
-        Ok(Admitted { decision, lease })
+        Ok(())
     }
 
     /// The reply every leased verb ends with: the decision, the record and the copy as
-    /// it is after the effect.
+    /// it is after the effect. Records the position if the verb had no effect to record it.
     pub(super) async fn reply(
         &self,
         pool: &MachinePool,
         name: &DockerVolumeName,
-        admitted: Admitted,
+        mut admitted: Admitted,
     ) -> std::result::Result<SwitchReply, RpcError> {
         let datasets = self.datasets(pool).await.map_err(internal)?;
+        self.record(pool, &datasets, name, &mut admitted).await?;
         Ok(SwitchReply {
             decision: admitted.decision,
             lease: admitted.lease,
@@ -324,11 +341,12 @@ impl VolumeStorage {
     }
 }
 
-/// A fenced request's decision and the record written for it.
+/// A fenced request's decision, the record it writes, and the record on disk.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Admitted {
     pub(super) decision: FenceDecision,
     pub(super) lease: LeaseRecord,
+    recorded: Option<LeaseRecord>,
 }
 
 pub(super) fn slot_parent(pool: &MachinePool, name: &DockerVolumeName) -> String {
