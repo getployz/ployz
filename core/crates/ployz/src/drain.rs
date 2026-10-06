@@ -244,6 +244,7 @@ impl From<DrainError> for RpcError {
             code,
             message: error.to_string(),
             details: serde_json::Value::Null,
+            cause: Vec::new(),
         };
         match error {
             DrainError::Refused(error) => error,
@@ -563,7 +564,7 @@ fn observed(live: &LiveServices<RpcError>, id: &MachineId) -> Result<(), String>
         .iter()
         .find(|failure| failure.machine_id == *id)
     {
-        return Err(failure.error.message.clone());
+        return Err(crate::ui::row(&failure.error));
     }
     if live.containers.omissions.contains(id) {
         return Err("no terminal response".into());

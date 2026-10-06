@@ -225,6 +225,7 @@ mod tests {
             code: RpcErrorCode::NotFound,
             message: "No Service nope in production.".into(),
             details: json!({ "valid_children": ["web", "db"] }),
+            cause: Vec::new(),
         });
         let ended = end(&failure, Mode::Plain, false);
         assert_eq!(ended.code, 1);

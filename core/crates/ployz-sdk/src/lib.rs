@@ -65,7 +65,7 @@ impl PendingConnection {
         let connector = std::sync::Arc::new(ployz::connect::SystemConnector::default());
         tokio::select! {
             biased;
-            () = self.cancel.cancelled() => Err(rpc_to_napi(RpcError { code: RpcErrorCode::Unavailable, message: "connection cancelled".into(), details: serde_json::Value::Null })),
+            () = self.cancel.cancelled() => Err(rpc_to_napi(RpcError { code: RpcErrorCode::Unavailable, message: "connection cancelled".into(), details: serde_json::Value::Null, cause: Vec::new(), })),
             result = sdk::connect_connections(connections, connector) => Ok(Client { inner: result.map_err(rpc_to_napi)? }),
         }
     }
@@ -766,6 +766,7 @@ fn invalid_argument(error: impl std::fmt::Display) -> Error {
         code: RpcErrorCode::InvalidArgument,
         message: error.to_string(),
         details: serde_json::Value::Null,
+        cause: Vec::new(),
     })
 }
 
@@ -798,6 +799,7 @@ pub fn allocate_enrollment(
                 code: ployz_core::RpcErrorCode::Conflict,
                 message: error.to_string(),
                 details: serde_json::Value::Null,
+                cause: Vec::new(),
             })
         })?;
     to_json(&assignment)

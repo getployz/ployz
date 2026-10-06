@@ -198,7 +198,7 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
     let mut failures = Vec::new();
     let mut attempt = |result: Result<(), NetworkError>| {
         if let Err(error) = result {
-            failures.push(error.to_string());
+            failures.push(ployz_core::error_chain::inline(&error));
         }
     };
     attempt(delete_rule(

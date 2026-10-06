@@ -35,17 +35,17 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("Corrosion I/O failed: {0}")]
+    #[error("Corrosion I/O failed")]
     Io(#[from] std::io::Error),
-    #[error("Corrosion HTTP request failed: {0}")]
+    #[error("Corrosion HTTP request failed")]
     Http(#[from] reqwest::Error),
-    #[error("Corrosion JSON failed: {0}")]
+    #[error("Corrosion JSON failed")]
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Value(#[from] ployz_core::ValueError),
-    #[error("Corrosion TOML failed: {0}")]
+    #[error("Corrosion TOML failed")]
     Toml(#[from] toml::ser::Error),
-    #[error("Docker operation for Corrosion failed: {0}")]
+    #[error("Docker operation for Corrosion failed")]
     Docker(#[from] bollard::errors::Error),
     #[error("{primary}; cleanup: {cleanup}")]
     CleanupAfter {

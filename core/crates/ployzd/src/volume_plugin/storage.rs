@@ -92,7 +92,7 @@ impl VolumeStorage {
         let installation = self
             .installation
             .try_mutation()
-            .map_err(|error| VolumeError::from(error.to_string()))?;
+            .map_err(|error| VolumeError::from(ployz_core::error_chain::inline(&error)))?;
         Ok((local, installation))
     }
 
@@ -406,8 +406,13 @@ pub(super) async fn checked_command(program: &PathBuf, args: &[&str]) -> Result<
                 attempt += 1;
             }
             output => {
-                break output
-                    .map_err(|error| format!("could not run {}: {error}", program.display()))?;
+                break output.map_err(|error| {
+                    format!(
+                        "could not run {}: {error}",
+                        program.display(),
+                        error = ployz_core::error_chain::inline(&error),
+                    )
+                })?;
             }
         }
     };

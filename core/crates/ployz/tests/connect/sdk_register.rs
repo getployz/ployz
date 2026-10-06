@@ -61,6 +61,7 @@ async fn register_isolation_locked_is_rpc_error() {
         code: RpcErrorCode::Unavailable,
         message: "this Machine is isolation-locked".into(),
         details: serde_json::Value::Null,
+        cause: Vec::new(),
     });
     let _machine = session.spawn_machine(description.machine_id, service).await;
 
@@ -98,6 +99,7 @@ async fn node_smoke_covers_session_register() {
         code: RpcErrorCode::Unavailable,
         message: "this Machine is isolation-locked".into(),
         details: serde_json::Value::Null,
+        cause: Vec::new(),
     });
     let _isolated = session.spawn_machine(isolated_id, isolated).await;
 

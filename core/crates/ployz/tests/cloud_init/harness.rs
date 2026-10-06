@@ -440,6 +440,7 @@ impl MachineRpc for JoinDaemon {
                 code: RpcErrorCode::InvalidArgument,
                 message: "assigned public key does not match this Machine".into(),
                 details: serde_json::Value::Null,
+                cause: Vec::new(),
             });
         }
         *self.inner.current_machine.lock().unwrap() = join.registration.assigned_machine.clone();
@@ -644,6 +645,7 @@ impl MachineRpc for JoinDaemon {
                 code: RpcErrorCode::Unavailable,
                 message: "unreachable".into(),
                 details: serde_json::Value::Null,
+                cause: Vec::new(),
             });
         }
         rpc_ok(ContainerList {
@@ -740,6 +742,7 @@ impl MachineRpc for JoinDaemon {
                     code: RpcErrorCode::Unavailable,
                     message: "ensure failed".into(),
                     details: serde_json::Value::Null,
+                    cause: Vec::new(),
                 });
             }
             self.inner
@@ -758,6 +761,7 @@ impl MachineRpc for JoinDaemon {
                     code: RpcErrorCode::Conflict,
                     message: "target Global slot is ineligible or unknown".into(),
                     details: serde_json::Value::Null,
+                    cause: Vec::new(),
                 });
             }
             let n = self.inner.containers.lock().unwrap().len() + 1;

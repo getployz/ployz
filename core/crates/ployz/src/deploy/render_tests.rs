@@ -615,6 +615,7 @@ fn failed_volume_footer_keeps_the_failing_machine_when_names_collide() {
                     code: RpcErrorCode::Unavailable,
                     message: "target Machine RPC timed out".into(),
                     details: serde_json::Value::Null,
+                    cause: Vec::new(),
                 },
             },
         },
@@ -957,6 +958,7 @@ fn timed_out_create() -> ExecutionError {
             code: RpcErrorCode::Unavailable,
             message: "target Machine RPC timed out".into(),
             details: serde_json::Value::Null,
+            cause: Vec::new(),
         },
     }
 }

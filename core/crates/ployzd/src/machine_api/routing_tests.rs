@@ -79,6 +79,28 @@ fn routing_resolves_visible_targets_without_repairing_ambiguity() {
     assert!(MachineTarget::parse("*").is_err());
 }
 
+#[test]
+fn an_unknown_server_is_not_found_only_when_members_are_visible() {
+    let visible = [machine('a', "alpha", 1)];
+    let missing = TargetResolutionError::NotFound(vec![target("nope")]);
+    assert_eq!(
+        super::route_status(&missing, &visible).code(),
+        tonic::Code::NotFound
+    );
+    assert_eq!(
+        super::route_status(&missing, &[]).code(),
+        tonic::Code::InvalidArgument
+    );
+    let ambiguous = TargetResolutionError::Ambiguous {
+        selector: target("alpha"),
+        matches: vec![visible[0].id],
+    };
+    assert_eq!(
+        super::route_status(&ambiguous, &visible).code(),
+        tonic::Code::InvalidArgument
+    );
+}
+
 #[tokio::test]
 async fn one_to_one_forwards_unknown_bytes_unchanged() {
     let listener = TcpListener::bind("[::1]:0").await.unwrap();

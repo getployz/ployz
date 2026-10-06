@@ -51,6 +51,7 @@ impl RetireClient for Client {
                 code: RpcErrorCode::Conflict,
                 message: "the Server accepts it again".into(),
                 details: serde_json::Value::Null,
+                cause: Vec::new(),
             }),
             ServicePlacementEligibility::Unknown(reason) => Err(unknown_eligibility(reason)),
         }

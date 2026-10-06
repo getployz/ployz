@@ -596,6 +596,7 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
             code: RpcErrorCode::Unavailable,
             message: "in use".into(),
             details: Value::Null,
+            cause: Vec::new(),
         },
     };
     let claimed = run(&store, 2, vec![removal(failed)]);

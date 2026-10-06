@@ -59,7 +59,10 @@ impl ReleaseSource {
             }
         };
         String::from_utf8(bytes).map_err(|error| {
-            Error::ReleaseSelection(format!("{name} channel is not UTF-8: {error}"))
+            Error::ReleaseSelection(format!(
+                "{name} channel is not UTF-8: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            ))
         })
     }
 
@@ -137,19 +140,39 @@ pub(super) async fn fetch(url: &str, stage: &str) -> Result<Vec<u8>, Error> {
         .read_timeout(DOWNLOAD_TIMEOUT)
         .user_agent("ployzd-installer")
         .build()
-        .map_err(|error| Error::ReleaseSelection(format!("build download client: {error}")))?;
+        .map_err(|error| {
+            Error::ReleaseSelection(format!(
+                "build download client: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            ))
+        })?;
     let response = client
         .get(url)
         .send()
         .await
-        .map_err(|error| Error::ReleaseSelection(format!("{stage}: {error}")))?
+        .map_err(|error| {
+            Error::ReleaseSelection(format!(
+                "{stage}: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            ))
+        })?
         .error_for_status()
-        .map_err(|error| Error::ReleaseSelection(format!("{stage}: {error}")))?;
+        .map_err(|error| {
+            Error::ReleaseSelection(format!(
+                "{stage}: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            ))
+        })?;
     response
         .bytes()
         .await
         .map(|bytes| bytes.to_vec())
-        .map_err(|error| Error::ReleaseSelection(format!("{stage}: {error}")))
+        .map_err(|error| {
+            Error::ReleaseSelection(format!(
+                "{stage}: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            ))
+        })
 }
 
 fn release_url(target: &MachineVersion, file: &str) -> String {
@@ -292,7 +315,7 @@ async fn version_command(path: &Path, stage: &str) -> Result<std::process::Outpu
         Ok(Ok(output)) => Ok(output),
         Ok(Err(error)) => Err(Error::Command {
             stage: stage.into(),
-            message: error.to_string(),
+            message: ployz_core::error_chain::inline(&error),
         }),
         Err(_) => Err(Error::Command {
             stage: stage.into(),

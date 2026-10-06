@@ -331,6 +331,7 @@ impl MachineRpc for MachineService {
                 code: RpcErrorCode::InvalidArgument,
                 message: "container observation wait exceeds 5 seconds".into(),
                 details: Value::Null,
+                cause: Vec::new(),
             });
         }
         let replicated = match self.replicated() {
@@ -600,7 +601,7 @@ impl MachineRpc for MachineService {
             .runtime_watch
             .subscribe(store, self.local.clone(), entry_id)
             .await
-            .map_err(|error| Status::unavailable(error.to_string()))?;
+            .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Unavailable, &error))?;
         Ok(Response::new(stream))
     }
 
@@ -679,7 +680,7 @@ impl MachineRpc for MachineService {
         let images = containers
             .list_images(request.reference.as_deref(), request.last_tagged)
             .await
-            .map_err(|error| Status::internal(error.to_string()))?;
+            .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Internal, &error))?;
         respond(images)
     }
 
@@ -713,6 +714,7 @@ impl MachineRpc for MachineService {
                 code: RpcErrorCode::InvalidArgument,
                 message: "image is required".into(),
                 details: Value::Null,
+                cause: Vec::new(),
             });
         }
         finish(self.local.pull_image_from_machine(request).await)
@@ -767,7 +769,8 @@ impl MachineRpc for MachineService {
             }
             Err(error) => Err(Status::internal(format!(
                 "read Ingress Proxy configuration {}: {error}",
-                path.display()
+                path.display(),
+                error = ployz_core::error_chain::inline(&error),
             ))),
         }
     }
@@ -795,9 +798,11 @@ impl MachineRpc for MachineService {
                         return respond(RpcError {
                             code: RpcErrorCode::InvalidArgument,
                             message: format!(
-                                "refused Certificate Material for {hostname}: {error}"
+                                "refused Certificate Material for {hostname}: {error}",
+                                error = ployz_core::error_chain::inline(&error),
                             ),
                             details: Value::Null,
+                            cause: Vec::new(),
                         });
                     }
                 };
@@ -864,7 +869,10 @@ async fn read_container_observations(
 fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Status> {
     match error {
         LocalMachineError::Store(error) => respond(store_error(error)),
-        LocalMachineError::ManagementRevoked => Err(Status::unauthenticated(error.to_string())),
+        LocalMachineError::ManagementRevoked => Err(ployz_core::rpc::caused_status(
+            tonic::Code::Unauthenticated,
+            &error,
+        )),
         LocalMachineError::NotParticipating => respond(unavailable("Machine is not participating")),
         LocalMachineError::ClusterStoreUnavailable => {
             respond(unavailable("Cluster store is not available"))
@@ -873,46 +881,57 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             Err(Status::unavailable("Cluster is not available"))
         }
         LocalMachineError::DockerUnavailable => respond(unavailable("Docker is not available")),
-        LocalMachineError::MissingAssignment => respond(RpcError {
-            code: RpcErrorCode::InvalidArgument,
-            message: error.to_string(),
-            details: Value::Null,
-        }),
-        LocalMachineError::Enrollment(error) => respond(RpcError {
-            code: RpcErrorCode::Conflict,
-            message: error.to_string(),
-            details: Value::Null,
-        }),
+        LocalMachineError::MissingAssignment => {
+            respond(RpcError::caused(RpcErrorCode::InvalidArgument, &error))
+        }
+        LocalMachineError::Enrollment(error) => {
+            respond(RpcError::caused(RpcErrorCode::Conflict, &error))
+        }
         LocalMachineError::EmptyUpdate => respond(RpcError {
             code: RpcErrorCode::InvalidArgument,
             message: "at least one Machine update is required".into(),
             details: Value::Null,
+            cause: Vec::new(),
         }),
-        LocalMachineError::RecordOwner(error) => Err(Status::internal(error.to_string())),
-        LocalMachineError::OperationTask(error) => Err(Status::internal(error.to_string())),
-        LocalMachineError::Cluster(error) => Err(Status::internal(error.to_string())),
-        LocalMachineError::IngressProxyServiceSpec(error) => respond(RpcError {
-            code: RpcErrorCode::InvalidArgument,
-            message: error.to_string(),
-            details: Value::Null,
-        }),
-        LocalMachineError::Network(error) => Err(Status::internal(error.to_string())),
+        LocalMachineError::RecordOwner(error) => Err(ployz_core::rpc::caused_status(
+            tonic::Code::Internal,
+            &error,
+        )),
+        LocalMachineError::OperationTask(error) => Err(ployz_core::rpc::caused_status(
+            tonic::Code::Internal,
+            &error,
+        )),
+        LocalMachineError::Cluster(error) => Err(ployz_core::rpc::caused_status(
+            tonic::Code::Internal,
+            &error,
+        )),
+        LocalMachineError::IngressProxyServiceSpec(error) => {
+            respond(RpcError::caused(RpcErrorCode::InvalidArgument, &error))
+        }
+        LocalMachineError::Network(error) => Err(ployz_core::rpc::caused_status(
+            tonic::Code::Internal,
+            &error,
+        )),
         LocalMachineError::Docker(error) => respond(RpcError::from(&error)),
         LocalMachineError::StoragePreparation(error) => respond(error),
         LocalMachineError::Cleanup(message) => respond(RpcError {
             code: RpcErrorCode::Internal,
             message,
             details: Value::Null,
+            cause: Vec::new(),
         }),
-        LocalMachineError::IsolationLocked => respond(unavailable(&error.to_string())),
+        LocalMachineError::IsolationLocked => {
+            respond(unavailable(&ployz_core::error_chain::inline(&error)))
+        }
         LocalMachineError::Admission(crate::mutation::Error::Busy) => respond(RpcError {
             code: RpcErrorCode::Conflict,
             message: "a Ployz installation or upgrade is active".into(),
             details: Value::Null,
+            cause: Vec::new(),
         }),
-        LocalMachineError::Admission(crate::mutation::Error::Io(error)) => {
-            Err(Status::internal(error.to_string()))
-        }
+        LocalMachineError::Admission(crate::mutation::Error::Io(error)) => Err(
+            ployz_core::rpc::caused_status(tonic::Code::Internal, &error),
+        ),
         LocalMachineError::Upgrade(error) => respond(upgrade_error(error)),
     }
 }
@@ -936,11 +955,7 @@ fn upgrade_error(error: crate::installer::upgrade::Error) -> RpcError {
         | Error::Upgrade(_)
         | Error::Admission(mutation::Error::Io(_)) => RpcErrorCode::Internal,
     };
-    RpcError {
-        code,
-        message: error.to_string(),
-        details: Value::Null,
-    }
+    RpcError::caused(code, &error)
 }
 
 #[allow(clippy::result_large_err)]
@@ -958,6 +973,7 @@ fn unavailable(message: &str) -> RpcError {
         code: RpcErrorCode::Unavailable,
         message: message.into(),
         details: Value::Null,
+        cause: Vec::new(),
     }
 }
 
@@ -970,6 +986,7 @@ fn ingress_config_missing(path: &Path) -> RpcError {
             path.display()
         ),
         details: serde_json::json!({ "path": path.display().to_string() }),
+        cause: Vec::new(),
     }
 }
 
@@ -999,19 +1016,11 @@ fn store_error(error: StoreError) -> RpcError {
         | StoreError::OwnershipLost(_)
         | StoreError::ResetPreparationLost(_) => RpcErrorCode::Internal,
     };
-    RpcError {
-        code,
-        message: error.to_string(),
-        details: Value::Null,
-    }
+    RpcError::caused(code, &error)
 }
 
 fn cluster_store_error(error: crate::corrosion::Error) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Internal,
-        message: error.to_string(),
-        details: Value::Null,
-    }
+    RpcError::caused(RpcErrorCode::Internal, &error)
 }
 
 #[allow(clippy::result_large_err)]
@@ -1022,7 +1031,7 @@ fn respond(response: impl Into<RpcResponse>) -> Result<Response<OpaquePayload>, 
 }
 
 fn invalid_request(error: impl std::error::Error + 'static) -> Status {
-    Status::invalid_argument(ployz_core::error_chain::inline(&error))
+    ployz_core::rpc::caused_status(tonic::Code::InvalidArgument, &error)
 }
 
 #[allow(clippy::result_large_err)]
@@ -1040,7 +1049,7 @@ fn expect<T: Rpc>(request: Request<OpaquePayload>) -> Result<T::Request, Status>
 }
 
 fn internal_response(error: impl std::error::Error + 'static) -> Status {
-    Status::internal(ployz_core::error_chain::inline(&error))
+    ployz_core::rpc::caused_status(tonic::Code::Internal, &error)
 }
 
 #[cfg(test)]

@@ -94,17 +94,22 @@ impl ImageIngest {
         {
             Ok(prerequisite) => prerequisite.socket()?,
             Err(error) => {
-                return Err(ImageIngestReason::DockerUnavailable.rpc_error(error.to_string()));
+                return Err(ImageIngestReason::DockerUnavailable
+                    .rpc_error(ployz_core::error_chain::inline(&error)));
             }
         };
         let _reconciliation = self.reconciliation.lock().await;
         docker
             .reconcile_unregistry(management_address.0, &socket)
             .await
-            .map_err(|error| ImageIngestReason::StartFailed.rpc_error(error.to_string()))?;
+            .map_err(|error| {
+                ImageIngestReason::StartFailed.rpc_error(ployz_core::error_chain::inline(&error))
+            })?;
         wait_for_unregistry(SocketAddr::from((management_address.0, UNREGISTRY_PORT)))
             .await
-            .map_err(|error| ImageIngestReason::StartFailed.rpc_error(error.to_string()))?;
+            .map_err(|error| {
+                ImageIngestReason::StartFailed.rpc_error(ployz_core::error_chain::inline(&error))
+            })?;
         Ok(opened)
     }
 

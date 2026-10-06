@@ -129,7 +129,11 @@ pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                     &selector,
                     Some(TARGET_RPC_TIMEOUT),
                 )
-                .await?;
+                .await
+                .map_err(|error| {
+                    Error::from(error)
+                        .context(format!("Could not inspect Server {}.", selector.as_str()))
+                })?;
             let upgrade = match client
                 .call_repeatable::<op::InspectMachineUpgrade>(
                     InspectMachineUpgradeRequest { attempt_id: None },

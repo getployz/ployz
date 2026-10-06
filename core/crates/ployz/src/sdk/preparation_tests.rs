@@ -464,6 +464,7 @@ async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
             code: RpcErrorCode::Unsupported,
             message: "containerd image store unavailable".into(),
             details: serde_json::Value::Null,
+            cause: Vec::new(),
         },
     );
     let (mut client, server) = connected(service.with_machines(vec![

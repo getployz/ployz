@@ -504,7 +504,7 @@ async fn image_id(
         .map_err(|error| MoveFailure::ReadImage {
             from: from.clone(),
             to: to.clone(),
-            detail: error.message,
+            detail: crate::ui::row(&error),
         })?
         .image_id
         .ok_or_else(|| MoveFailure::SourceTooOld { from: from.clone() })

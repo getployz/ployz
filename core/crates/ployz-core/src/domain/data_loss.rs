@@ -119,6 +119,7 @@ impl UnconfirmedDataLoss {
             code: RpcErrorCode::InvalidArgument,
             message: self.to_string(),
             details: serde_json::to_value(&self).expect("UnconfirmedDataLoss is JSON"),
+            cause: Vec::new(),
         }
     }
 

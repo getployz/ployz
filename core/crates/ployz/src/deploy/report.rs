@@ -668,7 +668,7 @@ fn cause_from_error(error: &ExecutionError) -> Cause {
     match error {
         ExecutionError::Machine { action, error } => Cause::Machine {
             action: ActionWord::from_machine(*action),
-            message: error.message.clone(),
+            message: crate::ui::row(error),
         },
         ExecutionError::Health { failure, .. } => cause_from_health(failure),
         ExecutionError::Hook { failure, .. } => cause_from_hook(failure),
@@ -699,10 +699,10 @@ fn cause_from_health(failure: &HealthFailure) -> Cause {
 fn cause_from_hook(failure: &HookFailure) -> Cause {
     match failure {
         HookFailure::TimedOut { stop_error } => Cause::HookTimeout {
-            stop_message: stop_error.as_ref().map(|error| error.message.clone()),
+            stop_message: stop_error.as_ref().map(|error| crate::ui::row(error)),
         },
         HookFailure::Cancelled { stop_error } => Cause::HookCancelled {
-            stop_message: stop_error.as_ref().map(|error| error.message.clone()),
+            stop_message: stop_error.as_ref().map(|error| crate::ui::row(error)),
         },
         HookFailure::Exit { code } => Cause::HookExit {
             code: *code,
@@ -717,7 +717,7 @@ fn cause_from_dependency(dependency: String, failure: &DependencyHealthFailure) 
         DependencyHealthFailure::NoContainers => Cause::DependencyEmpty { dependency },
         DependencyHealthFailure::Observation { error } => Cause::DependencyObserve {
             dependency,
-            message: error.message.clone(),
+            message: crate::ui::row(error),
         },
         DependencyHealthFailure::Container { failure, .. } => Cause::DependencyContainer {
             cause: Box::new(cause_from_health(failure)),

@@ -111,6 +111,7 @@ impl BuildGrants {
                         "this Machine holds no such Build Grant; it expired or the daemon restarted"
                             .into(),
                     details: serde_json::Value::Null,
+                    cause: Vec::new(),
                 })?,
         );
         grant.ended.cancel();
@@ -199,7 +200,7 @@ pub(super) async fn serve(
                 .serve_connection(TokioIo::new(tokio::io::join(recv, send)), service)
                 .await
             {
-                tracing::debug!(%error, "build grant stream ended");
+                tracing::debug!(error = %ployz_core::error_chain::inline(&error), "build grant stream ended");
             }
         });
     }
@@ -369,7 +370,7 @@ async fn forward(
     let upstream = match result {
         Ok(upstream) => upstream,
         Err(error) => {
-            tracing::debug!(%error, "build grant ingest request failed");
+            tracing::debug!(error = %ployz_core::error_chain::inline(&error), "build grant ingest request failed");
             return denied(StatusCode::BAD_GATEWAY, "image ingest is unavailable");
         }
     };

@@ -223,6 +223,7 @@ fn needs_cluster_domain(
             environment.summary.name
         ),
         details: json!({}),
+        cause: Vec::new(),
     })
 }
 

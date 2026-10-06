@@ -139,6 +139,53 @@ async fn inventory_reads_provisioned_details_and_keeps_healthy_siblings() {
 }
 
 #[tokio::test]
+async fn failed_ployz_listing_reports_its_volumes_without_inspecting_them() {
+    let (runtime, fake) = fake_runtime().await;
+    fake.list_warnings.lock().unwrap().push(
+        "list ployz: ZFS dataset ployz/ployz is read-only; make it writable before retrying".into(),
+    );
+    let machine_id = MachineId::random();
+
+    let inventory = runtime.list_volumes(&machine_id).await.unwrap();
+
+    assert_eq!(
+        inventory
+            .volumes
+            .iter()
+            .map(|volume| volume.id.name.as_str())
+            .collect::<Vec<_>>(),
+        ["plain"]
+    );
+    assert_eq!(
+        inventory
+            .failures
+            .iter()
+            .map(|failure| failure.id.name.as_str())
+            .collect::<Vec<_>>(),
+        ["healthy", "malformed", "unavailable", "mismatched"]
+    );
+    for failure in &inventory.failures {
+        assert_eq!(failure.id.machine_id, machine_id);
+        assert_eq!(failure.error.code, ployz_core::RpcErrorCode::Unavailable);
+        assert!(
+            failure
+                .error
+                .message
+                .contains("ZFS dataset ployz/ployz is read-only; make it writable before retrying"),
+            "{}",
+            failure.error.message
+        );
+    }
+    let requests = fake.requests.lock().unwrap();
+    assert!(
+        !requests
+            .iter()
+            .any(|(method, path)| method == Method::GET && path.contains("/volumes/")),
+        "{requests:?}"
+    );
+}
+
+#[tokio::test]
 async fn direct_lookup_does_not_enumerate_unrelated_volumes() {
     let (runtime, fake) = fake_runtime().await;
     let machine_id = MachineId::random();
@@ -593,7 +640,7 @@ async fn list_returns_a_top_level_collection_error() {
         .await
         .unwrap_err();
 
-    assert!(error.to_string().contains("collection unavailable"));
+    assert!(ployz_core::error_chain::inline(&error).contains("collection unavailable"));
 }
 
 #[tokio::test]
@@ -619,7 +666,10 @@ async fn create_reports_mutation_success_separately_from_failed_verification() {
     };
     assert_eq!(id.machine_id, machine_id);
     assert_eq!(id.name.as_str(), "unavailable");
-    assert!(error.message.contains("detail unavailable"), "{error}");
+    assert!(
+        ployz_core::error_chain::inline(&error).contains("detail unavailable"),
+        "{error:?}"
+    );
     let requests = fake.requests.lock().unwrap();
     assert!(
         requests
@@ -650,7 +700,7 @@ async fn create_returns_docker_rejection_as_an_error() {
         .await
         .unwrap_err();
 
-    assert!(error.to_string().contains("create rejected"));
+    assert!(ployz_core::error_chain::inline(&error).contains("create rejected"));
 }
 
 #[tokio::test]
@@ -728,6 +778,27 @@ async fn in_use_volume_names_the_service_that_mounts_it() {
 }
 
 #[test]
+fn volume_list_decoding_keeps_driver_warnings() {
+    let warning = "list ployz: ZFS dataset ployz/ployz is read-only";
+    let typed = Ok(bollard::models::VolumeListResponse {
+        volumes: Some(Vec::new()),
+        warnings: Some(vec![warning.into()]),
+    });
+    let recovered = Err(bollard::errors::Error::JsonDataError {
+        message: "generated Volume status cannot represent numeric values".into(),
+        contents: serde_json::json!({"Volumes":[],"Warnings":[warning]}).to_string(),
+        column: 0,
+    });
+
+    for response in [typed, recovered] {
+        assert_eq!(
+            decode_volume_list(response).unwrap().warnings.unwrap(),
+            [warning]
+        );
+    }
+}
+
+#[test]
 fn docker_volume_preserves_provisioned_usage_at_alert_threshold() {
     let contents = serde_json::json!({"Volumes":[{
         "Name":"data",
@@ -742,6 +813,8 @@ fn docker_volume_preserves_provisioned_usage_at_alert_threshold() {
         contents,
         column: 0,
     }))
+    .unwrap()
+    .volumes
     .unwrap();
     let observed = docker_volume(&MachineId::random(), volumes.remove(0)).unwrap();
 

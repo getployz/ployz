@@ -515,6 +515,7 @@ mod tests {
                     code: RpcErrorCode::Conflict,
                     message: "a Server upgrade or mutation is active".into(),
                     details: Value::Null,
+                    cause: Vec::new(),
                 }),
             ))),
             seen: Vec::new(),

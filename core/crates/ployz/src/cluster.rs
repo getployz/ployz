@@ -646,6 +646,7 @@ impl Client {
                     "the current entry Machine cannot be removed while another Machine is visible"
                         .into(),
                 details: Value::Null,
+                cause: Vec::new(),
             });
         }
         let hold = refuse_last_managed(self, &machines, selected).await?;
@@ -920,6 +921,7 @@ impl Client {
                                     code: RpcErrorCode::Unavailable,
                                     message: error.to_string(),
                                     details: Value::Null,
+                                    cause: Vec::new(),
                                 },
                             },
                         });
@@ -1036,6 +1038,7 @@ fn cloud_holds_last(machine: MachineId) -> RpcError {
              lets go of it too. No changes made."
         ),
         details: Value::Null,
+        cause: Vec::new(),
     }
 }
 
@@ -1067,9 +1070,9 @@ pub(crate) async fn refuse_last_managed(
             code: RpcErrorCode::Unavailable,
             message: format!(
                 "cannot read who manages Machine {selected}, the last Machine: {}. No changes made.",
-                error.message
+                crate::ui::row(&error)
             ),
-            details: Value::Null,
+            details: Value::Null, cause: Vec::new(),
         })?
         .management_clients;
     let cloud = holders.iter().any(|label| label.as_str() == "cloud");
@@ -1094,6 +1097,7 @@ pub(crate) async fn refuse_last_managed(
              No changes made. Disconnect {who} from this Machine first."
         ),
         details: Value::Null,
+        cause: Vec::new(),
     })
 }
 
@@ -1111,6 +1115,7 @@ pub(crate) fn visible_machine<'list>(
                 code: RpcErrorCode::NotFound,
                 message: format!("Server {} was not found", machine.as_str().escape_debug()),
                 details: Value::Null,
+                cause: Vec::new(),
             });
         }
         matches @ NameMatches::Ambiguous { .. } => {
@@ -1126,6 +1131,7 @@ pub(crate) fn visible_machine<'list>(
                         .join(", ")
                 ),
                 details: Value::Null,
+                cause: Vec::new(),
             });
         }
         NameMatches::One(row) => row.id,
@@ -1259,7 +1265,7 @@ async fn data_loss_on_machine(
     let volumes = list_volumes_on_machine(client.clone(), selected)
         .await
         .map_err(|failure| RpcError {
-            message: format!("Machine {selected}: {}", failure.error.message),
+            message: format!("Machine {selected}: {}", crate::ui::row(&failure.error)),
             ..failure.error
         })?;
     Ok(ObservedDataLoss {
@@ -1284,6 +1290,7 @@ fn machine_did_not_respond(machine_id: MachineId) -> RpcError {
         code: RpcErrorCode::Unavailable,
         message: format!("Machine {machine_id} did not respond"),
         details: Value::Null,
+        cause: Vec::new(),
     }
 }
 
@@ -1364,6 +1371,7 @@ fn validate_volume_inventory(
                     id.name, id.machine_id
                 ),
                 details: Value::Null,
+                cause: Vec::new(),
             });
         }
         if !names.insert(&id.name) {
@@ -1374,6 +1382,7 @@ fn validate_volume_inventory(
                     id.name
                 ),
                 details: Value::Null,
+                cause: Vec::new(),
             });
         }
     }

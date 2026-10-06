@@ -34,6 +34,7 @@ pub(crate) struct FakeDocker {
     pub(crate) image_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub(crate) create_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub(crate) reject_list: Arc<AtomicBool>,
+    pub(crate) list_warnings: Arc<Mutex<Vec<String>>>,
 }
 
 async fn fake_docker(
@@ -181,7 +182,7 @@ async fn fake_docker(
                 {"Name":"malformed","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/malformed"},
                 {"Name":"unavailable","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/unavailable"},
                 {"Name":"mismatched","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/mismatched"}
-            ]}),
+            ],"Warnings":*fake.list_warnings.lock().unwrap()}),
         )
     } else if method == Method::GET && path.contains("/volumes/") {
         let name = path.rsplit('/').next().unwrap();

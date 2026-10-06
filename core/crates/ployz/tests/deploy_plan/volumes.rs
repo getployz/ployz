@@ -42,6 +42,7 @@ fn unavailable_named_volume_blocks_only_a_dependent_service() {
                     code: RpcErrorCode::Unavailable,
                     message: "volume detail failed".into(),
                     details: Default::default(),
+                    cause: Vec::new(),
                 },
             }],
             Vec::new(),
@@ -89,6 +90,7 @@ fn named_volume_planning_keeps_a_machine_with_a_complete_inventory() {
                     code: RpcErrorCode::Unavailable,
                     message: "Docker did not answer".into(),
                     details: Default::default(),
+                    cause: Vec::new(),
                 },
             }],
             Vec::new(),
@@ -143,6 +145,72 @@ fn named_volume_planning_rejects_an_only_incomplete_candidate() {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     assert!(plan_deploy([&unrelated], &snapshot, PlanOptions::default()).is_ok());
+}
+
+#[test]
+fn no_eligible_machine_names_the_inventory_gap_that_skipped_the_volume_owner() {
+    let mut service = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    for name in ["data", "more", "third"] {
+        add_named_volume(&mut service, name);
+        make_provisioned(&mut service, name, ployz_core::STORAGE_GIB);
+    }
+    let machines =
+        [('1', "machine-1"), ('2', "machine-2"), ('3', "machine-3")].map(|(id, name)| {
+            let mut machine = machine(id, name);
+            machine.storage = Some(MachineStorageObservation::Ready);
+            machine
+        });
+    let mut snapshot = DeploySnapshot {
+        machines: machines.to_vec(),
+        volume_snapshot: VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            Vec::new(),
+            vec![MachineFailure {
+                machine_id: machine_id('3'),
+                error: RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "ZFS dataset ployz/ployz is read-only".into(),
+                    details: Default::default(),
+                },
+            }],
+            Vec::new(),
+        )
+        .expect("valid Volume Snapshot fixture"),
+        ..storage_snapshot()
+    };
+    let owner = snapshot
+        .storage_capacity
+        .get_mut(&machine_id('3'))
+        .expect("fixture has capacity for machine 3")
+        .as_mut()
+        .expect("fixture capacity is observed");
+    for name in ["data", "more"] {
+        owner
+            .volumes
+            .insert(app_volume(name), maximum_bytes(ployz_core::STORAGE_GIB));
+    }
+
+    let error = plan_deploy([&service], &snapshot, PlanOptions::default())
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains(
+            "Machine 'machine-3' was skipped because its Docker Volume inventory failed: \
+             ZFS dataset ployz/ployz is read-only"
+        ),
+        "{error}"
+    );
+    assert!(
+        error.contains("Docker Volume 'app_data' is already on Machine 'machine-3'"),
+        "{error}"
+    );
+    assert!(
+        error.contains("Docker Volume 'app_more' is already on Machine 'machine-3'"),
+        "{error}"
+    );
 }
 
 fn explicitly_targeted_provisioned_deploy(
