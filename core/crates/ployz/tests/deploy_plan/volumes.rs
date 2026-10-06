@@ -173,6 +173,7 @@ fn no_eligible_machine_names_the_inventory_gap_that_skipped_the_volume_owner() {
                     code: RpcErrorCode::Unavailable,
                     message: "ZFS dataset ployz/ployz is read-only".into(),
                     details: Default::default(),
+                    cause: Vec::new(),
                 },
             }],
             Vec::new(),
