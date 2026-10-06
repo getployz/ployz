@@ -5,6 +5,7 @@ use wire::{RequestedServiceSpecWire, ResolvedServiceSpecWire, ServiceStorageSpec
 
 use std::{
     collections::BTreeMap,
+    fmt,
     net::IpAddr,
     num::{NonZeroU16, NonZeroU32},
     time::Duration,
@@ -79,11 +80,20 @@ pub enum PortPublication {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConfigSpec {
     pub name: String,
     #[serde(default)]
     pub content: Vec<u8>,
+}
+
+impl fmt::Debug for ConfigSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConfigSpec")
+            .field("name", &self.name)
+            .field("content_len", &self.content.len())
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -721,6 +731,18 @@ pub use comparison::compare_specs;
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn config_debug_prints_content_length_not_bytes() {
+        let config = ConfigSpec {
+            name: "settings".into(),
+            content: b"token=secret".to_vec(),
+        };
+        assert_eq!(
+            format!("{config:?}"),
+            r#"ConfigSpec { name: "settings", content_len: 12 }"#
+        );
+    }
 
     #[test]
     fn resource_quantities_reject_negative_and_overflow_on_the_wire() {
