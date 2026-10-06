@@ -62,7 +62,7 @@
         },
         "configs": {
           "additionalProperties": false,
-          "description": "Where the Service mounts each Config, by Config name, each at SERVICE.configs.CONFIG. Create a Config with `ployz config create`. Unset unmounts it: the Config and its files stay.",
+          "description": "Where the Service mounts each Config, by Config name, each at SERVICE.configs.CONFIG. Add a Config with `ployz config add`. Unset unmounts it: the Config and its files stay.",
           "examples": [
             {
               "sentry": "/etc/sentry"
@@ -70,12 +70,12 @@
           ],
           "patternProperties": {
             "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$": {
-              "description": "The absolute directory the Config's files appear in, read-only, in the Service's containers. Unset unmounts it: the Config and its files stay.",
+              "description": "The absolute directory the Config's files appear in, read-only, in the Service's containers, with no `.` or `..` segment, empty segment or trailing `/`. Unset unmounts it: the Config and its files stay.",
               "examples": [
                 "/etc/app"
               ],
               "minLength": 1,
-              "pattern": "^/",
+              "pattern": "^(/([^/.][^/]*|\\.[^/.][^/]*|\\.\\.[^/]+))+$",
               "title": "Mount directory",
               "type": "string",
               "x-ployz-apply": "staged",

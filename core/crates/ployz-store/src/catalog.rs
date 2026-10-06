@@ -130,7 +130,7 @@ fn service() -> Value {
         "configs".to_owned(),
         json!({
             "title": "Config mounts",
-            "description": "Where the Service mounts each Config, by Config name, each at SERVICE.configs.CONFIG. Create a Config with `ployz config create`. Unset unmounts it: the Config and its files stay.",
+            "description": "Where the Service mounts each Config, by Config name, each at SERVICE.configs.CONFIG. Add a Config with `ployz config add`. Unset unmounts it: the Config and its files stay.",
             "type": "object",
             "patternProperties": { NODE_NAME: config_mount() },
             "additionalProperties": false,
@@ -166,9 +166,9 @@ fn mount() -> Value {
 fn config_mount() -> Value {
     json!({
         "title": "Mount directory",
-        "description": "The absolute directory the Config's files appear in, read-only, in the Service's containers. Unset unmounts it: the Config and its files stay.",
+        "description": "The absolute directory the Config's files appear in, read-only, in the Service's containers, with no `.` or `..` segment, empty segment or trailing `/`. Unset unmounts it: the Config and its files stay.",
         "type": "string",
-        "pattern": "^/",
+        "pattern": "^(/([^/.][^/]*|\\.[^/.][^/]*|\\.\\.[^/]+))+$",
         "minLength": 1,
         "examples": ["/etc/app"],
         "x-ployz-apply": "staged",
@@ -361,6 +361,33 @@ mod tests {
             explain("web.replicas").unwrap().path.to_string(),
             "web.replicas"
         );
+    }
+
+    #[test]
+    fn the_config_mount_pattern_admits_exactly_the_directories_the_store_does() {
+        let schema = schema(Some("web.configs.sentry")).unwrap();
+        let pattern = regex::Regex::new(schema["pattern"].as_str().unwrap()).unwrap();
+        for dir in [
+            "/etc/sentry",
+            "/.config",
+            "/etc/..d",
+            "/a/.../b",
+            "/",
+            "/etc/",
+            "/etc//a",
+            "/etc/./a",
+            "/etc/../a",
+            "/.",
+            "/..",
+            "etc",
+            "",
+        ] {
+            assert_eq!(
+                pattern.is_match(dir),
+                ployz_core::config::ConfigAttachment::is_canonical_dir(dir),
+                "{dir:?}"
+            );
+        }
     }
 
     #[test]
