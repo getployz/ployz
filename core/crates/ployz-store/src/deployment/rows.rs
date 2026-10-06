@@ -10,7 +10,7 @@ use ployz_core::{
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{Stored, TargetNode, json_text, now, saved_at};
+use super::{DeploymentStatus, Stored, TargetNode, json_text, now, saved_at};
 use crate::storage::Tx;
 
 /// The most log lines a failed row keeps.
@@ -34,13 +34,16 @@ pub enum RowState {
     },
     /// The Deployment stopped before this work finished.
     NotAttempted,
+    /// Its runner stopped reporting before this work finished, so what it did is
+    /// unknown, as the Deployment's own status says.
+    Unknown,
 }
 
 impl RowState {
     const fn finished(&self) -> bool {
         matches!(
             self,
-            Self::Completed | Self::Failed { .. } | Self::NotAttempted
+            Self::Completed | Self::Failed { .. } | Self::NotAttempted | Self::Unknown
         )
     }
 }
@@ -343,14 +346,20 @@ pub(super) fn of_nodes(
     if found.is_empty() {
         return Ok(BTreeMap::new());
     }
+    let lost = stored.summary.status == DeploymentStatus::Unknown;
     let mut by_service: BTreeMap<ServiceName, Vec<ServerRow>> = BTreeMap::new();
     for row in &found {
+        let state: RowState = row.json(2, "Deployment row")?;
         by_service
             .entry(row.parse(0, "Deployment row")?)
             .or_default()
             .push(ServerRow {
                 server: row.text(1)?.to_owned(),
-                state: row.json(2, "Deployment row")?,
+                state: if lost && !state.finished() {
+                    RowState::Unknown
+                } else {
+                    state
+                },
                 started_at: row.optional_int(3)?,
                 finished_at: row.optional_int(4)?,
             });

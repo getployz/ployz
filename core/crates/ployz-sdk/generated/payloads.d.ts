@@ -2763,7 +2763,7 @@ started_at: number | null,
 /**
  * When it finished, in Unix seconds.
  */
-finished_at: number | null, } & ({ "state": "pending" } | { "state": "running", phase: RowPhase, } | { "state": "completed" } | { "state": "failed", reason: string, cause: Array<string>, log: Array<string>, } | { "state": "not_attempted" });
+finished_at: number | null, } & ({ "state": "pending" } | { "state": "running", phase: RowPhase, } | { "state": "completed" } | { "state": "failed", reason: string, cause: Array<string>, log: Array<string>, } | { "state": "not_attempted" } | { "state": "unknown" });
 
 export type ServiceAttempt = {
 /**

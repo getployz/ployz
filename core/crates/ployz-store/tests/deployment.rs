@@ -14,7 +14,7 @@ use ployz_store::{
     DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView,
     Discard, Edit, EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId,
     PlanQuery, Principal, ProjectId, ProjectName, Query, RemoveService, RenameService, Retry,
-    Revision, RowState, RowTracker, RunEvidence, RunnerId, ServerRow, ServiceLineageId,
+    Revision, RowPhase, RowState, RowTracker, RunEvidence, RunnerId, ServerRow, ServiceLineageId,
     ServiceQuery, ServicesQuery, SettingPath, Start, Trusted, UploadBase, UploadedSource, View,
     Written,
 };
@@ -458,6 +458,55 @@ fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
                 }
             ),
             ("api".to_owned(), "beta".to_owned(), RowState::NotAttempted),
+        ]
+    );
+}
+
+#[test]
+fn a_lost_runners_unfinished_rows_read_unknown() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    let mut tracker = RowTracker::default();
+    let snapshot = progress(&[
+        ("web", "alpha", json!({"type": "completed"})),
+        ("web", "beta", waiting(5_000)),
+        ("web", "delta", json!({"type": "pending"})),
+    ]);
+    store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Progress(tracker.changes(&snapshot)),
+        )
+        .unwrap();
+    let running = |store: &ConfigStore| -> Vec<(String, RowState)> {
+        rows(store, &who, 1)
+            .into_iter()
+            .flat_map(|(_, rows)| rows.into_iter().map(|row| (row.server, row.state)))
+            .collect()
+    };
+    assert_eq!(
+        running(&store)[1],
+        (
+            "beta".to_owned(),
+            RowState::Running {
+                phase: RowPhase::WaitingForHealth
+            }
+        )
+    );
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &runner("runner-b")).unwrap();
+    assert_eq!(
+        running(&store),
+        [
+            ("alpha".to_owned(), RowState::Completed),
+            ("beta".to_owned(), RowState::Unknown),
+            ("delta".to_owned(), RowState::Unknown),
         ]
     );
 }
