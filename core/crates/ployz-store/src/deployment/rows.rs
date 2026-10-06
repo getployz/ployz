@@ -1,5 +1,4 @@
-//! Per-Server progress: one row per target Service per Server, written by the
-//! runner only when the row's state changes, so a long health wait is one write.
+//! Per-Server Deployment outcomes.
 
 use std::collections::BTreeMap;
 
@@ -174,7 +173,6 @@ type Key = (ServiceName, MachineId);
 #[derive(Debug, Default)]
 pub struct RowTracker {
     last: BTreeMap<Key, RowState>,
-    /// The Container each row last worked on, which a failed row's log comes from.
     containers: BTreeMap<Key, ContainerId>,
 }
 
@@ -243,8 +241,6 @@ fn container(status: &OperationStatus) -> Option<ContainerId> {
     }
 }
 
-/// One row's state from its operations: a failure wins, then running work. Between
-/// two operations it keeps the phase it was in.
 fn state(statuses: &[&OperationStatus], last: Option<&RowState>) -> RowState {
     let (mut failed, mut running, mut pending, mut completed) = (None, None, 0, 0);
     for status in statuses {
@@ -284,7 +280,6 @@ fn state(statuses: &[&OperationStatus], last: Option<&RowState>) -> RowState {
     }
 }
 
-/// Store each changed row; a row keeps the time its work first started.
 pub(super) fn record(
     tx: &mut dyn Tx,
     stored: &Stored,
@@ -318,7 +313,6 @@ pub(super) fn record(
     Ok(())
 }
 
-/// Once execution ended, a row that never finished never will.
 pub(super) fn settle(tx: &mut dyn Tx, stored: &Stored) -> Result<(), RpcError> {
     tx.execute(
         "UPDATE config_deployment_row SET state = ?2, finished = ?3 \
@@ -332,44 +326,45 @@ pub(super) fn settle(tx: &mut dyn Tx, stored: &Stored) -> Result<(), RpcError> {
     Ok(())
 }
 
-/// Each target node's rows, by node ID. A Volume shows the rows of the target
-/// Services mounting it, one per Server, as its Node Outcome follows them.
 pub(super) fn of_nodes(
     tx: &mut dyn Tx,
     stored: &Stored,
 ) -> Result<BTreeMap<String, Vec<ServerRow>>, RpcError> {
     let found = tx.query(
-        "SELECT service, server, state, started, finished FROM config_deployment_row \
-         WHERE deployment_id = ?1 ORDER BY service, server",
+        "SELECT service, server, state, started, finished, machine FROM config_deployment_row \
+         WHERE deployment_id = ?1 ORDER BY service, server, machine",
         &[stored.summary.id.as_str().into()],
     )?;
     if found.is_empty() {
         return Ok(BTreeMap::new());
     }
     let lost = stored.summary.status == DeploymentStatus::Unknown;
-    let mut by_service: BTreeMap<ServiceName, Vec<ServerRow>> = BTreeMap::new();
+    let mut by_service: BTreeMap<ServiceName, BTreeMap<MachineId, ServerRow>> = BTreeMap::new();
     for row in &found {
         let state: RowState = row.json(2, "Deployment row")?;
         by_service
             .entry(row.parse(0, "Deployment row")?)
             .or_default()
-            .push(ServerRow {
-                server: row.text(1)?.to_owned(),
-                state: if lost && !state.finished() {
-                    RowState::Unknown
-                } else {
-                    state
+            .insert(
+                row.parse(5, "Deployment row Machine")?,
+                ServerRow {
+                    server: row.text(1)?.to_owned(),
+                    state: if lost && !state.finished() {
+                        RowState::Unknown
+                    } else {
+                        state
+                    },
+                    started_at: row.optional_int(3)?,
+                    finished_at: row.optional_int(4)?,
                 },
-                started_at: row.optional_int(3)?,
-                finished_at: row.optional_int(4)?,
-            });
+            );
     }
     let mut nodes = BTreeMap::new();
     for node in &stored.nodes {
         if let TargetNode::Service { id, runtime, .. } = node
             && let Some(rows) = by_service.get(runtime)
         {
-            nodes.insert(id.as_str().to_owned(), rows.clone());
+            nodes.insert(id.as_str().to_owned(), rows.values().cloned().collect());
         }
     }
     if !stored
@@ -384,27 +379,47 @@ pub(super) fn of_nodes(
         let TargetNode::Volume { id, .. } = node else {
             continue;
         };
-        let mut rows: Vec<ServerRow> = Vec::new();
+        let mut rows: BTreeMap<MachineId, ServerRow> = BTreeMap::new();
         for service in saved.services.iter().filter(|service| {
             service
                 .volume_attachments
                 .iter()
                 .any(|mount| mount.volume_resource_id == id.as_str())
         }) {
-            for row in by_service
+            for (machine, row) in by_service
                 .get(&service.config.private_dns)
                 .into_iter()
                 .flatten()
             {
-                if !rows.iter().any(|kept| kept.server == row.server) {
-                    rows.push(row.clone());
-                }
+                rows.entry(*machine)
+                    .and_modify(|kept| merge_volume_row(kept, row))
+                    .or_insert_with(|| row.clone());
             }
         }
         if !rows.is_empty() {
+            let mut rows: Vec<_> = rows.into_values().collect();
             rows.sort_by(|a, b| a.server.cmp(&b.server));
             nodes.insert(id.as_str().to_owned(), rows);
         }
     }
     Ok(nodes)
+}
+
+fn merge_volume_row(kept: &mut ServerRow, row: &ServerRow) {
+    let priority = |state: &RowState| match state {
+        RowState::Failed { .. } => 6,
+        RowState::Unknown => 5,
+        RowState::Running { .. } => 4,
+        RowState::Pending => 3,
+        RowState::NotAttempted => 2,
+        RowState::Completed => 1,
+    };
+    if priority(&row.state) > priority(&kept.state) {
+        kept.state = row.state.clone();
+    }
+    kept.started_at = match (kept.started_at, row.started_at) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    kept.finished_at = kept.finished_at.zip(row.finished_at).map(|(a, b)| a.max(b));
 }

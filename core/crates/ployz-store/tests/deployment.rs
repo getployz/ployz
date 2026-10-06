@@ -317,7 +317,6 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
     );
 }
 
-/// A Deploy Progress snapshot: each Service's one operation on its Server, in `status`.
 fn progress(rows: &[(&str, &str, Value)]) -> Vec<OperationRow> {
     serde_json::from_value(Value::Array(
         rows.iter()
@@ -460,6 +459,85 @@ fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
             ("api".to_owned(), "beta".to_owned(), RowState::NotAttempted),
         ]
     );
+}
+
+#[test]
+fn volume_rows_keep_distinct_machines_and_failed_mounting_services() {
+    for api_status in [
+        json!({"type": "completed"}),
+        json!({"type": "pending"}),
+        waiting(1_000),
+    ] {
+        let api_finished = api_status["type"] == "completed";
+        let (store, who) = shop();
+        store
+            .write(
+                &who,
+                &ployz_store::CreateVolume {
+                    id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005")
+                        .unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ployz_store::VolumeName::parse("data").unwrap(),
+                    storage: ployz_core::config::VolumeKind::Docker {},
+                    shared_writes: true,
+                    mounts: ["web", "api"]
+                        .into_iter()
+                        .map(|service| ployz_store::Mount {
+                            service: ServiceName::parse(service).unwrap(),
+                            path: "/data".into(),
+                        })
+                        .collect(),
+                },
+            )
+            .unwrap();
+        admit(&store, &who, 1, &[], None).unwrap();
+        let a = runner("runner-a");
+        store.claim(&id(1), &a).unwrap();
+        store
+            .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        let mut snapshot = progress(&[
+            ("api", "alpha", api_status),
+            (
+                "web",
+                "alpha",
+                json!({"type": "failed", "error": {
+                    "type": "machine", "action": "RemoveContainer",
+                    "error": {"code": "internal", "message": "disk failure", "details": {}}
+                }}),
+            ),
+            ("web", "beta", waiting(5_000)),
+        ]);
+        for row in &mut snapshot {
+            row.machine_name = Some("same-name".parse().unwrap());
+        }
+        store
+            .record(
+                &id(1),
+                &a,
+                RunEvidence::Progress(RowTracker::default().changes(&snapshot)),
+            )
+            .unwrap();
+        let view = rows(&store, &who, 1);
+        let volume = &view.iter().find(|(name, _)| name == "data").unwrap().1;
+        assert_eq!(volume.len(), 2, "Machine names are not identities");
+        assert!(volume.iter().all(|row| row.server == "same-name"));
+        assert!(volume.iter().any(
+            |row| matches!(&row.state, RowState::Failed { cause, .. } if cause == &["disk failure"])
+        ));
+        assert!(volume.iter().any(|row| row.state
+            == RowState::Running {
+                phase: RowPhase::WaitingForHealth
+            }));
+        assert!(volume.iter().all(|row| row.started_at.is_some()));
+        assert_eq!(
+            volume
+                .iter()
+                .filter(|row| row.finished_at.is_some())
+                .count(),
+            usize::from(api_finished)
+        );
+    }
 }
 
 #[test]
