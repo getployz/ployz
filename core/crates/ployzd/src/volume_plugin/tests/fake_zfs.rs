@@ -151,6 +151,7 @@ case "$*" in
     require "$2"
     f='{props}'/"${{2%%@*}}/snapshots"
     mkdir -p "${{f%/*}}"
+    if [ -e "$f" ] && grep -q "^$2	" "$f"; then echo "cannot create snapshot '$2': dataset already exists" >&2; exit 1; fi
     if [ -e "$f" ]; then count=$(wc -l < "$f"); else count=0; fi
     {{ printf '%s\t%s\t%s\n' "$2" "$((1000 + count))" "$((1700000000 + count))"; [ ! -e "$f" ] || cat "$f"; }} > "$f.new"
     mv "$f.new" "$f"

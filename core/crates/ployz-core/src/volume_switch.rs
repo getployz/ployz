@@ -175,34 +175,26 @@ impl fmt::Display for SnapshotGuid {
     }
 }
 
-/// Name of a run's snapshot without the `@`: `w-<lease>-<n>` taken warm, `f-<lease>` taken final.
+/// Name of a run's snapshot without the `@`: `w-<lease>-<round>` taken warm, `f-<lease>` taken final.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 pub struct SnapshotName(String);
 
 impl SnapshotName {
     #[must_use]
-    pub fn warm(lease: Lease, index: u32) -> Self {
-        Self(format!("w-{lease}-{index}"))
+    pub fn warm(lease: Lease, round: u32) -> Self {
+        Self(format!("w-{lease}-{round}"))
     }
 
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
-
-    /// The warm index when this is `w-<lease>-<n>` of `lease`.
-    #[must_use]
-    pub fn warm_index(&self, lease: Lease) -> Option<u32> {
-        self.0
-            .strip_prefix(&format!("w-{lease}-"))
-            .and_then(|index| index.parse().ok())
-    }
 }
 
-/// A snapshot name that is not `w-<lease>-<n>` or `f-<lease>`.
+/// A snapshot name that is not `w-<lease>-<round>` or `f-<lease>`.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("invalid run snapshot name {0:?}; expected w-<lease>-<n> or f-<lease>")]
+#[error("invalid run snapshot name {0:?}; expected w-<lease>-<round> or f-<lease>")]
 pub struct SnapshotNameParseError(pub String);
 
 impl FromStr for SnapshotName {
@@ -439,7 +431,7 @@ pub struct CommitRequest {
     pub mirror_newest: SnapshotGuid,
 }
 
-/// Warm on the writer: take `w-<lease>-<n>` unless the newest warm snapshot already
+/// Warm on the writer: take `w-<lease>-<round>` unless the newest warm snapshot already
 /// captures every write.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct WarmRequest {

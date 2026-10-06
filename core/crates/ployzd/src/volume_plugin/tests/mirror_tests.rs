@@ -312,6 +312,26 @@ async fn warm_replayed_answers_with_the_snapshot_it_took() {
 }
 
 #[tokio::test]
+async fn warm_replayed_after_dying_before_its_snapshot_takes_it() {
+    let test = TestDir::new();
+    // Round 1 took w-1-1; round 2 recorded 4.2.2 and the plugin died before `zfs snapshot`.
+    set_property(
+        &test,
+        "tank/ployz/data",
+        "snapshots",
+        "tank/ployz/data@w-1-1\t1\t1700000001",
+    );
+    set_property(&test, "tank/ployz", "ployz:lease.data", "1:4.2.2:closed");
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
+
+    let response = post(&socket, "/Volume.WarmSnapshot", at(1, 4, 2, 2, json!({}))).await;
+    assert_eq!(response.pointer("/Ok/decision").unwrap(), "replay");
+    assert_eq!(response.pointer("/Ok/copy/newest/name").unwrap(), "w-1-2");
+    assert_eq!(snapshot_names(&test, "tank/ployz/data"), ["w-1-2", "w-1-1"]);
+    server.abort();
+}
+
+#[tokio::test]
 async fn warm_numbers_snapshots_within_its_own_lease() {
     let test = TestDir::new();
     set_property(
