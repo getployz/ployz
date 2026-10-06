@@ -742,8 +742,10 @@ async fn ending_an_unknown_build_grant_is_not_found() {
 }
 
 #[tokio::test]
-async fn listed_containers_redact_environment_unless_requested() {
-    use ployz_core::{CreateContainerRequest, EnvironmentValues, ListContainersRequest};
+async fn listed_containers_redact_values_unless_requested() {
+    use ployz_core::{
+        ConfigSpec, CreateContainerRequest, EnvironmentValues, ListContainersRequest,
+    };
     use serde_json::json;
     let (data_dir, _store, service, fake) = fake_docker_service("ployzd-list-env").await;
     let created = service
@@ -761,7 +763,9 @@ async fn listed_containers_redact_environment_unless_requested() {
                         "image":"example.test/api", "pull_policy":"missing",
                         "environment":{"CADDY_ADMIN":"localhost:2019", "TOKEN":"secret"}
                     },
-                    "pre_deploy":{"command":["migrate"], "environment":{"DATABASE_URL":"postgres://secret"}}
+                    "pre_deploy":{"command":["migrate"], "environment":{"DATABASE_URL":"postgres://secret"}},
+                    "config_mounts":[{"config_name":"settings", "target":"/etc/api/settings"}],
+                    "configs":[{"name":"settings", "content":b"token=config-secret".to_vec()}]
                 }))
                 .unwrap(),
             })
@@ -792,9 +796,25 @@ async fn listed_containers_redact_environment_unless_requested() {
                 .unwrap();
             let [observed] = listed.containers.try_into().unwrap();
             let spec = observed.resolved_spec.clone();
+            let configs = spec.mount_graph.config_graph();
+            let mounted = configs
+                .mounts()
+                .iter()
+                .map(|mount| {
+                    (
+                        mount.config_name.clone(),
+                        mount.target.clone().unwrap().to_string(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                mounted,
+                [("settings".to_owned(), "/etc/api/settings".to_owned())]
+            );
             (
-                spec.container.environment,
-                spec.pre_deploy.unwrap().environment,
+                spec.container.environment.clone(),
+                spec.pre_deploy.clone().unwrap().environment,
+                configs.configs().to_vec(),
             )
         }
     };
@@ -807,6 +827,10 @@ async fn listed_containers_redact_environment_unless_requested() {
                 ("TOKEN".into(), "<redacted>".into()),
             ]),
             BTreeMap::from([("DATABASE_URL".into(), "<redacted>".into())]),
+            vec![ConfigSpec {
+                name: "settings".into(),
+                content: Vec::new(),
+            }],
         )
     );
     assert_eq!(
@@ -820,6 +844,10 @@ async fn listed_containers_redact_environment_unless_requested() {
                 ("TOKEN".into(), "secret".into()),
             ]),
             BTreeMap::from([("DATABASE_URL".into(), "postgres://secret".into())]),
+            vec![ConfigSpec {
+                name: "settings".into(),
+                content: b"token=config-secret".to_vec(),
+            }],
         )
     );
     let _ = std::fs::remove_dir_all(data_dir);
