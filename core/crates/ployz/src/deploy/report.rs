@@ -618,7 +618,7 @@ fn visible_name(
         DeployOperation::StopContainer { container_id, .. }
         | DeployOperation::RemoveContainer { container_id, .. }
         | DeployOperation::StopHook { container_id, .. } => {
-            short_container_id(live_id.unwrap_or(container_id))
+            crate::ui::short_id(live_id.unwrap_or(container_id).as_str()).to_owned()
         }
     }
 }
@@ -651,13 +651,6 @@ fn logs_service(row: &OperationRow) -> Option<ServiceName> {
 
 fn is_hex_len(value: &str, len: usize) -> bool {
     value.len() == len && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-fn short_container_id(id: &ContainerId) -> String {
-    id.as_str()
-        .get(..12)
-        .unwrap_or_else(|| id.as_str())
-        .to_owned()
 }
 
 fn cause_from_error(error: &ExecutionError) -> Cause {

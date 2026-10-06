@@ -9,7 +9,6 @@ use crate::{
     connect::DEFAULT_LOCAL_SOCKET,
     context::{Connection, Context},
     handlers::{Error, leaf_matches},
-    ui,
     ui::Hint,
 };
 use serde_json::json;

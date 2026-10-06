@@ -8,7 +8,7 @@ use std::{
 
 use futures_util::stream;
 use ployz_core::{
-    ContainerKind, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
+    ContainerId, ContainerKind, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
     ContainerSelector, FanoutSelector, HealthObservation, HookContainer, LogBody, LogMetadata,
     LogOrigin, MachineId, MachineName, MembershipObservation, Namespace, ResolvedServiceSpec,
     RestartPolicy, ServiceContainer, ServiceId, ServiceName, ServiceSelector,

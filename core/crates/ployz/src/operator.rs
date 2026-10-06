@@ -11,8 +11,8 @@ use std::{
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
 use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
-    ContainerId, ContainerLogsRequest, ContainerRef, ContainerSelector, ExecConfig, ExecOptions,
-    ExecRequestFrame, FanoutSelector, LogBody, LogEntry, LogsOptions, MachineId, MachineLogService,
+    ContainerLogsRequest, ContainerRef, ContainerSelector, ExecConfig, ExecOptions,
+    ExecRequestFrame, FanoutSelector, LogBody, LogEntry, LogsOptions, MachineLogService,
     MachineLogsRequest, MachineName, MachineObservation, MachineTarget, Namespace, OpaquePayload,
     ServiceContainer, ServiceObservation, ServiceSelector, StreamProtocolError, op,
     resolve_container_selector, resolve_machine_selectors, select_service,

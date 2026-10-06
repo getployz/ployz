@@ -21,6 +21,7 @@ pub(crate) use result::{
     Gaps, captured, done, emit, emit_committed, emit_line, emitted, fields, finish, finish_fanout,
     hint, interactive, list, note, note_inline, rows, show, stream, warn,
 };
+pub(crate) use table::short_id;
 pub use table::{Cell, Fields, Table};
 pub use tone::{Painted, Tone, clap_styles};
 

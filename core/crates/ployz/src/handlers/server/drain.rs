@@ -27,18 +27,31 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
             let cancellation = crate::cancellation::on_ctrl_c();
             let report = client
                 .drain(&target, &scope, &cancellation, &mut |step| {
-                    crate::ui::stream(format_args!("{}", step_line(step)));
+                    if went_wrong(step) {
+                        crate::ui::warn(step_line(step));
+                    } else {
+                        crate::ui::stream(format_args!("{}", step_line(step)));
+                    }
                 })
                 .await
                 .map_err(refusal)?;
-            for line in closing_lines(&report) {
-                crate::ui::stream(format_args!("{line}"));
+            if let Some(stop) = &report.stopped {
+                crate::ui::warn(format!("Drain stopped: {stop}"));
+            }
+            let remaining = remaining(&report);
+            if let Err(warning) = &remaining {
+                crate::ui::warn(warning.clone());
             }
             let mut json = serde_json::to_value(&report).expect("a Drain report serializes");
             if let Value::Object(fields) = &mut json {
                 fields.insert("note".into(), NOTHING_MOVES_BACK.into());
             }
-            crate::ui::emit(&json)?;
+            crate::ui::finish(&json, || {
+                if let Ok(line) = &remaining {
+                    crate::ui::stream(format_args!("{line}"));
+                }
+                crate::ui::note(NOTHING_MOVES_BACK);
+            })?;
             if !report.complete() {
                 return Err(Error::partial());
             }
@@ -97,6 +110,22 @@ fn step_line(step: DrainStep<'_>) -> String {
     }
 }
 
+const fn went_wrong(step: DrainStep<'_>) -> bool {
+    match step {
+        DrainStep::ServicesOff { .. } => false,
+        DrainStep::Service { service, .. } => match service.outcome {
+            DrainOutcome::NotRetired { .. }
+            | DrainOutcome::Failed { .. }
+            | DrainOutcome::Interrupted { .. } => true,
+            DrainOutcome::Retired
+            | DrainOutcome::Stays { .. }
+            | DrainOutcome::NothingToMove
+            | DrainOutcome::NotAttempted
+            | DrainOutcome::Moved { .. } => false,
+        },
+    }
+}
+
 fn line(entry: &ServiceDrain, server: &MachineName) -> String {
     let service = &entry.service;
     let (moves, ending) = match &entry.outcome {
@@ -127,30 +156,25 @@ fn line(entry: &ServiceDrain, server: &MachineName) -> String {
     format!("{service}: {}", parts.join("; "))
 }
 
-fn closing_lines(report: &DrainReport) -> Vec<String> {
+/// What still runs on the Server, or the warning that nobody could look.
+fn remaining(report: &DrainReport) -> Result<String, String> {
     let server = &report.server.name;
-    let mut lines = Vec::new();
-    if let Some(stop) = &report.stopped {
-        lines.push(format!("Drain stopped: {stop}"));
-    }
-    lines.push(match &report.remaining {
+    match &report.remaining {
         Remaining::Observed { services, .. } if services.is_empty() => {
-            format!("Nothing runs on {server} now.")
+            Ok(format!("Nothing runs on {server} now."))
         }
-        Remaining::Observed { services, .. } => format!(
+        Remaining::Observed { services, .. } => Ok(format!(
             "Still on {server}: {}",
             services
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(", ")
-        ),
-        Remaining::Unobserved { error } => {
-            format!("Cannot observe Services on Server {server}: {error}")
-        }
-    });
-    lines.push(NOTHING_MOVES_BACK.to_owned());
-    lines
+        )),
+        Remaining::Unobserved { error } => Err(format!(
+            "Cannot observe Services on Server {server}: {error}"
+        )),
+    }
 }
 
 #[cfg(test)]

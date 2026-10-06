@@ -12,7 +12,7 @@ use super::super::teardown::confirmed;
 use super::super::{Error, leaf_matches, runtime, store};
 use crate::cli::{base, value};
 use crate::deploy::VolumeFate;
-use crate::ui::{Gaps, Hint, Table};
+use crate::ui::{Hint, Table};
 
 pub(super) fn command() -> Command {
     base(

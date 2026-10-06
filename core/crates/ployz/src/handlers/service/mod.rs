@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use crate::{
     cluster::ContainerObservationCondition,
-    ui::{self, Cell, Gaps, Table, Tone},
+    ui::{Cell, Gaps, Table, Tone},
 };
 use ployz_core::EnvironmentValues;
 
@@ -108,7 +108,7 @@ fn process_table(
         ));
         if clash {
             cells.push(if seen.get(row).is_some_and(|count| *count > 1) {
-                Cell::from(short(observation.container_id.as_str()))
+                Cell::from(crate::ui::short_id(observation.container_id.as_str()))
             } else {
                 Cell::from("")
             });
@@ -164,11 +164,6 @@ fn process_kind(container: ContainerRef<'_>) -> &'static str {
         ContainerRef::Service(_) => "service",
         ContainerRef::Hook(_) => "pre-deploy hook",
     }
-}
-
-/// An ID as `docker ps` shows it: the first 12 characters; `exec` and `--json` take the whole one.
-fn short(id: &str) -> &str {
-    id.get(..12).unwrap_or(id)
 }
 
 /// A runtime state in words: `running`, `running, unhealthy`, `exited with code 1`.
@@ -500,7 +495,7 @@ fn stop_options(
 /// A Server by name, else by its short ID.
 fn server(names: &HashMap<MachineId, &MachineName>, machine_id: &MachineId) -> String {
     names.get(machine_id).map_or_else(
-        || short(machine_id.as_str()).to_owned(),
+        || crate::ui::short_id(machine_id.as_str()).to_owned(),
         ToString::to_string,
     )
 }

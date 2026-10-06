@@ -148,12 +148,17 @@ async fn withdraw(client: &Client, machine_id: &MachineId, container_id: &Contai
         // Already gone: nothing routes to it, and the stop reports the rest.
         Err(error) if error.code == RpcErrorCode::NotFound => return,
         Err(error) => {
-            crate::ui::warn(format!(
-                "stopping Container {container_id} without taking it out of the Ingress Proxies first: {error}"
-            ));
+            crate::ui::warn_cause(
+                format_args!(
+                    "Stopping Container {} without taking it out of the Ingress Proxies first",
+                    crate::ui::short_id(container_id.as_str())
+                ),
+                &error,
+            );
             return;
         }
     };
+    let container = &details.container.display_name;
     let upstreams = routed_upstreams(&details.container);
     if upstreams.is_empty() {
         return;
@@ -164,7 +169,7 @@ async fn withdraw(client: &Client, machine_id: &MachineId, container_id: &Contai
         Err(error) => {
             crate::ui::warn_cause(
                 format_args!(
-                    "stopping Container {container_id} without confirming the Ingress Proxies stopped routing to it"
+                    "Stopping Container {container} without confirming the Ingress Proxies stopped routing to it"
                 ),
                 &error,
             );
@@ -196,7 +201,7 @@ async fn withdraw(client: &Client, machine_id: &MachineId, container_id: &Contai
     .collect::<Vec<_>>();
     if !unconfirmed.is_empty() {
         crate::ui::warn(format!(
-            "stopping Container {container_id} before Ingress Proxies on {} confirmed they stopped routing to it",
+            "Stopping Container {container} before the Ingress Proxies on {} confirmed they stopped routing to it.",
             unconfirmed.join(", ")
         ));
     }

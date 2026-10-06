@@ -1,16 +1,13 @@
 use clap::ArgMatches;
 use ployz_core::{
-    InspectRequest, JoinRequest, LocalMachinePhase, Machine, MachineName, RegisterRequest, op,
+    InspectRequest, JoinRequest, LocalMachinePhase, MachineName, RegisterRequest, op,
 };
 
 use super::super::{connect_context, runtime};
 use super::{ConnectionOptions, helpers, target};
 use serde_json::json;
 
-use crate::{
-    handlers::{Error, leaf_matches},
-    ui,
-};
+use crate::handlers::{Error, leaf_matches};
 
 pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);

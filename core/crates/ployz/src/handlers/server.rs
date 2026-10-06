@@ -24,7 +24,6 @@ use crate::{
     connect::{Client, SystemConnector, TARGET_RPC_TIMEOUT},
     context::{Config, ConnectionSource, ContextError, SelectedConnections},
     ingress::IngressImage,
-    ui,
 };
 
 use super::{Error, leaf_matches, string_values, with_client};

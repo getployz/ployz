@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use ployz_core::{
-    DescribeContractRequest, Machine, MachineId, MachineName, MachineTarget, QualifiedService,
-    RpcError, RpcErrorCode, op,
+    DescribeContractRequest, Machine, MachineId, MachineTarget, QualifiedService, RpcError,
+    RpcErrorCode, op,
 };
 
 use super::super::runtime;
@@ -390,8 +390,8 @@ fn machine_removal_refusal(error: RpcError) -> Error {
 mod tests {
     use ployz_core::{
         ContainerKind, ContainerObservation, ContainerRuntimeObservation, HealthObservation,
-        LiveServices, MachineId, MachineName, MachineSuccess, PartialResult, QualifiedService,
-        RpcError, RpcErrorCode, ServiceId, ServiceMode, ServiceName, derive_live_services,
+        LiveServices, MachineId, MachineSuccess, PartialResult, QualifiedService, RpcError,
+        RpcErrorCode, ServiceId, ServiceMode, ServiceName, derive_live_services,
     };
     use serde_json::{Value, json};
 

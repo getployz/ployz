@@ -228,6 +228,11 @@ impl Fields {
     }
 }
 
+/// An ID as `docker ps` shows it: the first 12 characters. `--json` and selectors take the whole one.
+pub(crate) fn short_id(id: &str) -> &str {
+    id.get(..12).unwrap_or(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
