@@ -6,7 +6,7 @@ import { HighlightStyle, StreamLanguage, syntaxHighlighting } from "@codemirror/
 import { toml } from "@codemirror/legacy-modes/mode/toml";
 import { Compartment, EditorState, Facet, RangeSetBuilder, type Extension } from "@codemirror/state";
 import {
-  Decoration, type DecorationSet, EditorView, hoverTooltip, keymap, lineNumbers, ViewPlugin, type ViewUpdate,
+  Decoration, type DecorationSet, EditorView, hoverTooltip, keymap, lineNumbers, tooltips, ViewPlugin, type ViewUpdate,
 } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 import { useEffect, useRef } from "react";
@@ -202,6 +202,8 @@ export default function ConfigFileEditor({ fileName, value, onChange, onSave, ta
         ...historyKeymap,
         indentWithTab,
       ]),
+      // On the body, so the drawer's scroll box doesn't clip the list.
+      tooltips({ parent: document.body }),
       autocompletion({ override: [referenceCompletions], icons: false }),
       referenceDecorations,
       unknownTooltip,

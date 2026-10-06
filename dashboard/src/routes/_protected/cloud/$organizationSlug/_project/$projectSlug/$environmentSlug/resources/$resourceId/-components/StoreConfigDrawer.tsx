@@ -38,7 +38,7 @@ import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorN
 import { CanvasInspectorNotFound } from "../../../-components/CanvasInspectorRouteStates";
 import { useStoreChangeActions } from "../../../-components/canvas/useStoreChangeActions";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../../../-components/deployment-page";
-import { ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
+import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
 
 const ConfigFileEditor = lazy(() => import("./ConfigFileEditor"));
 
@@ -436,6 +436,11 @@ function ConfigDanger({ state, params, version }: { state: StoreConfig; params: 
   const removing = config.change === "delete";
   const mounts = config.mounts.length;
 
+  function remove() {
+    writer.commit({ command: "delete_config", environment: state.environment, config: config.name });
+    void navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, search: (prev) => prev });
+  }
+
   return (
     <>
       <DangerRow
@@ -445,8 +450,7 @@ function ConfigDanger({ state, params, version }: { state: StoreConfig; params: 
         action={removing ? (
           <Button variant="outline" onClick={() => actions.discard(`configs.${config.name}`)}>Keep config</Button>
         ) : (
-          <Button variant="destructive"
-            onClick={() => writer.commit({ command: "delete_config", environment: state.environment, config: config.name })}>
+          <Button variant="destructive" onClick={remove}>
             <Trash2Icon data-icon="inline-start" />
             Delete config
           </Button>
