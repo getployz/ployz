@@ -29,7 +29,25 @@ struct Reply {
     kind: &'static str,
     status: u16,
     body: Value,
-    interrupt: bool,
+    interrupt: Option<Interrupt>,
+    delay: Duration,
+}
+
+enum Interrupt {
+    DuringRead,
+    AfterObserved(Duration),
+}
+
+struct Exchange {
+    requested: Instant,
+    responded: Instant,
+}
+
+struct Run {
+    output: Output,
+    events: Vec<Value>,
+    exchanges: Vec<Exchange>,
+    signal_to_exit: Option<Duration>,
 }
 
 fn admitted() -> Reply {
@@ -41,7 +59,8 @@ fn admitted() -> Reply {
             view(7, DeploymentStatus::Queued).deployment,
         ))
         .unwrap(),
-        interrupt: false,
+        interrupt: None,
+        delay: Duration::ZERO,
     }
 }
 
@@ -51,7 +70,8 @@ fn observed(number: u32, status: DeploymentStatus) -> Reply {
         kind: "deployment",
         status: 200,
         body: serde_json::to_value(View::Deployment(Box::new(view(number, status)))).unwrap(),
-        interrupt: false,
+        interrupt: None,
+        delay: Duration::ZERO,
     }
 }
 
@@ -67,11 +87,30 @@ fn replacement() -> Reply {
             next_cursor: None,
         }))
         .unwrap(),
-        interrupt: false,
+        interrupt: None,
+        delay: Duration::ZERO,
     }
 }
 
-fn serve(mut stream: TcpStream, reply: Reply, pid: u32) {
+fn interrupt(pid: u32) -> Instant {
+    let sent = Instant::now();
+    assert!(
+        Command::new("kill")
+            .args(["-INT", &pid.to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    sent
+}
+
+fn serve(
+    mut stream: TcpStream,
+    reply: Reply,
+    pid: u32,
+    events: &std::path::Path,
+) -> (Exchange, Option<Instant>) {
+    let requested = Instant::now();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
@@ -98,19 +137,33 @@ fn serve(mut stream: TcpStream, reply: Reply, pid: u32) {
         .or_else(|| body.get("command"))
         .and_then(Value::as_str);
     assert_eq!(kind, Some(reply.kind), "{body}");
-    if reply.interrupt {
-        assert!(
-            Command::new("kill")
-                .args(["-INT", &pid.to_string()])
-                .status()
-                .unwrap()
-                .success()
-        );
+    let mut sent = None;
+    if matches!(reply.interrupt, Some(Interrupt::DuringRead)) {
+        sent = Some(interrupt(pid));
         // The response races with the independently driven signal owner, not another key press.
         std::thread::sleep(Duration::from_millis(50));
     }
+    std::thread::sleep(reply.delay);
     let body = reply.body.to_string();
     write!(stream, "HTTP/1.1 {} Reply\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", reply.status, body.len()).unwrap();
+    stream.flush().unwrap();
+    let responded = Instant::now();
+    if let Some(Interrupt::AfterObserved(delay)) = reply.interrupt {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while std::fs::metadata(events).unwrap().len() == 0 {
+            assert!(Instant::now() < deadline, "CLI did not consume its view");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        std::thread::sleep(delay);
+        sent = Some(interrupt(pid));
+    }
+    (
+        Exchange {
+            requested,
+            responded,
+        },
+        sent,
+    )
 }
 
 fn run(replies: Vec<Reply>) -> (Output, Vec<Value>) {
@@ -119,6 +172,11 @@ fn run(replies: Vec<Reply>) -> (Output, Vec<Value>) {
 }
 
 fn run_at(replies: Vec<Reply>, root: &std::path::Path) -> (Output, Vec<Value>) {
+    let run = measured_run(replies, root);
+    (run.output, run.events)
+}
+
+fn measured_run(replies: Vec<Reply>, root: &std::path::Path) -> Run {
     let events = root.join("events.ndjson");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -151,8 +209,11 @@ fn run_at(replies: Vec<Reply>, root: &std::path::Path) -> (Output, Vec<Value>) {
         .unwrap();
     let pid = child.id();
     let (done, stopped) = mpsc::channel();
+    let server_events = events.clone();
     let server = std::thread::spawn(move || {
         let mut replies = VecDeque::from(replies);
+        let mut exchanges = Vec::new();
+        let mut signal = None;
         let deadline = Instant::now() + Duration::from_secs(20);
         while stopped.try_recv().is_err() {
             assert!(
@@ -160,13 +221,18 @@ fn run_at(replies: Vec<Reply>, root: &std::path::Path) -> (Output, Vec<Value>) {
                 "CLI did not finish its HTTP script"
             );
             match listener.accept() {
-                Ok((stream, _)) => serve(
-                    stream,
-                    replies
-                        .pop_front()
-                        .expect("unexpected request, possibly remote Cancel"),
-                    pid,
-                ),
+                Ok((stream, _)) => {
+                    let (exchange, sent) = serve(
+                        stream,
+                        replies
+                            .pop_front()
+                            .expect("unexpected request, possibly remote Cancel"),
+                        pid,
+                        &server_events,
+                    );
+                    exchanges.push(exchange);
+                    signal = signal.or(sent);
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(Duration::from_millis(5))
                 }
@@ -174,6 +240,7 @@ fn run_at(replies: Vec<Reply>, root: &std::path::Path) -> (Output, Vec<Value>) {
             }
         }
         assert!(replies.is_empty(), "CLI skipped a required request");
+        (exchanges, signal)
     });
     let deadline = Instant::now() + Duration::from_secs(22);
     while child.try_wait().unwrap().is_none() {
@@ -186,9 +253,10 @@ fn run_at(replies: Vec<Reply>, root: &std::path::Path) -> (Output, Vec<Value>) {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+    let exited = Instant::now();
     let output = child.wait_with_output().unwrap();
     done.send(()).unwrap();
-    server.join().unwrap();
+    let (exchanges, signal) = server.join().unwrap();
     use std::os::unix::process::ExitStatusExt;
     assert!(
         output.status.signal().is_none(),
@@ -201,20 +269,62 @@ fn run_at(replies: Vec<Reply>, root: &std::path::Path) -> (Output, Vec<Value>) {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    (output, events)
+    Run {
+        output,
+        events,
+        exchanges,
+        signal_to_exit: signal.map(|sent| exited.duration_since(sent)),
+    }
 }
 
 #[test]
 fn cloud_replacement_resets_event_dedup_without_changing_the_ndjson_shape() {
-    let (output, events) = run(vec![
-        admitted(),
-        observed(7, DeploymentStatus::Running),
-        observed(7, DeploymentStatus::Running),
-        observed(7, DeploymentStatus::Superseded),
-        replacement(),
-        observed(8, DeploymentStatus::Running),
-        observed(8, DeploymentStatus::Applied),
-    ]);
+    let root = tempfile::tempdir().unwrap();
+    let mut delayed = observed(7, DeploymentStatus::Running);
+    delayed.delay = Duration::from_millis(1200);
+    let Run {
+        output,
+        events,
+        exchanges,
+        ..
+    } = measured_run(
+        vec![
+            admitted(),
+            observed(7, DeploymentStatus::Running),
+            delayed,
+            observed(7, DeploymentStatus::Superseded),
+            replacement(),
+            observed(8, DeploymentStatus::Running),
+            observed(8, DeploymentStatus::Applied),
+        ],
+        root.path(),
+    );
+    for next in [2, 3, 6] {
+        let gap = exchanges
+            .get(next)
+            .unwrap()
+            .requested
+            .duration_since(exchanges.get(next - 1).unwrap().responded);
+        assert!(
+            gap >= Duration::from_millis(950),
+            "follow read burst after {gap:?}"
+        );
+        assert!(
+            gap < Duration::from_millis(1500),
+            "follow read delayed by {gap:?}"
+        );
+    }
+    for next in [1, 4, 5] {
+        let gap = exchanges
+            .get(next)
+            .unwrap()
+            .requested
+            .duration_since(exchanges.get(next - 1).unwrap().responded);
+        assert!(
+            gap < Duration::from_millis(500),
+            "immediate follow delayed by {gap:?}"
+        );
+    }
     assert!(
         output.status.success(),
         "{}",
@@ -233,6 +343,41 @@ fn cloud_replacement_resets_event_dedup_without_changing_the_ndjson_shape() {
 }
 
 #[test]
+fn cloud_interrupt_during_follow_wait_exits_without_another_read_or_remote_cancel() {
+    for delay in [
+        Duration::ZERO,
+        Duration::from_millis(100),
+        Duration::from_millis(850),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let mut running = observed(7, DeploymentStatus::Running);
+        running.interrupt = Some(Interrupt::AfterObserved(delay));
+        let Run {
+            output,
+            events,
+            signal_to_exit,
+            ..
+        } = measured_run(vec![admitted(), running], root.path());
+        assert_eq!(output.status.code(), Some(130), "{output:?}");
+        let elapsed = signal_to_exit.unwrap();
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "wait interruption took {elapsed:?}"
+        );
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result.get("number"), Some(&json!(7)));
+        assert_eq!(result.get("status"), Some(&json!("running")));
+        assert_eq!(
+            events,
+            vec![json!({"type":"deployment", "status":"running", "nodes":[]})]
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("The Cloud Deployment continues.")
+        );
+    }
+}
+
+#[test]
 fn cloud_interrupt_preserves_last_known_result_over_a_late_read_error() {
     for replacing in [false, true] {
         let mut replies = vec![admitted(), observed(7, DeploymentStatus::Running)];
@@ -244,7 +389,7 @@ fn cloud_interrupt_preserves_last_known_result_over_a_late_read_error() {
         } else {
             observed(7, DeploymentStatus::Running)
         };
-        late.interrupt = true;
+        late.interrupt = Some(Interrupt::DuringRead);
         late.status = 500;
         late.body = json!({"error":{"code":"unavailable", "message":"late read error", "cause":[], "details":null}});
         replies.push(late);
@@ -270,9 +415,44 @@ fn cloud_interrupt_preserves_last_known_result_over_a_late_read_error() {
 }
 
 #[test]
+fn cloud_interrupt_before_wait_keeps_successful_read_evidence() {
+    for first_read in [true, false] {
+        let mut replies = vec![admitted()];
+        if !first_read {
+            replies.push(observed(7, DeploymentStatus::Queued));
+        }
+        let mut late = observed(7, DeploymentStatus::Running);
+        late.interrupt = Some(Interrupt::DuringRead);
+        replies.push(late);
+        let (output, events) = run(replies);
+        assert_eq!(output.status.code(), Some(130), "{output:?}");
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result.get("status"), Some(&json!("running")));
+        let mut expected = Vec::new();
+        if !first_read {
+            expected.push(json!({"type":"deployment", "status":"queued", "nodes":[]}));
+        }
+        expected.push(json!({"type":"deployment", "status":"running", "nodes":[]}));
+        assert_eq!(events, expected);
+    }
+    let mut late = replacement();
+    late.interrupt = Some(Interrupt::DuringRead);
+    let (output, events) = run(vec![
+        admitted(),
+        observed(7, DeploymentStatus::Superseded),
+        late,
+    ]);
+    assert_eq!(output.status.code(), Some(130), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result.get("number"), Some(&json!(7)));
+    assert_eq!(result.get("status"), Some(&json!("superseded")));
+    assert!(events.is_empty());
+}
+
+#[test]
 fn cloud_completion_racing_interrupt_keeps_terminal_result_and_exit_130() {
     let mut terminal = observed(7, DeploymentStatus::Applied);
-    terminal.interrupt = true;
+    terminal.interrupt = Some(Interrupt::DuringRead);
     let (output, events) = run(vec![
         admitted(),
         observed(7, DeploymentStatus::Running),

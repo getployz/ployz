@@ -553,6 +553,7 @@ fn follow(
     runner: Option<&OwnedRunner<'_, '_>>,
     signal: &CtrlC,
 ) -> Result<Followed, Error> {
+    let wait_runtime = runtime()?;
     let mut last = None;
     let mut followed: Option<Followed> = None;
     let mut id = admitted.id.clone();
@@ -610,10 +611,12 @@ fn follow(
         {
             return followed.ok_or_else(Error::cancelled);
         }
-        let deadline = std::time::Instant::now() + FOLLOW_POLL;
-        while !signal.token().is_cancelled() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(25));
-        }
+        wait_runtime.block_on(async {
+            tokio::select! {
+                () = signal.token().cancelled() => {},
+                () = tokio::time::sleep(FOLLOW_POLL) => {},
+            }
+        });
     }
 }
 
