@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use ployz_core::{MANAGEMENT_PORT, MachineSubnet, ManagementAddress};
+use ployz_core::{MANAGEMENT_PORT, MachineSubnet, ManagementAddress, VOLUME_SEND_PORT};
 
 use crate::dns;
 
@@ -12,7 +12,7 @@ use super::{
 const INPUT_CHAIN: &str = "PLOYZ-INPUT";
 
 /// Apply the Machine's ingress and forwarding policy, including the private
-/// Machine API and Direct Image Transfer endpoints on `management_address`.
+/// Machine API, Direct Image Transfer and Volume send endpoints on `management_address`.
 ///
 /// # Errors
 ///
@@ -74,7 +74,7 @@ pub fn apply_firewall_rules(
     // Rules are inserted at the top, so these drops sit below the WireGuard
     // and loopback accepts added after them.
     let management_destination = format!("{}/128", management_address.0);
-    for port in [MACHINE_API_PORT, UNREGISTRY_PORT] {
+    for port in [MACHINE_API_PORT, UNREGISTRY_PORT, VOLUME_SEND_PORT] {
         ensure_rule(
             "ip6tables",
             "filter",
@@ -110,26 +110,28 @@ pub fn apply_firewall_rules(
             ],
         )?;
     }
+    for port in [UNREGISTRY_PORT, VOLUME_SEND_PORT] {
+        ensure_rule(
+            "ip6tables",
+            "filter",
+            INPUT_CHAIN,
+            &[
+                "-i",
+                WIREGUARD_INTERFACE_NAME,
+                "-s",
+                "fdcc::/16",
+                "-d",
+                &management_destination,
+                "-p",
+                "tcp",
+                "--dport",
+                &port.to_string(),
+                "-j",
+                "ACCEPT",
+            ],
+        )?;
+    }
     let ingest_port = UNREGISTRY_PORT.to_string();
-    ensure_rule(
-        "ip6tables",
-        "filter",
-        INPUT_CHAIN,
-        &[
-            "-i",
-            WIREGUARD_INTERFACE_NAME,
-            "-s",
-            "fdcc::/16",
-            "-d",
-            &management_destination,
-            "-p",
-            "tcp",
-            "--dport",
-            &ingest_port,
-            "-j",
-            "ACCEPT",
-        ],
-    )?;
     ensure_rule(
         "ip6tables",
         "filter",

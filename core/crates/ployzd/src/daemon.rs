@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use ployz_core::{CORROSION_API_PORT, LocalMachinePhase, MACHINE_START_WAIT};
+use ployz_core::{CORROSION_API_PORT, LocalMachinePhase, MACHINE_START_WAIT, VOLUME_SEND_PORT};
 use sd_notify::NotifyState;
 use thiserror::Error;
 use tokio::{
@@ -150,6 +150,12 @@ impl Daemon {
             Some(address) => Some(TcpListener::bind(address).await?),
             None => None,
         };
+        let volume_send_listener = match network.as_ref().map(NetworkPlane::machine_api_address) {
+            Some(address) => {
+                Some(TcpListener::bind(SocketAddr::new(address.ip(), VOLUME_SEND_PORT)).await?)
+            }
+            None => None,
+        };
         let dns_upstreams =
             (!config.dns_upstreams.is_empty()).then(|| config.dns_upstreams.clone());
         let containers = match config.containers {
@@ -234,6 +240,7 @@ impl Daemon {
             let network_rpc = async {
                 tokio::try_join!(
                     serve_machine_api(machine_api_listener, machine_api.clone(), shutdown.clone()),
+                    serve_volume_send(volume_send_listener, shutdown.clone()),
                     async {
                         management::serve(
                             management_endpoint,
@@ -560,6 +567,19 @@ async fn serve_machine_api(
             )
             .await
             .map_err(io::Error::other),
+        None => {
+            shutdown.cancelled().await;
+            Ok(())
+        }
+    }
+}
+
+async fn serve_volume_send(
+    listener: Option<TcpListener>,
+    shutdown: CancellationToken,
+) -> io::Result<()> {
+    match listener {
+        Some(listener) => crate::volume_send::serve(listener, PathBuf::from("zfs"), shutdown).await,
         None => {
             shutdown.cancelled().await;
             Ok(())
