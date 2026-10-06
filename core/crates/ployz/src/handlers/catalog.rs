@@ -12,6 +12,9 @@ use super::{Error, leaf_matches};
 use crate::cli::positional;
 use crate::ui::{self, Fields};
 
+/// Where agents find the catalog, stated as a fact at the end of `ployz --help`.
+pub(crate) const SIGNPOST: &str = "Settings catalog: `ployz schema --json` lists every command and Setting; `ployz explain SERVICE.SETTING` describes one Setting.";
+
 pub(crate) fn schema_command() -> Command {
     Command::new("schema")
         .about("Print the settings catalog as JSON Schema, with every command at the root: all of it, one Service, or one Setting")
