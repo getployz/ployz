@@ -7,7 +7,6 @@ use unicode_width::UnicodeWidthStr as _;
 
 use super::Tone;
 
-/// Space between aligned columns.
 const GAP: &str = "   ";
 
 /// One table cell: text, and the tone it carries on a color terminal.
