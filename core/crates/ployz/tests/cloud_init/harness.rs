@@ -818,6 +818,18 @@ impl MachineRpc for JoinDaemon {
             display_name,
         })
     }
+    async fn inspect_volume_copy(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
+    async fn adopt_lease(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
     async fn remove_volume(
         &self,
         _request: Request<OpaquePayload>,

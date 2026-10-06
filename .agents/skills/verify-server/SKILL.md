@@ -27,7 +27,7 @@ run=$(scripts/verify-cluster up --machines 2 --daemon stable)
 scripts/verify-cluster doctor "$run"
 ```
 
-`--daemon checkout` is the command's default; it builds and installs this checkout's runtime. `--daemon stable`, `beta` or an exact version uses a cached published runtime image and skips daemon compilation, per-Machine binary uploads and installation. Channel selection resolves to an exact version recorded in the manifest. The host CLI still comes from this checkout because the released CLI enrolls through Cloud rather than supporting standalone enrollment.
+`--daemon checkout` is the command's default; it builds and installs this checkout's runtime. `PLOYZ_VERIFY_CARGO_ARGS` appends to that `cargo build`; `PLOYZ_VERIFY_CARGO_ARGS="--features ployz/verify-faults,ployzd/verify-faults"` builds the fault hooks and `ployz debug volume-rpc` that Volume switch verification drives. `--daemon stable`, `beta` or an exact version uses a cached published runtime image and skips daemon compilation, per-Machine binary uploads and installation. Channel selection resolves to an exact version recorded in the manifest. The host CLI still comes from this checkout because the released CLI enrolls through Cloud rather than supporting standalone enrollment.
 
 `up` returns an absolute manifest path on stdout. Each invocation creates a separate cluster, SSH credentials, CLI context, Config Store and application workspace. The manifest records the selected daemon, Machines, artifact hashes and timings. Incus is the initial provider; its image, bridge and VM commands stay in `scripts/verify/incus.py`.
 

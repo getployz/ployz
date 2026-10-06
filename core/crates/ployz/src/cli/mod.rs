@@ -23,7 +23,7 @@ pub mod env {
 
 #[must_use]
 pub fn command() -> Command {
-    base("ployz", "Manage Ployz machines, services, and volumes")
+    let command = base("ployz", "Manage Ployz machines, services, and volumes")
         .styles(crate::ui::clap_styles())
         .arg(switch("version", Some('V')).help("Print version"))
         .arg(
@@ -71,7 +71,8 @@ pub fn command() -> Command {
         .subcommand(handlers::config::unset_command())
         .subcommand(handlers::up::command())
         .subcommand(handlers::volume::command())
-        .subcommand(completion())
+        .subcommand(completion());
+    handlers::debug::attach(command)
 }
 
 pub(crate) fn base(name: &'static str, about: &'static str) -> Command {

@@ -952,6 +952,24 @@ impl MachineRpc for DiscoveryService {
         ))
     }
 
+    async fn inspect_volume_copy(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "Volume switch verbs are not used by this fixture",
+        ))
+    }
+
+    async fn adopt_lease(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "Volume switch verbs are not used by this fixture",
+        ))
+    }
+
     async fn remove_volume(
         &self,
         request: Request<OpaquePayload>,

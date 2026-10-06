@@ -26,7 +26,7 @@ async fn docker_can_remove_a_provisioned_volume() {
     assert!(
         fs::read_to_string(test.0.join("commands"))
             .unwrap()
-            .contains("zfs destroy tank/ployz/data")
+            .contains("zfs destroy -r tank/ployz/data")
     );
     assert!(!test.0.join("volume").exists());
     server.abort();

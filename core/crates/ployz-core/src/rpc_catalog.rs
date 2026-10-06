@@ -63,6 +63,8 @@ macro_rules! rpc_catalog {
                 ListVolumes: (list_volumes, "ListVolumes", ListVolumesRequest, "list_volumes", VolumeInventory, LIST_VOLUMES_CAPABILITY, "ployz.volume.list.v1", Container),
                 InspectVolume: (inspect_volume, "InspectVolume", InspectVolumeRequest, "inspect_volume", DockerVolume, INSPECT_VOLUME_CAPABILITY, "ployz.volume.inspect.v1", Container),
                 RemoveVolume: (remove_volume, "RemoveVolume", RemoveVolumeRequest, "remove_volume", VolumeRemoved, REMOVE_VOLUME_CAPABILITY, "ployz.volume.remove.v1", Container),
+                InspectVolumeCopy: (inspect_volume_copy, "InspectVolumeCopy", InspectVolumeCopyRequest, "inspect_volume_copy", VolumeCopyView, INSPECT_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.inspect.v1", Container),
+                AdoptLease: (adopt_lease, "AdoptLease", AdoptLeaseRequest, "adopt_lease", SwitchReply, ADOPT_LEASE_CAPABILITY, "ployz.volume.lease.adopt.v1", Container),
                 ListImages: (list_images, "ListImages", ListImagesRequest, "list_images", MachineImages, LIST_IMAGES_CAPABILITY, "ployz.image.list.v1", Container),
                 RemoveImages: (remove_images, "RemoveImages", RemoveImagesRequest, "remove_images", ImagesRemoved, REMOVE_IMAGES_CAPABILITY, "ployz.image.remove.v1", Container),
                 EnsureImageIngest: (ensure_image_ingest, "EnsureImageIngest", EnsureImageIngestRequest, "ensure_image_ingest", ImageIngestOpened, ENSURE_IMAGE_INGEST_CAPABILITY, "ployz.image.ingest.ensure.v1", Container),

@@ -889,7 +889,8 @@ case "$name" in
         printf '%s\n' "${{3#refquota=}}" > '{other_bound}'
         touch '{other}'
         ;;
-      'destroy ployz/ployz/other') rm '{other}' '{other_bound}' ;;
+      'get -H -o value ployz:writer '*) echo '-' ;;
+      'destroy -r ployz/ployz/other') rm '{other}' '{other_bound}' ;;
       *) echo "unexpected fake zfs command: $*" >&2; exit 2 ;;
     esac
     ;;

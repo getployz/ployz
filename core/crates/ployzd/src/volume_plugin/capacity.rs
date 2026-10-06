@@ -29,8 +29,13 @@ fn storage_error(error: super::VolumeError) -> ployz_core::RpcError {
     }
 }
 
+struct ManagedStorage {
+    capacity: StorageCapacity,
+    slot_bound_bytes: u64,
+}
+
 impl VolumeStorage {
-    async fn capacity(&self) -> super::Result<StorageCapacity> {
+    async fn capacity(&self) -> super::Result<ManagedStorage> {
         let pool = match self.pool.one_usable().await? {
             Some(pool) => Some(pool),
             None => {
@@ -41,10 +46,20 @@ impl VolumeStorage {
         };
         let mut volumes = BTreeMap::new();
         let mut managed_used_bytes = 0u64;
+        let mut slot_bound_bytes = 0u64;
         if let Some(pool) = &pool {
-            let prefix = format!("{}/ployz/", pool.name());
             for dataset in self.datasets(pool).await? {
-                let Some(name) = dataset.name.strip_prefix(&prefix) else {
+                let place = super::Place::of(&dataset.name, pool.name());
+                if !place.commits() {
+                    continue;
+                }
+                managed_used_bytes = managed_used_bytes
+                    .checked_add(dataset.active_used_bytes)
+                    .ok_or("Dataset occupancy overflows u64")?;
+                let super::Place::Root(name) = place else {
+                    slot_bound_bytes = slot_bound_bytes
+                        .checked_add(dataset.refquota)
+                        .ok_or("Volume commitments overflow u64")?;
                     continue;
                 };
                 let name = ployz_core::DockerVolumeName::parse(name)
@@ -53,18 +68,18 @@ impl VolumeStorage {
                     std::num::NonZeroU64::new(dataset.refquota)
                         .ok_or("Volume has no finite bound")?,
                 );
-                managed_used_bytes = managed_used_bytes
-                    .checked_add(dataset.active_used_bytes)
-                    .ok_or("Dataset occupancy overflows u64")?;
                 volumes.insert(name, maximum);
             }
         }
-        Ok(StorageCapacity {
-            backing: self.pool.capacity_backing(pool.as_ref()).await?,
-            unmanaged_used_bytes: pool.as_ref().map_or(0, |pool| {
-                pool.used_bytes().saturating_sub(managed_used_bytes)
-            }),
-            volumes,
+        Ok(ManagedStorage {
+            capacity: StorageCapacity {
+                backing: self.pool.capacity_backing(pool.as_ref()).await?,
+                unmanaged_used_bytes: pool.as_ref().map_or(0, |pool| {
+                    pool.used_bytes().saturating_sub(managed_used_bytes)
+                }),
+                volumes,
+            },
+            slot_bound_bytes,
         })
     }
 
@@ -74,7 +89,11 @@ impl VolumeStorage {
         tokio::spawn(async move {
             let _admission = admission;
             let _pool_guard = storage.pool.lock_mutation().await.map_err(unknown)?;
-            storage.capacity().await.map_err(unknown)
+            storage
+                .capacity()
+                .await
+                .map(|managed| managed.capacity)
+                .map_err(unknown)
         })
         .await
         .unwrap_or_else(|error| Err(unknown(error)))
@@ -100,8 +119,9 @@ impl VolumeStorage {
         requested: &Volumes,
     ) -> Result<Vec<ployz_core::DockerVolumeName>, ployz_core::RpcError> {
         let _pool_guard = self.pool.lock_mutation().await.map_err(storage_error)?;
-        let capacity = self.capacity().await.map_err(unknown)?;
-        let budget = capacity
+        let managed = self.capacity().await.map_err(unknown)?;
+        let budget = managed
+            .capacity
             .budget(requested)
             .map_err(StorageCapacityError::into_rpc_error)?;
         if requested.is_empty() {
@@ -124,16 +144,18 @@ impl VolumeStorage {
                 }
             }
         }
-        let commitment = capacity
+        let commitment = managed
+            .capacity
             .volumes
             .values()
             .map(|maximum| maximum.get())
             .try_fold(budget.additional_commitment_bytes, u64::checked_add)
+            .and_then(|roots| roots.checked_add(managed.slot_bound_bytes))
             .ok_or_else(|| unknown("Volume commitments overflow u64"))?;
         match existing_pool {
             Some(pool) => {
                 self.pool
-                    .ensure_capacity(&pool, commitment, capacity.unmanaged_used_bytes)
+                    .ensure_capacity(&pool, commitment, managed.capacity.unmanaged_used_bytes)
                     .await
                     .map_err(storage_error)?;
             }

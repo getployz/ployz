@@ -18,6 +18,10 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
     let mut paths = Vec::new();
     collect(&ployz::cli::command(), "", &mut paths);
     paths.sort_unstable();
+    // `ployz debug` exists only in a verify-cluster build.
+    if cfg!(feature = "verify-faults") {
+        paths.retain(|path| path != "debug" && path != "debug volume-rpc");
+    }
     assert_eq!(
         paths,
         [
