@@ -128,15 +128,13 @@ fn redact_operation(operation: &mut DeployOperation) {
 /// # Errors
 /// Rejects malformed SDK values and unknown fields without echoing their contents.
 pub fn parse_runtime_preview(value: Value) -> Result<DeployPreview, ConfigError> {
-    let preview: DeployPreview = decode(value)?;
-    Ok(redacted_runtime_preview(&preview))
+    Ok(redacted_runtime_preview(decode(value)?))
 }
 
-/// Remove resolved environment/config values from a preview, including one
-/// stored before every value it carries was redacted.
+/// Preview without resolved environment values or Config content, whatever
+/// Store version recorded it.
 #[must_use]
-pub fn redacted_runtime_preview(preview: &DeployPreview) -> DeployPreview {
-    let mut preview = preview.clone();
+pub fn redacted_runtime_preview(mut preview: DeployPreview) -> DeployPreview {
     for row in &mut preview.operations {
         redact_operation(&mut row.operation);
     }
@@ -197,7 +195,7 @@ pub fn project_runtime_outcome(
     if completed.len() + usize::from(failed.is_some()) + pending.len() != preview.operations.len() {
         return Err(invalid());
     }
-    let preview = redacted_runtime_preview(preview);
+    let preview = redacted_runtime_preview(preview.clone());
     let mut matched = vec![false; preview.operations.len()];
     let mut services: BTreeMap<ServiceName, Progress> = BTreeMap::new();
     for (mut operation, progress) in completed

@@ -530,7 +530,7 @@ pub(crate) fn record(
                 .and_then(|preview| parse_runtime_preview(preview).ok())
                 .ok_or_else(|| invalid_evidence("Deploy Preview"))?;
             match &stored.run.preview {
-                Some(recorded) if redacted_runtime_preview(recorded) == preview => {
+                Some(recorded) if redacted_runtime_preview(recorded.clone()) == preview => {
                     return Ok(stored.summary);
                 }
                 Some(_) => {
