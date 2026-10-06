@@ -169,7 +169,11 @@ impl CatchUpClient for Client {
     }
 }
 
-pub(crate) fn joined_catch_up_error(error: CatchUpError, server: &Machine) -> Failure {
+pub(crate) fn joined_catch_up_error(
+    error: CatchUpError,
+    server: &Machine,
+    command: impl Fn(&[&str]) -> String,
+) -> Failure {
     let mut message = String::from(
         "Server joined, but Global catch-up is incomplete; it remains a Cluster member.",
     );
@@ -183,16 +187,14 @@ pub(crate) fn joined_catch_up_error(error: CatchUpError, server: &Machine) -> Fa
     let mut failure = error.cause.context(message);
     for identity in error.unresolved {
         let hint = if identity == QualifiedService::system_ingress() {
-            crate::ui::Hint::Retry(shell_words::join([
-                "ployz",
+            crate::ui::Hint::Retry(command(&[
                 "server",
                 "set",
                 &server.id.to_string(),
                 "--accepts-ingress=true",
             ]))
         } else {
-            crate::ui::Hint::Inspect(shell_words::join([
-                "ployz",
+            crate::ui::Hint::Inspect(command(&[
                 "logs",
                 &identity.to_string(),
                 "--machine",
@@ -230,25 +232,52 @@ pub(crate) async fn follow_globals(
     };
     let mut progress = Progress::start(frame.clone());
     let result = catch_up_globals(client, assigned, signal.token(), |fact| {
-                let (identity, state) = match fact {
-                    CatchUpFact::Identified(services) => {
-                        frame.rows = services.into_iter().map(|service| Row { subject: Subject::ServiceOnServer { service, machine: assigned.id, server: assigned.name.to_string() }, state: State::Pending, detail: None, timing: Timing::Unavailable }).collect();
-                        progress.update(frame.clone());
-                        return;
-                    }
-                    CatchUpFact::Creating(service) => (service, State::Running(ployz_store::RowPhase::CreatingContainer)),
-                    CatchUpFact::Starting(service) => (service, State::Running(ployz_store::RowPhase::StartingContainer)),
-                    CatchUpFact::Excluded(service) => (service, State::Excluded),
-                    CatchUpFact::Running(service) => (service, State::ObservedRunning),
-                    CatchUpFact::Failed(service) => (service, State::Failed),
-                };
-                if let Some(row) = frame.rows.iter_mut().find(|row| matches!(&row.subject, Subject::ServiceOnServer { service, .. } if service == &identity)) {
-                    if matches!(row.timing, Timing::Unavailable) { row.timing = Timing::Started(std::time::SystemTime::now()); }
-                    if !matches!(state, State::Running(_) | State::Pending) && let Timing::Started(at) = row.timing { row.timing = Timing::Finished(at.elapsed().unwrap_or_default()); }
-                    row.state = state;
-                }
+        let (identity, state) = match fact {
+            CatchUpFact::Identified(services) => {
+                frame.rows = services
+                    .into_iter()
+                    .map(|service| Row {
+                        subject: Subject::ServiceOnServer {
+                            service,
+                            machine: assigned.id,
+                            server: assigned.name.to_string(),
+                        },
+                        state: State::Pending,
+                        detail: None,
+                        timing: Timing::Unavailable,
+                    })
+                    .collect();
                 progress.update(frame.clone());
-            }).await;
+                return;
+            }
+            CatchUpFact::Creating(service) => (
+                service,
+                State::Running(ployz_store::RowPhase::CreatingContainer),
+            ),
+            CatchUpFact::Starting(service) => (
+                service,
+                State::Running(ployz_store::RowPhase::StartingContainer),
+            ),
+            CatchUpFact::Excluded(service) => (service, State::Excluded),
+            CatchUpFact::Running(service) => (service, State::ObservedRunning),
+            CatchUpFact::Failed(service) => (service, State::Failed),
+        };
+        if let Some(row) = frame.rows.iter_mut().find(|row| {
+            matches!(&row.subject, Subject::ServiceOnServer { service, .. } if service == &identity)
+        }) {
+            if matches!(row.timing, Timing::Unavailable) {
+                row.timing = Timing::Started(std::time::SystemTime::now());
+            }
+            if !matches!(state, State::Running(_) | State::Pending)
+                && let Timing::Started(at) = row.timing
+            {
+                row.timing = Timing::Finished(at.elapsed().unwrap_or_default());
+            }
+            row.state = state;
+        }
+        progress.update(frame.clone());
+    })
+    .await;
     if result.is_err() {
         for row in &mut frame.rows {
             if matches!(row.state, State::Pending | State::Running(_)) {
@@ -259,7 +288,7 @@ pub(crate) async fn follow_globals(
     progress.finish(
         frame,
         if signal.token().is_cancelled() {
-            Disposition::LocalStopped
+            Disposition::LocalInterrupted
         } else {
             Disposition::Settled
         },

@@ -50,7 +50,9 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
         )
         .await
         .unwrap_err();
-        let message = crate::ui::chain_text(&joined_catch_up_error(error, &joiner));
+        let message = crate::ui::chain_text(&joined_catch_up_error(error, &joiner, |args| {
+            shell_words::join(std::iter::once("ployz").chain(args.iter().copied()))
+        }));
         assert!(
             message.contains("partial Service observations"),
             "{message}"
@@ -380,8 +382,10 @@ async fn failed_placement_is_reported_even_if_final_observation_is_running() {
     .await
     .unwrap_err();
     assert!(
-        crate::ui::chain_text(&joined_catch_up_error(error, &joiner))
-            .contains("creation key conflict")
+        crate::ui::chain_text(&joined_catch_up_error(error, &joiner, |args| {
+            shell_words::join(std::iter::once("ployz").chain(args.iter().copied()))
+        }))
+        .contains("creation key conflict")
     );
 }
 

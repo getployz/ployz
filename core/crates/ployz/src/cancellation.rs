@@ -34,7 +34,7 @@ impl CtrlC {
         let listener = std::thread::Builder::new()
             .name("ployz-interrupt".into())
             .spawn(move || {
-                if signals.forever().next().is_some() {
+                for _ in signals.forever() {
                     cancelled.cancel();
                 }
             })?;
@@ -47,6 +47,116 @@ impl CtrlC {
 
     pub(crate) fn token(&self) -> &CancellationToken {
         &self.token
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::{
+        io::{BufRead, Write},
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+
+    #[test]
+    fn scoped_listener_joins_with_zero_one_or_repeated_signals_and_tokio_subscribers() {
+        for case in [
+            "none",
+            "early_drop",
+            "single",
+            "repeated",
+            "tokio_active",
+            "tokio_prior",
+        ] {
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "cancellation::tests::signal_listener_child",
+                    "--nocapture",
+                ])
+                .env("PLOYZ_SIGNAL_TEST", case)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
+            loop {
+                let mut line = String::new();
+                assert!(
+                    output.read_line(&mut line).unwrap() > 0,
+                    "child exited before READY: {case}"
+                );
+                if line.trim() == "READY" {
+                    break;
+                }
+            }
+            if !matches!(case, "none" | "early_drop") {
+                for _ in 0..if case == "repeated" { 2 } else { 1 } {
+                    assert!(
+                        Command::new("kill")
+                            .args(["-INT", &child.id().to_string()])
+                            .status()
+                            .unwrap()
+                            .success()
+                    );
+                    std::thread::sleep(Duration::from_millis(30));
+                }
+            }
+            child.stdin.take().unwrap().write_all(b"finish\n").unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while child.try_wait().unwrap().is_none() {
+                if Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("listener did not join: {case}");
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let status = child.wait().unwrap();
+            assert!(status.success(), "signal listener child {case}: {status}");
+        }
+    }
+
+    #[test]
+    fn signal_listener_child() {
+        let Ok(case) = std::env::var("PLOYZ_SIGNAL_TEST") else {
+            return;
+        };
+        sigpipe::reset();
+        if case == "early_drop" {
+            for _ in 0..16 {
+                drop(CtrlC::subscribe().unwrap());
+            }
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let entered = runtime.enter();
+        let mut tokio_signal = case.starts_with("tokio_").then(|| {
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap()
+        });
+        if case == "tokio_prior" {
+            tokio_signal.take();
+        }
+        drop(entered);
+        let signal = CtrlC::subscribe().unwrap();
+        writeln!(std::io::stdout(), "READY").unwrap();
+        std::io::stdout().flush().unwrap();
+        let mut done = String::new();
+        std::io::stdin().read_line(&mut done).unwrap();
+        if !matches!(case.as_str(), "none" | "early_drop") {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !signal.token().is_cancelled() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(signal.token().is_cancelled());
+        }
+        drop(signal);
+        drop(tokio_signal);
+        drop(runtime);
     }
 }
 

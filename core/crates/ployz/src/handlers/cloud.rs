@@ -289,7 +289,11 @@ where
     // The join is committed; a catch-up failure makes it partial.
     Ok(ui::emit_committed(
         serde_json::json!({ "server": super::server::server_json(&assigned), "founded": false }),
-        catch_up.map_err(|error| crate::global_catch_up::joined_catch_up_error(error, &assigned)),
+        catch_up.map_err(|error| {
+            crate::global_catch_up::joined_catch_up_error(error, &assigned, |args| {
+                super::server::rerun(matches, args)
+            })
+        }),
     ))
 }
 
@@ -406,7 +410,7 @@ where
     {
         // An interrupted Apply may have completed mutations. Do not replay it.
         let _ingress = crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
-            Error::from(error).context("Server initialized; Ingress deployment incomplete. Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it.")
+            super::ingress_hints(Error::from(error), |args| super::server::rerun(matches, args)).context("Server initialized; Ingress deployment incomplete. Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it.")
         })?;
     }
     // Repeated Set stages a fresh capability; its first operational RPC completes rotation.

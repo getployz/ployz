@@ -4,6 +4,8 @@
 //! hidden in-process Store this CLI is the Deployment's runner: it claims it,
 //! prepares and confirms it on the Cluster, and records what happened.
 
+#[cfg(test)]
+mod follow_tests;
 mod progress;
 
 use crate::cancellation::CtrlC;
@@ -351,7 +353,7 @@ pub(super) fn execute(
             finish_progress(
                 &mut followed,
                 if interrupted {
-                    Disposition::LocalStopped
+                    Disposition::LocalInterrupted
                 } else {
                     Disposition::Settled
                 },
@@ -367,9 +369,11 @@ pub(super) fn execute(
     let interrupted = signal.token().is_cancelled();
     let disposition = if interrupted {
         if runner.is_some() {
-            Disposition::LocalStopped
-        } else {
+            Disposition::LocalInterrupted
+        } else if followed.view.deployment.status.in_flight() {
             Disposition::CloudContinues
+        } else {
+            Disposition::Settled
         }
     } else if progress::noop(&followed.view) {
         Disposition::UpToDate
@@ -560,6 +564,7 @@ fn follow(
         let read = store.read(&ployz_store::DeploymentQuery { id: id.clone() });
         if signal.token().is_cancelled() {
             if let Ok(view) = read {
+                tap(&view, &mut events, &mut last);
                 if let Some(followed) = followed.as_mut() {
                     followed.view = view;
                 } else {

@@ -1,5 +1,6 @@
 //! Direct progress aggregation, retained diagnostics, and recovery commands.
 use super::*;
+use crate::ui::Hint;
 use ployz_core::{
     DeployPreview, MachineAction, MachineName, RequestedServiceSpec, ResolvedServiceSpec,
     ResolvedUpdateConfig, UpdateOrder,
@@ -118,11 +119,17 @@ fn contextual_failure_keeps_one_deepest_cause_tail_and_exact_inspect_command() {
         server: "edge".into(),
         lines: vec!["could not load configuration".into()],
     };
-    let failure = failure(&outcome, vec![tail], "production")
-        .context("Server initialized; ingress deployment incomplete.")
-        .hint(Hint::Retry(
-            "ployz server set edge --accepts-ingress=true".into(),
-        ));
+    let failure = crate::handlers::ingress_hints(failure(&outcome, vec![tail]), |args| {
+        shell_words::join(
+            std::iter::once("ployz")
+                .chain(args.iter().copied())
+                .chain(["--context", "production"]),
+        )
+    })
+    .context("Server initialized; ingress deployment incomplete.")
+    .hint(Hint::Retry(
+        "ployz server set edge --accepts-ingress=true".into(),
+    ));
     let text = crate::ui::plain(&failure);
     assert!(text.contains("error: Server initialized; ingress deployment incomplete."));
     assert_eq!(text.matches("cause:").count(), 1, "{text}");
@@ -174,7 +181,16 @@ fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
         server: "edge".into(),
         lines: Vec::new(),
     };
-    let text = crate::ui::plain(&failure(&outcome, vec![tail], "production"));
+    let text = crate::ui::plain(&crate::handlers::ingress_hints(
+        failure(&outcome, vec![tail]),
+        |args| {
+            shell_words::join(
+                std::iter::once("ployz")
+                    .chain(args.iter().copied())
+                    .chain(["--context", "production"]),
+            )
+        },
+    ));
     assert!(text.contains("Stopped the new Container."));
     assert!(text.contains("Could not restart the old Container."));
     assert_eq!(

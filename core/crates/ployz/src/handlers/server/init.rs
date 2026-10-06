@@ -151,12 +151,14 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                         .hint(Hint::Next(ingress_recovery.clone()))
                 })?;
             let outcome =
-                crate::deploy::apply_requested(&mut ready, &requested, false, false, "default")
+                crate::deploy::apply_requested(&mut ready, &requested, false, false, &context_name)
                     .await
                     .map_err(|error| {
-                        Error::from(error)
-                            .context("Server initialized; ingress deployment incomplete.")
-                            .hint(Hint::Next(ingress_recovery.clone()))
+                        super::super::ingress_hints(Error::from(error), |args| {
+                            super::super::recovery_command(matches, &context_name, args)
+                        })
+                        .context("Server initialized; ingress deployment incomplete.")
+                        .hint(Hint::Next(ingress_recovery.clone()))
                     })?;
             return Ok(Some(outcome));
         }

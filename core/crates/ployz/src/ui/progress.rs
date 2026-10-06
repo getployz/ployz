@@ -192,7 +192,7 @@ pub(crate) enum Disposition {
     Settled,
     UpToDate,
     CloudContinues,
-    LocalStopped,
+    LocalInterrupted,
 }
 
 /// Ordered updates deliberately trade memory for keeping every observed transition.
@@ -743,8 +743,11 @@ fn finish(
         Disposition::CloudContinues => {
             writeln!(writer, "Stopped following. The Cloud Deployment continues.")
         }
-        Disposition::LocalStopped => {
-            writeln!(writer, "Stopped local work after waiting for its outcome.")
+        Disposition::LocalInterrupted => {
+            writeln!(
+                writer,
+                "Interrupted after waiting for owned work to report its outcome."
+            )
         }
         Disposition::Settled | Disposition::UpToDate => Ok(()),
     }
@@ -756,6 +759,7 @@ mod tests;
 /// Additional execution evidence printed only after the outer command adds context.
 #[derive(Debug, Default)]
 pub(crate) struct Diagnostic {
+    pub failed_machine: Option<MachineId>,
     pub failures: Vec<Detail>,
     pub logs: Vec<LogTail>,
     pub compensation: Vec<Detail>,
@@ -814,6 +818,7 @@ impl Diagnostic {
         let detail =
             |value: &Detail| serde_json::json!({"message": value.message, "cause": value.causes});
         serde_json::json!({
+            "failed_machine": self.failed_machine,
             "failures": self.failures.iter().map(detail).collect::<Vec<_>>(),
             "logs": self.logs.iter().map(|tail| serde_json::json!({"service": tail.service, "machine_id": tail.machine, "server": tail.server, "lines": tail.lines})).collect::<Vec<_>>(),
             "compensation": self.compensation.iter().map(detail).collect::<Vec<_>>(),

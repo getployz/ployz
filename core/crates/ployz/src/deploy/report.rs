@@ -3,10 +3,7 @@
 use crate::{
     connect::Client,
     failure::Failure,
-    ui::{
-        Hint,
-        progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing},
-    },
+    ui::progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing},
 };
 use ployz_core::{
     ContainerId, DeployOperation, DeployOutcome, ExecutionError, FailedOperation, MachineId,
@@ -137,22 +134,20 @@ impl Direct {
     }
 }
 
-pub(super) fn failure(
-    outcome: &DeployOutcome<ExecutionError>,
-    tails: Vec<LogTail>,
-    context: &str,
-) -> Failure {
+pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTail>) -> Failure {
     let DeployOutcome::Failed { failed, .. } = outcome else {
         return Failure::coded(
             RpcErrorCode::Internal,
             "Deployment failed without failure evidence.",
         );
     };
-    let (service, error) = match failed {
-        FailedOperation::Operation { operation, error } => (operation.service_name(), error),
+    let (service, machine, error) = match failed {
+        FailedOperation::Operation { operation, error } => {
+            (operation.service_name(), operation.machine_id(), error)
+        }
         FailedOperation::Replacement {
             operation, error, ..
-        } => (Some(&operation.spec.name), error),
+        } => (Some(&operation.spec.name), operation.machine_id, error),
     };
     let stored = ployz_store::Failure::from(error);
     let message = service.map_or_else(
@@ -162,6 +157,7 @@ pub(super) fn failure(
     let mut causes = vec![stored.reason];
     causes.extend(stored.cause);
     let mut diagnostic = Diagnostic {
+        failed_machine: Some(machine),
         logs: tails,
         ..Diagnostic::default()
     };
@@ -200,32 +196,13 @@ pub(super) fn failure(
             }
         }
     }
-    let hints: Vec<_> = diagnostic
-        .logs
-        .iter()
-        .map(|tail| {
-            Hint::Inspect(shell_words::join([
-                "ployz",
-                "logs",
-                &tail.service.to_string(),
-                "--machine",
-                &tail.machine.to_string(),
-                "--context",
-                context,
-            ]))
-        })
-        .collect();
-    let mut failure = Failure::from(RpcError {
+    Failure::from(RpcError {
         code: RpcErrorCode::Internal,
         message,
         cause: causes,
         details: serde_json::json!({"outcome": outcome}),
     })
-    .with_diagnostic(diagnostic);
-    for hint in hints {
-        failure = failure.hint(hint);
-    }
-    failure
+    .with_diagnostic(diagnostic)
 }
 
 fn failure_causes(error: &ExecutionError) -> Vec<String> {

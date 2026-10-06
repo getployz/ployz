@@ -27,7 +27,7 @@ use crate::{
 pub struct Failure {
     inner: Inner,
     interrupted: bool,
-    diagnostic: Option<ui::progress::Diagnostic>,
+    diagnostic: Option<Box<ui::progress::Diagnostic>>,
 }
 
 #[derive(Debug)]
@@ -124,12 +124,12 @@ impl Failure {
     }
 
     pub(crate) fn with_diagnostic(mut self, diagnostic: ui::progress::Diagnostic) -> Self {
-        self.diagnostic = Some(diagnostic);
+        self.diagnostic = Some(Box::new(diagnostic));
         self
     }
 
     pub(crate) fn diagnostic(&self) -> Option<&ui::progress::Diagnostic> {
-        self.diagnostic.as_ref()
+        self.diagnostic.as_deref()
     }
 
     /// The input was wrong.

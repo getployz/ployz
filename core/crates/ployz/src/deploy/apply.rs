@@ -6,7 +6,7 @@ use crate::{
     connect::Client,
     failure::Failure,
     ui::{
-        self, Hint,
+        self,
         progress::{Disposition, Progress},
     },
 };
@@ -84,7 +84,7 @@ pub(crate) async fn apply_requested(
     progress.finish(
         evidence.frame(),
         if signal.token().is_cancelled() {
-            Disposition::LocalStopped
+            Disposition::LocalInterrupted
         } else {
             Disposition::Settled
         },
@@ -106,21 +106,7 @@ pub(crate) async fn apply_requested(
             }
         }
         DeployOutcome::Failed { .. } => {
-            let mut failure =
-                report::failure(&outcome, tails, context).hint(Hint::Retry(shell_words::join([
-                    "ployz",
-                    "server",
-                    "set",
-                    &preview
-                        .operations
-                        .first()
-                        .expect("nonempty preview")
-                        .machine_id
-                        .to_string(),
-                    "--accepts-ingress=true",
-                    "--context",
-                    context,
-                ])));
+            let mut failure = report::failure(&outcome, tails);
             if signal.token().is_cancelled() {
                 failure = failure.interrupted();
             }

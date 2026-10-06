@@ -211,6 +211,7 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
     let ingress = IngressImage::given_or(image.cloned(), IngressImage::Keep);
     let accepts_ingress = update.accepts_ingress;
     let selector = MachineTarget::parse(selector)?;
+    let recovery_matches = matches.clone();
     with_client(root, |client| {
         Box::pin(async move {
             let machine = client
@@ -247,23 +248,39 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
             .await;
             crate::ui::emit_committed(
                 json!({ "server": server_json(&machine), "ingress": followed.as_ref().ok().and_then(Option::as_ref) }),
-                followed
-                    .map(drop)
-                    .map_err(|error| ingress_incomplete("Server updated", error, rerun)),
+                followed.map(drop).map_err(|error| {
+                    ingress_incomplete(
+                        "Server updated",
+                        super::ingress_hints(error, |args| self::rerun(&recovery_matches, args)),
+                        rerun,
+                    )
+                }),
             )
         })
     })
 }
 
-/// The exact rerun of a Server command, keeping an explicit `--context`.
+/// A recovery command using the same config, connection and context.
 pub(super) fn rerun(matches: &ArgMatches, args: &[&str]) -> String {
+    let config = super::config_path(matches).expect("the Server command resolved its config");
+    let config = config.to_string_lossy();
+    let connect = matches.get_one::<String>("connect");
     let context = matches.get_one::<String>("context");
-    let args = std::iter::once("ployz").chain(args.iter().copied()).chain(
-        context
-            .map(|context| ["--context", context.as_str()])
-            .into_iter()
-            .flatten(),
-    );
+    let args = ["ployz", "--ployz-config", config.as_ref()]
+        .into_iter()
+        .chain(
+            connect
+                .map(|connect| ["--connect", connect.as_str()])
+                .into_iter()
+                .flatten(),
+        )
+        .chain(args.iter().copied())
+        .chain(
+            context
+                .map(|context| ["--context", context.as_str()])
+                .into_iter()
+                .flatten(),
+        );
     shell_words::join(args)
 }
 

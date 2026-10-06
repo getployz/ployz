@@ -113,7 +113,11 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             let mut entry = super::super::reconnect_client(matches, options.context()).await?;
             Ok::<_, Error>(crate::global_catch_up::follow_globals(&mut entry, &assigned).await)
         })?;
-        catch_up.map_err(|error| crate::global_catch_up::joined_catch_up_error(error, &assigned))
+        catch_up.map_err(|error| {
+            crate::global_catch_up::joined_catch_up_error(error, &assigned, |args| {
+                super::super::recovery_command(matches, &context_name, args)
+            })
+        })
     })();
     crate::ui::emit_committed(
         json!({ "server": super::server_json(&assigned) }),
@@ -146,6 +150,7 @@ mod tests {
                 vec![ployz_core::QualifiedService::system_ingress()],
             ),
             &assigned,
+            |args| shell_words::join(std::iter::once("ployz").chain(args.iter().copied())),
         );
         let message = failure.to_string();
         assert!(message.starts_with("Server joined"), "{message}");
