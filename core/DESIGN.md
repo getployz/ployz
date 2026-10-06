@@ -284,7 +284,9 @@ Ployz deliberately does not provide:
 - Cluster-wide atomic operations or general rollback;
 - automatic correction of every difference between observations;
 - a generic abstraction over container runtimes — Docker is the runtime;
-- continuously replicated persistent storage.
+- continuously replicated persistent storage. A point-in-time mirror of a
+  Volume, one per Volume, refreshed on request, is in scope; continuous
+  replication is not.
 
 These boundaries keep failure visible and each Machine independently useful. Add
 a stronger guarantee only when the product requires it and the system can prove
