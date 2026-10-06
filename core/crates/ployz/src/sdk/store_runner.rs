@@ -150,9 +150,15 @@ pub async fn run_deployment(
             .not_executed("No Server is enrolled in this Organization".into())
             .await;
     }
-    let session = match connect_connections(connections, Arc::new(SystemConnector::default())).await
+    let session = match run
+        .connecting(connect_connections(
+            connections,
+            Arc::new(SystemConnector::default()),
+        ))
+        .await
     {
-        Ok(session) => session,
+        Ok(Some(session)) => session,
+        Ok(None) => return run.not_executed("Cancelled before connecting".into()).await,
         // Users read it on the Deployment: plain words and one action first, then
         // what the connection said.
         Err(error) => {
@@ -205,7 +211,10 @@ impl Run {
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
         let prepared = if targets.is_empty() && built.is_empty() {
-            self.renewing(session.preview(claimed.intent), || ()).await
+            self.renewing(session.preview(claimed.intent), || {
+                session.inner.cancel.cancel()
+            })
+            .await
         } else {
             match self.build(session, &claimed, &targets).await? {
                 Ok(mut receipts) => {
@@ -285,7 +294,17 @@ impl Run {
                 ..PreparationInput::default()
             };
             target.input(&mut input);
-            builds.push((target, session.build(input, None)?));
+            let running = match session.build(input, None) {
+                Ok(running) => running,
+                Err(error) => return Err(stop_builds(&builds, error).await),
+            };
+            builds.push((target, running));
+            if let Err(error) = self
+                .report(service, BuildStatus::Building, None, String::new())
+                .await
+            {
+                return Err(stop_builds(&builds, error).await);
+            }
         }
         let all = futures_util::future::join_all(
             builds
@@ -333,8 +352,6 @@ impl Run {
         running: &RunningBuild,
     ) -> Result<Result<BuildReceipt, RpcError>, RpcError> {
         let service = &target.service;
-        self.report(service, BuildStatus::Building, None, String::new())
-            .await?;
         // GitHub can't build uploaded source: the walk skips it, and says so when the
         // Build Order has it.
         let github_skipped = matches!(
@@ -502,6 +519,26 @@ impl Run {
         Ok((outcome, pending.into_values().collect()))
     }
 
+    /// Connection setup is read-only, so cancellation drops it before any Session exists.
+    async fn connecting<T>(
+        &self,
+        work: impl std::future::Future<Output = Result<T, RpcError>>,
+    ) -> Result<Option<T>, RpcError> {
+        tokio::pin!(work);
+        let mut poll = tokio::time::interval(CANCEL_POLL);
+        loop {
+            tokio::select! {
+                biased;
+                _ = poll.tick() => {
+                    if self.status().await.ok() == Some(DeploymentStatus::Cancelling) {
+                        return Ok(None);
+                    }
+                }
+                done = &mut work => return done.map(Some),
+            }
+        }
+    }
+
     /// Await `work` while renewing this runner's lease on the Deployment; a cancel
     /// calls `abort`.
     async fn renewing<T>(&self, work: impl std::future::Future<Output = T>, abort: impl Fn()) -> T {
@@ -564,6 +601,34 @@ impl Run {
             .await
             .map(|summary| summary.status)
     }
+}
+
+/// A launch or initial report failed before followers took ownership of the results.
+async fn stop_builds(builds: &[(&Target, RunningBuild)], mut error: RpcError) -> RpcError {
+    for (_, running) in builds {
+        running.abort();
+    }
+    let settled = futures_util::future::join_all(builds.iter().map(|(target, running)| async {
+        running
+            .finished()
+            .await
+            .err()
+            .map(|error| serde_json::json!({ "service": target.service, "error": error }))
+    }))
+    .await;
+    let cleanup: Vec<_> = settled.into_iter().flatten().collect();
+    if !cleanup.is_empty() {
+        let mut details = match error.details {
+            Value::Object(details) => details,
+            Value::Null => serde_json::Map::new(),
+            original @ (Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Array(_)) => {
+                serde_json::Map::from_iter([("original".into(), original)])
+            }
+        };
+        details.insert("build_cleanup".into(), Value::Array(cleanup));
+        error.details = Value::Object(details);
+    }
+    error
 }
 
 /// What to build on the Servers, and the images GitHub already built, by Service.
@@ -752,3 +817,7 @@ pub(super) fn internal(message: &str) -> RpcError {
         cause: Vec::new(),
     }
 }
+
+#[cfg(test)]
+#[path = "store_runner_tests.rs"]
+mod tests;
