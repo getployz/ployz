@@ -81,7 +81,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 ployz_store::Landed::Hint => crate::ui::stream(format_args!(
                     "PR #{} merged {} = {} beside your edit; use it: {}",
                     hint.pull_request,
-                    hint.at.to_string(),
+                    hint.at,
                     hint.value,
                     next(
                         matches,
@@ -98,9 +98,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 ployz_store::Landed::Staged => {
                     crate::ui::stream(format_args!(
                         "PR #{} staged {} = {}",
-                        hint.pull_request,
-                        hint.at.to_string(),
-                        hint.value
+                        hint.pull_request, hint.at, hint.value
                     ));
                 }
             }
@@ -109,7 +107,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
             crate::ui::stream(format_args!(
                 "{} deployed {} = {}, not staged here; use it: {}",
                 hint.from,
-                hint.at.to_string(),
+                hint.at,
                 hint.value,
                 next(
                     matches,

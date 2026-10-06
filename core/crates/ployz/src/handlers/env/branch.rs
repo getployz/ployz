@@ -300,7 +300,7 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
             };
             crate::ui::stream(format_args!(
                 "  {}: {} → {}{notes}",
-                row.at.to_string(),
+                row.at,
                 store::shown(&row.into),
                 store::shown(&row.from)
             ));
@@ -313,7 +313,7 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
                 .collect();
             crate::ui::stream(format_args!(
                 "  {}: never synced (marked in {})",
-                row.at.to_string(),
+                row.at,
                 Vec::from_iter(sides).join(", ")
             ));
         }

@@ -108,9 +108,9 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
                 volume_names(&namespace.volumes),
             ]);
         }
+        gaps.warn();
         crate::ui::finish(&report, || {
             crate::ui::rows(&table);
-            gaps.warn();
             if let Some(next) = next.clone() {
                 crate::ui::hint(&Hint::Next(next));
             }

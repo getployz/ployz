@@ -1,4 +1,4 @@
-// Human text goes through `say!` so `--json` keeps stdout parseable; tests may print.
+// Human text goes through `ui` so `--json` keeps stdout parseable; tests may print.
 #![cfg_attr(not(test), deny(clippy::print_stdout))]
 
 pub mod build;

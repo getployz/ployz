@@ -76,8 +76,13 @@ pub(crate) fn hint(hint: &Hint) {
 /// Warn on one stderr line; the command's JSON result lists it under `warnings`.
 pub(crate) fn warn(warning: impl Into<String>) {
     let warning = warning.into();
-    let _ = writeln!(anstream::stderr(), "{} {warning}", Tone::Change.paint("!"));
+    flag(&warning);
     WARNINGS.with_borrow_mut(|warnings| warnings.push(warning));
+}
+
+/// A warning on stderr that the JSON result already carries elsewhere.
+fn flag(warning: &str) {
+    let _ = writeln!(anstream::stderr(), "{} {warning}", Tone::Change.paint("!"));
 }
 
 /// Run a command as one step of another: the JSON result it would print is
@@ -282,7 +287,7 @@ impl Gaps {
     /// One warning per Machine that didn't answer, by name, with its cause.
     pub(crate) fn warn(&self) {
         for failure in &self.failures {
-            warn(format!(
+            flag(&format!(
                 "{} did not answer; its rows are missing.",
                 self.name(&failure.machine_id)
             ));
@@ -291,7 +296,7 @@ impl Gaps {
             }
         }
         for machine_id in &self.omitted {
-            warn(format!(
+            flag(&format!(
                 "{} did not answer; its rows are missing.",
                 self.name(machine_id)
             ));
@@ -308,8 +313,8 @@ impl Gaps {
     }
 }
 
-/// Finish a fan-out: `{key: value, failures, omitted}`, or `human` and one
-/// warning per Machine that didn't answer; then the partial exit if any gap.
+/// Finish a fan-out: `{key: value, failures, omitted}` or `human`, then in either
+/// mode one warning per Machine that didn't answer, then the partial exit if any gap.
 ///
 /// # Errors
 ///
@@ -320,10 +325,8 @@ pub(crate) fn finish_fanout(
     gaps: &Gaps,
     human: impl FnOnce(),
 ) -> Result<(), Failure> {
-    finish(&Fanout::new(key, value, gaps), || {
-        human();
-        gaps.warn();
-    })?;
+    finish(&Fanout::new(key, value, gaps), human)?;
+    gaps.warn();
     gaps.outcome()
 }
 

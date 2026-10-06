@@ -136,7 +136,7 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         record.push("next deploy", store::word(change));
     }
     for (setting, value) in &view.values {
-        record.push("setting", format_args!("{setting} = {value}"));
+        record.push(setting.to_string(), value);
     }
     for change in &view.changes {
         record.push(

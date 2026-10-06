@@ -277,7 +277,7 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
             gaps.extend(&unanswered.failures, &unanswered.omissions);
             gaps.warn();
             print_logs(merge_logs(logs.inputs, cancellation), utc).await?;
-            Ok(gaps.outcome()?)
+            gaps.outcome()
         })
     })
 }

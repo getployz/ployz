@@ -137,7 +137,11 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             crate::ui::warn(format!("Server {} was not fully cleaned up or reset: {reason}. Reset does not erase volume data.", selected.name));
         } else {
             for loss in &observed.data_loss {
-                crate::ui::stream(format_args!("Volume data was not erased by reset: {loss}"));
+                crate::ui::stream(format_args!(
+                    "Reset left the data of Volume {} on {}.",
+                    volume_label(&labels, loss),
+                    selected.name
+                ));
             }
         }
         if !replicated_services.is_empty() {

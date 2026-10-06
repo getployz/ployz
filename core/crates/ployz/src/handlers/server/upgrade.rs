@@ -127,11 +127,14 @@ async fn run_all(
                 print_attempt(machine, &attempt);
                 let stopped = match &attempt.outcome {
                     MachineUpgradeOutcome::Succeeded { .. } => None,
-                    MachineUpgradeOutcome::Failed { stage, error } => Some(
+                    MachineUpgradeOutcome::Failed {
+                        stage,
+                        error: reason,
+                    } => Some(
                         Error::coded(
                             RpcErrorCode::Internal,
                             format!(
-                                "Server {} failed to upgrade to {} while {}: {error}",
+                                "Server {} failed to upgrade to {} while {}: {reason}",
                                 machine.name,
                                 attempt.target,
                                 stage.as_str()

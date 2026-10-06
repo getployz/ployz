@@ -1,7 +1,7 @@
 //! Lists and records: aligned for a person at a terminal, tab- or `=`-separated
 //! for a pipe.
 
-use std::io;
+use std::{borrow::Cow, io};
 
 use unicode_width::UnicodeWidthStr as _;
 
@@ -152,8 +152,9 @@ impl Table {
         let header: Vec<String> = self
             .header
             .iter()
+            .zip(&widths)
             .enumerate()
-            .map(|(column, title)| pad(title, title.width(), widths[column], column == last))
+            .map(|(column, (title, width))| pad(title, title.width(), *width, column == last))
             .collect();
         writeln!(out, "{}", Tone::Name.paint(header.concat()))?;
         for row in &self.rows {
@@ -184,7 +185,7 @@ fn pad(text: &str, shown: usize, width: usize, last: bool) -> String {
 /// One record: a label and a value per line.
 #[derive(Debug, Default)]
 pub struct Fields {
-    fields: Vec<(&'static str, String)>,
+    fields: Vec<(Cow<'static, str>, String)>,
 }
 
 impl Fields {
@@ -194,13 +195,17 @@ impl Fields {
     }
 
     #[must_use]
-    pub fn field(mut self, label: &'static str, value: impl std::fmt::Display) -> Self {
+    pub fn field(
+        mut self,
+        label: impl Into<Cow<'static, str>>,
+        value: impl std::fmt::Display,
+    ) -> Self {
         self.push(label, value);
         self
     }
 
-    pub fn push(&mut self, label: &'static str, value: impl std::fmt::Display) {
-        self.fields.push((label, value.to_string()));
+    pub fn push(&mut self, label: impl Into<Cow<'static, str>>, value: impl std::fmt::Display) {
+        self.fields.push((label.into(), value.to_string()));
     }
 
     /// Write the record: `label  value` aligned on a terminal, else `label = value`.
@@ -219,7 +224,11 @@ impl Fields {
             let value = if value.is_empty() { "-" } else { value };
             if aligned {
                 let padding = " ".repeat(width - label.width());
-                writeln!(out, "{}{padding}  {value}", Tone::Muted.paint(label))?;
+                writeln!(
+                    out,
+                    "{}{padding}  {value}",
+                    Tone::Muted.paint(label.as_ref())
+                )?;
             } else {
                 writeln!(out, "{label} = {value}")?;
             }

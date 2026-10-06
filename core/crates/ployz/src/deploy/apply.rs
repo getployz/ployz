@@ -218,7 +218,7 @@ fn progress_signature(event: &DeployEvent) -> String {
 
 fn print_warnings(preview: &DeployPreview) {
     for warning in &preview.warnings {
-        crate::ui::note(format_args!("WARNING: {warning}"));
+        crate::ui::warn(warning.to_string());
     }
 }
 
@@ -342,18 +342,18 @@ mod tests {
             preview
                 .warnings
                 .iter()
-                .map(|warning| format!("WARNING: {warning}"))
+                .map(ToString::to_string)
                 .collect::<Vec<_>>(),
             [
-                "WARNING: app.example.com answers from another server. Point it at 192.0.2.1. A certificate cannot be issued until then.",
-                "WARNING: plain.example.com does not resolve. Add a DNS record pointing at 192.0.2.1.",
+                "app.example.com answers from another server. Point it at 192.0.2.1. A certificate cannot be issued until then.",
+                "plain.example.com does not resolve. Add a DNS record pointing at 192.0.2.1.",
             ]
         );
         assert!(
             !preview
                 .warnings
                 .iter()
-                .map(|warning| format!("WARNING: {warning}"))
+                .map(ToString::to_string)
                 .any(|line| line.contains("plain.example.com")
                     && line.to_ascii_lowercase().contains("certificate"))
         );

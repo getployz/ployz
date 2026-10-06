@@ -471,7 +471,8 @@ fn ctx_rm_of_the_current_context_unsets_current() {
     );
     let stdout = String::from_utf8(removed.stdout).unwrap();
     assert!(stdout.contains("Removed context prod."), "{stdout}");
-    assert!(stdout.contains("Current context is now unset."), "{stdout}");
+    let stderr = String::from_utf8(removed.stderr).unwrap();
+    assert!(stderr.contains("Current context is now unset."), "{stderr}");
 
     assert_eq!(current_context(&path), None);
 
