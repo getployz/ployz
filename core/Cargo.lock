@@ -3427,6 +3427,7 @@ dependencies = [
  "chrono",
  "clap",
  "clap_complete",
+ "console",
  "crossterm",
  "flate2",
  "futures-util",

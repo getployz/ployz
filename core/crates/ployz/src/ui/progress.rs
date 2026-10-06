@@ -17,6 +17,8 @@ use super::{Mode, Tone};
 const HEARTBEAT: Duration = Duration::from_secs(30);
 const REDRAW: Duration = Duration::from_millis(100);
 
+mod terminal;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// The execution whose rows replace the current frame.
 pub(crate) enum Run {
@@ -213,7 +215,7 @@ impl Progress {
         let worker = thread::Builder::new()
             .name("ployz-progress".into())
             .spawn(move || {
-                let backend = Backend::new(mode, ProgressDrawTarget::stderr(), terminal_size);
+                let backend = Backend::new(mode, terminal::draw_target(), terminal_size);
                 let mut writer = anstream::AutoStream::new(
                     io::stderr(),
                     if color {
