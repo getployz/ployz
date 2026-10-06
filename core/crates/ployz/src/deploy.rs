@@ -338,6 +338,10 @@ pub enum EliminatingConstraint {
     MachineDown {
         names: Vec<MachineName>,
     },
+    VolumeInventoryUnavailable {
+        machine: MachineName,
+        message: String,
+    },
     VolumeAlreadyOn {
         volume: DockerVolumeName,
         located_on: Vec<MachineName>,
@@ -417,6 +421,9 @@ impl fmt::Display for EliminatingConstraint {
                 } else {
                     f.write_str(" are down")
                 }
+            }
+            Self::VolumeInventoryUnavailable { machine, message } => {
+                write!(f, "Machine '{machine}' was skipped because its {message}")
             }
             Self::VolumeAlreadyOn { volume, located_on } => {
                 write!(f, "Docker Volume '{volume}' is already on ")?;
