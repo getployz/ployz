@@ -1,5 +1,7 @@
 use crate::{
-    AdoptLeaseRequest, InspectVolumeCopyRequest, StorageCapacity, SwitchReply, VolumeCopyView,
+    AdoptLeaseRequest, CommitRequest, DeclareMirrorRequest, InspectReceiveRequest,
+    InspectVolumeCopyRequest, MirrorRequest, ReceiveView, StartReceiveRequest, StorageCapacity,
+    SwitchReply, VolumeCopyView, WarmRequest,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -981,6 +983,7 @@ define_responses! {
     VolumeRemoved(VolumeRemoved) => "volume_removed";
     VolumeCopyView(crate::VolumeCopyView) => "volume_copy_view";
     SwitchReply(crate::SwitchReply) => "switch_reply";
+    ReceiveView(crate::ReceiveView) => "receive_view";
     MachineImages(MachineImages) => "machine_images";
     ImageIngestOpened(ImageIngestOpened) => "image_ingest_opened";
     ImagePulled(ImagePulled) => "image_pulled";
