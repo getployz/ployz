@@ -368,7 +368,7 @@ The ephemeral sequence of operations calculated for one Deploy. It may complete 
 _Avoid_: Desired state, workflow
 
 **Deploy Preview**:
-The observer-relative plan-plus-warnings offered for confirmation before one Deploy executes. It is Live Observation shaped for a decision, not persisted state.
+The observer-relative plan-plus-warnings offered for confirmation before one Deploy executes. It is Live Observation shaped for a decision, not persisted state. A qualified observation gap names a Machine relevant to the bound Service Attempts and their dependencies, namespace-aware placement and acceptance, or independently observed affected work. It requires a failed observation or recognized Down evidence; generic omissions and synthetic absence do not establish it.
 _Avoid_: persisted plan, cluster decision record
 
 **Destructive Change**:

@@ -76,7 +76,7 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
             .preview
             .iter()
             .flat_map(|preview| &preview.warnings)
-            .map(ToString::to_string)
+            .cloned()
             .collect(),
     }
 }
@@ -87,7 +87,24 @@ pub(super) fn noop(view: &DeploymentView) -> bool {
             .nodes
             .iter()
             .all(|node| node.outcome == NodeStatus::Unchanged)
-        && view.preview.as_ref().is_some_and(|preview| preview.noop())
+        && view
+            .preview
+            .as_ref()
+            .is_some_and(|preview| preview.noop() && !preview.has_observation_gaps())
+}
+
+pub(super) fn completion(view: &DeploymentView) -> Result<(), Failure> {
+    if view.deployment.status != DeploymentStatus::Applied {
+        return Err(failure(view));
+    }
+    if view
+        .preview
+        .as_ref()
+        .is_some_and(|preview| preview.has_observation_gaps())
+    {
+        return Err(Failure::partial());
+    }
+    Ok(())
 }
 
 pub(super) fn failure(view: &DeploymentView) -> Failure {
@@ -241,5 +258,49 @@ mod tests {
                 && args.iter().any(|arg| arg == "production")
         }));
         assert_ne!(commands.first(), commands.get(1));
+    }
+    #[test]
+    fn applied_result_with_a_qualified_gap_is_partial_without_changing_its_status() {
+        use ployz_core::{
+            DeployPreview, DeployWarning, MachineId, MachineName, ObservationGap,
+            ObservationGapReason, ObservationKind,
+        };
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Applied;
+        for node in &mut view.nodes {
+            node.outcome = NodeStatus::Unchanged;
+        }
+        view.preview = Some(DeployPreview::new(
+            Vec::new(),
+            Vec::new(),
+            view.namespace.clone(),
+        ));
+        assert!(completion(&view).is_ok());
+        assert!(noop(&view));
+        let warning = DeployWarning::ObservationOmitted {
+            kind: ObservationKind::Container,
+            machine_id: MachineId::random(),
+            gap: None,
+        };
+        view.preview.as_mut().unwrap().warnings.push(warning);
+        assert!(completion(&view).is_ok());
+        let DeployWarning::ObservationOmitted { gap, .. } =
+            view.preview.as_mut().unwrap().warnings.first_mut().unwrap()
+        else {
+            unreachable!()
+        };
+        *gap = Some(ObservationGap {
+            machine_name: MachineName::parse("peer").unwrap(),
+            reason: ObservationGapReason::Down,
+        });
+        assert_eq!(completion(&view).unwrap_err().printed_exit(), Some(3));
+        assert!(!noop(&view));
+        assert_eq!(view.deployment.status, DeploymentStatus::Applied);
+        let encoded = serde_json::to_value(&view).unwrap();
+        assert_eq!(
+            encoded.get("status").and_then(serde_json::Value::as_str),
+            Some("applied")
+        );
+        assert!(encoded.pointer("/preview/warnings/0/gap").is_some());
     }
 }

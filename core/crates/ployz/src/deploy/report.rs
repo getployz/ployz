@@ -24,7 +24,7 @@ pub(super) struct Direct {
     tracker: RowTracker,
     rows: BTreeMap<(ServiceName, MachineId), (ServerProgress, Timing)>,
     pub(super) operations: Vec<OperationRow>,
-    notices: Vec<String>,
+    notices: Vec<ployz_core::DeployWarning>,
 }
 
 impl Direct {
@@ -35,7 +35,7 @@ impl Direct {
             tracker: RowTracker::default(),
             rows: BTreeMap::new(),
             operations: Vec::new(),
-            notices: Vec::new(),
+            notices: preview.warnings.clone(),
         };
         direct.observe(&preview.operations);
         direct

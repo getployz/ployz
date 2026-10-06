@@ -1001,10 +1001,7 @@ async fn join_fails_visibly_when_expected_ingress_cannot_be_placed() {
         stderr.contains("Global catch-up is incomplete"),
         "stderr: {stderr}"
     );
-    assert!(
-        stderr.contains("ployz-system/ingress: run `ployz server set "),
-        "stderr: {stderr}"
-    );
+    catch_up::assert_ingress_retry(&stderr);
 }
 
 #[tokio::test]

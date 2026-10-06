@@ -15,6 +15,7 @@ use super::{
 };
 
 pub(super) mod capacity;
+mod observation;
 mod placement;
 mod storage;
 mod volumes;
@@ -354,7 +355,13 @@ fn assemble_plan(
     } else {
         &[]
     };
-    let mut warnings = hostname_policy_for(&intent.namespace, &requested, snapshot, retiring)?;
+    let mut warnings = observation::warnings(&intent.namespace, &requested, retiring, snapshot);
+    warnings.extend(hostname_policy_for(
+        &intent.namespace,
+        &requested,
+        snapshot,
+        retiring,
+    )?);
     warnings.extend(storage_eligibility_warnings(
         &requested,
         &intent.namespace,

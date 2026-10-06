@@ -421,3 +421,36 @@ fn queued_terminal_evidence_after_a_duplicate_wins_over_heartbeat() {
     );
     assert!(!text.contains("still waiting:"), "{text}");
 }
+
+#[test]
+fn qualified_notices_group_by_machine_identity_and_count_each_gap_once() {
+    use ployz_core::{MachineName, ObservationGap, ObservationGapReason, ObservationKind};
+    let mut initial = frame(State::Completed);
+    let first = MachineId::random();
+    let second = MachineId::random();
+    for machine_id in [first, second] {
+        for kind in [ObservationKind::Container, ObservationKind::Volume] {
+            initial.notices.push(DeployWarning::ObservationOmitted {
+                kind,
+                machine_id,
+                gap: Some(ObservationGap {
+                    machine_name: MachineName::parse("edge").unwrap(),
+                    reason: ObservationGapReason::Down,
+                }),
+            });
+        }
+    }
+    let text = plain(
+        initial.clone(),
+        vec![(1, Message::Finish(initial, Disposition::Settled))],
+    );
+    assert_eq!(
+        text.matches("deployment observations are incomplete")
+            .count(),
+        2,
+        "{text}"
+    );
+    assert!(text.contains(&format!("edge ({first})")), "{text}");
+    assert!(text.contains(&format!("edge ({second})")), "{text}");
+    assert!(text.contains("2 Server observation gaps"), "{text}");
+}

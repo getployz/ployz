@@ -236,15 +236,38 @@ fn assert_joined_with_incomplete_catch_up(output: &Output) {
         stderr.contains("remains a Cluster member"),
         "stderr: {stderr}"
     );
-    assert!(
-        stderr.contains("--accepts-ingress=true`"),
-        "stderr: {stderr}"
-    );
+    assert_ingress_retry(&stderr);
     assert!(stderr.contains("shop/worker"), "stderr: {stderr}");
-    assert!(
-        stderr.contains("redeploy Namespace Service `shop/worker`"),
+    assert_eq!(
+        stderr
+            .matches("redeploy Namespace Service `shop/worker`")
+            .count(),
+        1,
         "stderr: {stderr}"
     );
+    assert_eq!(
+        stderr
+            .matches("inspect: ployz logs shop/worker --machine ")
+            .count(),
+        1
+    );
+}
+
+pub(super) fn assert_ingress_retry(stderr: &str) {
+    let retry = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("retry: "))
+        .unwrap_or_else(|| panic!("missing retry command: {stderr}"));
+    let retry = shell_words::split(retry).unwrap();
+    let [program, group, action, id, role] = retry.as_slice() else {
+        panic!("unexpected retry command: {retry:?}");
+    };
+    assert_eq!(
+        [program.as_str(), group.as_str(), action.as_str()],
+        ["ployz", "server", "set"]
+    );
+    assert!(ployz_core::MachineId::parse(id).is_ok());
+    assert_eq!(role, "--accepts-ingress=true");
 }
 
 fn globals_on(machine: &ployz_core::Machine) -> Vec<ContainerObservation> {

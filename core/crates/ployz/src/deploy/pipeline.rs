@@ -9,8 +9,8 @@ use std::net::IpAddr;
 use std::time::SystemTime;
 
 use ployz_core::{
-    DataLossConfirmation, MachineFailure, MachineId, MachineObservation, Namespace,
-    ObservedDataLoss, PortPublication, RpcError, RpcErrorCode, UnconfirmedDataLoss,
+    DataLossConfirmation, MachineId, MachineObservation, Namespace, ObservedDataLoss,
+    PortPublication, RpcError, RpcErrorCode, UnconfirmedDataLoss,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -24,8 +24,8 @@ use crate::{
 
 use super::{
     DeployEvent, DeployIntent, DeployOutcome, DeployPlan, DeployPreview, DeploySnapshot,
-    DeployWarning, ExecutionError, ObservationKind, PlanError, PlanOptions,
-    exec::execute_operation_sequence, plan_deploy, planning,
+    DeployWarning, ExecutionError, PlanError, PlanOptions, exec::execute_operation_sequence,
+    plan_deploy, planning,
 };
 
 /// Snapshot or planning failure before a Deploy executes.
@@ -53,8 +53,8 @@ impl Client {
     /// Returns when snapshot gathering or planning fails.
     pub async fn preview(&mut self, intent: DeployIntent) -> Result<DeployPlan, DeployError> {
         let machines = self.machines().await?;
-        let (snapshot, warnings) = gather_deploy_snapshot(self, machines, &intent).await?;
-        preview_gathered(snapshot, warnings, &intent).await
+        let snapshot = gather_deploy_snapshot(self, machines, &intent).await?;
+        preview_gathered(snapshot, &intent).await
     }
 
     /// Calculate a Namespace-removal preview. Confirming executes these operations.
@@ -72,10 +72,10 @@ impl Client {
     ) -> Result<DeployPlan, DeployError> {
         crate::namespace::refuse_reserved(namespace)?;
         let machines = self.machines().await?;
-        let (snapshot, warnings) = gather_snapshot(self, machines).await?;
-        let mut preview = planning::prepare_namespace_removal(namespace, &snapshot, volumes)?;
-        preview.prepend_warnings(warnings);
-        Ok(preview)
+        let snapshot = self.deploy_snapshot(machines).await?;
+        Ok(planning::prepare_namespace_removal(
+            namespace, &snapshot, volumes,
+        )?)
     }
 
     /// Live Observation of Data Loss that destroying `namespace` would cause.
@@ -327,17 +327,16 @@ pub(crate) async fn plan_namespace(
     intent: &DeployIntent,
     machines: Vec<MachineObservation>,
 ) -> Result<DeployPlan, DeployError> {
-    let (snapshot, warnings) = gather_deploy_snapshot(client, machines, intent).await?;
-    preview_gathered(snapshot, warnings, intent).await
+    let snapshot = gather_deploy_snapshot(client, machines, intent).await?;
+    preview_gathered(snapshot, intent).await
 }
 
 async fn preview_gathered(
     snapshot: DeploySnapshot,
-    mut warnings: Vec<DeployWarning>,
     intent: &DeployIntent,
 ) -> Result<DeployPlan, DeployError> {
     let mut preview = plan_deploy(intent, &snapshot)?;
-    warnings.extend(hostname_warnings(&preview, &snapshot.machines).await);
+    let warnings = hostname_warnings(&preview, &snapshot.machines).await;
     preview.prepend_warnings(warnings);
     Ok(preview)
 }
@@ -353,25 +352,11 @@ pub(crate) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> P
     }
 }
 
-async fn gather_snapshot(
-    client: &mut Client,
-    machines: Vec<MachineObservation>,
-) -> Result<(DeploySnapshot, Vec<DeployWarning>), DeployError> {
-    let snapshot = client.deploy_snapshot(machines).await?;
-    let mut warnings = observation_warnings(
-        ObservationKind::Container,
-        &snapshot.container_failures,
-        &snapshot.container_omissions,
-    );
-    warnings.extend(snapshot.volume_snapshot.deploy_warnings());
-    Ok((snapshot, warnings))
-}
-
 async fn gather_deploy_snapshot(
     client: &mut Client,
     mut machines: Vec<MachineObservation>,
     intent: &DeployIntent,
-) -> Result<(DeploySnapshot, Vec<DeployWarning>), DeployError> {
+) -> Result<DeploySnapshot, DeployError> {
     // Import recovery must precede Docker volume reads, whose plugin Get needs the Pool.
     let mut storage_capacity = std::collections::BTreeMap::new();
     if intent
@@ -399,32 +384,9 @@ async fn gather_deploy_snapshot(
         }
         client.observe_machine_storage(&mut machines).await;
     }
-    let (mut snapshot, warnings) = gather_snapshot(client, machines).await?;
+    let mut snapshot = client.deploy_snapshot(machines).await?;
     snapshot.storage_capacity = storage_capacity;
-    Ok((snapshot, warnings))
-}
-
-fn observation_warnings(
-    kind: ObservationKind,
-    failures: &[MachineFailure<RpcError>],
-    omissions: &[MachineId],
-) -> Vec<DeployWarning> {
-    failures
-        .iter()
-        .map(|failure| DeployWarning::ObservationFailed {
-            kind,
-            machine_id: failure.machine_id,
-            message: crate::ui::row(&failure.error),
-        })
-        .chain(
-            omissions
-                .iter()
-                .map(|machine| DeployWarning::ObservationOmitted {
-                    kind,
-                    machine_id: *machine,
-                }),
-        )
-        .collect()
+    Ok(snapshot)
 }
 
 async fn hostname_warnings(

@@ -7,7 +7,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use ployz_core::{MachineId, Namespace, QualifiedService};
+use ployz_core::{DeployWarning, MachineId, Namespace, QualifiedService};
 use ployz_store::{DeploymentId, RowPhase};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -169,7 +169,7 @@ pub(crate) struct Frame {
     pub run: Run,
     pub title: String,
     pub rows: Vec<Row>,
-    pub notices: Vec<String>,
+    pub notices: Vec<DeployWarning>,
 }
 
 impl Frame {
@@ -598,8 +598,9 @@ fn changes(
             )?;
         }
     }
-    for notice in &frame.notices {
-        if previous.is_none_or(|previous| !previous.notices.contains(notice)) {
+    let previous_notices = previous.map(notices).unwrap_or_default();
+    for notice in notices(frame) {
+        if !previous_notices.contains(&notice) {
             writeln!(
                 writer,
                 "{}",
@@ -608,6 +609,60 @@ fn changes(
         }
     }
     writer.flush()
+}
+
+/// One qualified notice per Machine; names only label the retained identity.
+fn notices(frame: &Frame) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    frame
+        .notices
+        .iter()
+        .filter_map(|warning| {
+            let Some((id, gap)) = warning.observation_gap() else {
+                return Some(warning.to_string());
+            };
+            if !seen.insert(id) {
+                return None;
+            }
+            let ambiguous = frame
+                .notices
+                .iter()
+                .filter_map(DeployWarning::observation_gap)
+                .any(|(other, fact)| other != id && fact.machine_name == gap.machine_name);
+            let label = if ambiguous {
+                format!("{} ({id})", gap.machine_name)
+            } else {
+                gap.machine_name.to_string()
+            };
+            let details = frame
+                .notices
+                .iter()
+                .filter(|warning| {
+                    warning
+                        .observation_gap()
+                        .is_some_and(|(machine, _)| machine == id)
+                })
+                .filter_map(|warning| match warning {
+                    DeployWarning::ObservationFailed { kind, message, .. } => {
+                        Some(format!("{kind}s: {message}"))
+                    }
+                    DeployWarning::ObservationOmitted { .. } => {
+                        Some("observed Down by this Entry".into())
+                    }
+                    DeployWarning::StorageHeadroom { .. }
+                    | DeployWarning::UnbudgetedDiskUsage
+                    | DeployWarning::StorageObservationUnknown { .. }
+                    | DeployWarning::IngressHostname { .. }
+                    | DeployWarning::ObserverRelativeHostnameConflict
+                    | DeployWarning::SkippedDependencyHealth { .. } => None,
+                })
+                .collect::<BTreeSet<_>>();
+            Some(format!(
+                "Server {label}: deployment observations are incomplete ({})",
+                details.into_iter().collect::<Vec<_>>().join("; ")
+            ))
+        })
+        .collect()
 }
 
 fn finish(
@@ -634,13 +689,25 @@ fn finish(
                 )
             )?;
         }
-        for notice in &frame.notices {
+        for notice in notices(frame) {
             writeln!(writer, "! {notice}")?;
         }
     } else {
         changes(writer, Some(previous), frame, color)?;
     }
     let mut counts = Vec::new();
+    let gaps = frame
+        .notices
+        .iter()
+        .filter_map(|warning| warning.observation_gap().map(|(id, _)| id))
+        .collect::<BTreeSet<_>>()
+        .len();
+    if gaps > 0 {
+        counts.push(format!(
+            "{gaps} Server observation {}",
+            if gaps == 1 { "gap" } else { "gaps" }
+        ));
+    }
     for (state, word) in [
         (State::Completed, "updated"),
         (State::ObservedRunning, "running"),

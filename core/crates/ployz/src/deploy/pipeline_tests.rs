@@ -5,6 +5,7 @@ use ployz_core::{
 use serde_json::Value;
 
 use super::*;
+use crate::deploy::{ObservationKind, observation_warnings};
 
 #[test]
 fn deploy_warning_display_is_the_cli_line_body() {
@@ -35,6 +36,7 @@ fn deploy_warning_display_is_the_cli_line_body() {
     );
     assert_eq!(
         DeployWarning::ObservationOmitted {
+            gap: None,
             kind: ObservationKind::Volume,
             machine_id: MachineId::parse("c".repeat(32)).unwrap(),
         }
@@ -77,11 +79,13 @@ fn observation_warnings_keep_failures_and_omissions_distinct() {
         ),
         [
             DeployWarning::ObservationFailed {
+                gap: None,
                 kind: ObservationKind::Container,
                 machine_id: MachineId::parse("b".repeat(32)).unwrap(),
                 message: "container listing failed".into(),
             },
             DeployWarning::ObservationOmitted {
+                gap: None,
                 kind: ObservationKind::Container,
                 machine_id: MachineId::parse("c".repeat(32)).unwrap(),
             },

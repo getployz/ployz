@@ -382,10 +382,10 @@ pub(super) fn execute(
     let view = followed.view;
     let ran = if interrupted {
         Err(Error::cancelled())
-    } else if view.deployment.status == DeploymentStatus::Applied || detached {
+    } else if detached {
         Ok(())
     } else {
-        Err(progress::failure(&view))
+        progress::completion(&view)
     };
     // A run that found no upload or usable image for its Services says to upload.
     let needs_upload = matches!(

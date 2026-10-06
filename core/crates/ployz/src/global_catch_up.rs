@@ -170,9 +170,17 @@ impl CatchUpClient for Client {
 }
 
 pub(crate) fn joined_catch_up_error(error: CatchUpError, server: &Machine) -> Failure {
-    let mut failure = error
-        .cause
-        .context("Server joined, but Global catch-up is incomplete; it remains a Cluster member.");
+    let mut message = String::from(
+        "Server joined, but Global catch-up is incomplete; it remains a Cluster member.",
+    );
+    for identity in &error.unresolved {
+        if *identity != QualifiedService::system_ingress() {
+            message.push_str(&format!(
+                " To finish, redeploy Namespace Service `{identity}`."
+            ));
+        }
+    }
+    let mut failure = error.cause.context(message);
     for identity in error.unresolved {
         let hint = if identity == QualifiedService::system_ingress() {
             crate::ui::Hint::Retry(shell_words::join([

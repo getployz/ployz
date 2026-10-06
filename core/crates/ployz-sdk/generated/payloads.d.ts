@@ -802,7 +802,7 @@ machine_id: MachineId,
 /**
  * Bytes left after preparation and the OS reserve.
  */
-remaining_bytes: number, } | { "type": "unbudgeted_disk_usage" } | { "type": "observation_failed", kind: ObservationKind, machine_id: MachineId, message: string, } | { "type": "observation_omitted", kind: ObservationKind, machine_id: MachineId, } | { "type": "storage_observation_unknown",
+remaining_bytes: number, } | { "type": "unbudgeted_disk_usage" } | { "type": "observation_failed", gap?: ObservationGap, kind: ObservationKind, machine_id: MachineId, message: string, } | { "type": "observation_omitted", gap?: ObservationGap, kind: ObservationKind, machine_id: MachineId, } | { "type": "storage_observation_unknown",
 /**
  * Machine whose storage capability could not be checked.
  */
@@ -2033,6 +2033,10 @@ rows: Array<ServerRow>, } & ({ "type": "service", id: ServiceLineageId, name: Se
 export type NodeStatus = "pending" | "deployed" | "removed" | "failed" | "not_attempted" | "unchanged" | "unknown";
 
 export type NumberedDeploymentQuery = { environment: EnvironmentRef, number: number, };
+
+export type ObservationGap = { machine_name: MachineName, reason: ObservationGapReason, };
+
+export type ObservationGapReason = "failed" | "down";
 
 export type ObservationKind = "container" | "volume";
 

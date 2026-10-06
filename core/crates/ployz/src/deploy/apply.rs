@@ -43,7 +43,10 @@ pub(crate) async fn apply_requested(
         () = signal.token().cancelled() => return Err(Failure::cancelled().into()),
         result = prepare => result.map_err(Failure::from)?,
     };
-    if preview.noop() {
+    if signal.token().is_cancelled() {
+        return Err(Failure::cancelled().into());
+    }
+    if preview.noop() && !preview.has_observation_gaps() {
         for warning in &preview.warnings {
             ui::warn(warning.to_string());
         }
@@ -53,7 +56,7 @@ pub(crate) async fn apply_requested(
         });
     }
     for warning in &preview.warnings {
-        ui::warn(warning.to_string());
+        ui::record_warning(warning.to_string());
     }
     let mut evidence = report::Direct::new(
         &preview,
@@ -91,6 +94,13 @@ pub(crate) async fn apply_requested(
             ui::note_inline(format_args!("{}", render::endpoints_footer(completed)));
             if signal.token().is_cancelled() {
                 Err(Failure::cancelled().into())
+            } else if preview.has_observation_gaps() {
+                Err(Failure::from(ployz_core::RpcError {
+                    code: ployz_core::RpcErrorCode::Unavailable,
+                    message: "Deployment completed with incomplete Server observations.".into(),
+                    details: serde_json::json!({ "outcome": outcome, "warnings": preview.warnings }),
+                    cause: Vec::new(),
+                }).into())
             } else {
                 Ok(outcome)
             }
