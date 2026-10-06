@@ -248,12 +248,14 @@ fn classify(error: &(dyn Error + Send + Sync + 'static)) -> (RpcErrorCode, Value
     if let Some(ConnectError::Remote(error)) = error.downcast_ref::<ConnectError>() {
         return (error.code.clone(), error.details.clone());
     }
-    if let Some(OperatorError::NotRunning { missing, running }) =
-        error.downcast_ref::<OperatorError>()
+    if let Some(OperatorError::NotRunning {
+        missing,
+        running_in_scope,
+    }) = error.downcast_ref::<OperatorError>()
     {
         return (
             code(missing),
-            serde_json::json!({ "valid_children": running }),
+            serde_json::json!({ "valid_children": running_in_scope }),
         );
     }
     if let Some(
@@ -1086,7 +1088,7 @@ mod tests {
             missing: ployz_core::ServiceSelectorError::NotFound {
                 selector: ployz_core::ServiceSelector::parse("nope").unwrap(),
             },
-            running: vec!["web".into()],
+            running_in_scope: vec!["web".into()],
         });
         assert_eq!(failure.report().code, RpcErrorCode::NotFound);
         assert_eq!(failure.hints(), [Hint::valid(["web"])]);

@@ -67,8 +67,6 @@ pub fn resolve_route(
     }
 }
 
-/// An unknown Server is `not_found` only when this daemon can see the members;
-/// callers read `not_found` as already gone, which an empty view cannot prove.
 fn route_status(error: &TargetResolutionError, visible: &[Machine]) -> Status {
     let code = if matches!(error, TargetResolutionError::NotFound(_)) && !visible.is_empty() {
         tonic::Code::NotFound
