@@ -2054,3 +2054,87 @@ fn a_service_confirmed_mid_run_stays_deployed_when_the_runner_is_lost() {
     // web is in Applied State: only api is still to deploy.
     assert_eq!(changed(&store, &who), ["api"]);
 }
+
+/// Rewrite Deployment `n`'s stored run record, as an earlier Store version could have saved it.
+fn rewrite_run(url: &str, n: u8, rewrite: impl FnOnce(&mut Value)) {
+    let id = id(n);
+    let select = "SELECT run FROM config_deployment WHERE id = ";
+    let update = "UPDATE config_deployment SET run = ";
+    match url.strip_prefix("sqlite:") {
+        Some(path) => {
+            let db = rusqlite::Connection::open(path).unwrap();
+            let text: String = db
+                .query_row(&format!("{select}?1"), [id.as_str()], |row| row.get(0))
+                .unwrap();
+            let mut run = serde_json::from_str(&text).unwrap();
+            rewrite(&mut run);
+            db.execute(
+                &format!("{update}?1 WHERE id = ?2"),
+                [run.to_string().as_str(), id.as_str()],
+            )
+            .unwrap();
+        }
+        None => {
+            let mut db = postgres::Client::connect(url, postgres::NoTls).unwrap();
+            let text: String = db
+                .query_one(&format!("{select}$1"), &[&id.as_str()])
+                .unwrap()
+                .get(0);
+            let mut run = serde_json::from_str(&text).unwrap();
+            rewrite(&mut run);
+            db.execute(
+                &format!("{update}$1 WHERE id = $2"),
+                &[&run.to_string(), &id.as_str()],
+            )
+            .unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_preview_recorded_with_hook_environment_still_matches_its_replay_and_outcome() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    admit(&store, &who, 1, &["web"], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    let run_web = json!({
+        "type": "run_container", "machine_id": "a".repeat(32), "skip_health_monitor": false,
+        "spec": {
+            "service_id": "c".repeat(32), "name": "web", "mode": {"mode": "replicated", "replicas": 1},
+            "container": {"image": "nginx:1", "pull_policy": "missing"},
+            "pre_deploy": {"command": ["migrate"], "environment": {"DATABASE_URL": "hook-secret"}}
+        }
+    });
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production",
+        "operations": [{"index": 0, "machine_id": "a".repeat(32), "service_name": "web",
+            "operation": run_web, "status": {"type": "pending"}}],
+        "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview.clone()))
+        .unwrap();
+    rewrite_run(&url, 1, |run| {
+        run["preview"]["operations"][0]["operation"]["spec"]["pre_deploy"]["environment"] =
+            json!({"DATABASE_URL": "hook-secret"});
+    });
+
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview))
+        .unwrap();
+    let executed = store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome(json!({"type": "success", "completed": [run_web]}))),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(executed.status, DeploymentStatus::Applied);
+}

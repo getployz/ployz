@@ -22,7 +22,7 @@ use ployz_core::config::{
     LowerDeploymentVolume, RuntimeOutcomeProjection, SavedEnvironmentIntent, SavedServiceIntent,
     SavedVolumeIntent, ServiceConfig, ServiceImageCredentials, ServiceSource,
     canonicalize_environment_intent, compile_environment_intent, lower_deployment,
-    parse_runtime_preview, project_runtime_outcome,
+    parse_runtime_preview, project_runtime_outcome, redacted_runtime_preview,
 };
 use ployz_core::{
     DeployIntent, DeployOutcome, DeployPreview, DockerVolumeId, ExecutionError, FailedOperation,

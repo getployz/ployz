@@ -530,7 +530,9 @@ pub(crate) fn record(
                 .and_then(|preview| parse_runtime_preview(preview).ok())
                 .ok_or_else(|| invalid_evidence("Deploy Preview"))?;
             match &stored.run.preview {
-                Some(recorded) if *recorded == preview => return Ok(stored.summary),
+                Some(recorded) if redacted_runtime_preview(recorded) == preview => {
+                    return Ok(stored.summary);
+                }
                 Some(_) => {
                     return Err(error::conflict(
                         "This Deployment already recorded a different Deploy Preview",
