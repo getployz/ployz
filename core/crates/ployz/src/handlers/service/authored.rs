@@ -10,6 +10,7 @@ use ployz_store::{
 use super::super::store::{self, Next};
 use super::super::{Error, leaf_matches};
 use crate::cli::{positional, value};
+use crate::ui::{Cell, Fields, Hint, Table, Tone};
 
 pub(super) fn add_command() -> Command {
     store::scoped(Command::new("add").about("Add a Service; it is staged until a Deploy"))
@@ -93,21 +94,29 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
     };
     let view = store::store(root)?.read(&query)?;
-    crate::ui::finish(&view, || {
-        crate::ui::stream(format_args!("SERVICE\tPRIVATE DNS\tSOURCE\tNEXT DEPLOY"));
-        for listing in &view.services {
-            crate::ui::stream(format_args!(
-                "{}\t{}\t{}\t{}",
-                listing.service.name,
-                listing.service.private_dns,
-                crate::handlers::store::word(&listing.source),
-                listing
-                    .change
-                    .as_ref()
-                    .map_or("-".to_owned(), crate::handlers::store::word)
-            ));
-        }
-    })
+    let mut table = Table::new(
+        ["SERVICE", "PRIVATE DNS", "SOURCE", "NEXT DEPLOY"],
+        format!("No Services in {} yet.", view.environment.name),
+    );
+    for listing in &view.services {
+        table.row([
+            Cell::from(listing.service.name.to_string()),
+            Cell::from(listing.service.private_dns.to_string()),
+            Cell::from(store::word(&listing.source)),
+            listing.change.as_ref().map_or_else(
+                || Cell::from(""),
+                |change| Cell::status(store::word(change), Tone::Change),
+            ),
+        ]);
+    }
+    crate::ui::list(&view, &table)?;
+    if view.services.is_empty() {
+        crate::ui::hint(&Hint::Next(store::next(
+            matches,
+            &["service", "add", "NAME", "--image", "REF"],
+        )));
+    }
+    Ok(())
 }
 
 /// Show one Service: its identity, Settings and staged changes.
@@ -118,32 +127,29 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         service: service_name(matches, "service")?,
     };
     let view = store::store(root)?.read(&query)?;
-    crate::ui::finish(&view, || {
-        let service = &view.service.service;
-        crate::ui::stream(format_args!("Service {} ({})", service.name, service.id));
-        crate::ui::stream(format_args!("Private DNS: {}", service.private_dns));
-        crate::ui::stream(format_args!(
-            "Source: {}",
-            crate::handlers::store::word(&view.service.source)
-        ));
-        if let Some(change) = &view.service.change {
-            crate::ui::stream(format_args!(
-                "Next Deploy: {}",
-                crate::handlers::store::word(change)
-            ));
-        }
-        for (setting, value) in &view.values {
-            crate::ui::stream(format_args!("{setting}={value}"));
-        }
-        for change in &view.changes {
-            crate::ui::stream(format_args!(
-                "staged {}: {} -> {}",
+    let service = &view.service.service;
+    let mut record = Fields::new()
+        .field("service", &service.name)
+        .field("private dns", &service.private_dns)
+        .field("source", store::word(&view.service.source));
+    if let Some(change) = &view.service.change {
+        record.push("next deploy", store::word(change));
+    }
+    for (setting, value) in &view.values {
+        record.push("setting", format_args!("{setting} = {value}"));
+    }
+    for change in &view.changes {
+        record.push(
+            "staged",
+            format_args!(
+                "{}: {} -> {}",
                 change.path,
-                crate::handlers::store::shown(&change.before),
-                crate::handlers::store::shown(&change.after)
-            ));
-        }
-    })
+                store::shown(&change.before),
+                store::shown(&change.after)
+            ),
+        );
+    }
+    crate::ui::fields(&view, &record)
 }
 
 /// Rename a Service in Working State.
@@ -169,14 +175,14 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
     staged(matches, &removed, "Staged removal of Service")
 }
 
-/// A staged Service change and, when it changed anything, `ployz diff` to review it.
+/// A staged Service change and, when it changed anything, `ployz deploy` to ship it.
 fn staged(matches: &ArgMatches, result: &ServiceStaged, what: &str) -> Result<(), Error> {
-    let hint = (!result.staged.is_empty()).then(|| store::next(matches, &["diff"]));
-    crate::ui::finish(&Next::new(result, hint), || {
+    let hint = (!result.staged.is_empty()).then(|| store::next(matches, &["deploy"]));
+    crate::ui::finish(&Next::new(result, hint.clone()), || {
         // A mutation always says what it did, nothing included.
         if result.staged.is_empty() {
             crate::ui::stream(format_args!(
-                "No change in {}/{}: {} already has that name.",
+                "Nothing changed in {}/{}; {} already has that name.",
                 result.environment.project, result.environment.name, result.service.name
             ));
             return;
@@ -188,6 +194,9 @@ fn staged(matches: &ArgMatches, result: &ServiceStaged, what: &str) -> Result<()
             result.environment.name,
             result.environment.revision
         ));
+        if let Some(hint) = hint.clone() {
+            crate::ui::hint(&Hint::Next(hint));
+        }
     })
 }
 

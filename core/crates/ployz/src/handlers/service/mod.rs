@@ -1,18 +1,18 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::cli::{base, positional, value};
 use ployz_core::{
     ContainerAction, ContainerId, ContainerRef, ContainerRuntimeObservation, HealthObservation,
-    LiveServices, MachineFailure, MachineId, QualifiedService, RpcError, ServiceObservation,
-    ServiceSelector, select_service,
+    LiveServices, MachineFailure, MachineId, MachineName, QualifiedService, RpcError,
+    ServiceObservation, ServiceSelector, select_service,
 };
 use serde::Serialize;
 
 use crate::{
     cluster::ContainerObservationCondition,
-    ui::{self, Gaps},
+    ui::{self, Cell, Gaps, Table, Tone},
 };
 use ployz_core::EnvironmentValues;
 
@@ -32,8 +32,14 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
     let namespace = super::operator::scope(root)?.map(|scoped| scoped.namespace);
     with_client(root, |client| {
         Box::pin(async move {
-            let live = client.live_services(EnvironmentValues::Redacted).await?;
-            print_observation_warning(&live);
+            let machines = client.machines().await?;
+            let live = client
+                .live_services_from(&machines, EnvironmentValues::Redacted)
+                .await?;
+            let names: HashMap<MachineId, &MachineName> = machines
+                .iter()
+                .map(|observed| (observed.machine.id, &observed.machine.name))
+                .collect();
             let services = live.services();
             let mut containers = services
                 .iter()
@@ -49,31 +55,76 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
                 .iter()
                 .map(|container| container.as_observation())
                 .collect::<Vec<_>>();
-            crate::ui::finish_fanout(
-                "containers",
-                &observations,
-                &Gaps::of(&live.containers),
-                || {
-                    crate::ui::stream(format_args!("CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE"));
-                    for container in &containers {
-                        let observation = container.as_observation();
-                        // Scoped to one Environment, its Namespace on every row says nothing.
-                        let service = match &namespace {
-                            Some(_) => observation.service_name().to_string(),
-                            None => observation.identity().to_string(),
-                        };
-                        crate::ui::stream(format_args!(
-                            "{}\t{service}\t{}\t{}\t{}",
-                            short(observation.container_id.as_str()),
-                            process_kind(*container),
-                            observation.machine_id,
-                            process_state(&observation.runtime)
-                        ));
-                    }
-                },
-            )
+            let gaps = Gaps::of(&live.containers)
+                .named(names.iter().map(|(machine_id, name)| (*machine_id, *name)));
+            let table = process_table(&containers, namespace.is_some(), &names);
+            crate::ui::finish_fanout("containers", &observations, &gaps, || {
+                crate::ui::rows(&table);
+            })
         })
     })
+}
+
+/// One row per Container. Rows that read the same get the short Container ID,
+/// which `exec` takes.
+fn process_table(
+    containers: &[ContainerRef<'_>],
+    scoped: bool,
+    names: &HashMap<MachineId, &MachineName>,
+) -> Table {
+    let rows: Vec<[String; 3]> = containers
+        .iter()
+        .map(|container| {
+            let observation = container.as_observation();
+            // Scoped to one Environment, its Namespace on every row says nothing.
+            let service = if scoped {
+                observation.service_name().to_string()
+            } else {
+                observation.identity().to_string()
+            };
+            [
+                service,
+                process_kind(*container).to_owned(),
+                server(names, &observation.machine_id),
+            ]
+        })
+        .collect();
+    let mut seen: HashMap<&[String; 3], usize> = HashMap::new();
+    for row in &rows {
+        *seen.entry(row).or_default() += 1;
+    }
+    let clash = seen.values().any(|count| *count > 1);
+    let mut header = vec!["SERVICE", "KIND", "SERVER", "STATE"];
+    if clash {
+        header.push("CONTAINER");
+    }
+    let mut table = Table::new(header, "No Containers running yet.");
+    for (container, row) in containers.iter().zip(&rows) {
+        let observation = container.as_observation();
+        let mut cells: Vec<Cell> = row.iter().map(Cell::from).collect();
+        cells.push(Cell::status(
+            process_state(&observation.runtime),
+            state_tone(*container),
+        ));
+        if clash {
+            cells.push(if seen.get(row).is_some_and(|count| *count > 1) {
+                Cell::from(short(observation.container_id.as_str()))
+            } else {
+                Cell::from("")
+            });
+        }
+        table.row(cells);
+    }
+    table
+}
+
+/// Green when the Container does its job, red when it needs a look.
+fn state_tone(container: ContainerRef<'_>) -> Tone {
+    match health_rank(container) {
+        0 => Tone::Bad,
+        1 => Tone::Change,
+        _ => Tone::Good,
+    }
 }
 
 fn sort_processes(containers: &mut [ContainerRef<'_>], sort: &str) {
@@ -184,8 +235,17 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
     let hint = super::store::next(leaf, &["ps"]);
     with_client(root, |client| {
         Box::pin(async move {
-            let live = client.live_services(EnvironmentValues::Redacted).await?;
-            print_observation_warning(&live);
+            let machines = client.machines().await?;
+            let live = client
+                .live_services_from(&machines, EnvironmentValues::Redacted)
+                .await?;
+            let names: HashMap<MachineId, &MachineName> = machines
+                .iter()
+                .map(|observed| (observed.machine.id, &observed.machine.name))
+                .collect();
+            Gaps::of(&live.containers)
+                .named(names.iter().map(|(machine_id, name)| (*machine_id, *name)))
+                .warn();
             let observed = live.services();
             let services = select_services(&observed, &selectors)?;
             // A restart rolls: each Container is stopped, then started and serving, before the next one stops,
@@ -220,9 +280,10 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
                         ContainerAction::Stop => (signal.clone(), timeout),
                         ContainerAction::Start | ContainerAction::Remove => (None, None),
                     };
-                    let step =
-                        apply_service_action(client, &live, services, action, signal, timeout)
-                            .await?;
+                    let step = apply_service_action(
+                        client, &live, &names, services, action, signal, timeout,
+                    )
+                    .await?;
                     outcome = Some(match outcome {
                         Some(before) => before.then(step),
                         None => step,
@@ -308,6 +369,7 @@ impl ServiceActionOutcome {
 async fn apply_service_action(
     client: &crate::connect::Client,
     live: &LiveServices<RpcError>,
+    names: &HashMap<MachineId, &MachineName>,
     services: &[&ServiceObservation],
     action: ContainerAction,
     signal: Option<String>,
@@ -329,8 +391,10 @@ async fn apply_service_action(
             .await;
         for success in outcomes.successes {
             crate::ui::stream(format_args!(
-                "{}\t{}\t{}\t{}",
-                action, service.identity, success.machine_id, success.value
+                "{} {} on {}.",
+                past(action),
+                service.identity,
+                server(names, &success.machine_id)
             ));
             rows.push(ChangedContainer {
                 action: action.to_string(),
@@ -343,13 +407,14 @@ async fn apply_service_action(
             }
         }
         for failure in outcomes.failures {
-            crate::ui::note(format_args!(
-                "WARNING: {} failed for {} on {}: {}",
-                action,
-                failure.error.container_id,
-                failure.machine_id,
-                crate::ui::row(&failure.error.error)
-            ));
+            crate::ui::warn_cause(
+                format_args!(
+                    "Could not {action} {} on {}",
+                    service.identity,
+                    server(names, &failure.machine_id)
+                ),
+                &failure.error.error,
+            );
             container_failures.push(ContainerFailure {
                 machine_id: failure.machine_id,
                 container_id: failure.error.container_id,
@@ -375,16 +440,10 @@ async fn apply_service_action(
         .await
         .err();
     if let Some(error) = &wait_error {
-        crate::ui::note(format_args!(
-            "WARNING: {action} was not confirmed: {}",
-            crate::ui::row(error)
-        ));
+        crate::ui::warn_cause(format_args!("The {action} was not confirmed"), error);
         partial = true;
     }
     if !live.containers.all_targets_succeeded() {
-        crate::ui::note(format_args!(
-            "WARNING: the Service selection came from a partial Live Observation"
-        ));
         partial = true;
     }
     Ok(ServiceActionOutcome {
@@ -438,29 +497,20 @@ fn stop_options(
     Ok((signal, timeout))
 }
 
-fn print_observation_warning(live: &LiveServices<RpcError>) {
-    for line in observation_warning_lines(live) {
-        crate::ui::note(format_args!("{line}"));
-    }
+/// A Server by name, else by its short ID.
+fn server(names: &HashMap<MachineId, &MachineName>, machine_id: &MachineId) -> String {
+    names.get(machine_id).map_or_else(
+        || short(machine_id.as_str()).to_owned(),
+        ToString::to_string,
+    )
 }
 
-fn observation_warning_lines(live: &LiveServices<RpcError>) -> Vec<String> {
-    let mut lines =
-        vec!["WARNING: Live Observation is observer-relative and not globally complete".into()];
-    lines.extend(live.containers.failures.iter().map(|failure| {
-        format!(
-            "WARNING: Machine {} failed: {}",
-            failure.machine_id,
-            crate::ui::row(&failure.error)
-        )
-    }));
-    lines.extend(
-        live.containers
-            .omissions
-            .iter()
-            .map(|machine_id| format!("WARNING: Machine {machine_id} was omitted")),
-    );
-    lines
+const fn past(action: ContainerAction) -> &'static str {
+    match action {
+        ContainerAction::Start => "Started",
+        ContainerAction::Stop => "Stopped",
+        ContainerAction::Remove => "Removed",
+    }
 }
 
 mod authored;

@@ -115,12 +115,15 @@ pub(crate) fn finish<T: Serialize + ?Sized>(
 ///
 /// Returns a serialization or stdout write error.
 pub(crate) fn list<T: Serialize + ?Sized>(value: &T, table: &Table) -> Result<(), Failure> {
-    finish(value, || {
-        if table.is_empty() {
-            note(table.empty_sentence());
-        }
-        let _ = table.write(&mut anstream::stdout(), aligned());
-    })
+    finish(value, || rows(table))
+}
+
+/// A list's human form, inside a `finish` that owns the result.
+pub(crate) fn rows(table: &Table) {
+    if table.is_empty() {
+        note(table.empty_sentence());
+    }
+    let _ = table.write(&mut anstream::stdout(), aligned());
 }
 
 /// Finish with one record: `value` under `--json`, else `record` on stdout.

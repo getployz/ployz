@@ -345,7 +345,7 @@ fn ls(root: &ArgMatches) -> Result<(), Error> {
     let listed = store(root)?.read(&EnvironmentsQuery {
         project: project(matches)?,
     })?;
-    crate::ui::finish(&listed, || print_environments(&listed))
+    crate::ui::list(&listed, &environments(&listed))
 }
 
 fn default(root: &ArgMatches) -> Result<(), Error> {
@@ -358,7 +358,7 @@ fn default(root: &ArgMatches) -> Result<(), Error> {
         },
     };
     let listed = store(root)?.write(&set)?;
-    crate::ui::finish(&listed, || print_environments(&listed))
+    crate::ui::list(&listed, &environments(&listed))
 }
 
 fn setup(root: &ArgMatches) -> Result<(), Error> {
@@ -368,44 +368,54 @@ fn setup(root: &ArgMatches) -> Result<(), Error> {
         setup: branch::setups(&super::string_values(matches, "setup"))?,
     };
     let listed = store(root)?.write(&set)?;
-    crate::ui::finish(&listed, || print_environments(&listed))
+    crate::ui::list(&listed, &environments(&listed))
 }
 
-fn print_environments(listed: &EnvironmentsView) {
-    crate::ui::stream(format_args!(
-        "Environments of Project {}:",
-        listed.project.name
-    ));
+fn environments(listed: &EnvironmentsView) -> crate::ui::Table {
+    use crate::ui::{Cell, Tone};
+    let mut table = crate::ui::Table::new(
+        [
+            "ENVIRONMENT",
+            "DEFAULT",
+            "BRANCH OF",
+            "REMOVAL",
+            "BRANCH SETUP",
+        ],
+        format!("No Environments in {} yet.", listed.project.name),
+    );
     for environment in &listed.environments {
-        let mut notes = Vec::new();
-        if environment.default {
-            notes.push("default".to_owned());
-        }
-        if let Some(parent) = &environment.parent {
-            notes.push(format!("branch of {parent}"));
-        }
-        if let Some(removal) = &environment.removal {
-            notes.push(format!(
-                "removal #{} {}",
-                removal.number,
-                store::word(&removal.status)
-            ));
-        }
-        match notes.is_empty() {
-            true => crate::ui::stream(format_args!("  {}", environment.name)),
-            false => crate::ui::stream(format_args!(
-                "  {} ({})",
-                environment.name,
-                notes.join(", ")
-            )),
-        }
-        for setup in &environment.branch_setup {
-            crate::ui::stream(format_args!(
-                "    new Branches run in {}: {}",
-                setup.service, setup.command
-            ));
-        }
+        table.row([
+            Cell::from(environment.name.to_string()),
+            if environment.default {
+                Cell::status("default", Tone::Good)
+            } else {
+                Cell::from("")
+            },
+            Cell::from(
+                environment
+                    .parent
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default(),
+            ),
+            Cell::from(
+                environment
+                    .removal
+                    .as_ref()
+                    .map(|removal| format!("#{} {}", removal.number, store::word(&removal.status)))
+                    .unwrap_or_default(),
+            ),
+            Cell::from(
+                environment
+                    .branch_setup
+                    .iter()
+                    .map(|setup| format!("{}: {}", setup.service, setup.command))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ),
+        ]);
     }
+    table
 }
 
 /// What `env rm` removed, and the Deployment that took it off the Servers.

@@ -25,7 +25,7 @@ use super::{Error, config_path, leaf_matches};
 use crate::cli::env;
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{Account, CredentialStore, Organization};
-use crate::ui::Hint;
+use crate::ui::{Fields, Hint};
 
 pub(crate) fn link_command() -> Command {
     scoped(Command::new("link").about("Link this directory to a Project and Environment"))
@@ -304,12 +304,17 @@ pub(super) fn link(root: &ArgMatches) -> Result<(), Error> {
     let view = store.read(&query)?;
     let linked = record(&config, view.environment)?;
     let hint = Some("ployz status".to_owned());
-    crate::ui::finish(&Next::new(&linked, hint), || {
-        crate::ui::stream(format_args!(
+    crate::ui::done(
+        &Next::new(&linked, hint.clone()),
+        format_args!(
             "Linked {} to {}/{}.",
             linked.directory, linked.project, linked.environment
-        ));
-    })
+        ),
+    )?;
+    if let Some(hint) = hint {
+        crate::ui::hint(&Hint::Next(hint));
+    }
+    Ok(())
 }
 
 /// Link this directory to `environment`, which the Store just resolved.
@@ -555,58 +560,73 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
         deploying,
         attention,
     };
-    crate::ui::finish(&Next::new(&status, hint.clone()), || {
-        print(&status, hint.as_deref())
-    })
+    crate::ui::fields(&Next::new(&status, hint.clone()), &status_record(&status))?;
+    if let Some(hint) = hint {
+        crate::ui::hint(&Hint::Next(hint));
+    }
+    Ok(())
 }
 
-fn print(status: &Status, hint: Option<&str>) {
+fn status_record(status: &Status) -> Fields {
     let identity = &status.identity;
-    let organization = identity
-        .organization
-        .as_ref()
-        .map_or("?", |organization| organization.slug.as_str());
-    let who = identity
-        .account
-        .as_ref()
-        .map_or(identity.credential, |account| account.email.as_str());
+    let mut record = Fields::new();
     if let Some(cloud) = &identity.cloud {
-        crate::ui::stream(format_args!("Cloud: {cloud}"));
+        record.push("cloud", cloud);
     }
-    crate::ui::stream(format_args!("Organization {organization} ({who})."));
+    record.push(
+        "organization",
+        identity
+            .organization
+            .as_ref()
+            .map_or("?", |organization| organization.slug.as_str()),
+    );
+    record.push(
+        "signed in as",
+        identity
+            .account
+            .as_ref()
+            .map_or(identity.credential, |account| account.email.as_str()),
+    );
     if let Some(environment) = &status.environment {
-        crate::ui::stream(format_args!(
-            "Environment {}/{}.",
-            environment.project, environment.name
-        ));
+        record.push(
+            "environment",
+            format_args!("{}/{}", environment.project, environment.name),
+        );
     }
     if let Some(link) = &status.scope.link {
-        crate::ui::stream(format_args!("Linked from {link}."));
+        record.push("linked from", link);
     }
     if let Some(staged) = &status.staged {
-        crate::ui::stream(format_args!(
-            "{} staged {}.",
-            staged.changes,
-            if staged.changes == 1 {
-                "change"
-            } else {
-                "changes"
-            }
-        ));
+        record.push(
+            "staged",
+            format_args!(
+                "{} {}",
+                staged.changes,
+                if staged.changes == 1 {
+                    "change"
+                } else {
+                    "changes"
+                }
+            ),
+        );
     }
     for deployment in &status.deploying {
-        crate::ui::stream(format_args!(
-            "Deployment {} is {}.",
-            deployment.number,
-            super::store::word(&deployment.status)
-        ));
+        record.push(
+            "deploying",
+            format_args!(
+                "#{} {}",
+                deployment.number,
+                super::store::word(&deployment.status)
+            ),
+        );
     }
     for attention in &status.attention {
-        crate::ui::stream(format_args!("Needs attention: {}", attention.message));
+        record.push(
+            "needs attention",
+            crate::ui::Cell::status(&attention.message, crate::ui::Tone::Bad),
+        );
     }
-    if let Some(hint) = hint {
-        crate::ui::stream(format_args!("next: {hint}"));
-    }
+    record
 }
 
 /// The scope, the acting Organization and how Servers are reached, without asking
@@ -627,33 +647,36 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
         scope: &scope,
         servers: servers(matches, &config)?,
     };
-    crate::ui::finish(&context, || {
-        let organization = context.organization.as_ref();
-        crate::ui::stream(format_args!(
-            "Organization: {}",
-            organization.map_or("(the token's)", |organization| organization.slug.as_str())
-        ));
-        match &scope.project {
-            Some(project) => crate::ui::stream(format_args!(
-                "Project: {} ({})",
-                project.name,
-                project.source.as_str()
-            )),
-            None => crate::ui::stream(format_args!("Project: the only Project")),
-        }
-        match &scope.environment {
-            Some(environment) => crate::ui::stream(format_args!(
-                "Environment: {} ({})",
-                environment.name,
-                environment.source.as_str()
-            )),
-            None => crate::ui::stream(format_args!("Environment: the Default Environment")),
-        }
-        match &context.servers.context {
-            Some(name) => crate::ui::stream(format_args!("Servers: via context {name}")),
-            None => crate::ui::stream(format_args!("Servers: via {}", context.servers.via)),
-        }
-    })
+    let record = Fields::new()
+        .field(
+            "organization",
+            context
+                .organization
+                .as_ref()
+                .map_or("(the token's)", |organization| organization.slug.as_str()),
+        )
+        .field(
+            "project",
+            scope.project.as_ref().map_or_else(
+                || "the only Project".to_owned(),
+                |project| format!("{} ({})", project.name, project.source.as_str()),
+            ),
+        )
+        .field(
+            "environment",
+            scope.environment.as_ref().map_or_else(
+                || "the Default Environment".to_owned(),
+                |environment| format!("{} ({})", environment.name, environment.source.as_str()),
+            ),
+        )
+        .field(
+            "servers",
+            context.servers.context.as_ref().map_or_else(
+                || format!("via {}", context.servers.via),
+                |name| format!("via context {name}"),
+            ),
+        );
+    crate::ui::fields(&context, &record)
 }
 
 /// How live commands reach Servers.

@@ -17,6 +17,7 @@ use ployz_store::{
 use super::store::{self, Next};
 use super::{Error, leaf_matches};
 use crate::cli::{base, positional, switch, value};
+use crate::ui::{Cell, Fields, Hint, Table, Tone};
 
 pub(crate) fn command() -> Command {
     base("volume", "Manage Volumes")
@@ -235,34 +236,40 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
     let view = store::store(root)?.read(&VolumesQuery {
         environment: store::environment(matches)?,
     })?;
-    crate::ui::finish(&view, || {
-        crate::ui::stream(format_args!(
-            "VOLUME\tSTORAGE\tSHARED WRITES\tMOUNTS\tDEPLOYED\tNEXT DEPLOY"
-        ));
-        for listing in &view.volumes {
-            let mounts: Vec<String> = listing
-                .mounts
-                .iter()
-                .map(|mount| format!("{}:{}", mount.service, mount.path))
-                .collect();
-            crate::ui::stream(format_args!(
-                "{}\t{}\t{}\t{}\t{}\t{}",
-                listing.volume.name,
-                storage_word(listing.volume.storage),
-                shared_writes_word(listing.volume.shared_writes),
-                if mounts.is_empty() {
-                    "-".to_owned()
-                } else {
-                    mounts.join(",")
-                },
-                if listing.deployed { "yes" } else { "no" },
-                listing
-                    .change
-                    .as_ref()
-                    .map_or("-".to_owned(), super::store::word)
-            ));
-        }
-    })
+    let mut table = Table::new(
+        [
+            "VOLUME",
+            "STORAGE",
+            "SHARED WRITES",
+            "MOUNTS",
+            "DEPLOYED",
+            "NEXT DEPLOY",
+        ],
+        format!("No Volumes in {} yet.", view.environment.name),
+    );
+    for listing in &view.volumes {
+        let mounts: Vec<String> = listing
+            .mounts
+            .iter()
+            .map(|mount| format!("{}:{}", mount.service, mount.path))
+            .collect();
+        table.row([
+            Cell::from(listing.volume.name.to_string()),
+            Cell::from(storage_word(listing.volume.storage)),
+            Cell::from(shared_writes_word(listing.volume.shared_writes)),
+            Cell::from(mounts.join(",")),
+            if listing.deployed {
+                Cell::status("yes", Tone::Good)
+            } else {
+                Cell::from("no")
+            },
+            listing.change.as_ref().map_or_else(
+                || Cell::from(""),
+                |change| Cell::status(super::store::word(change), Tone::Change),
+            ),
+        ]);
+    }
+    crate::ui::list(&view, &table)
 }
 
 fn inspect(root: &ArgMatches) -> Result<(), Error> {
@@ -272,42 +279,33 @@ fn inspect(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         volume: volume.clone(),
     })?;
-    crate::ui::finish(&view, || {
-        let listing = &view.volume;
-        crate::ui::stream(format_args!(
-            "Volume {} ({})",
-            listing.volume.name, listing.volume.id
-        ));
-        crate::ui::stream(format_args!(
-            "Storage: {}",
-            storage_word(listing.volume.storage)
-        ));
-        crate::ui::stream(format_args!(
-            "Storage settings: {}",
+    let listing = &view.volume;
+    let mut record = Fields::new()
+        .field("volume", &listing.volume.name)
+        .field("storage", storage_word(listing.volume.storage))
+        .field(
+            "storage settings",
             if listing.storage_locked {
                 "locked after deployment was requested"
             } else {
                 "editable before deployment"
-            }
-        ));
-        crate::ui::stream(format_args!(
-            "Shared writes: {}",
-            shared_writes_word(listing.volume.shared_writes)
-        ));
-        crate::ui::stream(format_args!(
-            "Deployed: {}",
-            if listing.deployed { "yes" } else { "no" }
-        ));
-        if let Some(change) = &listing.change {
-            crate::ui::stream(format_args!("Next Deploy: {}", super::store::word(change)));
-        }
-        for mount in &listing.mounts {
-            crate::ui::stream(format_args!(
-                "Mounted by {} at {}",
-                mount.service, mount.path
-            ));
-        }
-    })
+            },
+        )
+        .field(
+            "shared writes",
+            shared_writes_word(listing.volume.shared_writes),
+        )
+        .field("deployed", if listing.deployed { "yes" } else { "no" });
+    if let Some(change) = &listing.change {
+        record.push("next deploy", super::store::word(change));
+    }
+    for mount in &listing.mounts {
+        record.push(
+            "mounted by",
+            format_args!("{} at {}", mount.service, mount.path),
+        );
+    }
+    crate::ui::fields(&view, &record)
 }
 
 fn rename(root: &ArgMatches) -> Result<(), Error> {
@@ -332,7 +330,6 @@ fn remove(root: &ArgMatches) -> Result<(), Error> {
     staged(matches, &removed, "Staged removal of Volume", false)
 }
 
-/// A staged Volume change and `ployz diff` to review it.
 /// Servers were seen and each says it is Docker only; one not
 /// answering might host them.
 fn none_hosts_managed(machines: &[MachineObservation]) -> bool {
@@ -342,15 +339,16 @@ fn none_hosts_managed(machines: &[MachineObservation]) -> bool {
             .all(|machine| machine.storage == Some(MachineStorageObservation::Stateless))
 }
 
-/// `storage`: say the Volume's storage too, when the change set it.
+/// A staged Volume change and `ployz deploy` to ship it. `storage`: say the
+/// Volume's storage too, when the change set it.
 fn staged(
     matches: &ArgMatches,
     result: &VolumeStaged,
     what: &str,
     storage: bool,
 ) -> Result<(), Error> {
-    let hint = store::next(matches, &["diff"]);
-    crate::ui::finish(&Next::new(result, Some(hint)), || {
+    let hint = store::next(matches, &["deploy"]);
+    crate::ui::finish(&Next::new(result, Some(hint.clone())), || {
         crate::ui::stream(format_args!(
             "{what} {} in {}/{} (revision {}).",
             result.volume.name,
@@ -364,6 +362,7 @@ fn staged(
                 storage_word(result.volume.storage)
             ));
         }
+        crate::ui::hint(&Hint::Next(hint));
     })
 }
 

@@ -170,7 +170,7 @@ fn undo(root: &ArgMatches, sync: &str) -> Result<(), Error> {
             "Undid Sync {} in {}/{}.",
             request.sync, into.project, into.name
         ));
-        crate::ui::stream(format_args!("next: {next}"));
+        crate::ui::hint(&crate::ui::Hint::Next(next.clone()));
     })
 }
 
@@ -236,7 +236,7 @@ fn taken_out(matches: &ArgMatches, taken: &Taken) -> Result<(), Error> {
             ));
         }
         if let Some(next) = &next {
-            crate::ui::stream(format_args!("next: {next}"));
+            crate::ui::hint(&crate::ui::Hint::Next(next.clone()));
         }
     })
 }
@@ -341,21 +341,21 @@ fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
                             .collect::<Vec<_>>()
                     )
                 ));
-                crate::ui::stream(format_args!("Undo it: {undo}"));
+                crate::ui::hint(&crate::ui::Hint::Undo(undo.clone()));
             }
             SyncedWhen::Now { staged, closing } => {
                 crate::ui::stream(format_args!("Synced {from} → {into}."));
-                crate::ui::stream(format_args!("Undo it: {undo}"));
                 if !staged.is_empty() {
                     crate::ui::stream(format_args!("Staged: {}", crate::handlers::joined(staged)));
                 }
                 if *closing {
                     crate::ui::stream(format_args!("Closing {from}."));
                 }
+                crate::ui::hint(&crate::ui::Hint::Undo(undo.clone()));
             }
         }
         if let Some(next) = &next {
-            crate::ui::stream(format_args!("next: {next}"));
+            crate::ui::hint(&crate::ui::Hint::Next(next.clone()));
         }
     })
 }
