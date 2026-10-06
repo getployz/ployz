@@ -9,9 +9,11 @@ mod history;
 mod lifecycle;
 mod lowering;
 pub(crate) mod query;
+mod rows;
 pub(crate) use history::*;
 pub(crate) use lifecycle::*;
 pub(crate) use lowering::*;
+pub use rows::{Failure, LOG_TAIL, RowPhase, RowState, RowTracker, ServerProgress, ServerRow};
 
 use std::collections::BTreeMap;
 
@@ -189,6 +191,9 @@ pub struct NodeOutcome {
     #[serde(flatten)]
     pub node: DeployedNode,
     pub outcome: NodeStatus,
+    /// Its work on each Server, once its runner started executing.
+    #[serde(default)]
+    pub rows: Vec<ServerRow>,
 }
 
 /// A Node Outcome, or why a node has none.
@@ -226,15 +231,20 @@ pub enum Outcome {
     /// Execution ran. `summary` counts operations, without inputs or provider
     /// messages; each node's Node Outcome is on the Deployment's nodes. `reason`
     /// says why it failed, naming the Service by its current name; users read it.
+    /// `cause` lists what it came from, outermost first.
     Executed {
         summary: Value,
         #[serde(default)]
         reason: Option<String>,
+        #[serde(default)]
+        cause: Vec<String>,
     },
     /// Nothing executed: preparation failed first. `needs_upload` names the Services
     /// that can build only from a new upload.
     NotExecuted {
         reason: String,
+        #[serde(default)]
+        cause: Vec<String>,
         #[serde(default)]
         needs_upload: Vec<ServiceName>,
     },
@@ -264,8 +274,10 @@ pub enum RunEvidence {
         #[serde(default)]
         removed: Vec<VolumeRemoval>,
     },
-    /// Preparation failed, so nothing executed. Users read the reason: it holds no secret.
-    NotExecuted(String),
+    /// Preparation failed, so nothing executed. Users read it: it holds no secret.
+    NotExecuted(Failure),
+    /// The rows whose state changed while execution runs.
+    Progress(Vec<ServerProgress>),
     /// The runner stopped without knowing whether it executed: the outcome is unknown
     /// once it recorded a Deploy Preview, and nothing executed before that.
     Abandoned,

@@ -7,15 +7,16 @@
 
 use ployz_core::config::ReviewLifecycleKind;
 use ployz_core::{
-    DeployOutcome, DeployPreview, ExecutionError, RpcError, RpcErrorCode, ServiceName,
+    DeployOutcome, DeployPreview, ExecutionError, OperationRow, RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::{
     Actor, Admit, Cancel, Change, Command, ConfigStore, CreateProject, CreateService, Deploy,
     DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView,
     Discard, Edit, EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId,
     PlanQuery, Principal, ProjectId, ProjectName, Query, RemoveService, RenameService, Retry,
-    Revision, RunEvidence, RunnerId, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath,
-    Start, Trusted, UploadBase, UploadedSource, View, Written,
+    Revision, RowState, RowTracker, RunEvidence, RunnerId, ServerRow, ServiceLineageId,
+    ServiceQuery, ServicesQuery, SettingPath, Start, Trusted, UploadBase, UploadedSource, View,
+    Written,
 };
 use serde_json::{Value, json};
 
@@ -296,13 +297,11 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
         .unwrap();
     assert_eq!(view.deployment.status, DeploymentStatus::Failed);
     // The Deployment says why, in words users read.
-    let Some(ployz_store::Outcome::Executed { reason, .. }) = view.deployment.outcome else {
+    let Some(ployz_store::Outcome::Executed { reason, cause, .. }) = view.deployment.outcome else {
         panic!("an executed outcome");
     };
-    assert_eq!(
-        reason.as_deref(),
-        Some("remove Container failed: the daemon is busy")
-    );
+    assert_eq!(reason.as_deref(), Some("remove Container failed"));
+    assert_eq!(cause, ["the daemon is busy"]);
     assert_eq!(
         nodes(&store, &who, 1),
         [
@@ -315,6 +314,151 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
     assert_eq!(
         code(store.record(&id(1), &a, succeeded(&["web", "api"]))),
         RpcErrorCode::Conflict
+    );
+}
+
+/// A Deploy Progress snapshot: each Service's one operation on its Server, in `status`.
+fn progress(rows: &[(&str, &str, Value)]) -> Vec<OperationRow> {
+    serde_json::from_value(Value::Array(
+        rows.iter()
+            .enumerate()
+            .map(|(index, (service, server, status))| {
+                json!({
+                    "index": index, "machine_id": server.chars().next().unwrap().to_string().repeat(32),
+                    "machine_name": server, "service_name": service,
+                    "operation": operation(service), "status": status
+                })
+            })
+            .collect(),
+    ))
+    .unwrap()
+}
+
+fn waiting(elapsed_ms: u64) -> Value {
+    json!({"type": "running", "phase": {
+        "type": "waiting_for_health", "container_id": "c".repeat(64),
+        "elapsed_ms": elapsed_ms, "deadline_ms": 60_000
+    }})
+}
+
+fn rows(store: &ConfigStore, who: &Actor, n: u8) -> Vec<(String, Vec<ServerRow>)> {
+    store
+        .read(who, &ployz_store::DeploymentQuery { id: id(n) })
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| (node.node.name().to_owned(), node.rows))
+        .collect()
+}
+
+#[test]
+fn deployment_rows_record_state_changes_once() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &["web"], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    let mut tracker = RowTracker::default();
+    let mut writes = 0;
+    let mut observe = |status: Value| {
+        let changed = tracker.changes(&progress(&[("web", "alpha", status)]));
+        if !changed.is_empty() {
+            writes += 1;
+            store
+                .record(&id(1), &a, RunEvidence::Progress(changed))
+                .unwrap();
+        }
+    };
+    observe(json!({"type": "pending"}));
+    for elapsed in (0..=30_000).step_by(500) {
+        observe(waiting(elapsed));
+    }
+    observe(json!({"type": "completed"}));
+    assert_eq!(writes, 3, "pending, waiting for health, completed");
+    let [(web, row)] = &rows(&store, &who, 1)[..] else {
+        panic!("one node");
+    };
+    assert_eq!(web, "web");
+    let [row] = &row[..] else {
+        panic!("one row per Server");
+    };
+    assert_eq!(
+        (row.server.as_str(), &row.state),
+        ("alpha", &RowState::Completed)
+    );
+    assert!(row.started_at.is_some() && row.finished_at.is_some());
+}
+
+#[test]
+fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    let error = json!({
+        "type": "machine", "action": "RemoveContainer",
+        "error": {"code": "internal", "message": "the daemon is busy", "details": {},
+                  "cause": ["connection refused"]}
+    });
+    let mut tracker = RowTracker::default();
+    for snapshot in [
+        progress(&[
+            ("web", "alpha", json!({"type": "pending"})),
+            ("api", "beta", json!({"type": "pending"})),
+        ]),
+        progress(&[
+            ("web", "alpha", json!({"type": "failed", "error": error})),
+            ("api", "beta", json!({"type": "pending"})),
+        ]),
+    ] {
+        store
+            .record(
+                &id(1),
+                &a,
+                RunEvidence::Progress(tracker.changes(&snapshot)),
+            )
+            .unwrap();
+    }
+    store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Executed {
+                outcome: Box::new(outcome(json!({
+                    "type": "failed", "completed": [],
+                    "failed": {"type": "operation", "operation": operation("web"), "error": error},
+                    "unexecuted": [operation("api")]
+                }))),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    let states: Vec<(String, String, RowState)> = rows(&store, &who, 1)
+        .into_iter()
+        .flat_map(|(node, rows)| {
+            rows.into_iter()
+                .map(move |row| (node.clone(), row.server, row.state))
+        })
+        .collect();
+    assert_eq!(
+        states,
+        [
+            (
+                "web".to_owned(),
+                "alpha".to_owned(),
+                RowState::Failed {
+                    reason: "remove Container failed".into(),
+                    cause: vec!["the daemon is busy".into(), "connection refused".into()],
+                    log: Vec::new(),
+                }
+            ),
+            ("api".to_owned(), "beta".to_owned(), RowState::NotAttempted),
+        ]
     );
 }
 

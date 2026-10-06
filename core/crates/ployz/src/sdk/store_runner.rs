@@ -11,7 +11,8 @@ use std::time::Duration;
 use ployz_core::{DeployOutcome, RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
     BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeploymentId,
-    DeploymentStatus, DeploymentSummary, RunEvidence, RunnerId,
+    DeploymentStatus, DeploymentSummary, Failure, LOG_TAIL, RowState, RowTracker, RunEvidence,
+    RunnerId,
 };
 use serde::Deserialize as _;
 use serde_json::Value;
@@ -27,6 +28,9 @@ const CANCEL_POLL: Duration = Duration::from_secs(2);
 
 /// How often a build's new log output is recorded.
 const LOG_FLUSH: Duration = Duration::from_secs(3);
+
+/// How long a failed row waits for its Container's log.
+const LOG_READ: Duration = Duration::from_secs(5);
 
 /// Each Git Service's checkout at its pinned commit, by runtime Service name, and the
 /// Deployment's upload, if Cloud still holds it; or why Cloud could not read them.
@@ -153,12 +157,15 @@ pub async fn run_deployment(
         // Users read it on the Deployment: plain words and one action first, then
         // what the connection said.
         Err(error) => {
+            let Failure { reason, mut cause } = Failure::from(&error);
+            cause.insert(0, reason);
             return run
-                .not_executed(format!(
-                    "Ployz couldn't reach your Servers. Check that they're online, then retry. \
-                     ({})",
-                    crate::ui::row(&error)
-                ))
+                .not_executed(Failure {
+                    reason:
+                        "Ployz couldn't reach your Servers. Check that they're online, then retry."
+                            .into(),
+                    cause,
+                })
                 .await;
         }
     };
@@ -214,7 +221,7 @@ impl Run {
             Err(error) => {
                 return match needs_upload(&error) {
                     Some(services) => self.unbuilt(Unbuilt::UploadNeeded(services)).await,
-                    None => self.not_executed(crate::ui::row(&error)).await,
+                    None => self.not_executed(Failure::from(&error)).await,
                 };
             }
         };
@@ -229,10 +236,10 @@ impl Run {
         let log_id = self.deployment.as_str().parse().ok();
         let running = match prepared.confirm_with_log_id(log_id, ImageCleanup::Auto) {
             Ok(running) => running,
-            Err(error) => return self.not_executed(crate::ui::row(&error)).await,
+            Err(error) => return self.not_executed(Failure::from(&error)).await,
         };
         let outcome = self
-            .renewing(self.executing(&running), || running.abort())
+            .renewing(self.executing(session, &running), || running.abort())
             .await;
         match outcome {
             Ok(outcome) => {
@@ -435,13 +442,28 @@ impl Run {
     /// stays so if this runner is lost before the outcome.
     async fn executing(
         &self,
+        session: &Session,
         running: &super::RunningDeploy,
     ) -> Result<DeployOutcome<ployz_core::ExecutionError>, RpcError> {
         let mut confirmed = std::collections::BTreeSet::new();
+        let mut tracker = RowTracker::default();
         while let Some(event) = running.next().await {
             let ployz_core::DeployEvent::Progress { rows, .. } = event else {
                 continue;
             };
+            let mut changed = tracker.changes(&rows);
+            if !changed.is_empty() {
+                for row in &mut changed {
+                    let container = tracker.container(row);
+                    if let (RowState::Failed { log, .. }, Some(container)) =
+                        (&mut row.state, container)
+                    {
+                        *log = log_tail(session, row.machine, container).await;
+                    }
+                }
+                // ponytail: a refused record loses these rows; the outcome still says what ran.
+                let _ = self.record(RunEvidence::Progress(changed)).await;
+            }
             let mut done: BTreeMap<&ServiceName, bool> = BTreeMap::new();
             for row in &rows {
                 if let Some(service) = &row.service_name {
@@ -505,15 +527,15 @@ impl Run {
 
     async fn unbuilt(&self, unbuilt: Unbuilt) -> Result<DeploymentSummary, RpcError> {
         match unbuilt {
-            Unbuilt::Failed(reason) => self.not_executed(reason).await,
+            Unbuilt::Failed(reason) => self.not_executed(reason.into()).await,
             Unbuilt::UploadNeeded(services) => {
                 self.record(RunEvidence::UploadNeeded(services)).await
             }
         }
     }
 
-    async fn not_executed(&self, reason: String) -> Result<DeploymentSummary, RpcError> {
-        self.record(RunEvidence::NotExecuted(reason)).await
+    async fn not_executed(&self, failure: Failure) -> Result<DeploymentSummary, RpcError> {
+        self.record(RunEvidence::NotExecuted(failure)).await
     }
 
     async fn record(&self, evidence: RunEvidence) -> Result<DeploymentSummary, RpcError> {
@@ -659,6 +681,40 @@ pub(super) fn log_line(event: &Value) -> String {
         return format!("{} {name}\n", if cached { "CACHED" } else { "DONE" });
     }
     String::new()
+}
+
+/// The last lines `container` logged on `machine`, read once as its row fails;
+/// none when they can't be read in time.
+async fn log_tail(
+    session: &Session,
+    machine: ployz_core::MachineId,
+    container: ployz_core::ContainerId,
+) -> Vec<String> {
+    let read = async {
+        let stream = session
+            .container_logs(super::logs::ContainerLogInput {
+                machine_id: machine,
+                container_id: container,
+                tail: i32::try_from(LOG_TAIL).unwrap_or(i32::MAX),
+                follow: false,
+                before_nanos: None,
+                since_unix_seconds: None,
+            })
+            .await
+            .ok()?;
+        let mut lines = Vec::new();
+        while let Ok(Some(record)) = stream.next().await {
+            lines.extend(record.message.lines().map(str::to_owned));
+        }
+        Some(lines)
+    };
+    let mut lines = tokio::time::timeout(LOG_READ, read)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    lines.drain(..lines.len().saturating_sub(LOG_TAIL));
+    lines
 }
 
 /// Delete exactly the Docker Volumes admission accepted, never others of the same

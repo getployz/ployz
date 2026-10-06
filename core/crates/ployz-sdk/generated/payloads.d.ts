@@ -2018,7 +2018,11 @@ data: DataEffect | null, type: EnvironmentNodeType, id: string, };
 
 export type NodeName = string;
 
-export type NodeOutcome = { outcome: NodeStatus, } & ({ "type": "service", id: ServiceLineageId, name: ServiceName, } | { "type": "volume", id: VolumeId, name: VolumeName, });
+export type NodeOutcome = { outcome: NodeStatus,
+/**
+ * Its work on each Server, once its runner started executing.
+ */
+rows: Array<ServerRow>, } & ({ "type": "service", id: ServiceLineageId, name: ServiceName, } | { "type": "volume", id: VolumeId, name: VolumeName, });
 
 export type NodeStatus = "pending" | "deployed" | "removed" | "failed" | "not_attempted" | "unchanged" | "unknown";
 
@@ -2072,7 +2076,7 @@ export type OrganizationId = string;
 
 export type OrganizationRemoved = { organization: OrganizationId, };
 
-export type Outcome = { "type": "executed", summary: JsonValue, reason: string | null, } | { "type": "not_executed", reason: string, needs_upload: Array<ServiceName>, } | { "type": "never_ran" } | { "type": "forgotten" };
+export type Outcome = { "type": "executed", summary: JsonValue, reason: string | null, cause: Array<string>, } | { "type": "not_executed", reason: string, cause: Array<string>, needs_upload: Array<ServiceName>, } | { "type": "never_ran" } | { "type": "forgotten" };
 
 export type OwnedNamespace = { namespace: Namespace, project: ProjectName, environment: EnvironmentName, };
 
@@ -2626,6 +2630,8 @@ export type Revision = number;
 
 export type RowId = string & { readonly __brand: "RowId" };
 
+export type RowPhase = "starting" | "creating_container" | "starting_container" | "waiting_for_health" | "waiting_for_hook" | "stopping_container" | "removing_container" | "removing_volume" | "compensating";
+
 export type RowRef = string;
 
 export type RpcError = { code: RpcErrorCode, message: string, details: JsonValue,
@@ -2744,6 +2750,20 @@ export type SecretRow = {
 held: boolean, };
 
 export type SelectedEndpoint = string;
+
+export type ServerRow = {
+/**
+ * The Server's name, or its Machine ID when it has none.
+ */
+server: string,
+/**
+ * When its work started, in Unix seconds.
+ */
+started_at: number | null,
+/**
+ * When it finished, in Unix seconds.
+ */
+finished_at: number | null, } & ({ "state": "pending" } | { "state": "running", phase: RowPhase, } | { "state": "completed" } | { "state": "failed", reason: string, cause: Array<string>, log: Array<string>, } | { "state": "not_attempted" });
 
 export type ServiceAttempt = {
 /**

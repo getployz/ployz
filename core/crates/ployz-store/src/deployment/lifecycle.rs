@@ -571,7 +571,10 @@ pub(crate) fn record(
                 ));
             };
             let success = matches!(*outcome, DeployOutcome::Success { .. });
-            let reason = failure(&outcome, &stored.nodes);
+            let (reason, cause) = failure(&outcome, &stored.nodes)
+                .map_or((None, Vec::new()), |failure| {
+                    (Some(failure.reason), failure.cause)
+                });
             let projection =
                 project_runtime_outcome(preview, json!({ "version": 1, "outcome": outcome }))
                     .map_err(|_| invalid_evidence("Deploy Outcome"))?;
@@ -596,7 +599,9 @@ pub(crate) fn record(
             let outcome = Outcome::Executed {
                 summary: serde_json::to_value(projection.summary).expect("a summary is JSON"),
                 reason,
+                cause,
             };
+            super::rows::settle(tx, &stored)?;
             stored.run.nodes = nodes;
             stored.run.executed = Some(executed);
             finish(tx, stored, outcome, status)
@@ -633,6 +638,11 @@ pub(crate) fn record(
             save(tx, &mut stored)?;
             Ok(stored.summary)
         }
+        RunEvidence::Progress(rows) => {
+            running(&stored)?;
+            super::rows::record(tx, &stored, &rows)?;
+            Ok(stored.summary)
+        }
         RunEvidence::Built(receipts) => {
             running(&stored)?;
             for (service, receipt) in &receipts {
@@ -645,13 +655,14 @@ pub(crate) fn record(
             build::record(tx, &stored, &report)?;
             Ok(stored.summary)
         }
-        RunEvidence::NotExecuted(reason) => {
+        RunEvidence::NotExecuted(Failure { reason, cause }) => {
             let reason = reason.chars().take(500).collect();
             finish(
                 tx,
                 stored,
                 Outcome::NotExecuted {
                     reason,
+                    cause,
                     needs_upload: Vec::new(),
                 },
                 DeploymentStatus::Failed,
@@ -671,6 +682,7 @@ pub(crate) fn record(
                         "{names} has no source to build: its last upload is gone and no \
                          image is left to reuse. Upload it again or add an image."
                     ),
+                    cause: Vec::new(),
                     needs_upload: services,
                 },
                 DeploymentStatus::Failed,
@@ -688,6 +700,7 @@ pub(crate) fn record(
                     stored,
                     Outcome::NotExecuted {
                         reason,
+                        cause: Vec::new(),
                         needs_upload: Vec::new(),
                     },
                     DeploymentStatus::Failed,
@@ -702,7 +715,7 @@ pub(crate) fn record(
 
 /// Why a Deploy failed, for users: the failed operation's Service, by its current
 /// name, and its error. None when it succeeded.
-fn failure(outcome: &DeployOutcome<ExecutionError>, nodes: &[TargetNode]) -> Option<String> {
+fn failure(outcome: &DeployOutcome<ExecutionError>, nodes: &[TargetNode]) -> Option<Failure> {
     let DeployOutcome::Failed { failed, .. } = outcome else {
         return None;
     };
@@ -712,11 +725,15 @@ fn failure(outcome: &DeployOutcome<ExecutionError>, nodes: &[TargetNode]) -> Opt
             operation, error, ..
         } => (Some(&operation.spec.name), error),
     };
+    let Failure { reason, cause } = error.into();
     let reason = match service {
-        Some(service) => format!("{}: {error}", current_name(nodes, service)),
-        None => error.to_string(),
+        Some(service) => format!("{}: {reason}", current_name(nodes, service)),
+        None => reason,
     };
-    Some(reason.chars().take(500).collect())
+    Some(Failure {
+        reason: reason.chars().take(500).collect(),
+        cause,
+    })
 }
 
 /// The current name of the target Service that lowers to runtime Service `runtime`.
