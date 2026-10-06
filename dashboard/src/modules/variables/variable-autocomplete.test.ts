@@ -4,6 +4,7 @@ import {
   filterReferenceTargets,
   type ReferenceTarget,
 } from "./variable-autocomplete";
+import { getManagedServiceExports } from "./managed-service-exports";
 
 const api = {
   slug: "api",
@@ -64,5 +65,41 @@ describe("filterReferenceTargets", () => {
       ownerSlug: "db",
     });
     expect(result.map((t) => t.key)).toEqual(["PASSWORD"]);
+  });
+
+  it("offers a typed owner's managed exports in definition order, private domain first", () => {
+    const redis = {
+      slug: "redis", name: "redis", isSelf: false,
+      variables: [{ key: "AUTH", exported: true, isSecret: true, description: null }],
+      managedExports: getManagedServiceExports({
+        id: "s1", lineageId: "s1", name: "redis", slug: "redis", privateDns: "redis",
+        environmentId: "e1", environmentSlug: "production",
+      }),
+    };
+    const result = filterReferenceTargets(buildReferenceTargets({ services: [api, redis] }), {
+      start: 0, end: 0, query: "red", ownerSlug: null,
+    });
+    expect(result.map((t) => `${t.ownerSlug}.${t.key}`)).toEqual([
+      "redis.PLOYZ_PRIVATE_DOMAIN",
+      "redis.PORT",
+      "redis.PLOYZ_ENVIRONMENT_NAME",
+      "redis.PLOYZ_SERVICE_NAME",
+      "redis.PLOYZ_ENVIRONMENT_ID",
+      "redis.PLOYZ_SERVICE_ID",
+      "redis.AUTH",
+    ]);
+  });
+
+  it("matches by prefix only, never fuzzily", () => {
+    const result = filterReferenceTargets(targets, { start: 0, end: 0, query: "ASS", ownerSlug: "db" });
+    expect(result).toEqual([]);
+  });
+
+  it("sorts an owner's own variables by key", () => {
+    const owned: ReferenceTarget[] = ["ZED", "ALPHA", "MID"].map((key) => (
+      { key, ownerSlug: "db", kind: "service", ownerLabel: "db", isSecret: false, description: null }
+    ));
+    const result = filterReferenceTargets(owned, { start: 0, end: 0, query: "", ownerSlug: "db" });
+    expect(result.map((t) => t.key)).toEqual(["ALPHA", "MID", "ZED"]);
   });
 });

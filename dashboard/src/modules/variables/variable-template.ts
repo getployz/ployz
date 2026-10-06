@@ -20,8 +20,8 @@ export type ValuePart =
  *  - `$${{`                  — a literal `${{`
  */
 
-const KEY_SRC = "[A-Za-z_][A-Za-z0-9_]*";
-const SLUG_SRC = "[A-Za-z0-9][A-Za-z0-9_-]*";
+export const KEY_SRC = "[A-Za-z_][A-Za-z0-9_]*";
+export const SLUG_SRC = "[A-Za-z0-9][A-Za-z0-9_-]*";
 
 // Anchored matcher for a single `${{ [slug.]KEY }}` token at the start of a string.
 const TOKEN_AT_START = new RegExp(
