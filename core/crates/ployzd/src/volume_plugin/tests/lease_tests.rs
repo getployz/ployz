@@ -134,7 +134,12 @@ async fn adopt_lease_creates_the_managed_root_to_hold_the_record() {
 async fn inspect_reports_a_root_with_its_marker_and_newest_snapshot() {
     let test = TestDir::new();
     set_property(&test, "tank/ployz/data", "ployz:writer", "frozen:42");
-    set_property(&test, "tank/ployz/data", "snapshots", "42\t1700000000");
+    set_property(
+        &test,
+        "tank/ployz/data",
+        "snapshots",
+        "tank/ployz/data@f-2\t42\t1700000000\ntank/ployz/data@zfs-auto-snap\t7\t1600000000",
+    );
     set_property(&test, "tank/ployz", "ployz:lease.data", "2:6.0.0:open");
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
 
@@ -146,7 +151,7 @@ async fn inspect_reports_a_root_with_its_marker_and_newest_snapshot() {
                 "kind": "root",
                 "writer": {"phase": "frozen", "guid": 42},
                 "readonly": false,
-                "newest": {"guid": 42, "created_unix_seconds": 1_700_000_000},
+                "newest": {"name": "f-2", "guid": 42, "created_unix_seconds": 1_700_000_000},
             },
             "lease": {"lease": 2, "pos": {"seq": 6, "round": 0, "sub": 0}, "cycle": "open"},
         }})
@@ -157,12 +162,7 @@ async fn inspect_reports_a_root_with_its_marker_and_newest_snapshot() {
 #[tokio::test]
 async fn inspect_reports_a_slot_and_nothing_for_an_unknown_name() {
     let test = TestDir::new();
-    set_property(
-        &test,
-        "tank/ployz-mirror/copy/fs",
-        "ployz:mirror",
-        "final:9",
-    );
+    set_property(&test, "tank/ployz-mirror/copy", "ployz:mirror", "final:9");
     let (socket, server) = start(&test, USABLE_POOL, &["root", "slot"]);
 
     let response = post(&socket, "/Volume.Inspect", json!({"name": "copy"})).await;
@@ -173,6 +173,7 @@ async fn inspect_reports_a_slot_and_nothing_for_an_unknown_name() {
             "mirror": {"phase": "final", "guid": 9},
             "readonly": true,
             "newest": null,
+            "resume_token": null,
         })
     );
     let response = post(&socket, "/Volume.Inspect", json!({"name": "missing"})).await;
