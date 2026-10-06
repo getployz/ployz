@@ -445,7 +445,7 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
         )?;
         if service.config_attachments.iter().any(|config| {
             service.volume_attachments.iter().any(|volume| {
-                volume.mount_path.as_str().trim_end_matches('/') == config.mount_dir.as_str()
+                cleaned(volume.mount_path.as_str()) == config.mount_dir.as_str()
             })
         }) {
             return Err(ConfigError::at(
@@ -470,6 +470,22 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
         nonempty(&volume.name, "volumes.name")?;
     }
     Ok(intent)
+}
+
+/// The directory a container path names once `//`, `.` and `..` resolve, as
+/// the runtime resolves a mount target.
+fn cleaned(path: &str) -> String {
+    let mut segments = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            segment => segments.push(segment),
+        }
+    }
+    format!("/{}", segments.join("/"))
 }
 
 /// Refuse a Service whose Config Mounts would put two files at one path, or a
@@ -510,7 +526,8 @@ fn mounted_files(
         ));
     }
     let volume_on_file = service.volume_attachments.iter().any(|volume| {
-        let at = volume.mount_path.trim_end_matches('/');
+        let at = cleaned(volume.mount_path.as_str());
+        let at = at.as_str();
         paths.contains(at)
             || at
                 .match_indices('/')

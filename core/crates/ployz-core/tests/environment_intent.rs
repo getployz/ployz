@@ -214,6 +214,10 @@ fn configs_refuse_bare_references_and_colliding_mounts() {
         ("/etc/a", true),
         ("/etc/a/", true),
         ("/etc/a/b", true),
+        ("/etc//a", true),
+        ("/etc/./a", true),
+        ("/etc/x/../a", true),
+        ("//etc/.", true),
         ("/etc/b", false),
     ] {
         let mut value = with_config(json!({"a":file(json!([]))}), mount("/etc"));
