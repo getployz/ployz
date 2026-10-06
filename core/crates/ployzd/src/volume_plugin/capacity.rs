@@ -20,8 +20,11 @@ fn storage_error(error: super::VolumeError) -> ployz_core::RpcError {
         super::VolumeError::Capacity(error) => error.into_rpc_error(),
         error => ployz_core::RpcError {
             code: ployz_core::RpcErrorCode::Internal,
-            message: format!("Storage preparation failed: {error}"),
+            message: "Storage preparation failed".into(),
             details: serde_json::json!({"code": "storage_preparation_failed"}),
+            cause: std::iter::once(error.to_string())
+                .chain(ployz_core::error_chain::causes(&error))
+                .collect(),
         },
     }
 }
@@ -44,8 +47,8 @@ impl VolumeStorage {
                 let Some(name) = dataset.name.strip_prefix(&prefix) else {
                     continue;
                 };
-                let name =
-                    ployz_core::DockerVolumeName::parse(name).map_err(|error| error.to_string())?;
+                let name = ployz_core::DockerVolumeName::parse(name)
+                    .map_err(|error| ployz_core::error_chain::inline(&error))?;
                 let maximum = ProvisionedVolumeMaximumBytes::new(
                     std::num::NonZeroU64::new(dataset.refquota)
                         .ok_or("Volume has no finite bound")?,

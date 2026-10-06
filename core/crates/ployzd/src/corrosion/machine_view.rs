@@ -92,7 +92,7 @@ async fn run(
         let mut subscription = match subscription {
             Ok(Ok(subscription)) => subscription,
             Ok(Err(error)) => {
-                tracing::warn!(error = %error, "Machine view subscription failed, retrying");
+                tracing::warn!(error = %ployz_core::error_chain::inline(&error), "Machine view subscription failed, retrying");
                 tokio::select! {
                     () = tokio::time::sleep(RETRY_INTERVAL) => continue,
                     () = shutdown.cancelled() => return,
@@ -110,7 +110,7 @@ async fn run(
             match wait(&mut subscription, &shutdown).await {
                 Wake::Changed | Wake::Refresh => refresh(&replicated, &publish).await,
                 Wake::Resubscribe(error) => {
-                    tracing::warn!(error = %error, "Machine view subscription ended, reopening");
+                    tracing::warn!(error = %ployz_core::error_chain::inline(&error), "Machine view subscription ended, reopening");
                     tokio::select! {
                         () = tokio::time::sleep(RETRY_INTERVAL) => break,
                         () = shutdown.cancelled() => return,
@@ -170,7 +170,10 @@ async fn refresh(replicated: &ReplicatedStore, publish: &watch::Sender<MachinesS
                 true
             });
         }
-        Err(error) => eprintln!("failed to read the Machines table for the Machine view: {error}"),
+        Err(error) => eprintln!(
+            "failed to read the Machines table for the Machine view: {error}",
+            error = ployz_core::error_chain::inline(&error),
+        ),
     }
 }
 

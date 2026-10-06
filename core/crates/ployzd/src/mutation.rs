@@ -26,7 +26,7 @@ pub enum Error {
     #[error("a Ployz installation or upgrade is active")]
     Busy,
     /// Local ownership evidence could not be inspected or changed.
-    #[error("Machine mutation admission: {0}")]
+    #[error("Machine mutation admission failed")]
     Io(#[from] io::Error),
 }
 

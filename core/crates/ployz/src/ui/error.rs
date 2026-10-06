@@ -183,6 +183,7 @@ pub(crate) fn rpc_error(code: ployz_core::RpcErrorCode, error: Chain<'_>) -> plo
         code,
         message: inline(error),
         details: Value::Null,
+        cause: Vec::new(),
     }
 }
 

@@ -132,7 +132,7 @@ impl PreparedDeploy {
                 () = session_cancel.cancelled() => return Err(RpcError {
                     code: RpcErrorCode::Unavailable,
                     message: "session closed; in-flight Deploy outcome may be uncertain".into(),
-                    details: Value::Null,
+                    details: Value::Null, cause: Vec::new(),
                 }),
                 outcome = client.confirm(&preview, &token, Some(tx)) => outcome,
             };

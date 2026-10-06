@@ -20,6 +20,7 @@ pub async fn observe_enrollment(entry: &mut Client) -> Result<EnrollmentSnapshot
             code: RpcErrorCode::Unavailable,
             message: "Entry Machine returned no enrollment snapshot".into(),
             details: serde_json::Value::Null,
+            cause: Vec::new(),
         })
 }
 
@@ -41,6 +42,7 @@ pub async fn publish_enrollment(
         code: RpcErrorCode::Conflict,
         message: error.to_string(),
         details: serde_json::Value::Null,
+        cause: Vec::new(),
     })?;
     let mut request = assignment.request.clone();
     request.assigned_subnet = Some(assignment.machine.subnet);

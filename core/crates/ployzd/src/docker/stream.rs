@@ -29,8 +29,10 @@ impl ContainerRuntime {
             .message()
             .await?
             .ok_or_else(|| Status::invalid_argument("exec stream is empty"))?;
-        let ExecRequestFrame::Config(config) = ExecRequestFrame::decode(&first)
-            .map_err(|error| Status::invalid_argument(error.to_string()))?
+        let ExecRequestFrame::Config(config) =
+            ExecRequestFrame::decode(&first).map_err(|error| {
+                ployz_core::rpc::caused_status(tonic::Code::InvalidArgument, &error)
+            })?
         else {
             return Err(Status::invalid_argument(
                 "first exec stream frame must contain config",
@@ -210,7 +212,7 @@ impl ContainerRuntime {
             .map(|entry| {
                 entry
                     .map(parse_log_output)
-                    .map_err(|error| JournalError::Docker(error.to_string()))
+                    .map_err(|error| JournalError::Docker(ployz_core::error_chain::inline(&error)))
             });
         Ok(Box::pin(stream))
     }
@@ -315,7 +317,7 @@ async fn send_exec(
 ) -> Result<(), Status> {
     let payload = frame
         .encode()
-        .map_err(|error| Status::internal(error.to_string()))?;
+        .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Internal, &error))?;
     sender
         .send(Ok(payload))
         .await
@@ -332,6 +334,7 @@ async fn send_exec_error(
             code: RpcErrorCode::Internal,
             message: error.to_string(),
             details: Value::Null,
+            cause: Vec::new(),
         }),
     )
     .await
@@ -361,7 +364,7 @@ fn docker_status(error: super::Error) -> Status {
         RpcErrorCode::Internal | RpcErrorCode::Unknown(_) => tonic::Code::Internal,
         RpcErrorCode::Unauthenticated => tonic::Code::Unauthenticated,
     };
-    Status::new(code, error.to_string())
+    ployz_core::rpc::caused_status(code, &error)
 }
 
 fn parse_log_output(output: LogOutput) -> RawLogEntry {

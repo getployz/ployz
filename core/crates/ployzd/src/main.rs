@@ -93,14 +93,14 @@ fn main() -> ExitCode {
     {
         Ok(runtime) => runtime,
         Err(error) => {
-            eprintln!("{error}");
+            eprintln!("{error}", error = ployz_core::error_chain::inline(&error),);
             return ExitCode::FAILURE;
         }
     };
     let code = match runtime.block_on(run(args)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("{error}");
+            eprintln!("{error}", error = ployz_core::error_chain::inline(&error),);
             daemon_error_exit_code(&error)
         }
     };

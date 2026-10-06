@@ -40,7 +40,7 @@ pub(super) fn capacity<'snapshot>(
             machine: machine.machine.name.clone(),
             source: StorageCapacityError::StorageCapacityUnknown {
                 message: match failure {
-                    Some(Err(error)) => error.message.clone(),
+                    Some(Err(error)) => crate::ui::row(error),
                     _ => "the Machine did not return fresh storage capacity".into(),
                 },
             },

@@ -436,6 +436,7 @@ fn error(message: &str) -> RpcError {
         code: RpcErrorCode::Internal,
         message: message.into(),
         details: serde_json::Value::Null,
+        cause: Vec::new(),
     }
 }
 
@@ -476,6 +477,7 @@ fn unavailable(message: &str) -> RpcError {
         code: RpcErrorCode::Unavailable,
         message: message.into(),
         details: serde_json::Value::Null,
+        cause: Vec::new(),
     }
 }
 

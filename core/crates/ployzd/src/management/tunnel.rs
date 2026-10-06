@@ -57,7 +57,7 @@ pub(super) async fn serve(
         () = shutdown.cancelled() => connection.close(VarInt::from_u32(0), b"shutdown"),
         copied = tokio::io::copy_bidirectional(&mut tcp, &mut stream) => {
             if let Err(error) = copied {
-                tracing::debug!(%error, "tunnel ended");
+                tracing::debug!(error = %ployz_core::error_chain::inline(&error), "tunnel ended");
             }
             // Wait for the peer to hold the final bytes before the close discards them.
             let _ = tokio::time::timeout(OPEN_TIMEOUT, stream.writer().stopped()).await;
@@ -73,7 +73,7 @@ type TunnelStream = tokio::io::Join<iroh::endpoint::RecvStream, iroh::endpoint::
 enum TunnelError {
     #[error("the tunnel did not open in time")]
     Timeout,
-    #[error("no tunnel stream: {0}")]
+    #[error("no tunnel stream")]
     Stream(#[from] iroh::endpoint::ConnectionError),
     #[error("tunnel header: {0}")]
     Header(std::io::Error),

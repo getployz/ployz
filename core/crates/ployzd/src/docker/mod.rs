@@ -241,7 +241,10 @@ impl ContainerRuntime {
             match result {
                 Ok(observation) => observations.push(observation),
                 Err(error) if malformed_container(&error) => {
-                    eprintln!("ignoring malformed managed container {container_id}: {error}");
+                    eprintln!(
+                        "ignoring malformed managed container {container_id}: {error}",
+                        error = ployz_core::error_chain::inline(&error),
+                    );
                 }
                 Err(error) => return Err(error),
             }
@@ -753,14 +756,14 @@ pub enum Error {
     #[error(transparent)]
     Observation(#[from] ployz_core::ContainerObservationError),
     /// A required host telemetry read failed.
-    #[error("host telemetry failed: {0}")]
+    #[error("host telemetry failed")]
     Io(#[from] std::io::Error),
     /// The Ployz bridge has no endpoint available for a new Container.
     #[error("Ployz Docker bridge has no free endpoint capacity")]
     EndpointCapacity,
-    #[error("Docker operation failed: {0}")]
+    #[error("Docker operation failed")]
     Docker(#[from] bollard::errors::Error),
-    #[error("Docker inspect JSON failed: {0}")]
+    #[error("Docker inspect JSON failed")]
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Network(#[from] crate::network::NetworkError),
@@ -772,7 +775,7 @@ pub enum Error {
     MissingField(&'static str),
     #[error("managed container is missing label {0}")]
     MissingLabel(&'static str),
-    #[error("managed container has invalid {field}: {source}")]
+    #[error("managed container has invalid {field}")]
     InvalidValue {
         field: &'static str,
         #[source]
@@ -917,10 +920,13 @@ impl From<&Error> for RpcError {
             }
             _ => serde_json::Value::Null,
         };
+        let code = error.rpc_code();
+        if code == RpcErrorCode::Internal {
+            tracing::warn!(error = %ployz_core::error_chain::inline(error), "Docker request failed");
+        }
         Self {
-            code: error.rpc_code(),
-            message: error.to_string(),
             details,
+            ..Self::caused(code, error)
         }
     }
 }
@@ -934,6 +940,21 @@ mod tests {
         ImageManifestSummary, ImageManifestSummaryImageData, ImageManifestSummaryKindEnum,
         OciPlatform,
     };
+
+    #[test]
+    fn a_docker_500_reaches_the_caller_as_one_cause() {
+        let error = Error::Docker(bollard::errors::Error::DockerResponseServerError {
+            status_code: 500,
+            message: "error from registry: denied".into(),
+        });
+        let rpc = RpcError::from(&error);
+        assert_eq!(rpc.code, RpcErrorCode::Internal);
+        assert_eq!(rpc.message, "Docker operation failed");
+        assert_eq!(
+            rpc.cause,
+            ["Docker responded with status code 500: error from registry: denied"]
+        );
+    }
 
     #[test]
     fn runtime_failures_are_coded_by_kind() {

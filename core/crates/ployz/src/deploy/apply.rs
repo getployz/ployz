@@ -389,6 +389,7 @@ mod tests {
                         code: RpcErrorCode::Unavailable,
                         message: "target Machine RPC timed out".into(),
                         details: serde_json::Value::Null,
+                        cause: Vec::new(),
                     },
                 },
             },

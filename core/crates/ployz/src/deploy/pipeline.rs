@@ -217,6 +217,7 @@ fn require_namespace_present(preview: &DeployPreview) -> Result<(), RpcError> {
                 preview.namespace
             ),
             details: serde_json::Value::Null,
+            cause: Vec::new(),
         });
     }
     Ok(())
@@ -244,6 +245,7 @@ fn invalid_argument(message: String) -> RpcError {
         code: RpcErrorCode::InvalidArgument,
         message,
         details: serde_json::Value::Null,
+        cause: Vec::new(),
     }
 }
 
@@ -415,7 +417,7 @@ fn observation_warnings(
         .map(|failure| DeployWarning::ObservationFailed {
             kind,
             machine_id: failure.machine_id,
-            message: failure.error.message.clone(),
+            message: crate::ui::row(&failure.error),
         })
         .chain(
             omissions

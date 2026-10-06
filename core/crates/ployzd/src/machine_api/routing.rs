@@ -33,7 +33,7 @@ use crate::corrosion::ReplicatedStore;
 enum BackendError {
     #[error("remote backend cache lock poisoned")]
     Poisoned,
-    #[error("{0}")]
+    #[error(transparent)]
     Endpoint(#[from] tonic::transport::Error),
 }
 
@@ -65,6 +65,15 @@ pub fn resolve_route(
             resolve_machine_selectors(visible, &selectors).map(ProxyRoute::Many)
         }
     }
+}
+
+fn route_status(error: &TargetResolutionError, visible: &[Machine]) -> Status {
+    let code = if matches!(error, TargetResolutionError::NotFound(_)) && !visible.is_empty() {
+        tonic::Code::NotFound
+    } else {
+        tonic::Code::InvalidArgument
+    };
+    ployz_core::rpc::caused_status(code, error)
 }
 
 #[derive(Clone)]
@@ -107,7 +116,10 @@ impl MachineProxy {
         let routing =
             match routing_from_metadata(&MetadataMap::from_headers(request.headers().clone())) {
                 Ok(routing) => routing,
-                Err(error) => return Status::invalid_argument(error.to_string()).into_http(),
+                Err(error) => {
+                    return ployz_core::rpc::caused_status(tonic::Code::InvalidArgument, &error)
+                        .into_http();
+                }
             };
         self.dispatch(request, routing, visible).await
     }
@@ -128,7 +140,7 @@ impl MachineProxy {
         }
         let route = match resolve_route(routing, visible) {
             Ok(route) => route,
-            Err(error) => return Status::invalid_argument(error.to_string()).into_http(),
+            Err(error) => return route_status(&error, visible).into_http(),
         };
         match route {
             ProxyRoute::Local => self.call_local(request).await,
@@ -162,7 +174,10 @@ impl MachineProxy {
         // client-streaming fan-out command is ever added.
         let request_body = match body.collect().await {
             Ok(body) => body.to_bytes(),
-            Err(error) => return Status::invalid_argument(error.to_string()).into_http(),
+            Err(error) => {
+                return ployz_core::rpc::caused_status(tonic::Code::InvalidArgument, &error)
+                    .into_http();
+            }
         };
         let (sender, receiver) = mpsc::channel(targets.len().max(1));
         for target in targets {
@@ -196,14 +211,14 @@ impl MachineProxy {
     ) -> Result<http::Response<Body>, Status> {
         let mut channel = self
             .remote_backend(address)
-            .map_err(|error| Status::internal(error.to_string()))?;
+            .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Internal, &error))?;
         poll_fn(|context| channel.poll_ready(context))
             .await
-            .map_err(|error| Status::unavailable(error.to_string()))?;
+            .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Unavailable, &error))?;
         channel
             .call(request)
             .await
-            .map_err(|error| Status::unavailable(error.to_string()))
+            .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Unavailable, &error))
     }
 
     fn remote_backend(&self, address: ManagementAddress) -> Result<Channel, BackendError> {
@@ -280,8 +295,12 @@ async fn stream_target(
                         }
                         Ok(None) => break,
                         Err(error) => {
-                            send_failure(&sender, &target, Status::internal(error.to_string()))
-                                .await;
+                            send_failure(
+                                &sender,
+                                &target,
+                                ployz_core::rpc::caused_status(tonic::Code::Internal, &error),
+                            )
+                            .await;
                             return;
                         }
                     }
@@ -300,7 +319,12 @@ async fn stream_target(
     }
     if !buffered.is_empty() {
         let error = grpc_frames(&buffered).expect_err("an incomplete buffered frame must fail");
-        send_failure(&sender, &target, Status::internal(error.to_string())).await;
+        send_failure(
+            &sender,
+            &target,
+            ployz_core::rpc::caused_status(tonic::Code::Internal, &error),
+        )
+        .await;
     } else if !sent_payload {
         let _ = sender
             .send(Bytes::from(
@@ -374,7 +398,11 @@ impl Service<http::Request<Body>> for MachineProxy {
             )) {
                 Ok(routing) => routing,
                 Err(error) => {
-                    return Ok(Status::invalid_argument(error.to_string()).into_http());
+                    return Ok(ployz_core::rpc::caused_status(
+                        tonic::Code::InvalidArgument,
+                        &error,
+                    )
+                    .into_http());
                 }
             };
             if routing == RoutingRequest::Local {
@@ -384,7 +412,11 @@ impl Service<http::Request<Body>> for MachineProxy {
                 Some(store) => match store.machines().await {
                     Ok(snapshot) => snapshot.observations,
                     Err(error) => {
-                        return Ok(Status::unavailable(error.to_string()).into_http());
+                        return Ok(ployz_core::rpc::caused_status(
+                            tonic::Code::Unavailable,
+                            &error,
+                        )
+                        .into_http());
                     }
                 },
                 None => Vec::new(),

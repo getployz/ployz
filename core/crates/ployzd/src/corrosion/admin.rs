@@ -56,7 +56,8 @@ impl AdminClient {
 
             let mut values = Vec::new();
             while let Some(frame) = framed.next().await {
-                let frame = frame.map_err(|error| Error::Protocol(error.to_string()))?;
+                let frame = frame
+                    .map_err(|error| Error::Protocol(ployz_core::error_chain::inline(&error)))?;
                 let response = decode_response(&frame)?;
                 match response {
                     AdminResponse::Success => return Ok(values),
@@ -141,7 +142,8 @@ fn decode_membership_state(value: Value) -> Result<MembershipState, Error> {
 }
 
 fn decode_response(frame: &[u8]) -> Result<AdminResponse, Error> {
-    serde_json::from_slice(frame).map_err(|error| Error::Protocol(error.to_string()))
+    serde_json::from_slice(frame)
+        .map_err(|error| Error::Protocol(ployz_core::error_chain::inline(&error)))
 }
 
 #[derive(Deserialize)]

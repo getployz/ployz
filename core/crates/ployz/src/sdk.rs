@@ -213,7 +213,7 @@ impl Session {
             () = self.inner.cancel.cancelled() => Err(RpcError {
                 code: RpcErrorCode::Unavailable,
                 message: "session closed; in-flight Register outcome may be uncertain".into(),
-                details: Value::Null,
+                details: Value::Null, cause: Vec::new(),
             }),
             result = crate::enrollment::publish_enrollment(&mut client, assignment) => result,
         }
@@ -260,6 +260,7 @@ impl Session {
             code: RpcErrorCode::Internal,
             message: "Machine set a Management Client without a Management Capability".into(),
             details: Value::Null,
+            cause: Vec::new(),
         })
     }
 
@@ -349,6 +350,7 @@ impl Session {
                 code: RpcErrorCode::Unsupported,
                 message: format!("{RUNTIME_WATCH_CAPABILITY} is not advertised"),
                 details: Value::Null,
+                cause: Vec::new(),
             });
         }
         let payload = op::RuntimeWatch::into_request(RuntimeWatchRequest {})
@@ -904,6 +906,7 @@ impl Watch {
                         code: RpcErrorCode::Unavailable,
                         message: "Watch stream ended; reconnect to resume".into(),
                         details: Value::Null,
+                        cause: Vec::new(),
                     })
                 }
             }
@@ -955,6 +958,7 @@ fn closed() -> RpcError {
         code: RpcErrorCode::Unavailable,
         message: "client is closed".into(),
         details: Value::Null,
+        cause: Vec::new(),
     }
 }
 
@@ -963,6 +967,7 @@ fn invalid_argument(message: String) -> RpcError {
         code: RpcErrorCode::InvalidArgument,
         message,
         details: Value::Null,
+        cause: Vec::new(),
     }
 }
 
@@ -995,6 +1000,7 @@ pub(crate) fn preparation_error(
                 message: "No eligible Build Machine was selected; no build was started.".into(),
                 details: serde_json::json!({"preparation":{"kind":"failed", "stage":"Selection",
                     "message":"No eligible Build Machine was selected; no build was started.", "rejections":rejections}}),
+                cause: Vec::new(),
             }
         }
         PreparationError::Connect(_) => RpcError {
@@ -1002,6 +1008,7 @@ pub(crate) fn preparation_error(
             message: "Could not read Machine observations during preparation.".into(),
             details: serde_json::json!({"preparation":{"kind":"failed", "stage":"Observation",
                 "message":"Could not read Machine observations during preparation."}}),
+            cause: Vec::new(),
         },
         PreparationError::Build(crate::build::Error::RemoteBuild { outcome }) => {
             let cancelled = cancellation_requested
@@ -1018,6 +1025,7 @@ pub(crate) fn preparation_error(
                 code: RpcErrorCode::Internal,
                 message,
                 details,
+                cause: Vec::new(),
             }
         }
         PreparationError::UploadNeeded(services) => preparation::upload_needed(&services),
@@ -1025,12 +1033,14 @@ pub(crate) fn preparation_error(
             code: RpcErrorCode::Unavailable,
             message,
             details: serde_json::json!({"preparation":{"kind":"cancelled"}}),
+            cause: Vec::new(),
         },
         PreparationError::Build(_) | PreparationError::Plan(_) | PreparationError::Delivery(_) => {
             RpcError {
                 code: RpcErrorCode::Internal,
                 details: serde_json::json!({"preparation":{"kind":"failed", "message":message}}),
                 message,
+                cause: Vec::new(),
             }
         }
     }

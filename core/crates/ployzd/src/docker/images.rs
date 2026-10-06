@@ -80,7 +80,7 @@ fn refusal(error: DockerError) -> ImageRemovalOutcome {
         }
     }
     ImageRemovalOutcome::Failed {
-        message: error.to_string(),
+        message: ployz_core::error_chain::inline(&error),
     }
 }
 

@@ -183,7 +183,10 @@ async fn attempt(
     // holds the Machine's mutation lock, so deploys on this Machine proceed.
     let installation = match local.admit_installation() {
         Ok(installation) => installation,
-        Err(error) => return failed(Stage::Admission, error.to_string()).with_work(work),
+        Err(error) => {
+            return failed(Stage::Admission, ployz_core::error_chain::inline(&error))
+                .with_work(work);
+        }
     };
     // Acceptance may have been revoked while this Build waited in the queue.
     let (machine_id, concurrency) = match require_build_acceptance(&local) {
@@ -330,7 +333,7 @@ fn receive_and_execute(
     let deadline = std::time::Instant::now() + admission.remaining();
     let mut upload = match admission.upload() {
         Ok(upload) => upload,
-        Err(error) => return failed(Stage::Upload, error.to_string()),
+        Err(error) => return failed(Stage::Upload, ployz_core::error_chain::inline(&error)),
     };
     loop {
         let Some(payload) = source.blocking_recv() else {
@@ -341,11 +344,11 @@ fn receive_and_execute(
         };
         let frame = match remote::decode::<Input>(&payload) {
             Ok(frame) => frame,
-            Err(error) => return failed(Stage::Upload, error.to_string()),
+            Err(error) => return failed(Stage::Upload, ployz_core::error_chain::inline(&error)),
         };
         let finished = matches!(frame, Input::Finish);
         if let Err(error) = upload.accept(frame) {
-            return failed(Stage::Upload, error.to_string());
+            return failed(Stage::Upload, ployz_core::error_chain::inline(&error));
         }
         if finished {
             break;
@@ -384,7 +387,9 @@ fn receive_and_execute(
             .block_on(crate::docker::ImageProxy::open(context.source))
         {
             Ok(proxy) => proxy,
-            Err(error) => return failed(Stage::Preparation, error.to_string()),
+            Err(error) => {
+                return failed(Stage::Preparation, ployz_core::error_chain::inline(&error));
+            }
         };
         context.source.management_address =
             ployz_core::ManagementAddress(std::net::Ipv4Addr::LOCALHOST.to_ipv6_mapped());
@@ -432,10 +437,10 @@ fn failure(stage: Stage, error: BuildError) -> Outcome {
         Outcome::Unknown {
             work: Default::default(),
             stage,
-            message: error.to_string(),
+            message: ployz_core::error_chain::inline(&error),
         }
     } else {
-        failed(stage, error.to_string())
+        failed(stage, ployz_core::error_chain::inline(&error))
     }
 }
 

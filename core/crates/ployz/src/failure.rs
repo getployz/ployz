@@ -223,13 +223,16 @@ impl Failure {
             code,
             message: self.to_string(),
             details,
+            cause: self.causes(),
         }
     }
 
     pub(crate) fn json(&self) -> Value {
-        let mut error = serde_json::json!(self.report());
+        let report = self.report();
+        let cause = serde_json::json!(report.cause);
+        let mut error = serde_json::json!(report);
         if let Some(fields) = error.as_object_mut() {
-            fields.insert("cause".into(), serde_json::json!(self.causes()));
+            fields.insert("cause".into(), cause);
         }
         error
     }
@@ -244,6 +247,15 @@ fn classify(error: &(dyn Error + Send + Sync + 'static)) -> (RpcErrorCode, Value
     }
     if let Some(ConnectError::Remote(error)) = error.downcast_ref::<ConnectError>() {
         return (error.code.clone(), error.details.clone());
+    }
+    if let Some(OperatorError::NotRunning {
+        running_in_scope, ..
+    }) = error.downcast_ref::<OperatorError>()
+    {
+        return (
+            RpcErrorCode::NotFound,
+            serde_json::json!({ "valid_children": running_in_scope }),
+        );
     }
     if let Some(
         failed @ ProvisionError::CleanupAfter {
@@ -400,6 +412,7 @@ fn operator_code(error: &OperatorError) -> RpcErrorCode {
         OperatorError::Connect(error) => connect_code(error),
         OperatorError::Rpc(error) => error.to_rpc_error().code,
         OperatorError::Selector(error) => code(error),
+        OperatorError::NotRunning { .. } => RpcErrorCode::NotFound,
         OperatorError::MachineSelector(error) => machine_selector_code(error),
         OperatorError::Container(error) => code(error),
         OperatorError::Codec(error) => codec_code(error),
@@ -599,7 +612,7 @@ pub(crate) fn partial_failure_details<T>(result: &PartialResult<T, RpcError>) ->
     result
         .failures
         .iter()
-        .map(|failure| format!("{}: {}", failure.machine_id, failure.error.message))
+        .map(|failure| format!("{}: {}", failure.machine_id, crate::ui::row(&failure.error)))
         .chain(
             result
                 .omissions
@@ -835,6 +848,7 @@ mod tests {
             code: RpcErrorCode::Unavailable,
             message: "Machine is starting".into(),
             details: serde_json::json!({ "next": "ployz server ls", "machine": "alpha" }),
+            cause: Vec::new(),
         });
         let outer = inner.context("Could not deploy.");
         let report = outer.report();
@@ -986,6 +1000,7 @@ mod tests {
             code: RpcErrorCode::Internal,
             message: "boom".into(),
             details: Value::Null,
+            cause: Vec::new(),
         });
         assert_eq!(failure.to_string(), "boom");
         assert_eq!(source::<RpcError>(&failure).message, "boom");
@@ -1063,6 +1078,17 @@ mod tests {
         assert_eq!(Failure::exit(7).printed_exit(), Some(7));
         assert_eq!(Failure::partial().printed_exit(), Some(3));
         assert_eq!(Failure::usage("nope").printed_exit(), None);
+    }
+
+    #[test]
+    fn a_service_that_is_not_running_lists_the_running_ones() {
+        let failure = Failure::from(OperatorError::NotRunning {
+            name: "nope".into(),
+            running_in_scope: vec!["web".into()],
+        });
+        assert_eq!(failure.report().code, RpcErrorCode::NotFound);
+        assert_eq!(failure.report().message, "No running Service \"nope\"");
+        assert_eq!(failure.hints(), [Hint::valid(["web"])]);
     }
 
     #[test]

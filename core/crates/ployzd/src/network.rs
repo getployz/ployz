@@ -74,15 +74,15 @@ pub enum NetworkError {
         observed: String,
         recovery: &'static str,
     },
-    #[error("network I/O failed: {0}")]
+    #[error("network I/O failed")]
     Io(#[from] std::io::Error),
-    #[error("Docker network operation failed: {0}")]
+    #[error("Docker network operation failed")]
     Docker(#[from] bollard::errors::Error),
-    #[error("WireGuard operation failed: {0}")]
+    #[error("WireGuard operation failed")]
     WireGuard(#[from] defguard_wireguard_rs::error::WireguardInterfaceError),
-    #[error("endpoint discovery request failed: {0}")]
+    #[error("endpoint discovery request failed")]
     Http(#[from] reqwest::Error),
-    #[error("endpoint discovery output is invalid: {0}")]
+    #[error("endpoint discovery output is invalid")]
     Json(#[from] serde_json::Error),
     #[error("{program} failed: {stderr}")]
     Command { program: String, stderr: String },

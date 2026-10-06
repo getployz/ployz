@@ -167,6 +167,7 @@ fn invalid(message: impl ToString) -> RpcError {
         code: RpcErrorCode::InvalidArgument,
         message: message.to_string(),
         details: Value::Null,
+        cause: Vec::new(),
     }
 }
 
@@ -353,6 +354,7 @@ pub(crate) fn upload_needed(services: &[ServiceName]) -> RpcError {
              changed. Upload its source again"
         ),
         details: json!({"preparation": Needed::UploadNeeded { services: services.to_vec() }}),
+        cause: Vec::new(),
     }
 }
 

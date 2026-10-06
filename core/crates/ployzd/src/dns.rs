@@ -96,7 +96,10 @@ impl ProjectionInputs {
                 } else {
                     "serving unfiltered answers"
                 };
-                eprintln!("failed to load Internal DNS membership; {fallback}: {error}");
+                eprintln!(
+                    "failed to load Internal DNS membership; {fallback}: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                );
                 false
             }
         }
@@ -353,7 +356,10 @@ impl RequestHandler for Handler {
                         .unwrap_or_else(|_| failed_response(request, ResponseCode::ServFail))
                 }
                 Err(error) => {
-                    eprintln!("failed to forward DNS query: {error}");
+                    eprintln!(
+                        "failed to forward DNS query: {error}",
+                        error = ployz_core::error_chain::inline(&error),
+                    );
                     send_error(request, response_handle, ResponseCode::ServFail).await
                 }
             },
@@ -424,7 +430,10 @@ pub async fn run(
     let tcp = match TcpListener::bind(listen_address).await {
         Ok(listener) => Some(listener),
         Err(error) => {
-            eprintln!("failed to bind best-effort DNS TCP listener on {listen_address}: {error}");
+            eprintln!(
+                "failed to bind best-effort DNS TCP listener on {listen_address}: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            );
             None
         }
     };
@@ -483,7 +492,7 @@ async fn watch_projection(
                         true
                     }
                     Err(error) => {
-                        eprintln!("failed to rebuild DNS projection: {error}");
+                        eprintln!("failed to rebuild DNS projection: {error}", error = ployz_core::error_chain::inline(&error),);
                         false
                     }
                 }
@@ -541,7 +550,10 @@ fn system_upstreams(listen_address: Ipv4Addr) -> Vec<SocketAddr> {
     match fs::read_to_string("/etc/resolv.conf") {
         Ok(text) => nameservers_from_resolv_conf(&text, listen_address),
         Err(error) => {
-            eprintln!("failed to load DNS upstreams from /etc/resolv.conf: {error}");
+            eprintln!(
+                "failed to load DNS upstreams from /etc/resolv.conf: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            );
             Vec::new()
         }
     }

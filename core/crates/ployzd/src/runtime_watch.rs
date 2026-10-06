@@ -232,7 +232,10 @@ where
             Ok(snapshot) => snapshot,
             Err(error) => {
                 let _ = sender
-                    .send(Err(Status::unavailable(error.to_string())))
+                    .send(Err(ployz_core::rpc::caused_status(
+                        tonic::Code::Unavailable,
+                        &error,
+                    )))
                     .await;
                 return;
             }
@@ -253,15 +256,19 @@ where
                     Ok(payload) => payload,
                     Err(error @ RuntimeWatchPayloadError::MessageTooLarge { .. }) => {
                         let _ = sender
-                            .send(Err(Status::out_of_range(error.to_string())))
+                            .send(Err(ployz_core::rpc::caused_status(
+                                tonic::Code::OutOfRange,
+                                &error,
+                            )))
                             .await;
                         return;
                     }
                     Err(error) => {
                         let _ = sender
-                            .send(Err(Status::internal(ployz_core::error_chain::inline(
+                            .send(Err(ployz_core::rpc::caused_status(
+                                tonic::Code::Internal,
                                 &error,
-                            ))))
+                            )))
                             .await;
                         return;
                     }
@@ -281,14 +288,14 @@ where
                         Ok(next) => snapshot = next,
                         Err(error) => {
                             let _ = sender
-                                .send(Err(Status::unavailable(error.to_string())))
+                                .send(Err(ployz_core::rpc::caused_status(tonic::Code::Unavailable, &error)))
                                 .await;
                             return;
                         }
                     },
                     Some(Err(error)) => {
                         let _ = sender
-                            .send(Err(Status::unavailable(error.to_string())))
+                            .send(Err(ployz_core::rpc::caused_status(tonic::Code::Unavailable, &error)))
                             .await;
                         return;
                     }
