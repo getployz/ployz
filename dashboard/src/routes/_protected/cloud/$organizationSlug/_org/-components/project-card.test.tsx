@@ -61,3 +61,13 @@ it("keeps empty and single-service footers compact", () => {
   view.rerender(<ProjectCard name="Store" environment={{ ...environment, services: environment.services.slice(0, 1) }} runtimeServices={[]} runtimeStatus="observed" />);
   expect(screen.getByText("0/1 service online")).toBeTruthy();
 });
+
+it("folds services past eight tiles into one count tile", () => {
+  const services = Array.from({ length: 36 }, (_, index) => ({ ...environment.services[0], id: `s${index}`, name: `s${index}`, slug: `s${index}` }));
+  const view = render(<ProjectCard name="Store" environment={{ ...environment, services }} runtimeServices={[]} runtimeStatus="observed" />);
+  expect(screen.getByLabelText("Services").children).toHaveLength(8);
+  expect(screen.getByText("+29")).toBeTruthy();
+  view.rerender(<ProjectCard name="Store" environment={{ ...environment, services: services.slice(0, 8) }} runtimeServices={[]} runtimeStatus="observed" />);
+  expect(screen.getByLabelText("Services").children).toHaveLength(8);
+  expect(screen.queryByText(/^\+/)).toBeNull();
+});
