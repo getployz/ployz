@@ -4,16 +4,25 @@
 mod error;
 mod exit;
 mod mode;
+mod result;
+mod table;
 mod tone;
 
 #[cfg(test)]
 pub(crate) use error::chain_text;
 pub use error::{Hint, VALID_SHOWN, causes};
-pub(crate) use error::{retrying, row, rpc_error, warn};
+pub(crate) use error::{retrying, row, rpc_error, warn_cause};
 #[cfg(test)]
 pub(crate) use exit::plain;
 pub use exit::{PARTIAL_EXIT, exit, exit_code};
 pub use mode::{Mode, Surroundings, mode};
+pub use result::json;
+pub(crate) use result::{
+    Gaps, captured, done, emit, emit_committed, emit_line, emitted, fields, finish, finish_fanout,
+    hint, interactive, list, note, note_inline, rows, show, stream, warn,
+};
+pub(crate) use table::short_id;
+pub use table::{Cell, Fields, Table};
 pub use tone::{Painted, Tone, clap_styles};
 
 /// `--color`: when output carries color.

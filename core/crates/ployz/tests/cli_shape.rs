@@ -902,3 +902,58 @@ fn no_error_derive_interpolates_its_source() {
         found.join("\n")
     );
 }
+
+#[test]
+fn results_on_stdout_side_channel_on_stderr() {
+    let home = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+            .args(args)
+            .env("HOME", home.path())
+            .env("PLOYZ_CONFIG", home.path().join("config.yaml"))
+            .env(
+                "PLOYZ_STORE",
+                format!("sqlite:{}", home.path().join("store.db").display()),
+            )
+            .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
+            .env_remove("PLOYZ_TOKEN")
+            .env_remove("PLOYZ_PROJECT")
+            .env_remove("PLOYZ_ENV")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0), "{args:?}: {output:?}");
+        (
+            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap(),
+        )
+    };
+    run(&["project", "new", "shop"]);
+
+    let (stdout, stderr) = run(&["service", "add", "web", "--image", "nginx:1"]);
+    assert!(stdout.starts_with("Staged new Service web"), "{stdout}");
+    assert_eq!(stderr, "next: ployz deploy\n");
+
+    let (stdout, stderr) = run(&["service", "ls"]);
+    assert_eq!(
+        stdout,
+        "SERVICE\tPRIVATE DNS\tSOURCE\tNEXT DEPLOY\nweb\tweb\timage\tcreate\n"
+    );
+    assert_eq!(stderr, "");
+
+    let (stdout, stderr) = run(&["service", "inspect", "web"]);
+    assert!(stdout.starts_with("service = web\n"), "{stdout}");
+    assert!(stdout.contains("\nimage = \"nginx:1\"\n"), "{stdout}");
+    assert_eq!(stderr, "");
+
+    let (stdout, stderr) = run(&["volume", "ls"]);
+    assert_eq!(
+        stdout,
+        "VOLUME\tSTORAGE\tSHARED WRITES\tMOUNTS\tDEPLOYED\tNEXT DEPLOY\n"
+    );
+    assert_eq!(stderr, "No Volumes in production yet.\n");
+
+    let (stdout, stderr) = run(&["--json", "service", "ls"]);
+    let listed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(listed.is_object(), "{stdout}");
+    assert_eq!(stderr, "");
+}

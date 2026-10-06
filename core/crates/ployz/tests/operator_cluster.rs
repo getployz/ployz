@@ -2,8 +2,8 @@ use std::{collections::BTreeSet, path::Path, process, time::Duration};
 
 use futures_util::StreamExt;
 use ployz::operator::{
-    ExecMode, LogInput, ServiceArg, exec_options, merge_logs, open_exec, open_machine_logs,
-    open_service_logs, select_exec_container,
+    ExecMode, LogInput, ServiceArg, exec_options, merge_logs, observe_service_logs, open_exec,
+    open_machine_logs, open_service_logs, select_exec_container,
 };
 use ployz_core::{
     ContainerAction, ContainerKind, ContainerSelector, ExecRequestFrame, ExecResponseFrame,
@@ -222,20 +222,7 @@ async fn assert_service_logs(
         service: ServiceSelector::from(service_id),
         containers: Vec::new(),
     }];
-    let entries = collect_logs(
-        open_service_logs(
-            client,
-            &args,
-            None,
-            &[],
-            log_options(),
-            CancellationToken::new(),
-            None,
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
+    let entries = collect_logs(open_logs(client, &args, &[]).await.unwrap()).await;
     let actual = entries
         .iter()
         .filter_map(|entry| match &entry.metadata.origin {
@@ -274,17 +261,13 @@ async fn assert_service_logs(
     }
 
     assert!(
-        open_service_logs(
+        open_logs(
             client,
             &[ServiceArg {
                 service: ServiceSelector::parse("undeployed").unwrap(),
                 containers: Vec::new(),
             }],
-            None,
-            &[],
-            log_options(),
-            CancellationToken::new(),
-            None,
+            &[]
         )
         .await
         .is_err()
@@ -296,63 +279,61 @@ async fn assert_service_logs(
         selected.display_name.clone(),
         selected.container_id.as_str()[..12].to_owned(),
     ] {
-        let inputs = open_service_logs(
+        let inputs = open_logs(
             client,
             &[ServiceArg {
                 service: ServiceSelector::from(service_id),
                 containers: vec![ContainerSelector::parse(&selector).unwrap()],
             }],
-            None,
             &[],
-            log_options(),
-            CancellationToken::new(),
-            None,
         )
         .await
         .unwrap();
         assert_eq!(inputs.len(), 1);
     }
     assert!(
-        open_service_logs(
+        open_logs(
             client,
             &[ServiceArg {
                 service: ServiceSelector::from(service_id),
                 containers: vec![ContainerSelector::parse("missing").unwrap()],
             }],
-            None,
-            &[],
-            log_options(),
-            CancellationToken::new(),
-            None,
+            &[]
         )
         .await
         .is_err()
     );
-    let selected_machine = open_service_logs(
+    let selected_machine = open_logs(
         client,
         &args,
-        None,
         &[FanoutSelector::parse(machines[0].name.as_str()).unwrap()],
-        log_options(),
-        CancellationToken::new(),
-        None,
     )
     .await
     .unwrap();
     assert_eq!(selected_machine.len(), 2);
     assert!(
-        open_service_logs(
-            client,
-            &args,
-            None,
-            &[FanoutSelector::parse("missing").unwrap()],
-            log_options(),
-            CancellationToken::new(),
-            None,
-        )
-        .await
-        .is_err()
+        open_logs(client, &args, &[FanoutSelector::parse("missing").unwrap()])
+            .await
+            .is_err()
     );
+}
+
+async fn open_logs(
+    client: &mut ployz::connect::Client,
+    args: &[ServiceArg],
+    machines: &[FanoutSelector],
+) -> Result<Vec<LogInput>, ployz::operator::OperatorError> {
+    let scope = observe_service_logs(client, machines).await?;
+    open_service_logs(
+        client,
+        &scope,
+        args,
+        None,
+        log_options(),
+        CancellationToken::new(),
+        None,
+    )
+    .await
 }
 
 async fn assert_machine_logs(

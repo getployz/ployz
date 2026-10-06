@@ -11,8 +11,8 @@ use std::{
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
 use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
-    ContainerId, ContainerLogsRequest, ContainerRef, ContainerSelector, ExecConfig, ExecOptions,
-    ExecRequestFrame, FanoutSelector, LogBody, LogEntry, LogsOptions, MachineId, MachineLogService,
+    ContainerLogsRequest, ContainerRef, ContainerSelector, ExecConfig, ExecOptions,
+    ExecRequestFrame, FanoutSelector, LogBody, LogEntry, LogsOptions, MachineLogService,
     MachineLogsRequest, MachineName, MachineObservation, MachineTarget, Namespace, OpaquePayload,
     ServiceContainer, ServiceObservation, ServiceSelector, StreamProtocolError, op,
     resolve_container_selector, resolve_machine_selectors, select_service,
@@ -167,12 +167,18 @@ pub enum OperatorError {
         service: String,
         expected: &'static str,
     },
-    #[error("Could not open logs for Container {container_id} on Machine {machine_id}.")]
+    #[error("Could not open logs for {container} on {server}.")]
     OpenContainerLogs {
-        container_id: ContainerId,
-        machine_id: MachineId,
+        container: String,
+        server: String,
         #[source]
         source: Box<OperatorError>,
+    },
+    #[error("Could not start the command in {container}.")]
+    StartExec {
+        container: String,
+        #[source]
+        source: TransportError,
     },
     #[error("Could not open {service} logs on Machine {machine_name}.")]
     OpenMachineLogs {
@@ -425,7 +431,11 @@ pub async fn open_exec(
             &MachineTarget::from(&machine_id),
             tokio_stream::wrappers::ReceiverStream::new(receiver),
         )
-        .await?;
+        .await
+        .map_err(|source| OperatorError::StartExec {
+            container: container.display_name.clone(),
+            source,
+        })?;
     Ok(ExecSession {
         input: sender,
         output,
@@ -435,26 +445,85 @@ pub async fn open_exec(
 /// The label ployzd puts on each container a Deployment creates: its Deploy log ID.
 const DEPLOYMENT_LABEL: &str = "ployz.deployment.id";
 
+/// Ask the Servers `machine_selectors` names, every Server without one, which
+/// Service containers they run. A down Server is asked too, so it is a gap
+/// rather than an unknown name.
+pub async fn observe_service_logs(
+    client: &mut Client,
+    machine_selectors: &[FanoutSelector],
+) -> Result<LogScope, OperatorError> {
+    let machines = client.machines().await?;
+    let asked = asked_machines(&machines, machine_selectors)?;
+    let live = client
+        .live_services_from(&machines, EnvironmentValues::Redacted)
+        .await?;
+    let unanswered = Unanswered {
+        failures: live
+            .containers
+            .failures
+            .iter()
+            .filter(|failure| asked.contains(&failure.machine_id))
+            .cloned()
+            .collect(),
+        omissions: live
+            .containers
+            .omissions
+            .iter()
+            .filter(|machine_id| asked.contains(machine_id))
+            .copied()
+            .collect(),
+        names: machines
+            .iter()
+            .map(|machine| (machine.machine.id, machine.machine.name.clone()))
+            .collect(),
+    };
+    Ok(LogScope {
+        asked,
+        live,
+        unanswered,
+    })
+}
+
+/// The Servers a logs command asks: those `selectors` name, whatever their
+/// membership, or every Server without one.
+pub(crate) fn asked_machines(
+    machines: &[MachineObservation],
+    selectors: &[FanoutSelector],
+) -> Result<HashSet<ployz_core::MachineId>, OperatorError> {
+    if selectors.is_empty() {
+        return Ok(machines.iter().map(|machine| machine.machine.id).collect());
+    }
+    let visible = machines
+        .iter()
+        .map(|observation| observation.machine.clone())
+        .collect::<Vec<_>>();
+    Ok(resolve_machine_selectors(&visible, selectors)?
+        .into_iter()
+        .map(|machine| machine.id)
+        .collect())
+}
+
+/// What the asked Servers run, and which of them did not answer.
+pub struct LogScope {
+    asked: HashSet<ployz_core::MachineId>,
+    live: ployz_core::LiveServices<ployz_core::RpcError>,
+    pub unanswered: Unanswered,
+}
+
 /// Open log streams for `args`; none means every Service in `namespace`, or in the
 /// whole Cluster without one. `deployment` keeps only the containers that
 /// Deployment created.
 pub async fn open_service_logs(
     client: &mut Client,
+    scope: &LogScope,
     args: &[ServiceArg],
     namespace: Option<&Namespace>,
-    machine_selectors: &[FanoutSelector],
     options: LogsOptions,
     cancellation: CancellationToken,
     deployment: Option<&str>,
 ) -> Result<Vec<LogInput>, OperatorError> {
-    let machines = client.machines().await?;
-    let selected_machines = select_machines(&machines, machine_selectors)?;
-    let machine_ids = selected_machines
-        .iter()
-        .map(|machine| machine.machine.id)
-        .collect::<HashSet<_>>();
-    let live = client.live_services(EnvironmentValues::Redacted).await?;
-    let services = live.services();
+    let machine_ids = &scope.asked;
+    let services = scope.live.services();
     let mut every = Vec::new();
     let args = if args.is_empty() {
         every = services
@@ -542,8 +611,16 @@ pub async fn open_service_logs(
             .await
             {
                 return Err(OperatorError::OpenContainerLogs {
-                    container_id: observation.container_id,
-                    machine_id: observation.machine_id,
+                    container: observation.display_name.clone(),
+                    server: scope
+                        .unanswered
+                        .names
+                        .iter()
+                        .find(|(id, _)| *id == observation.machine_id)
+                        .map_or_else(
+                            || observation.machine_id.to_string(),
+                            |(_, name)| name.to_string(),
+                        ),
                     source: Box::new(error.into()),
                 });
             }
@@ -553,6 +630,14 @@ pub async fn open_service_logs(
         return Err(OperatorError::NoDeploymentContainers);
     }
     Ok(inputs)
+}
+
+/// Asked Servers whose Live Observation failed or was skipped, with every
+/// Server's name.
+pub struct Unanswered {
+    pub failures: Vec<ployz_core::MachineFailure<ployz_core::RpcError>>,
+    pub omissions: Vec<ployz_core::MachineId>,
+    pub names: Vec<(ployz_core::MachineId, ployz_core::MachineName)>,
 }
 
 pub async fn open_machine_logs(

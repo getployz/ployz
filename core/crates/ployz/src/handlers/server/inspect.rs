@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use ployz_core::{
     InspectMachineUpgradeRequest, InspectRequest, MachineObservation, MachineStorageObservation,
-    MachineTarget, RpcErrorCode, op,
+    MachineTarget, MembershipObservation, RpcErrorCode, op,
 };
 use serde_json::{Value, json};
 
@@ -9,7 +9,7 @@ use super::with_client;
 use crate::{
     connect::{ConnectError, TARGET_RPC_TIMEOUT},
     handlers::{Error, leaf_matches},
-    output::{self, Gaps, say},
+    ui::{self, Cell, Gaps, Table, Tone},
 };
 
 pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
@@ -17,48 +17,62 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
         Box::pin(async move {
             let mut machines = client.machines().await?;
             let storage = client.observe_machine_storage(&mut machines).await;
-            let warning = daemon_skew_warning(&machines, env!("CARGO_PKG_VERSION"));
+            if let Some(warning) = daemon_skew_warning(&machines, env!("CARGO_PKG_VERSION")) {
+                ui::warn(warning);
+            }
             let listed = machines.iter().map(observation_json).collect::<Vec<_>>();
-            let mut gaps = Gaps::default();
+            let mut gaps = Gaps::default().named(
+                machines
+                    .iter()
+                    .map(|observed| (observed.machine.id, &observed.machine.name)),
+            );
             gaps.extend(&storage.failures, &storage.omissions);
-            let finished = output::finish_fanout("servers", &listed, &gaps, || {
-                say!(
-                    "ID\tNAME\tMEMBERSHIP\tSTORAGE\tSUBNET\tGATEWAY\tPUBLIC IP\tENDPOINTS\tHOSTNAME\tDAEMON\tDOCKER\tOS\tKERNEL\tARCH"
-                );
-                for observed in &machines {
-                    let machine = &observed.machine;
-                    say!(
-                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                        machine.id,
-                        machine.name,
+            let mut table = Table::new(
+                [
+                    "SERVER",
+                    "MEMBERSHIP",
+                    "STORAGE",
+                    "PUBLIC IP",
+                    "SUBNET",
+                    "DAEMON",
+                    "OS",
+                ],
+                "No Servers yet.",
+            );
+            for observed in &machines {
+                let machine = &observed.machine;
+                table.row([
+                    Cell::from(machine.name.to_string()),
+                    Cell::status(
                         observed.membership.as_str(),
-                        format_storage(observed.storage),
-                        machine.subnet,
-                        machine.subnet.gateway().0,
+                        membership_tone(&observed.membership),
+                    ),
+                    Cell::from(format_storage(observed.storage)),
+                    Cell::from(
                         machine
                             .public_ip
-                            .map_or_else(|| "-".into(), |ip| ip.to_string()),
-                        machine
-                            .advertised_endpoints
-                            .iter()
-                            .map(|endpoint| endpoint.0.to_string())
-                            .collect::<Vec<_>>()
-                            .join(","),
-                        machine.runtime.hostname,
-                        machine.runtime.daemon_version,
-                        machine.runtime.docker_version,
-                        machine.runtime.os_pretty_name,
-                        machine.runtime.kernel_version,
-                        machine.runtime.architecture,
-                    );
-                }
-            });
-            if let Some(warning) = warning {
-                eprintln!("{warning}");
+                            .map(|ip| ip.to_string())
+                            .unwrap_or_default(),
+                    ),
+                    Cell::from(machine.subnet.to_string()),
+                    Cell::from(machine.runtime.daemon_version.to_string()),
+                    Cell::from(format!(
+                        "{} {}",
+                        machine.runtime.os_pretty_name, machine.runtime.architecture
+                    )),
+                ]);
             }
-            finished
+            crate::ui::finish_fanout("servers", &listed, &gaps, || ui::rows(&table))
         })
     })
+}
+
+fn membership_tone(membership: &MembershipObservation) -> Tone {
+    match membership {
+        MembershipObservation::Up => Tone::Good,
+        MembershipObservation::Suspect | MembershipObservation::Unknown => Tone::Change,
+        MembershipObservation::Down | MembershipObservation::Unrecognized(_) => Tone::Bad,
+    }
 }
 
 #[must_use]
@@ -70,10 +84,10 @@ fn daemon_skew_warning(machines: &[MachineObservation], cli_version: &str) -> Op
     match count {
         0 => None,
         1 => Some(format!(
-            "WARNING: 1 Server runs a daemon version different from CLI {cli_version}."
+            "1 Server runs a daemon version different from CLI {cli_version}."
         )),
         count => Some(format!(
-            "WARNING: {count} Servers run daemon versions different from CLI {cli_version}."
+            "{count} Servers run daemon versions different from CLI {cli_version}."
         )),
     }
 }
@@ -152,7 +166,7 @@ pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                     fields.insert("machine".into(), super::machine_json(machine));
                 }
             }
-            output::show(&json!({ "server": server, "upgrade": upgrade }))
+            crate::ui::show(&json!({ "server": server, "upgrade": upgrade }))
         })
     })
 }

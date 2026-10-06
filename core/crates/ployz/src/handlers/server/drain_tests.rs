@@ -3,7 +3,7 @@
 
 use ployz_core::{Machine, MachineId, MachineName, QualifiedService, WireGuardPublicKey};
 
-use super::{NOTHING_MOVES_BACK, closing_lines, line};
+use super::{line, remaining};
 use crate::drain::{
     DrainOutcome, DrainReport, DrainStop, MachineRef, Move, MoveFailure, Remaining, ServiceDrain,
     ServicesRole, StayReason,
@@ -171,23 +171,20 @@ fn every_outcome_that_existed_prints_the_same_line() {
         services: vec![service("db")],
         unchosen: vec![service("db")],
     });
-    assert_eq!(
-        closing_lines(&db),
-        ["Still on web-2: app/db", NOTHING_MOVES_BACK]
-    );
+    assert_eq!(remaining(&db), Ok("Still on web-2: app/db".to_owned()));
     let empty = report(Remaining::Observed {
         services: Vec::new(),
         unchosen: Vec::new(),
     });
     assert_eq!(
-        closing_lines(&empty),
-        ["Nothing runs on web-2 now.", NOTHING_MOVES_BACK]
+        remaining(&empty),
+        Ok("Nothing runs on web-2 now.".to_owned())
     );
     assert!(empty.complete());
 }
 
 #[test]
-fn a_stopped_drain_says_why_and_that_what_remains_went_unchecked() {
+fn a_stopped_drain_leaves_what_remains_unchecked() {
     let drained = server('b', "web-2");
     let report = DrainReport {
         server: drained,
@@ -202,12 +199,8 @@ fn a_stopped_drain_says_why_and_that_what_remains_went_unchecked() {
         },
     };
     assert_eq!(
-        closing_lines(&report),
-        [
-            "Drain stopped: cancelled",
-            "Cannot observe Services on Server web-2: no terminal response",
-            NOTHING_MOVES_BACK,
-        ]
+        remaining(&report),
+        Err("Cannot observe Services on Server web-2: no terminal response".to_owned())
     );
     assert!(!report.complete());
 }

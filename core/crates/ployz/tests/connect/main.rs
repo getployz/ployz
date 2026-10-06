@@ -447,13 +447,10 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
         assert!(!output.stderr.is_empty(), "{args:?}: expected diagnostics");
     }
 
-    let container_id = "c".repeat(12);
-    let machine_id = "a".repeat(32);
     let human_cases = [(
         &["ps"][..],
         format!(
-            "CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE\n{container_id}\tapp/api\tservice\t{machine_id}\trunning, healthy\n{}\tapp/worker\tpre-deploy hook\t{machine_id}\texited with code 0\n{}\tapp/worker\tservice\t{machine_id}\trunning, unhealthy\n{}\tapp/worker\tservice\t{machine_id}\trunning, starting\n{}\tapp/worker\tservice\t{machine_id}\texited with code 1\n",
-            "0".repeat(12),
+            "SERVICE\tKIND\tSERVER\tSTATE\tCONTAINER\napp/api\tservice\tone\trunning, healthy\t-\napp/worker\tpre-deploy hook\tone\texited with code 0\t-\napp/worker\tservice\tone\trunning, unhealthy\t{}\napp/worker\tservice\tone\trunning, starting\t{}\napp/worker\tservice\tone\texited with code 1\t{}\n",
             "d".repeat(12),
             "e".repeat(12),
             "f".repeat(12)
@@ -466,6 +463,25 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
             String::from_utf8(output.stdout).unwrap(),
             expected,
             "{args:?}"
+        );
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("did not answer"), "{args:?}: {stderr}");
+        assert!(!stderr.contains(&"b".repeat(32)), "{args:?}: {stderr}");
+    }
+
+    // When logs fail because a Server is down, the failure still names it first.
+    for args in [
+        &["logs", "app/gone"][..],
+        &["logs", "app/api", "--machine", "down"],
+    ] {
+        let output = run_ployz(address, args).await;
+        assert!(!output.status.success(), "{args:?}: {output:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        let gap = stderr.find("! down did not answer");
+        let error = stderr.find("error:");
+        assert!(
+            gap.is_some() && error.is_some() && gap < error,
+            "{args:?}: {stderr}"
         );
     }
     server.abort();

@@ -70,7 +70,7 @@ pub(crate) async fn run_expecting<C, T, E: std::error::Error + 'static>(
             Ok(Err(error)) => {
                 if last.is_none() {
                     match expected {
-                        Some(Expected(notice)) => eprintln!("{notice}"),
+                        Some(Expected(notice)) => crate::ui::note(format_args!("{notice}")),
                         None => crate::ui::retrying(
                             operation,
                             &error,

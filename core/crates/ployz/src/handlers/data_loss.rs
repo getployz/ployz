@@ -9,8 +9,7 @@ use std::{
     io::{self, Write},
 };
 
-use crate::output::{self, say};
-use crate::ui::Hint;
+use crate::ui::{self, Hint};
 
 #[derive(Clone, Copy)]
 pub(super) enum VolumeEffect {
@@ -42,7 +41,10 @@ pub(super) fn confirm_removal(
         ConnectionSource::LocalSocket => "local socket",
         ConnectionSource::Cloud => "Cloud",
     };
-    say!("{operation}: {}\nContext: {context}", targets.join(" "));
+    crate::ui::note(format_args!(
+        "{operation}: {}\nContext: {context}",
+        targets.join(" ")
+    ));
     let retry = retry_args(root, client.connection_source());
     confirm_with(
         observed,
@@ -58,10 +60,10 @@ pub(super) fn confirm_removal(
                     .ok()
                     .flatten()
                     .is_some(),
-            tty: output::interactive(),
+            tty: ui::interactive(),
         },
         &retry,
-        &mut output::human(),
+        &mut std::io::stderr(),
         read_answer,
     )
 }

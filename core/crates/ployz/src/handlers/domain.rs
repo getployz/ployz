@@ -13,7 +13,7 @@ use ployz_store::{
 use super::store::{self, Next};
 use super::{Error, leaf_matches, required};
 use crate::cli::{positional, value};
-use crate::output::{self, say};
+use crate::ui::{self, Cell, Fields, Hint, Table, Tone};
 
 pub(crate) fn command() -> Command {
     Command::new("domain")
@@ -134,18 +134,28 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
         .domains
         .iter()
         .find_map(|row| next(matches, row.action.as_ref()));
-    output::finish(&Next::new(&view, next), || {
-        if view.domains.is_empty() {
-            say!(
-                "No domains in {}/{}. Add one with: ployz domain add SERVICE",
-                view.environment.project,
-                view.environment.name
-            );
-        }
-        for row in &view.domains {
-            show(row);
-        }
-    })
+    let mut table = Table::new(
+        ["DOMAIN", "SERVICE", "PORT", "STATUS", "REASON"],
+        format!(
+            "No domains in {}/{} yet.",
+            view.environment.project, view.environment.name
+        ),
+    );
+    for row in &view.domains {
+        table.row(cells(row));
+    }
+    ui::list(&Next::new(&view, next.clone()), &table)?;
+    for row in &view.domains {
+        say_dns(row);
+    }
+    if view.domains.is_empty() {
+        ui::hint(&Hint::Next(store::next(
+            matches,
+            &["domain", "add", "SERVICE"],
+        )));
+    }
+    say_next(next);
+    Ok(())
 }
 
 fn check(root: &ArgMatches) -> Result<(), Error> {
@@ -156,22 +166,42 @@ fn check(root: &ArgMatches) -> Result<(), Error> {
     };
     let view = store::store(root)?.read(&query)?;
     let next = next(matches, view.domain.action.as_ref());
-    output::finish(&Next::new(&view, next), || show(&view.domain))
+    let row = &view.domain;
+    let [domain, service, port, status, reason] = cells(row);
+    let record = Fields::new()
+        .field("domain", domain)
+        .field("service", service)
+        .field("port", port)
+        .field("status", status)
+        .field("reason", reason);
+    ui::fields(&Next::new(&view, next.clone()), &record)?;
+    say_dns(row);
+    say_next(next);
+    Ok(())
 }
 
 /// A staged domain change and, when it changed anything, `ployz deploy` to ship it.
 fn staged(matches: &ArgMatches, result: &DomainStaged, what: &str) -> Result<(), Error> {
     let hint = (!result.staged.is_empty()).then(|| store::next(matches, &["deploy"]));
-    output::finish(&Next::new(result, hint), || {
-        say!(
+    ui::done(
+        &Next::new(result, hint.clone()),
+        format_args!(
             "{what} {} on {} in {}/{} (revision {}).",
             result.domain.shown(),
             result.domain.service,
             result.environment.project,
             result.environment.name,
             result.environment.revision
-        );
-    })
+        ),
+    )?;
+    say_next(hint);
+    Ok(())
+}
+
+fn say_next(next: Option<String>) {
+    if let Some(next) = next {
+        ui::hint(&Hint::Next(next));
+    }
 }
 
 /// The command a domain's action names, when it names one.
@@ -183,33 +213,37 @@ fn next(matches: &ArgMatches, action: Option<&DomainAction>) -> Option<String> {
     }
 }
 
-fn show(row: &DomainRow) {
+fn cells(row: &DomainRow) -> [Cell; 5] {
     let status = match row.status {
-        DomainStatus::Ready => "Ready",
-        DomainStatus::SettingUp => "Setting up",
-        DomainStatus::NeedsAttention => "Needs attention",
+        DomainStatus::Ready => Cell::status("ready", Tone::Good),
+        DomainStatus::SettingUp => Cell::status("setting up", Tone::Change),
+        DomainStatus::NeedsAttention => Cell::status("needs attention", Tone::Bad),
     };
-    let port = row
-        .domain
-        .port
-        .map_or_else(|| "PORT".to_owned(), |port| port.to_string());
-    let reason = row
-        .reason
-        .as_deref()
-        .map_or_else(String::new, |reason| format!(" · {reason}"));
-    say!(
-        "{}\t{} → {port}\t{status}{reason}",
-        row.domain.shown(),
-        row.domain.service
-    );
+    [
+        Cell::from(row.domain.shown().to_string()),
+        Cell::from(row.domain.service.to_string()),
+        Cell::from(
+            row.domain
+                .port
+                .map(|port| port.to_string())
+                .unwrap_or_default(),
+        ),
+        status,
+        Cell::from(row.reason.clone().unwrap_or_default()),
+    ]
+}
+
+/// The DNS records a domain still needs, one per stderr line.
+fn say_dns(row: &DomainRow) {
     if let Some(DomainAction::Dns { records }) = &row.action {
         for record in records {
-            say!(
-                "  add DNS {}\t{}\t{}",
+            ui::note(format_args!(
+                "Add DNS for {}: {} {} {}",
+                row.domain.shown(),
                 record.kind,
                 record.name,
                 record.value
-            );
+            ));
         }
     }
 }

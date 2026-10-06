@@ -11,8 +11,7 @@ use ployz_core::RpcErrorCode;
 
 use crate::cloud_account::{self, BillingPage, Credential, ServerClears};
 use crate::cloud_login::{CredentialStore, LoginError};
-use crate::output::say;
-use crate::ui::Hint;
+use crate::ui::{self, Cell, Hint, Table, Tone};
 
 pub(crate) fn token_command() -> Command {
     Command::new("token")
@@ -137,16 +136,14 @@ fn token_new(root: &ArgMatches) -> Result<(), Error> {
     let token = in_cloud(root, async |_, credential| {
         cloud_account::new_token(credential, name, days).await
     })?;
-    crate::output::finish(&serde_json::json!({ "token": token }), || {
-        say!(
-            "Made token {} ({}) in Organization {}, expiring {}.",
+    ui::finish(&serde_json::json!({ "token": token }), || {
+        ui::note(format_args!(
+            "Made token {} in Organization {}, expiring {}. Its secret is shown only now; set it as PLOYZ_TOKEN:",
             token.name.escape_debug(),
-            token.id,
             token.organization,
             token.expires_at
-        );
-        say!("Its secret is shown only now; set it as PLOYZ_TOKEN:");
-        say!("{}", token.secret);
+        ));
+        ui::stream(&token.secret);
     })
 }
 
@@ -154,31 +151,55 @@ fn token_list(root: &ArgMatches) -> Result<(), Error> {
     let listed = in_cloud(root, async |_, credential| {
         cloud_account::credentials(credential).await
     })?;
-    crate::output::finish(&listed, || {
-        say!("KIND\tID\tNAME\tEXPIRES");
-        for token in &listed.tokens {
-            let state = if token.expired { " (expired)" } else { "" };
-            let current = if token.current { " *" } else { "" };
-            say!(
-                "token\t{}\t{}{current}\t{}{state}",
-                token.id,
-                token.name.escape_debug(),
-                token.expires_at
-            );
+    let mut table = Table::new(
+        ["KIND", "ID", "NAME", "EXPIRES", "STATE"],
+        "No tokens or signed-in devices.",
+    );
+    let current = |current| {
+        if current {
+            Cell::status("current", Tone::Good)
+        } else {
+            Cell::from("")
         }
-        for device in &listed.devices {
-            let current = if device.current { " *" } else { "" };
-            say!("device\t{}\t-{current}\t{}", device.id, device.expires_at);
-        }
-        for revoking in &listed.revoking {
-            say!(
-                "{}\t{}\trevoked; not yet cleared on {}\t-",
-                super::store::word(&revoking.kind),
-                revoking.id,
-                super::joined(&revoking.unconfirmed)
-            );
-        }
-    })
+    };
+    for token in &listed.tokens {
+        table.row([
+            Cell::from("token"),
+            Cell::from(&token.id),
+            Cell::from(token.name.escape_debug().to_string()),
+            Cell::from(token.expires_at.to_string()),
+            if token.expired {
+                Cell::status("expired", Tone::Bad)
+            } else {
+                current(token.current)
+            },
+        ]);
+    }
+    for device in &listed.devices {
+        table.row([
+            Cell::from("device"),
+            Cell::from(&device.id),
+            Cell::from(""),
+            Cell::from(device.expires_at.to_string()),
+            current(device.current),
+        ]);
+    }
+    for revoking in &listed.revoking {
+        table.row([
+            Cell::from(super::store::word(&revoking.kind)),
+            Cell::from(&revoking.id),
+            Cell::from(""),
+            Cell::from(""),
+            Cell::status(
+                format!(
+                    "revoked; not yet cleared on {}",
+                    super::joined(&revoking.unconfirmed)
+                ),
+                Tone::Change,
+            ),
+        ]);
+    }
+    ui::list(&listed, &table)
 }
 
 fn token_remove(root: &ArgMatches) -> Result<(), Error> {
@@ -194,10 +215,14 @@ fn token_remove(root: &ArgMatches) -> Result<(), Error> {
         servers: &servers,
         next: next.as_deref(),
     };
-    crate::output::finish(&report, || {
+    ui::finish(&report, || {
         match removed.kind {
-            cloud_account::CredentialKind::Device => say!("Signed out device {}.", removed.id),
-            cloud_account::CredentialKind::Token => say!("Revoked token {}.", removed.id),
+            cloud_account::CredentialKind::Device => {
+                ui::stream(format_args!("Signed out device {}.", removed.id));
+            }
+            cloud_account::CredentialKind::Token => {
+                ui::stream(format_args!("Revoked token {}.", removed.id));
+            }
         }
         say_clears(&servers, next.as_deref());
     })?;
@@ -226,15 +251,19 @@ pub(super) fn retry_clears(servers: &ServerClears, id: &str) -> Option<String> {
     (!servers.unconfirmed.is_empty()).then(|| format!("ployz token rm {id}"))
 }
 
-pub(super) fn say_clears(servers: &ServerClears, next: Option<&str>) {
+pub(super) fn say_clears(servers: &ServerClears, retry: Option<&str>) {
     if !servers.confirmed.is_empty() {
-        say!("Cleared its key on {} Server(s).", servers.confirmed.len());
+        ui::note(format_args!(
+            "Cleared its key on {} Server(s).",
+            servers.confirmed.len()
+        ));
     }
-    if let Some(next) = next {
-        say!(
-            "Not yet confirmed on Server(s) {}; Cloud already refuses it. Retry: {next}",
+    if let Some(retry) = retry {
+        ui::warn(format!(
+            "{} did not confirm; Cloud already refuses it.",
             super::joined(&servers.unconfirmed)
-        );
+        ));
+        ui::hint(&Hint::Retry(retry.to_owned()));
     }
 }
 
@@ -242,15 +271,21 @@ fn org_list(root: &ArgMatches) -> Result<(), Error> {
     let organizations = in_cloud(root, async |_, credential| {
         cloud_account::organizations(credential).await
     })?;
-    crate::output::finish(
+    let mut table = Table::new(["ORGANIZATION", "NAME", "CURRENT"], "No Organizations yet.");
+    for organization in &organizations {
+        table.row([
+            Cell::from(organization.slug.to_string()),
+            Cell::from(organization.name.to_string()),
+            if organization.current {
+                Cell::status("current", Tone::Good)
+            } else {
+                Cell::from("")
+            },
+        ]);
+    }
+    ui::list(
         &serde_json::json!({ "organizations": organizations }),
-        || {
-            say!("ORGANIZATION\tNAME");
-            for organization in &organizations {
-                let current = if organization.current { " *" } else { "" };
-                say!("{}{current}\t{}", organization.slug, organization.name);
-            }
-        },
+        &table,
     )
 }
 
@@ -280,10 +315,12 @@ fn org_build_order(root: &ArgMatches) -> Result<(), Error> {
     if let (Some(_), Some(fields)) = (order, json.as_object_mut()) {
         fields.insert("immediate".to_owned(), serde_json::json!(true));
     }
-    crate::output::finish(&json, || match (order, view.build_order) {
-        (Some(_), _) => say!("Builds try {builders} from the next build on."),
-        (None, None) => say!("Auto: builds try {builders}."),
-        (None, Some(_)) => say!("Builds try {builders}."),
+    crate::ui::finish(&json, || match (order, view.build_order) {
+        (Some(_), _) => ui::stream(format_args!(
+            "Builds try {builders} from the next build on."
+        )),
+        (None, None) => ui::stream(format_args!("Auto: builds try {builders}.")),
+        (None, Some(_)) => ui::stream(format_args!("Builds try {builders}.")),
     })
 }
 
@@ -294,11 +331,11 @@ fn org_use(root: &ArgMatches) -> Result<(), Error> {
     let organization = in_cloud(root, async |store, credential| {
         cloud_account::use_organization(store, credential, slug).await
     })?;
-    crate::output::finish(&serde_json::json!({ "organization": organization }), || {
-        say!(
+    crate::ui::finish(&serde_json::json!({ "organization": organization }), || {
+        crate::ui::stream(format_args!(
             "This device now acts in Organization {}.",
             organization.slug
-        )
+        ))
     })
 }
 
@@ -329,17 +366,29 @@ fn org_remove(root: &ArgMatches) -> Result<(), Error> {
     })?;
     let next = (!removal.removed).then_some(retry.as_str());
     let report = Next::new(&removal, next.map(str::to_owned));
-    crate::output::finish(&report, || {
+    ui::finish(&report, || {
         if !removal.servers.confirmed.is_empty() {
-            say!("Unpaired {} Server(s).", removal.servers.confirmed.len());
+            ui::note(format_args!(
+                "Unpaired {} Server(s).",
+                removal.servers.confirmed.len()
+            ));
         }
         match next {
-            None => say!("Removed Organization {}.", removal.organization),
-            Some(next) => say!(
-                "Organization {} is disabled but stays until Server(s) {} confirm unpairing. Retry: {next}",
-                removal.organization,
-                super::joined(&removal.servers.unconfirmed)
-            ),
+            None => ui::stream(format_args!(
+                "Removed Organization {}.",
+                removal.organization
+            )),
+            Some(next) => {
+                ui::stream(format_args!(
+                    "Disabled Organization {}; it stays until its Servers confirm unpairing.",
+                    removal.organization,
+                ));
+                ui::warn(format!(
+                    "{} did not confirm unpairing.",
+                    super::joined(&removal.servers.unconfirmed)
+                ));
+                ui::hint(&Hint::Retry(next.to_owned()));
+            }
         }
     })?;
     match removal.removed {
@@ -361,7 +410,7 @@ fn billing(root: &ArgMatches) -> Result<(), Error> {
     })?;
     let next = billing.plan.next();
     let report = BillingReport { billing, next };
-    crate::output::finish(&report, || {
+    crate::ui::finish(&report, || {
         let billing = &report.billing;
         let plan = billing.plan.label();
         let domains = if billing.custom_domains {
@@ -369,12 +418,12 @@ fn billing(root: &ArgMatches) -> Result<(), Error> {
         } else {
             "need Pro"
         };
-        say!(
+        ui::stream(format_args!(
             "Organization {}: {plan}; custom domains {domains}.",
             billing.organization
-        );
+        ));
         if let Some(next) = report.next {
-            say!("Next: {next}");
+            ui::hint(&Hint::Next(next.to_owned()));
         }
     })
 }
@@ -391,9 +440,9 @@ fn billing_page(root: &ArgMatches, page: BillingPage) -> Result<(), Error> {
     let url = in_cloud(root, async |_, credential| {
         cloud_account::billing_url(credential, page).await
     })?;
-    crate::output::finish(&serde_json::json!({ "url": url }), || {
-        say!("Open {url}");
-        if crate::output::interactive() {
+    crate::ui::finish(&serde_json::json!({ "url": url }), || {
+        ui::stream(&url);
+        if ui::interactive() {
             open_browser(&url);
         }
     })
