@@ -276,6 +276,7 @@ fn apply(store: &ConfigStore, n: u8) -> ployz_core::DeployIntent {
             &deployment(n),
             &runner,
             RunEvidence::Executed {
+                progress: Vec::new(),
                 outcome: Box::new(outcome),
                 removed: Vec::new(),
             },

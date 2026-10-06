@@ -203,6 +203,7 @@ fn run(store: &ConfigStore, id: &DeploymentId, services: &[&str]) {
             id,
             &runner(),
             RunEvidence::Executed {
+                progress: Vec::new(),
                 outcome: Box::new(outcome),
                 removed: Vec::new(),
             },

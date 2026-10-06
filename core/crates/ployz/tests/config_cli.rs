@@ -636,6 +636,7 @@ fn a_project_removal_reports_applied_environments_before_a_later_refusal() {
                 &admitted.id,
                 &runner,
                 ployz_store::RunEvidence::Executed {
+                    progress: Vec::new(),
                     outcome: Box::new(outcome),
                     removed: Vec::new(),
                 },
@@ -2654,6 +2655,7 @@ fn succeed(store: &ConfigStore, id: &ployz_store::DeploymentId) {
             id,
             &runner,
             ployz_store::RunEvidence::Executed {
+                progress: Vec::new(),
                 outcome: Box::new(outcome),
                 removed: Vec::new(),
             },

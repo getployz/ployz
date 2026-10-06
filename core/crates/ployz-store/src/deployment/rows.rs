@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{
-    ContainerId, ExecutionError, MachineId, OperationPhase, OperationRow, OperationStatus,
-    RpcError, ServiceName,
+    ContainerId, DependencyHealthFailure, ExecutionError, HookFailure, MachineId, OperationPhase,
+    OperationRow, OperationStatus, RpcError, ServiceName,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -33,8 +33,7 @@ pub enum RowState {
     },
     /// The Deployment stopped before this work finished.
     NotAttempted,
-    /// Its runner stopped reporting before this work finished, so what it did is
-    /// unknown, as the Deployment's own status says.
+    /// Reporting stopped before this row's outcome was confirmed.
     Unknown,
 }
 
@@ -154,11 +153,42 @@ impl From<&ExecutionError> for Failure {
                 failure,
             } => (
                 format!("Dependency {dependency} failed its health gate"),
-                vec![failure.to_string()],
+                match failure {
+                    DependencyHealthFailure::Observation { error } => {
+                        let mut cause = vec![
+                            "Container observation failed".to_owned(),
+                            error.message.clone(),
+                        ];
+                        cause.extend(ployz_core::error_chain::causes(error));
+                        cause
+                    }
+                    _ => vec![failure.to_string()],
+                },
             ),
             ExecutionError::Hook { failure, .. } => (
                 "The hook Container failed".to_owned(),
-                vec![failure.to_string()],
+                match failure {
+                    HookFailure::Cancelled {
+                        stop_error: Some(error),
+                    }
+                    | HookFailure::TimedOut {
+                        stop_error: Some(error),
+                    } => {
+                        let stage = if matches!(failure, HookFailure::Cancelled { .. }) {
+                            "cancelled"
+                        } else {
+                            "timed out"
+                        };
+                        let mut cause = vec![
+                            stage.to_owned(),
+                            "Stopping the hook failed".to_owned(),
+                            error.message.clone(),
+                        ];
+                        cause.extend(ployz_core::error_chain::causes(error));
+                        cause
+                    }
+                    _ => vec![failure.to_string()],
+                },
             ),
             ExecutionError::Cancelled => ("Cancelled".to_owned(), Vec::new()),
         };
@@ -173,20 +203,25 @@ type Key = (ServiceName, MachineId);
 #[derive(Debug, Default)]
 pub struct RowTracker {
     last: BTreeMap<Key, RowState>,
-    containers: BTreeMap<Key, ContainerId>,
+    containers: BTreeMap<u32, ContainerId>,
+    failed: BTreeMap<Key, u32>,
 }
 
 impl RowTracker {
     /// The rows of `snapshot` whose state changed since the last snapshot.
     pub fn changes(&mut self, snapshot: &[OperationRow]) -> Vec<ServerProgress> {
         let mut grouped: BTreeMap<Key, (String, Vec<&OperationStatus>)> = BTreeMap::new();
+        self.failed.clear();
         for row in snapshot {
             let Some(service) = row.service_name() else {
                 continue;
             };
             let key = (service.clone(), row.machine_id);
             if let Some(container) = container(&row.status) {
-                self.containers.insert(key.clone(), container);
+                self.containers.insert(row.index, container);
+            }
+            if matches!(row.status, OperationStatus::Failed { .. }) {
+                self.failed.entry(key.clone()).or_insert(row.index);
             }
             let server = row
                 .machine_name
@@ -215,11 +250,12 @@ impl RowTracker {
         changes
     }
 
-    /// The Container `row` last worked on.
+    /// The failed operation's Container, when its progress identified one.
     #[must_use]
     pub fn container(&self, row: &ServerProgress) -> Option<ContainerId> {
-        self.containers
+        self.failed
             .get(&(row.service.clone(), row.machine))
+            .and_then(|index| self.containers.get(index))
             .copied()
     }
 }
@@ -287,7 +323,11 @@ pub(super) fn record(
 ) -> Result<(), RpcError> {
     let now = now();
     for row in rows {
-        let started = (row.state != RowState::Pending).then_some(now);
+        let started = matches!(
+            row.state,
+            RowState::Running { .. } | RowState::Completed | RowState::Failed { .. }
+        )
+        .then_some(now);
         let finished = row.state.finished().then_some(now);
         let machine = row.machine.to_string();
         tx.execute(
@@ -338,7 +378,10 @@ pub(super) fn of_nodes(
     if found.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let lost = stored.summary.status == DeploymentStatus::Unknown;
+    let lost = matches!(
+        stored.summary.status,
+        DeploymentStatus::Unknown | DeploymentStatus::Cancelled
+    );
     let mut by_service: BTreeMap<ServiceName, BTreeMap<MachineId, ServerRow>> = BTreeMap::new();
     for row in &found {
         let state: RowState = row.json(2, "Deployment row")?;

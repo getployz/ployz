@@ -241,7 +241,7 @@ impl Run {
             .renewing(self.executing(session, &running), || running.abort())
             .await;
         match outcome {
-            Ok(outcome) => {
+            Ok((outcome, progress)) => {
                 let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
                     // Deleting is never interrupted: a half-deleted set stays accepted.
                     self.renewing(remove_volumes(session, deletes), || ()).await
@@ -249,6 +249,7 @@ impl Run {
                     Vec::new()
                 };
                 self.record(RunEvidence::Executed {
+                    progress,
                     outcome: Box::new(outcome),
                     removed,
                 })
@@ -443,7 +444,13 @@ impl Run {
         &self,
         session: &Session,
         running: &super::RunningDeploy,
-    ) -> Result<DeployOutcome<ployz_core::ExecutionError>, RpcError> {
+    ) -> Result<
+        (
+            DeployOutcome<ployz_core::ExecutionError>,
+            Vec<ployz_store::ServerProgress>,
+        ),
+        RpcError,
+    > {
         let mut confirmed = std::collections::BTreeSet::new();
         let mut tracker = RowTracker::default();
         let mut pending = BTreeMap::new();
@@ -492,11 +499,7 @@ impl Run {
             }
         }
         let outcome = running.finished().await?;
-        if !pending.is_empty() {
-            self.record(RunEvidence::Progress(pending.into_values().collect()))
-                .await?;
-        }
-        Ok(outcome)
+        Ok((outcome, pending.into_values().collect()))
     }
 
     /// Await `work` while renewing this runner's lease on the Deployment; a cancel

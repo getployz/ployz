@@ -271,6 +271,9 @@ pub enum RunEvidence {
     /// Volumes it removes did: the runner deletes them only after a successful Deploy.
     Executed {
         outcome: Box<DeployOutcome<ExecutionError>>,
+        /// Final row changes not yet acknowledged while execution was running.
+        #[serde(default)]
+        progress: Vec<ServerProgress>,
         #[serde(default)]
         removed: Vec<VolumeRemoval>,
     },

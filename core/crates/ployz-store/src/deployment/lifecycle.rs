@@ -549,7 +549,11 @@ pub(crate) fn record(
             save(tx, &mut stored)?;
             Ok(stored.summary)
         }
-        RunEvidence::Executed { outcome, removed } => {
+        RunEvidence::Executed {
+            outcome,
+            removed,
+            progress,
+        } => {
             // A replay must carry the same evidence: Applied State moved since, so
             // recomputing its Node Outcomes would not tell.
             let executed = crate::removal::short_digest(
@@ -601,6 +605,7 @@ pub(crate) fn record(
                 reason,
                 cause,
             };
+            super::rows::record(tx, &stored, &progress)?;
             super::rows::settle(tx, &stored)?;
             stored.run.nodes = nodes;
             stored.run.executed = Some(executed);
