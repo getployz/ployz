@@ -474,11 +474,44 @@ fn failed_rows_use_the_failed_operations_container() {
     );
     let mut tracker = RowTracker::default();
     tracker.changes(&progress(&[("web", "alpha", waiting(0))]));
-    let changed = tracker.changes(&progress(&[("web", "alpha", failed)]));
+    let mut inspect_failed = failed;
+    inspect_failed["error"]["action"] = json!("InspectContainer");
+    let changed = tracker.changes(&progress(&[("web", "alpha", inspect_failed)]));
     assert_eq!(
         tracker.container(&changed[0]),
         Some("c".repeat(64).parse().unwrap())
     );
+}
+
+#[test]
+fn replacement_failure_logs_follow_the_old_or_new_container_that_failed() {
+    let replacement: ployz_core::DeployOperation = serde_json::from_value(json!({
+        "type":"replace_container", "machine_id":"a".repeat(32), "old_container_id":"b".repeat(64),
+        "spec":{"service_id":"a".repeat(32),"name":"web","mode":{"mode":"replicated","replicas":1},"container":{"image":"nginx:1","pull_policy":"missing"}},
+        "skip_health_monitor": false
+    })).unwrap();
+    for (phase, action, expected) in [
+        ("stopping_container", "StopContainer", Some("b")),
+        ("removing_container", "RemoveContainer", Some("b")),
+        ("removing_container", "InspectContainer", Some("b")),
+        ("creating_container", "CreateContainer", None),
+        ("starting_container", "StartContainer", None),
+    ] {
+        let mut tracker = RowTracker::default();
+        let mut snapshot = progress(&[("web", "alpha", waiting(0))]);
+        snapshot[0].operation = replacement.clone();
+        tracker.changes(&snapshot);
+        snapshot[0].status =
+            serde_json::from_value(json!({"type":"running","phase":{"type":phase}})).unwrap();
+        tracker.changes(&snapshot);
+        snapshot[0].status = serde_json::from_value(json!({"type":"failed","error":{"type":"machine","action":action,"error":{"code":"internal","message":"failed","details":{}}}})).unwrap();
+        let changed = tracker.changes(&snapshot);
+        assert_eq!(
+            tracker.container(&changed[0]),
+            expected.map(|id| id.repeat(64).parse().unwrap()),
+            "{phase} {action}"
+        );
+    }
 }
 
 #[test]

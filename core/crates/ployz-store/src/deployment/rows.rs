@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{
-    ContainerId, DependencyHealthFailure, ExecutionError, HookFailure, MachineId, OperationPhase,
-    OperationRow, OperationStatus, RpcError, ServiceName,
+    ContainerId, DependencyHealthFailure, ExecutionError, HookFailure, MachineAction, MachineId,
+    OperationPhase, OperationRow, OperationStatus, RpcError, ServiceName,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -162,7 +162,9 @@ impl From<&ExecutionError> for Failure {
                         cause.extend(ployz_core::error_chain::causes(error));
                         cause
                     }
-                    _ => vec![failure.to_string()],
+                    DependencyHealthFailure::Cancelled
+                    | DependencyHealthFailure::NoContainers
+                    | DependencyHealthFailure::Container { .. } => vec![failure.to_string()],
                 },
             ),
             ExecutionError::Hook { failure, .. } => (
@@ -187,7 +189,9 @@ impl From<&ExecutionError> for Failure {
                         cause.extend(ployz_core::error_chain::causes(error));
                         cause
                     }
-                    _ => vec![failure.to_string()],
+                    HookFailure::Cancelled { stop_error: None }
+                    | HookFailure::TimedOut { stop_error: None }
+                    | HookFailure::Exit { .. } => vec![failure.to_string()],
                 },
             ),
             ExecutionError::Cancelled => ("Cancelled".to_owned(), Vec::new()),
@@ -217,8 +221,10 @@ impl RowTracker {
                 continue;
             };
             let key = (service.clone(), row.machine_id);
-            if let Some(container) = container(&row.status) {
+            if let Some(container) = container(row, self.containers.get(&row.index).copied()) {
                 self.containers.insert(row.index, container);
+            } else {
+                self.containers.remove(&row.index);
             }
             if matches!(row.status, OperationStatus::Failed { .. }) {
                 self.failed.entry(key.clone()).or_insert(row.index);
@@ -260,20 +266,37 @@ impl RowTracker {
     }
 }
 
-fn container(status: &OperationStatus) -> Option<ContainerId> {
-    if let OperationStatus::Running {
-        phase:
+fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerId> {
+    match &row.status {
+        OperationStatus::Running { phase } => match phase {
             OperationPhase::WaitingForHealth { container_id, .. }
-            | OperationPhase::WaitingForHook { container_id, .. },
-    }
-    | OperationStatus::Failed {
-        error:
-            ExecutionError::Health { container_id, .. } | ExecutionError::Hook { container_id, .. },
-    } = status
-    {
-        Some(*container_id)
-    } else {
-        None
+            | OperationPhase::WaitingForHook { container_id, .. } => Some(*container_id),
+            OperationPhase::StoppingContainer | OperationPhase::RemovingContainer => {
+                row.operation.container_id()
+            }
+            OperationPhase::Starting
+            | OperationPhase::CreatingContainer
+            | OperationPhase::StartingContainer
+            | OperationPhase::RemovingVolume => None,
+            OperationPhase::Compensating => last,
+        },
+        OperationStatus::Failed { error } => match error {
+            ExecutionError::Health { container_id, .. }
+            | ExecutionError::Hook { container_id, .. } => Some(*container_id),
+            ExecutionError::Machine { action, .. } => match action {
+                MachineAction::StopContainer | MachineAction::RemoveContainer => {
+                    row.operation.container_id()
+                }
+                MachineAction::InspectContainer => last,
+                MachineAction::CreateContainer
+                | MachineAction::StartContainer
+                | MachineAction::PrepareVolumes
+                | MachineAction::RemoveVolume => None,
+            },
+            ExecutionError::DependencyHealth { .. } | ExecutionError::Cancelled => None,
+        },
+        OperationStatus::Completed => last,
+        OperationStatus::Pending | OperationStatus::Unexecuted => None,
     }
 }
 
