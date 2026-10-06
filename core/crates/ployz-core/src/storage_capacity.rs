@@ -41,6 +41,27 @@ pub enum StorageBacking {
     },
 }
 
+/// What a Machine's copy of a Volume is for. Derived from the dataset's place and its
+/// markers, never from the readonly bit alone.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CopyRole {
+    /// The root that takes writes: idle marker, closed record, writable.
+    Writer,
+    /// A mirror slot Docker never sees.
+    Slot,
+    /// A root a run holds: non-idle marker, open record or read-only.
+    Switching,
+}
+
+/// One copy of a Volume on a Machine and the bytes it commits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct ProvisionedCopy {
+    pub role: CopyRole,
+    pub maximum_bytes: ProvisionedVolumeMaximumBytes,
+    pub used_bytes: u64,
+}
+
 /// Fresh storage evidence, including commitments whose Docker metadata may be missing.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StorageCapacity {
@@ -50,6 +71,21 @@ pub struct StorageCapacity {
     pub unmanaged_used_bytes: u64,
     /// Every managed dataset commitment, including Volumes without Docker metadata.
     pub volumes: BTreeMap<DockerVolumeName, ProvisionedVolumeMaximumBytes>,
+    /// Every copy on this Machine by role, slots included. A daemon that predates roles
+    /// omits it; its `volumes` are then writers.
+    #[serde(default)]
+    pub copies: BTreeMap<DockerVolumeName, ProvisionedCopy>,
+}
+
+impl StorageCapacity {
+    /// The role of every copy this Machine holds, roots of older daemons as writers.
+    pub fn roles(&self) -> impl Iterator<Item = (&DockerVolumeName, CopyRole)> {
+        self.volumes
+            .keys()
+            .filter(|name| !self.copies.contains_key(*name))
+            .map(|name| (name, CopyRole::Writer))
+            .chain(self.copies.iter().map(|(name, copy)| (name, copy.role)))
+    }
 }
 
 /// Capacity required by the complete set of requested Volumes on one Machine.
@@ -357,6 +393,7 @@ mod tests {
             },
             unmanaged_used_bytes: 95 * STORAGE_GIB,
             volumes: BTreeMap::new(),
+            copies: BTreeMap::new(),
         };
         assert!(matches!(
             capacity.budget(&BTreeMap::from([(name.clone(), maximum(10))])),
@@ -391,6 +428,7 @@ mod tests {
             },
             unmanaged_used_bytes: 20 * STORAGE_GIB,
             volumes: volumes.clone(),
+            copies: BTreeMap::new(),
         };
         assert!(matches!(
             capacity.budget(&volumes),
@@ -445,6 +483,7 @@ mod tests {
             },
             unmanaged_used_bytes: 0,
             volumes: BTreeMap::new(),
+            copies: BTreeMap::new(),
         };
         let requested = BTreeMap::from([
             volume("postgres", 10),

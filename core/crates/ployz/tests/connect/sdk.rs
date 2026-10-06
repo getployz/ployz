@@ -416,6 +416,7 @@ async fn sdk_storage_shortage_preserves_numbers_and_actions_without_mutating() {
         },
         unmanaged_used_bytes: 0,
         volumes: Default::default(),
+        copies: Default::default(),
     });
     let created = service.created_volumes.clone();
     let target_id = service.machines.first().unwrap().machine.id;
@@ -492,6 +493,7 @@ async fn sdk_preview_recovers_pool_before_observing_existing_docker_volume() {
             ),
         )]
         .into(),
+        copies: Default::default(),
     });
     service
         .listed_volumes
