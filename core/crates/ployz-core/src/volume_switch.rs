@@ -320,10 +320,25 @@ pub struct InspectVolumeCopyRequest {
 }
 
 /// `02-lease`: record `<lease>:2.0.0` on this Machine, keeping an open cycle open.
+///
+/// Carries no position: the step is always [`Pos::ADOPT_LEASE`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct AdoptLeaseRequest {
-    pub switch: Switch,
+    pub lease: Lease,
+    pub not_after_unix_seconds: i64,
     pub name: DockerVolumeName,
+}
+
+impl AdoptLeaseRequest {
+    /// The request the fence admits, at [`Pos::ADOPT_LEASE`].
+    #[must_use]
+    pub const fn switch(&self) -> Switch {
+        Switch {
+            lease: self.lease,
+            pos: Pos::ADOPT_LEASE,
+            not_after_unix_seconds: self.not_after_unix_seconds,
+        }
+    }
 }
 
 /// Every admitted switch verb answers the same shape, so a replay answers as the original did.

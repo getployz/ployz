@@ -266,7 +266,7 @@ pub(super) async fn adopt_lease(
     Json(request): Json<AdoptLeaseRequest>,
 ) -> Json<std::result::Result<SwitchReply, RpcError>> {
     let result = match request.name.as_str().parse::<DockerVolumeName>() {
-        Ok(name) => storage.adopt_lease(&name, &request.switch).await,
+        Ok(name) => storage.adopt_lease(&name, &request.switch()).await,
         Err(error) => Err(internal(error)),
     };
     Json(result)

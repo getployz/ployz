@@ -33,15 +33,8 @@ fn property(test: &TestDir, dataset: &str, property: &str) -> Option<String> {
         .map(|value| value.trim_end().to_owned())
 }
 
-fn adopt(lease: u64, not_after: i64) -> Value {
-    json!({
-        "switch": {
-            "lease": lease,
-            "pos": {"seq": 2, "round": 0, "sub": 0},
-            "not_after_unix_seconds": not_after,
-        },
-        "name": "data",
-    })
+fn adopt(name: &str, lease: u64, not_after: i64) -> Value {
+    json!({"lease": lease, "not_after_unix_seconds": not_after, "name": name})
 }
 
 fn commands(test: &TestDir) -> String {
@@ -53,7 +46,7 @@ async fn adopt_lease_records_a_closed_lease_and_answers_the_copy() {
     let test = TestDir::new();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
 
-    let response = post(&socket, "/Volume.AdoptLease", adopt(1, FAR_FUTURE)).await;
+    let response = post(&socket, "/Volume.AdoptLease", adopt("data", 1, FAR_FUTURE)).await;
     assert_eq!(
         response,
         json!({"Ok": {
@@ -75,7 +68,7 @@ async fn adopt_lease_preserves_open() {
     set_property(&test, "tank/ployz", "ployz:lease.data", "3:7.0.0:open");
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
 
-    let response = post(&socket, "/Volume.AdoptLease", adopt(4, FAR_FUTURE)).await;
+    let response = post(&socket, "/Volume.AdoptLease", adopt("data", 4, FAR_FUTURE)).await;
     assert_eq!(response.pointer("/Ok/decision").unwrap(), "adopt");
     assert_eq!(response.pointer("/Ok/lease/cycle").unwrap(), "open");
     assert_eq!(
@@ -91,11 +84,11 @@ async fn adopt_lease_refuses_stale_or_expired_requests_and_replays_its_own() {
     set_property(&test, "tank/ployz", "ployz:lease.data", "4:2.0.0:closed");
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
 
-    let stale = post(&socket, "/Volume.AdoptLease", adopt(3, FAR_FUTURE)).await;
+    let stale = post(&socket, "/Volume.AdoptLease", adopt("data", 3, FAR_FUTURE)).await;
     assert_eq!(stale.pointer("/Err/code").unwrap(), "conflict");
     assert_eq!(stale.pointer("/Err/details/reason").unwrap(), "stale_lease");
 
-    let expired = post(&socket, "/Volume.AdoptLease", adopt(5, 0)).await;
+    let expired = post(&socket, "/Volume.AdoptLease", adopt("data", 5, 0)).await;
     assert_eq!(expired.pointer("/Err/details/reason").unwrap(), "expired");
     assert!(
         expired
@@ -104,7 +97,7 @@ async fn adopt_lease_refuses_stale_or_expired_requests_and_replays_its_own() {
             .is_some_and(|skew| skew > 0)
     );
 
-    let replay = post(&socket, "/Volume.AdoptLease", adopt(4, FAR_FUTURE)).await;
+    let replay = post(&socket, "/Volume.AdoptLease", adopt("data", 4, FAR_FUTURE)).await;
     assert_eq!(replay.pointer("/Ok/decision").unwrap(), "replay");
 
     assert!(!commands(&test).contains("zfs set"));
@@ -120,13 +113,37 @@ async fn adopt_lease_creates_the_managed_root_to_hold_the_record() {
     let test = TestDir::new();
     let (socket, server) = start(&test, USABLE_POOL, &[]);
 
-    let response = post(&socket, "/Volume.AdoptLease", adopt(1, FAR_FUTURE)).await;
+    let response = post(&socket, "/Volume.AdoptLease", adopt("data", 1, FAR_FUTURE)).await;
     assert_eq!(response.pointer("/Ok/copy").unwrap(), &Value::Null);
     let log = commands(&test);
     assert!(
         log.contains("zfs create -o canmount=off -o mountpoint=/var/lib/ployz-volumes tank/ployz")
     );
     assert!(log.contains("zfs set ployz:lease.data=1:2.0.0:closed tank/ployz"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn adopt_lease_records_its_own_step_whatever_position_the_caller_sends() {
+    let test = TestDir::new();
+    let (socket, server) = start(&test, USABLE_POOL, &["root"]);
+    let request = json!({
+        "lease": 1,
+        "pos": {"seq": 9, "round": 0, "sub": 0},
+        "not_after_unix_seconds": FAR_FUTURE,
+        "name": "data",
+    });
+
+    let response = post(&socket, "/Volume.AdoptLease", request).await;
+    assert_eq!(
+        response.pointer("/Ok/lease/pos"),
+        Some(&json!({"seq": 2, "round": 0, "sub": 0})),
+        "{response}"
+    );
+    assert_eq!(
+        property(&test, "tank/ployz", "ployz:lease.data").as_deref(),
+        Some("1:2.0.0:closed")
+    );
     server.abort();
 }
 
