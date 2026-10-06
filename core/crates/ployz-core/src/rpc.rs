@@ -1126,6 +1126,7 @@ impl RpcError {
 
 /// A gRPC status with `error`'s own sentence as the message and its sources in
 /// the details as `{"cause": [...]}`, read back by [`status_causes`].
+#[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn caused_status(
     code: tonic::Code,
@@ -1173,6 +1174,7 @@ mod rpc_error_wire {
         assert_eq!(serde_json::from_value::<RpcError>(wire).unwrap(), error);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_status_carries_its_causes_in_the_details() {
         let error = RpcError {
