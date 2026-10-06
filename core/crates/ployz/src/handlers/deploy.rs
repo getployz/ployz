@@ -581,16 +581,12 @@ fn follow(
         if let Some(followed) = followed.as_mut() {
             if let Some(progress) = followed.progress.as_mut() {
                 progress.update(frame);
-            } else if view.preview.as_ref().is_some_and(|preview| !preview.noop()) {
+            } else if progress::visible(&view) {
                 followed.progress = Some(Progress::start(frame));
             }
             followed.view = view;
         } else {
-            let progress = view
-                .preview
-                .as_ref()
-                .filter(|preview| !preview.noop())
-                .map(|_| Progress::start(frame));
+            let progress = progress::visible(&view).then(|| Progress::start(frame));
             followed = Some(Followed { view, progress });
         }
         let current = followed

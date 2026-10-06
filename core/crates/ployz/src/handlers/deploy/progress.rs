@@ -6,7 +6,9 @@ use crate::ui::{
     progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing},
 };
 use ployz_core::{QualifiedService, RpcError, RpcErrorCode};
-use ployz_store::{DeployedNode, DeploymentStatus, DeploymentView, NodeStatus, RowState};
+use ployz_store::{
+    BuildStatus, DeployedNode, DeploymentStatus, DeploymentView, NodeStatus, RowState,
+};
 use std::time::{Duration, UNIX_EPOCH};
 
 pub(super) fn frame(view: &DeploymentView) -> Frame {
@@ -44,6 +46,10 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                 }
             }));
         } else {
+            let build = view.builds.iter().find(|build| match &node.node {
+                DeployedNode::Service { name, .. } => build.service == *name,
+                DeployedNode::Volume { .. } => false,
+            });
             rows.push(Row {
                 subject: service.map_or_else(
                     || Subject::Node {
@@ -53,6 +59,11 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                     Subject::Service,
                 ),
                 state: match node.outcome {
+                    NodeStatus::Pending
+                        if build.is_some_and(|build| build.status == BuildStatus::Failed) =>
+                    {
+                        State::Failed
+                    }
                     NodeStatus::Pending => State::Pending,
                     NodeStatus::Deployed | NodeStatus::Removed => State::Completed,
                     NodeStatus::Failed => State::Failed,
@@ -60,7 +71,16 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                     NodeStatus::Unchanged => State::Unchanged,
                     NodeStatus::Unknown => State::Unknown,
                 },
-                detail: None,
+                detail: build.map(|build| {
+                    match build.status {
+                        BuildStatus::Pending => "build pending",
+                        BuildStatus::Building => "building",
+                        BuildStatus::Built => "built",
+                        BuildStatus::Reused => "build reused",
+                        BuildStatus::Failed => "build failed",
+                    }
+                    .to_owned()
+                }),
                 timing: Timing::Unavailable,
             });
         }
@@ -79,6 +99,19 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
             .cloned()
             .collect(),
     }
+}
+
+/// Start once there is observed work, preserving one caption for a clean no-op.
+pub(super) fn visible(view: &DeploymentView) -> bool {
+    view.preview
+        .as_ref()
+        .is_some_and(|preview| !preview.noop() || preview.has_observation_gaps())
+        || view.builds.iter().any(|build| {
+            matches!(
+                build.status,
+                BuildStatus::Building | BuildStatus::Built | BuildStatus::Failed
+            )
+        })
 }
 
 pub(super) fn noop(view: &DeploymentView) -> bool {
@@ -302,5 +335,53 @@ mod tests {
             Some("applied")
         );
         assert!(encoded.pointer("/preview/warnings/0/gap").is_some());
+    }
+
+    #[test]
+    fn recorded_builds_are_visible_without_inventing_server_placement() {
+        let mut view = view();
+        view.preview = None;
+        view.deployment.status = DeploymentStatus::Running;
+        view.nodes.truncate(1);
+        let node = view.nodes.first_mut().unwrap();
+        node.rows.clear();
+        node.outcome = NodeStatus::Pending;
+        view.builds.push(ployz_store::BuildView {
+            service: "web".parse().unwrap(),
+            commit: None,
+            status: BuildStatus::Pending,
+            message: None,
+        });
+        assert!(!visible(&view));
+        for (status, detail, state) in [
+            (BuildStatus::Building, "building", State::Pending),
+            (
+                BuildStatus::Built,
+                "built",
+                State::Pending,
+            ),
+            (BuildStatus::Failed, "build failed", State::Failed),
+        ] {
+            view.builds.first_mut().unwrap().status = status;
+            assert!(visible(&view));
+            let frame = frame(&view);
+            let row = frame.rows.first().unwrap();
+            assert_eq!(
+                row.subject,
+                Subject::Service(QualifiedService::parse("shop-production/private-web").unwrap())
+            );
+            assert_eq!(row.detail.as_deref(), Some(detail));
+            assert_eq!(row.state, state);
+        }
+        view.builds.first_mut().unwrap().status = BuildStatus::Reused;
+        view.deployment.status = DeploymentStatus::Applied;
+        view.nodes.first_mut().unwrap().outcome = NodeStatus::Unchanged;
+        view.preview = Some(ployz_core::DeployPreview::new(
+            Vec::new(),
+            Vec::new(),
+            view.namespace.clone(),
+        ));
+        assert!(!visible(&view));
+        assert!(noop(&view));
     }
 }
