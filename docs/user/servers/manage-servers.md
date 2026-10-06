@@ -150,8 +150,8 @@ the release it ran before.
 ## Remove a server
 
 > [!WARNING]
-> Volumes stay on the removed server's disk, but your services lose them. Copy off any data you
-> need first.
+> Volumes stay on the removed server's disk as copies, and your services lose them until you
+> make a copy the writer again with `ployz volume restore`. Copy off any data you need first.
 
 1. Open the server and click **Remove server**.
 2. Ployz lists the volumes on the server. Type the server's name and click **Remove**.
