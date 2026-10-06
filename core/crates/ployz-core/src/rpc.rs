@@ -1,4 +1,6 @@
-use crate::StorageCapacity;
+use crate::{
+    AdoptLeaseRequest, InspectVolumeCopyRequest, StorageCapacity, SwitchReply, VolumeCopyView,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
@@ -693,6 +695,15 @@ macro_rules! define_request_body {
                     $(Self::$stream_variant(_) => $stream_command,)+
                 }
             }
+
+            /// The gRPC path a unary request is dispatched on; `None` for a streaming command.
+            #[must_use]
+            pub fn unary_path(&self) -> Option<&'static str> {
+                match self {
+                    $(Self::$unary_variant(_) => Some(<op::$unary_variant as Rpc>::PATH),)+
+                    $(Self::$stream_variant(_) => None,)+
+                }
+            }
         }
     };
 }
@@ -969,6 +980,8 @@ define_responses! {
     PreparedVolumes(PreparedVolumes) => "prepared_volumes";
     VolumeInventory(VolumeInventory) => "volume_inventory";
     VolumeRemoved(VolumeRemoved) => "volume_removed";
+    VolumeCopyView(crate::VolumeCopyView) => "volume_copy_view";
+    SwitchReply(crate::SwitchReply) => "switch_reply";
     MachineImages(MachineImages) => "machine_images";
     ImageIngestOpened(ImageIngestOpened) => "image_ingest_opened";
     ImagePulled(ImagePulled) => "image_pulled";

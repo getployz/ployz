@@ -23,8 +23,9 @@ pub mod env {
 
 #[must_use]
 pub fn command() -> Command {
-    base("ployz", "Manage Ployz machines, services, and volumes")
+    let command = base("ployz", "Manage Ployz machines, services, and volumes")
         .styles(crate::ui::clap_styles())
+        .after_help(handlers::catalog::SIGNPOST)
         .arg(switch("version", Some('V')).help("Print version"))
         .arg(
             switch("json", None)
@@ -66,12 +67,12 @@ pub fn command() -> Command {
         .subcommand(handlers::review::publish_command())
         .subcommand(handlers::catalog::schema_command())
         .subcommand(handlers::config::set_command())
-        .subcommand(handlers::setup::command())
         .subcommand(handlers::link::status_command())
         .subcommand(handlers::config::unset_command())
         .subcommand(handlers::up::command())
         .subcommand(handlers::volume::command())
-        .subcommand(completion())
+        .subcommand(completion());
+    handlers::debug::attach(command)
 }
 
 pub(crate) fn base(name: &'static str, about: &'static str) -> Command {

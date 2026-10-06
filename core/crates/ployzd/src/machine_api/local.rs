@@ -131,6 +131,34 @@ impl MachineService {
             .containers()
             .ok_or_else(|| unavailable("Docker is not available"))
     }
+
+    fn require_joined(&self) -> Result<(), RpcError> {
+        match self.local_record().phase() {
+            LocalMachinePhase::Joining | LocalMachinePhase::Participating => Ok(()),
+            LocalMachinePhase::Uninitialized
+            | LocalMachinePhase::Resetting
+            | LocalMachinePhase::Unrecognized(_) => {
+                Err(unavailable("Machine is not participating"))
+            }
+        }
+    }
+
+    #[allow(clippy::result_large_err)]
+    async fn switch_verb<T: serde::de::DeserializeOwned + Into<RpcResponse>>(
+        &self,
+        verb: &'static str,
+        route: &str,
+        request: &impl serde::Serialize,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        if let Err(error) = self.require_joined() {
+            return respond(error);
+        }
+        crate::faults::apply(verb).await;
+        match crate::storage::plugin::<T>(route, request).await {
+            Ok(reply) => respond(reply),
+            Err(error) => respond(error),
+        }
+    }
 }
 
 #[tonic::async_trait]
@@ -437,6 +465,28 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::RemoveVolume>(request)?;
         finish(self.local.remove_volume(request.name, request.force).await)
+    }
+
+    async fn inspect_volume_copy(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::InspectVolumeCopy>(request)?;
+        self.switch_verb::<ployz_core::VolumeCopyView>(
+            "InspectVolumeCopy",
+            "Volume.Inspect",
+            &request,
+        )
+        .await
+    }
+
+    async fn adopt_lease(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::AdoptLease>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>("AdoptLease", "Volume.AdoptLease", &request)
+            .await
     }
 
     async fn build(

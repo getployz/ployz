@@ -14,6 +14,7 @@ pub(crate) mod cloud;
 pub(crate) mod config;
 pub(crate) mod context;
 mod data_loss;
+pub(crate) mod debug;
 pub(crate) mod deploy;
 pub(crate) mod domain;
 pub(crate) mod env;
@@ -25,7 +26,6 @@ pub(crate) mod project;
 pub(crate) mod review;
 pub(crate) mod server;
 pub(crate) mod service;
-pub(crate) mod setup;
 pub(crate) mod store;
 mod teardown;
 pub(crate) mod up;
@@ -38,11 +38,7 @@ pub type Error = Failure;
 
 pub fn run() -> Result<(), Error> {
     let mut command = crate::cli::command();
-    // Only root help shows the footer, so skip reading the skill otherwise.
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
-    if args.is_empty() || args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        command = command.after_help(setup::help_footer());
-    }
     let before_parse = crate::ui::Mode::resolve(crate::ui::Surroundings::of_process(false));
     crate::ui::Color::requested(&command, &args).apply(before_parse);
     let matches = command.clone().try_get_matches().map_err(usage_failure)?;
@@ -301,6 +297,7 @@ fn handler_for(path: &str) -> Option<Handler> {
         ("completion", "") => Some(completion),
         ("cloud", rest) => cloud::handler(rest),
         ("ctx", rest) => context::handler(rest),
+        ("debug", rest) => debug::handler(rest),
         ("deploy", "") => Some(deploy::deploy),
         ("deployment", rest) => deploy::deployment_handler(rest),
         ("diff", "") => Some(review::diff),
@@ -322,7 +319,6 @@ fn handler_for(path: &str) -> Option<Handler> {
         ("schema", "") => Some(catalog::schema),
         ("server", rest) => server::handler(rest),
         ("service", rest) => service::handler(rest),
-        ("setup", rest) => setup::handler(rest),
         ("set", "") => Some(config::set),
         ("status", "") => Some(link::status),
         ("token", rest) => account::token_handler(rest),

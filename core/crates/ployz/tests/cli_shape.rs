@@ -18,6 +18,10 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
     let mut paths = Vec::new();
     collect(&ployz::cli::command(), "", &mut paths);
     paths.sort_unstable();
+    // `ployz debug` exists only in a verify-cluster build.
+    if cfg!(feature = "verify-faults") {
+        paths.retain(|path| path != "debug" && path != "debug volume-rpc");
+    }
     assert_eq!(
         paths,
         [
@@ -108,8 +112,6 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "service start",
             "service stop",
             "set",
-            "setup",
-            "setup agent",
             "status",
             "token",
             "token ls",
@@ -614,17 +616,22 @@ fn cloud_commands_act_with_ployz_token_or_the_signed_in_device() {
 }
 
 #[test]
-fn every_error_field_the_agent_skill_names_appears_in_real_output() {
-    let home = tempfile::tempdir().unwrap();
-    std::fs::create_dir(home.path().join(".claude")).unwrap();
-    let installed = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
-        .args(["setup", "agent", "--json"])
-        .env("HOME", home.path())
-        .env_remove("AI_AGENT")
+fn root_help_ends_with_the_catalog_pointer() {
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--help")
         .output()
         .unwrap();
-    assert!(installed.status.success());
-    let skill = std::fs::read_to_string(home.path().join(".claude/skills/ployz/SKILL.md")).unwrap();
+    let help = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        help.trim_end()
+            .ends_with("`ployz explain SERVICE.SETTING` describes one Setting."),
+        "{help}"
+    );
+}
+
+#[test]
+fn every_error_field_the_agent_skill_names_appears_in_real_output() {
+    let skill = include_str!("../../../site/skill.md");
     let line = skill
         .lines()
         .find(|line| line.contains(r#"{"error": {"#))

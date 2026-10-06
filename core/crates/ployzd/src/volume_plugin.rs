@@ -20,12 +20,13 @@ use tokio::net::UnixListener;
 use tower_service::Service;
 
 mod capacity;
+mod lease;
 mod pool;
 mod removal;
 mod storage;
 
 use storage::{
-    CapacityAdmission, DATASET_ROOT, Dataset, MOUNT_ROOT, VolumeStorage, checked_command,
+    CapacityAdmission, DATASET_ROOT, Dataset, MOUNT_ROOT, Place, VolumeStorage, checked_command,
     parse_size,
 };
 
@@ -162,6 +163,8 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route("/Plugin.Activate", post(activate))
         .route("/Storage.Inspect", post(capacity::inspect))
         .route("/Storage.Prepare", post(capacity::prepare))
+        .route("/Volume.Inspect", post(lease::inspect))
+        .route("/Volume.AdoptLease", post(lease::adopt_lease))
         .route("/VolumeDriver.Create", post(create))
         .route("/VolumeDriver.Remove", post(removal::remove))
         .route("/VolumeDriver.Get", post(removal::get))
@@ -332,6 +335,12 @@ mod tests {
 
     #[path = "dataset_safety_tests.rs"]
     mod dataset_safety_tests;
+
+    #[path = "lease_tests.rs"]
+    mod lease_tests;
+
+    #[path = "slot_tests.rs"]
+    mod slot_tests;
 
     use fake_zfs::{USABLE_POOL, fake_zfs};
 

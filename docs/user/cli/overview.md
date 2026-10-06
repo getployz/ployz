@@ -33,17 +33,19 @@ your app's directory.
 
 ## Set up your coding agent
 
-```sh
-ployz setup agent
+Paste this into your coding agent, such as Claude Code or Codex:
+
+```text
+Set me up for Ployz: https://ployz.sh/agent.md
 ```
 
-This installs the Ployz skill for coding agents, including Claude Code. Your agent learns every
-command and setting from it, `ployz --help` and `ployz schema --json`, so you can ask it to
-deploy, add a database or read logs.
+The agent installs the CLI and the Ployz skill, then signs you in: it gives you a link and a
+code, and you click **Approve**. Restart or reload the agent afterwards so it loads the skill.
+From then on you can ask it to deploy, add a database or read logs. The skill points the agent
+to `ployz --help` and `ployz schema --json` for every command and setting.
 
-Run it again after you upgrade the CLI; `ployz --help` tells you when the skill is out of date.
-An agent can also sign you in: it runs `ployz login`, and you click **Approve** on the link it
-gives you.
+To set it up by hand, follow the steps in [ployz.sh/agent.md](https://ployz.sh/agent.md)
+yourself. Run step 2 again to update the skill.
 
 ## Deploy a directory
 
