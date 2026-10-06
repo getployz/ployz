@@ -389,7 +389,7 @@ pub(super) fn execute(
     } else if detached {
         Ok(())
     } else {
-        progress::completion(&view)
+        progress::completion(&view, |args| super::rerun(matches, args))
     };
     // A run that found no upload or usable image for its Services says to upload.
     let needs_upload = matches!(
@@ -546,7 +546,6 @@ fn tap(
     }
 }
 
-/// Follow only the owned local run, or Cloud's eligible replacement, retaining real last-known evidence.
 fn follow(
     store: &Store,
     admitted: &DeploymentSummary,

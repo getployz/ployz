@@ -277,7 +277,6 @@ enum Message {
     Abandon,
 }
 
-// The clock and inbox form one seam so deadline tests exercise the production loop.
 trait Inbox {
     fn now(&self) -> Duration;
     fn receive(&mut self, timeout: Duration) -> Result<Message, RecvTimeoutError>;
@@ -441,16 +440,32 @@ fn label(subject: &Subject, frame: &Frame) -> String {
             if ambiguous {
                 format!(
                     "{} on {server} ({})",
-                    service.name,
+                    service_label(service, frame),
                     super::short_id(&machine.to_string())
                 )
             } else {
-                format!("{} on {server}", service.name)
+                format!("{} on {server}", service_label(service, frame))
             }
         }
-        Subject::Service(service) => service.name.to_string(),
+        Subject::Service(service) => service_label(service, frame),
         Subject::Operation { name, server, .. } => format!("{name} on {server}"),
         Subject::Node { name, .. } => name.clone(),
+    }
+}
+
+fn service_label(service: &QualifiedService, frame: &Frame) -> String {
+    let ambiguous = frame
+        .rows
+        .iter()
+        .filter_map(|row| match &row.subject {
+            Subject::ServiceOnServer { service, .. } | Subject::Service(service) => Some(service),
+            Subject::Operation { .. } | Subject::Node { .. } => None,
+        })
+        .any(|other| other.name == service.name && other != service);
+    if ambiguous {
+        service.to_string()
+    } else {
+        service.name.to_string()
     }
 }
 
@@ -611,7 +626,6 @@ fn changes(
     writer.flush()
 }
 
-/// One qualified notice per Machine; names only label the retained identity.
 fn notices(frame: &Frame) -> Vec<String> {
     let mut seen = BTreeSet::new();
     frame

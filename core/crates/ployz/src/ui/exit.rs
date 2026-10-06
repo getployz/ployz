@@ -17,7 +17,6 @@ const FAILED_EXIT: u8 = 1;
 /// The command line is wrong.
 const USAGE_EXIT: u8 = 2;
 
-/// This invocation was interrupted, even when it emitted a committed result.
 const CANCELLED_EXIT: u8 = 130;
 
 /// The exit code for an error code: 2 when the command line is wrong, else 1.

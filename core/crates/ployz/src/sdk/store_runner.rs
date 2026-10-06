@@ -519,7 +519,6 @@ impl Run {
         Ok((outcome, pending.into_values().collect()))
     }
 
-    /// Connection setup is read-only, so cancellation drops it before any Session exists.
     async fn connecting<T>(
         &self,
         work: impl std::future::Future<Output = Result<T, RpcError>>,
@@ -603,7 +602,6 @@ impl Run {
     }
 }
 
-/// A launch or initial report failed before followers took ownership of the results.
 async fn stop_builds(builds: &[(&Target, RunningBuild)], mut error: RpcError) -> RpcError {
     for (_, running) in builds {
         running.abort();

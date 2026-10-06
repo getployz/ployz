@@ -154,6 +154,45 @@ fn duplicate_server_names_remain_distinct_and_names_can_change() {
     assert!(text.contains("across 2 servers"));
 }
 
+#[test]
+fn same_named_services_in_different_namespaces_keep_distinct_visible_outcomes() {
+    let mut initial = frame(State::Pending);
+    let mut other = initial.rows.first().unwrap().clone();
+    if let Subject::ServiceOnServer { service, .. } = &mut other.subject {
+        *service = QualifiedService::parse("prod/web").unwrap();
+    }
+    initial.rows.push(other);
+    let mut done = initial.clone();
+    done.rows.first_mut().unwrap().state = State::ObservedRunning;
+    done.rows.get_mut(1).unwrap().state = State::Failed;
+    let text = plain(
+        initial.clone(),
+        vec![(1, Message::Finish(done.clone(), Disposition::Settled))],
+    );
+    assert!(text.contains("shop/web on alpha: running"), "{text}");
+    assert!(text.contains("prod/web on alpha: failed"), "{text}");
+    let terminal = InMemoryTerm::new(20, 90);
+    let backend = Backend::new(
+        Mode::Interactive,
+        ProgressDrawTarget::term_like(Box::new(terminal.clone())),
+        room,
+    );
+    drive(
+        Script {
+            now: Duration::ZERO,
+            events: VecDeque::from([(REDRAW, Message::Finish(done, Disposition::Settled))]),
+        },
+        initial,
+        backend,
+        &mut TerminalWriter(terminal.clone()),
+        false,
+    );
+    let visible = terminal.contents();
+    assert!(visible.contains("shop/web on alpha  running"), "{visible}");
+    assert!(visible.contains("prod/web on alpha  failed"), "{visible}");
+    assert!(!visible.contains("pending"), "{visible}");
+}
+
 #[derive(Clone)]
 struct TerminalWriter(InMemoryTerm);
 impl Write for TerminalWriter {

@@ -259,3 +259,106 @@ async fn server_clean_removes_only_a_namespace_no_environment_owns() {
     assert_eq!(cleaned["namespace"], "left-over", "{cleaned}");
     server.abort();
 }
+
+#[tokio::test]
+async fn local_deploy_failure_recovery_keeps_explicit_connection_and_context() {
+    let root = tempfile::tempdir().unwrap();
+    let db = root.path().join("store.db");
+    let selected = root.path().join("selected team.yaml");
+    let machine = machine('a', "one");
+    let daemon = DeployService::new(machine.clone()).fail_create_volume("create denied");
+    let (address, server) = listening(daemon).await;
+    let connect = format!("tcp://{address}");
+    std::fs::write(
+        &selected,
+        "current_context: staging\ncontexts:\n  staging:\n    connections: [tcp://127.0.0.1:1]\n",
+    )
+    .unwrap();
+    let invoke = |args: Vec<&'static str>| {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command
+            .current_dir(root.path())
+            .env("HOME", root.path())
+            .env("PLOYZ_CONFIG", root.path().join("default.yaml"))
+            .env("PLOYZ_STORE", format!("sqlite:{}", db.display()))
+            .env_remove("PLOYZ_TOKEN")
+            .env_remove("PLOYZ_PROJECT")
+            .env_remove("PLOYZ_ENV")
+            .env_remove("PLOYZ_CONTEXT")
+            .env_remove("PLOYZ_CONNECT")
+            .args([
+                "--json",
+                "--color=never",
+                "--ployz-config",
+                selected.to_str().unwrap(),
+                "--connect",
+                &connect,
+            ])
+            .args(&args)
+            .kill_on_drop(true);
+        async move {
+            tokio::time::timeout(Duration::from_secs(10), command.output())
+                .await
+                .unwrap_or_else(|error| panic!("{args:?}: {error}"))
+                .unwrap()
+        }
+    };
+    for args in [
+        vec!["project", "new", "shop"],
+        vec!["service", "add", "web", "--image", "web:1"],
+    ] {
+        let output = invoke(args).await;
+        assert!(output.status.success(), "{output:?}");
+    }
+    let output = invoke(vec!["deploy", "--context", "staging"]).await;
+    server.abort();
+    server.await.ok();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(3), "{stderr}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "failed", "{result}");
+    let hints = stderr
+        .lines()
+        .filter_map(|line| {
+            line.trim()
+                .strip_prefix("inspect: ")
+                .or_else(|| line.trim().strip_prefix("retry: "))
+        })
+        .map(|line| shell_words::split(line).unwrap())
+        .collect::<Vec<_>>();
+    let prefix = [
+        "ployz",
+        "--ployz-config",
+        selected.to_str().unwrap(),
+        "--connect",
+        &connect,
+    ];
+    assert_eq!(hints.len(), 2, "{stderr}");
+    let machine_id = machine.machine.id.to_string();
+    for (hint, args) in hints.iter().zip([
+        vec![
+            "logs",
+            "shop-production/web",
+            "--machine",
+            &machine_id,
+            "--project",
+            "shop",
+            "--env",
+            "production",
+            "--context",
+            "staging",
+        ],
+        vec![
+            "deploy",
+            "--project",
+            "shop",
+            "--env",
+            "production",
+            "--context",
+            "staging",
+        ],
+    ]) {
+        let expected = prefix.iter().copied().chain(args).collect::<Vec<_>>();
+        assert_eq!(hint, &expected, "{stderr}");
+    }
+}

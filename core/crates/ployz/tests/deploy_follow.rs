@@ -115,18 +115,24 @@ fn serve(mut stream: TcpStream, reply: Reply, pid: u32) {
 
 fn run(replies: Vec<Reply>) -> (Output, Vec<Value>) {
     let root = tempfile::tempdir().unwrap();
-    let events = root.path().join("events.ndjson");
+    run_at(replies, root.path())
+}
+
+fn run_at(replies: Vec<Reply>, root: &std::path::Path) -> (Output, Vec<Value>) {
+    let events = root.join("events.ndjson");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let mut child = Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .current_dir(root.path())
-        .env("PLOYZ_CONFIG", root.path().join("config.yaml"))
+        .current_dir(root)
+        .env("PLOYZ_CONFIG", root.join("default.yaml"))
         .env_remove("PLOYZ_STORE")
         .env_remove("PLOYZ_CONNECT")
         .env_remove("PLOYZ_CONTEXT")
         .env("PLOYZ_TOKEN", "test-follow-token")
         .env("PLOYZ_CLOUD_URL", url)
+        .arg("--ployz-config")
+        .arg(root.join("selected team.yaml"))
         .args([
             "--json",
             "--color=never",
@@ -280,4 +286,66 @@ fn cloud_completion_racing_interrupt_keeps_terminal_result_and_exit_130() {
         Some(&json!("applied"))
     );
     assert!(!String::from_utf8_lossy(&output.stderr).contains("Deployment continues"));
+}
+
+#[test]
+fn cloud_failure_recovery_keeps_selected_config_and_actual_runtime_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let mut failed = serde_json::to_value(view(7, DeploymentStatus::Failed)).unwrap();
+    *failed.get_mut("runtime_names").unwrap() = json!({"web": "private-web"});
+    *failed.get_mut("outcome").unwrap() =
+        json!({"type": "executed", "summary": {}, "reason": "web failed", "cause": ["denied"]});
+    *failed.get_mut("nodes").unwrap() = json!([{"type": "service", "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "name": "web", "outcome": "failed", "rows": [{"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "edge", "state": "failed", "reason": "CreateContainer failed", "cause": ["denied"], "log": [], "started_at": 1, "finished_at": 2}]}]);
+    let mut reply = observed(7, DeploymentStatus::Failed);
+    reply.body = serde_json::to_value(View::Deployment(Box::new(
+        serde_json::from_value(failed.clone()).unwrap(),
+    )))
+    .unwrap();
+    let (output, events) = run_at(vec![admitted(), reply], root.path());
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result.get("status"), Some(&json!("failed")));
+    assert_eq!(result.get("nodes"), failed.get("nodes"));
+    assert_eq!(events.len(), 1);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let hints = stderr
+        .lines()
+        .filter_map(|line| {
+            line.trim()
+                .strip_prefix("inspect: ")
+                .or_else(|| line.trim().strip_prefix("retry: "))
+        })
+        .map(|line| shell_words::split(line).unwrap())
+        .collect::<Vec<_>>();
+    let selected = root.path().join("selected team.yaml");
+    let config = selected.to_str().unwrap();
+    assert_eq!(
+        hints,
+        [
+            vec![
+                "ployz",
+                "--ployz-config",
+                config,
+                "logs",
+                "shop-production/private-web",
+                "--machine",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "--project",
+                "shop",
+                "--env",
+                "production"
+            ],
+            vec![
+                "ployz",
+                "--ployz-config",
+                config,
+                "deploy",
+                "--project",
+                "shop",
+                "--env",
+                "production"
+            ],
+        ],
+        "{stderr}"
+    );
 }

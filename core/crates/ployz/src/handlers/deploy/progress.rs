@@ -126,9 +126,12 @@ pub(super) fn noop(view: &DeploymentView) -> bool {
             .is_some_and(|preview| preview.noop() && !preview.has_observation_gaps())
 }
 
-pub(super) fn completion(view: &DeploymentView) -> Result<(), Failure> {
+pub(super) fn completion(
+    view: &DeploymentView,
+    command: impl Fn(&[&str]) -> String,
+) -> Result<(), Failure> {
     if view.deployment.status != DeploymentStatus::Applied {
-        return Err(failure(view));
+        return Err(failure(view, command));
     }
     if view
         .preview
@@ -140,7 +143,7 @@ pub(super) fn completion(view: &DeploymentView) -> Result<(), Failure> {
     Ok(())
 }
 
-pub(super) fn failure(view: &DeploymentView) -> Failure {
+fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failure {
     let (reason, cause) = match &view.deployment.outcome {
         Some(
             ployz_store::Outcome::Executed {
@@ -189,8 +192,7 @@ pub(super) fn failure(view: &DeploymentView) -> Failure {
                 server: row.server.clone(),
                 lines: log.clone(),
             });
-            hints.push(Hint::Inspect(shell_words::join([
-                "ployz",
+            hints.push(Hint::Inspect(command(&[
                 "logs",
                 &service.to_string(),
                 "--machine",
@@ -212,8 +214,7 @@ pub(super) fn failure(view: &DeploymentView) -> Failure {
     for hint in hints {
         failure = failure.hint(hint);
     }
-    failure.hint(Hint::Retry(shell_words::join([
-        "ployz",
+    failure.hint(Hint::Retry(command(&[
         "deploy",
         "--project",
         view.environment.project.as_str(),
@@ -226,6 +227,10 @@ pub(super) fn failure(view: &DeploymentView) -> Failure {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn command(args: &[&str]) -> String {
+        shell_words::join(std::iter::once("ployz").chain(args.iter().copied()))
+    }
 
     pub(super) fn view() -> DeploymentView {
         serde_json::from_value(json!({
@@ -266,7 +271,7 @@ mod tests {
     #[test]
     fn duplicate_outcome_is_printed_once_and_identical_failure_on_another_server_survives() {
         let view = view();
-        let failure = failure(&view);
+        let failure = failure(&view, command);
         let text = crate::ui::plain(&failure);
         assert_eq!(text.matches("cause: denied").count(), 2, "{text}");
         assert!(text.contains("startup failed"));
@@ -308,7 +313,7 @@ mod tests {
             Vec::new(),
             view.namespace.clone(),
         ));
-        assert!(completion(&view).is_ok());
+        assert!(completion(&view, command).is_ok());
         assert!(noop(&view));
         let warning = DeployWarning::ObservationOmitted {
             kind: ObservationKind::Container,
@@ -316,7 +321,7 @@ mod tests {
             gap: None,
         };
         view.preview.as_mut().unwrap().warnings.push(warning);
-        assert!(completion(&view).is_ok());
+        assert!(completion(&view, command).is_ok());
         let DeployWarning::ObservationOmitted { gap, .. } =
             view.preview.as_mut().unwrap().warnings.first_mut().unwrap()
         else {
@@ -326,7 +331,10 @@ mod tests {
             machine_name: MachineName::parse("peer").unwrap(),
             reason: ObservationGapReason::Down,
         });
-        assert_eq!(completion(&view).unwrap_err().printed_exit(), Some(3));
+        assert_eq!(
+            completion(&view, command).unwrap_err().printed_exit(),
+            Some(3)
+        );
         assert!(!noop(&view));
         assert_eq!(view.deployment.status, DeploymentStatus::Applied);
         let encoded = serde_json::to_value(&view).unwrap();

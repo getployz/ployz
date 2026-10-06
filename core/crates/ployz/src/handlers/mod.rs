@@ -249,6 +249,29 @@ async fn reconnect_client(
     .map_err(Into::into)
 }
 
+fn rerun(matches: &ArgMatches, args: &[&str]) -> String {
+    let config = config_path(matches).expect("the command resolved its config");
+    let config = config.to_string_lossy();
+    let connect = matches.get_one::<String>("connect");
+    let context = matches.try_get_one::<String>("context").ok().flatten();
+    let args = ["ployz", "--ployz-config", config.as_ref()]
+        .into_iter()
+        .chain(
+            connect
+                .map(|connect| ["--connect", connect.as_str()])
+                .into_iter()
+                .flatten(),
+        )
+        .chain(args.iter().copied())
+        .chain(
+            context
+                .map(|context| ["--context", context.as_str()])
+                .into_iter()
+                .flatten(),
+        );
+    shell_words::join(args)
+}
+
 fn recovery_command(matches: &ArgMatches, context: &str, command: &[&str]) -> String {
     let config = config_path(matches).expect("setup already resolved the config path");
     let config = config.to_string_lossy();
@@ -475,7 +498,7 @@ mod tests {
                 ..Default::default()
             })
             .interrupted();
-        let error = ingress_hints(error, |args| server::rerun(leaf_matches(&matches), args))
+        let error = ingress_hints(error, |args| rerun(leaf_matches(&matches), args))
             .context("Server updated; the Ingress Proxy did not follow.");
         assert!(error.is_interrupted());
         crate::ui::init(true, crate::ui::Color::Never);

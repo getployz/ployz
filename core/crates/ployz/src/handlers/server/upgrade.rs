@@ -89,7 +89,7 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
             .iter()
             .flat_map(|image| ["--ingress-image", image.as_str()]),
     );
-    let rerun = super::rerun(matches, &args);
+    let rerun = super::super::rerun(matches, &args);
     let ingress = IngressImage::given_or(image.cloned(), IngressImage::Latest);
     let recovery_matches = matches.clone();
     with_client(root, |client| {
@@ -97,7 +97,9 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
             let machines = selected_machines(client, &selectors).await?;
             let (result, outcome) = run_all(client, &machines, release, ingress, rerun).await;
             let outcome = outcome.map_err(|error| {
-                super::super::ingress_hints(error, |args| super::rerun(&recovery_matches, args))
+                super::super::ingress_hints(error, |args| {
+                    super::super::rerun(&recovery_matches, args)
+                })
             });
             match result {
                 Some(result) => crate::ui::emit_committed(result, outcome),
