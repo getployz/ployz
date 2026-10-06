@@ -2753,6 +2753,10 @@ export type SelectedEndpoint = string;
 
 export type ServerRow = {
 /**
+ * The Machine whose work this row records, independent of its display name.
+ */
+machine_id: MachineId,
+/**
  * The Server's name, or its Machine ID when it has none.
  */
 server: string,

@@ -80,6 +80,8 @@ impl From<&OperationPhase> for RowPhase {
 /// One Service's work on one Server, as a Deployment's view shows it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServerRow {
+    /// The Machine whose work this row records, independent of its display name.
+    pub machine_id: MachineId,
     /// The Server's name, or its Machine ID when it has none.
     pub server: String,
     #[serde(flatten)]
@@ -408,12 +410,14 @@ pub(super) fn of_nodes(
     let mut by_service: BTreeMap<ServiceName, BTreeMap<MachineId, ServerRow>> = BTreeMap::new();
     for row in &found {
         let state: RowState = row.json(2, "Deployment row")?;
+        let machine_id: MachineId = row.parse(5, "Deployment row Machine")?;
         by_service
             .entry(row.parse(0, "Deployment row")?)
             .or_default()
             .insert(
-                row.parse(5, "Deployment row Machine")?,
+                machine_id,
                 ServerRow {
+                    machine_id,
                     server: row.text(1)?.to_owned(),
                     state: if lost && !state.finished() {
                         RowState::Unknown

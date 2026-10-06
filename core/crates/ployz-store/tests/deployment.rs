@@ -705,13 +705,55 @@ fn volume_rows_keep_distinct_machines_and_failed_mounting_services() {
         for row in &mut snapshot {
             row.machine_name = Some("same-name".parse().unwrap());
         }
+        let mut changes = RowTracker::default().changes(&snapshot);
+        for row in &mut changes {
+            if let RowState::Failed { log, .. } = &mut row.state {
+                *log = vec!["alpha disk log".into()];
+            }
+        }
         store
-            .record(
-                &id(1),
-                &a,
-                RunEvidence::Progress(RowTracker::default().changes(&snapshot)),
-            )
+            .record(&id(1), &a, RunEvidence::Progress(changes))
             .unwrap();
+        let deployment = store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+            .unwrap();
+        let serialized = serde_json::to_value(&deployment).unwrap();
+        for name in ["web", "data"] {
+            let node = serialized["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|node| node["name"] == name)
+                .unwrap();
+            let actual: Vec<_> = node["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| {
+                    json!({
+                        "machine_id": row["machine_id"], "server": row["server"],
+                        "state": row["state"], "phase": row["phase"],
+                        "reason": row["reason"], "cause": row["cause"], "log": row["log"]
+                    })
+                })
+                .collect();
+            assert_eq!(
+                actual,
+                [
+                    json!({
+                        "machine_id": snapshot[1].machine_id, "server": "same-name",
+                        "state": "failed", "phase": null,
+                        "reason": "remove Container failed", "cause": ["disk failure"],
+                        "log": ["alpha disk log"]
+                    }),
+                    json!({
+                        "machine_id": snapshot[2].machine_id, "server": "same-name",
+                        "state": "running", "phase": "waiting_for_health",
+                        "reason": null, "cause": null, "log": null
+                    })
+                ]
+            );
+        }
         let view = rows(&store, &who, 1);
         let volume = &view.iter().find(|(name, _)| name == "data").unwrap().1;
         assert_eq!(volume.len(), 2, "Machine names are not identities");
@@ -732,6 +774,43 @@ fn volume_rows_keep_distinct_machines_and_failed_mounting_services() {
             usize::from(api_finished)
         );
     }
+}
+
+#[test]
+fn deployment_rows_require_identity_but_older_node_outcomes_need_no_rows() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &["web"], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    let snapshot = progress(&[("web", "alpha", json!({"type": "completed"}))]);
+    store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Progress(RowTracker::default().changes(&snapshot)),
+        )
+        .unwrap();
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap();
+    let mut node = serde_json::to_value(&view.nodes[0]).unwrap();
+    let round_trip: ployz_store::NodeOutcome = serde_json::from_value(node.clone()).unwrap();
+    assert_eq!(round_trip.rows[0].machine_id, snapshot[0].machine_id);
+    node["rows"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("machine_id");
+    assert!(serde_json::from_value::<ployz_store::NodeOutcome>(node.clone()).is_err());
+    node["rows"][0]["machine_id"] = json!("same-name");
+    assert!(serde_json::from_value::<ployz_store::NodeOutcome>(node.clone()).is_err());
+    node.as_object_mut().unwrap().remove("rows");
+    let older: ployz_store::NodeOutcome = serde_json::from_value(node).unwrap();
+    assert!(older.rows.is_empty());
+    assert_eq!(older.node, round_trip.node);
+    assert_eq!(older.outcome, round_trip.outcome);
 }
 
 #[test]
