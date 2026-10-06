@@ -94,6 +94,15 @@ case "$*" in
     f='{props}'/"${{11}}/snapshots"
     [ ! -e "$f" ] || cat "$f"
     ;;
+  'get -H -o property,value -s local all '*)
+    d='{props}'/"$8"
+    [ -d "$d" ] || exit 0
+    for f in "$d"/*; do
+      [ -f "$f" ] || continue
+      case "${{f##*/}}" in snapshots) continue ;; esac
+      printf '%s\t%s\n' "${{f##*/}}" "$(cat "$f")"
+    done
+    ;;
   'get -H -o value '*)
     prop "$6" "$5" -
     ;;
@@ -131,6 +140,21 @@ case "$*" in
     printf '%s\n' "${{7#refquota=}}" > '{props}/tank/ployz-mirror/data/refquota'
     ;;
   'mount tank/ployz/data') touch '{mounted}' ;;
+  'unmount tank/ployz/data') rm -f '{mounted}' ;;
+  'rename tank/ployz/data tank/ployz-mirror/data/fs')
+    rm -f '{volume}' '{mounted}'
+    touch '{mirror_fs}'
+    rm -rf '{props}/tank/ployz-mirror/data/fs'
+    mkdir -p '{props}/tank/ployz-mirror/data/fs'
+    if [ -d '{props}/tank/ployz/data' ]; then
+      for f in '{props}'/tank/ployz/data/*; do
+        [ -f "$f" ] || continue
+        sed 's#^tank/ployz/data@#tank/ployz-mirror/data/fs@#' "$f" > '{props}'/tank/ployz-mirror/data/fs/"${{f##*/}}"
+      done
+      rm -rf '{props}/tank/ployz/data'
+    fi
+    echo 1073741824 > '{props}/tank/ployz-mirror/data/fs/refquota'
+    ;;
   'destroy -r tank/ployz/data')
     if [ -e '{destroy_fails}' ]; then echo 'dataset is busy' >&2; exit 1; fi
     rm -f '{volume}' '{mounted}'
@@ -158,13 +182,15 @@ case "$*" in
         {{ printf 'tank/ployz-mirror/data/fs@%s\t%s\t%s\n' "$arg" "$guid" "$((1700000000 + count))"; [ ! -e "$d/snapshots" ] || cat "$d/snapshots"; }} > "$d/snapshots.new"
         mv "$d/snapshots.new" "$d/snapshots"
         # A first receive lands the stream's properties; a lost connection loses them.
-        if [ -e '{readonly_lost}' ]; then echo off > "$d/readonly"; else echo on > "$d/readonly"; fi
+        if [ -e '{readonly_lost}' ]; then echo off > "$d/readonly.new"; else echo on > "$d/readonly.new"; fi
+        mv "$d/readonly.new" "$d/readonly"
         printf '%s\n' "${{7#refquota=}}" > "$d/refquota"
         ;;
       break)
         echo 'cannot receive: connection reset' >&2
         echo 'token-1' > "$d/receive_resume_token"
-        echo off > "$d/readonly"
+        echo off > "$d/readonly.new"
+        mv "$d/readonly.new" "$d/readonly"
         exit 1
         ;;
       *) echo "fake zfs receive: unexpected stream $verb" >&2; exit 1 ;;

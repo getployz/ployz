@@ -12,8 +12,8 @@ use super::{
     DATASET_ROOT, Dataset, DockerVolumeName, MIRROR_ROOT, Result, VolumeError, VolumeStorage,
 };
 
-const LEASE_PROPERTY_PREFIX: &str = "ployz:lease.";
-const WRITER_PROPERTY: &str = "ployz:writer";
+pub(super) const LEASE_PROPERTY_PREFIX: &str = "ployz:lease.";
+pub(super) const WRITER_PROPERTY: &str = "ployz:writer";
 pub(super) const MIRROR_PROPERTY: &str = "ployz:mirror";
 /// Set by ZFS on a dataset whose `receive -s` was interrupted; `-` otherwise.
 pub(super) const RESUME_TOKEN_PROPERTY: &str = "receive_resume_token";
@@ -149,24 +149,40 @@ impl VolumeStorage {
         }
     }
 
-    /// The run snapshots of a dataset, newest first by transaction group (creation time
-    /// ties within a second). Snapshots with other names are not the run's and are left out.
+    /// Every snapshot of a dataset as `name<TAB>guid<TAB>creation`, newest first by
+    /// transaction group (creation time ties within a second).
+    async fn list_snapshots(&self, dataset: &str) -> Result<String> {
+        self.zfs(&[
+            "list",
+            "-Hp",
+            "-t",
+            "snapshot",
+            "-o",
+            "name,guid,creation",
+            "-S",
+            "createtxg",
+            "-d",
+            "1",
+            dataset,
+        ])
+        .await
+    }
+
+    /// The full `<dataset>@<name>` of every snapshot, whatever its name.
+    pub(super) async fn snapshot_names(&self, dataset: &str) -> Result<Vec<String>> {
+        Ok(self
+            .list_snapshots(dataset)
+            .await?
+            .lines()
+            .filter_map(|line| line.split('\t').next())
+            .map(str::to_owned)
+            .collect())
+    }
+
+    /// The run snapshots of a dataset, newest first. Snapshots with other names are not
+    /// the run's and are left out.
     pub(super) async fn snapshots(&self, dataset: &str) -> Result<Vec<Snapshot>> {
-        let output = self
-            .zfs(&[
-                "list",
-                "-Hp",
-                "-t",
-                "snapshot",
-                "-o",
-                "name,guid,creation",
-                "-S",
-                "createtxg",
-                "-d",
-                "1",
-                dataset,
-            ])
-            .await?;
+        let output = self.list_snapshots(dataset).await?;
         let mut snapshots = Vec::new();
         for line in output.lines() {
             let invalid = || VolumeError::from(format!("invalid ZFS snapshot output: {line}"));

@@ -11,7 +11,9 @@ use tokio::sync::OwnedMutexGuard;
 
 use super::{
     Dataset, DockerVolumeName, MIRROR_ROOT, VolumeStorage,
-    lease::{Admitted, MIRROR_PROPERTY, RESUME_TOKEN_PROPERTY, internal, root_dataset},
+    lease::{
+        Admitted, MIRROR_PROPERTY, RESUME_TOKEN_PROPERTY, internal, root_dataset, slot_parent,
+    },
     transfer::RECEIVE_PROPERTY,
 };
 
@@ -114,26 +116,45 @@ impl VolumeStorage {
             .map_err(internal)?;
         self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
             .await?;
-        let mirror_root = format!("{}/{MIRROR_ROOT}", scope.pool.name());
-        if !scope
-            .datasets
-            .iter()
-            .any(|dataset| dataset.name == mirror_root)
-        {
-            self.zfs(&[
-                "create",
-                "-o",
-                "canmount=off",
-                "-o",
-                &format!("mountpoint={MIRROR_MOUNT_ROOT}"),
-                "-o",
-                "readonly=on",
-                &mirror_root,
-            ])
+        self.ensure_mirror_root(&scope.pool, &scope.datasets)
             .await
             .map_err(internal)?;
+        self.create_slot_parent(&slot_parent(&scope.pool, &name), request.refquota_bytes)
+            .await
+            .map_err(internal)?;
+        self.reply(&scope.pool, &name, scope.admitted).await
+    }
+
+    /// `<pool>/ployz-mirror`, the read-only parent every slot inherits from.
+    pub(super) async fn ensure_mirror_root(
+        &self,
+        pool: &MachinePool,
+        datasets: &[Dataset],
+    ) -> super::Result<()> {
+        let mirror_root = format!("{}/{MIRROR_ROOT}", pool.name());
+        if datasets.iter().any(|dataset| dataset.name == mirror_root) {
+            return Ok(());
         }
-        let parent = format!("{mirror_root}/{name}");
+        self.zfs(&[
+            "create",
+            "-o",
+            "canmount=off",
+            "-o",
+            &format!("mountpoint={MIRROR_MOUNT_ROOT}"),
+            "-o",
+            "readonly=on",
+            &mirror_root,
+        ])
+        .await?;
+        Ok(())
+    }
+
+    /// A slot parent bounded by `refquota_bytes`, marked idle.
+    pub(super) async fn create_slot_parent(
+        &self,
+        parent: &str,
+        refquota_bytes: u64,
+    ) -> super::Result<()> {
         self.zfs(&[
             "create",
             "-o",
@@ -141,19 +162,17 @@ impl VolumeStorage {
             "-o",
             "readonly=on",
             "-o",
-            &format!("refquota={}", request.refquota_bytes),
-            &parent,
+            &format!("refquota={refquota_bytes}"),
+            parent,
         ])
-        .await
-        .map_err(internal)?;
+        .await?;
         self.zfs(&[
             "set",
             &format!("{MIRROR_PROPERTY}={}", MirrorMarker::Idle),
-            &parent,
+            parent,
         ])
-        .await
-        .map_err(internal)?;
-        self.reply(&scope.pool, &name, scope.admitted).await
+        .await?;
+        Ok(())
     }
 
     async fn begin_round(&self, request: &MirrorRequest) -> Result<SwitchReply, RpcError> {

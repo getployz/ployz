@@ -1,7 +1,9 @@
 //! Fresh capacity and bounded batch preparation on the plugin's existing mutation lock.
 
 use axum::{Json, extract::State};
-use ployz_core::{ProvisionedVolumeMaximumBytes, StorageCapacity, StorageCapacityError};
+use ployz_core::{
+    CopyRole, ProvisionedCopy, ProvisionedVolumeMaximumBytes, StorageCapacity, StorageCapacityError,
+};
 use std::collections::BTreeMap;
 
 use super::{DockerVolumeName, VolumeStorage};
@@ -42,10 +44,12 @@ impl VolumeStorage {
             }
         };
         let mut volumes = BTreeMap::new();
+        let mut copies: BTreeMap<ployz_core::DockerVolumeName, ProvisionedCopy> = BTreeMap::new();
         let mut managed_used_bytes = 0u64;
         let mut slot_bound_bytes = 0u64;
         if let Some(pool) = &pool {
-            for dataset in self.datasets(pool).await? {
+            let datasets = self.datasets(pool).await?;
+            for dataset in &datasets {
                 let place = super::Place::of(&dataset.name, pool.name());
                 if !place.commits() {
                     continue;
@@ -53,19 +57,53 @@ impl VolumeStorage {
                 managed_used_bytes = managed_used_bytes
                     .checked_add(dataset.active_used_bytes)
                     .ok_or("Dataset occupancy overflows u64")?;
-                let super::Place::Root(name) = place else {
-                    slot_bound_bytes = slot_bound_bytes
-                        .checked_add(super::storage::committed_bytes(&dataset, pool.name()))
-                        .ok_or("Volume commitments overflow u64")?;
+                let (super::Place::Root(name) | super::Place::Slot(name)) = place else {
                     continue;
                 };
                 let name =
                     ployz_core::DockerVolumeName::parse(name).map_err(|error| error.to_string())?;
+                let (role, maximum_bytes) = match place {
+                    super::Place::Root(_) => {
+                        let plugin_name = name
+                            .as_str()
+                            .parse::<DockerVolumeName>()
+                            .map_err(|error| error.to_string())?;
+                        (
+                            self.root_role(&datasets, pool, dataset, &plugin_name)
+                                .await?,
+                            dataset.refquota,
+                        )
+                    }
+                    super::Place::Slot(_) => {
+                        let bound = super::storage::committed_bytes(dataset, pool.name());
+                        if bound == 0 {
+                            if let Some(copy) = copies.get_mut(&name) {
+                                copy.used_bytes =
+                                    copy.used_bytes.saturating_add(dataset.active_used_bytes);
+                            }
+                            continue;
+                        }
+                        slot_bound_bytes = slot_bound_bytes
+                            .checked_add(bound)
+                            .ok_or("Volume commitments overflow u64")?;
+                        (CopyRole::Slot, bound)
+                    }
+                    super::Place::Outside => continue,
+                };
                 let maximum = ProvisionedVolumeMaximumBytes::new(
-                    std::num::NonZeroU64::new(dataset.refquota)
-                        .ok_or("Volume has no finite bound")?,
+                    std::num::NonZeroU64::new(maximum_bytes).ok_or("Volume has no finite bound")?,
                 );
-                volumes.insert(name, maximum);
+                if role != CopyRole::Slot {
+                    volumes.insert(name.clone(), maximum);
+                }
+                copies.insert(
+                    name,
+                    ProvisionedCopy {
+                        role,
+                        maximum_bytes: maximum,
+                        used_bytes: dataset.active_used_bytes,
+                    },
+                );
             }
         }
         Ok(ManagedStorage {
@@ -75,8 +113,29 @@ impl VolumeStorage {
                     pool.used_bytes().saturating_sub(managed_used_bytes)
                 }),
                 volumes,
+                copies,
             },
             slot_bound_bytes,
+        })
+    }
+
+    /// Writer while idle, closed and writable; Switching while a run holds the root.
+    async fn root_role(
+        &self,
+        datasets: &[super::Dataset],
+        pool: &ployzd::machine_pool::MachinePool,
+        root: &super::Dataset,
+        name: &DockerVolumeName,
+    ) -> super::Result<CopyRole> {
+        let open = self
+            .lease_record(datasets, pool, name)
+            .await?
+            .is_some_and(|record| record.cycle == ployz_core::Cycle::Open);
+        let idle = self.writer_marker(root).await? == ployz_core::WriterMarker::Idle;
+        Ok(if idle && !root.readonly && !open {
+            CopyRole::Writer
+        } else {
+            CopyRole::Switching
         })
     }
 
