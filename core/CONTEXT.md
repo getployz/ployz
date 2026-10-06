@@ -460,13 +460,17 @@ The address assigned to one container within its Machine Subnet. Its apparent cl
 _Avoid_: Management Address, globally unique container address
 
 **Serving Container**:
-A Service Container that may serve (running with health `healthy`, `failing` or `not_configured`), has a Container Address, and carries this observer's selected Serving Shape for its Qualified Service. It is observer-derived eligibility to receive traffic, not a replica identity. A Healthcheck gates the first serve only: a Container that passed once keeps serving while its check fails.
+A Service Container that may serve (running with health `healthy`, `failing` or `not_configured`), has a Container Address, and carries this observer's selected Published Serving Shape for its Qualified Service. It is observer-derived eligibility to receive traffic, not a replica identity. A Healthcheck gates the first serve only: a Container that passed once keeps serving while its check fails.
 The selected shape is the newest traffic-eligible shape observed for that Qualified Service. A starting, unhealthy, or stopped replacement does not exclude older Containers that may serve; once a newer shape can take traffic, only that shape serves, and it keeps serving while its check fails.
 _Avoid_: replica, endpoint, upstream
 
 **Serving Shape**:
 The content identity of the Resolved Service Spec fields whose change requires a new Container. Equal shapes are interchangeable Containers. It is derived from observed spec content, not Cluster intent. Service ID is not a Serving Shape.
 _Avoid_: current version, desired generation, Service ID as generation
+
+**Published Serving Shape**:
+The Serving Shape of a published observation, whose environment values and Config content are redacted. It hashes Config names in place of content, so Containers from an env-only or Config-only change share a shape and do not separate traffic ([#1419](https://github.com/getployz/ployz/issues/1419)).
+_Avoid_: Serving Shape for observation rows
 
 **Public Ingress**:
 The public HTTP request path from DNS resolution through a Machine's Ingress Proxy to a Serving Container. It is a diagnostic boundary, not a single process or globally authoritative edge.
