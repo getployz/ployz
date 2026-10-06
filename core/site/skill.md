@@ -1,6 +1,6 @@
 ---
 name: ployz
-description: Deploy and operate apps on Ployz servers with the `ployz` CLI — sign in, add servers, add Services and change their Settings, review, publish and deploy, read logs. Relevant whenever a task mentions Ployz or the `ployz` command.
+description: Deploy and operate apps on Ployz servers with the `ployz` CLI: sign in, add servers, add Services and change their Settings, review, publish and deploy, read logs. Relevant whenever a task mentions Ployz or the `ployz` command.
 ---
 
 # Ployz CLI

@@ -623,7 +623,8 @@ fn root_help_ends_with_the_catalog_pointer() {
         .unwrap();
     let help = String::from_utf8(output.stdout).unwrap();
     assert!(
-        help.trim_end().ends_with("`ployz explain SERVICE.SETTING` describes one Setting."),
+        help.trim_end()
+            .ends_with("`ployz explain SERVICE.SETTING` describes one Setting."),
         "{help}"
     );
 }
