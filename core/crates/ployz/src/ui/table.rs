@@ -39,7 +39,7 @@ impl Cell {
         match self.tone {
             Some(Tone::Good) => "✔ ",
             Some(Tone::Bad) => "✘ ",
-            _ => "",
+            Some(Tone::Change | Tone::Muted | Tone::Name | Tone::Link | Tone::Label) | None => "",
         }
     }
 
@@ -50,6 +50,16 @@ impl Cell {
     /// The cell as one TSV field: no tab or newline may split it.
     fn field(&self) -> String {
         self.shown().replace(['\t', '\n'], " ")
+    }
+}
+
+/// The cell's text in its tone, as a record shows it.
+impl std::fmt::Display for Cell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.tone {
+            Some(tone) => write!(f, "{}", tone.paint(self.shown())),
+            None => f.write_str(self.shown()),
+        }
     }
 }
 

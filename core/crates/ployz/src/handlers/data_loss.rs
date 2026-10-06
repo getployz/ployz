@@ -9,7 +9,7 @@ use std::{
     io::{self, Write},
 };
 
-use crate::ui::Hint;
+use crate::ui::{self, Hint};
 
 #[derive(Clone, Copy)]
 pub(super) enum VolumeEffect {
@@ -60,7 +60,7 @@ pub(super) fn confirm_removal(
                     .ok()
                     .flatten()
                     .is_some(),
-            tty: crate::ui::interactive(),
+            tty: ui::interactive(),
         },
         &retry,
         &mut std::io::stderr(),

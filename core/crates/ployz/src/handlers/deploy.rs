@@ -4,6 +4,7 @@
 //! hidden in-process Store this CLI is the Deployment's runner: it claims it,
 //! prepares and confirms it on the Cluster, and records what happened.
 
+use crate::ui::{self, Cell, Hint, Table, Tone};
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -250,11 +251,16 @@ pub(super) struct Shipped {
     pub(super) view: DeploymentView,
     pub(super) hint: String,
     pub(super) ran: Result<(), Error>,
+    /// The run found no upload or usable image, so `hint` uploads one.
+    pub(super) needs_upload: bool,
 }
 
 impl Shipped {
     fn finish(self) -> Result<(), Error> {
-        finish_view(&self.view, Some(self.hint))?;
+        finish_view(&self.view, Some(self.hint.clone()))?;
+        if self.needs_upload {
+            ui::hint(&Hint::Next(self.hint));
+        }
         self.ran
     }
 }
@@ -305,7 +311,12 @@ pub(super) fn execute(
     } else {
         hint
     };
-    Ok(Shipped { view, hint, ran })
+    Ok(Shipped {
+        view,
+        hint,
+        ran,
+        needs_upload,
+    })
 }
 
 /// Run the Deployment in this process, as Cloud's runner does, on the Cluster the
@@ -370,7 +381,7 @@ fn follow(
     runner: Option<&std::thread::JoinHandle<Result<DeploymentSummary, Error>>>,
 ) -> Result<DeploymentView, Error> {
     if runner.is_none() {
-        crate::ui::stream(format_args!(
+        ui::note(format_args!(
             "Following Deployment #{}; stopping this leaves it running.",
             admitted.number
         ));
@@ -383,7 +394,7 @@ fn follow(
         if view.deployment.status == DeploymentStatus::Superseded
             && let Some(newer) = replacement(store, &view)?
         {
-            crate::ui::stream(format_args!(
+            ui::note(format_args!(
                 "Deployment #{} was replaced by #{}, which ships its changes too; following #{}.",
                 view.deployment.number, newer.number, newer.number
             ));
@@ -401,7 +412,7 @@ fn follow(
                 .iter()
                 .map(|node| format!("{} {}", node.node.name(), super::store::word(&node.outcome)))
                 .collect();
-            crate::ui::stream(format_args!(
+            ui::note(format_args!(
                 "{}: {}",
                 super::store::word(&view.deployment.status),
                 nodes.join(", ")
@@ -469,11 +480,13 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
                 ));
             }
         }
-        crate::ui::stream(format_args!(
-            "Decided by the Servers when it runs: {}.",
-            plan.unresolved.join(", ")
-        ));
-        crate::ui::stream(format_args!("next: {hint}"));
+        if !plan.unresolved.is_empty() {
+            ui::stream(format_args!(
+                "Decided by the Servers when it runs: {}.",
+                plan.unresolved.join(", ")
+            ));
+        }
+        ui::hint(&Hint::Next(hint.clone()));
     })
 }
 
@@ -557,26 +570,41 @@ fn ls(root: &ArgMatches) -> Result<(), Error> {
         }
         next(matches, &words)
     });
-    crate::ui::finish(&Next::new(&page, hint.clone()), || {
-        if page.deployments.is_empty() {
-            crate::ui::stream(format_args!(
-                "No Deployments in {}/{}.",
-                page.environment.project, page.environment.name
-            ));
-        }
-        for deployment in &page.deployments {
-            crate::ui::stream(format_args!(
-                "#{} {} Saved revision {} {}",
-                deployment.number,
+    let mut table = Table::new(
+        ["DEPLOYMENT", "STATUS", "SAVED REVISION"],
+        format!(
+            "No Deployments in {}/{} yet.",
+            page.environment.project, page.environment.name
+        ),
+    );
+    for deployment in &page.deployments {
+        table.row([
+            Cell::from(format!("#{}", deployment.number)),
+            Cell::status(
                 super::store::word(&deployment.status),
-                deployment.saved,
-                deployment.id
-            ));
-        }
-        if let Some(hint) = &hint {
-            crate::ui::stream(format_args!("next: {hint}"));
-        }
-    })
+                status_tone(deployment.status),
+            ),
+            Cell::from(deployment.saved.to_string()),
+        ]);
+    }
+    ui::list(&Next::new(&page, hint.clone()), &table)?;
+    if let Some(hint) = hint {
+        ui::hint(&Hint::Next(hint));
+    }
+    Ok(())
+}
+
+/// How a Deployment's status reads at a glance.
+const fn status_tone(status: DeploymentStatus) -> Tone {
+    match status {
+        DeploymentStatus::Applied => Tone::Good,
+        DeploymentStatus::Failed | DeploymentStatus::Unknown => Tone::Bad,
+        DeploymentStatus::Queued
+        | DeploymentStatus::Superseded
+        | DeploymentStatus::Running
+        | DeploymentStatus::Cancelling
+        | DeploymentStatus::Cancelled => Tone::Change,
+    }
 }
 
 /// Argument `arg`: a Deployment ID, or its number (`#N`) in the scoped Environment.

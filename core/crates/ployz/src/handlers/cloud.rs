@@ -17,7 +17,7 @@ use crate::cloud_enroll::{self, CloudPairing, EnrollIdentity, InitializeMode, Jo
 use crate::connect::{Client, ConnectError};
 use crate::context::{Connection, ContextError, SelectedConnections, Transport};
 use crate::setup_report::{SetupReport, Step};
-use crate::ui::Hint;
+use crate::ui::{self, Hint};
 
 /// Enroll with `token`: over SSH to `DESTINATION`, or on the host this runs on.
 pub(super) fn enroll(
@@ -285,12 +285,9 @@ where
     // A committed join remains enrolled even when Global catch-up needs a separate retry.
     cloud_enroll::publish(callback_url, assigned.id, &pairing.secret, &capability).await?;
     cloud_enroll::callback(callback_url, assigned.id, &pairing.secret).await?;
-    crate::ui::stream(format_args!(
-        "Joined Server {} ({})",
-        assigned.name, assigned.id
-    ));
+    ui::stream(format_args!("Joined Server {}.", assigned.name));
     // The join is committed; a catch-up failure makes it partial.
-    Ok(crate::ui::emit_committed(
+    Ok(ui::emit_committed(
         serde_json::json!({ "server": super::server::server_json(&assigned), "founded": false }),
         catch_up.map_err(|error| crate::global_catch_up::joined_catch_up_error(error, &assigned)),
     ))
@@ -428,7 +425,7 @@ where
         &pairing.secret,
     )
     .await?;
-    Ok(crate::ui::emit(&founder_result(&machine, founding)))
+    Ok(ui::emit(&founder_result(&machine, founding)))
 }
 
 /// The first Server's result. Founding it, Cloud deploys the Organization's saved
@@ -436,21 +433,15 @@ where
 fn founder_result(machine: &Machine, founding: bool) -> serde_json::Value {
     let next = founding.then_some("ployz deployment ls");
     if founding {
-        crate::ui::stream(format_args!(
-            "Initialised Server {} ({})",
-            machine.name, machine.id
-        ));
-        crate::ui::stream(format_args!(
-            "Cloud now deploys any saved Environments to it."
+        ui::stream(format_args!(
+            "Initialised Server {}; Cloud now deploys any saved Environments to it.",
+            machine.name
         ));
     } else {
-        crate::ui::stream(format_args!(
-            "Server {} ({}) is enrolled",
-            machine.name, machine.id
-        ));
+        ui::stream(format_args!("Enrolled Server {}.", machine.name));
     }
     if let Some(next) = next {
-        crate::ui::stream(format_args!("next: {next}"));
+        ui::hint(&ui::Hint::Inspect(next.to_owned()));
     }
     serde_json::json!({
         "server": super::server::server_json(machine),
@@ -754,7 +745,8 @@ fn reset(root: &ArgMatches) -> Result<(), Error> {
             })),
         )
         .await?;
-        crate::ui::stream(format_args!("Reset the founding of {}", organization.slug));
+        ui::stream(format_args!("Reset the founding of {}.", organization.slug));
+
         crate::ui::emit(&serde_json::json!({ "reset": true, "organization": organization }))
     })
 }

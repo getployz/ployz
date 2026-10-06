@@ -1,3 +1,4 @@
+use crate::ui::{self, Cell, Table, Tone};
 use std::{io, path::Path};
 
 use clap::{ArgMatches, Command};
@@ -52,22 +53,23 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
                 .collect(),
         })
         .collect::<Vec<_>>();
-    crate::ui::finish(&json!({ "contexts": contexts }), || {
-        if contexts.is_empty() {
-            crate::ui::stream(format_args!("No contexts found"));
-            return;
-        }
-        crate::ui::stream(format_args!("NAME\tCURRENT\tDEFAULT\tCONNECTIONS"));
-        for context in &contexts {
-            let current = if context.current { "*" } else { "" };
-            let default = context.connections.first().map_or("-", String::as_str);
-            crate::ui::stream(format_args!(
-                "{}\t{current}\t{default}\t{}",
-                context.name,
-                context.connections.len()
-            ));
-        }
-    })
+    let mut table = Table::new(
+        ["NAME", "CURRENT", "DEFAULT", "CONNECTIONS"],
+        "No contexts yet.",
+    );
+    for context in &contexts {
+        table.row([
+            Cell::from(context.name.to_string()),
+            if context.current {
+                Cell::status("current", Tone::Good)
+            } else {
+                Cell::from("")
+            },
+            Cell::from(context.connections.first().map_or("", String::as_str)),
+            Cell::from(context.connections.len().to_string()),
+        ]);
+    }
+    ui::list(&json!({ "contexts": contexts }), &table)
 }
 
 pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
@@ -147,7 +149,7 @@ pub(super) fn remove(matches: &ArgMatches) -> Result<(), Error> {
         || {
             crate::ui::stream(format_args!("Removed context {}.", name.escape_debug()));
             if was_current {
-                crate::ui::stream(format_args!("Current context is now unset."));
+                ui::note("Current context is now unset.");
             }
         },
     )
@@ -200,20 +202,20 @@ fn prompt<'a>(
     choices: impl Iterator<Item = &'a str>,
     default: Option<usize>,
 ) -> Result<usize, Error> {
-    if !crate::ui::interactive() {
+    if !ui::interactive() {
         return Err(Error::usage(format!(
             "cannot {title} interactively without a terminal; pass the context name: ployz ctx use <context-name>"
         )));
     }
     let choices = choices.collect::<Vec<_>>();
-    crate::ui::stream(format_args!("{title}:"));
+    ui::note(format_args!("{title}:"));
     for (index, choice) in choices.iter().enumerate() {
         let marker = if Some(index) == default {
             " (current)"
         } else {
             ""
         };
-        crate::ui::stream(format_args!("  {}. {choice}{marker}", index + 1));
+        ui::note(format_args!("  {}. {choice}{marker}", index + 1));
     }
     crate::ui::note_inline(format_args!("> "));
     let mut input = String::new();
