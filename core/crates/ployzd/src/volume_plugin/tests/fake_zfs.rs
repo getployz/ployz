@@ -5,7 +5,8 @@
 //! (`name<TAB>guid<TAB>creation` per line, newest first). A `zfs receive` reads one line
 //! of stream text: `snapshot <name> <guid>` lands that snapshot; `break` leaves a resume
 //! token behind and fails like an interrupted stream. The `readonly-lost` marker stands for
-//! a ZFS that does not keep `readonly=on` on the received copy, however it is set.
+//! a ZFS that does not keep `readonly=on` on the received copy, however it is set. Like ZFS,
+//! a command naming a dataset no marker stands for fails with `dataset does not exist`.
 
 use std::{
     fs,
@@ -61,6 +62,23 @@ prop() {{
   f='{props}'/"$1/$2"
   if [ -e "$f" ]; then cat "$f"; else printf '%s\n' "$3"; fi
 }}
+exists() {{
+  case "$1" in
+    tank) ;;
+    tank/ployz) [ -e '{root}' ] ;;
+    tank/ployz/data) [ -e '{volume}' ] ;;
+    tank/ployz/data/child) [ -e '{descendant}' ] ;;
+    tank/ployz/sibling) [ -e '{sibling}' ] ;;
+    tank/ployz-mirror) [ -e '{slot}' ] || [ -e '{mirror_root}' ] || [ -e '{mirror}' ] ;;
+    tank/ployz-mirror/copy|tank/ployz-mirror/copy/fs) [ -e '{slot}' ] ;;
+    tank/ployz-mirror/data) [ -e '{mirror}' ] ;;
+    tank/ployz-mirror/data/fs) [ -e '{mirror}' ] && [ -e '{mirror_fs}' ] ;;
+    *) false ;;
+  esac
+}}
+require() {{
+  exists "${{1%%@*}}" || {{ echo "cannot open '${{1%%@*}}': dataset does not exist" >&2; exit 1; }}
+}}
 case "$*" in
   'list -Hp -o name,refquota,used,usedbydataset,mountpoint,mounted,readonly -r tank')
     if [ -e '{list_fails}' ]; then echo 'pool is busy' >&2; exit 1; fi
@@ -98,31 +116,39 @@ case "$*" in
     fi
     ;;
   'list -Hp -t snapshot -o name,guid,creation -S createtxg -d 1 '*)
+    require "${{11}}"
     f='{props}'/"${{11}}/snapshots"
     [ ! -e "$f" ] || cat "$f"
     ;;
   'get -H -o value '*)
+    require "$6"
     prop "$6" "$5" -
     ;;
   'get -Hp -o value written@'*)
+    require "$6"
     prop "$6" "$5" 1
     ;;
   'get -Hp -o value '*)
+    require "$6"
     prop "$6" "$5" -
     ;;
   'set readonly=on tank/ployz-mirror/data/fs')
+    require tank/ployz-mirror/data/fs
     [ -e '{readonly_lost}' ] || {{ mkdir -p '{props}/tank/ployz-mirror/data/fs'; echo on > '{props}/tank/ployz-mirror/data/fs/readonly'; }}
     ;;
   'set '*)
+    require "$3"
     check_property "${{2%%=*}}"
     f='{props}'/"$3/${{2%%=*}}"
     mkdir -p "${{f%/*}}"
     printf '%s\n' "${{2#*=}}" > "$f"
     ;;
   'inherit '*)
+    require "$3"
     rm -f '{props}'/"$3/$2"
     ;;
   'snapshot '*)
+    require "$2"
     f='{props}'/"${{2%%@*}}/snapshots"
     mkdir -p "${{f%/*}}"
     if [ -e "$f" ]; then count=$(wc -l < "$f"); else count=0; fi
@@ -147,11 +173,13 @@ case "$*" in
     rm -rf '{mirror}' '{mirror_fs}' '{props}/tank/ployz-mirror/data'
     ;;
   'destroy '*'@'*)
+    require "$2"
     f='{props}'/"${{2%%@*}}/snapshots"
     grep -v "^$2	" "$f" > "$f.new" || true
     mv "$f.new" "$f"
     ;;
   'receive -A tank/ployz-mirror/data/fs')
+    require tank/ployz-mirror/data/fs
     rm -f '{props}/tank/ployz-mirror/data/fs/receive_resume_token'
     ;;
   'receive -u -s -o readonly=on -o refquota='*' tank/ployz-mirror/data/fs')
