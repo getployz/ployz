@@ -272,7 +272,7 @@ pub(super) fn execute(
     source: Option<&Path>,
     events: Option<std::io::BufWriter<std::fs::File>>,
 ) -> Result<Shipped, Error> {
-    let hint = show_hint(&admitted.id);
+    let hint = show_hint(matches, admitted.number);
     // Only the hidden in-process Store lets this CLI run the Deployment, as Cloud's
     // runner does; this command follows it either way, unless detached.
     let runner = match store.local() {
@@ -473,7 +473,7 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
             ));
             for row in &change.settings {
                 crate::ui::stream(format_args!(
-                    "  {}: {} -> {}",
+                    "  {}: {} → {}",
                     row.path,
                     super::store::shown(&row.before),
                     super::store::shown(&row.after)
@@ -627,6 +627,7 @@ pub(super) fn deployment_id(
 
 /// A refused retry, start or cancel points at the Deployment's current state.
 fn refused<'a>(
+    matches: &'a ArgMatches,
     store: &'a Store,
     id: &'a DeploymentId,
 ) -> impl FnOnce(StoreCallError) -> Error + 'a {
@@ -634,13 +635,47 @@ fn refused<'a>(
         store.fail(super::store::with_next(
             error,
             |refusal| refusal.code == RpcErrorCode::Conflict,
-            || show_hint(id),
+            || {
+                numbered(store, id)
+                    .map_or_else(|| id_hint(id), |(number, _)| show_hint(matches, number))
+            },
         ))
     }
 }
 
-/// `ployz deployment show ID`.
-pub(super) fn show_hint(id: &DeploymentId) -> String {
+/// `ployz deployment show N` in this command's Project and Environment.
+pub(super) fn show_hint(matches: &ArgMatches, number: u64) -> String {
+    next(matches, &["deployment", "show", &number.to_string()])
+}
+
+/// `ployz deployment show N` for Deployment `id` of `project`, in its own Environment.
+pub(super) fn show_hint_in(store: &Store, project: &str, id: &DeploymentId) -> String {
+    numbered(store, id).map_or_else(
+        || id_hint(id),
+        |(number, environment)| {
+            shell_words::join([
+                "ployz",
+                "deployment",
+                "show",
+                &number.to_string(),
+                "--project",
+                project,
+                "--env",
+                &environment,
+            ])
+        },
+    )
+}
+
+/// Deployment `id`'s number and Environment, when the Store can still say them.
+fn numbered(store: &Store, id: &DeploymentId) -> Option<(u64, String)> {
+    store
+        .read(&ployz_store::DeploymentQuery { id: id.clone() })
+        .ok()
+        .map(|view| (view.deployment.number, view.environment.name.to_string()))
+}
+
+fn id_hint(id: &DeploymentId) -> String {
     shell_words::join(["ployz", "deployment", "show", id.as_str()])
 }
 
@@ -654,7 +689,7 @@ fn retry(root: &ArgMatches) -> Result<(), Error> {
             id: DeploymentId::parse(mint())?,
             deployment: source.clone(),
         }))
-        .map_err(refused(&store, &source))?;
+        .map_err(refused(matches, &store, &source))?;
     ship(matches, &store, &admitted, events)
 }
 
@@ -667,7 +702,7 @@ fn start(root: &ArgMatches) -> Result<(), Error> {
         .try_write(&Start {
             deployment: id.clone(),
         })
-        .map_err(refused(&store, &id))?;
+        .map_err(refused(matches, &store, &id))?;
     ship(matches, &store, &queued, events)
 }
 
@@ -679,9 +714,9 @@ fn cancel(root: &ArgMatches) -> Result<(), Error> {
         .try_write(&Cancel {
             deployment: id.clone(),
         })
-        .map_err(refused(&store, &id))?;
+        .map_err(refused(matches, &store, &id))?;
     let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
-    finish_view(&view, Some(show_hint(&id)))
+    finish_view(&view, Some(show_hint(matches, view.deployment.number)))
 }
 
 fn show(root: &ArgMatches) -> Result<(), Error> {

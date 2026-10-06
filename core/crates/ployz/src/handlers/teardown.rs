@@ -106,7 +106,7 @@ where
                             "deployment": deployment,
                         }),
                     )
-                    .hint(Hint::Next(deploy::show_hint(&deployment))));
+                    .hint(Hint::Next(deploy::show_hint_in(store, project.as_str(), &deployment))));
                 }
                 Teardown::NeedsRemoval { environment, .. } => environment,
             };

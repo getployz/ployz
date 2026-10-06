@@ -1728,7 +1728,7 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
         let id = deployed["id"].as_str().unwrap().to_owned();
         assert_eq!(
             deployed["next"],
-            json!(format!("ployz deployment show {id}"))
+            json!(format!("ployz deployment show {}", deployed["number"]))
         );
 
         let shown = ok(store, &["deployment", "show", &id]);
@@ -1737,7 +1737,7 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
 
         // `status` says what is deploying, or what needs attention.
         let status = ok(store, &["status"]);
-        let show = json!(format!("ployz deployment show {id}"));
+        let show = json!(format!("ployz deployment show {}", deployed["number"]));
         assert_eq!(status["next"], show);
         assert_eq!(status["deploying"], json!([]));
         assert_eq!(status["attention"][0]["reason"], json!("deployment_failed"));
@@ -1764,13 +1764,9 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
                     store,
                     &["deploy", "--detach", "--message", "Ship the header"],
                 );
-                let id = detached["id"].as_str().unwrap();
                 assert_eq!(detached["number"], json!(2));
                 assert_eq!(detached["message"], json!("Ship the header"));
-                assert_eq!(
-                    detached["next"],
-                    json!(format!("ployz deployment show {id}"))
-                );
+                assert_eq!(detached["next"], json!("ployz deployment show 2"));
             }
         }
     }
@@ -1862,13 +1858,10 @@ fn an_agent_retries_a_failed_deployment_and_reads_its_logs() {
         );
         let id = retried["id"].as_str().unwrap();
         assert_ne!(id, failed_id);
-        assert_eq!(
-            retried["next"],
-            json!(format!("ployz deployment show {id}"))
-        );
+        assert_eq!(retried["next"], json!("ployz deployment show 2"));
 
         // An ended Deployment can't start or be cancelled; the refusal shows it.
-        let show = json!(format!("ployz deployment show {failed_id}"));
+        let show = json!("ployz deployment show 1");
         for verb in ["start", "cancel"] {
             let refused = error(store, &["deployment", verb, &failed_id]);
             assert_eq!(refused["code"], json!("conflict"));
@@ -1958,7 +1951,10 @@ fn up_ships_a_directory_without_git() {
         assert_eq!(deployment["environment"]["name"], json!("production"));
         assert_eq!(deployment["upload"]["base"], json!(null), "{up}");
         let id = deployment["id"].as_str().unwrap();
-        assert_eq!(up["next"], json!(format!("ployz deployment show {id}")));
+        assert_eq!(
+            up["next"],
+            json!(format!("ployz deployment show {}", deployment["number"]))
+        );
         match store {
             Target::Local(_) => {
                 assert_eq!(up["urls"], json!([]));

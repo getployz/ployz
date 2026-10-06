@@ -521,9 +521,9 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             if let Some(reason) = reason {
                 attention.push(Attention {
                     reason: reason.to_owned(),
-                    message: format!("Deployment {} did not complete", ended.number),
+                    message: format!("Deployment #{} did not complete", ended.number),
                     deployment: Some(ended.id.clone()),
-                    next: Some(super::deploy::show_hint(&ended.id)),
+                    next: Some(super::deploy::show_hint(matches, ended.number)),
                 });
             }
         }
@@ -550,7 +550,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
         .or_else(|| {
             deploying
                 .first()
-                .map(|deployment| super::deploy::show_hint(&deployment.id))
+                .map(|deployment| super::deploy::show_hint(matches, deployment.number))
         });
     let status = Status {
         identity,
