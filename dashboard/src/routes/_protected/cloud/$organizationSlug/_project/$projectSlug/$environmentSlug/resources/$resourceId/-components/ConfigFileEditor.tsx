@@ -33,7 +33,6 @@ const referenceContext = Facet.define<ReferenceContext, ReferenceContext>({
 const pill = Decoration.mark({ class: "cm-config-ref" });
 const unknown = Decoration.mark({ class: "cm-config-unknown" });
 
-/** Scans only the visible lines, so a 256 KB file costs what the viewport shows. */
 const referenceDecorations = ViewPlugin.fromClass(class {
   decorations: DecorationSet;
   references: ConfigReference[] = [];
@@ -89,12 +88,11 @@ function referenceCompletions(context: CompletionContext): CompletionResult | nu
   const token = caretToken(line.text.slice(0, context.pos - line.from), context.pos - line.from);
   if (token === null) return null;
   const { targets } = context.state.facet(referenceContext);
-  // Configs are shared, so a reference always names its Service.
-  const qualified = targets.filter((target) => target.ownerSlug !== null);
+  const serviceTargets = targets.filter((target) => target.ownerSlug !== null);
   return {
     from: line.from + token.start,
     filter: false,
-    options: filterReferenceTargets(qualified, token).map((target) => ({
+    options: filterReferenceTargets(serviceTargets, token).map((target) => ({
       label: `${target.ownerSlug}.${target.key}`,
       detail: target.ownerLabel,
       apply: (view, _completion, from, to) => {
@@ -148,7 +146,6 @@ const plain: Extension = [];
 const languageSlot = new Compartment();
 const propsSlot = new Compartment();
 
-/** The language for a file, by extension; Python loads its own chunk on first use. */
 function language(fileName: string): Extension | Promise<Extension> {
   const extension = /\.([^.]+)$/u.exec(fileName)?.[1]?.toLowerCase();
   switch (extension) {
@@ -171,8 +168,7 @@ export default function ConfigFileEditor({ fileName, value, onChange, onSave, ta
   const parent = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const callbacks = useRef({ onChange, onSave });
-  // The text the editor holds, so a `value` that only echoes local typing is not dispatched back.
-  const text = useRef(value);
+  const editorText = useRef(value);
 
   useEffect(() => {
     callbacks.current = { onChange, onSave };
@@ -213,15 +209,15 @@ export default function ConfigFileEditor({ fileName, value, onChange, onSave, ta
       propsSlot.of(props()),
       EditorView.updateListener.of((update) => {
         if (!update.docChanged) return;
-        text.current = update.state.doc.toString();
-        callbacks.current.onChange(text.current);
+        editorText.current = update.state.doc.toString();
+        callbacks.current.onChange(editorText.current);
       }),
     ],
   });
 
   useEffect(() => {
     if (!parent.current) return;
-    const editor = new EditorView({ parent: parent.current, state: state(text.current) });
+    const editor = new EditorView({ parent: parent.current, state: state(editorText.current) });
     view.current = editor;
     return () => {
       editor.destroy();
@@ -231,8 +227,8 @@ export default function ConfigFileEditor({ fileName, value, onChange, onSave, ta
 
   useEffect(() => {
     const editor = view.current;
-    if (!editor || value === text.current) return;
-    text.current = value;
+    if (!editor || value === editorText.current) return;
+    editorText.current = value;
     // A fresh state, so undo never crosses into another file's text.
     editor.setState(state(value, editor.state));
   });

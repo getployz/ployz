@@ -60,7 +60,6 @@ describe("Config trays", () => {
     config("loose", []),
     config("orphan", [{ service: "gone", dir: "/etc" }]),
   ];
-  // The next Deploy mounts `relay` into worker.
   const diff = asTestDouble<DiffView>()({ changes: [{ type: "service", id: "s2", name: "worker", lifecycle: "update", comparison: "head", data: null,
     settings: [{ path: "worker.configs.relay", kind: "add", before: null, after: "/etc/relay", canRestore: true }] }] });
   const { trays, unmounted } = configTrays(services, configs, diff);
@@ -98,7 +97,6 @@ describe("Saving drafts", () => {
 });
 
 describe("Preview values", () => {
-  // SAFETY: only the fields the reference values read.
   const view = asTestDouble<EnvironmentView>()({
     environment: { id: "env-1", name: "production" },
     settings: [

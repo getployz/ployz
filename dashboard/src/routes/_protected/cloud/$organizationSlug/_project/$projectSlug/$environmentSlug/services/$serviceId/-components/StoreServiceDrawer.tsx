@@ -553,7 +553,6 @@ function StoreDangerSection({ state }: { state: StoreService }) {
   );
 }
 
-/** The Configs this service mounts, each opening its own panel, then a row to mount another. */
 function StoreServiceConfigs({ state, params, configs, mounts }: {
   state: StoreService;
   params: { organizationSlug: string; projectSlug: string; environmentSlug: string };
@@ -562,7 +561,8 @@ function StoreServiceConfigs({ state, params, configs, mounts }: {
 }) {
   const writer = useStoreWriter(state.organizationSlug);
   const [adding, setAdding] = useState<{ config: string; dir: string; error: string | null }>({ config: "", dir: "", error: null });
-  const available = configs.filter((config) => config.change !== "delete" && !mounts.some((mount) => mount.config.id === config.id));
+  const unmountedOrPicked = (config: ConfigListing) => config.name === adding.config || !mounts.some((mount) => mount.config.id === config.id);
+  const available = configs.filter((config) => config.change !== "delete" && unmountedOrPicked(config));
 
   async function mount() {
     if (adding.config === "") return setAdding({ ...adding, error: "Select a config." });

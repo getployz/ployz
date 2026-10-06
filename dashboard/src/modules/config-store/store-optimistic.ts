@@ -72,7 +72,6 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       return;
     }
     case "delete_config":
-      // Its mounts go with it, in the same change.
       await views<ConfigsView>("configs", command.environment, (view) => ({ ...view, configs: view.configs.flatMap((config) =>
         config.name !== command.config ? [config] : config.change === "create" ? [] : [{ ...config, mounts: [], change: "delete" as const }]) }));
       return;
@@ -87,7 +86,6 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       return;
     }
     case "put_config_file": {
-      // Its size and references are the Store's to count; the text is what was typed.
       const put = <V extends Pick<ConfigListing, "name" | "files">>(config: V): V => {
         if (config.name !== command.config) return config;
         const old = config.files.find((file) => file.name === command.file);

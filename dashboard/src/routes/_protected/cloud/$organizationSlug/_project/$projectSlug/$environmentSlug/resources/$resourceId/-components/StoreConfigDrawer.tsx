@@ -42,7 +42,6 @@ import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-co
 
 const ConfigFileEditor = lazy(() => import("./ConfigFileEditor"));
 
-/** The Store's refusals a Config write shows in place instead of as a toast. */
 const SHOWN_REFUSALS = ["invalid", "conflict"] as const;
 
 type ConfigRouteParams = { organizationSlug: string; projectSlug: string; environmentSlug: string; resourceId: string };
@@ -59,7 +58,6 @@ export function StoreConfigDrawer({ params, config }: { params: ConfigRouteParam
   const diff = requireView(views[2]);
   const settings = requireView(views[3]);
   const writer = useStoreWriter(organizationSlug);
-  // Removed while open (a new Config's deletion, or from the CLI).
   if (!views[4].ok) return <CanvasInspectorNotFound noun="Config" />;
   const item = views[4].value;
   const state: StoreConfig = { organizationSlug, environment: store, config };
@@ -130,7 +128,6 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
       await writer.commit(saveConfigCommand(state.environment, state.config.name, edits), SHOWN_REFUSALS).isPersisted.promise;
       setDrafts((prev) => new Map([...prev].filter(([file]) => !dirty.has(file))));
     } catch (error) {
-      // The draft stays, so nothing typed is lost to a refusal.
       setSaveError(error instanceof StoreRefused ? error.message : "Couldn't save. Try again.");
     } finally {
       setSaving(false);
@@ -338,7 +335,6 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
   );
 }
 
-/** A file as its Services receive it: addresses filled in, secrets as dots, never their values. */
 function ConfigPreview({ text, values }: { text: string; values: ReturnType<typeof configReferenceValues> }) {
   return (
     <pre aria-label="Preview" className="ph-no-capture max-h-[32rem] overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs leading-5 whitespace-pre-wrap">
@@ -359,7 +355,8 @@ function ConfigMounts({ state, services }: { state: StoreConfig; services: reado
   const [adding, setAdding] = useState<{ service: string; dir: string; error: string | null }>({ service: "", dir: defaultDir, error: null });
   const [detachError, setDetachError] = useState<string | null>(null);
   const mounted = new Set(state.config.mounts.map((mount) => mount.service));
-  const available = services.filter((service) => !mounted.has(service.name) && service.change !== "delete");
+  const unmountedOrPicked = (service: ServiceListing) => service.name === adding.service || !mounted.has(service.name);
+  const available = services.filter((service) => service.change !== "delete" && unmountedOrPicked(service));
 
   async function attach() {
     if (adding.service === "") return setAdding({ ...adding, error: "Select a service." });

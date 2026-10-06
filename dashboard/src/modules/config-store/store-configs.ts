@@ -78,7 +78,6 @@ export function configTrays(services: readonly Pick<ServiceListing, "id" | "name
   const names = new Set(services.map((service) => service.name));
   return {
     trays: new Map(services.map((service) => {
-      // A mount is the Service's Setting, `configs.CONFIG`.
       const changes = serviceChanges(diff, service.id);
       return [service.id, configs.flatMap((config): MountedConfig[] => config.mounts
         .filter((mount) => mount.service === service.name)

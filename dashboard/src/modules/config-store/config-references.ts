@@ -89,7 +89,7 @@ export function previewSegments(text: string, values: ReadonlyMap<string, Refere
 function didYouMean(name: string, candidates: readonly string[]): string {
   let best: { candidate: string; distance: number } | null = null;
   for (const candidate of candidates) {
-    const distance = editDistance(name.toLowerCase(), candidate.toLowerCase());
+    const distance = optimalStringAlignmentDistance(name.toLowerCase(), candidate.toLowerCase());
     const close = distance <= Math.max(1, Math.floor(name.length / 3)) || sharedPrefix(name, candidate) >= 3;
     if (close && (best === null || distance < best.distance)) best = { candidate, distance };
   }
@@ -102,8 +102,7 @@ function sharedPrefix(left: string, right: string): number {
   return length;
 }
 
-/** Optimal string alignment distance: a swapped pair of letters counts as one edit. */
-function editDistance(left: string, right: string): number {
+function optimalStringAlignmentDistance(left: string, right: string): number {
   const rows: number[][] = [Array.from({ length: right.length + 1 }, (_, index) => index)];
   for (let i = 1; i <= left.length; i += 1) {
     const row = [i];

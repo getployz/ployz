@@ -64,7 +64,6 @@ describe("Config Store nodes", () => {
       ["s1", "storeService"], ["s2", "storeService"], ["loose", "storeVolume"], ["orphan", "storeVolume"], ["spare", "storeConfig"],
     ]);
     expect(nodes[0]).toMatchObject({ position: { x: 480, y: 96 }, height: 144 + 2 * 40 });
-    // web: one Volume tray and one Config tray.
     expect(nodes[1]?.height).toBe(144 + 2 * 40);
     expect(nodes[2]?.data).toMatchObject({ resourceType: "volume", resourceId: "loose", environmentId: "e" });
     expect(nodes[4]?.data).toMatchObject({ resourceType: "config", resourceId: "spare", environmentId: "e" });
