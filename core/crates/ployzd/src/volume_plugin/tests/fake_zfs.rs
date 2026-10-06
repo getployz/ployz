@@ -50,7 +50,14 @@ if [ "$name" = zpool ]; then
   printf '{pools}'
   exit 0
 fi
+# ZFS refuses a user property (a name with a colon) holding anything but a-z, 0-9 and :._-
+check_property() {{
+  case "$1" in *:*) case "$1" in *[!abcdefghijklmnopqrstuvwxyz0123456789:._-]*)
+    echo "invalid property '$1'" >&2; exit 1 ;;
+  esac ;; esac
+}}
 prop() {{
+  check_property "$2"
   f='{props}'/"$1/$2"
   if [ -e "$f" ]; then cat "$f"; else printf '%s\n' "$3"; fi
 }}
@@ -107,6 +114,7 @@ case "$*" in
     [ -e '{readonly_lost}' ] || {{ mkdir -p '{props}/tank/ployz-mirror/data/fs'; echo on > '{props}/tank/ployz-mirror/data/fs/readonly'; }}
     ;;
   'set '*)
+    check_property "${{2%%=*}}"
     f='{props}'/"$3/${{2%%=*}}"
     mkdir -p "${{f%/*}}"
     printf '%s\n' "${{2#*=}}" > "$f"
