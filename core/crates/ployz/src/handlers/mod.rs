@@ -252,8 +252,13 @@ async fn reconnect_client(
 fn recovery_command(matches: &ArgMatches, context: &str, command: &[&str]) -> String {
     let config = config_path(matches).expect("setup already resolved the config path");
     let config = config.to_string_lossy();
+    let connect = matches
+        .get_one::<String>("connect")
+        .into_iter()
+        .flat_map(|connect| ["--connect", connect.as_str()]);
     let args = ["ployz", "--ployz-config", config.as_ref()]
         .into_iter()
+        .chain(connect)
         .chain(command.iter().copied())
         .chain(["--context", context]);
     // A hint that names a removed command is worse than no hint.

@@ -14,7 +14,9 @@ ends with the full Service and Server rows and a summary. In CI or redirected ou
 Ployz prints changes as lines and says `still waiting:` after 30 seconds without a
 change. To capture those lines through a pipe, use `ployz deploy 2>&1 | cat`.
 `--json` keeps the result on stdout; progress stays on stderr. `--events FILE` also
-records the existing Deployment events as NDJSON.
+records the existing Deployment events as NDJSON. Source builds appear against their
+Service before Server placement is known. Once execution starts, the rows identify the
+Servers where work runs.
 
 A failed deploy shows the deepest cause, available failed-container log tails, and
 `inspect:` and `retry:` commands. A Deployment result that did not fully succeed exits
@@ -24,8 +26,9 @@ Services or their dependencies, or to observed work the deploy affected. An Entr
 Down observation is evidence from that Entry, not proof that somebody stopped the
 Server. Missing telemetry and unknown membership values alone do not establish Down.
 
-Ctrl-C stops following a Cloud Deployment and exits 130; the Cloud Deployment keeps
-running. The command returns its last known result when one is available. An active
+Ctrl-C stops following a Cloud Deployment and exits 130; an active Cloud Deployment
+keeps running. The command returns its last known result when one is available, including
+a completion observed during interruption. An active
 Cloud request can take up to 15 seconds to return. For local execution, Ctrl-C requests
 cancellation and waits for owned work and cleanup to settle. Server enrollment that
 already committed remains committed; follow the recovery hint if Global catch-up or

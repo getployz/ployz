@@ -174,9 +174,12 @@ pub(crate) fn joined_catch_up_error(
     server: &Machine,
     command: impl Fn(&[&str]) -> String,
 ) -> Failure {
-    let mut message = String::from(
-        "Server joined, but Global catch-up is incomplete; it remains a Cluster member.",
-    );
+    let mut message = if error.cause.is_interrupted() {
+        "Server joined; Global catch-up was interrupted. It remains a Cluster member."
+    } else {
+        "Server joined, but Global catch-up is incomplete; it remains a Cluster member."
+    }
+    .to_owned();
     for identity in &error.unresolved {
         if *identity != QualifiedService::system_ingress() {
             message.push_str(&format!(
@@ -327,11 +330,11 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         .iter()
         .filter_map(ServiceObservation::observed_global_slot)
         .collect::<Vec<_>>();
-    let identities = slots
+    let mut unresolved = slots
         .iter()
         .map(|slot| slot.identity().clone())
         .collect::<Vec<_>>();
-    observe(CatchUpFact::Identified(identities.clone()));
+    observe(CatchUpFact::Identified(unresolved.clone()));
     let mut expected = Vec::new();
     let mut failures = Vec::new();
     for slot in slots {
@@ -360,7 +363,10 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
                     failures.push((identity, error.to_string()));
                 }
             }
-            Ok(None) => observe(CatchUpFact::Excluded(identity)),
+            Ok(None) => {
+                unresolved.retain(|service| service != &identity);
+                observe(CatchUpFact::Excluded(identity));
+            }
             Err(error) => {
                 observe(CatchUpFact::Failed(identity.clone()));
                 failures.push((identity, crate::ui::row(&error)));
@@ -377,32 +383,27 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
                 } else {
                     error
                 },
-                identities.clone(),
+                unresolved.clone(),
             )
         })?;
     let target_services = service_containers(target_containers);
     for slot in &expected {
         if slot.is_running_on(&target_services, this_machine) {
+            if !failures
+                .iter()
+                .any(|(identity, _)| identity == slot.identity())
+            {
+                unresolved.retain(|identity| identity != slot.identity());
+            }
             observe(CatchUpFact::Running(slot.identity().clone()));
         } else {
             observe(CatchUpFact::Failed(slot.identity().clone()));
         }
     }
     if cancel.is_cancelled() {
-        return Err(CatchUpError::new(Failure::cancelled(), identities));
+        return Err(CatchUpError::new(Failure::cancelled(), unresolved));
     }
-    let mut missing = expected
-        .into_iter()
-        .filter_map(|slot| {
-            (!slot.is_running_on(&target_services, this_machine)).then(|| slot.identity().clone())
-        })
-        .collect::<Vec<_>>();
-    for (identity, _) in &failures {
-        if !missing.contains(identity) {
-            missing.push(identity.clone());
-        }
-    }
-    if !missing.is_empty() {
+    if !unresolved.is_empty() {
         let details = failures
             .iter()
             .map(|(identity, error)| format!("{identity}: {error}"))
@@ -413,7 +414,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         } else {
             Failure::unavailable(format!("Global catch-up incomplete: {details}"))
         };
-        return Err(CatchUpError::new(cause, missing));
+        return Err(CatchUpError::new(cause, unresolved));
     }
     Ok(())
 }

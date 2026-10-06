@@ -41,7 +41,6 @@ fn a_follow_read_error_cannot_detach_owned_work_even_when_cancel_is_refused() {
         .unwrap();
     let runner = RunnerId::parse("owned-runner").unwrap();
     local.claim(&admitted.id, &runner).unwrap();
-    // This actor cannot read or cancel the admitted run; its owner can still finish.
     let denied = Actor::system(OrganizationId::parse("other").unwrap());
     let matches = crate::cli::command()
         .try_get_matches_from(["ployz", "deploy"])

@@ -355,11 +355,7 @@ mod tests {
         assert!(!visible(&view));
         for (status, detail, state) in [
             (BuildStatus::Building, "building", State::Pending),
-            (
-                BuildStatus::Built,
-                "built",
-                State::Pending,
-            ),
+            (BuildStatus::Built, "built", State::Pending),
             (BuildStatus::Failed, "build failed", State::Failed),
         ] {
             view.builds.first_mut().unwrap().status = status;

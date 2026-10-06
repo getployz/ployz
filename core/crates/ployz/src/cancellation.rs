@@ -78,19 +78,23 @@ mod tests {
                 .env("PLOYZ_SIGNAL_TEST", case)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
+                .stderr(Stdio::inherit())
                 .spawn()
                 .unwrap();
-            let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
-            loop {
-                let mut line = String::new();
-                assert!(
-                    output.read_line(&mut line).unwrap() > 0,
-                    "child exited before READY: {case}"
-                );
-                if line.trim() == "READY" {
-                    break;
+            let output = std::io::BufReader::new(child.stdout.take().unwrap());
+            let (ready, readiness) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                for line in output.lines() {
+                    if line.unwrap().trim() == "READY" {
+                        let _ = ready.send(());
+                    }
                 }
+            });
+            if let Err(error) = readiness.recv_timeout(Duration::from_secs(5)) {
+                let _ = child.kill();
+                child.wait().unwrap();
+                reader.join().unwrap();
+                panic!("signal listener child did not become ready: {case}: {error}");
             }
             if !matches!(case, "none" | "early_drop") {
                 for _ in 0..if case == "repeated" { 2 } else { 1 } {
@@ -110,11 +114,13 @@ mod tests {
                 if Instant::now() >= deadline {
                     child.kill().unwrap();
                     child.wait().unwrap();
+                    reader.join().unwrap();
                     panic!("listener did not join: {case}");
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
             let status = child.wait().unwrap();
+            reader.join().unwrap();
             assert!(status.success(), "signal listener child {case}: {status}");
         }
     }
