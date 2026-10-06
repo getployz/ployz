@@ -92,7 +92,8 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
         if (config.name !== command.config) return config;
         const old = config.files.find((file) => file.name === command.file);
         const file = { name: command.file, mode: "0444", uid: 0, gid: 0, references: [], ...old,
-          bytes: new TextEncoder().encode(command.content).length, ...command.mode ? { mode: command.mode } : {} };
+          bytes: new TextEncoder().encode(command.content).length };
+        if (command.mode) file.mode = command.mode;
         return { ...config, files: old ? config.files.map((one) => one === old ? file : one) : [...config.files, file] };
       };
       await views<ConfigsView>("configs", command.environment, (view) => ({ ...view, configs: view.configs.map(put) }));

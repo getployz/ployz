@@ -1,8 +1,10 @@
 import type {
-  AttachConfig, ConfigCommand, ConfigFileSummary, ConfigListing, CreateConfig, DiffView, EnvironmentRef,
+  AttachConfig, ConfigCommand, ConfigFileSummary, ConfigItemView, ConfigListing, CreateConfig, DiffView, EnvironmentRef, EnvironmentView,
   PutConfigFile, ServiceListing,
 } from "@ployz/sdk";
-import { serviceChanges } from "./store-services";
+import type { ReferenceValue } from "./config-references";
+import { serviceChanges, serviceSettingRows } from "./store-services";
+import { serviceVariables, storeManagedExports } from "./store-variables";
 
 /** The most text one Config file holds, in bytes; the Store's `MAX_FILE_BYTES`. */
 export const CONFIG_FILE_MAX_BYTES = 256 * 1024;
@@ -19,7 +21,9 @@ export function createConfigCommand(id: string, environment: EnvironmentRef, nam
 /** Writes one file's text; `mode` only when the user flipped Executable, so a CLI-set owner stays. */
 export function putConfigFileCommand(environment: EnvironmentRef, config: string, file: string, content: string, mode?: string):
   { command: "put_config_file" } & PutConfigFile {
-  return { command: "put_config_file", environment, config, file, content, ...(mode === undefined ? {} : { mode }) };
+  const put: { command: "put_config_file" } & PutConfigFile = { command: "put_config_file", environment, config, file, content };
+  if (mode !== undefined) put.mode = mode;
+  return put;
 }
 
 export function attachConfigCommand(environment: EnvironmentRef, service: string, config: string, dir: string):
@@ -82,4 +86,32 @@ export function configTrays(services: readonly Pick<ServiceListing, "id" | "name
     })),
     unmounted: configs.filter((config) => !config.mounts.some((mount) => names.has(mount.service))),
   };
+}
+
+/** A file's unsaved text and, when the user flipped Executable, its mode. */
+export type FileDraft = { content: string; mode?: string };
+
+/** What one Save writes: each drafted file whose text or mode differs from the Store's, or that is new. */
+export function configEdits(config: Pick<ConfigItemView, "files" | "contents">, drafts: ReadonlyMap<string, FileDraft>) {
+  return [...drafts].flatMap(([file, draft]) => {
+    const stored = config.files.find((one) => one.name === file);
+    const changed = stored === undefined || config.contents[file] !== draft.content
+      || (draft.mode !== undefined && draft.mode !== stored.mode);
+    return changed ? [{ file, ...draft }] : [];
+  });
+}
+
+/** Preview's values by `service.KEY`: each Service's built-in exports, then its own variables over them; secrets carry no value. */
+export function configReferenceValues(view: EnvironmentView, services: readonly ServiceListing[]) {
+  const values = new Map<string, ReferenceValue>();
+  for (const service of services) {
+    for (const managed of storeManagedExports(service, view.environment)) {
+      values.set(`${service.name}.${managed.key}`, { secret: false, value: managed.value });
+    }
+    for (const variable of serviceVariables(serviceSettingRows(view, service.name), service.id)) {
+      values.set(`${service.name}.${variable.key}`,
+        variable.value.type === "plain" ? { secret: false, value: variable.value.value } : { secret: true });
+    }
+  }
+  return values;
 }

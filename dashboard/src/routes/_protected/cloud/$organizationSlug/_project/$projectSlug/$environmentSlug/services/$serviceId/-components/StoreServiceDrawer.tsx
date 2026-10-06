@@ -2,7 +2,8 @@ import { Suspense, useState, type ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
 import { Schema } from "effect";
 import { PackageIcon, PencilIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
-import type { Change, EnvironmentRef, JsonValue, ServiceListing, ServiceSettingChange, SettingRow, VolumeListing } from "@ployz/sdk";
+import type { Change, ConfigListing, EnvironmentRef, JsonValue, ServiceListing, ServiceSettingChange, SettingRow, VolumeListing } from "@ployz/sdk";
+import { attachConfigCommand } from "#/modules/config-store/store-configs";
 import { volumeStorageText } from "#/modules/config-store/store-volumes";
 import { replicaCap, replicaCount, volumeWriters, writersText } from "#/modules/config-store/volume-sharing";
 import { StoreRefused } from "#/modules/config-store/store.contract";
@@ -22,7 +23,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
 import { templateLabel } from "#/modules/config-store/database-presets";
 import { changedProps, dnsLabelError, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
-import { diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { configsQuery, diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import type { Persistable } from "#/collections/query-collection";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
@@ -103,12 +104,13 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { organizationSlug } = params;
   const views = useStoreViews(organizationSlug,
-    [servicesQuery(store), environmentSettingsQuery(store), diffQuery(store), volumesQuery(store), namespaceQuery(store)] as const);
+    [servicesQuery(store), environmentSettingsQuery(store), diffQuery(store), volumesQuery(store), namespaceQuery(store), configsQuery(store)] as const);
   const services = requireView(views[0]).services;
   const settings = requireView(views[1]);
   const diff = requireView(views[2]);
   const volumes = requireView(views[3]).volumes;
   const namespace = views[4].ok ? views[4].value.namespace : null;
+  const configs = requireView(views[5]).configs;
   const writer = useStoreWriter(organizationSlug);
   const { tab } = useSearch({ from: SERVICE_ROUTE_FROM });
   const navigate = useNavigate({ from: SERVICE_ROUTE_TO });
@@ -141,6 +143,8 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const capped = cap && replicasOf(service.name) <= 1 ? cap : null;
   const mounts = volumes.flatMap((volume) => volume.mounts.filter((mount) => mount.service === service.name)
     .map((mount) => ({ volume, path: mount.path })));
+  const configMounts = configs.flatMap((config) => config.mounts.filter((mount) => mount.service === service.name)
+    .map((mount) => ({ config, dir: mount.dir })));
   const rename = state.changes.get("name");
   const restartPolicy = state.rows.get("restartPolicy");
   const buildMethod = settingText(state.rows.get("buildMethod")?.value ?? state.rows.get("buildMethod")?.default);
@@ -155,7 +159,12 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
             ?? (taken(service, services, raw) ? `A service here is already reached as ${raw}.` : null)} />
       </Suspense>
     ),
-    storage: mounts.length || database ? <StoreServiceStorage state={state} params={params} mounts={mounts} replicasOf={replicasOf} /> : null,
+    storage: mounts.length || configs.length || database ? (
+      <FieldGroup>
+        {configs.length ? <StoreServiceConfigs state={state} params={params} configs={configs} mounts={configMounts} /> : null}
+        {mounts.length || database ? <StoreServiceStorage state={state} params={params} mounts={mounts} replicasOf={replicasOf} /> : null}
+      </FieldGroup>
+    ) : null,
     scale: <FieldGroup>{capped ? <StoreReplicasCapped params={params} volume={capped} /> : field("replicas")}{field("cpuLimit")}{field("memLimit")}</FieldGroup>,
     build: state.source === "git" ? (
       <FieldGroup>
@@ -542,6 +551,64 @@ function StoreDangerSection({ state }: { state: StoreService }) {
         </Button>
       )} />
   );
+}
+
+/** The Configs this service mounts, each opening its own panel, then a row to mount another. */
+function StoreServiceConfigs({ state, params, configs, mounts }: {
+  state: StoreService;
+  params: { organizationSlug: string; projectSlug: string; environmentSlug: string };
+  configs: readonly ConfigListing[];
+  mounts: { config: ConfigListing; dir: string }[];
+}) {
+  const writer = useStoreWriter(state.organizationSlug);
+  const [adding, setAdding] = useState<{ config: string; dir: string; error: string | null }>({ config: "", dir: "", error: null });
+  const available = configs.filter((config) => config.change !== "delete" && !mounts.some((mount) => mount.config.id === config.id));
+
+  async function mount() {
+    if (adding.config === "") return setAdding({ ...adding, error: "Select a config." });
+    const dir = adding.dir || `/etc/${adding.config}`;
+    try {
+      await writer.commit(attachConfigCommand(state.environment, state.service.name, adding.config, dir), ["invalid", "conflict"])
+        .isPersisted.promise;
+      setAdding({ config: "", dir: "", error: null });
+    } catch (error) {
+      setAdding((prev) => ({ ...prev, error: error instanceof StoreRefused ? error.message : "Couldn't mount it." }));
+    }
+  }
+
+  return <>
+    {mounts.map(({ config, dir }) => (
+      <Field key={config.id} orientation="responsive">
+        <FieldContent>
+          <FieldLabel>
+            <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: config.id }} className="hover:underline">{config.name}</Link>
+          </FieldLabel>
+          <FieldDescription>Config · {config.files.length} file{config.files.length === 1 ? "" : "s"}</FieldDescription>
+        </FieldContent>
+        <span className="truncate font-mono text-sm">{dir}</span>
+      </Field>
+    ))}
+    {available.length ? (
+      <Field data-invalid={adding.error ? true : undefined}>
+        <FieldLabel>Mount a config</FieldLabel>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Select value={adding.config} onValueChange={(config) => setAdding({ ...adding, config: config ?? "", error: null })}>
+            <SelectTrigger className="w-full sm:w-auto sm:flex-1" aria-label="Config"><SelectValue placeholder="Select a config" /></SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                {available.map((config) => <SelectItem key={config.id} value={config.name} label={config.name}>{config.name}</SelectItem>)}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+          <Input className="flex-1 font-mono" aria-label="Directory" value={adding.dir}
+            placeholder={adding.config ? `/etc/${adding.config}` : "/etc/app"} aria-invalid={adding.error ? true : undefined}
+            onChange={(event) => setAdding({ ...adding, dir: event.target.value, error: null })} />
+          <Button onClick={() => void mount()}><PlusIcon data-icon="inline-start" />Mount</Button>
+        </div>
+        {adding.error ? <FieldError>{adding.error}</FieldError> : null}
+      </Field>
+    ) : null}
+  </>;
 }
 
 /**

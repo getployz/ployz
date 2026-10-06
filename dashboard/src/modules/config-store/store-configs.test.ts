@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { ConfigListing, DiffView, RowId, ServiceListing } from "@ployz/sdk";
+import type { ConfigItemView, ConfigListing, DiffView, EnvironmentView, RowId, ServiceListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import {
-  attachConfigCommand, configFileSizeError, configTrays, createConfigCommand, fileAccess, putConfigFileCommand, saveConfigCommand, utf8Bytes,
+  attachConfigCommand, configEdits, configFileSizeError, configReferenceValues, configTrays, createConfigCommand, fileAccess, putConfigFileCommand, saveConfigCommand, utf8Bytes,
 } from "./store-configs";
 
 const environment = { project: "shop", environment: "production" };
@@ -76,5 +76,49 @@ describe("Config trays", () => {
 
   it("leaves a Config no Service here mounts as its own node", () => {
     expect(unmounted.map((listing) => listing.id)).toEqual(["loose", "orphan"]);
+  });
+});
+
+describe("Saving drafts", () => {
+  const stored = asTestDouble<ConfigItemView>()({
+    files: [{ name: "config.yml", bytes: 4, mode: "0444", uid: 0, gid: 0, references: [] }],
+    contents: { "config.yml": "a: 1" },
+  });
+
+  it("writes only drafts that differ from the Store, and new files", () => {
+    const drafts = new Map([["config.yml", { content: "a: 1" }], ["new.toml", { content: "" }]]);
+    expect(configEdits(stored, drafts)).toEqual([{ file: "new.toml", content: "" }]);
+  });
+
+  it("writes a file whose text is unchanged when only its mode flipped", () => {
+    expect(configEdits(stored, new Map([["config.yml", { content: "a: 1", mode: "0555" }]])))
+      .toEqual([{ file: "config.yml", content: "a: 1", mode: "0555" }]);
+    expect(configEdits(stored, new Map([["config.yml", { content: "a: 1", mode: "0444" }]]))).toEqual([]);
+  });
+});
+
+describe("Preview values", () => {
+  // SAFETY: only the fields the reference values read.
+  const view = asTestDouble<EnvironmentView>()({
+    environment: { id: "env-1", name: "production" },
+    settings: [
+      { path: "redis.env.PORT", value: "6379" },
+      { path: "api.env.SECRET_KEY", value: { secret: true } },
+    ],
+  });
+  const services = [
+    { id: "s1", row: "s1:node" as RowId, name: "redis", private_dns: "redis", source: "image", change: null, template: null },
+    { id: "s2", row: "s2:node" as RowId, name: "api", private_dns: "api", source: "image", change: null, template: null },
+  ] satisfies ServiceListing[];
+  const values = configReferenceValues(view, services);
+
+  it("resolves a Service's private address and its own PORT over the default", () => {
+    expect(values.get("redis.PLOYZ_PRIVATE_DOMAIN")).toEqual({ secret: false, value: "redis.internal" });
+    expect(values.get("redis.PORT")).toEqual({ secret: false, value: "6379" });
+    expect(values.get("api.PORT")).toEqual({ secret: false, value: "8080" });
+  });
+
+  it("carries no value for a secret", () => {
+    expect(values.get("api.SECRET_KEY")).toEqual({ secret: true });
   });
 });
