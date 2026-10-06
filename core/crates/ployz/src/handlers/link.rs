@@ -487,7 +487,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             };
             attention.push(Attention {
                 reason: error.code.to_string(),
-                message: error.message,
+                message: crate::ui::row(&error),
                 deployment: None,
                 next,
             });

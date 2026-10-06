@@ -2,7 +2,7 @@ use std::{
     env,
     ffi::OsString,
     io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
@@ -427,18 +427,22 @@ impl Remote {
         // Host preparation may add the SSH user to the ployz group. A multiplexed
         // session authenticated before installation retains its old group list.
         self.close_control_master().await;
-        let port = self
-            .destination
-            .port()
-            .map(|port| format!("-p {port} "))
-            .unwrap_or_default();
-        let remove = format!(
-            "ssh {port}{} rm -rf -- {}",
-            self.destination.target(),
-            shell_quote(&remote_directory)
-        );
+        let remove = remove_command(&self.destination, &self.key, &remote_directory);
         finish_remote(primary, cleanup, remove)
     }
+}
+
+fn remove_command(destination: &SshDestination, key: &Path, directory: &str) -> String {
+    let port = destination
+        .port()
+        .map(|port| format!("-p {port} "))
+        .unwrap_or_default();
+    format!(
+        "ssh {port}-i {} {} rm -rf -- {}",
+        shell_quote(&key.to_string_lossy()),
+        destination.target(),
+        shell_quote(directory)
+    )
 }
 
 fn ssh_key(matches: &ArgMatches) -> PathBuf {
@@ -661,6 +665,19 @@ mod tests {
             ["install", "--version", "1.2.3", "--software-only"]
                 .map(OsString::from)
                 .to_vec()
+        );
+    }
+
+    #[test]
+    fn the_cleanup_command_uses_the_key_the_session_used() {
+        let destination = SshDestination::parse("root@host").unwrap();
+        assert_eq!(
+            remove_command(
+                &destination,
+                Path::new("/home/me/my keys/id"),
+                "/tmp/ployz-bootstrap-1"
+            ),
+            "ssh -i '/home/me/my keys/id' root@host rm -rf -- '/tmp/ployz-bootstrap-1'"
         );
     }
 

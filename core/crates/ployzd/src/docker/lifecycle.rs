@@ -279,7 +279,10 @@ impl ContainerRuntime {
         if result.is_err()
             && let Err(error) = config_operation.garbage_collect_configs().await
         {
-            eprintln!("failed to reclaim materialized configs: {error}");
+            eprintln!(
+                "failed to reclaim materialized configs: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            );
         }
         result
     }

@@ -114,13 +114,8 @@ if [ "${VERIFY_REAL_SERVERS:-0}" = 1 ]; then
   node node_modules/vite/bin/vite.js build --config vite.worker.config.ts --outDir "$run/worker" --emptyOutDir \
     > "$run/worker-build.log" 2>&1 || { cat "$run/worker-build.log" >&2; exit 1; }
   for _ in $(seq 60); do curl -fs -o /dev/null "http://127.0.0.1:$inngest_port" && break; sleep 0.5; done
-  PORT=$worker_port setsid nohup node "$run/worker/index.mjs" > "$run/worker.log" 2>&1 < /dev/null &
-  echo $! > "$run/worker.pid"; echo "$worker_port" > "$run/worker.port"
-  for _ in $(seq 120); do
-    [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$worker_port/ready")" = 200 ] && break; sleep 0.5
-  done
-  [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$worker_port/ready")" = 200 ] \
-    || { echo "up.sh: the Inngest worker did not connect (see $run/worker.log, $run/inngest.log)" >&2; exit 1; }
+  echo "$worker_port" > "$run/worker.port"
+  "$dash/scripts/verify/worker.sh"
 fi
 
 setsid nohup node node_modules/vite/bin/vite.js dev --port "$port" --strictPort --host 127.0.0.1 > "$run/vite.log" 2>&1 < /dev/null &

@@ -49,12 +49,12 @@ impl ApiClient {
         configure: impl FnOnce(reqwest::ClientBuilder) -> reqwest::ClientBuilder,
     ) -> Result<Self, Error> {
         let base_url = Url::parse(&format!("http://{address}"))
-            .map_err(|error| Error::Protocol(error.to_string()))?;
+            .map_err(|error| Error::Protocol(ployz_core::error_chain::inline(&error)))?;
         let mut headers = header::HeaderMap::new();
         headers.insert(
             header::AUTHORIZATION,
             header::HeaderValue::from_str(&format!("Bearer {token}"))
-                .map_err(|error| Error::Protocol(error.to_string()))?,
+                .map_err(|error| Error::Protocol(ployz_core::error_chain::inline(&error)))?,
         );
         let retry = reqwest::retry::for_host(address.ip().to_string())
             .max_retries_per_request(2)
@@ -271,7 +271,7 @@ impl Subscription {
                 .next()
                 .await
                 .ok_or_else(|| Error::Protocol("subscription stream closed".into()))?
-                .map_err(|error| Error::Protocol(error.to_string()))?;
+                .map_err(|error| Error::Protocol(ployz_core::error_chain::inline(&error)))?;
             if !line.trim().is_empty() {
                 return Ok(serde_json::from_str(&line)?);
             }

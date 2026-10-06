@@ -62,7 +62,10 @@ impl PreparedReset {
         )?;
         store.record = self.resetting.clone();
         if let Err(error) = File::open(&self.data_dir).and_then(|directory| directory.sync_all()) {
-            eprintln!("failed to sync committed local Machine reset: {error}");
+            eprintln!(
+                "failed to sync committed local Machine reset: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            );
         }
         Ok(())
     }
@@ -233,8 +236,9 @@ impl LocalMachineStore {
             accepts_ingress: initial_policy.accepts_ingress,
             id: self.record.id(),
             name,
-            subnet: allocate_machine_subnet(founding_cluster.network, [])
-                .map_err(|error| StoreError::InvalidNetwork(error.to_string()))?,
+            subnet: allocate_machine_subnet(founding_cluster.network, []).map_err(|error| {
+                StoreError::InvalidNetwork(ployz_core::error_chain::inline(&error))
+            })?,
             public_key,
             public_ip,
             advertised_endpoints,
@@ -504,9 +508,9 @@ fn display_data_directory(path: &Path) -> String {
 
 #[derive(Debug, Error)]
 pub enum StoreError {
-    #[error("local Machine record I/O failed: {0}")]
+    #[error("local Machine record I/O failed")]
     Io(#[from] io::Error),
-    #[error("local Machine record JSON is invalid: {0}")]
+    #[error("local Machine record JSON is invalid")]
     Json(#[from] serde_json::Error),
     #[error("machine is not participating")]
     NotParticipating,

@@ -604,6 +604,7 @@ impl SwitchError {
             code: self.rpc_code(),
             message: message.into(),
             details: serde_json::to_value(self).expect("a switch reason is JSON serializable"),
+            cause: Vec::new(),
         }
     }
 

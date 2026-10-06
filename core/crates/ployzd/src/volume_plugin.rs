@@ -190,7 +190,7 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         let stream = match listener.accept().await {
             Ok((stream, _)) => stream,
             Err(error) => {
-                tracing::error!(%error, "Volume plugin could not accept a connection");
+                tracing::error!(error = %ployz_core::error_chain::inline(&error), "Volume plugin could not accept a connection");
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
@@ -202,7 +202,7 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
                 .serve_connection(TokioIo::new(stream), service)
                 .await
             {
-                tracing::debug!(%error, "Volume plugin connection ended");
+                tracing::debug!(error = %ployz_core::error_chain::inline(&error), "Volume plugin connection ended");
             }
         });
     }
@@ -251,7 +251,7 @@ fn error_response(result: Result<()>) -> Json<ErrorResponse> {
     Json(ErrorResponse {
         error: result
             .err()
-            .map(|error| error.to_string())
+            .map(|error| ployz_core::error_chain::inline(&error))
             .unwrap_or_default(),
     })
 }
@@ -275,7 +275,7 @@ fn mount_response(result: Result<String>) -> Json<MountResponse> {
         }),
         Err(error) => Json(MountResponse {
             mountpoint: String::new(),
-            error: error.to_string(),
+            error: ployz_core::error_chain::inline(&error),
         }),
     }
 }

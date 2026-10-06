@@ -121,6 +121,7 @@ async fn retirement_reports_every_global_and_stops_at_the_next_once_cancelled() 
         code: RpcErrorCode::Conflict,
         message: "the Server accepts it again".into(),
         details: serde_json::Value::Null,
+        cause: Vec::new(),
     });
     let gone = qualified("gone", "api");
     let outcomes = retire_globals(

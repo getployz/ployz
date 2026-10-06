@@ -20,7 +20,7 @@ pub async fn wait_for_catch_up(
             Ok(true) => return Ok(()),
             Ok(false) => "target replication is incomplete".to_owned(),
             Err(error @ Error::InvalidCatchUpTarget(_)) => return Err(error),
-            Err(error) => error.to_string(),
+            Err(error) => ployz_core::error_chain::inline(&error),
         };
         tokio::select! {
             () = tokio::time::sleep(Duration::from_millis(500)) => {}
@@ -79,7 +79,10 @@ pub async fn run_machine_publisher(
             if let Some(network) = record.cluster_network()
                 && let Err(error) = replicated.publish_cluster_network(network).await
             {
-                eprintln!("failed to publish Cluster network: {error}");
+                eprintln!(
+                    "failed to publish Cluster network: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                );
             }
             let publication = replicated.machine_publication().await;
             let running = *running_builds.borrow_and_update();
@@ -88,7 +91,10 @@ pub async fn run_machine_publisher(
             if let Some(machine) = machine
                 && let Err(error) = publication.publish(&machine).await
             {
-                eprintln!("failed to publish local Machine: {error}");
+                eprintln!(
+                    "failed to publish local Machine: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                );
             }
         }
         tokio::select! {

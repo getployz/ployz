@@ -33,28 +33,28 @@ pub enum Error {
     #[error("a Machine upgrade or mutation is active")]
     Busy,
     /// The durable receipt could not be read.
-    #[error("read Machine upgrade receipt: {0}")]
+    #[error("could not read the Machine upgrade receipt")]
     Read(#[source] io::Error),
     /// The durable receipt was not valid JSON for the current contract.
-    #[error("decode Machine upgrade receipt: {0}")]
+    #[error("could not decode the Machine upgrade receipt")]
     Decode(#[source] serde_json::Error),
     /// The durable receipt could not be atomically written.
-    #[error("write Machine upgrade receipt: {0}")]
+    #[error("could not write the Machine upgrade receipt")]
     Write(#[source] io::Error),
     /// The current receipt could not be encoded.
-    #[error("encode Machine upgrade receipt: {0}")]
+    #[error("could not encode the Machine upgrade receipt")]
     Encode(#[source] serde_json::Error),
     /// Global activation was requested from a daemon using unsupported Machine paths.
     #[error("{0}")]
     NonstandardPaths(String),
     /// The requested release could not be parsed or resolved.
-    #[error("resolve Machine release: {0}")]
+    #[error("could not resolve the Machine release")]
     Resolve(#[source] InstallError),
     /// The system manager rejected or did not confirm worker launch.
     #[error("launch Machine upgrade worker: {0}")]
     Launch(String),
     /// The worker process or unit could not be queried.
-    #[error("inspect Machine upgrade worker: {0}")]
+    #[error("could not inspect the Machine upgrade worker")]
     InspectWorker(#[source] io::Error),
     /// `systemctl` returned evidence that did not prove either a running or stopped worker.
     #[error("inspect Machine upgrade worker: {0}")]
@@ -63,7 +63,7 @@ pub enum Error {
     #[error("Machine upgrade worker does not own active attempt {0}")]
     NotActive(MachineUpgradeAttemptId),
     /// The attempt failed; its text is the recorded failure, including any restore outcome.
-    #[error("Machine upgrade failed: {0}")]
+    #[error("Machine upgrade failed")]
     Upgrade(#[source] UpgradeFailure),
     /// Machine mutation ownership could not be claimed or inspected.
     #[error(transparent)]
@@ -107,8 +107,12 @@ pub(crate) fn request(
         request_locked(request, &data_dir, &run_dir).await
     });
     async move {
-        task.await
-            .map_err(|error| Error::Launch(format!("upgrade acceptance task failed: {error}")))?
+        task.await.map_err(|error| {
+            Error::Launch(format!(
+                "upgrade acceptance task failed: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            ))
+        })?
     }
 }
 
@@ -160,7 +164,7 @@ async fn request_locked(
     if let Err(error) = launch_worker(request.attempt_id, data_dir, run_dir).await {
         stored.attempt.outcome = MachineUpgradeOutcome::Failed {
             stage: MachineUpgradeStage::Launching,
-            error: error.to_string(),
+            error: ployz_core::error_chain::inline(&error),
         };
         write(data_dir, &stored)?;
         admission.clear_active(request.attempt_id.as_str())?;
@@ -262,7 +266,7 @@ async fn work(
         Ok(()) => MachineUpgradeOutcome::Succeeded { version: target },
         Err(error) => MachineUpgradeOutcome::Failed {
             stage,
-            error: error.to_string(),
+            error: ployz_core::error_chain::inline(error),
         },
     };
     write(data_dir, &stored)?;

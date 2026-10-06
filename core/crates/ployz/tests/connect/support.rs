@@ -753,6 +753,7 @@ impl MachineRpc for DiscoveryService {
                 code: RpcErrorCode::Conflict,
                 message: "a Machine upgrade or mutation is active".into(),
                 details: Value::Null,
+                cause: Vec::new(),
             })
         };
         if self.lose_upgrade_reply.swap(false, Ordering::SeqCst) {
@@ -777,6 +778,7 @@ impl MachineRpc for DiscoveryService {
                 code: RpcErrorCode::NotFound,
                 message: "Machine upgrade attempt was not found".into(),
                 details: Value::Null,
+                cause: Vec::new(),
             }),
         };
         Ok(Response::new(reply.encode().unwrap()))
@@ -861,6 +863,7 @@ impl MachineRpc for DiscoveryService {
                 code: RpcErrorCode::Unavailable,
                 message: "target unavailable".into(),
                 details: Value::Null,
+                cause: Vec::new(),
             })
         } else {
             RpcResponse::from(VolumeInventory {
@@ -905,6 +908,7 @@ impl MachineRpc for DiscoveryService {
                         code: RpcErrorCode::NotFound,
                         message: format!("Docker Volume {:?} was not found", inspect.name),
                         details: Value::Null,
+                        cause: Vec::new(),
                     })
                 },
                 RpcResponse::from,
@@ -1056,18 +1060,21 @@ impl MachineRpc for DiscoveryService {
                 code: RpcErrorCode::Unavailable,
                 message: "target unavailable".into(),
                 details: Value::Null,
+                cause: Vec::new(),
             })
         } else if remove.name.as_str() == "missing" {
             RpcResponse::from(RpcError {
                 code: RpcErrorCode::NotFound,
                 message: "volume not found".into(),
                 details: Value::Null,
+                cause: Vec::new(),
             })
         } else if remove.name.as_str() == "busy" && !remove.force {
             RpcResponse::from(RpcError {
                 code: RpcErrorCode::Conflict,
                 message: "volume is in use".into(),
                 details: Value::Null,
+                cause: Vec::new(),
             })
         } else {
             self.removed_volumes.lock().unwrap().push(DockerVolumeId {

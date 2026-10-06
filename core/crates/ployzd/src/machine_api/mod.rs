@@ -158,7 +158,9 @@ impl Service<http::Request<Body>> for MachineApi {
             // Negotiation is read-only: Cloud must save a verified candidate before
             // any operational RPC can activate it and retire the previous credential.
             if !verification && let Err(error) = local.activate_management_client(remote).await {
-                return Ok(tonic::Status::unavailable(error.to_string()).into_http());
+                return Ok(
+                    ployz_core::rpc::caused_status(tonic::Code::Unavailable, &error).into_http(),
+                );
             }
             let record = local.record();
             let allowed = if verification {

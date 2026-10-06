@@ -435,6 +435,7 @@ mod tests {
                 code: RpcErrorCode::Unavailable,
                 message: "ingest unavailable".into(),
                 details: Value::Null,
+                cause: Vec::new(),
             }),
             PushError::ImageIngest(_)
         ));

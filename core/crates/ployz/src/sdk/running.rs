@@ -155,6 +155,7 @@ impl<T> Running<T> {
             code: RpcErrorCode::Internal,
             message: "SDK call task failed".into(),
             details: Value::Null,
+            cause: Vec::new(),
         })?
     }
 }
