@@ -1,5 +1,17 @@
 //! Process-lifetime signal ownership for commands spanning synchronous and async work.
 
+use std::{
+    io::{self, Read},
+    os::unix::{
+        io::{AsRawFd, RawFd},
+        net::UnixStream,
+    },
+};
+
+use signal_hook::iterator::{
+    backend::{OwningSignalIterator, PollResult, SignalDelivery},
+    exfiltrator::SignalOnly,
+};
 use tokio_util::sync::CancellationToken;
 
 /// Subscribe to Ctrl-C for async-only commands already running on Tokio.
@@ -24,20 +36,34 @@ pub(crate) struct CtrlC {
     listener: Option<std::thread::JoinHandle<()>>,
 }
 
+#[derive(Debug)]
+struct SignalWriter {
+    writer: UnixStream,
+    _receiver: UnixStream,
+}
+
+impl AsRawFd for SignalWriter {
+    fn as_raw_fd(&self) -> RawFd {
+        self.writer.as_raw_fd()
+    }
+}
+
 impl CtrlC {
     /// Register before returning, including when the caller's Tokio runtime is idle.
     pub(crate) fn subscribe() -> std::io::Result<Self> {
-        let mut signals = signal_hook::iterator::Signals::new([signal_hook::consts::SIGINT])?;
+        let (read, writer) = UnixStream::pair()?;
+        let writer = SignalWriter {
+            writer,
+            _receiver: read.try_clone()?,
+        };
+        let signals =
+            SignalDelivery::with_pipe(read, writer, SignalOnly, [signal_hook::consts::SIGINT])?;
         let handle = signals.handle();
         let token = CancellationToken::new();
         let cancelled = token.clone();
         let listener = std::thread::Builder::new()
             .name("ployz-interrupt".into())
-            .spawn(move || {
-                for _ in signals.forever() {
-                    cancelled.cancel();
-                }
-            })?;
+            .spawn(move || listen(OwningSignalIterator::new(signals), &cancelled))?;
         Ok(Self {
             token,
             signals: handle,
@@ -49,6 +75,34 @@ impl CtrlC {
         &self.token
     }
 }
+
+fn listen(
+    mut signals: OwningSignalIterator<UnixStream, SignalOnly>,
+    cancelled: &CancellationToken,
+) {
+    loop {
+        match signals.poll_signal(&mut wait_for_byte) {
+            PollResult::Signal(_) => cancelled.cancel(),
+            PollResult::Closed => return,
+            PollResult::Pending => {}
+            PollResult::Err(error) => panic!("Unexpected error: {error}"),
+        }
+    }
+}
+
+fn wait_for_byte(read: &mut UnixStream) -> io::Result<bool> {
+    loop {
+        match read.read(&mut [0; 1]) {
+            Ok(count) => return Ok(count != 0),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+#[path = "cancellation/lifetime_tests.rs"]
+mod lifetime_tests;
 
 #[cfg(all(test, unix))]
 mod tests {
