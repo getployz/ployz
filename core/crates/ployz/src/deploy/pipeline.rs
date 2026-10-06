@@ -380,10 +380,7 @@ async fn gather_deploy_snapshot(
         .any(|spec| spec.volume_graph().has_mounted_provisioned_volume())
     {
         let mut reads = tokio::task::JoinSet::new();
-        for machine in machines
-            .iter()
-            .filter(|machine| machine.membership.invites_rpc())
-        {
+        for machine in machines.iter().filter(|machine| machine.invites_rpc()) {
             let mut client = client.clone();
             let id = machine.machine.id;
             reads.spawn(async move {

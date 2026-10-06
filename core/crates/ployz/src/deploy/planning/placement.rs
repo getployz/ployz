@@ -13,6 +13,7 @@ use super::volumes::VolumePlacement;
 use super::{DeployOperation, PlanError, PlanOptions, ReplacementOperation};
 
 pub(super) struct PlacementState {
+    unobserved: BTreeMap<MachineId, ployz_core::MachineObservation>,
     occupancy: BTreeMap<MachineId, usize>,
     capacity: CapacityBudget,
     sockets: HostSockets,
@@ -68,6 +69,21 @@ impl PlacementReservations {
 
     pub(super) fn into_placement(self, snapshot: &super::DeploySnapshot) -> PlacementState {
         PlacementState {
+            unobserved: snapshot
+                .machines
+                .iter()
+                .filter(|machine| {
+                    matches!(
+                        machine.membership_evidence,
+                        Some(ployz_core::MembershipEvidence::Unrecognized { .. })
+                    ) || matches!(
+                        machine.membership,
+                        ployz_core::MembershipObservation::Unknown
+                            | ployz_core::MembershipObservation::Unrecognized(_)
+                    )
+                })
+                .map(|machine| (machine.machine.id, machine.clone()))
+                .collect(),
             occupancy: BTreeMap::new(),
             capacity: self.capacity,
             // Socket effects are applied in Deploy order, including unreserved Services.
@@ -369,7 +385,7 @@ pub(super) fn plan_global(
         }
     }
 
-    remove_unused(&mut operations, current, &used, placement);
+    remove_unused(&mut operations, requested, current, &used, placement);
     Ok((operations, hook_machine))
 }
 
@@ -533,7 +549,7 @@ pub(super) fn plan_replicated(
             }
         }
     }
-    remove_unused(&mut operations, current, &used, placement);
+    remove_unused(&mut operations, requested, current, &used, placement);
     Ok((operations, reservation.hook_machine))
 }
 
@@ -685,13 +701,27 @@ fn conflicting_siblings(
 
 fn remove_unused(
     operations: &mut Vec<DeployOperation>,
+    requested: &RequestedServiceSpec,
     current: &[ServiceContainer],
     used: &BTreeSet<ContainerId>,
     placement: &mut PlacementState,
 ) {
     for container in current {
         let observation = container.as_observation();
-        if !used.contains(&observation.container_id) {
+        let unknown_placement = placement
+            .unobserved
+            .get(&observation.machine_id)
+            .is_some_and(|machine| {
+                !matches!(
+                    requested.placement_eligibility_in_namespace(
+                        &observation.namespace,
+                        &machine.machine,
+                        machine.storage.as_ref()
+                    ),
+                    ployz_core::ServicePlacementEligibility::Ineligible(_)
+                )
+            });
+        if !used.contains(&observation.container_id) && !unknown_placement {
             // TODO: placement changes remove now-ineligible containers; there is no
             // deploy-time Machine filter that leaves excluded containers running.
             operations.push(DeployOperation::RemoveContainer {

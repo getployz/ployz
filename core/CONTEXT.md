@@ -59,7 +59,7 @@ A Machine's own lifecycle phase: uninitialized, joining, participating, or reset
 _Avoid_: Machine state, membership state, readiness
 
 **Membership Observation**:
-One Machine's potentially incomplete or stale judgment that another Machine is unknown, up, suspect, or down. It is not the observed Machine's lifecycle or an authoritative liveness fact.
+One Machine's potentially incomplete or stale judgment that another Machine is unknown, up, suspect, or down. It is not the observed Machine's lifecycle or an authoritative liveness fact. Optional Membership Evidence distinguishes a recognized admin observation from synthetic absence. Missing evidence and unrecognized raw admin values do not prove Down; unknown values retain their decoder classification across transport.
 _Avoid_: Machine status, cluster membership truth
 
 **Service**:

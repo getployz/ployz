@@ -303,7 +303,7 @@ impl DeploySnapshot {
         let required = self
             .machines
             .iter()
-            .filter(|machine| machine.membership.invites_rpc())
+            .filter(|machine| machine.invites_rpc())
             .map(|machine| machine.machine.id)
             .collect::<BTreeSet<_>>();
         !affects_required(

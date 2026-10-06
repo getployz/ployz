@@ -1703,6 +1703,10 @@ export type MachineName = string;
 
 export type MachineObservation = { machine: Machine, membership: MembershipObservation,
 /**
+ * Raw admin evidence, absent for synthetic membership and older responders.
+ */
+membership_evidence?: MembershipEvidence,
+/**
  * Current storage evidence, absent when this observer could not obtain it.
  */
 storage: MachineStorageObservation | null, selected_endpoint: SelectedEndpoint | null,
@@ -1878,6 +1882,8 @@ environment: EnvironmentName,
  * The marked row, as that Environment holds it.
  */
 row: RowId, };
+
+export type MembershipEvidence = { "kind": "up" } | { "kind": "suspect" } | { "kind": "down" } | { "kind": "unrecognized", raw: string, };
 
 export type MembershipObservation = "unknown" | "up" | "suspect" | "down" | string;
 
