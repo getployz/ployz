@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -136,7 +137,7 @@ def pair_cloud(private, commands, owns):
     return dict(dashboard=str(DASHBOARD), url=url, organization=seed["organizationSlug"], owns_dashboard=owns)
 
 
-def cli(run, commands, args, **kwargs):
+def cli_environment(run):
     directory = Path(run["manifest"]).parent
     environment = {key: value for key, value in os.environ.items() if not key.startswith("PLOYZ_")}
     environment.update(PLOYZ_CONFIG=str(directory / "private" / "config.yaml"),
@@ -145,8 +146,80 @@ def cli(run, commands, args, **kwargs):
         environment.update(PLOYZ_TOKEN=(directory / "private" / "cloud-token").read_text(), PLOYZ_CLOUD_URL=run["cloud"]["url"])
     else:
         environment.update(PLOYZ_CONTEXT="verify", PLOYZ_STORE="sqlite:" + str(directory / "private" / "store.sqlite"))
-    return commands([directory / "artifacts" / "ployz", *args],
-                    cwd=directory / "workspace", env=environment, **kwargs)
+    return str(directory / "artifacts" / "ployz"), environment, directory / "workspace"
+
+
+def cli(run, commands, args, **kwargs):
+    ployz, environment, workspace = cli_environment(run)
+    return commands([ployz, *args], cwd=workspace, env=environment, **kwargs)
+
+
+PARTITION = """
+iptables -N PLOYZ-VERIFY-PARTITION 2>/dev/null || iptables -F PLOYZ-VERIFY-PARTITION
+for peer in "$@"; do
+    iptables -A PLOYZ-VERIFY-PARTITION -s "$peer" -j DROP
+    iptables -A PLOYZ-VERIFY-PARTITION -d "$peer" -j DROP
+done
+for hook in INPUT OUTPUT FORWARD; do
+    iptables -C "$hook" -j PLOYZ-VERIFY-PARTITION 2>/dev/null || iptables -I "$hook" 1 -j PLOYZ-VERIFY-PARTITION
+done
+"""
+
+UNPARTITION = """
+for hook in INPUT OUTPUT FORWARD; do
+    while iptables -D "$hook" -j PLOYZ-VERIFY-PARTITION 2>/dev/null; do :; done
+done
+iptables -F PLOYZ-VERIFY-PARTITION 2>/dev/null || true
+iptables -X PLOYZ-VERIFY-PARTITION 2>/dev/null || true
+"""
+
+
+def partition(run, backend, node, cut):
+    """Drop the Machine's traffic with each peer's underlay address, which carries WireGuard. The host bridge
+    address stays reachable, so SSH, the guest agent and Cloud still answer. The rules do not survive a reboot."""
+    peers = [peer["address"] for peer in run["machines"] if peer is not node]
+    backend.exec(node, ["bash", "-ec", PARTITION if cut else UNPARTITION, "partition", *peers])
+
+
+def power(backend, node, on):
+    if not on:
+        backend.power_off(node)
+        return
+    backend.power_on(node)
+    address = backend.address(node)
+    if address != node["address"]:
+        raise RuntimeError(f"{node['name']}: booted with address {address}, not {node['address']}")
+    deadline = time.monotonic() + 180
+    while backend.exec(node, ["systemctl", "is-active", "--quiet", "ployz", "docker"], check=False, timeout=10).returncode:
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"{node['name']}: ployz and docker were not active 180s after boot")
+        time.sleep(1)
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def runner(run, commands, on):
+    """Kill or restart the Cloud Inngest worker this run's dashboard started. Inngest keeps the function runs and
+    retries a lost step once a worker connects again."""
+    if "cloud" not in run:
+        raise RuntimeError("runner needs a --cloud run")
+    dashboard = Path(run["cloud"]["dashboard"])
+    pid = int((dashboard / ".verify" / "run" / "worker.pid").read_text())
+    if on and not alive(pid):
+        commands([dashboard / "scripts" / "verify" / "worker.sh"], timeout=120)
+    if not on and alive(pid):
+        os.killpg(pid, signal.SIGKILL)
+        deadline = time.monotonic() + 10
+        while alive(pid):
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"Inngest worker {pid} survived SIGKILL")
+            time.sleep(0.1)
 
 
 def install(run, backend, node):
@@ -363,9 +436,22 @@ def main():
                          help="Start this checkout's dashboard verify instance and enroll through it; down stops it")
     # dashboard/scripts/verify/up.sh started the dashboard and owns it.
     pairing.add_argument("--cloud-attach", action="store_true", help=argparse.SUPPRESS)
-    for action in ["doctor", "update", "down", "exec", "cli"]:
+    for action in ["doctor", "update", "down", "exec", "cli", "power", "partition", "runner", "probe"]:
         command = actions.add_parser(action)
+        if action in ["power", "partition"]:
+            command.add_argument("state", choices=["on", "off"])
+        if action == "runner":
+            command.add_argument("state", choices=["kill", "start"])
         command.add_argument("manifest", type=Path)
+        if action in ["power", "partition"]:
+            command.add_argument("machine", help="machine-1, machine-2, …")
+        if action == "probe":
+            command.add_argument("service", help="A Postgres Service; acknowledged ids are logged in evidence/")
+            command.add_argument("--user", default="postgres")
+            command.add_argument("--database", default="postgres")
+            command.add_argument("--rate", type=float, default=200, help="Inserts per second")
+            command.add_argument("--stall", type=float, default=2,
+                                 help="Seconds an insert may wait for its acknowledgement before the probe reconnects")
         if action == "update":
             command.add_argument("--daemon", help="Change the daemon source; otherwise keep this run's selection")
         if action == "exec":
@@ -387,6 +473,25 @@ def main():
         raise RuntimeError("This cluster has been removed")
     commands = Commands(run)
     backend = provider(run, commands)
+    machine = next((node for node in run["machines"] if node["name"] == getattr(args, "machine", None)), None)
+    if hasattr(args, "machine") and machine is None:
+        raise RuntimeError(f"Unknown Machine: {args.machine}")
+    if args.action == "power":
+        power(backend, machine, args.state == "on")
+        return 0
+    if args.action == "partition":
+        partition(run, backend, machine, args.state == "on")
+        return 0
+    if args.action == "runner":
+        runner(run, commands, args.state == "start")
+        return 0
+    if args.action == "probe":
+        ployz, environment, workspace = cli_environment(run)
+        result = importlib.import_module("ackprobe").run(
+            ployz, environment, workspace, commands.evidence, service=args.service,
+            user=args.user, database=args.database, rate=args.rate, stall=args.stall)
+        print(json.dumps(result))
+        return 1 if result["lost"] else 0
     if args.action in ["exec", "cli"]:
         command = args.command[1:] if args.command[:1] == ["--"] else args.command
         if not command:
@@ -394,10 +499,7 @@ def main():
         if args.action == "cli":
             result = cli(run, commands, command, check=False, timeout=args.timeout)
         else:
-            node = next((node for node in run["machines"] if node["name"] == args.machine), None)
-            if node is None:
-                raise RuntimeError(f"Unknown Machine: {args.machine}")
-            result = backend.exec(node, command, check=False, timeout=args.timeout)
+            result = backend.exec(machine, command, check=False, timeout=args.timeout)
         sys.stdout.buffer.write(result.stdout)
         sys.stderr.buffer.write(result.stderr)
         return result.returncode
