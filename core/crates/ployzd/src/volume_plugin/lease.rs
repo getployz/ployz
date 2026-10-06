@@ -85,6 +85,7 @@ fn internal(error: VolumeError) -> RpcError {
             code: RpcErrorCode::Internal,
             message,
             details: serde_json::Value::Null,
+            cause: Vec::new(),
         },
     }
 }
