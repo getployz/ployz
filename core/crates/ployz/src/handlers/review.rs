@@ -59,7 +59,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
             ));
             for row in &change.settings {
                 crate::ui::stream(format_args!(
-                    "  {}: {} -> {}{}",
+                    "  {}: {} → {}{}",
                     row.path,
                     super::store::shown(&row.before),
                     super::store::shown(&row.after),

@@ -142,7 +142,7 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         record.push(
             "staged",
             format_args!(
-                "{}: {} -> {}",
+                "{}: {} → {}",
                 change.path,
                 store::shown(&change.before),
                 store::shown(&change.after)

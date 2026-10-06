@@ -90,8 +90,9 @@ A command prints its result on stdout and everything else on stderr: progress, w
 `next:` line, prompts and errors. `ployz service ls > services.txt` saves only the table.
 
 A list is an aligned table in a terminal. Piped, it is tab-separated with an uppercase header
-row, so `ployz service ls | cut -f1` prints the names. An empty list prints the header on stdout
-and one sentence on stderr, such as `No Services in production yet.`. A single record, such as
+row, so `ployz service ls | cut -f1` prints the names. An empty list prints one sentence on
+stderr, such as `No Services in production yet.`; piped, it also prints the header row on stdout.
+A single record, such as
 `ployz status`, prints one `label = value` line per field when piped.
 
 Human output names things: Servers by name and Deployments as `#3`. It shows a short Container
@@ -114,5 +115,5 @@ Scripts can tell failures apart by exit code:
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in
 one. Set `NO_COLOR=1` or pass `--color never` to turn color off, or `--color always` to keep it
-when you pipe the output. Put `--color` before `--`, and before the command `ployz exec` runs;
+when you pipe the output. A piped list stays plain tab-separated text either way. Put `--color` before `--`, and before the command `ployz exec` runs;
 after either, it belongs to that command.

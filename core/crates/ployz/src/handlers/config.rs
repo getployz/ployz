@@ -379,13 +379,14 @@ fn unchanged(changes: &[Change]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    if changes
+    let unset = changes
         .iter()
-        .all(|change| matches!(change, Change::Unset { .. }))
-    {
-        format!("{paths} is already unset")
-    } else {
-        format!("{paths} already has that value")
+        .all(|change| matches!(change, Change::Unset { .. }));
+    match (unset, changes.len() > 1) {
+        (true, false) => format!("{paths} is already unset"),
+        (true, true) => format!("{paths} are already unset"),
+        (false, false) => format!("{paths} already has that value"),
+        (false, true) => format!("{paths} already have those values"),
     }
 }
 
@@ -469,6 +470,33 @@ mod tests {
         assert_eq!(
             repeated(&[set("web.replicas", "2"), set("WEB.replicas", "3")]).as_deref(),
             Some("web.replicas")
+        );
+    }
+
+    #[test]
+    fn a_no_op_edit_agrees_with_how_many_paths_it_names() {
+        let unset = |path: &str| Change::Unset {
+            path: SettingPath::parse(path).unwrap(),
+        };
+        let set = Change::Set {
+            path: SettingPath::parse("web.replicas").unwrap(),
+            value: json!("2"),
+        };
+        assert_eq!(
+            unchanged(&[unset("web.env.A")]),
+            "web.env.A is already unset"
+        );
+        assert_eq!(
+            unchanged(&[unset("web.env.A"), unset("web.env.B")]),
+            "web.env.A, web.env.B are already unset"
+        );
+        assert_eq!(
+            unchanged(std::slice::from_ref(&set)),
+            "web.replicas already has that value"
+        );
+        assert_eq!(
+            unchanged(&[set, unset("web.env.A")]),
+            "web.replicas, web.env.A already have those values"
         );
     }
 }
