@@ -610,16 +610,25 @@ fn context_code(error: &ContextError) -> RpcErrorCode {
     }
 }
 
-pub(crate) fn partial_failure_details<T>(result: &PartialResult<T, RpcError>) -> String {
+pub(crate) fn partial_failure_details<T>(
+    result: &PartialResult<T, RpcError>,
+    server: impl Fn(&ployz_core::MachineId) -> String,
+) -> String {
     result
         .failures
         .iter()
-        .map(|failure| format!("{}: {}", failure.machine_id, crate::ui::row(&failure.error)))
+        .map(|failure| {
+            format!(
+                "{}: {}",
+                server(&failure.machine_id),
+                crate::ui::row(&failure.error)
+            )
+        })
         .chain(
             result
                 .omissions
                 .iter()
-                .map(|machine_id| format!("{machine_id}: no terminal response")),
+                .map(|machine_id| format!("{}: no terminal response", server(machine_id))),
         )
         .collect::<Vec<_>>()
         .join("; ")

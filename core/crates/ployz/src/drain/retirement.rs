@@ -1,8 +1,8 @@
 //! Retire a Drain's chosen Globals on the drained Server, one Global slot at a time.
 
 use ployz_core::{
-    EnvironmentValues, LiveServices, Machine, MachineId, ObservedGlobalSlotSpec, QualifiedService,
-    RpcError, RpcErrorCode, ServicePlacementEligibility,
+    EnvironmentValues, LiveServices, Machine, MachineId, MachineName, ObservedGlobalSlotSpec,
+    QualifiedService, RpcError, RpcErrorCode, ServicePlacementEligibility,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -22,7 +22,8 @@ pub(crate) enum Retirement {
 
 /// What retirement needs from a Cluster.
 pub(crate) trait RetireClient {
-    async fn live_services(&mut self) -> Result<LiveServices<RpcError>, ConnectError>;
+    /// What every Server runs, with each Server's name.
+    async fn live_services(&mut self) -> Result<(LiveServices<RpcError>, Names), ConnectError>;
     /// Stop and remove `slot`'s Containers on `machine_id` when fresh evidence says it is
     /// definitely ineligible there; refuse when it is eligible or its eligibility unknown.
     async fn retire_slot(
@@ -32,9 +33,19 @@ pub(crate) trait RetireClient {
     ) -> Result<(), RpcError>;
 }
 
+pub(crate) type Names = Vec<(MachineId, MachineName)>;
+
 impl RetireClient for Client {
-    async fn live_services(&mut self) -> Result<LiveServices<RpcError>, ConnectError> {
-        Client::live_services(self, EnvironmentValues::Redacted).await
+    async fn live_services(&mut self) -> Result<(LiveServices<RpcError>, Names), ConnectError> {
+        let machines = self.machines().await?;
+        let live = self
+            .live_services_from(&machines, EnvironmentValues::Redacted)
+            .await?;
+        let names = machines
+            .into_iter()
+            .map(|machine| (machine.machine.id, machine.machine.name))
+            .collect();
+        Ok((live, names))
     }
 
     async fn retire_slot(
@@ -77,14 +88,20 @@ pub(crate) async fn retire_globals<C: RetireClient>(
             .map(|identity| (identity.clone(), Retirement::NotRetired(error.clone())))
             .collect()
     };
-    let live = match client.live_services().await {
-        Ok(live) => live,
+    let (live, names) = match client.live_services().await {
+        Ok(observed) => observed,
         Err(error) => return everyone(crate::ui::row(&error)),
     };
     if !live.containers.all_targets_succeeded() {
+        let server = |id: &MachineId| {
+            names
+                .iter()
+                .find(|(named, _)| named == id)
+                .map_or_else(|| id.to_string(), |(_, name)| name.to_string())
+        };
         return everyone(format!(
             "cannot retire from partial Service observations: {}",
-            crate::failure::partial_failure_details(&live.containers)
+            crate::failure::partial_failure_details(&live.containers, server)
         ));
     }
     let services = live.services();
