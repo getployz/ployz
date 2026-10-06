@@ -1,6 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type {
-  BranchView, BuildOrderView, ConfigCommand, ConfigQuery, DeploymentView, DiffView, DomainsView, EnvironmentRef, EnvironmentsView,
+  BranchView, BuildOrderView, ConfigCommand, ConfigItemView, ConfigListing, ConfigsView, ConfigQuery, DeploymentView, DiffView, DomainsView, EnvironmentRef, EnvironmentsView,
   EnvironmentView, NodeChange, PrPlansView, ProjectsView, RowId, ServiceListing, ServicesView, SyncView,
   VolumeListing, VolumesView,
 } from "@ployz/sdk";
@@ -66,6 +66,40 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       await views<VolumesView>("volumes", command.environment, (view) => ({ ...view, volumes: [...view.volumes, volume] }));
       return;
     }
+    case "create_config": {
+      const config: ConfigListing = { id: command.id, name: command.name, files: [], mounts: command.mounts, deployed: false, change: "create" };
+      await views<ConfigsView>("configs", command.environment, (view) => ({ ...view, configs: [...view.configs, config] }));
+      return;
+    }
+    case "delete_config":
+      // Its mounts go with it, in the same change.
+      await views<ConfigsView>("configs", command.environment, (view) => ({ ...view, configs: view.configs.flatMap((config) =>
+        config.name !== command.config ? [config] : config.change === "create" ? [] : [{ ...config, mounts: [], change: "delete" as const }]) }));
+      return;
+    case "attach_config":
+    case "detach_config": {
+      const mounts = (config: Pick<ConfigListing, "name" | "mounts">) => config.name !== command.config ? config.mounts : [
+        ...config.mounts.filter((mount) => mount.service !== command.service),
+        ...command.command === "attach_config" ? [{ service: command.service, dir: command.dir }] : [],
+      ];
+      await views<ConfigsView>("configs", command.environment, (view) => ({ ...view, configs: view.configs.map((config) => ({ ...config, mounts: mounts(config) })) }));
+      await views<ConfigItemView>("config", command.environment, (view) => ({ ...view, mounts: mounts(view) }));
+      return;
+    }
+    case "put_config_file": {
+      // Its size and references are the Store's to count; the text is what was typed.
+      const put = <V extends Pick<ConfigListing, "name" | "files">>(config: V): V => {
+        if (config.name !== command.config) return config;
+        const old = config.files.find((file) => file.name === command.file);
+        const file = { name: command.file, mode: "0444", uid: 0, gid: 0, references: [], ...old,
+          bytes: new TextEncoder().encode(command.content).length, ...command.mode ? { mode: command.mode } : {} };
+        return { ...config, files: old ? config.files.map((one) => one === old ? file : one) : [...config.files, file] };
+      };
+      await views<ConfigsView>("configs", command.environment, (view) => ({ ...view, configs: view.configs.map(put) }));
+      await views<ConfigItemView>("config", command.environment, (view) => view.name !== command.config ? view
+        : { ...put(view), contents: { ...view.contents, [command.file]: command.content } });
+      return;
+    }
     case "remove_service":
       await views<ServicesView>("services", command.environment, (view) => ({ ...view, services: view.services.flatMap((service) =>
         service.name !== command.service ? [service] : service.change === "create" ? [] : [{ ...service, change: "delete" as const }]) }));
@@ -110,10 +144,11 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       // Its rows leave the review at once; what the Store restores (values, nodes, the count) comes with its answer.
       const { path } = command;
       const [node, ...setting] = path?.split(".") ?? [];
-      // Every node, one node (a Volume as `volumes.NAME`), or one Setting of one node.
-      const volume = node === "volumes" && setting.length === 1 ? setting[0] : null;
+      // Every node, one node (a Volume as `volumes.NAME`, a Config as `configs.NAME`), or one Setting of one node.
+      const type = node === "volumes" ? "volume" : node === "configs" ? "config" : null;
+      const named = type !== null && setting.length === 1 ? setting[0] : null;
       const whole = (change: NodeChange) => path === null
-        || (volume !== null ? change.type === "volume" && change.name === volume : setting.length === 0 && change.name === node);
+        || (named !== null ? change.type === type && change.name === named : setting.length === 0 && change.name === node);
       await views<DiffView>("diff", command.environment, (view) => {
         const changes = view.changes.flatMap((change) => {
           if (whole(change)) return [];

@@ -1,0 +1,80 @@
+import { describe, expect, it } from "vitest";
+import type { ConfigListing, DiffView, RowId, ServiceListing } from "@ployz/sdk";
+import { asTestDouble } from "#/lib/test-double";
+import {
+  attachConfigCommand, configFileSizeError, configTrays, createConfigCommand, fileAccess, putConfigFileCommand, saveConfigCommand, utf8Bytes,
+} from "./store-configs";
+
+const environment = { project: "shop", environment: "production" };
+
+describe("Config commands", () => {
+  it("creates an empty Config mounted nowhere, with the minted id", () => {
+    expect(createConfigCommand("c1", environment, "sentry"))
+      .toEqual({ command: "create_config", id: "c1", environment, name: "sentry", mounts: [] });
+  });
+
+  it("puts a file's text and sends a mode only when the user set one, so a CLI-set owner stays", () => {
+    expect(putConfigFileCommand(environment, "sentry", "config.yml", "a: 1"))
+      .toEqual({ command: "put_config_file", environment, config: "sentry", file: "config.yml", content: "a: 1" });
+    expect(putConfigFileCommand(environment, "sentry", "run.sh", "#!/bin/sh", "0555")).toMatchObject({ mode: "0555" });
+  });
+
+  it("saves every edited file of a Config in one batch", () => {
+    const save = saveConfigCommand(environment, "sentry", [{ file: "config.yml", content: "a" }, { file: "run.sh", content: "b", mode: "0555" }]);
+    expect(save).toEqual({ command: "batch", environment, commands: [
+      { command: "put_config_file", environment, config: "sentry", file: "config.yml", content: "a" },
+      { command: "put_config_file", environment, config: "sentry", file: "run.sh", content: "b", mode: "0555" },
+    ] });
+  });
+
+  it("mounts a Config on a Service at a directory", () => {
+    expect(attachConfigCommand(environment, "web", "sentry", "/etc/sentry"))
+      .toEqual({ command: "attach_config", environment, service: "web", config: "sentry", dir: "/etc/sentry" });
+  });
+});
+
+describe("Config files", () => {
+  it("toggles only root-owned 0444 and 0555; anything else is a fixed label", () => {
+    expect(fileAccess({ mode: "0444", uid: 0, gid: 0 })).toEqual({ kind: "toggle", executable: false });
+    expect(fileAccess({ mode: "0555", uid: 0, gid: 0 })).toEqual({ kind: "toggle", executable: true });
+    expect(fileAccess({ mode: "0640", uid: 0, gid: 0 })).toEqual({ kind: "fixed", label: "0640 · 0:0" });
+    expect(fileAccess({ mode: "0444", uid: 999, gid: 999 })).toEqual({ kind: "fixed", label: "0444 · 999:999" });
+  });
+
+  it("refuses text over 256 KB, counted in UTF-8 bytes", () => {
+    expect(configFileSizeError(256 * 1024)).toBeNull();
+    expect(configFileSizeError(300 * 1024)).toBe("Over the 256 KB limit (300 KB).");
+    expect(utf8Bytes("é")).toBe(2);
+  });
+});
+
+describe("Config trays", () => {
+  // SAFETY: test ids stand in for the Store's minted Service ids.
+  const listing = (id: string, name: string): ServiceListing => ({ id, row: `${id}:node` as RowId, name, private_dns: name, source: "image", change: null, template: null });
+  const config = (id: string, mounts: { service: string; dir: string }[]): ConfigListing =>
+    ({ id, name: id, files: [], mounts, deployed: true, change: null });
+  const services = [listing("s1", "web"), listing("s2", "worker")];
+  const configs = [
+    config("sentry", [{ service: "web", dir: "/etc/sentry" }, { service: "worker", dir: "/etc/sentry" }]),
+    config("relay", [{ service: "worker", dir: "/etc/relay" }]),
+    config("loose", []),
+    config("orphan", [{ service: "gone", dir: "/etc" }]),
+  ];
+  // The next Deploy mounts `relay` into worker.
+  const diff = asTestDouble<DiffView>()({ changes: [{ type: "service", id: "s2", name: "worker", lifecycle: "update", comparison: "head", data: null,
+    settings: [{ path: "worker.configs.relay", kind: "add", before: null, after: "/etc/relay", canRestore: true }] }] });
+  const { trays, unmounted } = configTrays(services, configs, diff);
+
+  it("puts a mounted Config in a tray under each Service that mounts it, with its directory", () => {
+    expect(trays.get("s1")?.map((tray) => [tray.config.id, tray.dir])).toEqual([["sentry", "/etc/sentry"]]);
+    expect(trays.get("s2")?.map((tray) => [tray.config.id, tray.dir])).toEqual([["sentry", "/etc/sentry"], ["relay", "/etc/relay"]]);
+  });
+
+  it("marks only the mount the next Deploy stages", () => {
+    expect(trays.get("s2")?.map((tray) => [tray.config.id, tray.mountChanged])).toEqual([["sentry", false], ["relay", true]]);
+  });
+
+  it("leaves a Config no Service here mounts as its own node", () => {
+    expect(unmounted.map((listing) => listing.id)).toEqual(["loose", "orphan"]);
+  });
+});
