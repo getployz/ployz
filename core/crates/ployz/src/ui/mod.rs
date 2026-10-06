@@ -4,6 +4,7 @@
 mod error;
 mod exit;
 mod mode;
+pub(crate) mod progress;
 mod result;
 mod table;
 mod tone;
