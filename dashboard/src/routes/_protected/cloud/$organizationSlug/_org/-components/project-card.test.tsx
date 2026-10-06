@@ -9,10 +9,12 @@ afterEach(cleanup);
 
 const environment: NonNullable<ComponentProps<typeof ProjectCard>["environment"]> = {
   name: "Production", namespace: "store-production",
-  services: ["api", "db", "worker"].map(slug => ({
-    id: slug, name: slug, slug, config: { source: { type: "empty", version: 1, rootDir: "/" } },
-  })),
+  services: ["api", "db", "worker"].map(service),
 };
+
+function service(slug: string) {
+  return { id: slug, name: slug, slug, config: { source: { type: "empty" as const, version: 1 as const, rootDir: "/" } } };
+}
 
 function container(id: string, state: string, health = "healthy"): RuntimeContainerRecord {
   return { id, displayName: id, machineId: "machine", namespace: "store-production", kind: "service_container", runtime: { state, health } };
@@ -63,7 +65,7 @@ it("keeps empty and single-service footers compact", () => {
 });
 
 it("folds services past eight tiles into one count tile", () => {
-  const services = Array.from({ length: 36 }, (_, index) => ({ ...environment.services[0], id: `s${index}`, name: `s${index}`, slug: `s${index}` }));
+  const services = Array.from({ length: 36 }, (_, index) => service(`s${index}`));
   const view = render(<ProjectCard name="Store" environment={{ ...environment, services }} runtimeServices={[]} runtimeStatus="observed" />);
   expect(screen.getByLabelText("Services").children).toHaveLength(8);
   expect(screen.getByText("+29")).toBeTruthy();
