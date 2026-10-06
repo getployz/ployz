@@ -139,6 +139,53 @@ async fn inventory_reads_provisioned_details_and_keeps_healthy_siblings() {
 }
 
 #[tokio::test]
+async fn failed_ployz_listing_reports_its_volumes_without_inspecting_them() {
+    let (runtime, fake) = fake_runtime().await;
+    fake.list_warnings.lock().unwrap().push(
+        "list ployz: ZFS dataset ployz/ployz is read-only; make it writable before retrying".into(),
+    );
+    let machine_id = MachineId::random();
+
+    let inventory = runtime.list_volumes(&machine_id).await.unwrap();
+
+    assert_eq!(
+        inventory
+            .volumes
+            .iter()
+            .map(|volume| volume.id.name.as_str())
+            .collect::<Vec<_>>(),
+        ["plain"]
+    );
+    assert_eq!(
+        inventory
+            .failures
+            .iter()
+            .map(|failure| failure.id.name.as_str())
+            .collect::<Vec<_>>(),
+        ["healthy", "malformed", "unavailable", "mismatched"]
+    );
+    for failure in &inventory.failures {
+        assert_eq!(failure.id.machine_id, machine_id);
+        assert_eq!(failure.error.code, ployz_core::RpcErrorCode::Unavailable);
+        assert!(
+            failure
+                .error
+                .message
+                .contains("ZFS dataset ployz/ployz is read-only; make it writable before retrying"),
+            "{}",
+            failure.error.message
+        );
+    }
+    let requests = fake.requests.lock().unwrap();
+    assert!(
+        !requests
+            .iter()
+            .any(|(method, path)| method == Method::GET && path.contains("/volumes/")),
+        "{requests:?}"
+    );
+}
+
+#[tokio::test]
 async fn direct_lookup_does_not_enumerate_unrelated_volumes() {
     let (runtime, fake) = fake_runtime().await;
     let machine_id = MachineId::random();
