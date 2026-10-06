@@ -545,6 +545,20 @@ fn machine_selection_treats_star_as_all_and_all_as_a_name() {
     assert!(select_machines(&mixed, &[FanoutSelector::parse("down").unwrap()]).is_err());
 }
 
+#[test]
+fn logs_ask_a_down_server_so_it_can_be_named_as_a_gap() {
+    let mut down = machine_observation(3, "down");
+    down.membership = MembershipObservation::Down;
+    let down_id = down.machine.id;
+    let machines = [machine_observation(1, "edge"), down];
+    assert_eq!(asked_machines(&machines, &[]).unwrap().len(), 2);
+    assert_eq!(
+        asked_machines(&machines, &[FanoutSelector::parse("down").unwrap()]).unwrap(),
+        HashSet::from([down_id])
+    );
+    assert!(asked_machines(&machines, &[FanoutSelector::parse("missing").unwrap()]).is_err());
+}
+
 fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
     values.into_iter().map(ToOwned::to_owned).collect()
 }

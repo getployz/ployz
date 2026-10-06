@@ -468,6 +468,22 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
         assert!(stderr.contains("did not answer"), "{args:?}: {stderr}");
         assert!(!stderr.contains(&"b".repeat(32)), "{args:?}: {stderr}");
     }
+
+    // When logs fail because a Server is down, the failure still names it first.
+    for args in [
+        &["logs", "app/gone"][..],
+        &["logs", "app/api", "--machine", "down"],
+    ] {
+        let output = run_ployz(address, args).await;
+        assert!(!output.status.success(), "{args:?}: {output:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        let gap = stderr.find("! down did not answer");
+        let error = stderr.find("error:");
+        assert!(
+            gap.is_some() && error.is_some() && gap < error,
+            "{args:?}: {stderr}"
+        );
+    }
     server.abort();
 }
 

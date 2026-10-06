@@ -445,44 +445,31 @@ pub async fn open_exec(
 /// The label ployzd puts on each container a Deployment creates: its Deploy log ID.
 const DEPLOYMENT_LABEL: &str = "ployz.deployment.id";
 
-/// Open log streams for `args`; none means every Service in `namespace`, or in the
-/// whole Cluster without one. `deployment` keeps only the containers that
-/// Deployment created.
-pub async fn open_service_logs(
+/// Ask the Servers `machine_selectors` names, every Server without one, which
+/// Service containers they run. A down Server is asked too, so it is a gap
+/// rather than an unknown name.
+pub async fn observe_service_logs(
     client: &mut Client,
-    args: &[ServiceArg],
-    namespace: Option<&Namespace>,
     machine_selectors: &[FanoutSelector],
-    options: LogsOptions,
-    cancellation: CancellationToken,
-    deployment: Option<&str>,
-) -> Result<ServiceLogs, OperatorError> {
+) -> Result<LogScope, OperatorError> {
     let machines = client.machines().await?;
-    let selected_machines = select_machines(&machines, machine_selectors)?;
-    let machine_ids = selected_machines
-        .iter()
-        .map(|machine| machine.machine.id)
-        .collect::<HashSet<_>>();
+    let asked = asked_machines(&machines, machine_selectors)?;
     let live = client
         .live_services_from(&machines, EnvironmentValues::Redacted)
         .await?;
-    // Without --machine every Server is asked, so a down one is a gap too.
-    let asked = |machine_id: &ployz_core::MachineId| {
-        machine_selectors.is_empty() || machine_ids.contains(machine_id)
-    };
     let unanswered = Unanswered {
         failures: live
             .containers
             .failures
             .iter()
-            .filter(|failure| asked(&failure.machine_id))
+            .filter(|failure| asked.contains(&failure.machine_id))
             .cloned()
             .collect(),
         omissions: live
             .containers
             .omissions
             .iter()
-            .filter(|machine_id| asked(machine_id))
+            .filter(|machine_id| asked.contains(machine_id))
             .copied()
             .collect(),
         names: machines
@@ -490,7 +477,53 @@ pub async fn open_service_logs(
             .map(|machine| (machine.machine.id, machine.machine.name.clone()))
             .collect(),
     };
-    let services = live.services();
+    Ok(LogScope {
+        asked,
+        live,
+        unanswered,
+    })
+}
+
+/// The Servers a logs command asks: those `selectors` name, whatever their
+/// membership, or every Server without one.
+pub(crate) fn asked_machines(
+    machines: &[MachineObservation],
+    selectors: &[FanoutSelector],
+) -> Result<HashSet<ployz_core::MachineId>, OperatorError> {
+    if selectors.is_empty() {
+        return Ok(machines.iter().map(|machine| machine.machine.id).collect());
+    }
+    let visible = machines
+        .iter()
+        .map(|observation| observation.machine.clone())
+        .collect::<Vec<_>>();
+    Ok(resolve_machine_selectors(&visible, selectors)?
+        .into_iter()
+        .map(|machine| machine.id)
+        .collect())
+}
+
+/// What the asked Servers run, and which of them did not answer.
+pub struct LogScope {
+    asked: HashSet<ployz_core::MachineId>,
+    live: ployz_core::LiveServices<ployz_core::RpcError>,
+    pub unanswered: Unanswered,
+}
+
+/// Open log streams for `args`; none means every Service in `namespace`, or in the
+/// whole Cluster without one. `deployment` keeps only the containers that
+/// Deployment created.
+pub async fn open_service_logs(
+    client: &mut Client,
+    scope: &LogScope,
+    args: &[ServiceArg],
+    namespace: Option<&Namespace>,
+    options: LogsOptions,
+    cancellation: CancellationToken,
+    deployment: Option<&str>,
+) -> Result<Vec<LogInput>, OperatorError> {
+    let machine_ids = &scope.asked;
+    let services = scope.live.services();
     let mut every = Vec::new();
     let args = if args.is_empty() {
         every = services
@@ -579,12 +612,14 @@ pub async fn open_service_logs(
             {
                 return Err(OperatorError::OpenContainerLogs {
                     container: observation.display_name.clone(),
-                    server: machines
+                    server: scope
+                        .unanswered
+                        .names
                         .iter()
-                        .find(|machine| machine.machine.id == observation.machine_id)
+                        .find(|(id, _)| *id == observation.machine_id)
                         .map_or_else(
                             || observation.machine_id.to_string(),
-                            |machine| machine.machine.name.to_string(),
+                            |(_, name)| name.to_string(),
                         ),
                     source: Box::new(error.into()),
                 });
@@ -594,18 +629,11 @@ pub async fn open_service_logs(
     if inputs.is_empty() {
         return Err(OperatorError::NoDeploymentContainers);
     }
-    Ok(ServiceLogs { inputs, unanswered })
+    Ok(inputs)
 }
 
-/// Log streams of the Containers found, and the Servers that did not say which
-/// Containers they run.
-pub struct ServiceLogs {
-    pub inputs: Vec<LogInput>,
-    pub unanswered: Unanswered,
-}
-
-/// Selected Servers whose Live Observation failed or was skipped, with every
-/// selected Server's name.
+/// Asked Servers whose Live Observation failed or was skipped, with every
+/// Server's name.
 pub struct Unanswered {
     pub failures: Vec<ployz_core::MachineFailure<ployz_core::RpcError>>,
     pub omissions: Vec<ployz_core::MachineId>,

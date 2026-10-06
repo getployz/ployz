@@ -22,9 +22,9 @@ use crate::{
     cloud_login::LoginError,
     context::Transport,
     operator::{
-        ExecMode, ProxyPorts, ServiceArg, exec_options, merge_logs, open_exec, open_machine_logs,
-        open_service_logs, parse_log_time, parse_proxy_ports, parse_service_args, parse_tail,
-        select_proxy_container,
+        ExecMode, ProxyPorts, ServiceArg, exec_options, merge_logs, observe_service_logs,
+        open_exec, open_machine_logs, open_service_logs, parse_log_time, parse_proxy_ports,
+        parse_service_args, parse_tail, select_proxy_container,
     },
 };
 
@@ -257,17 +257,8 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
         Box::pin(async move {
             let cancellation = cancellation_on_ctrl_c();
             let _parent = cancellation.clone().drop_guard();
-            let logs = open_service_logs(
-                client,
-                &args,
-                namespace.as_ref().map(|scoped| &scoped.namespace),
-                &machines,
-                options,
-                cancellation.clone(),
-                deployment.as_ref().map(DeploymentId::as_str),
-            )
-            .await?;
-            let unanswered = &logs.unanswered;
+            let scope = observe_service_logs(client, &machines).await?;
+            let unanswered = &scope.unanswered;
             let mut gaps = crate::ui::Gaps::default().named(
                 unanswered
                     .names
@@ -275,8 +266,19 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
                     .map(|(machine_id, name)| (*machine_id, name)),
             );
             gaps.extend(&unanswered.failures, &unanswered.omissions);
+            // Before opening, so a missing Service or Container still names the Server that did not answer.
             gaps.warn();
-            print_logs(merge_logs(logs.inputs, cancellation), utc).await?;
+            let inputs = open_service_logs(
+                client,
+                &scope,
+                &args,
+                namespace.as_ref().map(|scoped| &scoped.namespace),
+                options,
+                cancellation.clone(),
+                deployment.as_ref().map(DeploymentId::as_str),
+            )
+            .await?;
+            print_logs(merge_logs(inputs, cancellation), utc).await?;
             gaps.outcome()
         })
     })
