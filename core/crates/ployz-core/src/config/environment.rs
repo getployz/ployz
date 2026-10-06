@@ -444,9 +444,10 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
             false,
         )?;
         if service.config_attachments.iter().any(|config| {
-            service.volume_attachments.iter().any(|volume| {
-                cleaned(volume.mount_path.as_str()) == config.mount_dir.as_str()
-            })
+            service
+                .volume_attachments
+                .iter()
+                .any(|volume| cleaned(volume.mount_path.as_str()) == config.mount_dir.as_str())
         }) {
             return Err(ConfigError::at(
                 "mountPath",
