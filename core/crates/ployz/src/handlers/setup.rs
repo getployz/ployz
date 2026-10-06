@@ -15,7 +15,6 @@ use sha2::{Digest as _, Sha256};
 
 use super::{Error, leaf_matches};
 use crate::cli::switch;
-use crate::output::say;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DIGEST_KEY: &str = "ployz-digest: ";
@@ -111,7 +110,7 @@ fn agent(root: &ArgMatches) -> Result<(), Error> {
         next: kept.then(|| "ployz setup agent --force".to_owned()),
         locations,
     };
-    crate::output::finish(&result, || {
+    crate::ui::finish(&result, || {
         for location in &result.locations {
             let outcome = match location.outcome {
                 Outcome::Installed => "installed",
@@ -120,7 +119,7 @@ fn agent(root: &ArgMatches) -> Result<(), Error> {
                 Outcome::Kept => "kept: it has local edits; --force replaces it",
                 Outcome::Replaced => "replaced",
             };
-            say!("{}: {outcome}", location.path.display());
+            crate::ui::stream(format_args!("{}: {outcome}", location.path.display()));
         }
     })
 }

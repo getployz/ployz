@@ -80,30 +80,47 @@ fn stop_options_are_only_read_for_stop_actions() {
 }
 
 #[test]
-fn observation_warnings_come_from_partial_result_failures_and_omissions() {
-    let failed_id = MachineId::parse("2".repeat(32)).unwrap();
-    let omitted_id = MachineId::parse("3".repeat(32)).unwrap();
-    let live = derive_live_services(PartialResult::<Vec<ployz_core::ContainerObservation>, _> {
-        successes: Vec::new(),
-        failures: vec![MachineFailure {
-            machine_id: failed_id,
-            error: RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "offline".into(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            },
-        }],
-        omissions: vec![omitted_id],
-    });
-
+fn ps_names_servers_and_shows_a_container_id_only_on_rows_that_read_the_same() {
+    let running = || ContainerRuntimeObservation::Running {
+        health: HealthObservation::NotConfigured,
+    };
+    let first = ServiceContainer::try_from(observation('a', 'b', "web", running())).unwrap();
+    let second = ServiceContainer::try_from(observation('c', 'b', "web", running())).unwrap();
+    let api = ServiceContainer::try_from(observation('d', 'e', "api", running())).unwrap();
+    let containers = [
+        ContainerRef::Service(&first),
+        ContainerRef::Service(&second),
+        ContainerRef::Service(&api),
+    ];
+    let name = MachineName::parse("machine-1").unwrap();
+    let names = HashMap::from([(MachineId::parse("b".repeat(32)).unwrap(), &name)]);
+    let mut out = Vec::new();
+    process_table(&containers, true, &names)
+        .write(&mut out, false)
+        .unwrap();
     assert_eq!(
-        observation_warning_lines(&live),
-        vec![
-            "WARNING: Live Observation is observer-relative and not globally complete".to_string(),
-            format!("WARNING: Machine {failed_id} failed: offline"),
-            format!("WARNING: Machine {omitted_id} was omitted"),
-        ]
+        String::from_utf8(out).unwrap(),
+        format!(
+            "SERVICE\tKIND\tSERVER\tSTATE\tCONTAINER\n\
+             web\tservice\tmachine-1\trunning\taaaaaaaaaaaa\n\
+             web\tservice\tmachine-1\trunning\tcccccccccccc\n\
+             api\tservice\t{}\trunning\t-\n",
+            "e".repeat(12)
+        )
+    );
+
+    let mut out = Vec::new();
+    process_table(&containers[1..], true, &names)
+        .write(&mut out, false)
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        format!(
+            "SERVICE\tKIND\tSERVER\tSTATE\n\
+             web\tservice\tmachine-1\trunning\n\
+             api\tservice\t{}\trunning\n",
+            "e".repeat(12)
+        )
     );
 }
 

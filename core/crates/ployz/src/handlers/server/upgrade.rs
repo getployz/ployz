@@ -9,12 +9,13 @@ use ployz_core::{
 };
 use tokio::time::Instant;
 
-use crate::{cluster::Client, connect::ConnectError, deploy::Outcome, ingress::IngressImage};
+use crate::{
+    cluster::Client, connect::ConnectError, deploy::Outcome, ingress::IngressImage, ui::Hint,
+};
 
 use serde_json::json;
 
 use super::super::{Error, leaf_matches, string_values, with_client};
-use crate::output::{self, say};
 
 const OBSERVATION_TIMEOUT: Duration = Duration::from_secs(16 * 60);
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -95,7 +96,7 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
             let machines = selected_machines(client, &selectors).await?;
             let (result, outcome) = run_all(client, &machines, release, ingress, rerun).await;
             match result {
-                Some(result) => output::emit_committed(result, outcome),
+                Some(result) => crate::ui::emit_committed(result, outcome),
                 None => outcome,
             }
         })
@@ -126,17 +127,33 @@ async fn run_all(
                 print_attempt(machine, &attempt);
                 let stopped = match &attempt.outcome {
                     MachineUpgradeOutcome::Succeeded { .. } => None,
-                    MachineUpgradeOutcome::Failed { error, .. } => {
-                        Some(Error::coded(RpcErrorCode::Internal, error.clone()))
-                    }
-                    MachineUpgradeOutcome::Interrupted { .. } => Some(Error::coded(
-                        RpcErrorCode::Internal,
-                        format!(
-                            "Server {} upgrade was interrupted; {}",
-                            machine.name,
-                            journal_hint(attempt_id)
-                        ),
-                    )),
+                    MachineUpgradeOutcome::Failed {
+                        stage,
+                        error: reason,
+                    } => Some(
+                        Error::coded(
+                            RpcErrorCode::Internal,
+                            format!(
+                                "Server {} failed to upgrade to {} while {}: {reason}",
+                                machine.name,
+                                attempt.target,
+                                stage.as_str()
+                            ),
+                        )
+                        .hint(journal_hint(attempt_id)),
+                    ),
+                    MachineUpgradeOutcome::Interrupted { stage } => Some(
+                        Error::coded(
+                            RpcErrorCode::Internal,
+                            format!(
+                                "The upgrade of Server {} to {} was interrupted while {}.",
+                                machine.name,
+                                attempt.target,
+                                stage.as_str()
+                            ),
+                        )
+                        .hint(journal_hint(attempt_id)),
+                    ),
                     MachineUpgradeOutcome::Accepted | MachineUpgradeOutcome::Running { .. } => {
                         unreachable!("run_one returns only terminal evidence")
                     }
@@ -149,7 +166,9 @@ async fn run_all(
             }
         };
         let unattempted = machines.get(index + 1..).unwrap_or_default();
-        print_unattempted(unattempted, machine);
+        if let Some(warning) = unattempted_warning(unattempted, machine) {
+            crate::ui::warn(warning);
+        }
         // A recorded attempt is a result: print it, then exit partial.
         let result = (!attempts.is_empty()).then(|| {
             json!({
@@ -223,11 +242,11 @@ async fn run_one(
         Err(crate::setup_retry::Error::Permanent(error)) => return Err(error.into()),
         Err(exhausted) => return Err(uncertain(machine, attempt_id, exhausted)),
     };
-    print_attempt(machine, &accepted);
     *seen = Some(accepted.clone());
     if accepted.is_terminal() {
         return Ok(accepted);
     }
+    print_attempt(machine, &accepted);
 
     loop {
         if tokio::time::timeout_at(deadline, tokio::time::sleep(POLL_INTERVAL))
@@ -257,64 +276,45 @@ async fn run_one(
 }
 
 fn print_attempt(machine: &Machine, attempt: &MachineUpgradeAttempt) {
-    print_attempt_target(&format!("{} ({})", machine.name, machine.id), attempt);
-}
-
-fn print_attempt_target(machine: &str, attempt: &MachineUpgradeAttempt) {
-    let MachineUpgradeAttempt {
-        attempt_id,
-        target,
-        outcome,
-    } = attempt;
-    match outcome {
-        MachineUpgradeOutcome::Accepted => say!(
-            "Server {machine}: upgrade {attempt_id} accepted for {target}; {}",
-            journal_hint(*attempt_id)
-        ),
-        MachineUpgradeOutcome::Running { stage } => say!(
-            "Server {machine}: upgrade {attempt_id} is {} for {target}; {}",
-            stage.as_str(),
-            journal_hint(*attempt_id)
-        ),
-        MachineUpgradeOutcome::Succeeded { version } => {
-            say!("Server {machine}: upgrade {attempt_id} succeeded; running version {version}")
+    let name = &machine.name;
+    let target = &attempt.target;
+    match &attempt.outcome {
+        MachineUpgradeOutcome::Accepted => {
+            crate::ui::stream(format_args!("Upgrading Server {name} to {target}."));
         }
-        MachineUpgradeOutcome::Failed { stage, error } => say!(
-            "Server {machine}: upgrade {attempt_id} failed at {} for {target}: {error}; {}",
-            stage.as_str(),
-            journal_hint(*attempt_id)
-        ),
-        MachineUpgradeOutcome::Interrupted { stage } => say!(
-            "Server {machine}: upgrade {attempt_id} was interrupted at {} for {target}; {}",
-            stage.as_str(),
-            journal_hint(*attempt_id)
-        ),
+        MachineUpgradeOutcome::Running { stage } => crate::ui::stream(format_args!(
+            "Upgrading Server {name} to {target}: {}.",
+            stage.as_str()
+        )),
+        MachineUpgradeOutcome::Succeeded { version } => {
+            crate::ui::stream(format_args!("Upgraded Server {name} to {version}."));
+        }
+        MachineUpgradeOutcome::Failed { .. } | MachineUpgradeOutcome::Interrupted { .. } => {}
     }
 }
 
-fn print_unattempted<'a>(machines: impl IntoIterator<Item = &'a Machine>, after: &Machine) {
-    for line in unattempted_lines(machines, after) {
-        say!("{line}");
+fn unattempted_warning(machines: &[Machine], after: &Machine) -> Option<String> {
+    let names = machines
+        .iter()
+        .map(|machine| machine.name.to_string())
+        .collect::<Vec<_>>();
+    match names.as_slice() {
+        [] => None,
+        [one] => Some(format!(
+            "Did not upgrade Server {one}: Server {} stopped the run.",
+            after.name
+        )),
+        many => Some(format!(
+            "Did not upgrade Servers {}: Server {} stopped the run.",
+            many.join(", "),
+            after.name
+        )),
     }
 }
 
-fn unattempted_lines<'a>(
-    machines: impl IntoIterator<Item = &'a Machine>,
-    after: &Machine,
-) -> Vec<String> {
-    machines
-        .into_iter()
-        .map(|machine| {
-            format!(
-                "Server {} ({}): upgrade unattempted after {} ({})",
-                machine.name, machine.id, after.name, after.id
-            )
-        })
-        .collect()
-}
-
-fn journal_hint(attempt_id: MachineUpgradeAttemptId) -> String {
-    format!("inspect locally with `journalctl -u ployz-upgrade-{attempt_id}.service`")
+/// The unit that ran the upgrade, read on the Server itself.
+fn journal_hint(attempt_id: MachineUpgradeAttemptId) -> Hint {
+    Hint::Inspect(format!("journalctl -u ployz-upgrade-{attempt_id}.service"))
 }
 
 fn uncertain(
@@ -325,25 +325,22 @@ fn uncertain(
     Error::caused(
         ployz_core::RpcErrorCode::Unavailable,
         format!(
-            "Server {} ({}) upgrade {attempt_id} outcome is uncertain; reconnect and run `ployz server inspect {}` and compare its upgrade attempt; {}",
-            machine.name,
-            machine.id,
-            machine.id,
-            journal_hint(attempt_id)
+            "Cannot tell whether Server {} finished upgrade {attempt_id}. Reconnect and compare it with the upgrade attempt `ployz server inspect {}` shows.",
+            machine.name, machine.name,
         ),
         error,
     )
+    .hint(journal_hint(attempt_id))
 }
 
 fn uncertain_timeout(machine: &Machine, attempt_id: MachineUpgradeAttemptId) -> Error {
     Error::unavailable(format!(
-        "Server {} ({}) upgrade {attempt_id} outcome is uncertain after {} minutes; reconnect and run `ployz server inspect {}` and compare its upgrade attempt; {}",
+        "Cannot tell whether Server {} finished upgrade {attempt_id} after {} minutes. Reconnect and compare it with the upgrade attempt `ployz server inspect {}` shows.",
         machine.name,
-        machine.id,
         OBSERVATION_TIMEOUT.as_secs() / 60,
-        machine.id,
-        journal_hint(attempt_id)
+        machine.name,
     ))
+    .hint(journal_hint(attempt_id))
 }
 
 #[cfg(test)]
@@ -532,7 +529,7 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("upgrade or mutation is active"));
-        assert!(!error.to_string().contains("outcome is uncertain"));
+        assert!(!error.to_string().contains("Cannot tell whether"));
         assert_eq!(client.seen, [(attempt_id, machine.id.as_str().to_owned())]);
     }
 
@@ -560,7 +557,7 @@ mod tests {
         .unwrap_err()
         .to_string();
 
-        assert!(error.contains("outcome is uncertain"), "{error}");
+        assert!(error.contains("Cannot tell whether"), "{error}");
         assert!(error.contains(attempt_id.as_str()), "{error}");
         assert!(error.contains("ployz server inspect"), "{error}");
         assert_eq!(client.seen, [(attempt_id, machine.id.as_str().to_owned())]);
@@ -715,24 +712,15 @@ mod tests {
             machine('d', 4),
         ];
 
-        let first = unattempted_lines(&machines[1..], &machines[0]);
         assert_eq!(
-            first,
-            [
-                "Server b (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb): upgrade unattempted after a (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
-                "Server c (cccccccccccccccccccccccccccccccc): upgrade unattempted after a (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
-                "Server d (dddddddddddddddddddddddddddddddd): upgrade unattempted after a (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
-            ]
+            unattempted_warning(&machines[1..], &machines[0]).as_deref(),
+            Some("Did not upgrade Servers b, c, d: Server a stopped the run.")
         );
-
-        let middle = unattempted_lines(&machines[2..], &machines[1]);
         assert_eq!(
-            middle,
-            [
-                "Server c (cccccccccccccccccccccccccccccccc): upgrade unattempted after b (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)",
-                "Server d (dddddddddddddddddddddddddddddddd): upgrade unattempted after b (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)",
-            ]
+            unattempted_warning(&machines[3..], &machines[2]).as_deref(),
+            Some("Did not upgrade Server d: Server c stopped the run.")
         );
+        assert_eq!(unattempted_warning(&[], &machines[3]), None);
     }
 
     fn machine(id: char, subnet: u8) -> Machine {

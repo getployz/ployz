@@ -167,15 +167,15 @@ pub(crate) fn row(error: Chain<'_>) -> String {
     inline(error)
 }
 
-pub(crate) fn warn(what: impl std::fmt::Display, error: Chain<'_>) {
-    crate::output::warn(format!("{what}: {}", inline(error)));
+pub(crate) fn warn_cause(what: impl std::fmt::Display, error: Chain<'_>) {
+    super::warn(format!("{what}: {}", inline(error)));
 }
 
 pub(crate) fn retrying(operation: &str, error: Chain<'_>, seconds: u64) {
-    eprintln!(
+    super::note(format_args!(
         "{operation}: {}; retrying for up to {seconds}s. Check outbound firewall access if this connection is blocked.",
         inline(error)
-    );
+    ));
 }
 
 pub(crate) fn rpc_error(code: ployz_core::RpcErrorCode, error: Chain<'_>) -> ployz_core::RpcError {

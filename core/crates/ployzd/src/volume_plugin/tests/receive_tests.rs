@@ -262,6 +262,31 @@ async fn a_replayed_start_after_completion_answers_without_receiving_again() {
 }
 
 #[tokio::test]
+async fn a_replayed_start_whose_receive_never_began_starts_it() {
+    let writer = Writer::start("snapshot w-1-1 77\n").await;
+    let test = TestDir::new();
+    // The plugin died after recording 4.1.3 and before the receive created `fs`.
+    set_property(&test, "tank/ployz", "ployz:lease.data", "1:4.1.3:closed");
+    let (socket, server) = start(&test, &["root", "mirror"], &writer);
+
+    let response = post(&socket, "/Volume.StartReceive", receive(4, 1, json!({}))).await;
+    assert_eq!(
+        response
+            .pointer("/Ok/decision")
+            .unwrap_or_else(|| panic!("{response}")),
+        "replay"
+    );
+    let view = settled(&socket, 1).await;
+    assert_eq!(view.pointer("/Ok/status/state").unwrap(), "done", "{view}");
+    assert_eq!(writer.requests(), ["/volume-send/data?target=w-1-1"]);
+    assert_eq!(
+        snapshot_names(&test, "tank/ployz-mirror/data/fs"),
+        ["w-1-1"]
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn a_running_receive_makes_the_slot_busy() {
     let writer = Writer::start("snapshot w-1-1 77\n").await;
     *writer.hold.lock().unwrap() = true;

@@ -1,8 +1,8 @@
 //! Tests for retiring a Drain's chosen Globals on the drained Server.
 
 use ployz_core::{
-    Machine, MachineId, ObservedGlobalSlotSpec, Placement, QualifiedService, ResolvedUpdateConfig,
-    RpcError, RpcErrorCode, ServiceMode, ServiceObservation,
+    Machine, MachineId, MachineName, ObservedGlobalSlotSpec, Placement, QualifiedService,
+    ResolvedUpdateConfig, RpcError, RpcErrorCode, ServiceMode, ServiceObservation,
 };
 
 use super::*;
@@ -16,11 +16,12 @@ struct FakeRetireClient {
     retire_calls: Vec<QualifiedService>,
     retire_error: Option<RpcError>,
     cancel_on_retire: Option<CancellationToken>,
+    silent: Option<(MachineId, MachineName)>,
 }
 
 impl RetireClient for FakeRetireClient {
-    async fn live_services(&mut self) -> Result<LiveServices<RpcError>, ConnectError> {
-        Ok(LiveServices {
+    async fn live_services(&mut self) -> Result<(LiveServices<RpcError>, Names), ConnectError> {
+        let live = LiveServices {
             containers: ployz_core::PartialResult {
                 successes: vec![ployz_core::MachineSuccess {
                     machine_id: self.machine_id,
@@ -32,9 +33,10 @@ impl RetireClient for FakeRetireClient {
                         .collect(),
                 }],
                 failures: Vec::new(),
-                omissions: Vec::new(),
+                omissions: self.silent.iter().map(|(id, _)| *id).collect(),
             },
-        })
+        };
+        Ok((live, self.silent.iter().cloned().collect()))
     }
 
     async fn retire_slot(
@@ -57,6 +59,7 @@ fn retiring(drained: &Machine, services: Vec<ServiceObservation>) -> FakeRetireC
         retire_calls: Vec::new(),
         retire_error: None,
         cancel_on_retire: None,
+        silent: None,
     }
 }
 
@@ -91,6 +94,33 @@ async fn retirement_touches_only_the_chosen_globals() {
         retire_globals(&mut client, &drained, &[], &never)
             .await
             .is_empty()
+    );
+    assert!(client.retire_calls.is_empty());
+}
+
+#[tokio::test]
+async fn retirement_names_the_server_that_left_the_observation_partial() {
+    let drained = machine('1', "drained");
+    let beta = machine('2', "beta");
+    let mut client = retiring(&drained, vec![global_on(&drained, "app", 'a')]);
+    client.silent = Some((beta.id, beta.name.clone()));
+    let chosen = qualified("app", "api");
+    let outcomes = retire_globals(
+        &mut client,
+        &drained,
+        std::slice::from_ref(&chosen),
+        &CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(
+        outcomes,
+        [(
+            chosen,
+            Retirement::NotRetired(
+                "cannot retire from partial Service observations: beta: no terminal response"
+                    .into()
+            )
+        )]
     );
     assert!(client.retire_calls.is_empty());
 }

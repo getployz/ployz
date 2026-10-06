@@ -24,7 +24,6 @@ use super::store::{self, mint, project, project_arg, store};
 use super::teardown::{Inventory, confirmed, inventory, remove_all};
 use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, repeated, switch, value};
-use crate::output::say;
 use crate::ui::Hint;
 
 pub(crate) fn command() -> Command {
@@ -333,12 +332,11 @@ fn new(root: &ArgMatches) -> Result<(), Error> {
         name,
     };
     let created = store.write(&create)?;
-    crate::output::finish(&created, || {
-        say!(
+    crate::ui::finish(&created, || {
+        crate::ui::stream(format_args!(
             "Created Environment {} in Project {}.",
-            created.environment.name,
-            created.environment.project
-        );
+            created.environment.name, created.environment.project
+        ));
     })
 }
 
@@ -347,7 +345,7 @@ fn ls(root: &ArgMatches) -> Result<(), Error> {
     let listed = store(root)?.read(&EnvironmentsQuery {
         project: project(matches)?,
     })?;
-    crate::output::finish(&listed, || print_environments(&listed))
+    crate::ui::list(&listed, &environments(&listed))
 }
 
 fn default(root: &ArgMatches) -> Result<(), Error> {
@@ -360,7 +358,7 @@ fn default(root: &ArgMatches) -> Result<(), Error> {
         },
     };
     let listed = store(root)?.write(&set)?;
-    crate::output::finish(&listed, || print_environments(&listed))
+    crate::ui::list(&listed, &environments(&listed))
 }
 
 fn setup(root: &ArgMatches) -> Result<(), Error> {
@@ -370,38 +368,54 @@ fn setup(root: &ArgMatches) -> Result<(), Error> {
         setup: branch::setups(&super::string_values(matches, "setup"))?,
     };
     let listed = store(root)?.write(&set)?;
-    crate::output::finish(&listed, || print_environments(&listed))
+    crate::ui::list(&listed, &environments(&listed))
 }
 
-fn print_environments(listed: &EnvironmentsView) {
-    say!("Environments of Project {}:", listed.project.name);
+fn environments(listed: &EnvironmentsView) -> crate::ui::Table {
+    use crate::ui::{Cell, Tone};
+    let mut table = crate::ui::Table::new(
+        [
+            "ENVIRONMENT",
+            "DEFAULT",
+            "BRANCH OF",
+            "REMOVAL",
+            "BRANCH SETUP",
+        ],
+        format!("No Environments in {} yet.", listed.project.name),
+    );
     for environment in &listed.environments {
-        let mut notes = Vec::new();
-        if environment.default {
-            notes.push("default".to_owned());
-        }
-        if let Some(parent) = &environment.parent {
-            notes.push(format!("branch of {parent}"));
-        }
-        if let Some(removal) = &environment.removal {
-            notes.push(format!(
-                "removal #{} {}",
-                removal.number,
-                store::word(&removal.status)
-            ));
-        }
-        match notes.is_empty() {
-            true => say!("  {}", environment.name),
-            false => say!("  {} ({})", environment.name, notes.join(", ")),
-        }
-        for setup in &environment.branch_setup {
-            say!(
-                "    new Branches run in {}: {}",
-                setup.service,
-                setup.command
-            );
-        }
+        table.row([
+            Cell::from(environment.name.to_string()),
+            if environment.default {
+                Cell::status("default", Tone::Good)
+            } else {
+                Cell::from("")
+            },
+            Cell::from(
+                environment
+                    .parent
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default(),
+            ),
+            Cell::from(
+                environment
+                    .removal
+                    .as_ref()
+                    .map(|removal| format!("#{} {}", removal.number, store::word(&removal.status)))
+                    .unwrap_or_default(),
+            ),
+            Cell::from(
+                environment
+                    .branch_setup
+                    .iter()
+                    .map(|setup| format!("{}: {}", setup.service, setup.command))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ),
+        ]);
     }
+    table
 }
 
 /// What `env rm` removed, and the Deployment that took it off the Servers.
@@ -468,28 +482,25 @@ fn finish_removal(
         removed,
         deployment,
     };
-    crate::output::finish(&removal, || {
+    crate::ui::finish(&removal, || {
         let environment = &removed.environment;
         match deployment {
-            Some(deployment) if super::teardown::left_on_old_servers(deployment) => say!(
-                "Left {}/{} on old servers: no Server was left to take it off (Deployment #{}).",
-                environment.project,
-                environment.name,
-                deployment.number
-            ),
-            Some(deployment) => say!(
+            Some(deployment) if super::teardown::left_on_old_servers(deployment) => {
+                crate::ui::stream(format_args!(
+                    "Left {}/{} on old servers: no Server was left to take it off (Deployment #{}).",
+                    environment.project, environment.name, deployment.number
+                ))
+            }
+            Some(deployment) => crate::ui::stream(format_args!(
                 "Removed {}/{} from the Servers (Deployment #{}).",
-                environment.project,
-                environment.name,
-                deployment.number
-            ),
+                environment.project, environment.name, deployment.number
+            )),
             None => {}
         }
-        say!(
+        crate::ui::stream(format_args!(
             "Removed Environment {}/{}.",
-            environment.project,
-            environment.name
-        );
+            environment.project, environment.name
+        ));
     })
 }
 
@@ -515,20 +526,18 @@ fn never_sync(root: &ArgMatches) -> Result<(), Error> {
         off,
     };
     let marked = store.write(&request)?;
-    crate::output::finish(&marked, || {
+    crate::ui::finish(&marked, || {
         let paths = super::joined(&asked);
         let environment = &marked.environment;
         match request.off {
-            true => say!(
+            true => crate::ui::stream(format_args!(
                 "Syncing {paths} again in {}/{}.",
-                environment.project,
-                environment.name
-            ),
-            false => say!(
+                environment.project, environment.name
+            )),
+            false => crate::ui::stream(format_args!(
                 "Never syncing {paths} in {}/{}.",
-                environment.project,
-                environment.name
-            ),
+                environment.project, environment.name
+            )),
         }
     })
 }

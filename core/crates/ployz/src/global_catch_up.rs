@@ -209,7 +209,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         return Err(CatchUpError::new(
             Failure::unavailable(format!(
                 "Global catch-up cannot plan from partial Service observations: {}; restore peer connectivity and redeploy",
-                crate::failure::partial_failure_details(&live.containers)
+                crate::failure::partial_failure_details(&live.containers, MachineId::to_string)
             )),
             Vec::new(),
         ));

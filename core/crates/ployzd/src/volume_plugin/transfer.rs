@@ -140,8 +140,15 @@ impl VolumeStorage {
         let (slot, bound) = (slot.name.clone(), slot.refquota);
         self.require_no_receive(&name)?;
         let fs = slot_fs(&scope.pool, &name);
+        // The plugin can die after recording and before the receive creates `fs`, so a
+        // replay looks for the landed target in ZFS and otherwise starts the receive again.
         if scope.replayed()
-            && let Some(newest) = self.snapshots(&fs).await.map_err(internal)?.first()
+            && let Some(received) = scope.fs(&name)
+            && let Some(newest) = self
+                .snapshots(&received.name)
+                .await
+                .map_err(internal)?
+                .first()
             && newest.name == request.target
         {
             return self.reply(&scope.pool, &name, scope.admitted).await;

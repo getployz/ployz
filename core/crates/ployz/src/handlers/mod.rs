@@ -79,9 +79,9 @@ fn clap_usage(error: &clap::Error) -> Error {
 
 fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     if matches.get_flag("version") {
-        return crate::output::finish(
+        return crate::ui::finish(
             &serde_json::json!({ "version": env!("CARGO_PKG_VERSION") }),
-            || crate::output::say!("{}", env!("CARGO_PKG_VERSION")),
+            || crate::ui::stream(format_args!("{}", env!("CARGO_PKG_VERSION"))),
         );
     }
     if matches.subcommand().is_none() {
@@ -89,7 +89,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
             return Err(Error::usage("a command is required"));
         }
         command.print_help()?;
-        crate::output::say!();
+        crate::ui::stream("");
         return Ok(());
     }
     let path = command_path(matches);

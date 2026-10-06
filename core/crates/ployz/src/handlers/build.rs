@@ -112,7 +112,7 @@ pub(super) fn build(root: &ArgMatches) -> Result<(), Error> {
             .await
             .map_err(std::io::Error::other)?;
         if let Err(error) = exported {
-            crate::ui::warn(
+            crate::ui::warn_cause(
                 "the image was pushed, but its build cache was not exported",
                 &error,
             );

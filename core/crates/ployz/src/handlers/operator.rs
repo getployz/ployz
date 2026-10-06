@@ -22,9 +22,9 @@ use crate::{
     cloud_login::LoginError,
     context::Transport,
     operator::{
-        ExecMode, ProxyPorts, ServiceArg, exec_options, merge_logs, open_exec, open_machine_logs,
-        open_service_logs, parse_log_time, parse_proxy_ports, parse_service_args, parse_tail,
-        select_proxy_container,
+        ExecMode, ProxyPorts, ServiceArg, exec_options, merge_logs, observe_service_logs,
+        open_exec, open_machine_logs, open_service_logs, parse_log_time, parse_proxy_ports,
+        parse_service_args, parse_tail, select_proxy_container,
     },
 };
 
@@ -257,17 +257,29 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
         Box::pin(async move {
             let cancellation = cancellation_on_ctrl_c();
             let _parent = cancellation.clone().drop_guard();
+            let scope = observe_service_logs(client, &machines).await?;
+            let unanswered = &scope.unanswered;
+            let mut gaps = crate::ui::Gaps::default().named(
+                unanswered
+                    .names
+                    .iter()
+                    .map(|(machine_id, name)| (*machine_id, name)),
+            );
+            gaps.extend(&unanswered.failures, &unanswered.omissions);
+            // Before opening, so a missing Service or Container still names the Server that did not answer.
+            gaps.warn();
             let inputs = open_service_logs(
                 client,
+                &scope,
                 &args,
                 namespace.as_ref().map(|scoped| &scoped.namespace),
-                &machines,
                 options,
                 cancellation.clone(),
                 deployment.as_ref().map(DeploymentId::as_str),
             )
             .await?;
-            print_logs(merge_logs(inputs, cancellation), utc).await
+            print_logs(merge_logs(inputs, cancellation), utc).await?;
+            gaps.outcome()
         })
     })
 }
@@ -294,12 +306,12 @@ fn build_logs(root: &ArgMatches, id: &DeploymentId, named: &[String]) -> Result<
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    crate::output::finish(&serde_json::json!({ "builds": builds }), || {
+    crate::ui::finish(&serde_json::json!({ "builds": builds }), || {
         if builds.is_empty() {
-            crate::output::say!("Deployment {id} built nothing.");
+            crate::ui::note("That Deployment built nothing.");
         }
         for build in &builds {
-            crate::output::say!(
+            crate::ui::stream(format_args!(
                 "== {} from {}: {}",
                 build.build.service,
                 build
@@ -308,8 +320,8 @@ fn build_logs(root: &ArgMatches, id: &DeploymentId, named: &[String]) -> Result<
                     .as_ref()
                     .map_or("the upload", ployz_store::CommitSha::as_str),
                 super::store::word(&build.build.status)
-            );
-            crate::output::say!("{}", build.log);
+            ));
+            crate::ui::stream(format_args!("{}", build.log));
         }
     })
 }
@@ -371,7 +383,7 @@ async fn run_port_forward(
     let address = container.address.ok_or_else(|| {
         Error::usage(format!(
             "Container {} has no address on the ployz Docker network",
-            container.container_id
+            container.display_name
         ))
     })?;
     let remote = SocketAddr::new(IpAddr::V4(address.0), ports.remote);
@@ -381,18 +393,19 @@ async fn run_port_forward(
     ))
     .await?;
     let local = listener.local_addr()?;
-    if crate::output::json() {
-        crate::output::emit_line(&serde_json::json!({
+    if crate::ui::json() {
+        crate::ui::emit_line(&serde_json::json!({
             "local": local,
             "remote": remote,
             "service": service_selector.to_string(),
             "container": container.container_id,
         }))?;
     } else {
-        crate::output::say!(
-            "{local} -> {remote} ({service_selector}/{}); Ctrl-C stops",
-            container.container_id
-        );
+        crate::ui::stream(format_args!(
+            "Forwarding {local} to {service_selector} ({}) port {}.",
+            container.display_name, ports.remote
+        ));
+        crate::ui::note("Ctrl-C stops it.");
     }
     let mut connections = tokio::task::JoinSet::new();
     loop {
@@ -405,10 +418,10 @@ async fn run_port_forward(
                     match client.dial_proxy("tcp", &remote).await {
                         Ok(mut upstream) => {
                             if let Err(error) = copy_bidirectional(&mut local, &mut upstream).await {
-                                crate::ui::warn(format_args!("port-forward connection to {remote} failed"), &error);
+                                crate::ui::warn_cause(format_args!("port-forward connection to {remote} failed"), &error);
                             }
                         }
-                        Err(error) => crate::ui::warn(format_args!("port-forward connection to {remote} failed"), &error),
+                        Err(error) => crate::ui::warn_cause(format_args!("port-forward connection to {remote} failed"), &error),
                     }
                 });
             }
@@ -475,9 +488,9 @@ async fn print_logs(
 ) -> Result<(), Error> {
     while let Some(entry) = entries.recv().await {
         let entry = entry.map_err(Error::unavailable)?;
-        if crate::output::json() {
+        if crate::ui::json() {
             if let Some(line) = log_line(&entry) {
-                crate::output::emit_line(&line)?;
+                crate::ui::emit_line(&line)?;
             }
             continue;
         }

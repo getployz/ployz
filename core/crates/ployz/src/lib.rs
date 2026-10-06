@@ -1,4 +1,4 @@
-// Human text goes through `say!` so `--json` keeps stdout parseable; tests may print.
+// Human text goes through `ui` so `--json` keeps stdout parseable; tests may print.
 #![cfg_attr(not(test), deny(clippy::print_stdout))]
 
 pub mod build;
@@ -25,7 +25,6 @@ pub mod image;
 pub mod ingress;
 pub mod namespace;
 pub mod operator;
-pub mod output;
 mod provisioning;
 pub mod sdk;
 pub mod service;
