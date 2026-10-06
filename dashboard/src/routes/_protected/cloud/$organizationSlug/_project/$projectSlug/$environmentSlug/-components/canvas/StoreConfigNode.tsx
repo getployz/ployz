@@ -24,6 +24,7 @@ export function StoreConfigCard({ config, selected, className }: { config: Confi
       data-canvas-node={config.id}
       aria-current={selected ? "page" : undefined}
       draggable={false}
+      preload="intent"
       className={cn("rounded-xl", className)}
     >
       <Card size="node" state={surface}

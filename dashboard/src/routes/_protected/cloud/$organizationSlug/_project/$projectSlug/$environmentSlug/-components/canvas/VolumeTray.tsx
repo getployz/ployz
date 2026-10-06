@@ -83,6 +83,7 @@ export function ConfigTray({ tray: { config, dir, mountChanged }, selected }: { 
     <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: config.id }}
       search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
       data-canvas-node={config.id} aria-current={selected ? "page" : undefined} draggable={false}
+      preload="intent"
       className={cn(
         "relative -mt-3 mx-1.5 flex h-13 items-end gap-2 rounded-b-xl border border-t-0 bg-muted px-4 pb-2.5 text-xs text-muted-foreground",
         surface && STAGED_CLASSES[surface].surface,

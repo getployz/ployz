@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { useState } from "react";
 import { Schema } from "effect";
 import { useBlocker, useLoaderData, useNavigate } from "@tanstack/react-router";
 import { EllipsisIcon, LockIcon, PlusIcon, Trash2Icon } from "lucide-react";
@@ -38,9 +38,9 @@ import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorN
 import { CanvasInspectorNotFound } from "../../../-components/CanvasInspectorRouteStates";
 import { useStoreChangeActions } from "../../../-components/canvas/useStoreChangeActions";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../../../-components/deployment-page";
+import { useConfigFileEditor } from "./config-file-editor-loader";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
 
-const ConfigFileEditor = lazy(() => import("./ConfigFileEditor"));
 
 const SHOWN_REFUSALS = ["invalid", "conflict"] as const;
 
@@ -232,6 +232,7 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
   readOnly: boolean; onDraft: (file: string, change: Partial<FileDraft>) => void; onSave: () => void; onRemove: (file: string) => void;
   onAdd: (file: string) => void; footer: React.ReactNode;
 }) {
+  const ConfigFileEditor = useConfigFileEditor();
   const [view, setView] = useState<"edit" | "preview">("edit");
   const [adding, setAdding] = useState<{ name: string; error: string | null } | null>(null);
 
@@ -321,14 +322,14 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
         <Empty variant="placeholder"><EmptyDescription>No files.</EmptyDescription></Empty>
       ) : view === "preview" ? (
         <ConfigPreview text={textOf(current)} values={values()} />
+      ) : ConfigFileEditor === null ? (
+        <Skeleton className="h-80 w-full" />
       ) : (
-        <Suspense fallback={<Skeleton className="h-80 w-full" />}>
-          <div className="overflow-hidden rounded-md border">
-            <ConfigFileEditor fileName={current} value={textOf(current)} targets={targets} services={serviceNames}
-              ariaLabel={`${current} contents`} onSave={onSave}
-              onChange={(content) => { if (!readOnly) onDraft(current, { content }); }} />
-          </div>
-        </Suspense>
+        <div className="overflow-hidden rounded-md border">
+          <ConfigFileEditor fileName={current} value={textOf(current)} targets={targets} services={serviceNames}
+            ariaLabel={`${current} contents`} onSave={onSave}
+            onChange={(content) => { if (!readOnly) onDraft(current, { content }); }} />
+        </div>
       )}
       {footer}
     </div>

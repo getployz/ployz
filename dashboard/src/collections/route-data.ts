@@ -4,7 +4,7 @@ import type { CollectionScope } from "./scope";
 import { orgStoreOptions } from "./org-store";
 import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
 import type { ConfigQuery, EnvironmentRef } from "@ployz/sdk";
-import { environmentsQuery, projectsQuery, requireView, storeDeploymentsOptions, storeViewOptions } from "#/modules/config-store/store-view.queries";
+import { configQuery, configsQuery, environmentsQuery, projectsQuery, requireView, storeDeploymentsOptions, storeViewOptions } from "#/modules/config-store/store-view.queries";
 
 /**
  * Route loaders call only the helpers in this file.
@@ -86,6 +86,16 @@ export async function prefetchStoreEnvironment(context: RouteDataContext, organi
     prefetchStoreViews(context, organizationSlug, ...queries),
     prefetchRemotePages(context, storeDeploymentsOptions(organizationSlug, scopeOf(context), environment)),
   ]);
+}
+
+/** The files of the Config `resourceId` names, if it names one: the one read a Config's drawer adds to its Environment's. */
+export async function prefetchStoreConfig(context: RouteDataContext, organizationSlug: string, environment: EnvironmentRef, resourceId: string) {
+  const scope = scopeOf(context);
+  const ready = context.queryClient.ensureQueryData(storeViewOptions(organizationSlug, scope, configsQuery(environment))).then((result) => {
+    const config = result.ok ? result.value.configs.find((candidate) => candidate.id === resourceId) : undefined;
+    return config && context.queryClient.prefetchQuery(storeViewOptions(organizationSlug, scope, configQuery(environment, config.name)));
+  }).catch(() => {});
+  if (environmentManager.isServer()) await ready;
 }
 
 /** `prefetchRemote` for a paged read: its first page. */
