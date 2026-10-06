@@ -113,9 +113,9 @@ pub enum OperatorError {
     Connect(#[from] ConnectError),
     #[error(transparent)]
     Selector(#[from] ployz_core::ServiceSelectorError),
-    #[error("{missing}")]
+    #[error("No running Service {name:?}")]
     NotRunning {
-        missing: ployz_core::ServiceSelectorError,
+        name: String,
         running_in_scope: Vec<String>,
     },
     #[error(transparent)]
@@ -476,16 +476,30 @@ pub async fn open_service_logs(
     };
     let mut inputs = Vec::new();
     for arg in args {
-        let service = select_service(&services, &arg.service).map_err(|missing| {
-            OperatorError::NotRunning {
-                missing,
-                running_in_scope: services
-                    .iter()
-                    .filter(|service| {
-                        namespace.is_none_or(|namespace| service.identity.namespace == *namespace)
-                    })
-                    .map(|service| service.identity.name.to_string())
-                    .collect(),
+        let service = select_service(&services, &arg.service).map_err(|error| {
+            let running_in_scope: Vec<String> = services
+                .iter()
+                .filter(|service| {
+                    namespace.is_none_or(|namespace| service.identity.namespace == *namespace)
+                })
+                .map(|service| service.identity.name.to_string())
+                .collect();
+            match error {
+                ployz_core::ServiceSelectorError::NotFound { selector }
+                    if !running_in_scope.is_empty() =>
+                {
+                    OperatorError::NotRunning {
+                        name: selector
+                            .as_str()
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or_default()
+                            .to_owned(),
+                        running_in_scope,
+                    }
+                }
+                error @ (ployz_core::ServiceSelectorError::NotFound { .. }
+                | ployz_core::ServiceSelectorError::NameAmbiguity { .. }) => error.into(),
             }
         })?;
         let containers = select_log_containers(service, &arg.containers)?;

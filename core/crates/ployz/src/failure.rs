@@ -249,12 +249,11 @@ fn classify(error: &(dyn Error + Send + Sync + 'static)) -> (RpcErrorCode, Value
         return (error.code.clone(), error.details.clone());
     }
     if let Some(OperatorError::NotRunning {
-        missing,
-        running_in_scope,
+        running_in_scope, ..
     }) = error.downcast_ref::<OperatorError>()
     {
         return (
-            code(missing),
+            RpcErrorCode::NotFound,
             serde_json::json!({ "valid_children": running_in_scope }),
         );
     }
@@ -412,9 +411,8 @@ fn operator_code(error: &OperatorError) -> RpcErrorCode {
     match error {
         OperatorError::Connect(error) => connect_code(error),
         OperatorError::Rpc(error) => error.to_rpc_error().code,
-        OperatorError::Selector(error) | OperatorError::NotRunning { missing: error, .. } => {
-            code(error)
-        }
+        OperatorError::Selector(error) => code(error),
+        OperatorError::NotRunning { .. } => RpcErrorCode::NotFound,
         OperatorError::MachineSelector(error) => machine_selector_code(error),
         OperatorError::Container(error) => code(error),
         OperatorError::Codec(error) => codec_code(error),
@@ -1085,12 +1083,11 @@ mod tests {
     #[test]
     fn a_service_that_is_not_running_lists_the_running_ones() {
         let failure = Failure::from(OperatorError::NotRunning {
-            missing: ployz_core::ServiceSelectorError::NotFound {
-                selector: ployz_core::ServiceSelector::parse("nope").unwrap(),
-            },
+            name: "nope".into(),
             running_in_scope: vec!["web".into()],
         });
         assert_eq!(failure.report().code, RpcErrorCode::NotFound);
+        assert_eq!(failure.report().message, "No running Service \"nope\"");
         assert_eq!(failure.hints(), [Hint::valid(["web"])]);
     }
 
