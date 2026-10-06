@@ -15,7 +15,6 @@ use ployz_store::{
 use super::store::{self, Next};
 use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, switch, value};
-use crate::failure::USAGE_EXIT;
 use crate::output::{self, say};
 
 pub(crate) fn command() -> Command {
@@ -141,7 +140,6 @@ fn create(root: &ArgMatches) -> Result<(), Error> {
                 .and_then(|(service, dir)| Some((ServiceName::parse(service).ok()?, dir)))
                 .ok_or_else(|| {
                     Error::usage("Expected --mount SERVICE:/DIR, like web:/etc/sentry")
-                        .with_exit(USAGE_EXIT)
                 })?;
             Ok(ConfigMountAt {
                 service,
@@ -173,7 +171,6 @@ fn put(root: &ArgMatches) -> Result<(), Error> {
         Error::usage(format!(
             "{file}: a Config file is UTF-8 text; this one is binary"
         ))
-        .with_exit(USAGE_EXIT)
     })?;
     let mode = if matches.get_flag("executable") {
         Some(FileMode::EXECUTABLE)
@@ -339,7 +336,6 @@ fn config_name(matches: &ArgMatches, arg: &str) -> Result<ConfigName, Error> {
         Error::usage(
             "Expected a Config name: up to 63 lowercase letters, digits and -, like sentry",
         )
-        .with_exit(USAGE_EXIT)
     })
 }
 
@@ -348,11 +344,10 @@ fn file_name(matches: &ArgMatches) -> Result<ConfigFileName, Error> {
         Error::usage(
             "Expected a file path inside the Config: up to 4 segments, none empty, . or .., like conf.d/site.conf",
         )
-        .with_exit(USAGE_EXIT)
     })
 }
 
 fn service_name(matches: &ArgMatches) -> Result<ServiceName, Error> {
     ServiceName::parse(required(matches, "service")?)
-        .map_err(|_| Error::usage("Expected a Service name, like web").with_exit(USAGE_EXIT))
+        .map_err(|_| Error::usage("Expected a Service name, like web"))
 }
