@@ -306,7 +306,9 @@ pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outco
             }
             Response::NotYet { retry_after } => {
                 if !announced_wait {
-                    eprintln!("Another Machine is founding this Organization; waiting...");
+                    crate::ui::note(format_args!(
+                        "Another Machine is founding this Organization; waiting..."
+                    ));
                     announced_wait = true;
                 }
                 if tokio::time::Instant::now() + retry_after > deadline {

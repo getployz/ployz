@@ -7,6 +7,9 @@ import { getServiceIcon } from "#/routes/_protected/cloud/$organizationSlug/_pro
 import { cn } from "#/lib/utils";
 import { servicesOnline } from "../../-components/services-online";
 
+// Two rows of tiles fit the canvas's minimum height; the narrowest card holds four per row.
+const MAX_TILES = 8;
+
 export function ProjectCard({
   name,
   environment,
@@ -21,6 +24,8 @@ export function ProjectCard({
 }) {
   const backgroundId = useId();
   const services = environment?.services ?? [];
+  const overflow = services.length > MAX_TILES ? services.length - (MAX_TILES - 1) : 0;
+  const shown = overflow ? services.slice(0, MAX_TILES - 1) : services;
   const { online, label } = environment ? servicesOnline(environment, runtimeServices, runtimeStatus) : { online: null, label: "No services" };
 
   return (
@@ -34,12 +39,19 @@ export function ProjectCard({
             <Background id={backgroundId} variant={BackgroundVariant.Dots} gap={16} size={1} />
           </ReactFlowProvider>
           <div className="relative flex flex-1 flex-wrap content-center items-center justify-center gap-3 p-4" aria-label="Services">
-            {services.map(service => (
+            {shown.map(service => (
               <span key={service.id} title={service.name} className="flex size-12 shrink-0 items-center justify-center rounded-lg border bg-card [&_svg]:size-6">
                 {getServiceIcon(service.config)}
                 <span className="sr-only">{service.name}</span>
               </span>
             ))}
+            {overflow > 0 && (
+              <span title={services.slice(MAX_TILES - 1).map(service => service.name).join(", ")}
+                className="flex size-12 shrink-0 items-center justify-center rounded-lg border bg-card text-sm font-medium text-muted-foreground">
+                +{overflow}
+                <span className="sr-only"> more services</span>
+              </span>
+            )}
           </div>
           <div className="relative flex flex-wrap items-center gap-x-2 gap-y-1 p-3 text-xs text-muted-foreground">
             {environment && <>

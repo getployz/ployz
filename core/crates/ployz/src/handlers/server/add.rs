@@ -1,16 +1,13 @@
 use clap::ArgMatches;
 use ployz_core::{
-    InspectRequest, JoinRequest, LocalMachinePhase, Machine, MachineName, RegisterRequest, op,
+    InspectRequest, JoinRequest, LocalMachinePhase, MachineName, RegisterRequest, op,
 };
 
 use super::super::{connect_context, runtime};
 use super::{ConnectionOptions, helpers, target};
 use serde_json::json;
 
-use crate::{
-    handlers::{Error, leaf_matches},
-    output::{self, say},
-};
+use crate::handlers::{Error, leaf_matches};
 
 pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -104,7 +101,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let follow_up = (|| {
         connection = connection.with_machine_id(assigned.id);
         config.save_connection(&context_name, connection.clone())?;
-        say!("{}", added_machine_line(&assigned));
+        crate::ui::stream(format_args!("Added Server {}.", assigned.name));
 
         runtime.block_on(helpers::wait_direct_participating(
             matches,
@@ -118,14 +115,10 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         })?;
         catch_up.map_err(|error| crate::global_catch_up::joined_catch_up_error(error, &assigned))
     })();
-    output::emit_committed(
+    crate::ui::emit_committed(
         json!({ "server": super::server_json(&assigned) }),
         follow_up,
     )
-}
-
-fn added_machine_line(assigned: &Machine) -> String {
-    format!("Added Server {} ({})", assigned.name, assigned.id)
 }
 
 #[cfg(test)]
@@ -141,15 +134,6 @@ mod tests {
 
         assert!(message.contains("added Server did not become ready"));
         assert!(message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY));
-    }
-
-    #[test]
-    fn server_add_reports_the_added_server() {
-        let assigned = assigned_machine("edge", 'a');
-        assert_eq!(
-            added_machine_line(&assigned),
-            "Added Server edge (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
-        );
     }
 
     #[test]

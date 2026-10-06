@@ -51,10 +51,10 @@ async fn machine_removal_reports_complete_and_partial_results() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stdout.contains("Removed Server one"), "{stdout}");
         assert!(
-            stdout.contains(
+            stderr.contains(
                 "Volumes the Cluster loses (1); only the Server's disk keeps their data:"
             ),
-            "{stdout}"
+            "{stderr}"
         );
         assert!(
             !stdout.contains("Permanently delete") && !stdout.contains("Deleted volume"),
@@ -71,7 +71,7 @@ async fn machine_removal_reports_complete_and_partial_results() {
             assert!(!stdout.contains("Deleted volume"), "{stdout}");
         } else {
             assert!(
-                stdout.contains("Volume data was not erased by reset: data on"),
+                stdout.contains("Reset left the data of Volume data on one."),
                 "{stdout}"
             );
         }
@@ -110,7 +110,7 @@ async fn machine_reset_refuses_failed_service_observation_before_mutation() {
     assert!(removals.lock().unwrap().is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("container inventory failed"), "{stderr}");
-    assert!(stderr.contains(machine_id('a').as_str()), "{stderr}");
+    assert!(stderr.contains("Server one"), "{stderr}");
     assert!(stderr.contains("No changes made"), "{stderr}");
     server.abort();
 }

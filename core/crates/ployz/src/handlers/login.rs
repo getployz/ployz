@@ -8,7 +8,6 @@ use crate::cli::{env, switch, value};
 use crate::cloud_login::{
     self, Account, CredentialStore, DEFAULT_CLOUD, Organization, Pending, SignedIn, Start,
 };
-use crate::output::{say, say_inline};
 
 pub(crate) fn login_command() -> Command {
     Command::new("login")
@@ -62,14 +61,14 @@ pub(super) fn login(root: &ArgMatches) -> Result<(), Error> {
         Some(cloud) => cloud.clone(),
         None => store.cloud()?.unwrap_or_else(|| DEFAULT_CLOUD.to_owned()),
     };
-    let wait = matches.get_flag("wait") || !crate::output::json();
+    let wait = matches.get_flag("wait") || !crate::ui::json();
     runtime()?.block_on(async {
         let (pending, resumed) = match cloud_login::start(&store, &cloud).await? {
             Start::SignedIn(signed_in) => return report(&signed_in),
             Start::Pending { pending, resumed } => (pending, resumed),
         };
         if !wait {
-            return crate::output::emit(&PendingReport {
+            return crate::ui::emit(&PendingReport {
                 status: "pending",
                 url: &pending.url,
                 code: &pending.code,
@@ -84,26 +83,23 @@ pub(super) fn login(root: &ArgMatches) -> Result<(), Error> {
 }
 
 fn announce(pending: &Pending, resumed: bool) {
-    say!(
+    crate::ui::note(format_args!(
         "Open {} and confirm the code {}.",
-        pending.url,
-        pending.code
-    );
+        pending.url, pending.code
+    ));
     // Only a person at a terminal gets a browser; agents show the URL themselves.
-    if !resumed && crate::output::interactive() {
+    if !resumed && crate::ui::interactive() {
         open_browser(&pending.url);
     }
-    say_inline!("Waiting for approval... ");
+    crate::ui::note_inline(format_args!("Waiting for approval... "));
 }
 
 fn report(signed_in: &SignedIn) -> Result<(), Error> {
-    crate::output::finish(&SignInReport::of(signed_in), || {
-        say!(
+    crate::ui::finish(&SignInReport::of(signed_in), || {
+        crate::ui::stream(format_args!(
             "Signed in to {} as {} in Organization {}.",
-            signed_in.cloud,
-            signed_in.account.email,
-            signed_in.organization.slug
-        );
+            signed_in.cloud, signed_in.account.email, signed_in.organization.slug
+        ));
     })
 }
 
@@ -122,12 +118,12 @@ pub(super) fn logout(root: &ArgMatches) -> Result<(), Error> {
         servers: out.as_ref().map(|out| &out.servers),
         next: next.as_deref(),
     };
-    crate::output::finish(&report, || match &out {
+    crate::ui::finish(&report, || match &out {
         Some(out) => {
-            say!("Signed out of {}.", out.cloud);
+            crate::ui::stream(format_args!("Signed out of {}.", out.cloud));
             super::account::say_clears(&out.servers, next.as_deref());
         }
-        None => say!("Not signed in."),
+        None => crate::ui::stream(format_args!("Not signed in.")),
     })?;
     out.as_ref()
         .map_or(Ok(()), |out| super::account::unconfirmed(&out.servers))

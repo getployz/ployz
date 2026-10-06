@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use super::{Error, leaf_matches};
 use crate::cli::positional;
-use crate::output::say;
+use crate::ui::{self, Fields};
 
 pub(crate) fn schema_command() -> Command {
     Command::new("schema")
@@ -45,7 +45,7 @@ pub(super) fn schema(root: &ArgMatches) -> Result<(), Error> {
     if let (None, Some(object)) = (path, schema.as_object_mut()) {
         object.insert("x-ployz-commands".into(), serde_json::to_value(commands())?);
     }
-    crate::output::show(&schema)?;
+    crate::ui::show(&schema)?;
     Ok(())
 }
 
@@ -143,34 +143,35 @@ pub(super) fn explain(root: &ArgMatches) -> Result<(), Error> {
     let explanation = Explanation { explained, example };
     let schema = &explanation.explained.schema;
     let text = |key: &str| schema.get(key).and_then(Value::as_str).unwrap_or_default();
-    crate::output::finish(&explanation, || {
-        say!("{} — {}", explanation.explained.path, text("title"));
-        say!("{}", text("description"));
-        say!("Type: {}", type_of(schema));
-        if let Some(values) = schema.get("enum") {
-            say!("Allowed: {values}");
-        }
-        // The bounds the Store enforces, so a refused value needs no second read.
-        let low = schema
-            .get("minimum")
-            .map(|low| format!("at least {low}"))
-            .or_else(|| {
-                schema
-                    .get("exclusiveMinimum")
-                    .map(|low| format!("above {low}"))
-            });
-        let high = schema.get("maximum").map(|high| format!("at most {high}"));
-        match (low, high) {
-            (Some(low), Some(high)) => say!("Range: {low}, {high}"),
-            (Some(bound), None) | (None, Some(bound)) => say!("Range: {bound}"),
-            (None, None) => {}
-        }
-        if let Some(default) = schema.get("default") {
-            say!("Default: {default}");
-        }
-        say!("Applies: {}", text("x-ployz-apply"));
-        say!("Example: {}", explanation.example);
-    })
+    let mut record = Fields::new()
+        .field("setting", &explanation.explained.path)
+        .field("title", text("title"))
+        .field("description", text("description"))
+        .field("type", type_of(schema));
+    if let Some(values) = schema.get("enum") {
+        record.push("allowed", values);
+    }
+    // The bounds the Store enforces, so a refused value needs no second read.
+    let low = schema
+        .get("minimum")
+        .map(|low| format!("at least {low}"))
+        .or_else(|| {
+            schema
+                .get("exclusiveMinimum")
+                .map(|low| format!("above {low}"))
+        });
+    let high = schema.get("maximum").map(|high| format!("at most {high}"));
+    match (low, high) {
+        (Some(low), Some(high)) => record.push("range", format_args!("{low}, {high}")),
+        (Some(bound), None) | (None, Some(bound)) => record.push("range", bound),
+        (None, None) => {}
+    }
+    if let Some(default) = schema.get("default") {
+        record.push("default", default);
+    }
+    record.push("applies", text("x-ployz-apply"));
+    record.push("example", &explanation.example);
+    ui::fields(&explanation, &record)
 }
 
 /// A schema's type, or its alternatives' (`string or object`) when it has several.

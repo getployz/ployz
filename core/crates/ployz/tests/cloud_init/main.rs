@@ -54,10 +54,7 @@ async fn cloud_init_join_participates() {
         String::from_utf8_lossy(&output.stdout)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains(&format!("Joined Server joiner ({machine_id})")),
-        "{stdout}"
-    );
+    assert!(stdout.contains("Joined Server joiner."), "{stdout}");
     assert_eq!(
         daemon.join_attempts(),
         1,
@@ -193,10 +190,7 @@ async fn cloud_init_initialize_participates() {
         String::from_utf8_lossy(&output.stdout)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains(&format!("Initialised Server founder ({machine_id})")),
-        "{stdout}"
-    );
+    assert!(stdout.contains("Initialised Server founder;"), "{stdout}");
 
     let initialized = daemon.initialize_request();
     assert_eq!(initialized.name.as_str(), "founder");
@@ -378,10 +372,7 @@ async fn cloud_init_retries_not_yet_then_joins() {
         String::from_utf8_lossy(&output.stdout)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains(&format!("Joined Server joiner ({machine_id})")),
-        "{stdout}"
-    );
+    assert!(stdout.contains("Joined Server joiner."), "{stdout}");
 
     let posts = enroll.posts();
     assert_eq!(posts.len(), 2);
@@ -462,10 +453,7 @@ async fn cloud_init_retries_not_yet_then_initializes() {
         String::from_utf8_lossy(&output.stdout)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains(&format!("Initialised Server founder ({machine_id})")),
-        "{stdout}"
-    );
+    assert!(stdout.contains("Initialised Server founder;"), "{stdout}");
 
     let posts = enroll.posts();
     assert_eq!(posts.len(), 2);
@@ -606,10 +594,7 @@ async fn rerun_on_the_founded_machine_does_not_claim_to_found_it() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        stdout.contains(&format!("Server founder ({}) is enrolled", founder.id)),
-        "{stdout}"
-    );
+    assert!(stdout.contains("Enrolled Server founder."), "{stdout}");
     assert!(
         !stdout.contains("Initialised") && !stdout.contains("deploys"),
         "{stdout}"

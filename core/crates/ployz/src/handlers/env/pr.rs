@@ -9,7 +9,6 @@ use super::super::store::{self, project, store};
 use super::super::{Error, leaf_matches, required};
 use super::branch::setups;
 use crate::handlers::teardown::{accepted, take_off, unfinished, with_accepted};
-use crate::output::say;
 
 /// Take an Environment off the Servers and keep everything else of it.
 pub(super) fn shutdown(root: &ArgMatches) -> Result<(), Error> {
@@ -104,34 +103,45 @@ pub(super) fn pr(root: &ArgMatches) -> Result<(), Error> {
     if let (true, Some(fields)) = (changing, json.as_object_mut()) {
         fields.insert("immediate".to_owned(), json!(true));
     }
-    crate::output::finish(&json, || {
-        say!("PR Environments of Project {}:", view.project.name);
-        if view.plans.is_empty() {
-            say!("  No Service deploys from a GitHub repository through the GitHub App.");
+    let mut table = crate::ui::Table::new(
+        ["REPOSITORY", "PR ENVIRONMENTS", "FROM", "DETAILS"],
+        format!(
+            "No Service in {} deploys from a GitHub repository through the GitHub App.",
+            view.project.name
+        ),
+    );
+    for plan in &view.plans {
+        let from = match &plan.start_from {
+            Some(from) => from.to_string(),
+            None if plan.enabled => "pick --from to start".to_owned(),
+            None => String::new(),
+        };
+        let mut words = Vec::new();
+        if !plan.copy.is_empty() {
+            words.push(format!(
+                "also copies {}",
+                crate::handlers::joined(&plan.copy)
+            ));
         }
-        for plan in &view.plans {
-            let mut words = vec![if plan.enabled { "on" } else { "off" }.to_owned()];
-            match &plan.start_from {
-                Some(from) => words.push(format!("from {from}")),
-                None if plan.enabled => words.push("pick --from to start".to_owned()),
-                None => {}
-            }
-            if !plan.copy.is_empty() {
-                words.push(format!(
-                    "also copies {}",
-                    crate::handlers::joined(&plan.copy)
-                ));
-            }
-            for setup in &plan.setup {
-                words.push(format!("then {}: {}", setup.service, setup.command));
-            }
-            if !plan.remove_on_close {
-                words.push("kept after close".to_owned());
-            }
-            if plan.include_bots {
-                words.push("bots too".to_owned());
-            }
-            say!("  {}: {}", plan.repository, words.join(" · "));
+        for setup in &plan.setup {
+            words.push(format!("then {}: {}", setup.service, setup.command));
         }
-    })
+        if !plan.remove_on_close {
+            words.push("kept after close".to_owned());
+        }
+        if plan.include_bots {
+            words.push("bots too".to_owned());
+        }
+        table.row([
+            crate::ui::Cell::from(plan.repository.to_string()),
+            if plan.enabled {
+                crate::ui::Cell::status("on", crate::ui::Tone::Good)
+            } else {
+                crate::ui::Cell::from("off")
+            },
+            crate::ui::Cell::from(from),
+            crate::ui::Cell::from(words.join(" · ")),
+        ]);
+    }
+    crate::ui::list(&json, &table)
 }

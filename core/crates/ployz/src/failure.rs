@@ -410,7 +410,9 @@ fn machine_selector_code(error: &MachineSelectorError) -> RpcErrorCode {
 fn operator_code(error: &OperatorError) -> RpcErrorCode {
     match error {
         OperatorError::Connect(error) => connect_code(error),
-        OperatorError::Rpc(error) => error.to_rpc_error().code,
+        OperatorError::Rpc(error) | OperatorError::StartExec { source: error, .. } => {
+            error.to_rpc_error().code
+        }
         OperatorError::Selector(error) => code(error),
         OperatorError::NotRunning { .. } => RpcErrorCode::NotFound,
         OperatorError::MachineSelector(error) => machine_selector_code(error),
@@ -608,16 +610,25 @@ fn context_code(error: &ContextError) -> RpcErrorCode {
     }
 }
 
-pub(crate) fn partial_failure_details<T>(result: &PartialResult<T, RpcError>) -> String {
+pub(crate) fn partial_failure_details<T>(
+    result: &PartialResult<T, RpcError>,
+    server: impl Fn(&ployz_core::MachineId) -> String,
+) -> String {
     result
         .failures
         .iter()
-        .map(|failure| format!("{}: {}", failure.machine_id, crate::ui::row(&failure.error)))
+        .map(|failure| {
+            format!(
+                "{}: {}",
+                server(&failure.machine_id),
+                crate::ui::row(&failure.error)
+            )
+        })
         .chain(
             result
                 .omissions
                 .iter()
-                .map(|machine_id| format!("{machine_id}: no terminal response")),
+                .map(|machine_id| format!("{}: no terminal response", server(machine_id))),
         )
         .collect::<Vec<_>>()
         .join("; ")
@@ -1060,9 +1071,13 @@ mod tests {
                 Failure::from(ConnectError::Rpc(transport())),
                 Failure::from(OperatorError::Rpc(transport())),
                 Failure::from(OperatorError::OpenContainerLogs {
-                    machine_id: ployz_core::MachineId::parse("1".repeat(32)).unwrap(),
-                    container_id: ployz_core::ContainerId::parse("2".repeat(64)).unwrap(),
+                    container: "web-1".into(),
+                    server: "machine-1".into(),
                     source: Box::new(OperatorError::Rpc(transport())),
+                }),
+                Failure::from(OperatorError::StartExec {
+                    container: "web-1".into(),
+                    source: transport(),
                 }),
             ];
             for failure in failures {

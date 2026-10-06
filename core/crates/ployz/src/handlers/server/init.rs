@@ -9,7 +9,6 @@ use crate::{
     connect::DEFAULT_LOCAL_SOCKET,
     context::{Connection, Context},
     handlers::{Error, leaf_matches},
-    output::{self, say},
     ui::Hint,
 };
 use serde_json::json;
@@ -113,9 +112,9 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     config.set_current_context(Some(context_name.clone()))?;
     config.save()?;
     if let Some(current_context) = config.current_context() {
-        say!("Switched context to '{current_context}'");
+        crate::ui::note(format_args!("Switched context to {current_context}."));
     }
-    say!("Initialised Server {} ({})", machine.name, machine.id);
+    crate::ui::stream(format_args!("Initialised Server {}.", machine.name));
     let ingress_recovery = super::super::recovery_command(
         matches,
         &context_name,
@@ -169,7 +168,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         "context": context_name,
         "ingress": ingress.as_ref().ok().and_then(Option::as_ref),
     });
-    output::emit_committed(result, ingress.map(drop))
+    crate::ui::emit_committed(result, ingress.map(drop))
 }
 
 #[cfg(test)]

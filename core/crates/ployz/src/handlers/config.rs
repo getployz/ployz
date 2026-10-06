@@ -7,6 +7,7 @@
 //! (`--all` adds the rest), `get SERVICE` shows every Setting plus the `values`
 //! object that `set SERVICE --patch` takes back.
 
+use crate::ui::{self, Hint};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_store::{
     Change, Edit, EnvironmentQuery, HoldSecret, Instead, PullRequestNumber, Revision, SettingPath,
@@ -17,7 +18,6 @@ use serde_json::{Value, json};
 use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
-use crate::output::say;
 
 pub(crate) fn get_command() -> Command {
     scoped(Command::new("get").about("Show Settings: every Service, one Service, or one Setting"))
@@ -103,13 +103,12 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
         all: matches.get_flag("all"),
     };
     let view = store(root)?.read(&query)?;
-    crate::output::finish(&view, || {
+    crate::ui::finish(&view, || {
         if view.settings.is_empty() {
-            say!(
-                "No Services in {}/{}.",
-                view.environment.project,
-                view.environment.name
-            );
+            ui::note(format_args!(
+                "No Services in {}/{} yet.",
+                view.environment.project, view.environment.name
+            ));
         }
         for row in &view.settings {
             let default = if row.value == row.default {
@@ -117,7 +116,11 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
             } else {
                 ""
             };
-            say!("{} = {}{default}", row.path, display_value(&row.value));
+            crate::ui::stream(format_args!(
+                "{} = {}{default}",
+                row.path,
+                display_value(&row.value)
+            ));
         }
     })
 }
@@ -326,6 +329,7 @@ pub(super) fn unset(root: &ArgMatches) -> Result<(), Error> {
 /// Apply `changes`.
 fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
     let matches = leaf_matches(root);
+    let unchanged = unchanged(&changes);
     let edit = Edit {
         environment: environment(matches)?,
         expect: expected(matches)?,
@@ -335,27 +339,55 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
     let edited = store
         .try_write(&edit)
         .map_err(|error| store.fail(with_refresh_hint(error, matches, "get")))?;
-    let hint = (!edited.staged.is_empty()).then(|| next(matches, &["diff"]));
-    crate::output::finish(&Next::new(&edited, hint), || {
+    let hint = (!edited.staged.is_empty()).then(|| next(matches, &["deploy"]));
+    ui::finish(&Next::new(&edited, hint.clone()), || {
         let where_ = format!("{}/{}", edited.environment.project, edited.environment.name);
         if !edited.staged.is_empty() {
-            say!(
+            crate::ui::stream(format_args!(
                 "Staged {} in {where_} (revision {}).",
                 super::joined(&edited.staged),
                 edited.environment.revision
-            );
+            ));
         }
         if !edited.immediate.is_empty() {
-            say!("Applied {} in {where_}.", super::joined(&edited.immediate));
+            crate::ui::stream(format_args!(
+                "Applied {} in {where_}.",
+                super::joined(&edited.immediate)
+            ));
         }
         // A mutation always says what it did, nothing included.
         if edited.staged.is_empty() && edited.immediate.is_empty() {
-            say!("No change in {where_}: already set.");
+            ui::stream(format_args!("Nothing changed in {where_}; {unchanged}."));
         }
         for typed in &edited.typed_addresses {
             say_typed_addresses(matches, typed);
         }
+        if let Some(hint) = hint {
+            ui::hint(&Hint::Next(hint));
+        }
     })
+}
+
+/// Why an edit that changed nothing had nothing to change.
+fn unchanged(changes: &[Change]) -> String {
+    let paths = changes
+        .iter()
+        .map(|change| match change {
+            Change::Set { path, .. } | Change::Unset { path } | Change::Patch { path, .. } => {
+                path.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let unset = changes
+        .iter()
+        .all(|change| matches!(change, Change::Unset { .. }));
+    match (unset, changes.len() > 1) {
+        (true, false) => format!("{paths} is already unset"),
+        (true, true) => format!("{paths} are already unset"),
+        (false, false) => format!("{paths} already has that value"),
+        (false, true) => format!("{paths} already have those values"),
+    }
 }
 
 /// Hold `secret` as the Destination's value of the row `asked` names for pull
@@ -379,12 +411,11 @@ fn hold(root: &ArgMatches, number: &str, asked: &str, secret: String) -> Result<
         value: secret,
     };
     let held = store.write(&request)?;
-    crate::output::finish(&held, || {
-        say!(
+    crate::ui::finish(&held, || {
+        crate::ui::stream(format_args!(
             "Holding {}'s value of {asked} for #{}'s merge.",
-            held.environment.name,
-            held.pull_request
-        );
+            held.environment.name, held.pull_request
+        ));
     })
 }
 
@@ -397,19 +428,19 @@ fn say_typed_addresses(matches: &ArgMatches, typed: &TypedAddresses) {
         "them"
     };
     let consumer = path.node();
-    say!(
+    ui::warn(format!(
         "{path} types the private address of {services}, so Ployz can't see that {consumer} uses {them}: a Branch that doesn't copy {them} can't reach {them}, and a Deploy won't start {them} first."
-    );
+    ));
     match &typed.instead {
         Instead::Reference { value } => {
-            say!(
-                "Set the reference instead: {}",
-                next(matches, &["set", &format!("{path}={value}")])
-            );
+            ui::hint(&Hint::Retry(next(
+                matches,
+                &["set", &format!("{path}={value}")],
+            )));
         }
-        Instead::Sealed => say!(
+        Instead::Sealed => ui::note(format_args!(
             "It is sealed, so it can't hold a reference: seal only the password, in its own variable, and set {path} from references to it and to the address."
-        ),
+        )),
     }
 }
 
@@ -439,6 +470,33 @@ mod tests {
         assert_eq!(
             repeated(&[set("web.replicas", "2"), set("WEB.replicas", "3")]).as_deref(),
             Some("web.replicas")
+        );
+    }
+
+    #[test]
+    fn a_no_op_edit_agrees_with_how_many_paths_it_names() {
+        let unset = |path: &str| Change::Unset {
+            path: SettingPath::parse(path).unwrap(),
+        };
+        let set = Change::Set {
+            path: SettingPath::parse("web.replicas").unwrap(),
+            value: json!("2"),
+        };
+        assert_eq!(
+            unchanged(&[unset("web.env.A")]),
+            "web.env.A is already unset"
+        );
+        assert_eq!(
+            unchanged(&[unset("web.env.A"), unset("web.env.B")]),
+            "web.env.A, web.env.B are already unset"
+        );
+        assert_eq!(
+            unchanged(std::slice::from_ref(&set)),
+            "web.replicas already has that value"
+        );
+        assert_eq!(
+            unchanged(&[set, unset("web.env.A")]),
+            "web.replicas, web.env.A already have those values"
         );
     }
 }
