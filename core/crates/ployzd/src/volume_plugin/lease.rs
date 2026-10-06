@@ -3,16 +3,20 @@
 use axum::{Json, extract::State};
 use ployz_core::{
     AdoptLeaseRequest, Cycle, FenceDecision, InspectVolumeCopyRequest, LeaseRecord, MirrorMarker,
-    RpcError, RpcErrorCode, Snapshot, SnapshotGuid, Switch, SwitchError, SwitchReply, VolumeCopy,
-    VolumeCopyView, WriterMarker,
+    RpcError, RpcErrorCode, Snapshot, SnapshotGuid, SnapshotName, Switch, SwitchError, SwitchReply,
+    VolumeCopy, VolumeCopyView, WriterMarker,
 };
 use ployzd::machine_pool::MachinePool;
 
-use super::{DATASET_ROOT, Dataset, DockerVolumeName, Place, Result, VolumeError, VolumeStorage};
+use super::{
+    DATASET_ROOT, Dataset, DockerVolumeName, MIRROR_ROOT, Result, VolumeError, VolumeStorage,
+};
 
 const LEASE_PROPERTY_PREFIX: &str = "ployz:lease.";
 const WRITER_PROPERTY: &str = "ployz:writer";
-const MIRROR_PROPERTY: &str = "ployz:mirror";
+pub(super) const MIRROR_PROPERTY: &str = "ployz:mirror";
+/// Set by ZFS on a dataset whose `receive -s` was interrupted; `-` otherwise.
+pub(super) const RESUME_TOKEN_PROPERTY: &str = "receive_resume_token";
 
 pub(super) fn fence(
     recorded: Option<LeaseRecord>,
@@ -64,7 +68,7 @@ fn refusal(
     }
 }
 
-fn internal(error: VolumeError) -> RpcError {
+pub(super) fn internal(error: VolumeError) -> RpcError {
     match error {
         VolumeError::Capacity(error) => error.into_rpc_error(),
         VolumeError::Message(message) => RpcError {
@@ -77,7 +81,7 @@ fn internal(error: VolumeError) -> RpcError {
 
 impl VolumeStorage {
     /// A dataset's user property, or `None` when ZFS reports it unset (`-`).
-    async fn property(&self, dataset: &str, property: &str) -> Result<Option<String>> {
+    pub(super) async fn property(&self, dataset: &str, property: &str) -> Result<Option<String>> {
         let value = self
             .zfs(&["get", "-H", "-o", "value", property, dataset])
             .await?;
@@ -136,7 +140,7 @@ impl VolumeStorage {
         }
     }
 
-    async fn mirror_marker(&self, slot: &Dataset) -> Result<MirrorMarker> {
+    pub(super) async fn mirror_marker(&self, slot: &Dataset) -> Result<MirrorMarker> {
         match self.property(&slot.name, MIRROR_PROPERTY).await? {
             None => Ok(MirrorMarker::Idle),
             Some(value) => value
@@ -145,7 +149,9 @@ impl VolumeStorage {
         }
     }
 
-    async fn newest_snapshot(&self, dataset: &Dataset) -> Result<Option<Snapshot>> {
+    /// The run snapshots of a dataset, newest first by transaction group (creation time
+    /// ties within a second). Snapshots with other names are not the run's and are left out.
+    pub(super) async fn snapshots(&self, dataset: &str) -> Result<Vec<Snapshot>> {
         let output = self
             .zfs(&[
                 "list",
@@ -153,26 +159,43 @@ impl VolumeStorage {
                 "-t",
                 "snapshot",
                 "-o",
-                "guid,creation",
+                "name,guid,creation",
                 "-S",
-                "creation",
+                "createtxg",
                 "-d",
                 "1",
-                &dataset.name,
+                dataset,
             ])
             .await?;
-        let Some(line) = output.lines().next() else {
-            return Ok(None);
-        };
-        let invalid = || VolumeError::from(format!("invalid ZFS snapshot output: {line}"));
-        let (guid, created) = line.split_once('\t').ok_or_else(invalid)?;
-        Ok(Some(Snapshot {
-            guid: SnapshotGuid::new(guid.parse().map_err(|_| invalid())?),
-            created_unix_seconds: created.parse().map_err(|_| invalid())?,
-        }))
+        let mut snapshots = Vec::new();
+        for line in output.lines() {
+            let invalid = || VolumeError::from(format!("invalid ZFS snapshot output: {line}"));
+            let mut fields = line.split('\t');
+            let (Some(full_name), Some(guid), Some(created), None) =
+                (fields.next(), fields.next(), fields.next(), fields.next())
+            else {
+                return Err(invalid());
+            };
+            let Some(name) = full_name
+                .split_once('@')
+                .and_then(|(_, name)| name.parse::<SnapshotName>().ok())
+            else {
+                continue;
+            };
+            snapshots.push(Snapshot {
+                name,
+                guid: SnapshotGuid::new(guid.parse().map_err(|_| invalid())?),
+                created_unix_seconds: created.parse().map_err(|_| invalid())?,
+            });
+        }
+        Ok(snapshots)
     }
 
-    async fn copy(
+    async fn newest_snapshot(&self, dataset: &str) -> Result<Option<Snapshot>> {
+        Ok(self.snapshots(dataset).await?.into_iter().next())
+    }
+
+    pub(super) async fn copy(
         &self,
         datasets: &[Dataset],
         pool: &MachinePool,
@@ -183,21 +206,94 @@ impl VolumeStorage {
             return Ok(Some(VolumeCopy::Root {
                 writer: self.writer_marker(root).await?,
                 readonly: root.readonly,
-                newest: self.newest_snapshot(root).await?,
+                newest: self.newest_snapshot(&root.name).await?,
             }));
         }
-        let slot = datasets.iter().find(|dataset| {
-            matches!(Place::of(&dataset.name, pool.name()), Place::Slot(slot) if slot == name.0)
-                && dataset.name.ends_with("/fs")
-        });
-        let Some(slot) = slot else {
+        let Some(slot) = Self::slot(datasets, pool, name) else {
             return Ok(None);
+        };
+        let fs = Self::slot_fs(datasets, pool, name);
+        let (readonly, newest, resume_token) = match fs {
+            Some(fs) => (
+                fs.readonly,
+                self.newest_snapshot(&fs.name).await?,
+                self.property(&fs.name, RESUME_TOKEN_PROPERTY).await?,
+            ),
+            None => (slot.readonly, None, None),
         };
         Ok(Some(VolumeCopy::Slot {
             mirror: self.mirror_marker(slot).await?,
-            readonly: slot.readonly,
-            newest: self.newest_snapshot(slot).await?,
+            readonly,
+            newest,
+            resume_token,
         }))
+    }
+
+    /// The slot parent `<pool>/ployz-mirror/<name>` when this Machine mirrors `name`.
+    pub(super) fn slot<'datasets>(
+        datasets: &'datasets [Dataset],
+        pool: &MachinePool,
+        name: &DockerVolumeName,
+    ) -> Option<&'datasets Dataset> {
+        let parent = slot_parent(pool, name);
+        datasets.iter().find(|dataset| dataset.name == parent)
+    }
+
+    /// The received copy `<pool>/ployz-mirror/<name>/fs`, present once a receive began.
+    pub(super) fn slot_fs<'datasets>(
+        datasets: &'datasets [Dataset],
+        pool: &MachinePool,
+        name: &DockerVolumeName,
+    ) -> Option<&'datasets Dataset> {
+        let fs = slot_fs(pool, name);
+        datasets.iter().find(|dataset| dataset.name == fs)
+    }
+
+    /// Fences `request` for `name` and records the admitted position. The caller holds
+    /// the mutation lock; the effect runs after this returns.
+    pub(super) async fn admit(
+        &self,
+        pool: &MachinePool,
+        datasets: &[Dataset],
+        name: &DockerVolumeName,
+        request: &Switch,
+    ) -> std::result::Result<Admitted, RpcError> {
+        let recorded = self
+            .lease_record(datasets, pool, name)
+            .await
+            .map_err(internal)?;
+        let now = chrono::Utc::now().timestamp();
+        let decision = fence(recorded, request, now);
+        if let Some(error) = refusal(decision, request, recorded, now) {
+            return Err(error);
+        }
+        let lease = LeaseRecord {
+            lease: request.lease,
+            pos: request.pos,
+            cycle: recorded.map_or(Cycle::Closed, |record| record.cycle),
+        };
+        if recorded != Some(lease) {
+            self.write_lease_record(datasets, pool, name, lease)
+                .await
+                .map_err(internal)?;
+        }
+        Ok(Admitted { decision, lease })
+    }
+
+    /// The reply every leased verb ends with: the decision, the record and the copy as
+    /// it is after the effect.
+    pub(super) async fn reply(
+        &self,
+        pool: &MachinePool,
+        name: &DockerVolumeName,
+        admitted: Admitted,
+    ) -> std::result::Result<SwitchReply, RpcError> {
+        let datasets = self.datasets(pool).await.map_err(internal)?;
+        Ok(SwitchReply {
+            decision: admitted.decision,
+            lease: admitted.lease,
+            copy: self.copy(&datasets, pool, name).await.map_err(internal)?,
+        })
     }
 
     async fn inspect_copy(&self, name: &DockerVolumeName) -> Result<VolumeCopyView> {
@@ -223,31 +319,28 @@ impl VolumeStorage {
         let _guard = self.admit_mutation().await.map_err(internal)?;
         let pool = self.one_pool().await.map_err(internal)?;
         let datasets = self.datasets(&pool).await.map_err(internal)?;
-        let recorded = self
-            .lease_record(&datasets, &pool, name)
-            .await
-            .map_err(internal)?;
-        let now = chrono::Utc::now().timestamp();
-        let decision = fence(recorded, request, now);
-        if let Some(error) = refusal(decision, request, recorded, now) {
-            return Err(error);
-        }
-        let lease = LeaseRecord {
-            lease: request.lease,
-            pos: request.pos,
-            cycle: recorded.map_or(Cycle::Closed, |record| record.cycle),
-        };
-        if recorded != Some(lease) {
-            self.write_lease_record(&datasets, &pool, name, lease)
-                .await
-                .map_err(internal)?;
-        }
-        Ok(SwitchReply {
-            decision,
-            lease,
-            copy: self.copy(&datasets, &pool, name).await.map_err(internal)?,
-        })
+        let admitted = self.admit(&pool, &datasets, name, request).await?;
+        self.reply(&pool, name, admitted).await
     }
+}
+
+/// A fenced request's decision and the record written for it.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Admitted {
+    pub(super) decision: FenceDecision,
+    pub(super) lease: LeaseRecord,
+}
+
+pub(super) fn slot_parent(pool: &MachinePool, name: &DockerVolumeName) -> String {
+    format!("{}/{MIRROR_ROOT}/{name}", pool.name())
+}
+
+pub(super) fn slot_fs(pool: &MachinePool, name: &DockerVolumeName) -> String {
+    format!("{}/fs", slot_parent(pool, name))
+}
+
+pub(super) fn root_dataset(pool: &MachinePool, name: &DockerVolumeName) -> String {
+    format!("{}/{DATASET_ROOT}/{name}", pool.name())
 }
 
 pub(super) async fn inspect(

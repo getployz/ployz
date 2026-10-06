@@ -430,6 +430,8 @@ async fn concurrent_and_retried_first_creates_converge_on_one_pool() {
         zfs: first.zfs.clone(),
         mutation: Arc::new(Mutex::new(())),
         installation: first.installation.clone(),
+        receives: Default::default(),
+        send_port: first.send_port,
     };
     let first_socket = test.0.join("first-plugin.sock");
     let second_socket = test.0.join("second-plugin.sock");
@@ -496,6 +498,8 @@ async fn a_second_process_cannot_use_a_pool_before_its_owner_finishes() {
         zfs: first.zfs.clone(),
         mutation: Arc::new(Mutex::new(())),
         installation: first.installation.clone(),
+        receives: Default::default(),
+        send_port: first.send_port,
     };
     let first_socket = test.0.join("first-plugin.sock");
     let second_socket = test.0.join("second-plugin.sock");
@@ -966,5 +970,7 @@ esac
             directory.join("admission-run"),
             directory.join("admission-data"),
         ),
+        receives: Default::default(),
+        send_port: ployz_core::VOLUME_SEND_PORT,
     }
 }

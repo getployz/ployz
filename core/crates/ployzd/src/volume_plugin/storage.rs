@@ -10,8 +10,7 @@ use tokio::{
 
 use super::{DockerVolumeName, Result, VolumeError, pool::PoolStorage};
 
-pub(super) const DATASET_ROOT: &str = "ployz";
-pub(super) const MIRROR_ROOT: &str = "ployz-mirror";
+pub(super) use ployz_core::{DATASET_ROOT, MIRROR_ROOT};
 pub(super) const MOUNT_ROOT: &str = "/var/lib/ployz-volumes";
 
 #[derive(Debug, Eq, PartialEq)]
@@ -49,6 +48,19 @@ pub(super) struct VolumeStorage {
     pub(super) zfs: PathBuf,
     pub(super) mutation: Arc<Mutex<()>>,
     pub(super) installation: ployzd::mutation::MutationGate,
+    pub(super) receives: super::transfer::Receives,
+    /// Where a writer Machine serves send streams; tests point it at a local server.
+    pub(super) send_port: u16,
+}
+
+/// Bytes a dataset commits the Pool to: a root's `refquota`, or a slot parent's. The
+/// slot's `fs` copy carries the same bound and is not counted again.
+pub(super) fn committed_bytes(dataset: &Dataset, pool: &str) -> u64 {
+    match Place::of(&dataset.name, pool) {
+        Place::Root(_) => dataset.refquota,
+        Place::Slot(name) if dataset.name.ends_with(&format!("/{name}")) => dataset.refquota,
+        Place::Slot(_) | Place::Outside => 0,
+    }
 }
 
 pub(super) enum CapacityAdmission {
@@ -63,6 +75,8 @@ impl VolumeStorage {
             zfs: "zfs".into(),
             mutation: Arc::new(Mutex::new(())),
             installation: ployzd::mutation::MutationGate::new(run_dir, data_dir),
+            receives: super::transfer::Receives::default(),
+            send_port: ployz_core::VOLUME_SEND_PORT,
         }
     }
 
@@ -82,6 +96,8 @@ impl VolumeStorage {
                 fixture.join("admission-run"),
                 fixture.join("admission-data"),
             ),
+            receives: super::transfer::Receives::default(),
+            send_port: ployz_core::VOLUME_SEND_PORT,
         }
     }
 
@@ -112,33 +128,42 @@ impl VolumeStorage {
         }
 
         if matches!(origin, CapacityAdmission::Required) {
-            let committed = datasets
-                .iter()
-                .filter(|dataset| Place::of(&dataset.name, pool.name()).commits());
-            let commitment = committed
-                .clone()
-                .map(|dataset| dataset.refquota)
-                .try_fold(requested, u64::checked_add)
-                .ok_or_else(|| {
-                    VolumeError::from("Provisioned Volume commitments overflowed u64")
-                })?;
-            let managed_used = committed
-                .map(|dataset| dataset.active_used_bytes)
-                .try_fold(0u64, u64::checked_add)
-                .ok_or("Dataset occupancy overflows u64")?;
-            self.pool
-                .ensure_capacity(
-                    pool,
-                    commitment,
-                    pool.used_bytes().saturating_sub(managed_used),
-                )
-                .await?;
+            self.ensure_commitment(pool, &datasets, requested).await?;
         }
 
         if !datasets.iter().any(|dataset| dataset.name == root) {
             self.create_root(&root).await?;
         }
         self.zfs(&["create", "-o", &format!("refquota={requested}"), &volume])
+            .await?;
+        Ok(())
+    }
+
+    /// Grows the Pool, when it can, for `requested` more committed bytes.
+    pub(super) async fn ensure_commitment(
+        &self,
+        pool: &MachinePool,
+        datasets: &[Dataset],
+        requested: u64,
+    ) -> Result<()> {
+        let committed = datasets
+            .iter()
+            .filter(|dataset| Place::of(&dataset.name, pool.name()).commits());
+        let commitment = committed
+            .clone()
+            .map(|dataset| committed_bytes(dataset, pool.name()))
+            .try_fold(requested, u64::checked_add)
+            .ok_or_else(|| VolumeError::from("Provisioned Volume commitments overflowed u64"))?;
+        let managed_used = committed
+            .map(|dataset| dataset.active_used_bytes)
+            .try_fold(0u64, u64::checked_add)
+            .ok_or("Dataset occupancy overflows u64")?;
+        self.pool
+            .ensure_capacity(
+                pool,
+                commitment,
+                pool.used_bytes().saturating_sub(managed_used),
+            )
             .await?;
         Ok(())
     }
