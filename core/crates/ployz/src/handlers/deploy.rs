@@ -387,6 +387,7 @@ fn follow(
         ));
     }
     let mut last = None;
+    let mut said = None;
     let mut id = admitted.id.clone();
     loop {
         let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
@@ -412,11 +413,15 @@ fn follow(
                 .iter()
                 .map(|node| format!("{} {}", node.node.name(), super::store::word(&node.outcome)))
                 .collect();
-            ui::note(format_args!(
+            let line = format!(
                 "{}: {}",
                 super::store::word(&view.deployment.status),
                 nodes.join(", ")
-            ));
+            );
+            if said.as_ref() != Some(&line) {
+                ui::note(&line);
+                said = Some(line);
+            }
             if let Some(file) = events.as_mut() {
                 // ponytail: a failed event write never stops following; the file is a tap.
                 let _ = writeln!(file, "{progress}");
@@ -744,14 +749,18 @@ pub(super) fn say_view(view: &DeploymentView) {
         crate::ui::stream(format_args!("  {}", provenance(upload)));
     }
     if let Some(
-        ployz_store::Outcome::NotExecuted { reason, .. }
+        ployz_store::Outcome::NotExecuted { reason, cause, .. }
         | ployz_store::Outcome::Executed {
             reason: Some(reason),
+            cause,
             ..
         },
     ) = &view.deployment.outcome
     {
         crate::ui::stream(format_args!("  {reason}"));
+        if let Some(cause) = cause.last() {
+            crate::ui::stream(format_args!("    cause: {cause}"));
+        }
     }
     if super::teardown::left_on_old_servers(&view.deployment) {
         crate::ui::stream(format_args!(

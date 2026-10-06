@@ -169,11 +169,13 @@ pub(crate) fn view(
 ) -> Result<DeploymentView, RpcError> {
     let stored = owned(tx, who, id)?;
     let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
+    let mut rows = super::rows::of_nodes(tx, &stored)?;
     let nodes = stored
         .nodes
         .iter()
         .map(|node| NodeOutcome {
             node: node.shown(),
+            rows: rows.remove(node.id()).unwrap_or_default(),
             outcome: match (stored.run.nodes.get(node.id()), stored.summary.status) {
                 (Some(status), _) => *status,
                 (None, DeploymentStatus::Unknown) => NodeStatus::Unknown,

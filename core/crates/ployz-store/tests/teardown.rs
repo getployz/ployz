@@ -187,6 +187,7 @@ fn succeed(store: &ConfigStore, n: u8, services: &[&str], removed: Vec<VolumeRem
             &id(n),
             &runner(),
             RunEvidence::Executed {
+                progress: Vec::new(),
                 outcome: Box::new(outcome),
                 removed,
             },
