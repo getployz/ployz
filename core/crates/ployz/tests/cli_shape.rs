@@ -628,6 +628,42 @@ fn root_help_ends_with_the_catalog_pointer() {
     );
 }
 
+#[test]
+fn every_error_field_the_agent_skill_names_appears_in_real_output() {
+    let skill = include_str!("../../../site/skill.md");
+    let line = skill
+        .lines()
+        .find(|line| line.contains(r#"{"error": {"#))
+        .unwrap();
+    let shape = &line[line.find(r#"{"error": {"#).unwrap() + 11..];
+    let mut named: Vec<String> = shape[..shape.find('}').unwrap()]
+        .split(", ")
+        .map(|field| format!("/error/{field}"))
+        .collect();
+    named.extend(skill.split('`').filter_map(|code| {
+        code.strip_prefix("details.")
+            .map(|key| format!("/error/details/{key}"))
+    }));
+    assert!(named.len() > 4, "{named:?}");
+
+    let store = tempfile::tempdir().unwrap();
+    let store = format!("sqlite:{}", store.path().join("store.db").display());
+    let with_store = [("PLOYZ_STORE", store.as_str())];
+    let (code, _, stderr) = run_json_with(&["project", "new", "blog", "--json"], &with_store);
+    assert_eq!(code, Some(0), "{stderr}");
+    let outputs = [
+        run_json(&["token", "ls", "--json"]).1,
+        run_json(&["explain", "web.restart_policy", "--json"]).1,
+        run_json_with(&["project", "rm", "blog", "--json"], &with_store).1,
+    ];
+    for field in named {
+        assert!(
+            outputs.iter().any(|json| json.pointer(&field).is_some()),
+            "{field} named by the skill appears in no output: {outputs:?}"
+        );
+    }
+}
+
 fn message(json: &serde_json::Value) -> &str {
     json.pointer("/error/message")
         .and_then(serde_json::Value::as_str)
