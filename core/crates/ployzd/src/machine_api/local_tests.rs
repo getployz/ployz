@@ -747,7 +747,9 @@ async fn listed_containers_redact_values_unless_requested() {
         ConfigSpec, CreateContainerRequest, EnvironmentValues, ListContainersRequest,
     };
     use serde_json::json;
+    use std::os::unix::fs::MetadataExt;
     let (data_dir, _store, service, fake) = fake_docker_service("ployzd-list-env").await;
+    let owner = std::fs::metadata(&data_dir).unwrap();
     let created = service
         .create_container(Request::new(
             op::CreateContainer::into_request(CreateContainerRequest {
@@ -761,10 +763,13 @@ async fn listed_containers_redact_values_unless_requested() {
                     "mode":{"mode":"replicated", "replicas":1},
                     "container":{
                         "image":"example.test/api", "pull_policy":"missing",
-                        "environment":{"CADDY_ADMIN":"localhost:2019", "TOKEN":"secret"}
+                        "environment":{"CADDY_ADMIN":"localhost:2019", "TOKEN":"secret"},
+                        "config_mounts":[{
+                            "config_name":"settings", "target":"/etc/api/settings",
+                            "uid":owner.uid(), "gid":owner.gid()
+                        }]
                     },
                     "pre_deploy":{"command":["migrate"], "environment":{"DATABASE_URL":"postgres://secret"}},
-                    "config_mounts":[{"config_name":"settings", "target":"/etc/api/settings"}],
                     "configs":[{"name":"settings", "content":b"token=config-secret".to_vec()}]
                 }))
                 .unwrap(),
