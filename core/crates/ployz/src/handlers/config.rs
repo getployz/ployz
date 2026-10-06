@@ -329,6 +329,7 @@ pub(super) fn unset(root: &ArgMatches) -> Result<(), Error> {
 /// Apply `changes`.
 fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
     let matches = leaf_matches(root);
+    let unchanged = unchanged(&changes);
     let edit = Edit {
         environment: environment(matches)?,
         expect: expected(matches)?,
@@ -356,7 +357,7 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
         }
         // A mutation always says what it did, nothing included.
         if edited.staged.is_empty() && edited.immediate.is_empty() {
-            ui::stream(format_args!("Nothing changed in {where_}; already set."));
+            ui::stream(format_args!("Nothing changed in {where_}; {unchanged}."));
         }
         for typed in &edited.typed_addresses {
             say_typed_addresses(matches, typed);
@@ -365,6 +366,27 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
             ui::hint(&Hint::Next(hint));
         }
     })
+}
+
+/// Why an edit that changed nothing had nothing to change.
+fn unchanged(changes: &[Change]) -> String {
+    let paths = changes
+        .iter()
+        .map(|change| match change {
+            Change::Set { path, .. } | Change::Unset { path } | Change::Patch { path, .. } => {
+                path.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    if changes
+        .iter()
+        .all(|change| matches!(change, Change::Unset { .. }))
+    {
+        format!("{paths} is already unset")
+    } else {
+        format!("{paths} already has that value")
+    }
 }
 
 /// Hold `secret` as the Destination's value of the row `asked` names for pull
