@@ -34,6 +34,12 @@ pub(crate) enum Subject {
         server: String,
     },
     Service(QualifiedService),
+    Operation {
+        index: u32,
+        machine: MachineId,
+        server: String,
+        name: String,
+    },
     Node {
         index: usize,
         name: String,
@@ -56,6 +62,18 @@ impl Subject {
                 },
             ) => a == b && am == bm,
             (Self::Service(a), Self::Service(b)) => a == b,
+            (
+                Self::Operation {
+                    index: a,
+                    machine: am,
+                    ..
+                },
+                Self::Operation {
+                    index: b,
+                    machine: bm,
+                    ..
+                },
+            ) => a == b && am == bm,
             (Self::Node { index: a, .. }, Self::Node { index: b, .. }) => a == b,
             _ => false,
         }
@@ -111,6 +129,19 @@ impl State {
             Self::Failed => Tone::Bad,
             Self::Pending | Self::Running(_) | Self::Unknown => Tone::Change,
             Self::Unchanged | Self::NotAttempted | Self::Excluded => Tone::Muted,
+        }
+    }
+}
+
+impl From<&ployz_store::RowState> for State {
+    fn from(state: &ployz_store::RowState) -> Self {
+        match state {
+            ployz_store::RowState::Pending => Self::Pending,
+            ployz_store::RowState::Running { phase } => Self::Running(*phase),
+            ployz_store::RowState::Completed => Self::Completed,
+            ployz_store::RowState::Failed { .. } => Self::Failed,
+            ployz_store::RowState::NotAttempted => Self::NotAttempted,
+            ployz_store::RowState::Unknown => Self::Unknown,
         }
     }
 }
@@ -331,12 +362,13 @@ fn drive(
         let _ = changes(writer, None, &frame, color);
     }
     backend.draw(&frame, tick, color);
+    let mut pending = None;
     loop {
-        let received = inbox.receive(deadline.saturating_sub(inbox.now()));
+        let received = pending
+            .take()
+            .map_or_else(|| inbox.receive(deadline.saturating_sub(inbox.now())), Ok);
         let received = match received {
-            Err(RecvTimeoutError::Timeout) => {
-                inbox.ready().map_or(Err(RecvTimeoutError::Timeout), Ok)
-            }
+            Err(RecvTimeoutError::Timeout) => inbox.ready().ok_or(RecvTimeoutError::Timeout),
             other => other,
         };
         match received {
@@ -371,6 +403,10 @@ fn drive(
             Err(RecvTimeoutError::Timeout) => {}
         }
         if inbox.now() >= deadline {
+            if let Some(message) = inbox.ready() {
+                pending = Some(message);
+                continue;
+            }
             if interactive {
                 tick = tick.wrapping_add(1);
                 backend.draw(&frame, tick, color);
@@ -413,6 +449,7 @@ fn label(subject: &Subject, frame: &Frame) -> String {
             }
         }
         Subject::Service(service) => service.name.to_string(),
+        Subject::Operation { name, server, .. } => format!("{name} on {server}"),
         Subject::Node { name, .. } => name.clone(),
     }
 }
@@ -622,7 +659,9 @@ fn finish(
         .rows
         .iter()
         .filter_map(|row| match &row.subject {
-            Subject::ServiceOnServer { machine, .. } => Some(machine),
+            Subject::ServiceOnServer { machine, .. } | Subject::Operation { machine, .. } => {
+                Some(machine)
+            }
             Subject::Service(_) | Subject::Node { .. } => None,
         })
         .collect();
@@ -646,3 +685,71 @@ fn finish(
 
 #[cfg(test)]
 mod tests;
+
+/// Additional execution evidence printed only after the outer command adds context.
+#[derive(Debug, Default)]
+pub(crate) struct Diagnostic {
+    pub failures: Vec<Detail>,
+    pub logs: Vec<LogTail>,
+    pub compensation: Vec<Detail>,
+}
+
+/// One distinct failed task or observed compensation action.
+#[derive(Debug)]
+pub(crate) struct Detail {
+    pub message: String,
+    pub causes: Vec<String>,
+}
+
+/// Already-bounded log evidence. An empty tail makes no claim about Container output.
+#[derive(Debug)]
+pub(crate) struct LogTail {
+    pub service: QualifiedService,
+    pub machine: MachineId,
+    pub server: String,
+    pub lines: Vec<String>,
+}
+
+impl Diagnostic {
+    pub(crate) fn write(&self, writer: &mut dyn Write) -> io::Result<()> {
+        for failure in &self.failures {
+            super::error::write(
+                writer,
+                &failure.message,
+                failure.causes.last().map(String::as_str),
+                &[],
+            )?;
+        }
+        for tail in &self.logs {
+            if !tail.lines.is_empty() {
+                writeln!(
+                    writer,
+                    "Last {} log lines from {} on {}:",
+                    tail.lines.len(),
+                    tail.service.name,
+                    tail.server
+                )?;
+                for line in &tail.lines {
+                    writeln!(writer, "  {line}")?;
+                }
+            }
+        }
+        for fact in &self.compensation {
+            writeln!(writer, "  {}", fact.message)?;
+            if let Some(cause) = fact.causes.last() {
+                writeln!(writer, "  cause: {cause}")?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn json(&self) -> serde_json::Value {
+        let detail =
+            |value: &Detail| serde_json::json!({"message": value.message, "cause": value.causes});
+        serde_json::json!({
+            "failures": self.failures.iter().map(detail).collect::<Vec<_>>(),
+            "logs": self.logs.iter().map(|tail| serde_json::json!({"service": tail.service, "machine_id": tail.machine, "server": tail.server, "lines": tail.lines})).collect::<Vec<_>>(),
+            "compensation": self.compensation.iter().map(detail).collect::<Vec<_>>(),
+        })
+    }
+}

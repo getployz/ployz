@@ -1,602 +1,286 @@
-//! CLI paint model for one Deploy. Human copy lives here, not on the wire types.
+//! Direct execution evidence, grouped by the same RowTracker the Store uses.
 
-use std::fmt::Write as _;
-use std::io;
-
-use crossterm::style::Stylize as _;
-use ployz_core::{
-    ContainerId, ContainerRuntimeObservation, DependencyHealthFailure, DeployOperation,
-    DeployOutcome, ExecutionError, FailedOperation, HealthFailure, HealthObservation, HookFailure,
-    LastHealthCheck, MachineAction, MachineName, OperationPhase, OperationRow, OperationStatus,
-    ReplacementCompensation, RestartAttempt, ServiceName, StopAttempt,
+use crate::{
+    connect::Client,
+    failure::Failure,
+    ui::{
+        Hint,
+        progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing},
+    },
 };
+use ployz_core::{
+    ContainerId, DeployOperation, DeployOutcome, ExecutionError, FailedOperation, MachineId,
+    Namespace, OperationPhase, OperationRow, OperationStatus, QualifiedService,
+    ReplacementCompensation, RestartAttempt, RpcError, RpcErrorCode, ServiceName, StopAttempt,
+};
+use ployz_store::{RowState, RowTracker, ServerProgress};
+use std::collections::BTreeMap;
+use std::time::{Duration, SystemTime};
 
-/// ANSI roles for a TTY stream. Pipes and `NO_COLOR` stay plain.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct Ink {
-    color: bool,
+/// Factual Service/Server progress plus standalone operations and failed Container identity.
+pub(super) struct Direct {
+    namespace: Namespace,
+    title: String,
+    tracker: RowTracker,
+    rows: BTreeMap<(ServiceName, MachineId), (ServerProgress, Timing)>,
+    pub(super) operations: Vec<OperationRow>,
+    notices: Vec<String>,
 }
 
-impl Ink {
-    #[must_use]
-    pub(crate) fn of(choice: anstream::ColorChoice) -> Self {
-        Self {
-            color: choice != anstream::ColorChoice::Never,
+impl Direct {
+    pub(super) fn new(preview: &super::DeployPreview, title: String) -> Self {
+        let mut direct = Self {
+            namespace: preview.namespace.clone(),
+            title,
+            tracker: RowTracker::default(),
+            rows: BTreeMap::new(),
+            operations: Vec::new(),
+            notices: Vec::new(),
+        };
+        direct.observe(&preview.operations);
+        direct
+    }
+
+    pub(super) fn observe(&mut self, operations: &[OperationRow]) {
+        for row in self.tracker.changes(operations) {
+            let key = (row.service.clone(), row.machine);
+            let prior = self.rows.get(&key).map(|(_, timing)| timing);
+            let started = match prior {
+                Some(Timing::Started(at)) => Some(*at),
+                Some(Timing::Finished(_)) | Some(Timing::Unavailable) | None => None,
+            };
+            let timing = match row.state {
+                RowState::Pending => Timing::Unavailable,
+                RowState::Running { .. } => {
+                    Timing::Started(started.unwrap_or_else(SystemTime::now))
+                }
+                RowState::Completed
+                | RowState::Failed { .. }
+                | RowState::NotAttempted
+                | RowState::Unknown => started.map_or(Timing::Unavailable, |at| {
+                    Timing::Finished(at.elapsed().unwrap_or_default())
+                }),
+            };
+            self.rows.insert(key, (row, timing));
         }
+        self.operations = operations.to_vec();
     }
 
-    /// Color for stderr, where progress goes.
-    #[must_use]
-    pub(crate) fn human() -> Self {
-        Self::of(anstream::AutoStream::choice(&io::stderr()))
-    }
-
-    /// No ANSI.
-    #[must_use]
-    pub(crate) const fn plain() -> Self {
-        Self { color: false }
-    }
-
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) const fn color() -> Self {
-        Self { color: true }
-    }
-
-    #[must_use]
-    pub(crate) fn paint(self, role: Role, text: &str) -> String {
-        if !self.color {
-            return text.to_owned();
-        }
-        match role {
-            Role::Title => text.bold().to_string(),
-            Role::Done => text.green().to_string(),
-            Role::Run => text.cyan().to_string(),
-            Role::Fail => text.red().to_string(),
-            Role::Idle => text.dim().to_string(),
-            Role::Neutral => text.to_owned(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Role {
-    Title,
-    Done,
-    Run,
-    Fail,
-    Idle,
-    Neutral,
-}
-
-#[derive(Clone, Debug)]
-struct TaskView {
-    subject: Subject,
-    verb: Verb,
-    place: Option<MachineName>,
-    state: TaskState,
-    service: Option<ServiceName>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum Subject {
-    Storage { name: String },
-    Container { name: String },
-    Volume { name: String },
-    Dependency { name: String },
-    Hook { name: String },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Verb {
-    Prepare,
-    Create,
-    Replace,
-    Remove,
-    Stop,
-    Wait,
-    RunHook,
-    StopHook,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum TaskState {
-    Pending,
-    Running { pulse: Pulse },
-    Done { word: DoneWord },
-    Failed { cause: Cause },
-    Unexecuted,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Pulse {
-    Starting,
-    WaitingHealth { elapsed_ms: u64 },
-    WaitingHook { elapsed_ms: u64 },
-    Removing,
-    Compensating,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DoneWord {
-    Ready,
-    Healthy,
-    Removed,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum Cause {
-    Machine {
-        action: ActionWord,
-        message: String,
-    },
-    HealthTimeout {
-        last_check: Option<LastHealthCheck>,
-    },
-    HealthCancelled,
-    HealthRuntime {
-        summary: RuntimeSummary,
-        last_check: Option<LastHealthCheck>,
-    },
-    HookTimeout {
-        stop_message: Option<String>,
-    },
-    HookCancelled {
-        stop_message: Option<String>,
-    },
-    HookExit {
-        code: i64,
-        stop_message: Option<String>,
-    },
-    DependencyCancelled,
-    DependencyEmpty {
-        dependency: String,
-    },
-    DependencyObserve {
-        dependency: String,
-        message: String,
-    },
-    DependencyContainer {
-        cause: Box<Cause>,
-    },
-    Cancelled,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ActionWord {
-    PrepareVolumes,
-    Create,
-    Start,
-    Inspect,
-    Stop,
-    Remove,
-    RemoveVolume,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RuntimeSummary {
-    NeverStarted,
-    Unhealthy,
-    StillStarting,
-    NoHealthcheck,
-    Paused,
-    Restarting,
-    Exited { code: i64 },
-    Stopping,
-    Removing,
-    Dead,
-    Unrecognized,
-    ReportedHealthy,
-    ReportedFailing,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum CompensationFact {
-    StoppedNew,
-    StopNewFailed { cause: Cause },
-    RestartedOld,
-    RestartOldFailed { cause: Cause },
-}
-
-/// Live progress title plus one row per operation.
-#[must_use]
-pub(crate) fn paint_live(
-    title: &str,
-    completed: u32,
-    total: u32,
-    rows: &[OperationRow],
-    ink: &Ink,
-) -> String {
-    let tasks: Vec<_> = rows.iter().map(TaskView::from_row).collect();
-    paint_tasks(title, completed, total, &tasks, ink)
-}
-
-/// Halt footer. Synthesizes the live list when Progress never printed.
-#[must_use]
-pub(crate) fn paint_closing(
-    outcome: &DeployOutcome<ExecutionError>,
-    rows: &[OperationRow],
-    live_shown: bool,
-    ink: &Ink,
-) -> String {
-    let DeployOutcome::Failed {
-        completed,
-        failed,
-        unexecuted,
-    } = outcome
-    else {
-        return String::new();
-    };
-    let tasks = if rows.is_empty() {
-        tasks_from_failed_outcome(completed, failed, unexecuted)
-    } else {
-        let mut tasks: Vec<_> = rows.iter().map(TaskView::from_row).collect();
-        overlay_failed(&mut tasks, rows, failed);
-        tasks
-    };
-    let mut out = String::new();
-    if !live_shown {
-        let total = (completed.len() + 1 + unexecuted.len()) as u32;
-        out.push_str(&paint_tasks("", completed.len() as u32, total, &tasks, ink));
-    }
-    let failed_row = tasks
-        .iter()
-        .find(|row| matches!(row.state, TaskState::Failed { .. }))
-        .cloned()
-        .unwrap_or_else(|| task_from_failed(failed));
-    let TaskState::Failed { cause } = &failed_row.state else {
-        return out;
-    };
-    let place = failed_row
-        .place
-        .as_ref()
-        .map(|machine| format!(" on {machine}"))
-        .unwrap_or_default();
-    let prefix = ink.paint(Role::Fail, "Failed:");
-    let _ = writeln!(
-        out,
-        "{prefix} {} {}{place}",
-        failed_row.verb.word(),
-        failed_row.subject.name()
-    );
-    let _ = writeln!(out, "  {}", ink.paint(Role::Fail, &cause.english()));
-    if let FailedOperation::Replacement { compensation, .. } = failed {
-        for fact in compensation_facts(compensation) {
-            let _ = writeln!(out, "  {}", compensation_line(&fact));
-        }
-    }
-    if wants_logs(cause)
-        && let Some(service) = &failed_row.service
-    {
-        let hint = ink.paint(Role::Neutral, &format!("next: ployz logs {service}"));
-        let _ = writeln!(out, "  {hint}");
-    }
-    out
-}
-
-fn paint_tasks(title: &str, completed: u32, total: u32, rows: &[TaskView], ink: &Ink) -> String {
-    let mut out = String::new();
-    if !title.is_empty() {
-        let mark = ink.paint(Role::Title, "[+]");
-        let _ = writeln!(out, "{mark} {title} {completed}/{total}");
-    }
-    for row in rows {
-        out.push_str(&paint_row(row, ink));
-    }
-    out
-}
-
-fn tasks_from_failed_outcome(
-    completed: &[DeployOperation],
-    failed: &FailedOperation<ExecutionError>,
-    unexecuted: &[DeployOperation],
-) -> Vec<TaskView> {
-    let mut rows: Vec<_> = completed
-        .iter()
-        .map(|operation| {
-            TaskView::from_operation(
-                operation,
-                TaskState::Done {
-                    word: done_word(operation),
+    pub(super) fn frame(&self) -> Frame {
+        let mut rows: Vec<_> = self
+            .rows
+            .values()
+            .map(|(row, timing)| Row {
+                subject: Subject::ServiceOnServer {
+                    service: QualifiedService::new(self.namespace.clone(), row.service.clone()),
+                    machine: row.machine,
+                    server: row.server.clone(),
                 },
-            )
+                state: (&row.state).into(),
+                detail: None,
+                timing: timing.clone(),
+            })
+            .collect();
+        rows.extend(
+            self.operations
+                .iter()
+                .filter(|row| row.service_name().is_none())
+                .map(|row| Row {
+                    subject: Subject::Operation {
+                        index: row.index,
+                        machine: row.machine_id,
+                        server: row
+                            .machine_name
+                            .as_ref()
+                            .map_or_else(|| row.machine_id.to_string(), ToString::to_string),
+                        name: visible_row_name(row),
+                    },
+                    state: match &row.status {
+                        OperationStatus::Pending => State::Pending,
+                        OperationStatus::Running { phase } => State::Running(phase.into()),
+                        OperationStatus::Completed => State::Completed,
+                        OperationStatus::Failed { .. } => State::Failed,
+                        OperationStatus::Unexecuted => State::NotAttempted,
+                    },
+                    detail: None,
+                    timing: Timing::Unavailable,
+                }),
+        );
+        Frame {
+            run: Run::Direct(self.namespace.clone()),
+            title: self.title.clone(),
+            rows,
+            notices: self.notices.clone(),
+        }
+    }
+
+    pub(super) async fn tails(&self, client: &Client) -> Vec<LogTail> {
+        let mut tails = Vec::new();
+        for (row, _) in self
+            .rows
+            .values()
+            .filter(|(row, _)| matches!(row.state, RowState::Failed { .. }))
+        {
+            let lines = if let Some(container) = self.tracker.container(row) {
+                log_tail(client, row.machine, container).await
+            } else {
+                Vec::new()
+            };
+            tails.push(LogTail {
+                service: QualifiedService::new(self.namespace.clone(), row.service.clone()),
+                machine: row.machine,
+                server: row.server.clone(),
+                lines,
+            });
+        }
+        tails
+    }
+}
+
+pub(super) fn failure(
+    outcome: &DeployOutcome<ExecutionError>,
+    tails: Vec<LogTail>,
+    context: &str,
+) -> Failure {
+    let DeployOutcome::Failed { failed, .. } = outcome else {
+        return Failure::coded(
+            RpcErrorCode::Internal,
+            "Deployment failed without failure evidence.",
+        );
+    };
+    let (service, error) = match failed {
+        FailedOperation::Operation { operation, error } => (operation.service_name(), error),
+        FailedOperation::Replacement {
+            operation, error, ..
+        } => (Some(&operation.spec.name), error),
+    };
+    let stored = ployz_store::Failure::from(error);
+    let message = service.map_or_else(
+        || "Deployment failed.".to_owned(),
+        |service| format!("Deployment of {service} failed."),
+    );
+    let mut causes = vec![stored.reason];
+    causes.extend(stored.cause);
+    let mut diagnostic = Diagnostic {
+        logs: tails,
+        ..Diagnostic::default()
+    };
+    if let FailedOperation::Replacement { compensation, .. } = failed {
+        let stop = |attempt: &StopAttempt<ExecutionError>| match attempt {
+            StopAttempt::Stopped => Detail {
+                message: "Stopped the new Container.".into(),
+                causes: Vec::new(),
+            },
+            StopAttempt::Failed { error } => Detail {
+                message: "Could not stop the new Container.".into(),
+                causes: failure_causes(error),
+            },
+        };
+        match compensation {
+            ReplacementCompensation::OldUntouched { stop_new_container } => {
+                diagnostic.compensation.push(stop(stop_new_container))
+            }
+            ReplacementCompensation::OldStopped {
+                stop_new_container,
+                restart_old_container,
+            } => {
+                diagnostic
+                    .compensation
+                    .extend(stop_new_container.iter().map(stop));
+                diagnostic.compensation.push(match restart_old_container {
+                    RestartAttempt::Restarted => Detail {
+                        message: "Restarted the old Container.".into(),
+                        causes: Vec::new(),
+                    },
+                    RestartAttempt::Failed { error } => Detail {
+                        message: "Could not restart the old Container.".into(),
+                        causes: failure_causes(error),
+                    },
+                });
+            }
+        }
+    }
+    let hints: Vec<_> = diagnostic
+        .logs
+        .iter()
+        .map(|tail| {
+            Hint::Inspect(shell_words::join([
+                "ployz",
+                "logs",
+                &tail.service.to_string(),
+                "--machine",
+                &tail.machine.to_string(),
+                "--context",
+                context,
+            ]))
         })
         .collect();
-    rows.push(task_from_failed(failed));
-    rows.extend(
-        unexecuted
-            .iter()
-            .map(|operation| TaskView::from_operation(operation, TaskState::Unexecuted)),
-    );
-    rows
+    let mut failure = Failure::from(RpcError {
+        code: RpcErrorCode::Internal,
+        message,
+        cause: causes,
+        details: serde_json::json!({"outcome": outcome}),
+    })
+    .with_diagnostic(diagnostic);
+    for hint in hints {
+        failure = failure.hint(hint);
+    }
+    failure
 }
 
-impl TaskView {
-    fn from_row(row: &OperationRow) -> Self {
-        let name = visible_row_name(row);
-        Self {
-            subject: subject_of(&row.operation, name),
-            verb: verb_of(&row.operation),
-            place: place_of(row),
-            state: task_state(row),
-            service: logs_service(row),
-        }
-    }
-
-    fn from_operation(operation: &DeployOperation, state: TaskState) -> Self {
-        let name = visible_name(None, operation, operation.container_id().as_ref());
-        Self {
-            subject: subject_of(operation, name),
-            verb: verb_of(operation),
-            place: None,
-            state,
-            service: operation.service_name().cloned(),
-        }
-    }
+fn failure_causes(error: &ExecutionError) -> Vec<String> {
+    let failure = ployz_store::Failure::from(error);
+    std::iter::once(failure.reason)
+        .chain(failure.cause)
+        .collect()
 }
 
-impl Subject {
-    fn name(&self) -> &str {
-        match self {
-            Self::Storage { name }
-            | Self::Container { name }
-            | Self::Volume { name }
-            | Self::Dependency { name }
-            | Self::Hook { name } => name,
-        }
-    }
-
-    fn kind(&self) -> &'static str {
-        match self {
-            Self::Storage { .. } => "Storage",
-            Self::Container { .. } => "Container",
-            Self::Volume { .. } => "Volume",
-            Self::Dependency { .. } => "Dependency",
-            Self::Hook { .. } => "Hook",
-        }
-    }
-}
-
-impl Verb {
-    fn word(self) -> &'static str {
-        match self {
-            Self::Prepare => "prepare",
-            Self::Create => "create",
-            Self::Replace => "replace",
-            Self::Remove => "remove",
-            Self::Stop => "stop",
-            Self::Wait => "wait",
-            Self::RunHook => "run hook",
-            Self::StopHook => "stop hook",
-        }
-    }
-}
-
-impl ActionWord {
-    fn from_machine(action: MachineAction) -> Self {
-        match action {
-            MachineAction::PrepareVolumes => Self::PrepareVolumes,
-            MachineAction::CreateContainer => Self::Create,
-            MachineAction::StartContainer => Self::Start,
-            MachineAction::InspectContainer => Self::Inspect,
-            MachineAction::StopContainer => Self::Stop,
-            MachineAction::RemoveContainer => Self::Remove,
-            MachineAction::RemoveVolume => Self::RemoveVolume,
-        }
-    }
-
-    fn word(self) -> &'static str {
-        match self {
-            Self::PrepareVolumes => "prepare storage",
-            Self::Create => "create",
-            Self::Start => "start",
-            Self::Inspect => "inspect",
-            Self::Stop => "stop",
-            Self::Remove => "remove",
-            Self::RemoveVolume => "remove volume",
-        }
-    }
-}
-
-impl Cause {
-    fn english(&self) -> String {
-        match self {
-            Self::Machine { action, message } => format!("{} failed: {message}", action.word()),
-            Self::HealthTimeout { last_check } => {
-                with_last_check("health check timed out".into(), last_check.as_ref())
+async fn log_tail(client: &Client, machine: MachineId, container: ContainerId) -> Vec<String> {
+    let read = async {
+        let request =
+            ployz_core::op::ContainerLogs::into_request(ployz_core::ContainerLogsRequest {
+                container_id: container,
+                options: ployz_core::LogsOptions {
+                    follow: false,
+                    tail: 10,
+                    since_unix_seconds: None,
+                    until_unix_seconds: None,
+                },
+            })
+            .encode()
+            .ok()?;
+        let mut stream = client
+            .container_logs_stream(&ployz_core::MachineTarget::from(&machine), request)
+            .await
+            .ok()?;
+        let mut lines = std::collections::VecDeque::new();
+        while let Ok(Some(payload)) = stream.message().await {
+            let entry = ployz_core::LogEntry::decode(&payload).ok()?;
+            let bytes = match entry.body {
+                ployz_core::LogBody::Stdout(bytes) | ployz_core::LogBody::Stderr(bytes) => bytes,
+                ployz_core::LogBody::Heartbeat | ployz_core::LogBody::Error(_) => continue,
+            };
+            for line in String::from_utf8_lossy(&bytes).lines() {
+                if lines.len() == ployz_store::LOG_TAIL {
+                    lines.pop_front();
+                }
+                lines.push_back(line.to_owned());
             }
-            Self::HealthCancelled => "health check cancelled".into(),
-            Self::HealthRuntime {
-                summary,
-                last_check,
-            } => with_last_check(summary.english(), last_check.as_ref()),
-            Self::HookTimeout { stop_message } => {
-                hook_line("pre-deploy hook timed out", stop_message)
-            }
-            Self::HookCancelled { stop_message } => {
-                hook_line("pre-deploy hook cancelled", stop_message)
-            }
-            Self::HookExit { code, stop_message } => {
-                hook_line(&format!("pre-deploy hook exited {code}"), stop_message)
-            }
-            Self::DependencyCancelled | Self::Cancelled => "deploy cancelled".into(),
-            Self::DependencyEmpty { dependency } => {
-                format!("no containers were observed for {dependency}")
-            }
-            Self::DependencyObserve {
-                dependency,
-                message,
-            } => format!("could not observe {dependency}: {message}"),
-            Self::DependencyContainer { cause } => cause.english(),
         }
-    }
+        Some(lines.into_iter().collect())
+    };
+    tokio::time::timeout(Duration::from_secs(5), read)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default()
 }
-
-impl RuntimeSummary {
-    fn english(self) -> String {
-        match self {
-            Self::NeverStarted => "container never started".into(),
-            Self::Unhealthy => "container reported unhealthy".into(),
-            Self::StillStarting => "container never became healthy".into(),
-            Self::NoHealthcheck => "container has no health check".into(),
-            Self::Paused => "container paused".into(),
-            Self::Restarting => "container is restarting".into(),
-            Self::Exited { code } => format!("container exited {code}"),
-            Self::Stopping => "container is stopping".into(),
-            Self::Removing => "container is being removed".into(),
-            Self::Dead => "container is dead".into(),
-            Self::Unrecognized => "container in an unrecognized state".into(),
-            Self::ReportedHealthy => "monitor rejected a healthy observation".into(),
-            Self::ReportedFailing => "monitor rejected a failing observation".into(),
-        }
-    }
-}
-
 pub(super) fn visible_row_name(row: &OperationRow) -> String {
     visible_name(
         row.display_name.as_deref(),
         &row.operation,
         live_container_id(row).as_ref(),
     )
-}
-
-fn task_from_failed(failed: &FailedOperation<ExecutionError>) -> TaskView {
-    let (operation, error) = match failed {
-        FailedOperation::Operation { operation, error } => (operation.clone(), error),
-        FailedOperation::Replacement {
-            operation, error, ..
-        } => (DeployOperation::ReplaceContainer(operation.clone()), error),
-    };
-    TaskView::from_operation(
-        &operation,
-        TaskState::Failed {
-            cause: cause_from_error(error),
-        },
-    )
-}
-
-fn overlay_failed(
-    tasks: &mut [TaskView],
-    rows: &[OperationRow],
-    failed: &FailedOperation<ExecutionError>,
-) {
-    let overlay = task_from_failed(failed);
-    let Some(row) = failed_row_index(rows, failed).and_then(|index| tasks.get_mut(index)) else {
-        return;
-    };
-    row.state = overlay.state;
-    if row.service.is_none() {
-        row.service = overlay.service;
-    }
-}
-
-fn failed_row_index(
-    rows: &[OperationRow],
-    failed: &FailedOperation<ExecutionError>,
-) -> Option<usize> {
-    rows.iter()
-        .position(|row| row_matches_failed(row, failed))
-        .or_else(|| {
-            rows.iter()
-                .position(|row| matches!(row.status, OperationStatus::Failed { .. }))
-        })
-}
-
-fn row_matches_failed(row: &OperationRow, failed: &FailedOperation<ExecutionError>) -> bool {
-    match failed {
-        FailedOperation::Operation { operation, .. } => row.operation == *operation,
-        FailedOperation::Replacement { operation, .. } => {
-            matches!(
-                &row.operation,
-                DeployOperation::ReplaceContainer(existing) if existing == operation
-            )
-        }
-    }
-}
-
-fn subject_of(operation: &DeployOperation, name: String) -> Subject {
-    match operation {
-        DeployOperation::PrepareVolumes { .. } => Subject::Storage { name },
-        DeployOperation::WaitHealthy { .. } => Subject::Dependency { name },
-        DeployOperation::RemoveVolume { .. } => Subject::Volume { name },
-        DeployOperation::RunHook { .. } | DeployOperation::StopHook { .. } => {
-            Subject::Hook { name }
-        }
-        DeployOperation::RunContainer { .. }
-        | DeployOperation::ReplaceContainer(_)
-        | DeployOperation::StopContainer { .. }
-        | DeployOperation::RemoveContainer { .. } => Subject::Container { name },
-    }
-}
-
-fn verb_of(operation: &DeployOperation) -> Verb {
-    match operation {
-        DeployOperation::PrepareVolumes { .. } => Verb::Prepare,
-        DeployOperation::RunContainer { .. } => Verb::Create,
-        DeployOperation::ReplaceContainer(_) => Verb::Replace,
-        DeployOperation::RemoveContainer { .. } | DeployOperation::RemoveVolume { .. } => {
-            Verb::Remove
-        }
-        DeployOperation::StopContainer { .. } => Verb::Stop,
-        DeployOperation::WaitHealthy { .. } => Verb::Wait,
-        DeployOperation::RunHook { .. } => Verb::RunHook,
-        DeployOperation::StopHook { .. } => Verb::StopHook,
-    }
-}
-
-fn place_of(row: &OperationRow) -> Option<MachineName> {
-    if matches!(row.operation, DeployOperation::WaitHealthy { .. }) {
-        return None;
-    }
-    row.machine_name.clone()
-}
-
-fn task_state(row: &OperationRow) -> TaskState {
-    match &row.status {
-        OperationStatus::Pending => TaskState::Pending,
-        OperationStatus::Unexecuted => TaskState::Unexecuted,
-        OperationStatus::Completed => TaskState::Done {
-            word: done_word(&row.operation),
-        },
-        OperationStatus::Failed { error } => TaskState::Failed {
-            cause: cause_from_error(error),
-        },
-        OperationStatus::Running { phase } => TaskState::Running {
-            pulse: pulse_of(phase),
-        },
-    }
-}
-
-fn pulse_of(phase: &OperationPhase) -> Pulse {
-    match phase {
-        OperationPhase::Starting
-        | OperationPhase::CreatingContainer
-        | OperationPhase::StartingContainer => Pulse::Starting,
-        OperationPhase::WaitingForHealth { elapsed_ms, .. } => Pulse::WaitingHealth {
-            elapsed_ms: *elapsed_ms,
-        },
-        OperationPhase::WaitingForHook { elapsed_ms, .. } => Pulse::WaitingHook {
-            elapsed_ms: *elapsed_ms,
-        },
-        OperationPhase::StoppingContainer
-        | OperationPhase::RemovingContainer
-        | OperationPhase::RemovingVolume => Pulse::Removing,
-        OperationPhase::Compensating => Pulse::Compensating,
-    }
-}
-
-fn done_word(operation: &DeployOperation) -> DoneWord {
-    match operation {
-        DeployOperation::PrepareVolumes { .. } => DoneWord::Ready,
-        DeployOperation::RemoveContainer { .. }
-        | DeployOperation::StopContainer { .. }
-        | DeployOperation::StopHook { .. }
-        | DeployOperation::RemoveVolume { .. } => DoneWord::Removed,
-        DeployOperation::WaitHealthy { .. }
-        | DeployOperation::RunContainer { .. }
-        | DeployOperation::ReplaceContainer(_)
-        | DeployOperation::RunHook { .. } => DoneWord::Healthy,
-    }
 }
 
 fn visible_name(
@@ -642,230 +326,10 @@ fn live_container_id(row: &OperationRow) -> Option<ContainerId> {
     }
 }
 
-fn logs_service(row: &OperationRow) -> Option<ServiceName> {
-    if let DeployOperation::WaitHealthy { dependency, .. } = &row.operation {
-        return Some(dependency.name.clone());
-    }
-    row.service_name().cloned()
-}
-
 fn is_hex_len(value: &str, len: usize) -> bool {
     value.len() == len && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn cause_from_error(error: &ExecutionError) -> Cause {
-    match error {
-        ExecutionError::Machine { action, error } => Cause::Machine {
-            action: ActionWord::from_machine(*action),
-            message: crate::ui::row(error),
-        },
-        ExecutionError::Health { failure, .. } => cause_from_health(failure),
-        ExecutionError::Hook { failure, .. } => cause_from_hook(failure),
-        ExecutionError::DependencyHealth {
-            dependency,
-            failure,
-        } => cause_from_dependency(dependency.to_string(), failure),
-        ExecutionError::Cancelled => Cause::Cancelled,
-    }
-}
-
-fn cause_from_health(failure: &HealthFailure) -> Cause {
-    match failure {
-        HealthFailure::TimedOut { last_check } => Cause::HealthTimeout {
-            last_check: last_check.clone(),
-        },
-        HealthFailure::Cancelled => Cause::HealthCancelled,
-        HealthFailure::Runtime {
-            observation,
-            last_check,
-        } => Cause::HealthRuntime {
-            summary: runtime_summary(observation),
-            last_check: last_check.clone(),
-        },
-    }
-}
-
-fn cause_from_hook(failure: &HookFailure) -> Cause {
-    match failure {
-        HookFailure::TimedOut { stop_error } => Cause::HookTimeout {
-            stop_message: stop_error.as_ref().map(|error| crate::ui::row(error)),
-        },
-        HookFailure::Cancelled { stop_error } => Cause::HookCancelled {
-            stop_message: stop_error.as_ref().map(|error| crate::ui::row(error)),
-        },
-        HookFailure::Exit { code } => Cause::HookExit {
-            code: *code,
-            stop_message: None,
-        },
-    }
-}
-
-fn cause_from_dependency(dependency: String, failure: &DependencyHealthFailure) -> Cause {
-    match failure {
-        DependencyHealthFailure::Cancelled => Cause::DependencyCancelled,
-        DependencyHealthFailure::NoContainers => Cause::DependencyEmpty { dependency },
-        DependencyHealthFailure::Observation { error } => Cause::DependencyObserve {
-            dependency,
-            message: crate::ui::row(error),
-        },
-        DependencyHealthFailure::Container { failure, .. } => Cause::DependencyContainer {
-            cause: Box::new(cause_from_health(failure)),
-        },
-    }
-}
-
-fn runtime_summary(observation: &ContainerRuntimeObservation) -> RuntimeSummary {
-    match observation {
-        ContainerRuntimeObservation::Created => RuntimeSummary::NeverStarted,
-        ContainerRuntimeObservation::Running { health } => match health {
-            HealthObservation::Unhealthy => RuntimeSummary::Unhealthy,
-            HealthObservation::Starting => RuntimeSummary::StillStarting,
-            HealthObservation::NotConfigured => RuntimeSummary::NoHealthcheck,
-            HealthObservation::Healthy => RuntimeSummary::ReportedHealthy,
-            HealthObservation::Failing => RuntimeSummary::ReportedFailing,
-            HealthObservation::Unrecognized(_) => RuntimeSummary::Unrecognized,
-            HealthObservation::Stopping => RuntimeSummary::Stopping,
-        },
-        ContainerRuntimeObservation::Paused => RuntimeSummary::Paused,
-        ContainerRuntimeObservation::Restarting => RuntimeSummary::Restarting,
-        ContainerRuntimeObservation::Exited { code } => RuntimeSummary::Exited { code: *code },
-        ContainerRuntimeObservation::Removing => RuntimeSummary::Removing,
-        ContainerRuntimeObservation::Dead => RuntimeSummary::Dead,
-        ContainerRuntimeObservation::Unknown { .. } => RuntimeSummary::Unrecognized,
-    }
-}
-
-fn with_last_check(base: String, last_check: Option<&LastHealthCheck>) -> String {
-    match last_check {
-        Some(last_check) => format!("{base}; {last_check}"),
-        None => base,
-    }
-}
-
-fn hook_line(base: &str, stop_message: &Option<String>) -> String {
-    match stop_message {
-        Some(message) => format!("{base}: stop also failed: {message}"),
-        None => base.to_owned(),
-    }
-}
-
-fn wants_logs(cause: &Cause) -> bool {
-    match cause {
-        Cause::HealthTimeout { .. }
-        | Cause::HealthCancelled
-        | Cause::HealthRuntime { .. }
-        | Cause::HookTimeout { .. }
-        | Cause::HookCancelled { .. }
-        | Cause::HookExit { .. }
-        | Cause::DependencyEmpty { .. }
-        | Cause::DependencyObserve { .. }
-        | Cause::DependencyContainer { .. } => true,
-        Cause::Machine { .. } | Cause::Cancelled | Cause::DependencyCancelled => false,
-    }
-}
-
-fn compensation_facts(
-    compensation: &ReplacementCompensation<ExecutionError>,
-) -> Vec<CompensationFact> {
-    match compensation {
-        ReplacementCompensation::OldUntouched { stop_new_container } => {
-            vec![stop_fact(stop_new_container)]
-        }
-        ReplacementCompensation::OldStopped {
-            stop_new_container,
-            restart_old_container,
-        } => stop_new_container
-            .iter()
-            .map(stop_fact)
-            .chain([restart_fact(restart_old_container)])
-            .collect(),
-    }
-}
-
-fn stop_fact(attempt: &StopAttempt<ExecutionError>) -> CompensationFact {
-    match attempt {
-        StopAttempt::Stopped => CompensationFact::StoppedNew,
-        StopAttempt::Failed { error } => CompensationFact::StopNewFailed {
-            cause: cause_from_error(error),
-        },
-    }
-}
-
-fn restart_fact(attempt: &RestartAttempt<ExecutionError>) -> CompensationFact {
-    match attempt {
-        RestartAttempt::Restarted => CompensationFact::RestartedOld,
-        RestartAttempt::Failed { error } => CompensationFact::RestartOldFailed {
-            cause: cause_from_error(error),
-        },
-    }
-}
-
-fn compensation_line(fact: &CompensationFact) -> String {
-    match fact {
-        CompensationFact::StoppedNew => "stopped the new container".into(),
-        CompensationFact::StopNewFailed { cause } => {
-            format!("could not stop the new container: {}", cause.english())
-        }
-        CompensationFact::RestartedOld => "restarted the old container".into(),
-        CompensationFact::RestartOldFailed { cause } => {
-            format!("could not restart the old container: {}", cause.english())
-        }
-    }
-}
-
-fn paint_row(row: &TaskView, ink: &Ink) -> String {
-    let (mark, status, elapsed, role) = status_paint(&row.state);
-    let mark = ink.paint(role, mark);
-    let status = ink.paint(role, status);
-    let place = row
-        .place
-        .as_ref()
-        .map(|machine| format!(" on {machine}"))
-        .unwrap_or_default();
-    let kind = ink.paint(Role::Neutral, row.subject.kind());
-    let mut line = format!(
-        " {mark} {kind} {}{place}  {status}{elapsed}\n",
-        row.subject.name()
-    );
-    if let TaskState::Failed { cause } = &row.state {
-        let body = ink.paint(Role::Fail, &cause.english());
-        let _ = writeln!(line, "   {body}");
-    }
-    line
-}
-
-fn status_paint(state: &TaskState) -> (&'static str, &'static str, String, Role) {
-    match state {
-        TaskState::Pending => ("•", "Pending", String::new(), Role::Idle),
-        TaskState::Unexecuted => ("•", "Unexecuted", String::new(), Role::Idle),
-        TaskState::Done {
-            word: DoneWord::Ready,
-        } => ("✔", "Ready", String::new(), Role::Done),
-        TaskState::Done {
-            word: DoneWord::Healthy,
-        } => ("✔", "Healthy", String::new(), Role::Done),
-        TaskState::Done {
-            word: DoneWord::Removed,
-        } => ("✔", "Removed", String::new(), Role::Done),
-        TaskState::Failed { .. } => ("✖", "Failed", String::new(), Role::Fail),
-        TaskState::Running {
-            pulse: Pulse::Starting,
-        } => ("…", "Running", String::new(), Role::Run),
-        TaskState::Running {
-            pulse: Pulse::WaitingHealth { elapsed_ms },
-        } => ("…", "waiting for health", elapsed(*elapsed_ms), Role::Run),
-        TaskState::Running {
-            pulse: Pulse::WaitingHook { elapsed_ms },
-        } => ("…", "waiting for hook", elapsed(*elapsed_ms), Role::Run),
-        TaskState::Running {
-            pulse: Pulse::Removing,
-        } => ("…", "Removed", String::new(), Role::Run),
-        TaskState::Running {
-            pulse: Pulse::Compensating,
-        } => ("…", "Compensating", String::new(), Role::Run),
-    }
-}
-
-fn elapsed(elapsed_ms: u64) -> String {
-    format!("  {:.1}s", elapsed_ms as f64 / 1000.0)
-}
+#[cfg(test)]
+#[path = "report_tests.rs"]
+mod tests;

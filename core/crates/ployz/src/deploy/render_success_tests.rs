@@ -1,4 +1,5 @@
 use super::*;
+use ployz_core::DeployOutcome;
 use ployz_core::{ContainerId, MachineId, ResolvedServiceSpec};
 
 #[test]
@@ -34,7 +35,10 @@ fn success_with_ingress_deduplicates_endpoints() {
             }),
         ],
     };
-    let text = outcome_text(&outcome);
+    let DeployOutcome::<ployz_core::ExecutionError>::Success { completed } = outcome else {
+        panic!("success fixture");
+    };
+    let text = endpoints_footer(&completed);
     assert_eq!(
         text.matches("https://excalidraw.acme.ployz.app").count(),
         1,
@@ -92,13 +96,10 @@ fn success_groups_unique_urls_by_service_and_target_port_in_hostname_order() {
         );
         4
     ]);
-    let text = success_text(&completed, "Deployed to default");
+    let text = endpoints_footer(&completed);
     assert_eq!(
         text,
-        "\
-✓ Deployed to default
-  9 ready · 5 created · 4 replaced · 1 machine
-
+        "
 web → :8080
   http://a.example.com
   https://a.example.com
@@ -109,31 +110,5 @@ web → :8080
 web → :9090
   https://a.example.com
 "
-    );
-}
-
-#[test]
-fn success_without_ingress_reports_skipped_health_and_cleanup_on_multiple_machines() {
-    let spec = serde_json::from_value(serde_json::json!({
-        "service_id": "a".repeat(32),
-        "name": "worker",
-        "mode": { "mode": "replicated", "replicas": 1 },
-        "container": { "image": "nginx", "pull_policy": "missing" }
-    }))
-    .unwrap();
-    let completed = [
-        DeployOperation::RunContainer {
-            machine_id: MachineId::parse("d".repeat(32)).unwrap(),
-            spec,
-            skip_health_monitor: true,
-        },
-        DeployOperation::RemoveContainer {
-            machine_id: MachineId::parse("e".repeat(32)).unwrap(),
-            container_id: ContainerId::parse("f".repeat(64)).unwrap(),
-        },
-    ];
-    assert_eq!(
-        success_text(&completed, "Deployed to staging"),
-        "✓ Deployed to staging\n  1 ready · health checks skipped: 1 · 1 created · 1 removed · 2 machines\n"
     );
 }

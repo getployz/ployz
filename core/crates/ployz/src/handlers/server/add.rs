@@ -111,7 +111,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
 
         let catch_up = runtime.block_on(async {
             let mut entry = super::super::reconnect_client(matches, options.context()).await?;
-            Ok::<_, Error>(crate::global_catch_up::catch_up_globals(&mut entry, &assigned).await)
+            Ok::<_, Error>(crate::global_catch_up::follow_globals(&mut entry, &assigned).await)
         })?;
         catch_up.map_err(|error| crate::global_catch_up::joined_catch_up_error(error, &assigned))
     })();
@@ -150,22 +150,34 @@ mod tests {
         let message = failure.to_string();
         assert!(message.starts_with("Server joined"), "{message}");
         assert!(message.contains("remains a Cluster member"), "{message}");
-        assert!(
-            message.contains(&format!(
-                "`ployz server set {} --accepts-ingress=true`",
-                assigned.id
-            )),
-            "failure must tell the operator how the Ingress Proxy follows the role, got {message:?}"
+        let hints = failure.hints();
+        let command = hints
+            .iter()
+            .find_map(|hint| match hint {
+                crate::ui::Hint::Retry(command) => Some(command),
+                crate::ui::Hint::Next(_)
+                | crate::ui::Hint::Inspect(_)
+                | crate::ui::Hint::Undo(_)
+                | crate::ui::Hint::Closest(_)
+                | crate::ui::Hint::Valid(_) => None,
+            })
+            .unwrap();
+        assert_eq!(
+            shell_words::split(command).unwrap(),
+            [
+                "ployz",
+                "server",
+                "set",
+                &assigned.id.to_string(),
+                "--accepts-ingress=true"
+            ]
         );
         assert_eq!(failure.causes(), ["deploy timed out"]);
         assert_eq!(
             failure.report().code,
             ployz_core::RpcErrorCode::InvalidArgument
         );
-        assert_eq!(
-            failure.hints(),
-            [crate::ui::Hint::Next("ployz deploy".into())]
-        );
+        assert!(hints.contains(&crate::ui::Hint::Next("ployz deploy".into())));
     }
 
     fn assigned_machine(name: &str, seed: char) -> Machine {

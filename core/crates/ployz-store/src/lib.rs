@@ -61,9 +61,9 @@ pub use conditional_sync::{
     SecretHeld,
 };
 pub use deployment::{
-    Claimed, DeploymentStatus, DeploymentSummary, DeploymentView, Failure, LOG_TAIL, NodeOutcome,
-    NodeStatus, Outcome, RowPhase, RowState, RowTracker, RunEvidence, ServerProgress, ServerRow,
-    Unclaimed, UploadBase, UploadedSource,
+    Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView, Failure, LOG_TAIL,
+    NodeOutcome, NodeStatus, Outcome, RowPhase, RowState, RowTracker, RunEvidence, ServerProgress,
+    ServerRow, Unclaimed, UploadBase, UploadedSource,
 };
 pub use domain::{
     AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord, DnsRecordKind, Domain,

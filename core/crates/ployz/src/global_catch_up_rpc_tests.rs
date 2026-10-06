@@ -451,7 +451,14 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
                 }
             })
             .await;
-        catch_up_globals(&mut client, &stale).await.unwrap();
+        catch_up_globals(
+            &mut client,
+            &stale,
+            &tokio_util::sync::CancellationToken::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
         assert_eq!(retained.lock().unwrap().len(), usize::from(eligible));
         server.abort();
     }

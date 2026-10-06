@@ -68,9 +68,9 @@ fn plain(initial: Frame, events: Vec<(u64, Message)>) -> String {
 fn quiet_heartbeat_uses_actual_driver_deadline_and_ignores_timing_snapshots() {
     let initial = frame(State::Running(RowPhase::WaitingForHealth));
     let mut timed = initial.clone();
-    timed.rows[0].timing = Timing::Finished(Duration::from_secs(29));
+    timed.rows.first_mut().unwrap().timing = Timing::Finished(Duration::from_secs(29));
     let mut done = initial.clone();
-    done.rows[0].state = State::Completed;
+    done.rows.first_mut().unwrap().state = State::Completed;
     let text = plain(
         initial,
         vec![
@@ -92,7 +92,7 @@ fn quiet_heartbeat_uses_actual_driver_deadline_and_ignores_timing_snapshots() {
 fn completion_at_deadline_wins_over_stale_heartbeat() {
     let initial = frame(State::Running(RowPhase::WaitingForHealth));
     let mut done = initial.clone();
-    done.rows[0].state = State::Completed;
+    done.rows.first_mut().unwrap().state = State::Completed;
     let text = plain(
         initial,
         vec![(30_000, Message::Finish(done, Disposition::Settled))],
@@ -105,11 +105,11 @@ fn completion_at_deadline_wins_over_stale_heartbeat() {
 fn phase_and_detail_changes_are_preserved_and_restart_quiet_period() {
     let initial = frame(State::Pending);
     let mut starting = initial.clone();
-    starting.rows[0].state = State::Running(RowPhase::Starting);
+    starting.rows.first_mut().unwrap().state = State::Running(RowPhase::Starting);
     let mut detail = starting.clone();
-    detail.rows[0].detail = Some("image ready".into());
+    detail.rows.first_mut().unwrap().detail = Some("image ready".into());
     let mut done = detail.clone();
-    done.rows[0].state = State::Completed;
+    done.rows.first_mut().unwrap().state = State::Completed;
     let text = plain(
         initial,
         vec![
@@ -139,13 +139,13 @@ fn replacement_run_resets_row_deduplication() {
 #[test]
 fn duplicate_server_names_remain_distinct_and_names_can_change() {
     let mut initial = frame(State::Pending);
-    let mut other = initial.rows[0].clone();
+    let mut other = initial.rows.first().unwrap().clone();
     if let Subject::ServiceOnServer { machine, .. } = &mut other.subject {
         *machine = MachineId::random();
     }
     initial.rows.push(other);
     let mut changed = initial.clone();
-    changed.rows[1].state = State::Completed;
+    changed.rows.get_mut(1).unwrap().state = State::Completed;
     let text = plain(
         initial,
         vec![(1, Message::Finish(changed, Disposition::Settled))],
@@ -177,8 +177,8 @@ fn interactive_finish_retains_full_frame_once_and_preserves_earlier_output() {
     terminal.write_line("Earlier command output").unwrap();
     let initial = frame(State::Running(RowPhase::Starting));
     let mut done = initial.clone();
-    done.rows[0].state = State::Completed;
-    done.rows[0].timing = Timing::Finished(Duration::from_secs(2));
+    done.rows.first_mut().unwrap().state = State::Completed;
+    done.rows.first_mut().unwrap().timing = Timing::Finished(Duration::from_secs(2));
     let backend = Backend::new(
         Mode::Interactive,
         ProgressDrawTarget::term_like(Box::new(terminal.clone())),
@@ -257,7 +257,7 @@ fn short_unicode_viewport_prioritizes_failures_and_never_wraps() {
     }
     let lines = live_lines(&initial, 0, 20, 5, false);
     assert_eq!(lines.len(), 4);
-    assert!(lines[1].starts_with('✘'));
+    assert!(lines.get(1).unwrap().starts_with('✘'));
     assert!(lines.last().unwrap().contains("more rows"));
     assert!(lines.iter().all(|line| line.width() < 20));
     for height in 0..=3 {
@@ -281,7 +281,7 @@ fn shrinking_viewport_leaves_no_rows_behind() {
     });
     let mut smaller = initial.clone();
     smaller.rows.pop();
-    smaller.rows[0].state = State::Completed;
+    smaller.rows.first_mut().unwrap().state = State::Completed;
     let backend = Backend::new(
         Mode::Interactive,
         ProgressDrawTarget::term_like(Box::new(terminal.clone())),
@@ -347,11 +347,11 @@ fn producer_does_not_wait_for_slow_sink_and_finish_joins_after_all_transitions()
         RowPhase::StartingContainer,
         RowPhase::WaitingForHealth,
     ] {
-        next.rows[0].state = State::Running(phase);
+        next.rows.first_mut().unwrap().state = State::Running(phase);
         progress.update(next.clone());
     }
     assert!(!progress.worker.as_ref().unwrap().is_finished());
-    next.rows[0].state = State::Completed;
+    next.rows.first_mut().unwrap().state = State::Completed;
     progress.finish(next, Disposition::Settled);
     let text = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
     assert_eq!(text.matches("alpha:").count(), 6, "{text}");
@@ -399,10 +399,25 @@ fn progress_drop_joins_its_worker_without_a_summary() {
         previous: initial.clone(),
     };
     let mut next = initial;
-    next.rows[0].state = State::Running(RowPhase::Starting);
+    next.rows.first_mut().unwrap().state = State::Running(RowPhase::Starting);
     progress.update(next);
     drop(progress);
     let text = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
     assert!(text.ends_with("alpha: starting\n"), "{text}");
     assert!(!text.contains("updated"));
+}
+
+#[test]
+fn queued_terminal_evidence_after_a_duplicate_wins_over_heartbeat() {
+    let initial = frame(State::Running(RowPhase::WaitingForHealth));
+    let mut finished = initial.clone();
+    finished.rows.first_mut().unwrap().state = State::Completed;
+    let text = plain(
+        initial.clone(),
+        vec![
+            (30_000, Message::Update(initial)),
+            (30_000, Message::Finish(finished, Disposition::Settled)),
+        ],
+    );
+    assert!(!text.contains("still waiting:"), "{text}");
 }

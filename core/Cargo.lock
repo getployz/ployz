@@ -3450,6 +3450,7 @@ dependencies = [
  "serde_norway",
  "sha2",
  "shell-words",
+ "signal-hook",
  "sigpipe",
  "syn 2.0.119",
  "tar",

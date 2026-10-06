@@ -42,7 +42,14 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
             },
             omissions: if failed { Vec::new() } else { vec![peer.id] },
         };
-        let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
+        let error = catch_up_globals(
+            &mut client,
+            &joiner,
+            &tokio_util::sync::CancellationToken::new(),
+            |_| {},
+        )
+        .await
+        .unwrap_err();
         let message = crate::ui::chain_text(&joined_catch_up_error(error, &joiner));
         assert!(
             message.contains("partial Service observations"),
@@ -72,7 +79,14 @@ async fn successful_ensure_is_reobserved_before_success() {
         omissions: Vec::new(),
     };
 
-    let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
+    let error = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap_err();
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
@@ -96,7 +110,14 @@ async fn initially_eligible_global_absent_from_target_inspection_remains_missing
         omissions: Vec::new(),
     };
 
-    let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
+    let error = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap_err();
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
@@ -134,7 +155,14 @@ async fn initially_eligible_global_with_only_hook_visible_remains_missing() {
         omissions: Vec::new(),
     };
 
-    let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
+    let error = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap_err();
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
@@ -165,7 +193,14 @@ async fn initially_eligible_generation_absent_from_target_inspection_remains_mis
         omissions: Vec::new(),
     };
 
-    let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
+    let error = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap_err();
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
@@ -195,7 +230,14 @@ async fn another_namespaces_matching_shape_does_not_satisfy_catch_up() {
         omissions: Vec::new(),
     };
 
-    let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
+    let error = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap_err();
     assert_eq!(error.unresolved, [qualified("prod", "api")]);
 }
 
@@ -329,7 +371,14 @@ async fn failed_placement_is_reported_even_if_final_observation_is_running() {
         failures: Vec::new(),
         omissions: Vec::new(),
     };
-    let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
+    let error = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap_err();
     assert!(
         crate::ui::chain_text(&joined_catch_up_error(error, &joiner))
             .contains("creation key conflict")
