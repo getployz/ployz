@@ -29,7 +29,6 @@ const CANCEL_POLL: Duration = Duration::from_secs(2);
 /// How often a build's new log output is recorded.
 const LOG_FLUSH: Duration = Duration::from_secs(3);
 
-/// How long a failed row waits for its Container's log.
 const LOG_READ: Duration = Duration::from_secs(5);
 
 /// Each Git Service's checkout at its pinned commit, by runtime Service name, and the
@@ -447,22 +446,26 @@ impl Run {
     ) -> Result<DeployOutcome<ployz_core::ExecutionError>, RpcError> {
         let mut confirmed = std::collections::BTreeSet::new();
         let mut tracker = RowTracker::default();
+        let mut pending = BTreeMap::new();
         while let Some(event) = running.next().await {
             let ployz_core::DeployEvent::Progress { rows, .. } = event else {
                 continue;
             };
-            let mut changed = tracker.changes(&rows);
-            if !changed.is_empty() {
-                for row in &mut changed {
-                    let container = tracker.container(row);
-                    if let (RowState::Failed { log, .. }, Some(container)) =
-                        (&mut row.state, container)
-                    {
-                        *log = log_tail(session, row.machine, container).await;
-                    }
+            for mut row in tracker.changes(&rows) {
+                let container = tracker.container(&row);
+                if let (RowState::Failed { log, .. }, Some(container)) = (&mut row.state, container)
+                {
+                    *log = log_tail(session, row.machine, container).await;
                 }
-                // ponytail: a refused record loses these rows; the outcome still says what ran.
-                let _ = self.record(RunEvidence::Progress(changed)).await;
+                pending.insert((row.service.clone(), row.machine), row);
+            }
+            if !pending.is_empty()
+                && self
+                    .record(RunEvidence::Progress(pending.values().cloned().collect()))
+                    .await
+                    .is_ok()
+            {
+                pending.clear();
             }
             let mut done: BTreeMap<&ServiceName, bool> = BTreeMap::new();
             for row in &rows {
@@ -488,7 +491,12 @@ impl Run {
                 confirmed.extend(new);
             }
         }
-        running.finished().await
+        let outcome = running.finished().await?;
+        if !pending.is_empty() {
+            self.record(RunEvidence::Progress(pending.into_values().collect()))
+                .await?;
+        }
+        Ok(outcome)
     }
 
     /// Await `work` while renewing this runner's lease on the Deployment; a cancel
@@ -683,8 +691,6 @@ pub(super) fn log_line(event: &Value) -> String {
     String::new()
 }
 
-/// The last lines `container` logged on `machine`, read once as its row fails;
-/// none when they can't be read in time.
 async fn log_tail(
     session: &Session,
     machine: ployz_core::MachineId,

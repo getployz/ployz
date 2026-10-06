@@ -418,7 +418,6 @@ fn follow(
                 super::store::word(&view.deployment.status),
                 nodes.join(", ")
             );
-            // A change only a Server row shows goes to `events`, not to the terminal again.
             if said.as_ref() != Some(&line) {
                 ui::note(&line);
                 said = Some(line);
