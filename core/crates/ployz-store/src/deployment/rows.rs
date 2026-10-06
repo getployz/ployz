@@ -363,7 +363,7 @@ pub(super) fn record(
              ON CONFLICT (deployment_id, service, machine) DO UPDATE SET \
              server = excluded.server, state = excluded.state, \
              started = COALESCE(config_deployment_row.started, excluded.started), \
-             finished = excluded.finished",
+             finished = COALESCE(config_deployment_row.finished, excluded.finished)",
             &[
                 stored.summary.id.as_str().into(),
                 row.service.as_str().into(),

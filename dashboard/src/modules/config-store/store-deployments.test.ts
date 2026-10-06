@@ -1,4 +1,4 @@
-import type { DeploymentView, DiffView, JsonValue, RowId, ServiceListing } from "@ployz/sdk";
+import type { DeploymentView, DiffView, JsonValue, Outcome, RowId, ServiceListing } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
@@ -152,4 +152,34 @@ it("words a Deployment that takes its Environment off the Servers as the Branch 
   expect(deploymentStatusLabel({ status: "applied", remove: true, outcome: { type: "never_ran" } })).toBe("Off the servers");
   expect(deploysLabel({ services: [], remove: true })).toBeNull();
   expect(deploysLabel({ services: ["web", "api"], remove: false })).toBe("Deploys web, api");
+});
+
+
+it("keeps the deepest execution failure cause in the Deployment banner", () => {
+  const outcome: Outcome = {
+    type: "executed", summary: null, reason: "remove Container failed",
+    cause: ["the daemon is busy", "connection refused"],
+  };
+  expect(outcomeReason(outcome)).toBe("remove Container failed: connection refused");
+  expect(outcome.cause).toEqual(["the daemon is busy", "connection refused"]);
+});
+
+it("keeps the deepest preparation failure cause in the Deployment banner", () => {
+  const outcome: Outcome = {
+    type: "not_executed", reason: "Could not prepare the deployment", needs_upload: [],
+    cause: ["could not pull the image", "registry denied access"],
+  };
+  expect(outcomeReason(outcome)).toBe("Could not prepare the deployment: registry denied access");
+  expect(outcome.cause).toEqual(["could not pull the image", "registry denied access"]);
+});
+
+it("preserves reasons without a cause and outcomes without a reason", () => {
+  expect(outcomeReason(null)).toBeUndefined();
+  expect(outcomeReason({ type: "never_ran" })).toBeUndefined();
+  expect(outcomeReason({ type: "executed", summary: null, reason: null, cause: ["connection refused"] })).toBeUndefined();
+  expect(outcomeReason({ type: "executed", summary: null, reason: "", cause: [] })).toBe("");
+  expect(outcomeReason({ type: "executed", summary: null, reason: "Cancelled", cause: [] })).toBe("Cancelled");
+  expect(outcomeReason({ type: "not_executed", reason: "No source", needs_upload: [], cause: [] })).toBe("No source");
+  expect(outcomeReason(asTestDouble<Outcome>()({ type: "executed", summary: null, reason: "Old execution failure" }))).toBe("Old execution failure");
+  expect(outcomeReason(asTestDouble<Outcome>()({ type: "not_executed", reason: "Old preparation failure", needs_upload: [] }))).toBe("Old preparation failure");
 });

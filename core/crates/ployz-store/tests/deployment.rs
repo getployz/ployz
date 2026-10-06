@@ -584,6 +584,68 @@ fn deployment_rows_record_state_changes_once() {
 }
 
 #[test]
+fn terminal_row_retries_preserve_the_recorded_clocks() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    admit(&store, &who, 1, &["web"], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    let error = json!({
+        "type": "machine", "action": "RemoveContainer",
+        "error": {"code": "internal", "message": "disk failure", "details": {}}
+    });
+    let changes = RowTracker::default().changes(&progress(&[
+        ("web", "alpha", json!({"type": "completed"})),
+        ("web", "beta", json!({"type": "failed", "error": error})),
+        ("web", "charlie", json!({"type": "unexecuted"})),
+    ]));
+    store
+        .record(&id(1), &a, RunEvidence::Progress(changes.clone()))
+        .unwrap();
+    let age_clocks = "UPDATE config_deployment_row SET \
+        started = CASE WHEN started IS NULL THEN NULL ELSE 123 END, finished = 124";
+    if let Some(path) = url.strip_prefix("sqlite:") {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute_batch(age_clocks)
+            .unwrap();
+    } else {
+        postgres::Client::connect(&url, postgres::NoTls)
+            .unwrap()
+            .batch_execute(age_clocks)
+            .unwrap();
+    }
+    let original = rows(&store, &who, 1);
+    assert_eq!(original[0].1.len(), 3);
+    assert_eq!(original[0].1[0].state, RowState::Completed);
+    assert!(matches!(original[0].1[1].state, RowState::Failed { .. }));
+    assert_eq!(original[0].1[2].state, RowState::NotAttempted);
+    assert!(original[0].1.iter().all(|row| row.finished_at == Some(124)));
+    assert_eq!(original[0].1[2].started_at, None);
+    store
+        .record(&id(1), &a, RunEvidence::Progress(changes.clone()))
+        .unwrap();
+    assert_eq!(rows(&store, &who, 1), original);
+    let finished = RunEvidence::Executed {
+        progress: changes,
+        outcome: Box::new(outcome(json!({
+            "type": "failed", "completed": [],
+            "failed": {"type": "operation", "operation": operation("web"), "error": error},
+            "unexecuted": []
+        }))),
+        removed: Vec::new(),
+    };
+    store.record(&id(1), &a, finished.clone()).unwrap();
+    assert_eq!(rows(&store, &who, 1), original);
+    store.record(&id(1), &a, finished).unwrap();
+    assert_eq!(rows(&store, &who, 1), original);
+}
+
+#[test]
 fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
     let (store, who) = shop();
     admit(&store, &who, 1, &[], None).unwrap();
