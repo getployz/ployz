@@ -84,7 +84,7 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
 export function StoreServiceNode({ data }: { data: StoreCanvasService }) {
   const pick = useNodePick(data.service.name);
   const { selectedNodeId } = useCanvasInspectorSelection();
-  const trays = <ServiceTrays trays={data.trays} selectedNodeId={selectedNodeId} />;
+  const trays = <ServiceTrays trays={data.trays} configTrays={data.configTrays} selectedNodeId={selectedNodeId} />;
   if (pick) {
     return <>
       <div className="relative z-10">

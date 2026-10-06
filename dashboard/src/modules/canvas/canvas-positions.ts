@@ -18,7 +18,7 @@ export const canvasPositionSchema = Schema.Struct({
 });
 export type CanvasPosition = typeof canvasPositionSchema.Type;
 
-export const canvasResourceTypes = ["service", "volume"] as const;
+export const canvasResourceTypes = ["service", "volume", "config"] as const;
 
 /** One node's place: the Org Store collection's key. */
 export function canvasPositionKey(item: Pick<CanvasPosition, "resourceType" | "resourceId">) {

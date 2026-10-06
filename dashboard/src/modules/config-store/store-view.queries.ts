@@ -1,6 +1,6 @@
 import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useMutationState, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQueries, type Query, type QueryClient } from "@tanstack/react-query";
 import type {
-  BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, Change, ConfigQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
+  BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, Change, ConfigItemQuery, ConfigQuery, ConfigsQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
   DeploymentsView, DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, EnvironmentView, NamespaceQuery,
   ProjectsQuery, RemovalsQuery, ServicesQuery, SyncQuery, VolumesQuery,
 } from "@ployz/sdk";
@@ -218,6 +218,16 @@ export function domainsQuery(environment: EnvironmentRef): { query: "domains" } 
 /** An Environment's Volumes with where Services mount them: the canvas's Volumes and their links. */
 export function volumesQuery(environment: EnvironmentRef): { query: "volumes" } & VolumesQuery {
   return { query: "volumes", environment };
+}
+
+/** An Environment's Configs with their files (no text) and where Services mount them: the canvas's trays and nodes. */
+export function configsQuery(environment: EnvironmentRef): { query: "configs" } & ConfigsQuery {
+  return { query: "configs", environment };
+}
+
+/** One Config with every file's text, references by Service name: its drawer. */
+export function configQuery(environment: EnvironmentRef, config: string): { query: "config" } & ConfigItemQuery {
+  return { query: "config", environment, config };
 }
 
 /** The Organization's Projects, each with its Default Environment and its Environments' names. */

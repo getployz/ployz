@@ -7,7 +7,7 @@ import { ENVIRONMENT_SERVICE_ROUTE_TO, ENVIRONMENT_RESOURCE_ROUTE_TO } from "./e
 export type NavigationNode = {
   id: string;
   name: string;
-  type: "service" | "volume";
+  type: "service" | "volume" | "config";
 };
 
 export function nodeDestination(

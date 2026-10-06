@@ -1,5 +1,5 @@
 import type {
-  AttachConfig, ConfigCommand, ConfigFileSummary, ConfigItemQuery, ConfigListing, ConfigsQuery, CreateConfig, DiffView, EnvironmentRef,
+  AttachConfig, ConfigCommand, ConfigFileSummary, ConfigListing, CreateConfig, DiffView, EnvironmentRef,
   PutConfigFile, ServiceListing,
 } from "@ployz/sdk";
 import { serviceChanges } from "./store-services";
@@ -10,16 +10,6 @@ export const CONFIG_FILE_MAX_BYTES = 256 * 1024;
 /** The mode a Config file gets unless the user marks it executable. */
 export const READ_ONLY_MODE = "0444";
 export const EXECUTABLE_MODE = "0555";
-
-/** An Environment's Configs with their files (no text) and where Services mount them: the canvas's trays and nodes. */
-export function configsQuery(environment: EnvironmentRef): { query: "configs" } & ConfigsQuery {
-  return { query: "configs", environment };
-}
-
-/** One Config with every file's text, references by Service name: its drawer. */
-export function configQuery(environment: EnvironmentRef, config: string): { query: "config" } & ConfigItemQuery {
-  return { query: "config", environment, config };
-}
 
 /** The command that creates an empty Config with the id the caller minted, mounted nowhere yet. */
 export function createConfigCommand(id: string, environment: EnvironmentRef, name: string): { command: "create_config" } & CreateConfig {
