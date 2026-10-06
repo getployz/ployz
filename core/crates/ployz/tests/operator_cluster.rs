@@ -233,7 +233,8 @@ async fn assert_service_logs(
             None,
         )
         .await
-        .unwrap(),
+        .unwrap()
+        .inputs,
     )
     .await;
     let actual = entries
@@ -310,7 +311,7 @@ async fn assert_service_logs(
         )
         .await
         .unwrap();
-        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs.inputs.len(), 1);
     }
     assert!(
         open_service_logs(
@@ -339,7 +340,7 @@ async fn assert_service_logs(
     )
     .await
     .unwrap();
-    assert_eq!(selected_machine.len(), 2);
+    assert_eq!(selected_machine.inputs.len(), 2);
     assert!(
         open_service_logs(
             client,

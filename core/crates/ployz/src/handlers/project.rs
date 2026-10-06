@@ -13,7 +13,7 @@ use super::store::{Store, mint, store};
 use super::teardown::{confirmed, inventory, remove_all};
 use super::{Error, deploy, leaf_matches, required};
 use crate::cli::{base, positional, value};
-use crate::ui::Hint;
+use crate::ui::{Hint, Table};
 
 pub(crate) fn command() -> Command {
     Command::new("project")
@@ -86,28 +86,22 @@ fn new(root: &ArgMatches) -> Result<(), Error> {
 
 fn ls(root: &ArgMatches) -> Result<(), Error> {
     let listed = store(root)?.read(&ployz_store::ProjectsQuery {})?;
-    crate::ui::finish(&listed, || {
-        if listed.projects.is_empty() {
-            crate::ui::stream(format_args!(
-                "No Projects yet. Create one: ployz project new NAME"
-            ));
-        }
-        for project in &listed.projects {
-            let environments: Vec<String> = project
-                .environments
-                .iter()
-                .map(|name| match name == &project.default_environment {
-                    true => format!("{name}*"),
-                    false => name.to_string(),
-                })
-                .collect();
-            crate::ui::stream(format_args!(
-                "{}\t{}",
-                project.name,
-                environments.join(", ")
-            ));
-        }
-    })
+    let mut table = Table::new(
+        ["PROJECT", "DEFAULT ENVIRONMENT", "ENVIRONMENTS"],
+        "No Projects yet.",
+    );
+    for project in &listed.projects {
+        table.row([
+            project.name.to_string(),
+            project.default_environment.to_string(),
+            super::joined(&project.environments),
+        ]);
+    }
+    crate::ui::list(&listed, &table)?;
+    if listed.projects.is_empty() {
+        crate::ui::hint(&Hint::Next("ployz project new NAME".to_owned()));
+    }
+    Ok(())
 }
 
 fn rename(root: &ArgMatches) -> Result<(), Error> {
@@ -128,10 +122,12 @@ fn rename(root: &ArgMatches) -> Result<(), Error> {
     // The rename is committed; moving this device's links is a follow-up.
     let links =
         super::link::rename_project(&config, acting.as_ref(), &rename.project, &renamed.name);
-    if let Ok(moved @ 1..) = links {
-        crate::ui::stream(format_args!(
-            "Moved {moved} linked director(ies) on this device to it."
-        ));
+    match links {
+        Ok(1) => crate::ui::stream("Moved 1 linked directory on this device to it."),
+        Ok(moved @ 2..) => crate::ui::stream(format_args!(
+            "Moved {moved} linked directories on this device to it."
+        )),
+        Ok(0) | Err(_) => {}
     }
     crate::ui::emit_committed(
         json!({ "project": renamed, "links": links.as_ref().ok() }),

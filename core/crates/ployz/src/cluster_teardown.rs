@@ -23,12 +23,16 @@ impl Client {
         &mut self,
     ) -> Result<(Vec<ployz_core::NamespaceObservation>, Gaps), RpcError> {
         let machines = self.machines().await.map_err(RpcError::from)?;
+        let mut gaps = Gaps::default().named(
+            machines
+                .iter()
+                .map(|observed| (observed.machine.id, &observed.machine.name)),
+        );
         let snapshot = self
             .deploy_snapshot(machines)
             .await
             .map_err(RpcError::from)?;
         let seen = &snapshot.volume_snapshot;
-        let mut gaps = Gaps::default();
         gaps.extend(&snapshot.container_failures, &snapshot.container_omissions);
         gaps.extend(seen.machine_failures(), seen.omissions());
         // A Volume a Machine couldn't inspect has no known Namespace.

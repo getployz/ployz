@@ -257,7 +257,7 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
         Box::pin(async move {
             let cancellation = cancellation_on_ctrl_c();
             let _parent = cancellation.clone().drop_guard();
-            let inputs = open_service_logs(
+            let logs = open_service_logs(
                 client,
                 &args,
                 namespace.as_ref().map(|scoped| &scoped.namespace),
@@ -267,7 +267,17 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
                 deployment.as_ref().map(DeploymentId::as_str),
             )
             .await?;
-            print_logs(merge_logs(inputs, cancellation), utc).await
+            let unanswered = &logs.unanswered;
+            let mut gaps = crate::ui::Gaps::default().named(
+                unanswered
+                    .names
+                    .iter()
+                    .map(|(machine_id, name)| (*machine_id, name)),
+            );
+            gaps.extend(&unanswered.failures, &unanswered.omissions);
+            gaps.warn();
+            print_logs(merge_logs(logs.inputs, cancellation), utc).await?;
+            Ok(gaps.outcome()?)
         })
     })
 }
@@ -296,7 +306,7 @@ fn build_logs(root: &ArgMatches, id: &DeploymentId, named: &[String]) -> Result<
         .collect::<Result<Vec<_>, Error>>()?;
     crate::ui::finish(&serde_json::json!({ "builds": builds }), || {
         if builds.is_empty() {
-            crate::ui::stream(format_args!("Deployment {id} built nothing."));
+            crate::ui::note("That Deployment built nothing.");
         }
         for build in &builds {
             crate::ui::stream(format_args!(
@@ -371,7 +381,7 @@ async fn run_port_forward(
     let address = container.address.ok_or_else(|| {
         Error::usage(format!(
             "Container {} has no address on the ployz Docker network",
-            container.container_id
+            container.display_name
         ))
     })?;
     let remote = SocketAddr::new(IpAddr::V4(address.0), ports.remote);
@@ -390,9 +400,10 @@ async fn run_port_forward(
         }))?;
     } else {
         crate::ui::stream(format_args!(
-            "{local} -> {remote} ({service_selector}/{}); Ctrl-C stops",
-            container.container_id
+            "Forwarding {local} to {service_selector} ({}) port {}.",
+            container.display_name, ports.remote
         ));
+        crate::ui::note("Ctrl-C stops it.");
     }
     let mut connections = tokio::task::JoinSet::new();
     loop {

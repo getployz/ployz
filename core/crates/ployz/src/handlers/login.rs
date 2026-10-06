@@ -83,7 +83,7 @@ pub(super) fn login(root: &ArgMatches) -> Result<(), Error> {
 }
 
 fn announce(pending: &Pending, resumed: bool) {
-    crate::ui::stream(format_args!(
+    crate::ui::note(format_args!(
         "Open {} and confirm the code {}.",
         pending.url, pending.code
     ));

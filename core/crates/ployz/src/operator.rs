@@ -167,12 +167,18 @@ pub enum OperatorError {
         service: String,
         expected: &'static str,
     },
-    #[error("Could not open logs for Container {container_id} on Machine {machine_id}.")]
+    #[error("Could not open logs for {container} on {server}.")]
     OpenContainerLogs {
-        container_id: ContainerId,
-        machine_id: MachineId,
+        container: String,
+        server: String,
         #[source]
         source: Box<OperatorError>,
+    },
+    #[error("Could not start the command in {container}.")]
+    StartExec {
+        container: String,
+        #[source]
+        source: TransportError,
     },
     #[error("Could not open {service} logs on Machine {machine_name}.")]
     OpenMachineLogs {
@@ -425,7 +431,11 @@ pub async fn open_exec(
             &MachineTarget::from(&machine_id),
             tokio_stream::wrappers::ReceiverStream::new(receiver),
         )
-        .await?;
+        .await
+        .map_err(|source| OperatorError::StartExec {
+            container: container.display_name.clone(),
+            source,
+        })?;
     Ok(ExecSession {
         input: sender,
         output,
@@ -446,14 +456,36 @@ pub async fn open_service_logs(
     options: LogsOptions,
     cancellation: CancellationToken,
     deployment: Option<&str>,
-) -> Result<Vec<LogInput>, OperatorError> {
+) -> Result<ServiceLogs, OperatorError> {
     let machines = client.machines().await?;
     let selected_machines = select_machines(&machines, machine_selectors)?;
     let machine_ids = selected_machines
         .iter()
         .map(|machine| machine.machine.id)
         .collect::<HashSet<_>>();
-    let live = client.live_services(EnvironmentValues::Redacted).await?;
+    let live = client
+        .live_services_from(&machines, EnvironmentValues::Redacted)
+        .await?;
+    let unanswered = Unanswered {
+        failures: live
+            .containers
+            .failures
+            .iter()
+            .filter(|failure| machine_ids.contains(&failure.machine_id))
+            .cloned()
+            .collect(),
+        omissions: live
+            .containers
+            .omissions
+            .iter()
+            .filter(|machine_id| machine_ids.contains(machine_id))
+            .copied()
+            .collect(),
+        names: selected_machines
+            .iter()
+            .map(|machine| (machine.machine.id, machine.machine.name.clone()))
+            .collect(),
+    };
     let services = live.services();
     let mut every = Vec::new();
     let args = if args.is_empty() {
@@ -542,8 +574,14 @@ pub async fn open_service_logs(
             .await
             {
                 return Err(OperatorError::OpenContainerLogs {
-                    container_id: observation.container_id,
-                    machine_id: observation.machine_id,
+                    container: observation.display_name.clone(),
+                    server: machines
+                        .iter()
+                        .find(|machine| machine.machine.id == observation.machine_id)
+                        .map_or_else(
+                            || observation.machine_id.to_string(),
+                            |machine| machine.machine.name.to_string(),
+                        ),
                     source: Box::new(error.into()),
                 });
             }
@@ -552,7 +590,22 @@ pub async fn open_service_logs(
     if inputs.is_empty() {
         return Err(OperatorError::NoDeploymentContainers);
     }
-    Ok(inputs)
+    Ok(ServiceLogs { inputs, unanswered })
+}
+
+/// Log streams of the Containers found, and the Servers that did not say which
+/// Containers they run.
+pub struct ServiceLogs {
+    pub inputs: Vec<LogInput>,
+    pub unanswered: Unanswered,
+}
+
+/// Selected Servers whose Live Observation failed or was skipped, with every
+/// selected Server's name.
+pub struct Unanswered {
+    pub failures: Vec<ployz_core::MachineFailure<ployz_core::RpcError>>,
+    pub omissions: Vec<ployz_core::MachineId>,
+    pub names: Vec<(ployz_core::MachineId, ployz_core::MachineName)>,
 }
 
 pub async fn open_machine_logs(

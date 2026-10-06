@@ -155,11 +155,11 @@ async fn paste(
             next: format!("ployz server add --wait {}", minted.id),
         });
     }
-    crate::ui::stream(format_args!(
+    crate::ui::note(format_args!(
         "Run this on the Server (expires {}):\n\n  {line}\n",
         minted.expires_at
     ));
-    crate::ui::stream(format_args!("Waiting for the Server to join..."));
+    crate::ui::note("Waiting for the Server to join...");
     wait_joined(acting, &minted.id).await
 }
 
@@ -204,7 +204,7 @@ async fn wait_joined(acting: &Acting, enrollment: &str) -> Result<(), Error> {
                 .hint(Hint::Retry("ployz server add --command".into())));
             }
             Enrollment::Joined { machine_id } => {
-                crate::ui::stream(format_args!("Server {machine_id} joined"));
+                crate::ui::stream("The Server joined.");
                 return crate::ui::emit(
                     &json!({ "server": { "id": machine_id }, "status": "joined" }),
                 );

@@ -12,8 +12,7 @@ use super::super::teardown::confirmed;
 use super::super::{Error, leaf_matches, runtime, store};
 use crate::cli::{base, value};
 use crate::deploy::VolumeFate;
-use crate::ui::Gaps;
-use crate::ui::Hint;
+use crate::ui::{Gaps, Hint, Table};
 
 pub(super) fn command() -> Command {
     base(
@@ -98,24 +97,23 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
             "failures": gaps.failures,
             "omitted": gaps.omitted,
         });
+        let mut table = Table::new(
+            ["NAMESPACE", "SERVICES", "VOLUMES"],
+            "Every Namespace on the Servers that answered is in a Project.",
+        );
+        for namespace in &unowned {
+            table.row([
+                namespace.namespace.to_string(),
+                super::super::joined(&namespace.services),
+                volume_names(&namespace.volumes),
+            ]);
+        }
         crate::ui::finish(&report, || {
-            if unowned.is_empty() {
-                crate::ui::stream(format_args!(
-                    "Every Namespace on the Servers that answered is in a Project."
-                ));
+            crate::ui::rows(&table);
+            gaps.warn();
+            if let Some(next) = next.clone() {
+                crate::ui::hint(&Hint::Next(next));
             }
-            for namespace in &unowned {
-                crate::ui::stream(format_args!(
-                    "{}: {} Service(s), Volumes {}",
-                    namespace.namespace,
-                    namespace.services.len(),
-                    volume_names(&namespace.volumes)
-                ));
-            }
-            if let Some(next) = &next {
-                crate::ui::stream(format_args!("Remove one: {next}"));
-            }
-            unanswered(&gaps);
         })?;
         return gaps.outcome();
     };
@@ -155,7 +153,6 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
                 "Namespace {namespace} isn't on the Servers that answered, but some didn't; \
                  run the same command again."
             ));
-            unanswered(&gaps);
         });
     };
     let next = retry(matches, &namespace);
@@ -216,22 +213,6 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
     match removed {
         true => Ok(()),
         false => Err(Error::partial()),
-    }
-}
-
-/// Name the Servers whose Namespaces went unseen.
-fn unanswered(gaps: &Gaps) {
-    let unseen: Vec<_> = gaps
-        .failures
-        .iter()
-        .map(|failure| failure.machine_id)
-        .chain(gaps.omitted.iter().copied())
-        .collect();
-    if !unseen.is_empty() {
-        crate::ui::stream(format_args!(
-            "Servers {} didn't answer; what they run isn't listed.",
-            super::super::joined(&unseen)
-        ));
     }
 }
 

@@ -323,13 +323,13 @@ pub(in crate::handlers) fn confirm(yes: bool, prompt: &str) -> Result<(), Error>
             prompt.escape_debug()
         )));
     }
-    crate::ui::stream(format_args!("{prompt}"));
-    crate::ui::stream(format_args!(
-        "This removes Ployz-managed containers and resets this machine's cluster membership."
-    ));
-    crate::ui::stream(format_args!(
-        "Volume data will not be erased, but will lose access through the current cluster."
-    ));
+    crate::ui::note(prompt);
+    crate::ui::note(
+        "This removes Ployz-managed containers and resets this machine's cluster membership.",
+    );
+    crate::ui::note(
+        "Volume data will not be erased, but will lose access through the current cluster.",
+    );
     crate::ui::note_inline(format_args!(
         "Type yes to confirm, or press Enter to cancel: "
     ));

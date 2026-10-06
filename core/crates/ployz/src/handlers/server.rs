@@ -222,10 +222,7 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
                 )
                 .await?
                 .machine;
-            crate::ui::stream(format_args!(
-                "Updated Server {} ({})",
-                machine.name, machine.id
-            ));
+            crate::ui::stream(format_args!("Updated Server {}.", machine.name));
             // The update is committed; starting the Ingress Proxy for a new ingress role is a
             // follow-up. Turning the role off leaves the proxy serving: Hosted DNS stops
             // advertising the Server at its next sync, and `server rm` stops the proxy.

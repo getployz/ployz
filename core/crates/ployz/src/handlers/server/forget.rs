@@ -61,7 +61,7 @@ pub(super) fn forget(root: &ArgMatches) -> Result<(), Error> {
                 forgotten.cancelled.len()
             ));
         }
-        crate::ui::stream(format_args!("Next: ployz server add"));
+        crate::ui::hint(&crate::ui::Hint::Next("ployz server add".into()));
     })
 }
 

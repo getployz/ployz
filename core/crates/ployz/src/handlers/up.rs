@@ -194,7 +194,7 @@ fn found_project(
             || shell_words::join(["ployz", "up", "--project", name.as_str()]),
         ))
     })?;
-    crate::ui::stream(format_args!("Created Project {}.", created.project.name));
+    crate::ui::note(format_args!("Created Project {}.", created.project.name));
     Ok(EnvironmentRef {
         project: Some(created.project.name),
         environment,
@@ -217,7 +217,7 @@ fn add_service(
         image: None,
         template: None,
     })?;
-    crate::ui::stream(format_args!("Added Service {name}."));
+    crate::ui::note(format_args!("Added Service {name}."));
     let dockerfile = std::fs::read_to_string(directory.join("Dockerfile")).ok();
     if dockerfile.is_some() {
         store.write(&Edit {

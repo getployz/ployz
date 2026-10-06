@@ -113,12 +113,9 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     config.set_current_context(Some(context_name.clone()))?;
     config.save()?;
     if let Some(current_context) = config.current_context() {
-        crate::ui::stream(format_args!("Switched context to '{current_context}'"));
+        crate::ui::note(format_args!("Switched context to {current_context}."));
     }
-    crate::ui::stream(format_args!(
-        "Initialised Server {} ({})",
-        machine.name, machine.id
-    ));
+    crate::ui::stream(format_args!("Initialised Server {}.", machine.name));
     let ingress_recovery = super::super::recovery_command(
         matches,
         &context_name,

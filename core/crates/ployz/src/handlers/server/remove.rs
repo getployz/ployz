@@ -44,7 +44,11 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         }
         // Before anything is listed or confirmed: a removal that can't happen asks nothing.
         let hold = refuse_last_managed(&client, &machines, selected.id).await?;
-        let cloud = if hold == CloudHold::Last || cloud_manages(&client, current).await? {
+        let entry = machines
+            .iter()
+            .find(|observed| observed.machine.id == current)
+            .map_or_else(|| current.to_string(), |observed| observed.machine.name.to_string());
+        let cloud = if hold == CloudHold::Last || cloud_manages(&client, current, &entry).await? {
             Some(cloud_removal(matches, &selected, hold, no_reset).await?)
         } else {
             None
@@ -58,18 +62,23 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         let live = client.live_services_from(&machines, EnvironmentValues::Redacted).await?;
         if !no_reset {
             if let Some(failure) = live.containers.failures.iter().find(|failure| failure.machine_id == selected.id) {
-                return Err(Error::caused(RpcErrorCode::Unavailable, format!("Cannot observe Services on Server {}. No changes made.", selected.id), failure.error.clone()));
+                return Err(Error::caused(RpcErrorCode::Unavailable, format!("Cannot observe Services on Server {}. No changes made.", selected.name), failure.error.clone()));
             }
             if live.containers.omissions.contains(&selected.id) {
-                return Err(Error::unavailable(format!("Cannot observe Services on Server {}: no terminal response. No changes made.", selected.id)));
+                return Err(Error::unavailable(format!("Cannot observe Services on Server {}: no terminal response. No changes made.", selected.name)));
             }
         }
         let services = services_on(&selected.id, &live);
         let replicated_services = replicated_services_on(&selected.id, &live);
         Ok::<_, Error>((client, selected, hold, cloud, observed, services, replicated_services))
     })?;
-    for line in service_warnings(&selected.name, &services) {
-        crate::ui::note(format_args!("{line}"));
+    if !services.is_empty() {
+        crate::ui::warn(format!(
+            "Server {} is running Services: {}.",
+            selected.name,
+            super::super::joined(&services)
+        ));
+        crate::ui::hint(&Hint::Next(format!("ployz server drain {}", selected.name)));
     }
     if hold == CloudHold::Last {
         crate::ui::warn(format!(
@@ -84,7 +93,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         root,
         &client,
         &observed,
-        &format!("Remove Server ({})", selected.id),
+        &format!("Remove Server {}", selected.name),
         &[selected.name.to_string()],
         if no_reset {
             VolumeEffect::Preserve
@@ -119,25 +128,22 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     .map_err(crate::failure::refusal_from_rpc)?;
             reset_failure = removed.reset_warning;
         }
-        crate::ui::stream(format_args!("Removed Server {} ({}) membership", selected.name, selected.id));
+        crate::ui::stream(format_args!("Removed Server {}.", selected.name));
         if cloud_released == Some(true) {
-            crate::ui::stream(format_args!("Cloud let go of the Cluster: this Organization has no Server now. Its Environments keep their config; nothing runs until you add a Server.\nnext: ployz server add"));
+            crate::ui::stream("Cloud let go of the Cluster: this Organization has no Server now. Its Environments keep their config; nothing runs until you add a Server.");
+            crate::ui::hint(&Hint::Next("ployz server add".into()));
         }
         if let Some(reason) = &reset_failure {
-            crate::ui::note(format_args!("Server {} cleanup/reset incomplete: {reason}. Reset does not erase volume data.", selected.id));
+            crate::ui::warn(format!("Server {} was not fully cleaned up or reset: {reason}. Reset does not erase volume data.", selected.name));
         } else {
             for loss in &observed.data_loss {
                 crate::ui::stream(format_args!("Volume data was not erased by reset: {loss}"));
             }
         }
         if !replicated_services.is_empty() {
-            crate::ui::note(format_args!(
-                "WARNING: Replicated Services may now be under-replicated: {}. Their replicas were not moved.",
-                replicated_services
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
+            crate::ui::warn(format!(
+                "Replicated Services may now be under-replicated: {}. Their replicas were not moved.",
+                super::super::joined(&replicated_services)
             ));
         }
 
@@ -200,7 +206,11 @@ async fn cloud_removal(
 /// Whether Cloud manages this Cluster: the entry Server, which always answers, holds
 /// Cloud's key. Cloud holds every Server it enrolled, so it removes any of them itself
 /// and drops its row. Holders that can't be read refuse: they may be Cloud's.
-async fn cloud_manages(client: &crate::connect::Client, entry: MachineId) -> Result<bool, Error> {
+async fn cloud_manages(
+    client: &crate::connect::Client,
+    entry: MachineId,
+    name: &str,
+) -> Result<bool, Error> {
     let details = client
         .invoke::<op::Inspect>(
             ployz_core::InspectRequest::default(),
@@ -211,7 +221,7 @@ async fn cloud_manages(client: &crate::connect::Client, entry: MachineId) -> Res
         .map_err(|error| {
             Error::caused(
                 RpcErrorCode::Unavailable,
-                format!("Cannot read who manages Server {entry}. No changes made."),
+                format!("Cannot read who manages Server {name}. No changes made."),
                 error,
             )
         })?;
@@ -317,24 +327,28 @@ fn typed_confirmation(
     services: &[QualifiedService],
     labels: &VolumeLabels,
 ) -> Result<(), Error> {
+    let retry = || {
+        let mut retry = super::super::data_loss::retry_args(root, client.connection_source());
+        retry.extend(["--confirm".into(), selected.name.to_string()]);
+        let volumes = observed
+            .data_loss
+            .iter()
+            .map(|loss| volume_label(labels, loss));
+        for name in volumes.collect::<std::collections::BTreeSet<_>>() {
+            retry.extend(["--accept-volume-loss".into(), name.to_owned()]);
+        }
+        shell_words::join(retry)
+    };
     match leaf_matches(root).get_one::<String>("confirm") {
         Some(typed) if typed == selected.name.as_str() => Ok(()),
         Some(typed) => Err(Error::usage(format!(
             "--confirm {} does not match Server {}. No changes made.",
             typed.escape_debug(),
             selected.name
-        ))),
+        ))
+        .hint(Hint::Retry(retry()))),
         None => {
-            let mut retry = super::super::data_loss::retry_args(root, client.connection_source());
-            retry.extend(["--confirm".into(), selected.name.to_string()]);
-            let volumes = observed
-                .data_loss
-                .iter()
-                .map(|loss| volume_label(labels, loss));
-            for name in volumes.collect::<std::collections::BTreeSet<_>>() {
-                retry.extend(["--accept-volume-loss".into(), name.to_owned()]);
-            }
-            let retry = shell_words::join(retry);
+            let retry = retry();
             Err(Error::detailed(
                 RpcErrorCode::ConfirmationRequired,
                 format!(
@@ -372,21 +386,6 @@ fn machine_removal_refusal(error: RpcError) -> Error {
     }
 }
 
-#[must_use]
-fn service_warnings(machine: &MachineName, services: &[QualifiedService]) -> Vec<String> {
-    if services.is_empty() {
-        return Vec::new();
-    }
-    vec![format!(
-        "WARNING: Server {machine} is running Services: {}. Move them off first: ployz server drain {machine}",
-        services
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", ")
-    )]
-}
-
 #[cfg(test)]
 mod tests {
     use ployz_core::{
@@ -397,8 +396,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        VolumeOwner, machine_removal_refusal, qualified_labels, replicated_services_on,
-        service_warnings, services_on,
+        VolumeOwner, machine_removal_refusal, qualified_labels, replicated_services_on, services_on,
     };
 
     #[test]
@@ -428,28 +426,6 @@ mod tests {
             Some("blog/staging/data")
         );
         assert_eq!(labels.get("a_vol-4").map(String::as_str), Some("logs"));
-    }
-
-    #[test]
-    fn service_warnings_are_silent_when_nothing_is_at_stake() {
-        assert_eq!(
-            service_warnings(&MachineName::parse("ams1").unwrap(), &[]),
-            Vec::<String>::new()
-        );
-    }
-
-    #[test]
-    fn service_warnings_name_services_on_the_machine() {
-        assert_eq!(
-            service_warnings(
-                &MachineName::parse("ams1").unwrap(),
-                &[
-                    QualifiedService::parse("app/api").unwrap(),
-                    QualifiedService::parse("app/web").unwrap(),
-                ],
-            ),
-            vec!["WARNING: Server ams1 is running Services: app/api, app/web. Move them off first: ployz server drain ams1".to_owned()]
-        );
     }
 
     #[test]

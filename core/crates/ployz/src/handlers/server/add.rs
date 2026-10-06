@@ -104,7 +104,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let follow_up = (|| {
         connection = connection.with_machine_id(assigned.id);
         config.save_connection(&context_name, connection.clone())?;
-        crate::ui::stream(format_args!("{}", added_machine_line(&assigned)));
+        crate::ui::stream(format_args!("Added Server {}.", assigned.name));
 
         runtime.block_on(helpers::wait_direct_participating(
             matches,
@@ -124,10 +124,6 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     )
 }
 
-fn added_machine_line(assigned: &Machine) -> String {
-    format!("Added Server {} ({})", assigned.name, assigned.id)
-}
-
 #[cfg(test)]
 mod tests {
     use ployz_core::DOCKER_NETWORK_CONFLICT_RECOVERY;
@@ -141,15 +137,6 @@ mod tests {
 
         assert!(message.contains("added Server did not become ready"));
         assert!(message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY));
-    }
-
-    #[test]
-    fn server_add_reports_the_added_server() {
-        let assigned = assigned_machine("edge", 'a');
-        assert_eq!(
-            added_machine_line(&assigned),
-            "Added Server edge (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
-        );
     }
 
     #[test]
