@@ -775,6 +775,27 @@ async fn in_use_volume_names_the_service_that_mounts_it() {
 }
 
 #[test]
+fn volume_list_decoding_keeps_driver_warnings() {
+    let warning = "list ployz: ZFS dataset ployz/ployz is read-only";
+    let typed = Ok(bollard::models::VolumeListResponse {
+        volumes: Some(Vec::new()),
+        warnings: Some(vec![warning.into()]),
+    });
+    let recovered = Err(bollard::errors::Error::JsonDataError {
+        message: "generated Volume status cannot represent numeric values".into(),
+        contents: serde_json::json!({"Volumes":[],"Warnings":[warning]}).to_string(),
+        column: 0,
+    });
+
+    for response in [typed, recovered] {
+        assert_eq!(
+            decode_volume_list(response).unwrap().warnings.unwrap(),
+            [warning]
+        );
+    }
+}
+
+#[test]
 fn docker_volume_preserves_provisioned_usage_at_alert_threshold() {
     let contents = serde_json::json!({"Volumes":[{
         "Name":"data",
@@ -789,6 +810,8 @@ fn docker_volume_preserves_provisioned_usage_at_alert_threshold() {
         contents,
         column: 0,
     }))
+    .unwrap()
+    .volumes
     .unwrap();
     let observed = docker_volume(&MachineId::random(), volumes.remove(0)).unwrap();
 

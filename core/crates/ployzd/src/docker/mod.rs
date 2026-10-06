@@ -808,6 +808,9 @@ pub enum Error {
         id: DockerVolumeId,
         error: Box<RpcError>,
     },
+    /// Docker reported that the ployz volume plugin failed to list its Volumes.
+    #[error("the ployz volume plugin could not list Volumes: {0}")]
+    VolumePluginListFailed(String),
     /// Fresh local storage evidence was unavailable for a Provisioned Volume container.
     #[error("local storage could not be observed for a mounted Provisioned Volume")]
     StorageUnobservable,
@@ -873,6 +876,7 @@ impl Error {
             Self::ProvisionedStorageUnsupported | Self::UnsupportedImageStore => RpcErrorCode::Unsupported,
             Self::VolumeCreatedButUnverified { .. }
             | Self::StorageUnobservable
+            | Self::VolumePluginListFailed(_)
             | Self::EventStreamClosed
             // A peer pull is idempotent, so a rerun is safe whatever docker printed.
             | Self::PeerPull(_)
