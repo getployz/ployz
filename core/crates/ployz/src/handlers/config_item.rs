@@ -3,6 +3,8 @@
 //! rename and delete it. Every change is staged in Working State until a Deploy.
 //! A file reads Service variables as `${{ SERVICE.KEY }}`.
 
+use std::io::{self, IsTerminal};
+
 use clap::{ArgAction, ArgMatches, Command};
 use ployz_core::config::FileMode;
 use ployz_core::{ConfigFileName, ConfigName, ServiceName};
@@ -15,7 +17,7 @@ use ployz_store::{
 use super::store::{self, Next};
 use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, switch, value};
-use crate::output::{self, say};
+use crate::ui::{Cell, Fields, Table, Tone};
 
 pub(crate) fn command() -> Command {
     base(
@@ -204,21 +206,22 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
     let view = store::store(root)?.read(&ConfigsQuery {
         environment: store::environment(matches)?,
     })?;
-    output::finish(&view, || {
-        say!("CONFIG\tFILES\tMOUNTS\tNEXT DEPLOY");
-        for listing in &view.configs {
-            say!(
-                "{}\t{}\t{}\t{}",
-                listing.config.name,
-                files_word(&listing.config),
-                mounts_word(&listing.mounts),
-                listing
-                    .change
-                    .as_ref()
-                    .map_or("-".to_owned(), super::store::word)
-            );
-        }
-    })
+    let mut table = Table::new(
+        ["CONFIG", "FILES", "MOUNTS", "NEXT DEPLOY"],
+        format!("No Configs in {} yet.", view.environment.name),
+    );
+    for listing in &view.configs {
+        table.row([
+            Cell::from(listing.config.name.to_string()),
+            Cell::from(files_word(&listing.config)),
+            Cell::from(mounts_word(&listing.mounts)),
+            listing.change.as_ref().map_or_else(
+                || Cell::from(""),
+                |change| Cell::status(super::store::word(change), Tone::Change),
+            ),
+        ]);
+    }
+    crate::ui::list(&view, &table)
 }
 
 fn inspect(root: &ArgMatches) -> Result<(), Error> {
@@ -227,26 +230,28 @@ fn inspect(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         config: config_name(matches, "config")?,
     })?;
-    output::finish(&view, || {
-        let listing = &view.config;
-        say!("Config {} ({})", listing.config.name, listing.config.id);
-        if let Some(change) = &listing.change {
-            say!("Next Deploy: {}", super::store::word(change));
-        }
-        for mount in &listing.mounts {
-            say!("Mounted by {} at {}", mount.service, mount.dir);
-        }
+    let listing = &view.config;
+    let mut record = Fields::new()
+        .field("config", &listing.config.name)
+        .field("id", &listing.config.id);
+    if let Some(change) = &listing.change {
+        record.push("next deploy", super::store::word(change));
+    }
+    for mount in &listing.mounts {
+        record.push(
+            "mounted by",
+            format_args!("{} at {}", mount.service, mount.dir),
+        );
+    }
+    crate::ui::finish(&view, || {
+        let _ = record.write(&mut anstream::stdout(), io::stdout().is_terminal());
         for file in &listing.config.files {
-            say!(
+            crate::ui::stream(format_args!(
                 "\n{} ({} bytes, mode {}, uid {}, gid {})",
-                file.name,
-                file.bytes,
-                file.mode,
-                file.uid,
-                file.gid
-            );
+                file.name, file.bytes, file.mode, file.uid, file.gid
+            ));
             if let Some(text) = view.contents.get(&file.name) {
-                say!("{text}");
+                crate::ui::stream(text);
             }
         }
     })
@@ -293,40 +298,38 @@ fn unmount(root: &ArgMatches) -> Result<(), Error> {
 }
 
 fn files_word(config: &ConfigSummary) -> String {
-    match config.files.as_slice() {
-        [] => "-".to_owned(),
-        files => files
-            .iter()
-            .map(|file| file.name.to_string())
-            .collect::<Vec<_>>()
-            .join(","),
-    }
+    config
+        .files
+        .iter()
+        .map(|file| file.name.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn mounts_word(mounts: &[ConfigMountAt]) -> String {
-    match mounts {
-        [] => "-".to_owned(),
-        mounts => mounts
-            .iter()
-            .map(|mount| format!("{}:{}", mount.service, mount.dir))
-            .collect::<Vec<_>>()
-            .join(","),
-    }
+    mounts
+        .iter()
+        .map(|mount| format!("{}:{}", mount.service, mount.dir))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// A staged Config change, its files, and `ployz diff` to review it.
 fn staged(matches: &ArgMatches, result: &ConfigStaged, what: &str) -> Result<(), Error> {
     let hint = store::next(matches, &["diff"]);
-    output::finish(&Next::new(result, Some(hint)), || {
-        say!(
+    crate::ui::finish(&Next::new(result, Some(hint)), || {
+        crate::ui::stream(format_args!(
             "{what} {} in {}/{} (revision {}).",
             result.config.name,
             result.environment.project,
             result.environment.name,
             result.environment.revision
-        );
+        ));
         for file in &result.config.files {
-            say!("  {} ({} bytes, mode {})", file.name, file.bytes, file.mode);
+            crate::ui::stream(format_args!(
+                "  {} ({} bytes, mode {})",
+                file.name, file.bytes, file.mode
+            ));
         }
     })
 }
