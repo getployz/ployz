@@ -399,6 +399,7 @@ mod tests {
     use serde_json::json;
 
     use crate::machine::{LocalMachine, LocalMachineError, LocalMachineStore, RecordOwner};
+    use crate::storage::test_support::FakePlugin;
 
     #[tokio::test]
     async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
@@ -544,8 +545,13 @@ mod tests {
             })
             .await;
             let owner = RecordOwner::spawn(store).unwrap();
+            let plugin = FakePlugin::default();
+            plugin.reply("Storage.Demote", json!({"Ok": []}));
+            let (plugin, _plugin_server) = plugin.serve(&data_dir);
             let local = LocalMachine::new(owner.clone()).with_containers(Some(runtime.clone()));
-            let resetting = LocalMachine::new(owner).with_containers(Some(runtime));
+            let resetting = LocalMachine::new(owner)
+                .with_containers(Some(runtime))
+                .with_plugin(plugin);
             let spec: ResolvedServiceSpec = serde_json::from_value(json!({
             "service_id": ServiceId::random(), "name": "api", "mode": serde_json::to_value(ServiceMode::Replicated { replicas: 1.try_into().unwrap() }).unwrap(),
             "container":{"image":"example.test/api", "pull_policy":"missing"}
@@ -706,9 +712,13 @@ mod tests {
         let (runtime, _) = fake_runtime_with(FakeDocker::default()).await;
         let owner = RecordOwner::spawn(store).unwrap();
         let restarting = owner.restart_requested();
+        let plugin = FakePlugin::default();
+        plugin.reply("Storage.Demote", json!({"Ok": []}));
+        let (plugin, _plugin_server) = plugin.serve(&data_dir);
         let local = LocalMachine::new(owner)
             .with_containers(Some(runtime))
-            .with_cluster(Some((replicated, AdminClient::new("/no/such/admin.sock"))));
+            .with_cluster(Some((replicated, AdminClient::new("/no/such/admin.sock"))))
+            .with_plugin(plugin);
         let removed = local
             .remove_local(RemoveLocalMachineRequest {
                 restart_on_cleanup_failure: false,

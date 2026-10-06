@@ -759,20 +759,21 @@ impl LocalMachine {
 impl LocalMachine {
     /// Departure: every root this Machine holds becomes a slot and every lease record
     /// moves on, so nothing left here can be taken for the writer by the next identity
-    /// or by a restore elsewhere. Docker forgets each demoted name.
+    /// or by a restore elsewhere. Docker forgets each demoted name. A Machine without
+    /// Docker has no volume driver, so it has nothing to depart.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Cleanup`] when the plugin cannot demote or Docker keeps a name.
     async fn depart_storage(&self) -> Result<(), Error> {
+        let Some(containers) = &self.containers else {
+            return Ok(());
+        };
         let demoted: Vec<DockerVolumeName> = self
             .plugin
             .call("Storage.Demote", &())
             .await
             .map_err(|error| Error::Cleanup(format!("storage departure failed: {error}")))?;
-        let Some(containers) = &self.containers else {
-            return Ok(());
-        };
         for name in &demoted {
             containers
                 .forget_volume(name)

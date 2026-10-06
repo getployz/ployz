@@ -549,6 +549,8 @@ node: ServiceName,
  */
 expect: Revision | null, };
 
+export type CopyRole = "writer" | "slot" | "switching";
+
 export type CpuNanos = number;
 
 export type CreateBranch = {
@@ -1114,7 +1116,12 @@ bound_bytes: number,
 /**
  * Current referenced ZFS dataset bytes.
  */
-used_bytes: number, };
+used_bytes: number,
+/**
+ * What this copy is to the run model. Absent from a daemon that predates copies;
+ * readers treat that as a writer.
+ */
+role: CopyRole | null, };
 
 export type Domain = { service: ServiceName,
 /**
