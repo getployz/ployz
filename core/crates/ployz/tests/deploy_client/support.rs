@@ -127,6 +127,7 @@ impl DeployService {
             code: RpcErrorCode::Unavailable,
             message: message.into(),
             details: Value::Null,
+            cause: Vec::new(),
         });
         self
     }
@@ -136,6 +137,7 @@ impl DeployService {
             code: RpcErrorCode::Unavailable,
             message: message.into(),
             details: Value::Null,
+            cause: Vec::new(),
         });
         self
     }
@@ -150,6 +152,7 @@ impl DeployService {
             code: RpcErrorCode::Unavailable,
             message: message.into(),
             details: Value::Null,
+            cause: Vec::new(),
         });
         self
     }
@@ -188,6 +191,7 @@ impl DeployService {
             code: RpcErrorCode::Internal,
             message: message.into(),
             details: Value::Null,
+            cause: Vec::new(),
         });
         self
     }
@@ -327,6 +331,7 @@ impl MachineRpc for DeployService {
                 code: RpcErrorCode::Unavailable,
                 message: "listing failed".into(),
                 details: Value::Null,
+                cause: Vec::new(),
             }));
         }
         encoded(RpcResponse::from(ContainerList {

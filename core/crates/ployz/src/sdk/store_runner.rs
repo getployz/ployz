@@ -157,7 +157,7 @@ pub async fn run_deployment(
                 .not_executed(format!(
                     "Ployz couldn't reach your Servers. Check that they're online, then retry. \
                      ({})",
-                    error.message
+                    crate::ui::row(&error)
                 ))
                 .await;
         }
@@ -214,7 +214,7 @@ impl Run {
             Err(error) => {
                 return match needs_upload(&error) {
                     Some(services) => self.unbuilt(Unbuilt::UploadNeeded(services)).await,
-                    None => self.not_executed(error.message).await,
+                    None => self.not_executed(crate::ui::row(&error)).await,
                 };
             }
         };
@@ -229,7 +229,7 @@ impl Run {
         let log_id = self.deployment.as_str().parse().ok();
         let running = match prepared.confirm_with_log_id(log_id, ImageCleanup::Auto) {
             Ok(running) => running,
-            Err(error) => return self.not_executed(error.message).await,
+            Err(error) => return self.not_executed(crate::ui::row(&error)).await,
         };
         let outcome = self
             .renewing(self.executing(&running), || running.abort())
@@ -302,7 +302,7 @@ impl Run {
                 }
                 Err(error) => match needs_upload(&error) {
                     Some(services) => uploads.extend(services),
-                    None => failed.push(format!("{}: {}", target.service, error.message)),
+                    None => failed.push(format!("{}: {}", target.service, crate::ui::row(&error))),
                 },
             }
         }
@@ -368,9 +368,17 @@ impl Run {
             }
             Ok(BuildOutcome::Queued) => {
                 let error = internal("No Server started the build");
-                (BuildStatus::Failed, Some(error.message.clone()), Err(error))
+                (
+                    BuildStatus::Failed,
+                    Some(crate::ui::row(&error)),
+                    Err(error),
+                )
             }
-            Err(error) => (BuildStatus::Failed, Some(error.message.clone()), Err(error)),
+            Err(error) => (
+                BuildStatus::Failed,
+                Some(crate::ui::row(&error)),
+                Err(error),
+            ),
         };
         self.report(service, status, message, log).await?;
         let receipt = match ended {
@@ -676,5 +684,6 @@ pub(super) fn internal(message: &str) -> RpcError {
         code: RpcErrorCode::Internal,
         message: message.to_owned(),
         details: serde_json::Value::Null,
+        cause: Vec::new(),
     }
 }

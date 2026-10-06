@@ -30,6 +30,7 @@ fn remove_tolerates_a_missing_preliminary_stop_target() {
         code: RpcErrorCode::NotFound,
         message: "gone".into(),
         details: Value::Null,
+        cause: Vec::new(),
     };
 
     assert!(accept_stop_result(ContainerAction::Remove, Err(missing.clone())).is_ok());
@@ -326,5 +327,6 @@ fn unavailable(message: &str) -> RpcError {
         code: RpcErrorCode::Unavailable,
         message: message.into(),
         details: Value::Null,
+        cause: Vec::new(),
     }
 }

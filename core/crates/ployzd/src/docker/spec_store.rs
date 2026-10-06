@@ -105,7 +105,10 @@ impl ConfigOperation<'_> {
                 && let Err(error) = referenced_config_names(&connection)
                     .and_then(|retained| garbage_collect_config_files(&path, &retained))
             {
-                eprintln!("failed to reclaim materialized configs: {error}");
+                eprintln!(
+                    "failed to reclaim materialized configs: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                );
             }
             Ok(removed)
         })
@@ -279,15 +282,15 @@ where
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("machine database I/O failed: {0}")]
+    #[error("machine database I/O failed")]
     Io(#[from] std::io::Error),
-    #[error("machine database failed: {0}")]
+    #[error("machine database failed")]
     Sqlite(#[from] rusqlite::Error),
-    #[error("machine database JSON failed: {0}")]
+    #[error("machine database JSON failed")]
     Json(#[from] serde_json::Error),
     #[error("invalid config metadata: {0}")]
     InvalidConfig(String),
-    #[error("machine database task failed: {0}")]
+    #[error("machine database task failed")]
     Task(#[from] tokio::task::JoinError),
 }
 

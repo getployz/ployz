@@ -183,6 +183,7 @@ impl StorageCapacityError {
             },
             message: self.to_string(),
             details,
+            cause: Vec::new(),
         }
     }
 }

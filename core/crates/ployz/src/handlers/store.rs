@@ -536,6 +536,7 @@ mod tests {
             code: RpcErrorCode::ConfirmationRequired,
             message: "This Deploy permanently deletes the data of data".into(),
             details: json!({ "version": "3:1:0.1", "accept": ["data"] }),
+            cause: Vec::new(),
         };
         let error = store.accepting(StoreCallError::Refused(refused));
         let retry = "ployz deploy --accept-volume-loss data --expect-version 3:1:0.1 --env staging";
@@ -558,6 +559,7 @@ mod tests {
                 code: RpcErrorCode::Conflict,
                 message: "refused".into(),
                 details,
+                cause: Vec::new(),
             })
         };
         let next_of = |error| {

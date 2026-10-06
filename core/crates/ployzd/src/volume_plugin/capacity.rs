@@ -22,8 +22,11 @@ fn storage_error(error: super::VolumeError) -> ployz_core::RpcError {
         super::VolumeError::Capacity(error) => error.into_rpc_error(),
         error => ployz_core::RpcError {
             code: ployz_core::RpcErrorCode::Internal,
-            message: format!("Storage preparation failed: {error}"),
+            message: "Storage preparation failed".into(),
             details: serde_json::json!({"code": "storage_preparation_failed"}),
+            cause: std::iter::once(error.to_string())
+                .chain(ployz_core::error_chain::causes(&error))
+                .collect(),
         },
     }
 }
@@ -60,14 +63,14 @@ impl VolumeStorage {
                 let (super::Place::Root(name) | super::Place::Slot(name)) = place else {
                     continue;
                 };
-                let name =
-                    ployz_core::DockerVolumeName::parse(name).map_err(|error| error.to_string())?;
+                let name = ployz_core::DockerVolumeName::parse(name)
+                    .map_err(|error| ployz_core::error_chain::inline(&error))?;
                 let (role, maximum_bytes) = match place {
                     super::Place::Root(_) => {
                         let plugin_name = name
                             .as_str()
                             .parse::<DockerVolumeName>()
-                            .map_err(|error| error.to_string())?;
+                            .map_err(|error| ployz_core::error_chain::inline(&error))?;
                         (
                             self.root_role(&datasets, pool, dataset, &plugin_name)
                                 .await?,

@@ -220,6 +220,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                                     code: ployz_core::RpcErrorCode::Conflict,
                                     message: "creation key conflict".into(),
                                     details: serde_json::Value::Null,
+                                    cause: Vec::new(),
                                 })
                             } else {
                                 RpcResponse::from(ployz_core::ContainerCreated {
@@ -504,6 +505,7 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
                                 code: ployz_core::RpcErrorCode::Conflict,
                                 message: "storage inspection failed".into(),
                                 details: serde_json::Value::Null,
+                                cause: Vec::new(),
                             })
                         }
                         RpcRequestBody::Inspect(_) => RpcResponse::from(MachineDetails {

@@ -115,7 +115,7 @@ pub enum Error {
     Docker(#[from] crate::docker::Error),
     #[error("{0}")]
     Cleanup(String),
-    #[error("local operation task failed: {0}")]
+    #[error("local operation task failed")]
     OperationTask(#[from] tokio::task::JoinError),
     #[error("Register requires a client-selected Machine Subnet")]
     MissingAssignment,
@@ -381,14 +381,20 @@ impl LocalMachine {
         let machines = match cluster.replicated.machines().await {
             Ok(snapshot) => snapshot.observations,
             Err(error) => {
-                eprintln!("WireGuard Machine enrichment is unavailable: {error}");
+                eprintln!(
+                    "WireGuard Machine enrichment is unavailable: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                );
                 Vec::new()
             }
         };
         let rtts = match machine_rtts(&cluster.admin, &cluster.replicated).await {
             Ok(rtts) => rtts,
             Err(error) => {
-                eprintln!("WireGuard RTT enrichment is unavailable: {error}");
+                eprintln!(
+                    "WireGuard RTT enrichment is unavailable: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                );
                 Vec::new()
             }
         }
@@ -704,7 +710,7 @@ impl LocalMachine {
             })
             .await??;
         if let Err(error) = containers.remove_all_managed().await {
-            return Err(Error::Cleanup(error.to_string()));
+            return Err(Error::Cleanup(ployz_core::error_chain::inline(&error)));
         }
         self.depart_storage().await?;
         if let Some(prepared_reset) = prepared_reset {
@@ -716,7 +722,7 @@ impl LocalMachine {
             .remove(&machine_id)
             .await
             .err()
-            .map(|error| error.to_string());
+            .map(|error| ployz_core::error_chain::inline(&error));
         Ok(local_removal_response(
             &self.owner,
             reset_warning,

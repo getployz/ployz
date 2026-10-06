@@ -249,9 +249,12 @@ impl ReplicatedStore {
         let Some([value]) = rows.first() else {
             return Err(Error::Protocol("Cluster network is missing".into()));
         };
-        text(value, "Cluster network")?
-            .parse()
-            .map_err(|error| Error::Protocol(format!("invalid Cluster network: {error}")))
+        text(value, "Cluster network")?.parse().map_err(|error| {
+            Error::Protocol(format!(
+                "invalid Cluster network: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            ))
+        })
     }
 
     pub async fn machine(&self, id: &str) -> Result<Option<Machine>, Error> {

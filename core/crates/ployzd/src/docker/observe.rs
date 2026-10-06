@@ -81,7 +81,10 @@ impl ContainerRuntime {
     {
         while !shutdown.is_cancelled() {
             if let Err(error) = watch(self, sink, &shutdown).await {
-                eprintln!("{retry}: {error}");
+                eprintln!(
+                    "{retry}: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                );
                 tokio::select! {
                     () = tokio::time::sleep(Duration::from_secs(1)) => {}
                     () = shutdown.cancelled() => {}
@@ -156,7 +159,7 @@ impl ContainerRuntime {
     {
         let since = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|error| Error::Clock(error.to_string()))?
+            .map_err(|error| Error::Clock(ployz_core::error_chain::inline(&error)))?
             .as_secs()
             .to_string();
         let options = EventsOptionsBuilder::default()
@@ -211,7 +214,10 @@ impl ContainerRuntime {
                     live.observed(redacted_container(&observation));
                 }
                 Err(error) => {
-                    eprintln!("failed to inspect managed container {container_id}: {error}")
+                    eprintln!(
+                        "failed to inspect managed container {container_id}: {error}",
+                        error = ployz_core::error_chain::inline(&error),
+                    )
                 }
             }
         }

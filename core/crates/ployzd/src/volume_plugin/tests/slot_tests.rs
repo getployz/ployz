@@ -52,7 +52,7 @@ async fn mirror_admission_uses_ensure_capacity() {
         let message = match route {
             "/VolumeDriver.Create" => error(&response).to_owned(),
             _ => response
-                .pointer("/Err/message")
+                .pointer("/Err/cause/0")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned(),

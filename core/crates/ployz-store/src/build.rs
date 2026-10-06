@@ -659,6 +659,7 @@ pub(crate) fn github_authorize(
             code: ployz_core::RpcErrorCode::Unauthenticated,
             message: message.to_owned(),
             details: json!({}),
+            cause: Vec::new(),
         })
     };
     if claims.repository_id != source.repository_id.to_string() {

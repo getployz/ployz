@@ -380,6 +380,7 @@ pub(crate) fn add_domain(
                     code: RpcErrorCode::Unsupported,
                     message: "Custom domains need Ployz Pro".into(),
                     details: json!({ "next": "ployz billing upgrade" }),
+                    cause: Vec::new(),
                 });
             }
             match existing {

@@ -362,7 +362,10 @@ where
                     match result {
                         Ok(()) => last_input = Some(input),
                         Err(error) => {
-                            eprintln!("failed to update Ingress Proxy configuration: {error}");
+                            eprintln!(
+                                "failed to update Ingress Proxy configuration: {error}",
+                                error = ployz_core::error_chain::inline(&error),
+                            );
                             if wait_before_retry(&shutdown).await {
                                 continue;
                             }
@@ -373,7 +376,10 @@ where
                 Ok(_) => {}
                 Err(error) => {
                     last_input = None;
-                    eprintln!("failed to rebuild ingress projection: {error}");
+                    eprintln!(
+                        "failed to rebuild ingress projection: {error}",
+                        error = ployz_core::error_chain::inline(&error),
+                    );
                 }
             }
             match wait_for_debounced_change(
@@ -471,7 +477,7 @@ async fn wait_for_debounced_change(
 }
 
 async fn wait_to_retry(error: &CorrosionError, shutdown: &CancellationToken) -> bool {
-    tracing::warn!(error = %error, "ingress watcher failed, retrying");
+    tracing::warn!(error = %ployz_core::error_chain::inline(error), "ingress watcher failed, retrying");
     wait_before_retry(shutdown).await
 }
 

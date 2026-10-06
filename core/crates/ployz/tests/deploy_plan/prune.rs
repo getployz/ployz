@@ -68,6 +68,7 @@ fn required_container_failure_makes_the_snapshot_incomplete() {
                 code: RpcErrorCode::Unavailable,
                 message: "container listing failed".into(),
                 details: Default::default(),
+                cause: Vec::new(),
             },
         }],
         ..Default::default()
@@ -90,6 +91,7 @@ fn required_named_volume_failure_makes_the_snapshot_incomplete() {
                     code: RpcErrorCode::Unavailable,
                     message: "detail failed".into(),
                     details: Default::default(),
+                    cause: Vec::new(),
                 },
             }],
             Vec::new(),

@@ -214,7 +214,7 @@ async fn serve_connection<S>(
     let connection = match incoming.await {
         Ok(connection) => connection,
         Err(error) => {
-            tracing::debug!(%error, "management handshake failed");
+            tracing::debug!(error = %ployz_core::error_chain::inline(&error), "management handshake failed");
             return;
         }
     };
@@ -283,7 +283,7 @@ where
         streams = connection.accept_bi() => match streams {
             Ok(streams) => streams,
             Err(error) => {
-                tracing::debug!(%error, "management client opened no RPC stream");
+                tracing::debug!(error = %ployz_core::error_chain::inline(&error), "management client opened no RPC stream");
                 return Ended::Closed;
             }
         },
@@ -305,7 +305,7 @@ where
     let ended = tokio::select! {
         served = serving.as_mut() => {
             if let Err(error) = served {
-                tracing::debug!(%error, "management connection ended");
+                tracing::debug!(error = %ployz_core::error_chain::inline(&error), "management connection ended");
             }
             return Ended::Closed;
         }
@@ -319,7 +319,7 @@ where
     serving.as_mut().graceful_shutdown();
     let drained = async {
         if let Err(error) = serving.await {
-            tracing::debug!(%error, "management connection failed while draining");
+            tracing::debug!(error = %ployz_core::error_chain::inline(&error), "management connection failed while draining");
         }
     };
     let Ended::Revoked = ended else {

@@ -154,16 +154,23 @@ impl PoolStorage {
             .map_err(|error| {
                 format!(
                     "could not open Machine Pool mutation lock {}: {error}",
-                    lock_path.display()
+                    lock_path.display(),
+                    error = ployz_core::error_chain::inline(&error),
                 )
             })?;
         tokio::task::spawn_blocking(move || fs2::FileExt::lock_exclusive(&lock).map(|()| lock))
             .await
-            .map_err(|error| format!("could not wait for Machine Pool mutation lock: {error}"))?
+            .map_err(|error| {
+                format!(
+                    "could not wait for Machine Pool mutation lock: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                )
+            })?
             .map_err(|error| {
                 format!(
                     "could not lock Machine Pool mutations through {}: {error}",
-                    lock_path.display()
+                    lock_path.display(),
+                    error = ployz_core::error_chain::inline(&error),
                 )
                 .into()
             })
@@ -185,7 +192,8 @@ impl PoolStorage {
             ],
         )
         .await?;
-        Ok(machine_pool::one_usable(&output).map_err(|error| error.to_string())?)
+        Ok(machine_pool::one_usable(&output)
+            .map_err(|error| ployz_core::error_chain::inline(&error))?)
     }
 
     /// Imports this host's valid backing Pool and optionally reclaims an unlabeled stale file.
@@ -199,18 +207,20 @@ impl PoolStorage {
             Err(error) => {
                 return Err(format!(
                     "could not inspect Machine Pool backing file {}: {error}",
-                    self.backing.display()
+                    self.backing.display(),
+                    error = ployz_core::error_chain::inline(&error),
                 )
                 .into());
             }
         }
         let backing = self.backing_text()?;
         let output = checked_command(&self.zpool, &["import", "-d", backing]).await?;
-        let pools = machine_pool::importable_names(&output).map_err(|error| error.to_string())?;
+        let pools = machine_pool::importable_names(&output)
+            .map_err(|error| ployz_core::error_chain::inline(&error))?;
         if pools.is_empty() {
             let output = checked_command(&self.zpool, &["import", "-D", "-d", backing]).await?;
             if !machine_pool::importable_names(&output)
-                .map_err(|error| error.to_string())?
+                .map_err(|error| ployz_core::error_chain::inline(&error))?
                 .is_empty()
             {
                 return Err(format!(
@@ -223,7 +233,8 @@ impl PoolStorage {
                 self.remove_backing().map_err(|error| {
                     format!(
                         "could not remove unlabeled Machine Pool backing file {}: {error}",
-                        self.backing.display()
+                        self.backing.display(),
+                        error = ployz_core::error_chain::inline(&error),
                     )
                 })?;
             }
@@ -283,7 +294,8 @@ impl PoolStorage {
             .map_err(|error| {
                 format!(
                     "could not create Machine Pool backing file {}: {error}",
-                    backing
+                    backing,
+                    error = ployz_core::error_chain::inline(&error),
                 )
             })?;
         let capacity_text = capacity.to_string();
@@ -427,8 +439,7 @@ impl PoolStorage {
             Err(error) => {
                 return format!(
                     "{failure}; cleanup could not inspect Machine Pools: {error}; backing file retained at {}",
-                    self.backing.display()
-                )
+                    self.backing.display(), error = ployz_core::error_chain::inline(&error),)
                 .into();
             }
         };
@@ -437,8 +448,7 @@ impl PoolStorage {
         {
             return format!(
                 "{failure}; cleanup could not destroy Machine Pool {POOL_NAME}: {error}; backing file retained at {}",
-                self.backing.display()
-            )
+                self.backing.display(), error = ployz_core::error_chain::inline(&error),)
             .into();
         }
         self.cleanup_backing(failure)
@@ -483,7 +493,8 @@ impl PoolStorage {
         let host = fs::metadata(&self.host_root).map_err(|error| {
             format!(
                 "could not inspect host root {}: {error}",
-                self.host_root.display()
+                self.host_root.display(),
+                error = ployz_core::error_chain::inline(&error),
             )
         })?;
         let backing_directory = self.backing.parent().ok_or_else(|| {
@@ -495,7 +506,8 @@ impl PoolStorage {
         let data = fs::metadata(backing_directory).map_err(|error| {
             format!(
                 "could not inspect Machine Pool backing directory {}: {error}",
-                backing_directory.display()
+                backing_directory.display(),
+                error = ployz_core::error_chain::inline(&error),
             )
         })?;
         if host.dev() != data.dev() {
@@ -556,7 +568,8 @@ impl PoolStorage {
         let mut path = fs::canonicalize(&device).map_err(|error| {
             format!(
                 "could not resolve host-root block device {}: {error}",
-                device.display()
+                device.display(),
+                error = ployz_core::error_chain::inline(&error),
             )
         })?;
         loop {
@@ -571,7 +584,8 @@ impl PoolStorage {
                 Err(error) => {
                     return Err(format!(
                         "could not detect host-root physical block size from {}: {error}",
-                        physical_block_size.display()
+                        physical_block_size.display(),
+                        error = ployz_core::error_chain::inline(&error),
                     )
                     .into());
                 }
@@ -631,7 +645,8 @@ impl PoolStorage {
             Ok(()) => failure,
             Err(error) => format!(
                 "{failure}; cleanup could not remove Machine Pool backing file {}: {error}",
-                self.backing.display()
+                self.backing.display(),
+                error = ployz_core::error_chain::inline(&error),
             )
             .into(),
         }

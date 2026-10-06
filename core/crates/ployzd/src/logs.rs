@@ -75,7 +75,7 @@ pub fn serve_logs(mut source: LogSource, metadata: LogMetadata, follow: bool) ->
                         }
                     }
                     Some(Err(error)) => {
-                        let _ = send_entry(&sender, LogEntry::error(metadata.clone(), error.to_string())).await;
+                        let _ = send_entry(&sender, LogEntry::error(metadata.clone(), ployz_core::error_chain::inline(&error))).await;
                         return;
                     }
                     None => return,
@@ -104,7 +104,7 @@ async fn send_entry(
 ) -> Result<(), ()> {
     let payload = entry
         .encode()
-        .map_err(|error| Status::internal(error.to_string()));
+        .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Internal, &error));
     sender.send(payload).await.map_err(|_| ())
 }
 
@@ -114,7 +114,12 @@ pub async fn open_journal_logs(unit: &str, options: &LogsOptions) -> Result<LogS
         .stdout(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|error| Status::internal(format!("start journalctl: {error}")))?;
+        .map_err(|error| {
+            Status::internal(format!(
+                "start journalctl: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            ))
+        })?;
     let stdout = child
         .stdout
         .take()

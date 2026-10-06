@@ -3,7 +3,7 @@
 
 use std::{fs, os::unix::fs::MetadataExt, path::Path, time::Duration};
 
-use ployz_core::{MachineRelease, MachineUpgradeStage, MachineVersion};
+use ployz_core::{MachineRelease, MachineUpgradeStage, MachineVersion, error_chain::inline};
 use thiserror::Error;
 
 use super::{Error as InstallError, InstallMode, InstallPaths, InstallRequest, ReleaseSource};
@@ -23,19 +23,17 @@ const PLUGIN_UNITS: [&str; 2] = ["ployz-volume-plugin.socket", "ployz-volume-plu
 #[derive(Debug, Error)]
 pub enum UpgradeFailure {
     /// Nothing this attempt swapped needed putting back.
-    #[error("{0}")]
-    NotRestored(#[source] InstallError),
+    #[error(transparent)]
+    NotRestored(InstallError),
     /// The previous release is running again.
-    #[error("{error}; restored {previous}")]
+    #[error("{}; restored {previous}", inline(.error))]
     Restored {
-        #[source]
         error: InstallError,
         previous: MachineVersion,
     },
     /// Putting the previous release back failed too.
-    #[error("{error}; restore failed: {restore}")]
+    #[error("{}; restore failed: {}", inline(.error), inline(.restore))]
     RestoreFailed {
-        #[source]
         error: InstallError,
         restore: InstallError,
     },

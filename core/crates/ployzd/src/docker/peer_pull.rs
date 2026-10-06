@@ -29,7 +29,8 @@ pub(crate) async fn pull_from_ingest(
 ) -> Result<(), Error> {
     let image = pull.image();
     let retained = if image.contains('@') {
-        ImageDigestReference::parse(image).map_err(|error| Error::PeerPull(error.to_string()))?;
+        ImageDigestReference::parse(image)
+            .map_err(|error| Error::PeerPull(ployz_core::error_chain::inline(&error)))?;
         if !super::LocalDocker::connect()?
             .uses_containerd_store()
             .await?
@@ -105,10 +106,10 @@ impl ImageProxy {
     pub(crate) async fn open(source: ImageIngestDestination) -> Result<Self, Error> {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
-            .map_err(|error| Error::PeerPull(error.to_string()))?;
+            .map_err(|error| Error::PeerPull(ployz_core::error_chain::inline(&error)))?;
         let port = listener
             .local_addr()
-            .map_err(|error| Error::PeerPull(error.to_string()))?
+            .map_err(|error| Error::PeerPull(ployz_core::error_chain::inline(&error)))?
             .port();
         let source = SocketAddr::from((source.management_address.0, source.port));
         let task = tokio::spawn(async move {
@@ -141,7 +142,7 @@ async fn docker_cli(docker: &std::path::Path, args: &[&str]) -> Result<String, E
         .args(args)
         .output()
         .await
-        .map_err(|error| Error::PeerPull(error.to_string()))?;
+        .map_err(|error| Error::PeerPull(ployz_core::error_chain::inline(&error)))?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {

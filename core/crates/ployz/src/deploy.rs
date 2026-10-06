@@ -75,8 +75,9 @@ impl VolumeSnapshot {
         Self::try_from_parts(observations, named_failures, machine_failures, omissions).map_err(
             |error| RpcError {
                 code: RpcErrorCode::Internal,
-                message: format!("invalid Docker Volume snapshot: {}", error.message),
+                message: format!("invalid Docker Volume snapshot: {}", crate::ui::row(&error)),
                 details: error.details,
+                cause: Vec::new(),
             },
         )
     }
@@ -123,6 +124,7 @@ impl VolumeSnapshot {
             code: RpcErrorCode::InvalidArgument,
             message,
             details: serde_json::Value::Null,
+            cause: Vec::new(),
         };
         let mut ids = BTreeSet::new();
         for volume in &self.observations {
@@ -212,7 +214,12 @@ impl VolumeSnapshot {
         self.machine_failures
             .iter()
             .find(|failure| failure.machine_id == machine_id)
-            .map(|failure| format!("Docker Volume inventory failed: {}", failure.error.message))
+            .map(|failure| {
+                format!(
+                    "Docker Volume inventory failed: {}",
+                    crate::ui::row(&failure.error)
+                )
+            })
             .or_else(|| {
                 self.omissions
                     .contains(&machine_id)
@@ -236,7 +243,7 @@ impl VolumeSnapshot {
             .map(|failure| DeployWarning::ObservationFailed {
                 kind: ObservationKind::Volume,
                 machine_id: failure.machine_id,
-                message: failure.error.message.clone(),
+                message: crate::ui::row(&failure.error),
             })
             .chain(
                 self.omissions
@@ -331,6 +338,10 @@ pub enum EliminatingConstraint {
     MachineDown {
         names: Vec<MachineName>,
     },
+    VolumeInventoryUnavailable {
+        machine: MachineName,
+        message: String,
+    },
     VolumeAlreadyOn {
         volume: DockerVolumeName,
         located_on: Vec<MachineName>,
@@ -410,6 +421,9 @@ impl fmt::Display for EliminatingConstraint {
                 } else {
                     f.write_str(" are down")
                 }
+            }
+            Self::VolumeInventoryUnavailable { machine, message } => {
+                write!(f, "Machine '{machine}' was skipped because its {message}")
             }
             Self::VolumeAlreadyOn { volume, located_on } => {
                 write!(f, "Docker Volume '{volume}' is already on ")?;
@@ -618,6 +632,7 @@ impl PlanError {
                 code: RpcErrorCode::InvalidArgument,
                 message: error.to_string(),
                 details: serde_json::Value::Null,
+                cause: Vec::new(),
             },
         }
     }

@@ -173,6 +173,23 @@ fn machine_rpc_status_prints_the_message_not_transport_metadata() {
 }
 
 #[test]
+fn a_daemon_status_carries_its_causes_to_cause_lines() {
+    let sent = RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "transport error".into(),
+        details: Value::Null,
+        cause: vec!["keep-alive timed out".into()],
+    };
+    let status = ployz_core::rpc::caused_status(tonic::Code::Unavailable, &sent);
+    let error = TransportError::from(status);
+    assert_eq!(error.to_string(), "transport error");
+    assert_eq!(crate::ui::causes(&error), ["keep-alive timed out"]);
+    let rpc = error.to_rpc_error();
+    assert_eq!(rpc.cause, ["keep-alive timed out"]);
+    assert_eq!(rpc.details, Value::Null);
+}
+
+#[test]
 fn reached_target_cleanup_rejections_are_not_unreachable_fallbacks() {
     assert!(
         ConnectError::Rpc(TransportError::from(tonic::Status::unavailable(
@@ -191,6 +208,7 @@ fn reached_target_cleanup_rejections_are_not_unreachable_fallbacks() {
             code: RpcErrorCode::Unavailable,
             message: "Docker is unavailable".into(),
             details: serde_json::Value::Null,
+            cause: Vec::new(),
         })
         .is_unreachable()
     );

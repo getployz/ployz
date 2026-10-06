@@ -852,29 +852,25 @@ fn volume_constraints<'spec>(
     machines: &mut Vec<&MachineObservation>,
 ) -> Result<(Vec<&'spec ServiceVolume>, Vec<&'spec ServiceVolume>), PlanError> {
     let mounted_volumes = mounted_managed_volumes(spec.volume_graph());
-    let incomplete = machines.iter().find_map(|machine| {
-        snapshot
-            .volume_snapshot
-            .machine_gap(machine.machine.id)
-            .map(|message| (machine.machine.id, machine.machine.name.clone(), message))
-    });
+    let mut skipped = Vec::new();
     if !mounted_volumes.is_empty() {
         machines.retain(|machine| {
-            snapshot
-                .volume_snapshot
-                .machine_gap(machine.machine.id)
-                .is_none()
+            let Some(message) = snapshot.volume_snapshot.machine_gap(machine.machine.id) else {
+                return true;
+            };
+            skipped.push((machine.machine.id, machine.machine.name.clone(), message));
+            false
         });
     }
     if machines.is_empty()
-        && let Some((machine_id, machine, message)) = incomplete
+        && let Some((machine_id, machine, message)) = skipped.first()
         && let Some(name) = mounted_volumes
             .first()
             .and_then(|volume| managed_volume_name(volume))
     {
         return Err(PlanError::DockerVolumeUnavailable {
             id: DockerVolumeId {
-                machine_id,
+                machine_id: *machine_id,
                 name: name.clone(),
             },
             message: format!("Machine '{machine}' {message}"),
@@ -909,10 +905,20 @@ fn volume_constraints<'spec>(
         // ponytail: name the filter that emptied the set; no per-Machine matrix.
         let requested = &spec.placement.constraints;
         return Err(PlanError::no_eligible_machines(
-            mounted_volumes
-                .iter()
-                .filter_map(|volume| managed_volume_name(volume))
-                .filter_map(|name| volume_anchor(snapshot, plan, name, requested))
+            skipped
+                .into_iter()
+                .map(
+                    |(_, machine, message)| EliminatingConstraint::VolumeInventoryUnavailable {
+                        machine,
+                        message,
+                    },
+                )
+                .chain(
+                    mounted_volumes
+                        .iter()
+                        .filter_map(|volume| managed_volume_name(volume))
+                        .filter_map(|name| volume_anchor(snapshot, plan, name, requested)),
+                )
                 .collect(),
         ));
     }

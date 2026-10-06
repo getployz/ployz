@@ -92,9 +92,9 @@ async fn batch_preparation_rejects_an_existing_read_only_volume_before_dataset_c
 
     assert!(
         response
-            .pointer("/Err/message")
+            .pointer("/Err/cause/0")
             .and_then(Value::as_str)
-            .is_some_and(|message| message.contains("read-only")),
+            .is_some_and(|cause| cause.contains("read-only")),
         "{response}"
     );
     assert!(

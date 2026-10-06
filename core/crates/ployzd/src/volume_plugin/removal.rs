@@ -103,11 +103,11 @@ pub(super) async fn get(
 ) -> std::result::Result<Json<GetResponse>, HangUp> {
     let Json(request) = request.map_err(|rejection| HangUp(rejection.body_text()))?;
     let (volume, error) = match request.name.parse::<DockerVolumeName>() {
-        Err(error) => (None, error.to_string()),
+        Err(error) => (None, ployz_core::error_chain::inline(&error)),
         Ok(name) => match storage.inspect(&name).await {
             Ok(Some(volume)) => (Some(volume), String::new()),
             Ok(None) => (None, format!("Provisioned Volume {name} does not exist")),
-            Err(error) => return Err(HangUp(error.to_string())),
+            Err(error) => return Err(HangUp(ployz_core::error_chain::inline(&error))),
         },
     };
     Ok(Json(GetResponse { volume, error }))
@@ -121,7 +121,7 @@ pub(super) async fn list(State(storage): State<VolumeStorage>) -> Json<ListRespo
         }),
         Err(error) => Json(ListResponse {
             volumes: Vec::new(),
-            error: error.to_string(),
+            error: ployz_core::error_chain::inline(&error),
         }),
     }
 }

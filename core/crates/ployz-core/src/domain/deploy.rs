@@ -684,7 +684,7 @@ pub enum DependencyHealthFailure {
     Cancelled,
     #[error("no Service Containers were observed")]
     NoContainers,
-    #[error("container observation failed: {}", error.message)]
+    #[error("container observation failed: {}", crate::error_chain::inline(error))]
     Observation { error: RpcError },
     #[error("container {container_id} failed health monitoring: {failure}")]
     Container {
@@ -716,7 +716,11 @@ impl Display for HookFailure {
             Self::Exit { code } => return write!(f, "exited with code {code}"),
         };
         if let Some(error) = stop_error {
-            write!(f, "; stop also failed: {}", error.message.escape_debug())?;
+            write!(
+                f,
+                "; stop also failed: {}",
+                crate::error_chain::inline(error).escape_debug()
+            )?;
         }
         Ok(())
     }
@@ -726,7 +730,7 @@ impl Display for HookFailure {
 #[derive(Clone, Debug, Error, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ExecutionError {
-    #[error("{action} failed: {}", error.message)]
+    #[error("{action} failed: {}", crate::error_chain::inline(error))]
     Machine {
         action: MachineAction,
         error: RpcError,

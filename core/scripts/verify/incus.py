@@ -44,6 +44,22 @@ class Provider:
         self.incus("launch", self.run["image"], node["name"], "--vm", "--no-profiles", "-n", self.bridge,
                    "-s", self.pool, "-d", "root,size=24GiB", "-c", "limits.cpu=2", "-c", "limits.memory=2GiB",
                    "-c", "security.secureboot=false")
+        self.wait_agent(node)
+
+    def power_off(self, node):
+        # --force cuts power: no shutdown hooks, no flushed page cache.
+        if self.state(node) != "STOPPED":
+            self.incus("stop", node["name"], "--force")
+
+    def power_on(self, node):
+        if self.state(node) != "RUNNING":
+            self.incus("start", node["name"])
+        self.wait_agent(node)
+
+    def state(self, node):
+        return self.incus("list", node["name"], "-c", "s", "-f", "csv").stdout.decode().strip()
+
+    def wait_agent(self, node):
         deadline = time.monotonic() + 120
         while True:
             if not self.exec(node, ["true"], check=False, timeout=10).returncode:

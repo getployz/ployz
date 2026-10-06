@@ -182,11 +182,21 @@ impl ContainerRuntime {
                 .list_volumes(None::<bollard::query_parameters::ListVolumesOptions>)
                 .await,
         )?;
+        let warnings = listed.warnings.unwrap_or_default();
+        // Every Get after a failed ployz List hits the same broken plugin, and Docker retries
+        // each hang-up for about 15 seconds, overrunning the caller's read timeout.
+        let ployz_list_failure = warnings
+            .iter()
+            .find_map(|warning| warning.strip_prefix("list ployz: "));
         let mut inventory = VolumeInventory::default();
-        let mut observations = stream::iter(listed.into_iter().map(|volume| async move {
+        let volumes = listed.volumes.unwrap_or_default();
+        let mut observations = stream::iter(volumes.into_iter().map(|volume| async move {
             let id = docker_volume_id(machine_id, &volume.name)?;
             let observation = if volume.driver == "ployz" {
-                self.inspect_volume(machine_id, &id.name).await
+                match ployz_list_failure {
+                    Some(message) => Err(Error::VolumePluginListFailed(message.to_owned())),
+                    None => self.inspect_volume(machine_id, &id.name).await,
+                }
             } else {
                 docker_volume(machine_id, volume)
             };
@@ -393,6 +403,7 @@ impl From<Volume> for RawVolume {
 #[serde(rename_all = "PascalCase")]
 struct RawVolumeList {
     volumes: Option<Vec<RawVolume>>,
+    warnings: Option<Vec<String>>,
 }
 
 fn decode_volume(result: Result<Volume, bollard::errors::Error>) -> Result<RawVolume, Error> {
@@ -416,18 +427,16 @@ pub(super) async fn ensure_volume_exists(docker: &Docker, name: &str) -> Result<
 
 fn decode_volume_list(
     result: Result<bollard::models::VolumeListResponse, bollard::errors::Error>,
-) -> Result<Vec<RawVolume>, Error> {
+) -> Result<RawVolumeList, Error> {
     match result {
-        Ok(response) => Ok(response
-            .volumes
-            .unwrap_or_default()
-            .into_iter()
-            .map(Into::into)
-            .collect()),
-        Err(bollard::errors::Error::JsonDataError { contents, .. }) => {
-            Ok(serde_json::from_str::<RawVolumeList>(&contents)?
+        Ok(response) => Ok(RawVolumeList {
+            volumes: response
                 .volumes
-                .unwrap_or_default())
+                .map(|volumes| volumes.into_iter().map(Into::into).collect()),
+            warnings: response.warnings,
+        }),
+        Err(bollard::errors::Error::JsonDataError { contents, .. }) => {
+            Ok(serde_json::from_str(&contents)?)
         }
         Err(error) => Err(error.into()),
     }

@@ -530,12 +530,20 @@ pub(super) async fn verify_daemon_contract(
 ) -> Result<(), Error> {
     let endpoint =
         Endpoint::from_shared(format!("unix:{}", socket.display())).map_err(|error| {
-            Error::Verification(format!("invalid Machine API socket address: {error}"))
+            Error::Verification(format!(
+                "invalid Machine API socket address: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            ))
         })?;
     let channel = tokio::time::timeout(std::time::Duration::from_secs(10), endpoint.connect())
         .await
         .map_err(|_| Error::Verification("Machine API readiness timed out after 10s".into()))?
-        .map_err(|error| Error::Verification(format!("Machine API is not ready: {error}")))?;
+        .map_err(|error| {
+            Error::Verification(format!(
+                "Machine API is not ready: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            ))
+        })?;
     let payload = op::DescribeContract::into_request(DescribeContractRequest {})
         .encode()
         .map_err(|error| {
@@ -550,7 +558,12 @@ pub(super) async fn verify_daemon_contract(
     )
     .await
     .map_err(|_| Error::Verification("Machine API readiness timed out after 10s".into()))?
-    .map_err(|error| Error::Verification(format!("Machine API is not ready: {error}")))?
+    .map_err(|error| {
+        Error::Verification(format!(
+            "Machine API is not ready: {error}",
+            error = ployz_core::error_chain::inline(&error),
+        ))
+    })?
     .into_inner()
     .decode_response()
     .and_then(|response| response.decode::<op::DescribeContract>())

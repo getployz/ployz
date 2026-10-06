@@ -194,6 +194,7 @@ fn unknown_dataset_locality_holds_placement_instead_of_creating_elsewhere() {
             code: RpcErrorCode::Unavailable,
             message: "storage inspection failed".into(),
             details: serde_json::Value::Null,
+            cause: Vec::new(),
         }),
     ] {
         if let Some(error) = failure {

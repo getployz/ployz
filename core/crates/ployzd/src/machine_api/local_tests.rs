@@ -656,11 +656,8 @@ async fn volume_switch_verbs_refuse_a_machine_outside_the_cluster() {
         name: name.clone(),
     });
     let adopt = op::AdoptLease::into_request(ployz_core::AdoptLeaseRequest {
-        switch: ployz_core::Switch {
-            lease: ployz_core::Lease::new(1),
-            pos: ployz_core::Pos::ADOPT_LEASE,
-            not_after_unix_seconds: i64::MAX,
-        },
+        lease: ployz_core::Lease::new(1),
+        not_after_unix_seconds: i64::MAX,
         name,
     });
     for (verb, request) in [("InspectVolumeCopy", inspect), ("AdoptLease", adopt)] {

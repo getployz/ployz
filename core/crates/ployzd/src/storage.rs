@@ -44,7 +44,7 @@ impl Plugin {
         .await
         .map_err(|error: reqwest::Error| {
             StorageCapacityError::StorageCapacityUnknown {
-                message: error.to_string(),
+                message: ployz_core::error_chain::inline(&error),
             }
             .into_rpc_error()
         })?

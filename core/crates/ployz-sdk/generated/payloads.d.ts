@@ -2628,7 +2628,11 @@ export type RowId = string & { readonly __brand: "RowId" };
 
 export type RowRef = string;
 
-export type RpcError = { code: RpcErrorCode, message: string, details: JsonValue, };
+export type RpcError = { code: RpcErrorCode, message: string, details: JsonValue,
+/**
+ * Each source below `message` on the peer that failed, outermost first.
+ */
+cause?: Array<string>, };
 
 export type RpcErrorCode = "invalid_argument" | "not_found" | "ambiguous" | "unsupported" | "unavailable" | "conflict" | "internal" | "unauthenticated" | "confirmation_required" | string;
 

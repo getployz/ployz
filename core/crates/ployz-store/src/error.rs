@@ -8,6 +8,7 @@ fn error(code: RpcErrorCode, message: impl Into<String>, details: Value) -> RpcE
         code,
         message: message.into(),
         details,
+        cause: Vec::new(),
     }
 }
 

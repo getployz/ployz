@@ -348,7 +348,10 @@ async fn apply_service_action(
         for failure in outcomes.failures {
             eprintln!(
                 "WARNING: {} failed for {} on {}: {}",
-                action, failure.error.container_id, failure.machine_id, failure.error.error.message
+                action,
+                failure.error.container_id,
+                failure.machine_id,
+                crate::ui::row(&failure.error.error)
             );
             container_failures.push(ContainerFailure {
                 machine_id: failure.machine_id,
@@ -375,7 +378,10 @@ async fn apply_service_action(
         .await
         .err();
     if let Some(error) = &wait_error {
-        eprintln!("WARNING: {action} was not confirmed: {}", error.message);
+        eprintln!(
+            "WARNING: {action} was not confirmed: {}",
+            crate::ui::row(error)
+        );
         partial = true;
     }
     if !live.containers.all_targets_succeeded() {
@@ -445,7 +451,8 @@ fn observation_warning_lines(live: &LiveServices<RpcError>) -> Vec<String> {
     lines.extend(live.containers.failures.iter().map(|failure| {
         format!(
             "WARNING: Machine {} failed: {}",
-            failure.machine_id, failure.error.message
+            failure.machine_id,
+            crate::ui::row(&failure.error)
         )
     }));
     lines.extend(
