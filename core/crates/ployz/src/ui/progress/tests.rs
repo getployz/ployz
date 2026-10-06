@@ -211,6 +211,33 @@ fn room() -> (usize, usize) {
 }
 
 #[test]
+fn each_animation_frame_is_written_once_at_the_driver_cadence() {
+    let terminal = InMemoryTerm::new(20, 90);
+    let backend = Backend::new(
+        Mode::Interactive,
+        ProgressDrawTarget::term_like(Box::new(terminal.clone())),
+        room,
+    );
+    drive(
+        Script {
+            now: Duration::ZERO,
+            events: VecDeque::from([(Duration::from_millis(250), Message::Abandon)]),
+        },
+        frame(State::Running(RowPhase::Starting)),
+        backend,
+        &mut TerminalWriter(terminal.clone()),
+        false,
+    );
+    let writes = terminal.moves_since_last_check();
+    assert_eq!(writes.matches("Deploying shop").count(), 3, "{writes}");
+    for spinner in ["⠋", "⠙", "⠹"] {
+        assert_eq!(writes.matches(spinner).count(), 1, "{writes}");
+    }
+    assert!(!writes.contains("⠸"), "{writes}");
+    assert!(terminal.contents().is_empty());
+}
+
+#[test]
 fn interactive_finish_retains_full_frame_once_and_preserves_earlier_output() {
     let terminal = InMemoryTerm::new(20, 90);
     terminal.write_line("Earlier command output").unwrap();

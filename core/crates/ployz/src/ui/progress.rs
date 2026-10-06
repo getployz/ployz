@@ -335,7 +335,6 @@ impl Backend {
             let (width, height) = (live.size)();
             live.bar
                 .set_message(live_lines(frame, tick, width, height, color).join("\n"));
-            live.bar.tick();
         }
     }
 }
