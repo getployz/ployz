@@ -320,6 +320,34 @@ impl Client {
         apply_timeout(timeout, self.call_once::<T>(payload, Some(target))).await
     }
 
+    /// One unary RPC from an already-shaped request body. No retry, as [`Self::invoke`].
+    #[cfg(feature = "verify-faults")]
+    pub(crate) async fn invoke_raw(
+        &self,
+        request: &ployz_core::RpcRequest,
+        path: &'static str,
+        target: &MachineTarget,
+        timeout: Option<Duration>,
+    ) -> Result<ployz_core::RpcResponse, RpcError> {
+        let payload = request
+            .encode()
+            .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
+        apply_timeout(timeout, async {
+            let mut grpc = tonic::client::Grpc::new(self.channel.clone());
+            grpc.ready().await?;
+            Ok(grpc
+                .unary(
+                    target_request(payload, Some(target)),
+                    PathAndQuery::from_static(path),
+                    ProstCodec::<OpaquePayload, OpaquePayload>::default(),
+                )
+                .await?
+                .into_inner()
+                .decode_response()?)
+        })
+        .await
+    }
+
     fn machine_rpc(&self) -> MachineRpcClient<Channel> {
         MachineRpcClient::new(self.channel.clone())
     }

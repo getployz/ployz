@@ -71,8 +71,17 @@ what that observer saw; different observers may legitimately disagree until thei
 observations converge. Weak semantics stated honestly beat strong semantics
 enforced badly.
 
+**Machine-local lease records.** A Volume switch is a Cloud-driven sequence of
+Machine RPCs, and Cloud's own late or retried requests can arrive after the
+Machine has moved on. Each Machine keeps one lease record per Volume on its Pool
+and fences such requests against it: a stale lease or an earlier step is refused,
+a repeat answers what it already did. That record is admission, not
+coordination. The Machines decide it, Cloud carries it, and no Machine's record
+claims to be the Cluster's view of the Volume.
+
 **Red flags:** fencing tokens, leases, leader election, quorum reads, any API or
-message claiming a complete or canonical Cluster view.
+message claiming a complete or canonical Cluster view. A Machine-local lease
+record that fences Cloud's own late requests is none of these.
 
 ## 2. AP over C — inside the Cluster
 
@@ -254,6 +263,14 @@ These separate observation and lifecycle calls are not atomic; new creation and
 storage preparation independently enforce fresh Machine-local admission.
 These checks admit work for an already-selected target; they do not schedule
 work across Machines.
+
+**Volume switch verbs.** Moving a Provisioned Volume between Machines is ZFS
+work on both Pools: snapshots, send and receive, promoting a mirror, fencing a
+late request against the lease record. That is Machine-local resource management
+and a Machine-local safety boundary, so the daemon owns these verbs and the
+tasks behind them (a receive that outlives the request, a Promote, a Start),
+each admitted on this Machine's own record and markers. Cloud sequences the
+verbs; it never performs one.
 
 **Red flags:** daemon-side policy without one of the three reasons, daemon logic
 a client could compute from the observations it already gathers.

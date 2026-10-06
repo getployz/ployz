@@ -407,6 +407,18 @@ _Avoid_: Cluster pool, auto-created pool, dedicated disk, Machine ZFS Pool, ZFS-
 A Docker Volume backed by a dataset on a Machine Pool, with a declared maximum size. An ordinary named Docker Volume is not one and is unaffected. User-facing copy (CLI output, errors, dashboard) calls it a Managed volume and an ordinary one a Docker volume; Provisioned stays the wire and code name. A Machine without a Machine Pool reads Docker only.
 _Avoid_: Managed ZFS Volume, cluster volume, storage class, CSI volume; Managed volume in wire or code names
 
+**Writer**:
+The one copy of a Provisioned Volume that Containers mount read-write: the dataset in the Pool's Volume root, with its writer marker idle. A copy whose marker is mid-switch is not a writer, and a Volume can have no writer at all.
+_Avoid_: primary, master, active replica, source of truth
+
+**Mirror**:
+A read-only point-in-time copy of a Provisioned Volume held in a hidden slot on another Machine's Pool, refreshed by request. Docker never lists a slot; the Pool still pays for its bound. It is not continuous replication and does not make the Volume shared.
+_Avoid_: replica, standby, backup, secondary
+
+**Lease**:
+The per-Volume record each Machine keeps on its Pool, `<lease>:<seq>.<round>.<sub>:<open|closed>`, that admits a switch request only when its lease and step are not behind what this Machine already did. A newer lease adopts; the same step replays; anything older is refused. It outlives the copy, `docker volume rm` and a Machine reset.
+_Avoid_: lock, fencing token, leader, epoch (as a user-facing word)
+
 **Service Volume Reference**:
 A name used within one Service specification to refer to storage. It is not the Docker Volume name or a machine-independent storage identity.
 _Avoid_: Docker Volume name, cluster volume ID

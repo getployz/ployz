@@ -20,6 +20,7 @@ pub mod daemon;
 pub mod diag;
 pub mod dns;
 pub mod docker;
+mod faults;
 pub(crate) mod filesystem;
 mod host_capacity;
 pub(crate) mod ingress;

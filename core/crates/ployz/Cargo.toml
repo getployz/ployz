@@ -46,6 +46,9 @@ unicode-segmentation = "1.13.3"
 unicode-width = { version = "0.2.2", default-features = false }
 uuid = { version = "1.24.0", features = ["v4"] }
 
+[features]
+verify-faults = []
+
 [dev-dependencies]
 base64 = "0.22.1"
 ployz-testkit.workspace = true

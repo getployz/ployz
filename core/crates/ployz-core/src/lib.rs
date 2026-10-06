@@ -20,6 +20,7 @@ pub mod service;
 mod storage_capacity;
 pub mod stream;
 pub mod value;
+mod volume_switch;
 
 pub use container_metadata::*;
 pub use domain::*;
@@ -36,6 +37,7 @@ pub use service::*;
 pub use storage_capacity::*;
 pub use stream::*;
 pub use value::*;
+pub use volume_switch::*;
 
 /// How long a Machine may take to become ready after start or restart,
 /// including a first Corrosion image pull. systemd start is extended up to

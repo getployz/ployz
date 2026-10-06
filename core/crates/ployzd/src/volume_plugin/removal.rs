@@ -4,6 +4,7 @@ use axum::{
     Json,
     extract::{State, rejection::JsonRejection},
 };
+use ployz_core::WriterMarker;
 use ployzd::VolumePluginStatus;
 use serde::Serialize;
 
@@ -26,7 +27,15 @@ impl VolumeStorage {
         let dataset = Self::dataset(&datasets, &pool, name)?
             .expect("the requested dataset was just observed");
         dataset.require_provisioned(name)?;
-        self.zfs(&["destroy", &dataset.name]).await?;
+        let writer = self.writer_marker(dataset).await?;
+        if writer != WriterMarker::Idle {
+            return Err(format!(
+                "VolumeSwitching: Volume {name} is mid-run on this Machine (writer {writer}); refusing to remove {}",
+                dataset.name
+            )
+            .into());
+        }
+        self.zfs(&["destroy", "-r", &dataset.name]).await?;
         Ok(())
     }
 

@@ -104,6 +104,7 @@ impl Daemon {
     ///
     /// If construction, binding, or required planes fail.
     pub async fn start(config: DaemonConfig) -> Result<Self, Error> {
+        crate::faults::check_env()?;
         let socket = MachineApiSocket::claim(&config.socket)?;
         let run_dir = config
             .socket

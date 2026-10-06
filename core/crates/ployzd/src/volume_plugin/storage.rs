@@ -11,7 +11,37 @@ use tokio::{
 use super::{DockerVolumeName, Result, VolumeError, pool::PoolStorage};
 
 pub(super) const DATASET_ROOT: &str = "ployz";
+pub(super) const MIRROR_ROOT: &str = "ployz-mirror";
 pub(super) const MOUNT_ROOT: &str = "/var/lib/ployz-volumes";
+
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum Place<'name> {
+    Root(&'name str),
+    Slot(&'name str),
+    Outside,
+}
+
+impl<'name> Place<'name> {
+    pub(super) fn of(dataset: &'name str, pool: &str) -> Self {
+        let Some(rest) = dataset
+            .strip_prefix(pool)
+            .and_then(|rest| rest.strip_prefix('/'))
+        else {
+            return Self::Outside;
+        };
+        if let Some(name) = rest.strip_prefix(&format!("{DATASET_ROOT}/")) {
+            return Self::Root(name);
+        }
+        match rest.strip_prefix(&format!("{MIRROR_ROOT}/")) {
+            Some(slot) => Self::Slot(slot.split('/').next().unwrap_or(slot)),
+            None => Self::Outside,
+        }
+    }
+
+    pub(super) fn commits(&self) -> bool {
+        matches!(self, Self::Root(_) | Self::Slot(_))
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct VolumeStorage {
@@ -82,17 +112,17 @@ impl VolumeStorage {
         }
 
         if matches!(origin, CapacityAdmission::Required) {
-            let commitment = datasets
+            let committed = datasets
                 .iter()
-                .filter(|dataset| dataset.name.starts_with(&format!("{root}/")))
+                .filter(|dataset| Place::of(&dataset.name, pool.name()).commits());
+            let commitment = committed
+                .clone()
                 .map(|dataset| dataset.refquota)
                 .try_fold(requested, u64::checked_add)
                 .ok_or_else(|| {
                     VolumeError::from("Provisioned Volume commitments overflowed u64")
                 })?;
-            let managed_used = datasets
-                .iter()
-                .filter(|dataset| dataset.name.starts_with(&format!("{root}/")))
+            let managed_used = committed
                 .map(|dataset| dataset.active_used_bytes)
                 .try_fold(0u64, u64::checked_add)
                 .ok_or("Dataset occupancy overflows u64")?;
@@ -106,18 +136,23 @@ impl VolumeStorage {
         }
 
         if !datasets.iter().any(|dataset| dataset.name == root) {
-            self.zfs(&[
-                "create",
-                "-o",
-                "canmount=off",
-                "-o",
-                &format!("mountpoint={MOUNT_ROOT}"),
-                &root,
-            ])
-            .await?;
+            self.create_root(&root).await?;
         }
         self.zfs(&["create", "-o", &format!("refquota={requested}"), &volume])
             .await?;
+        Ok(())
+    }
+
+    pub(super) async fn create_root(&self, root: &str) -> Result<()> {
+        self.zfs(&[
+            "create",
+            "-o",
+            "canmount=off",
+            "-o",
+            &format!("mountpoint={MOUNT_ROOT}"),
+            root,
+        ])
+        .await?;
         Ok(())
     }
 
@@ -128,7 +163,7 @@ impl VolumeStorage {
         let dataset = Self::dataset(&datasets, &pool, name)?
             .ok_or_else(|| format!("Provisioned Volume {name} does not exist"))?;
         dataset.require_provisioned(name)?;
-        dataset.require_writable()?;
+        dataset.require_not_switching(name)?;
         if dataset.mounted {
             return Ok(dataset.mountpoint.clone());
         }
@@ -137,7 +172,7 @@ impl VolumeStorage {
         let dataset = Self::dataset(&datasets, &pool, name)?
             .ok_or_else(|| format!("Provisioned Volume {name} disappeared while mounting"))?;
         dataset.require_provisioned(name)?;
-        dataset.require_writable()?;
+        dataset.require_not_switching(name)?;
         if !dataset.mounted {
             return Err(format!("Provisioned Volume {name} did not mount").into());
         }
@@ -277,6 +312,17 @@ impl Dataset {
         }
         Err(format!(
             "ZFS dataset {} is read-only; make it writable before retrying",
+            self.name
+        )
+        .into())
+    }
+
+    pub(super) fn require_not_switching(&self, name: &DockerVolumeName) -> Result<()> {
+        if !self.readonly {
+            return Ok(());
+        }
+        Err(format!(
+            "VolumeSwitching: Volume {name} is mid-run on this Machine (ZFS dataset {} is read-only); wait for the run to finish",
             self.name
         )
         .into())

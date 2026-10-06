@@ -50,6 +50,9 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 x509-parser = "0.18.1"
 
+[features]
+verify-faults = []
+
 [dev-dependencies]
 base64 = "0.22.1"
 iroh = { version = "1.2", default-features = false, features = ["tls-ring", "test-utils"] }

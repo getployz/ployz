@@ -9,6 +9,9 @@ use std::{
 /// One ordinary writable Pool for plugin tests that do not exercise Pool growth.
 pub(super) const USABLE_POOL: &str = "tank\t4294967296\t0\t4294967296\tONLINE\toff\n";
 
+/// The `slot` marker's mirror slot bound: 3 GiB of the 4 GiB [`USABLE_POOL`].
+pub(super) const SLOT_BOUND_BYTES: u64 = 3 * 1024 * 1024 * 1024;
+
 /// Creates fake `zpool` and `zfs` programs backed by marker files in `directory`.
 pub(super) fn fake_zfs(directory: &Path, pools: &str) -> (PathBuf, PathBuf) {
     let script = directory.join("fake-zfs");
@@ -25,6 +28,8 @@ pub(super) fn fake_zfs(directory: &Path, pools: &str) -> (PathBuf, PathBuf) {
     let mounted = directory.join("mounted");
     let destroy_fails = directory.join("destroy-fails");
     let list_fails = directory.join("list-fails");
+    let slot = directory.join("slot");
+    let props = directory.join("props");
     let script_body = format!(
         r#"#!/bin/sh
 set -eu
@@ -56,12 +61,30 @@ case "$*" in
     if [ -e '{sibling}' ]; then
       printf 'tank/ployz/sibling\t1073741824\t0\t0\t/var/lib/ployz-volumes/sibling\tno\toff\n'
     fi
+    if [ -e '{slot}' ]; then
+      printf 'tank/ployz-mirror\t0\t0\t0\t/var/lib/ployz-mirror\tno\ton\n'
+      printf 'tank/ployz-mirror/copy\t0\t0\t0\t/var/lib/ployz-mirror/copy\tno\ton\n'
+      printf 'tank/ployz-mirror/copy/fs\t{slot_bound}\t0\t0\t/var/lib/ployz-mirror/copy/fs\tno\ton\n'
+    fi
+    ;;
+  'list -Hp -t snapshot -o guid,creation -S creation -d 1 '*)
+    f='{props}'/"${{11}}/snapshots"
+    [ ! -e "$f" ] || cat "$f"
+    ;;
+  'get -H -o value '*)
+    f='{props}'/"$6/$5"
+    if [ -e "$f" ]; then cat "$f"; else echo '-'; fi
+    ;;
+  'set '*)
+    f='{props}'/"$3/${{2%%=*}}"
+    mkdir -p "${{f%/*}}"
+    printf '%s\n' "${{2#*=}}" > "$f"
     ;;
   'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes tank/ployz') touch '{root}' ;;
   'create -o refquota=1 tank/ployz/data') touch '{volume}' ;;
   'create -o refquota=1073741824 tank/ployz/data') touch '{volume}' ;;
   'mount tank/ployz/data') touch '{mounted}' ;;
-  'destroy tank/ployz/data')
+  'destroy -r tank/ployz/data')
     if [ -e '{destroy_fails}' ]; then echo 'dataset is busy' >&2; exit 1; fi
     rm -f '{volume}' '{mounted}'
     ;;
@@ -82,6 +105,9 @@ esac
         mounted = mounted.display(),
         destroy_fails = destroy_fails.display(),
         list_fails = list_fails.display(),
+        slot = slot.display(),
+        slot_bound = SLOT_BOUND_BYTES,
+        props = props.display(),
     );
     fs::write(&script, script_body).unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();

@@ -14,6 +14,7 @@ pub(crate) mod cloud;
 pub(crate) mod config;
 pub(crate) mod context;
 mod data_loss;
+pub(crate) mod debug;
 pub(crate) mod deploy;
 pub(crate) mod domain;
 pub(crate) mod env;
@@ -301,6 +302,7 @@ fn handler_for(path: &str) -> Option<Handler> {
         ("completion", "") => Some(completion),
         ("cloud", rest) => cloud::handler(rest),
         ("ctx", rest) => context::handler(rest),
+        ("debug", rest) => debug::handler(rest),
         ("deploy", "") => Some(deploy::deploy),
         ("deployment", rest) => deploy::deployment_handler(rest),
         ("diff", "") => Some(review::diff),

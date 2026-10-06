@@ -644,6 +644,45 @@ async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
 }
 
 #[tokio::test]
+async fn volume_switch_verbs_refuse_a_machine_outside_the_cluster() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "ployzd-switch-gate-{}",
+        ployz_core::MachineId::random()
+    ));
+    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
+    let service = MachineService::with_cluster(store, None);
+    let name: ployz_core::DockerVolumeName = "data".parse().unwrap();
+    let inspect = op::InspectVolumeCopy::into_request(ployz_core::InspectVolumeCopyRequest {
+        name: name.clone(),
+    });
+    let adopt = op::AdoptLease::into_request(ployz_core::AdoptLeaseRequest {
+        switch: ployz_core::Switch {
+            lease: ployz_core::Lease::new(1),
+            pos: ployz_core::Pos::ADOPT_LEASE,
+            not_after_unix_seconds: i64::MAX,
+        },
+        name,
+    });
+    for (verb, request) in [("InspectVolumeCopy", inspect), ("AdoptLease", adopt)] {
+        let request = Request::new(request.encode().unwrap());
+        let response = match verb {
+            "InspectVolumeCopy" => service.inspect_volume_copy(request).await,
+            _ => service.adopt_lease(request).await,
+        }
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+        let ployz_core::RpcResponseBody::Error(error) = response.body else {
+            panic!("{verb} on an uninitialized Machine must refuse: {response:?}");
+        };
+        assert_eq!(error.code, ployz_core::RpcErrorCode::Unavailable, "{verb}");
+        assert_eq!(error.message, "Machine is not participating", "{verb}");
+    }
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
 async fn image_removal_without_docker_reports_an_error() {
     let data_dir = std::env::temp_dir().join(format!(
         "ployzd-remove-images-{}",

@@ -54,6 +54,7 @@ async fn mount_and_path_reject_a_read_only_volume() {
         let response = post(&socket, route, json!({"Name":"data","ID":"container"})).await;
         assert_eq!(response.get("Mountpoint").and_then(Value::as_str), Some(""));
         let message = error(&response);
+        assert!(message.starts_with("VolumeSwitching:"), "{message}");
         assert!(message.contains("tank/ployz/data"));
         assert!(message.contains("read-only"));
     }
