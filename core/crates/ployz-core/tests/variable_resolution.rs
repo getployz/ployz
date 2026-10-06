@@ -3,7 +3,10 @@
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 
-use ployz_core::config::{ResolveVariablesInput, resolve_variables};
+use ployz_core::config::{
+    ResolveVariablesInput, VariableProducer, parse_variable_template, resolve_config_file,
+    resolve_variables,
+};
 use serde_json::{Value, json};
 
 fn reference(key: &str) -> Value {
@@ -82,4 +85,91 @@ fn cycle_reports_only_owner_keys_even_after_a_secret_was_resolved() {
         assert!(!result.to_string().contains("private-sentinel"));
         assert!(result["path"].as_array().unwrap().contains(&json!("db::A")));
     }
+}
+
+/// Resolve Config file `name` written as display text, where `db.KEY` names `db`'s producers.
+fn file(name: &str, text: &str, producers: Value) -> ployz_core::config::ResolvedConfigFile {
+    let parsed = parse_variable_template(text, |service| {
+        (service == "db").then(|| "db-lineage".to_owned())
+    });
+    let producers: Vec<VariableProducer> = serde_json::from_value(producers).unwrap();
+    resolve_config_file(name, &parsed.parts, &producers).unwrap()
+}
+
+fn literal(value: &str) -> Value {
+    json!({"kind":"literal","value":value})
+}
+
+#[test]
+fn a_config_file_resolves_secrets_and_keeps_escaped_references_literal() {
+    let producers = json!([
+        producer("HOST", literal("redis.internal")),
+        producer(
+            "PASSWORD",
+            json!({"kind":"secret","value":"private-sentinel"})
+        ),
+    ]);
+    let plain = file(
+        "config.yml",
+        "host: ${{ db.HOST }}\nraw: $${{ db.HOST }}\n",
+        producers.clone(),
+    );
+    assert_eq!(plain.content, "host: redis.internal\nraw: ${{ db.HOST }}\n");
+    assert!(!plain.secret);
+    let secret = file("config.yml", "password: ${{ db.PASSWORD }}\n", producers);
+    assert_eq!(secret.content, "password: private-sentinel\n");
+    assert!(secret.secret);
+}
+
+#[test]
+fn a_config_file_flags_each_value_that_may_break_its_syntax_once() {
+    let producers = json!([
+        producer("QUOTE", literal("it's")),
+        producer("DOUBLE", literal("say \"hi\"")),
+        producer("LINES", literal("a\nb")),
+        producer("PLAIN", literal("plain")),
+    ]);
+    let fragile = |name: &str, text: &str| -> Vec<String> {
+        file(name, text, producers.clone())
+            .fragile
+            .into_iter()
+            .map(|reference| reference.key)
+            .collect()
+    };
+    assert_eq!(
+        fragile(
+            "app.json",
+            r#"{"a": "${{ db.DOUBLE }}", "b": "${{ db.DOUBLE }}", "c": "${{ db.QUOTE }}"}"#
+        ),
+        ["DOUBLE"]
+    );
+    assert_eq!(
+        fragile("app.conf", "a = ${{ db.QUOTE }}\nb = '${{ db.LINES }}'"),
+        ["LINES"]
+    );
+    assert_eq!(
+        fragile(
+            "app.conf",
+            "a = ${{ db.QUOTE }} '${{ db.PLAIN }}' ${{ db.LINES }}"
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        fragile("APP.YAML", "a: ${{ db.LINES }}\nb: \"${{ db.PLAIN }}\""),
+        ["LINES"]
+    );
+}
+
+#[test]
+fn a_config_file_reports_the_cycle_it_reads() {
+    let producers: Vec<VariableProducer> = serde_json::from_value(json!([
+        producer("A", json!({"kind":"template","parts":[reference("B")]})),
+        producer("B", json!({"kind":"template","parts":[reference("A")]})),
+    ]))
+    .unwrap();
+    let parsed = parse_variable_template("${{ db.A }}", |_| Some("db-lineage".to_owned()));
+    assert_eq!(
+        resolve_config_file("x", &parsed.parts, &producers).unwrap_err(),
+        ["db::A", "db::B", "db::A"]
+    );
 }

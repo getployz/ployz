@@ -18,15 +18,17 @@ pub use rows::{Failure, LOG_TAIL, RowPhase, RowState, RowTracker, ServerProgress
 use std::collections::BTreeMap;
 
 use ployz_core::config::{
-    CompiledNodeConfig, EncryptedSecretValue, LowerDeploymentInput, LowerDeploymentSnapshot,
-    LowerDeploymentVolume, RuntimeOutcomeProjection, SavedEnvironmentIntent, SavedServiceIntent,
-    SavedVolumeIntent, ServiceConfig, ServiceImageCredentials, ServiceSource,
+    CompiledNodeConfig, EncryptedSecretValue, LowerDeploymentConfig, LowerDeploymentConfigFile,
+    LowerDeploymentInput, LowerDeploymentSnapshot, LowerDeploymentVolume, RuntimeOutcomeProjection,
+    SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent,
+    ServiceConfig, ServiceImageCredentials, ServiceSource, ValuePartOwner,
     canonicalize_environment_intent, compile_environment_intent, lower_deployment,
     parse_runtime_preview, project_runtime_outcome, redacted_runtime_preview,
 };
 use ployz_core::{
-    DeployIntent, DeployOutcome, DeployPreview, DockerVolumeId, ExecutionError, FailedOperation,
-    Namespace, RpcError, ServiceAttempt, ServiceName, VolumeRemoval, VolumeRemovalOutcome,
+    ConfigFileName, ConfigName, DeployIntent, DeployOutcome, DeployPreview, DockerVolumeId,
+    ExecutionError, FailedOperation, Namespace, RpcError, ServiceAttempt, ServiceName,
+    VolumeRemoval, VolumeRemovalOutcome,
 };
 
 use serde::{Deserialize, Serialize};
@@ -37,8 +39,8 @@ use crate::Actor;
 use crate::build::{self, BuildReport, BuildView, GitSource};
 use crate::error;
 use crate::id::{
-    CommitSha, DeploymentId, EnvironmentId, Hostname, OrganizationId, Principal, Revision,
-    RunnerId, ServiceLineageId, VolumeId, VolumeName,
+    CommitSha, ConfigId, DeploymentId, EnvironmentId, Hostname, OrganizationId, Principal,
+    Revision, RunnerId, ServiceLineageId, VolumeId, VolumeName,
 };
 use crate::registry;
 use crate::removal::VolumeLoss;
@@ -117,6 +119,21 @@ pub struct DeploymentSummary {
     pub in_flight: bool,
     /// What its runner recorded at its end; none while it hasn't ended.
     pub outcome: Option<Outcome>,
+    /// What its runner was warned of when it claimed it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<DeploymentWarning>>")]
+    pub warnings: Vec<DeploymentWarning>,
+}
+
+/// A Config file whose resolved variable may break the file's syntax: it holds a
+/// newline or a quote inside quotes, or a newline in YAML. The Deployment still
+/// ships it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct DeploymentWarning {
+    pub config: ConfigName,
+    pub file: ConfigFileName,
+    /// The variable as the file references it, such as `api.TOKEN`.
+    pub variable: String,
 }
 
 /// The most characters a Deployment message has.
@@ -338,6 +355,10 @@ pub(crate) enum TargetNode {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         deletes: Option<Vec<DockerVolumeId>>,
     },
+    Config {
+        id: ConfigId,
+        name: ConfigName,
+    },
 }
 
 impl TargetNode {
@@ -361,11 +382,19 @@ impl TargetNode {
         })
     }
 
+    fn config(config: &SavedConfigIntent) -> Result<Self, RpcError> {
+        Ok(Self::Config {
+            id: parse_stored(&config.resource_id)?,
+            name: config.name.clone(),
+        })
+    }
+
     /// Its node ID.
     pub(crate) fn id(&self) -> &str {
         match self {
             Self::Service { id, .. } => id.as_str(),
             Self::Volume { id, .. } => id.as_str(),
+            Self::Config { id, .. } => id.as_str(),
         }
     }
 
@@ -377,6 +406,10 @@ impl TargetNode {
                 name: name.clone(),
             },
             Self::Volume { id, name, .. } => DeployedNode::Volume {
+                id: id.clone(),
+                name: name.clone(),
+            },
+            Self::Config { id, name } => DeployedNode::Config {
                 id: id.clone(),
                 name: name.clone(),
             },
@@ -396,6 +429,10 @@ pub enum DeployedNode {
         id: VolumeId,
         name: VolumeName,
     },
+    Config {
+        id: ConfigId,
+        name: ConfigName,
+    },
 }
 
 impl DeployedNode {
@@ -405,6 +442,7 @@ impl DeployedNode {
         match self {
             Self::Service { name, .. } => name.as_str(),
             Self::Volume { name, .. } => name.as_str(),
+            Self::Config { name, .. } => name.as_str(),
         }
     }
 
@@ -414,6 +452,7 @@ impl DeployedNode {
         match self {
             Self::Service { id, .. } => id.as_str(),
             Self::Volume { id, .. } => id.as_str(),
+            Self::Config { id, .. } => id.as_str(),
         }
     }
 }
@@ -449,6 +488,8 @@ struct Run {
     /// Each target node's Node Outcome, by node ID, once execution ran.
     #[serde(default)]
     nodes: BTreeMap<String, NodeStatus>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<DeploymentWarning>,
 }
 
 pub(crate) struct Stored {
@@ -615,6 +656,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             message: row.optional_text(17)?.map(str::to_owned),
             in_flight: status.in_flight(),
             outcome: run.outcome.clone(),
+            warnings: run.warnings.clone(),
         },
         nodes: row.json(6, "Deployment")?,
         namespace: row.parse::<Namespace>(7, "Namespace")?,

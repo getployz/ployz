@@ -3,9 +3,10 @@
 use super::*;
 
 /// Freeze a Deployment of `saved`: its target nodes, checked to lower to a Deploy
-/// Intent. `services` narrows it; none targets every Service and Volume, including
-/// the removal of those Applied State holds and `saved` does not, which deletes the
-/// Docker Volumes `losses` names. Generated domains expand under `cluster_domain`;
+/// Intent. `services` narrows it to those Services and the Volumes and Configs they
+/// mount; none targets every Service, Volume and Config, including the removal of
+/// those Applied State holds and `saved` does not, which deletes the Docker Volumes
+/// `losses` names. Generated domains expand under `cluster_domain`;
 /// a plan, which has none, checks the rest.
 pub(crate) fn freeze(
     environment: &EnvironmentId,
@@ -64,6 +65,40 @@ pub(crate) fn freeze(
         .map(|volume| TargetNode::volume(volume, None))
         .collect::<Result<_, _>>()?;
     nodes.extend(kept);
+    // A narrowed Deploy applies a Config its Services mount once no untargeted Service
+    // would keep running an older one. A full Deploy also removes those only Applied holds.
+    let applies = |config: &SavedConfigIntent| {
+        let targeted: Vec<bool> = saved
+            .services
+            .iter()
+            .filter(|service| {
+                service
+                    .config_attachments
+                    .iter()
+                    .any(|mount| mount.config_resource_id == config.resource_id)
+            })
+            .map(|service| nodes.iter().any(|node| node.id() == service.id))
+            .collect();
+        let fresh = !applied
+            .configs
+            .iter()
+            .any(|old| old.resource_id == config.resource_id);
+        targeted.contains(&true) && (fresh || !targeted.contains(&false))
+    };
+    let configs: Vec<TargetNode> = saved
+        .configs
+        .iter()
+        .filter(|config| services.is_empty() || applies(config))
+        .chain(applied.configs.iter().filter(|old| {
+            services.is_empty()
+                && !saved
+                    .configs
+                    .iter()
+                    .any(|new| new.resource_id == old.resource_id)
+        }))
+        .map(TargetNode::config)
+        .collect::<Result<_, _>>()?;
+    nodes.extend(configs);
     if services.is_empty() {
         for loss in losses {
             let volume = applied
@@ -101,11 +136,21 @@ pub(crate) fn freeze(
     })
 }
 
+/// A Deployment lowered at claim.
+pub(super) struct Lowered {
+    /// The lowering input the runner lowers again once it built.
+    pub(super) input: Value,
+    pub(super) intent: DeployIntent,
+    /// Config file references whose resolved value may break the file. Only
+    /// lowering with the sealing key sees every value, so only it warns.
+    pub(super) warnings: Vec<DeploymentWarning>,
+}
+
 /// Lower Saved revision `saved` to the Deploy Intent of a Deployment of `services`
 /// (none: every Service) into its Namespace, with generated domains under the
-/// Cluster Domain. Variables resolve here, a Branch's Live Node references against
-/// `branch.live`; secrets, and values that reference one, only with `unseal`, and
-/// are left out without it.
+/// Cluster Domain. Variables and Config files resolve here, a Branch's Live Node
+/// references against `branch.live`; secrets, and values that reference one, only
+/// with `unseal`. Without it such a variable is left out and such a file is empty.
 pub(super) fn lower(
     environment: &EnvironmentId,
     saved: &SavedEnvironmentIntent,
@@ -113,7 +158,7 @@ pub(super) fn lower(
     (namespace, cluster_domain): (Namespace, Option<&Hostname>),
     branch: &crate::branch::Lowering,
     unseal: Option<&SealingKey>,
-) -> Result<(Value, DeployIntent), RpcError> {
+) -> Result<Lowered, RpcError> {
     let mut compiled = compile_environment_intent(
         environment.as_str(),
         crate::domain::expand(saved, cluster_domain),
@@ -149,7 +194,7 @@ pub(super) fn lower(
             CompiledNodeConfig::Service(config) => Some((
                 *config,
                 LowerDeploymentSnapshot {
-                    resolved_env: resolved.remove(&node.node_id).unwrap_or_default(),
+                    resolved_env: resolved.env.remove(&node.node_id).unwrap_or_default(),
                     setup_commands: branch.setup.get(&node.node_id).cloned().unwrap_or_default(),
                     service_id: Some(node.node_id),
                     config: Value::Null,
@@ -168,6 +213,82 @@ pub(super) fn lower(
             name: service.config.private_dns.clone(),
         })
         .collect::<Vec<_>>();
+    let slugs: BTreeMap<&str, &str> = saved
+        .services
+        .iter()
+        .map(|service| (service.lineage_id.as_str(), service.slug.as_str()))
+        .collect();
+    let mut warnings = Vec::new();
+    let mut configs = Vec::new();
+    // Only Configs a lowered Service mounts ship, and only those it deploys warn.
+    for config in &saved.configs {
+        let mounting: Vec<&str> = saved
+            .services
+            .iter()
+            .filter(|service| {
+                service
+                    .config_attachments
+                    .iter()
+                    .any(|mount| mount.config_resource_id == config.resource_id)
+            })
+            .map(|service| service.id.as_str())
+            .collect();
+        if !snapshots.iter().any(|(_, snapshot)| {
+            snapshot
+                .service_id
+                .as_deref()
+                .is_some_and(|id| mounting.contains(&id))
+        }) {
+            continue;
+        }
+        let warns = unseal.is_some()
+            && mounting
+                .iter()
+                .any(|id| services.is_empty() || targeted.contains(id));
+        let mut files = resolved
+            .configs
+            .remove(&config.resource_id)
+            .unwrap_or_default();
+        let mut lowered = BTreeMap::new();
+        for (name, file) in &config.files {
+            let resolved = files.remove(name).ok_or_else(|| error::corrupt("Config"))?;
+            if warns {
+                warnings.extend(resolved.fragile.iter().map(|reference| DeploymentWarning {
+                    config: config.name.clone(),
+                    file: name.clone(),
+                    variable: match &reference.owner {
+                        ValuePartOwner::Service { lineage_id } => {
+                            match slugs.get(lineage_id.as_str()) {
+                                Some(slug) => format!("{slug}.{}", reference.key),
+                                None => reference.key.clone(),
+                            }
+                        }
+                        ValuePartOwner::Self_ => reference.key.clone(),
+                    },
+                }));
+            }
+            lowered.insert(
+                name.clone(),
+                LowerDeploymentConfigFile {
+                    content: resolved.content,
+                    mode: file.mode,
+                    uid: file.uid,
+                    gid: file.gid,
+                },
+            );
+        }
+        configs.push(LowerDeploymentConfig {
+            config_resource_id: config.resource_id.clone(),
+            name: config.name.clone(),
+            references: config
+                .files
+                .values()
+                .flat_map(|file| file.referenced_lineages())
+                .map(str::to_owned)
+                .collect(),
+            files: lowered,
+        });
+    }
     let input = |snapshots: Vec<LowerDeploymentSnapshot>| LowerDeploymentInput {
         namespace: namespace.clone(),
         snapshots,
@@ -181,6 +302,7 @@ pub(super) fn lower(
             .collect(),
         lineages: lineages.clone(),
         selected: Some(selected.clone()),
+        configs: configs.clone(),
     };
     let with = |built_later: bool| {
         snapshots
@@ -201,7 +323,11 @@ pub(super) fn lower(
             json!({ "path": error.path }),
         )
     })?;
-    Ok((json_value(&input(with(false))), intent))
+    Ok(Lowered {
+        input: json_value(&input(with(false))),
+        intent,
+        warnings,
+    })
 }
 
 /// `config` with a Git source replaced by the image its build will produce, as the

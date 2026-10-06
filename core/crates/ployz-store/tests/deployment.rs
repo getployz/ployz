@@ -11,13 +11,14 @@ use ployz_core::{
     RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::{
-    Actor, Admit, Cancel, Change, Command, ConfigId, ConfigMountAt, ConfigStore, ConfigsQuery,
-    CreateConfig, CreateProject, CreateService, Deploy, DeploymentId, DeploymentStatus,
-    DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView, Discard, Edit, EnvironmentId,
-    EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId, PlanQuery, Principal, ProjectId,
-    ProjectName, PutConfigFile, Query, RemoveService, RenameService, Retry, Revision, RowPhase,
-    RowState, RowTracker, RunEvidence, RunnerId, ServerRow, ServiceLineageId, ServiceQuery,
-    ServicesQuery, SettingPath, Start, Trusted, UploadBase, UploadedSource, View, Written,
+    Actor, Admit, AttachConfig, Cancel, Change, Command, ConfigId, ConfigMountAt, ConfigStore,
+    CreateConfig, CreateProject, CreateService, DeleteConfig, Deploy, DeploymentId,
+    DeploymentStatus, DeploymentSummary, DeploymentsQuery, DetachConfig, DiffQuery, DiffView,
+    Discard, Edit, EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId,
+    PlanQuery, Principal, ProjectId, ProjectName, PutConfigFile, Query, RemoveService,
+    RenameService, Retry, Revision, RowPhase, RowState, RowTracker, RunEvidence, RunnerId,
+    ServerRow, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, Start, Trusted,
+    UploadBase, UploadedSource, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -261,12 +262,11 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     );
 }
 
-#[test]
-fn a_deployed_service_leaves_its_config_mount_staged() {
-    let (store, who) = shop();
+/// Config `sentry`, mounted into `web` at `/etc/sentry`, whose one file reads `api.PORT`.
+fn sentry(store: &ConfigStore, who: &Actor) {
     store
         .write(
-            &who,
+            who,
             &CreateConfig {
                 id: ConfigId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
                 environment: EnvironmentRef::default(),
@@ -278,41 +278,192 @@ fn a_deployed_service_leaves_its_config_mount_staged() {
             },
         )
         .unwrap();
+    put_sentry(store, who, "url: http://api:${{ api.PORT }}\n");
+}
+
+fn put_sentry(store: &ConfigStore, who: &Actor, content: &str) {
     store
         .write(
-            &who,
+            who,
             &PutConfigFile {
                 environment: EnvironmentRef::default(),
                 config: ConfigName::parse("sentry").unwrap(),
-                file: ConfigFileName::parse("a.yml").unwrap(),
-                content: "url: http://${{ api.PORT }}\n".into(),
+                file: ConfigFileName::parse("config.yml").unwrap(),
+                content: content.into(),
                 mode: None,
                 uid: None,
                 gid: None,
             },
         )
         .unwrap();
+}
 
+#[test]
+fn a_config_deploys_with_the_services_that_mount_it() {
+    let (store, who) = shop();
+    sentry(&store, &who);
     admit(&store, &who, 1, &[], None).unwrap();
-    assert_eq!(changed(&store, &who), ["sentry", "web"]);
+    assert!(changed(&store, &who).is_empty());
     let a = runner("runner-a");
-    store.claim(&id(1), &a).unwrap();
+    let claimed = store.claim(&id(1), &a).unwrap();
+    let web = claimed
+        .intent
+        .target
+        .iter()
+        .find(|spec| spec.name.as_str() == "web")
+        .unwrap();
+    assert_eq!(
+        json!(web.configs()),
+        json!([{"name": "sentry/config.yml", "content": b"url: http://api:8080\n".to_vec()}])
+    );
+    assert_eq!(
+        json!(web.config_mounts()),
+        json!([{"config_name": "sentry/config.yml", "target": "/etc/sentry/config.yml",
+            "uid": 0, "gid": 0, "mode": 0o444}])
+    );
+    let web_name = ServiceName::parse("web").unwrap();
+    assert_eq!(
+        claimed.intent.dependencies()[&web_name][0].service.as_str(),
+        "api"
+    );
+    assert!(claimed.deployment.warnings.is_empty());
     store
         .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
         .unwrap();
+    let sentry_is = |n: u8| {
+        nodes(&store, &who, n)
+            .into_iter()
+            .find(|(name, _)| name == "sentry")
+            .map(|(_, outcome)| outcome)
+    };
+    assert_eq!(sentry_is(1), Some(NodeStatus::Pending));
     store
         .record(&id(1), &a, succeeded(&["web", "api"]))
         .unwrap();
-    assert_eq!(changed(&store, &who), ["sentry", "web"]);
-    let configs = store
-        .read(
-            &who,
-            &ConfigsQuery {
-                environment: EnvironmentRef::default(),
+    assert_eq!(sentry_is(1), Some(NodeStatus::Deployed));
+    assert!(
+        changed(&store, &who).is_empty(),
+        "Applied State holds Config and mount"
+    );
+
+    admit(&store, &who, 2, &["api"], None).unwrap();
+    assert_eq!(sentry_is(2), None);
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&[])))
+        .unwrap();
+    store.record(&id(2), &a, succeeded(&[])).unwrap();
+
+    put_sentry(&store, &who, "url: changed\n");
+    admit(&store, &who, 3, &[], None).unwrap();
+    store.claim(&id(3), &a).unwrap();
+    store
+        .record(&id(3), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(
+            &id(3),
+            &a,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome(json!({
+                    "type": "failed", "completed": [operation("api")],
+                    "failed": {"type": "operation", "operation": operation("web"), "error": {
+                        "type": "machine", "action": "RemoveContainer",
+                        "error": {"code": "internal", "message": "busy", "details": {}}
+                    }},
+                    "unexecuted": []
+                }))),
+                removed: Vec::new(),
             },
         )
         .unwrap();
-    assert_eq!(configs.configs[0].mounts.len(), 1);
+    assert_eq!(sentry_is(3), Some(NodeStatus::Failed));
+    assert_eq!(changed(&store, &who), ["sentry"]);
+
+    store
+        .write(
+            &who,
+            &DetachConfig {
+                environment: EnvironmentRef::default(),
+                service: web_name.clone(),
+                config: ConfigName::parse("sentry").unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &DeleteConfig {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("sentry").unwrap(),
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 4, &[], None).unwrap();
+    assert!(changed(&store, &who).is_empty());
+    store.claim(&id(4), &a).unwrap();
+    store
+        .record(&id(4), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    assert_eq!(sentry_is(4), Some(NodeStatus::Pending));
+    store.record(&id(4), &a, succeeded(&["web"])).unwrap();
+    assert_eq!(sentry_is(4), Some(NodeStatus::Removed));
+    assert!(changed(&store, &who).is_empty());
+}
+
+#[test]
+fn a_narrowed_deploy_leaves_a_shared_config_staged_until_every_mounter_redeploys() {
+    let (store, who) = shop();
+    sentry(&store, &who);
+    store
+        .write(
+            &who,
+            &AttachConfig {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("api").unwrap(),
+                config: ConfigName::parse("sentry").unwrap(),
+                dir: "/etc/sentry".into(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &CreateConfig {
+                id: ConfigId::parse("00000000-0000-4000-8000-000000000010").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("unmounted").unwrap(),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+    let a = runner("runner-a");
+    let deploy = |n: u8, services: &[&str], ran: &[&str]| {
+        admit(&store, &who, n, services, None).unwrap();
+        let claimed = store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(ran)))
+            .unwrap();
+        store.record(&id(n), &a, succeeded(ran)).unwrap();
+        claimed
+    };
+    let claimed = deploy(1, &[], &["web", "api"]);
+    assert!(!claimed.input.to_string().contains("unmounted"));
+    assert!(changed(&store, &who).is_empty());
+
+    put_sentry(&store, &who, "url: changed\n");
+    deploy(2, &["web"], &["web"]);
+    assert!(
+        !nodes(&store, &who, 2)
+            .iter()
+            .any(|(name, _)| name == "sentry"),
+        "api still runs the old file"
+    );
+    assert_eq!(changed(&store, &who), ["sentry"]);
+
+    deploy(3, &[], &["web", "api"]);
+    assert!(changed(&store, &who).is_empty());
 }
 
 #[test]

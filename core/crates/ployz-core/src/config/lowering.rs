@@ -6,14 +6,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    ConfigError, ServiceConfig, ServiceEnvValue, ServiceHealthcheck, ServiceSource, ValuePart,
-    ValuePartOwner, VolumeKind, parse_service_config,
+    ConfigError, FileMode, ServiceConfig, ServiceEnvValue, ServiceHealthcheck, ServiceSource,
+    ValuePart, ValuePartOwner, VolumeKind, parse_service_config,
 };
 use crate::{
-    ByteQuantity, ConfiguredHealthcheck, ContainerResources, CpuNanos, DependencyCondition,
-    DeployIntent, HealthcheckCommand, HealthcheckSpec, HttpHealthcheck, HttpProtocol, IngressHost,
-    Namespace, PlanOptions, PortPublication, PreDeployCommand, PreDeployHook, PullPolicy,
-    RawVolumeSource, RequestedServiceSpec, RestartPolicy, ServiceAttempt, ServiceContainerSpec,
+    ByteQuantity, ConfigFileName, ConfigMount, ConfigName, ConfigSpec, ConfiguredHealthcheck,
+    ContainerResources, CpuNanos, DependencyCondition, DeployIntent, HealthcheckCommand,
+    HealthcheckSpec, HttpHealthcheck, HttpProtocol, IngressHost, Namespace, PlanOptions,
+    PortPublication, PreDeployCommand, PreDeployHook, PullPolicy, RawVolumeSource,
+    RequestedServiceSpec, RestartPolicy, ServiceAttempt, ServiceConfigGraph, ServiceContainerSpec,
     ServiceDependency, ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeGraph,
     VolumeDriver,
 };
@@ -45,6 +46,10 @@ pub struct LowerDeploymentInput {
     /// The Volumes the Namespace holds; mounts of any other are left out.
     #[serde(default)]
     pub volumes: Vec<LowerDeploymentVolume>,
+    /// The Configs the Namespace holds, their files resolved; mounts of any other are
+    /// left out. Written only when there are some, so inputs from before Configs read the same.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configs: Vec<LowerDeploymentConfig>,
     /// Service ID by lineage, from the attempt's frozen variable producers. References
     /// resolved through it order the deploy.
     #[serde(default)]
@@ -82,10 +87,45 @@ pub struct LowerDeploymentVolume {
     pub storage: VolumeKind,
 }
 
+/// One Config the Namespace holds, its references resolved.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LowerDeploymentConfig {
+    /// The authored Config's ID, as mounts name it.
+    pub config_resource_id: String,
+    pub name: ConfigName,
+    /// The Service lineages its files reference: Services mounting it wait for them.
+    #[serde(default)]
+    pub references: BTreeSet<String>,
+    pub files: BTreeMap<ConfigFileName, LowerDeploymentConfigFile>,
+}
+
+/// One resolved Config file and the owner and mode it is mounted with.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LowerDeploymentConfigFile {
+    pub content: String,
+    pub mode: FileMode,
+    pub uid: u32,
+    pub gid: u32,
+}
+
+impl std::fmt::Debug for LowerDeploymentConfigFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LowerDeploymentConfigFile")
+            .field("content_len", &self.content.len())
+            .field("mode", &self.mode)
+            .field("uid", &self.uid)
+            .field("gid", &self.gid)
+            .finish()
+    }
+}
+
 /// Lower captured authored settings and adapter-supplied image/environment inputs.
 /// No source lookup, build, provider execution, or Cluster observation occurs here.
 /// Missing PORT defaults to 8080; authored values take precedence, including invalid ones.
 /// Domains without an explicit target and HTTP healthchecks use that same container PORT.
+/// Each mounted Config file mounts read-only at `<dir>/<file>`, named `<config>/<file>`.
 ///
 /// # Errors
 /// Returns ConfigError when a source lacks a pullable image, a setting is unsupported by the runtime,
@@ -96,18 +136,24 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
         .iter()
         .map(|v| (v.volume_resource_id.as_str(), v.storage))
         .collect();
+    let config_sources: BTreeMap<_, _> = input
+        .configs
+        .iter()
+        .map(|c| (c.config_resource_id.as_str(), c))
+        .collect();
     let snapshots = input
         .snapshots
         .into_iter()
         .map(|mut snapshot| Ok((parse_service_config(snapshot.config.take())?, snapshot)))
         .collect::<Result<Vec<_>, ConfigError>>()?;
-    let dependencies = deployment_dependencies(&snapshots, &input.lineages);
+    let dependencies = deployment_dependencies(&snapshots, &input.lineages, &config_sources);
     let mut target: Vec<RequestedServiceSpec> = Vec::new();
     let mut volume_names = BTreeMap::new();
     for (parsed, snapshot) in snapshots {
         let ServiceConfig {
             settings: config,
             mounts: configured_mounts,
+            configs: configured_configs,
             ..
         } = parsed;
         let image = match &config.source {
@@ -218,6 +264,33 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                 subpath: None,
             });
         }
+        let mut configs: Vec<ConfigSpec> = Vec::new();
+        let mut config_mounts = Vec::new();
+        for mount in configured_configs {
+            let Some(config) = config_sources.get(mount.config_resource_id.as_str()) else {
+                continue;
+            };
+            for (file, resolved) in &config.files {
+                let name = format!("{}/{file}", config.name);
+                if !configs.iter().any(|spec| spec.name == name) {
+                    configs.push(ConfigSpec {
+                        name: name.clone(),
+                        content: resolved.content.clone().into_bytes(),
+                    });
+                }
+                config_mounts.push(ConfigMount {
+                    config_name: name,
+                    target: Some(
+                        format!("{}/{file}", mount.mount_dir)
+                            .try_into()
+                            .map_err(lowering_error)?,
+                    ),
+                    uid: Some(u64::from(resolved.uid)),
+                    gid: Some(u64::from(resolved.gid)),
+                    mode: Some(resolved.mode.bits()),
+                });
+            }
+        }
         let mut ports = Vec::new();
         for route in &config.routes {
             ports.push(PortPublication::Ingress {
@@ -325,17 +398,11 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             update: Default::default(),
         };
         spec.set_volume_graph(ServiceVolumeGraph::parse(volumes, mounts).map_err(lowering_error)?)
-            .map_err(|error| match error {
-                crate::ServiceSpecGraphError::RootMountTarget => {
-                    ConfigError::at("mounts", "A volume cannot mount at the container root /")
-                }
-                crate::ServiceSpecGraphError::DuplicateMountTarget { .. } => ConfigError::at(
-                    "mounts",
-                    "Two volume mounts resolve to the same container path",
-                ),
-                error @ (crate::ServiceSpecGraphError::Volume(_)
-                | crate::ServiceSpecGraphError::Config(_)) => lowering_error(error),
-            })?;
+            .map_err(mount_error)?;
+        spec.set_config_graph(
+            ServiceConfigGraph::parse(configs, config_mounts).map_err(lowering_error)?,
+        )
+        .map_err(mount_error)?;
         target.push(spec);
     }
     let selected = input.selected.unwrap_or_else(|| {
@@ -360,6 +427,19 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
     .with_volume_names(volume_names))
 }
 
+fn mount_error(error: crate::ServiceSpecGraphError) -> ConfigError {
+    match error {
+        crate::ServiceSpecGraphError::RootMountTarget => {
+            ConfigError::at("mounts", "A volume cannot mount at the container root /")
+        }
+        crate::ServiceSpecGraphError::DuplicateMountTarget { .. } => {
+            ConfigError::at("mounts", "Two mounts resolve to the same container path")
+        }
+        error @ (crate::ServiceSpecGraphError::Volume(_)
+        | crate::ServiceSpecGraphError::Config(_)) => lowering_error(error),
+    }
+}
+
 fn command_healthcheck(command: &str, timeout_seconds: u16) -> HealthcheckSpec {
     let timeout = u64::from(timeout_seconds) * 1_000;
     HealthcheckSpec::Configured(ConfiguredHealthcheck {
@@ -374,12 +454,14 @@ fn command_healthcheck(command: &str, timeout_seconds: u16) -> HealthcheckSpec {
     })
 }
 
-/// A deployed Service waits for every deployed Service its variables reference, except that
+/// A deployed Service waits for every deployed Service its variables and mounted Configs
+/// reference, except that
 /// edges inside a reference cycle are dropped. An HTTP or command healthcheck makes the wait for
 /// health.
 fn deployment_dependencies(
     snapshots: &[(ServiceConfig, LowerDeploymentSnapshot)],
     lineages: &BTreeMap<String, String>,
+    configs: &BTreeMap<&str, &LowerDeploymentConfig>,
 ) -> BTreeMap<ServiceName, Vec<ServiceDependency>> {
     let deployed = || {
         snapshots
@@ -393,7 +475,7 @@ fn deployment_dependencies(
         BTreeMap::new();
     for (config, _) in deployed() {
         let name = &config.settings.private_dns;
-        let references = config
+        let from_env = config
             .env
             .values()
             .filter_map(|value| match value {
@@ -405,13 +487,21 @@ fn deployment_dependencies(
                 ValuePart::Ref {
                     owner: ValuePartOwner::Service { lineage_id },
                     ..
-                } => by_id.get(lineages.get(lineage_id)?.as_str()),
+                } => Some(lineage_id),
                 ValuePart::Ref {
                     owner: ValuePartOwner::Self_,
                     ..
                 }
                 | ValuePart::Text { .. } => None,
-            })
+            });
+        let from_configs = config
+            .configs
+            .iter()
+            .filter_map(|mount| configs.get(mount.config_resource_id.as_str()))
+            .flat_map(|mounted| &mounted.references);
+        let references = from_env
+            .chain(from_configs)
+            .filter_map(|lineage_id| by_id.get(lineages.get(lineage_id)?.as_str()))
             .map(|dependency| &dependency.settings.private_dns)
             .filter(|dependency| *dependency != name)
             .collect();

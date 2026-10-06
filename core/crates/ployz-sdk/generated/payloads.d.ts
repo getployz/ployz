@@ -1097,7 +1097,11 @@ in_flight: boolean,
 /**
  * What its runner recorded at its end; none while it hasn't ended.
  */
-outcome: Outcome | null, };
+outcome: Outcome | null,
+/**
+ * What its runner was warned of when it claimed it.
+ */
+warnings?: Array<DeploymentWarning>, };
 
 export type DeploymentView = { environment: EnvironmentSummary,
 /**
@@ -1179,7 +1183,17 @@ in_flight: boolean,
 /**
  * What its runner recorded at its end; none while it hasn't ended.
  */
-outcome: Outcome | null, };
+outcome: Outcome | null,
+/**
+ * What its runner was warned of when it claimed it.
+ */
+warnings?: Array<DeploymentWarning>, };
+
+export type DeploymentWarning = { config: ConfigName, file: ConfigFileName,
+/**
+ * The variable as the file references it, such as `api.TOKEN`.
+ */
+variable: string, };
 
 export type DeploymentsQuery = { environment: EnvironmentRef,
 /**
@@ -2294,7 +2308,7 @@ export type NodeOutcome = { outcome: NodeStatus,
 /**
  * Its work on each Server, once its runner started executing.
  */
-rows: Array<ServerRow>, } & ({ "type": "service", id: ServiceLineageId, name: ServiceName, } | { "type": "volume", id: VolumeId, name: VolumeName, });
+rows: Array<ServerRow>, } & ({ "type": "service", id: ServiceLineageId, name: ServiceName, } | { "type": "volume", id: VolumeId, name: VolumeName, } | { "type": "config", id: ConfigId, name: ConfigName, });
 
 export type NodeStatus = "pending" | "deployed" | "removed" | "failed" | "not_attempted" | "unchanged" | "unknown";
 
