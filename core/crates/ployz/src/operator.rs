@@ -466,22 +466,26 @@ pub async fn open_service_logs(
     let live = client
         .live_services_from(&machines, EnvironmentValues::Redacted)
         .await?;
+    // Without --machine every Server is asked, so a down one is a gap too.
+    let asked = |machine_id: &ployz_core::MachineId| {
+        machine_selectors.is_empty() || machine_ids.contains(machine_id)
+    };
     let unanswered = Unanswered {
         failures: live
             .containers
             .failures
             .iter()
-            .filter(|failure| machine_ids.contains(&failure.machine_id))
+            .filter(|failure| asked(&failure.machine_id))
             .cloned()
             .collect(),
         omissions: live
             .containers
             .omissions
             .iter()
-            .filter(|machine_id| machine_ids.contains(machine_id))
+            .filter(|machine_id| asked(machine_id))
             .copied()
             .collect(),
-        names: selected_machines
+        names: machines
             .iter()
             .map(|machine| (machine.machine.id, machine.machine.name.clone()))
             .collect(),
