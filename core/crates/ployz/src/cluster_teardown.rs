@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     cluster::{Client, evict_machine},
     deploy::{DeploySnapshot, VolumeFate},
-    output::Gaps,
+    ui::Gaps,
 };
 
 impl Client {

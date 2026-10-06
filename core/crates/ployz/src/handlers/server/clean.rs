@@ -12,7 +12,7 @@ use super::super::teardown::confirmed;
 use super::super::{Error, leaf_matches, runtime, store};
 use crate::cli::{base, value};
 use crate::deploy::VolumeFate;
-use crate::output::{Gaps, say};
+use crate::ui::Gaps;
 use crate::ui::Hint;
 
 pub(super) fn command() -> Command {
@@ -98,20 +98,22 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
             "failures": gaps.failures,
             "omitted": gaps.omitted,
         });
-        crate::output::finish(&report, || {
+        crate::ui::finish(&report, || {
             if unowned.is_empty() {
-                say!("Every Namespace on the Servers that answered is in a Project.");
+                crate::ui::stream(format_args!(
+                    "Every Namespace on the Servers that answered is in a Project."
+                ));
             }
             for namespace in &unowned {
-                say!(
+                crate::ui::stream(format_args!(
                     "{}: {} Service(s), Volumes {}",
                     namespace.namespace,
                     namespace.services.len(),
                     volume_names(&namespace.volumes)
-                );
+                ));
             }
             if let Some(next) = &next {
-                say!("Remove one: {next}");
+                crate::ui::stream(format_args!("Remove one: {next}"));
             }
             unanswered(&gaps);
         })?;
@@ -148,11 +150,11 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
                 "No Server runs Namespace {namespace}"
             )));
         }
-        return crate::output::finish_fanout("namespace", &None::<()>, &gaps, || {
-            say!(
+        return crate::ui::finish_fanout("namespace", &None::<()>, &gaps, || {
+            crate::ui::stream(format_args!(
                 "Namespace {namespace} isn't on the Servers that answered, but some didn't; \
                  run the same command again."
-            );
+            ));
             unanswered(&gaps);
         });
     };
@@ -200,16 +202,16 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
         volumes,
         outcome,
     };
-    crate::output::finish(&report, || match removed {
-        true => say!(
+    crate::ui::finish(&report, || match removed {
+        true => crate::ui::stream(format_args!(
             "Removed Namespace {} and the data of Volumes {}.",
             report.namespace,
             volume_names(&report.volumes)
-        ),
-        false => say!(
+        )),
+        false => crate::ui::stream(format_args!(
             "Removing Namespace {} did not finish; run the same command again.",
             report.namespace
-        ),
+        )),
     })?;
     match removed {
         true => Ok(()),
@@ -226,10 +228,10 @@ fn unanswered(gaps: &Gaps) {
         .chain(gaps.omitted.iter().copied())
         .collect();
     if !unseen.is_empty() {
-        say!(
+        crate::ui::stream(format_args!(
             "Servers {} didn't answer; what they run isn't listed.",
             super::super::joined(&unseen)
-        );
+        ));
     }
 }
 

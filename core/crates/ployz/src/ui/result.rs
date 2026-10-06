@@ -1,18 +1,21 @@
-//! The CLI output contract.
+//! Where a command's output goes.
 //!
-//! Under `--json`, stdout carries exactly one JSON object: the command's result, or
-//! `{"error": …}` when it fails. Streaming commands write one object per line instead.
-//! Human text — tables, progress, prompts — goes to stdout without `--json` and to
-//! stderr with it, so stdout stays parseable. `--json` never prompts.
+//! stdout carries the result: a list, a record, a done-sentence, streamed
+//! lines, or under `--json` exactly one JSON object (one per line for a
+//! streaming command). stderr carries everything else: progress, notes,
+//! warnings, hints and prompts. `--json` never prompts.
 
 use std::{
     cell::{Cell, RefCell},
+    collections::BTreeMap,
+    fmt::Display,
     io::{self, IsTerminal, Write},
 };
 
-use ployz_core::{MachineFailure, MachineId, PartialResult, RpcError};
+use ployz_core::{MachineFailure, MachineId, MachineName, PartialResult, RpcError};
 use serde::Serialize;
 
+use super::{Fields, Hint, Mode, Table, Tone};
 use crate::failure::Failure;
 
 thread_local! {
@@ -25,10 +28,55 @@ thread_local! {
     static WARNINGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Whether this command writes its result as JSON.
+#[must_use]
+pub fn json() -> bool {
+    super::mode() == Mode::Json
+}
+
+/// Whether the command may prompt: a terminal on both ends and no `--json`.
+#[must_use]
+pub(crate) fn interactive() -> bool {
+    !json() && io::stdin().is_terminal() && io::stdout().is_terminal()
+}
+
+/// Whether results are laid out for a person: stdout is a terminal.
+fn aligned() -> bool {
+    io::stdout().is_terminal()
+}
+
+/// One line of the result on stdout; under `--json`, on stderr beside the object.
+pub(crate) fn stream(line: impl Display) {
+    if json() {
+        let _ = writeln!(anstream::stderr(), "{line}");
+    } else {
+        let _ = writeln!(anstream::stdout(), "{line}");
+    }
+}
+
+/// One line beside the result, on stderr: progress, a heads-up, a prompt's context.
+pub(crate) fn note(line: impl Display) {
+    let _ = writeln!(anstream::stderr(), "{line}");
+}
+
+/// Text on stderr with no newline, flushed: a prompt, or a line that finishes later.
+pub(crate) fn note_inline(text: impl Display) {
+    let mut stderr = anstream::stderr();
+    let _ = write!(stderr, "{text}");
+    let _ = stderr.flush();
+}
+
+/// A hint line on stderr. `--json` carries hints as result keys instead.
+pub(crate) fn hint(hint: &Hint) {
+    if !json() {
+        let _ = hint.write(&mut anstream::stderr());
+    }
+}
+
 /// Warn on one stderr line; the command's JSON result lists it under `warnings`.
 pub(crate) fn warn(warning: impl Into<String>) {
     let warning = warning.into();
-    eprintln!("WARNING: {warning}");
+    let _ = writeln!(anstream::stderr(), "{} {warning}", Tone::Change.paint("!"));
     WARNINGS.with_borrow_mut(|warnings| warnings.push(warning));
 }
 
@@ -41,57 +89,6 @@ pub(crate) fn captured<R>(step: impl FnOnce() -> R) -> (R, Option<serde_json::Va
     EMITTED.set(emitted);
     (result, CAPTURED.take().flatten())
 }
-
-/// Whether this command writes its result as JSON.
-#[must_use]
-pub fn json() -> bool {
-    crate::ui::mode() == crate::ui::Mode::Json
-}
-
-/// Whether the command may prompt: a terminal on both ends and no `--json`.
-#[must_use]
-pub(crate) fn interactive() -> bool {
-    !json() && io::stdin().is_terminal() && io::stdout().is_terminal()
-}
-
-/// Whether the stream carrying human text is a terminal.
-#[must_use]
-pub(crate) fn human_is_terminal() -> bool {
-    if json() {
-        io::stderr().is_terminal()
-    } else {
-        io::stdout().is_terminal()
-    }
-}
-
-/// Where human text goes: stdout, or stderr under `--json`.
-pub(crate) fn human() -> Box<dyn Write> {
-    if json() {
-        Box::new(io::stderr())
-    } else {
-        Box::new(io::stdout())
-    }
-}
-
-/// Human text line, routed by [`human`].
-macro_rules! say {
-    ($($arg:tt)*) => {{
-        use std::io::Write as _;
-        let _ = writeln!($crate::output::human(), $($arg)*);
-    }};
-}
-
-/// Human text without a newline, flushed, routed by [`human`].
-macro_rules! say_inline {
-    ($($arg:tt)*) => {{
-        use std::io::Write as _;
-        let mut human = $crate::output::human();
-        let _ = write!(human, $($arg)*);
-        let _ = human.flush();
-    }};
-}
-
-pub(crate) use {say, say_inline};
 
 /// Finish with `value`: printed as the JSON result, or rendered by `human`.
 ///
@@ -109,6 +106,45 @@ pub(crate) fn finish<T: Serialize + ?Sized>(
         EMITTED.set(true);
         Ok(())
     }
+}
+
+/// Finish with a list: `value` under `--json`, else `table` on stdout. An
+/// empty list says so on stderr, and a pipe still gets the header.
+///
+/// # Errors
+///
+/// Returns a serialization or stdout write error.
+pub(crate) fn list<T: Serialize + ?Sized>(value: &T, table: &Table) -> Result<(), Failure> {
+    finish(value, || {
+        if table.is_empty() {
+            note(table.empty_sentence());
+        }
+        let _ = table.write(&mut anstream::stdout(), aligned());
+    })
+}
+
+/// Finish with one record: `value` under `--json`, else `record` on stdout.
+///
+/// # Errors
+///
+/// Returns a serialization or stdout write error.
+pub(crate) fn fields<T: Serialize + ?Sized>(value: &T, record: &Fields) -> Result<(), Failure> {
+    finish(value, || {
+        let _ = record.write(&mut anstream::stdout(), aligned());
+    })
+}
+
+/// Finish with what the command did: `value` under `--json`, else `sentence`
+/// on stdout.
+///
+/// # Errors
+///
+/// Returns a serialization or stdout write error.
+pub(crate) fn done<T: Serialize + ?Sized>(
+    value: &T,
+    sentence: impl Display,
+) -> Result<(), Failure> {
+    finish(value, || stream(sentence))
 }
 
 /// Print `value` as pretty JSON in both modes, for inspect-style commands.
@@ -191,6 +227,9 @@ pub(crate) fn emitted() -> bool {
 pub(crate) struct Gaps {
     pub failures: Vec<MachineFailure<RpcError>>,
     pub omitted: Vec<MachineId>,
+    /// How a warning names each Machine; one missing here is named by id.
+    #[serde(skip)]
+    names: BTreeMap<MachineId, MachineName>,
 }
 
 impl Gaps {
@@ -198,7 +237,19 @@ impl Gaps {
         Self {
             failures: result.failures.clone(),
             omitted: result.omissions.clone(),
+            names: BTreeMap::new(),
         }
+    }
+
+    /// Name the Machines in warnings by these names.
+    #[must_use]
+    pub(crate) fn named<'a>(
+        mut self,
+        names: impl IntoIterator<Item = (MachineId, &'a MachineName)>,
+    ) -> Self {
+        self.names
+            .extend(names.into_iter().map(|(id, name)| (id, name.clone())));
+        self
     }
 
     /// Add another fan-out's gaps, keeping each Machine once per list.
@@ -219,6 +270,31 @@ impl Gaps {
         self.failures.is_empty() && self.omitted.is_empty()
     }
 
+    fn name(&self, machine_id: &MachineId) -> String {
+        self.names
+            .get(machine_id)
+            .map_or_else(|| machine_id.to_string(), ToString::to_string)
+    }
+
+    /// One warning per Machine that didn't answer, by name, with its cause.
+    pub(crate) fn warn(&self) {
+        for failure in &self.failures {
+            warn(format!(
+                "{} did not answer; its rows are missing.",
+                self.name(&failure.machine_id)
+            ));
+            if let Some(cause) = super::causes(&failure.error).last() {
+                note(format_args!("  {} {cause}", Tone::Bad.paint("cause:")));
+            }
+        }
+        for machine_id in &self.omitted {
+            warn(format!(
+                "{} did not answer; its rows are missing.",
+                self.name(machine_id)
+            ));
+        }
+    }
+
     /// `Ok` when every Machine answered; otherwise the partial exit.
     pub(crate) fn outcome(&self) -> Result<(), Failure> {
         if self.is_complete() {
@@ -229,8 +305,8 @@ impl Gaps {
     }
 }
 
-/// Finish a fan-out: `{key: value, failures, omitted}`, or
-/// `human`; then the partial exit if any gap.
+/// Finish a fan-out: `{key: value, failures, omitted}`, or `human` and one
+/// warning per Machine that didn't answer; then the partial exit if any gap.
 ///
 /// # Errors
 ///
@@ -241,14 +317,17 @@ pub(crate) fn finish_fanout(
     gaps: &Gaps,
     human: impl FnOnce(),
 ) -> Result<(), Failure> {
-    finish(&Fanout::new(key, value, gaps), human)?;
+    finish(&Fanout::new(key, value, gaps), || {
+        human();
+        gaps.warn();
+    })?;
     gaps.outcome()
 }
 
 #[derive(Serialize)]
 struct Fanout<'a, T> {
     #[serde(flatten)]
-    value: std::collections::BTreeMap<&'a str, &'a T>,
+    value: BTreeMap<&'a str, &'a T>,
     #[serde(flatten)]
     gaps: &'a Gaps,
 }
@@ -256,7 +335,7 @@ struct Fanout<'a, T> {
 impl<'a, T> Fanout<'a, T> {
     fn new(key: &'a str, value: &'a T, gaps: &'a Gaps) -> Self {
         Self {
-            value: std::collections::BTreeMap::from([(key, value)]),
+            value: BTreeMap::from([(key, value)]),
             gaps,
         }
     }

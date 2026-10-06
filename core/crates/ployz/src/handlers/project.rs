@@ -13,7 +13,6 @@ use super::store::{Store, mint, store};
 use super::teardown::{confirmed, inventory, remove_all};
 use super::{Error, deploy, leaf_matches, required};
 use crate::cli::{base, positional, value};
-use crate::output::say;
 use crate::ui::Hint;
 
 pub(crate) fn command() -> Command {
@@ -77,20 +76,21 @@ fn new(root: &ArgMatches) -> Result<(), Error> {
         default_environment: EnvironmentId::parse(mint())?,
     };
     let created = store.write(&create)?;
-    crate::output::finish(&created, || {
-        say!(
+    crate::ui::finish(&created, || {
+        crate::ui::stream(format_args!(
             "Created Project {} with Environment {}.",
-            created.project.name,
-            created.environment.name
-        );
+            created.project.name, created.environment.name
+        ));
     })
 }
 
 fn ls(root: &ArgMatches) -> Result<(), Error> {
     let listed = store(root)?.read(&ployz_store::ProjectsQuery {})?;
-    crate::output::finish(&listed, || {
+    crate::ui::finish(&listed, || {
         if listed.projects.is_empty() {
-            say!("No Projects yet. Create one: ployz project new NAME");
+            crate::ui::stream(format_args!(
+                "No Projects yet. Create one: ployz project new NAME"
+            ));
         }
         for project in &listed.projects {
             let environments: Vec<String> = project
@@ -101,7 +101,11 @@ fn ls(root: &ArgMatches) -> Result<(), Error> {
                     false => name.to_string(),
                 })
                 .collect();
-            say!("{}\t{}", project.name, environments.join(", "));
+            crate::ui::stream(format_args!(
+                "{}\t{}",
+                project.name,
+                environments.join(", ")
+            ));
         }
     })
 }
@@ -117,14 +121,19 @@ fn rename(root: &ArgMatches) -> Result<(), Error> {
     // Resolved before the write, so a failed lookup cannot strand a done rename.
     let acting = super::link::identity(&store)?.organization;
     let renamed = store.write(&rename)?;
-    say!("Renamed Project {} to {}.", rename.project, renamed.name);
+    crate::ui::stream(format_args!(
+        "Renamed Project {} to {}.",
+        rename.project, renamed.name
+    ));
     // The rename is committed; moving this device's links is a follow-up.
     let links =
         super::link::rename_project(&config, acting.as_ref(), &rename.project, &renamed.name);
     if let Ok(moved @ 1..) = links {
-        say!("Moved {moved} linked director(ies) on this device to it.");
+        crate::ui::stream(format_args!(
+            "Moved {moved} linked director(ies) on this device to it."
+        ));
     }
-    crate::output::emit_committed(
+    crate::ui::emit_committed(
         json!({ "project": renamed, "links": links.as_ref().ok() }),
         links.map(drop),
     )
@@ -199,24 +208,24 @@ fn finish(removed: &ProjectRemoved, ran: &[DeploymentSummary]) -> Result<(), Err
         removed,
         deployments: ran,
     };
-    crate::output::finish(&removal, || {
+    crate::ui::finish(&removal, || {
         for deployment in ran {
             if super::teardown::left_on_old_servers(deployment) {
-                say!(
+                crate::ui::stream(format_args!(
                     "Left an Environment on old servers: no Server was left to take it off (Deployment #{}).",
                     deployment.number
-                );
+                ));
             } else {
-                say!(
+                crate::ui::stream(format_args!(
                     "Took an Environment off the Servers (Deployment #{}).",
                     deployment.number
-                );
+                ));
             }
         }
-        say!(
+        crate::ui::stream(format_args!(
             "Removed Project {} and its Environments ({}).",
             removed.project.name,
             super::joined(&removed.environments)
-        );
+        ));
     })
 }

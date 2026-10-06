@@ -9,7 +9,7 @@ use super::with_client;
 use crate::{
     connect::{ConnectError, TARGET_RPC_TIMEOUT},
     handlers::{Error, leaf_matches},
-    output::{self, Gaps, say},
+    ui::{self, Gaps},
 };
 
 pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
@@ -21,13 +21,13 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
             let listed = machines.iter().map(observation_json).collect::<Vec<_>>();
             let mut gaps = Gaps::default();
             gaps.extend(&storage.failures, &storage.omissions);
-            let finished = output::finish_fanout("servers", &listed, &gaps, || {
-                say!(
+            let finished = crate::ui::finish_fanout("servers", &listed, &gaps, || {
+                crate::ui::stream(format_args!(
                     "ID\tNAME\tMEMBERSHIP\tSTORAGE\tSUBNET\tGATEWAY\tPUBLIC IP\tENDPOINTS\tHOSTNAME\tDAEMON\tDOCKER\tOS\tKERNEL\tARCH"
-                );
+                ));
                 for observed in &machines {
                     let machine = &observed.machine;
-                    say!(
+                    crate::ui::stream(format_args!(
                         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                         machine.id,
                         machine.name,
@@ -50,11 +50,11 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
                         machine.runtime.os_pretty_name,
                         machine.runtime.kernel_version,
                         machine.runtime.architecture,
-                    );
+                    ));
                 }
             });
             if let Some(warning) = warning {
-                eprintln!("{warning}");
+                crate::ui::note(format_args!("{warning}"));
             }
             finished
         })
@@ -152,7 +152,7 @@ pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                     fields.insert("machine".into(), super::machine_json(machine));
                 }
             }
-            output::show(&json!({ "server": server, "upgrade": upgrade }))
+            crate::ui::show(&json!({ "server": server, "upgrade": upgrade }))
         })
     })
 }

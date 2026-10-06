@@ -8,7 +8,6 @@ use super::super::{Error, config_path, leaf_matches, runtime, store::Next};
 use crate::cli::value;
 use crate::cloud_account::{self, ForgetCheck};
 use crate::cloud_login::CredentialStore;
-use crate::output::say;
 use crate::ui::Hint;
 
 pub(super) fn command() -> Command {
@@ -45,24 +44,24 @@ pub(super) fn forget(root: &ArgMatches) -> Result<(), Error> {
         Ok::<_, Error>(cloud_account::forget_servers(&credential, typed).await?)
     })?;
     let next = "ployz server add".to_owned();
-    crate::output::finish(&Next::new(&forgotten, Some(next)), || {
+    crate::ui::finish(&Next::new(&forgotten, Some(next)), || {
         let check = &forgotten.check;
-        say!(
+        crate::ui::stream(format_args!(
             "Forgot the Servers of Organization {}: {}. Cloud reached none of them.",
             check.organization,
             server_names(check)
-        );
-        say!(
+        ));
+        crate::ui::stream(format_args!(
             "Volume data they held can't be recovered: {}.",
             volumes(check)
-        );
+        ));
         if !forgotten.cancelled.is_empty() {
-            say!(
+            crate::ui::stream(format_args!(
                 "Cancelled {} Deployment(s) that might still have run.",
                 forgotten.cancelled.len()
-            );
+            ));
         }
-        say!("Next: ployz server add");
+        crate::ui::stream(format_args!("Next: ployz server add"));
     })
 }
 

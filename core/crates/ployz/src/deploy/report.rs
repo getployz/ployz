@@ -25,14 +25,10 @@ impl Ink {
         }
     }
 
-    /// Color for the stream carrying human text.
+    /// Color for stderr, where progress goes.
     #[must_use]
     pub(crate) fn human() -> Self {
-        Self::of(if crate::output::json() {
-            anstream::AutoStream::choice(&io::stderr())
-        } else {
-            anstream::AutoStream::choice(&io::stdout())
-        })
+        Self::of(anstream::AutoStream::choice(&io::stderr()))
     }
 
     /// No ANSI.

@@ -21,7 +21,6 @@ use super::store::{Next, Store, environment, mint, next, scoped, store, with_ref
 use super::{Error, leaf_matches, required, runtime};
 use crate::cli::{base, positional, switch, value};
 use crate::cloud_account::StoreCallError;
-use crate::output::say;
 
 pub(crate) fn deploy_command() -> Command {
     following(
@@ -371,10 +370,10 @@ fn follow(
     runner: Option<&std::thread::JoinHandle<Result<DeploymentSummary, Error>>>,
 ) -> Result<DeploymentView, Error> {
     if runner.is_none() {
-        say!(
+        crate::ui::stream(format_args!(
             "Following Deployment #{}; stopping this leaves it running.",
             admitted.number
-        );
+        ));
     }
     let mut last = None;
     let mut id = admitted.id.clone();
@@ -384,12 +383,10 @@ fn follow(
         if view.deployment.status == DeploymentStatus::Superseded
             && let Some(newer) = replacement(store, &view)?
         {
-            say!(
+            crate::ui::stream(format_args!(
                 "Deployment #{} was replaced by #{}, which ships its changes too; following #{}.",
-                view.deployment.number,
-                newer.number,
-                newer.number
-            );
+                view.deployment.number, newer.number, newer.number
+            ));
             id = newer.id;
             continue;
         }
@@ -404,11 +401,11 @@ fn follow(
                 .iter()
                 .map(|node| format!("{} {}", node.node.name(), super::store::word(&node.outcome)))
                 .collect();
-            say!(
+            crate::ui::stream(format_args!(
                 "{}: {}",
                 super::store::word(&view.deployment.status),
                 nodes.join(", ")
-            );
+            ));
             if let Some(file) = events.as_mut() {
                 // ponytail: a failed event write never stops following; the file is a tap.
                 let _ = writeln!(file, "{progress}");
@@ -452,31 +449,31 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
         services,
     })?;
     let hint = store.again(&["--expect-version", plan.version.as_str()]);
-    crate::output::finish(&Next::new(&plan, Some(hint.clone())), || {
+    crate::ui::finish(&Next::new(&plan, Some(hint.clone())), || {
         let where_ = format!("{}/{}", plan.environment.project, plan.environment.name);
         if plan.changes.is_empty() {
-            say!("No authored changes to deploy in {where_}.");
+            crate::ui::stream(format_args!("No authored changes to deploy in {where_}."));
         }
         for change in &plan.changes {
-            say!(
+            crate::ui::stream(format_args!(
                 "{} ({})",
                 change.name,
                 super::store::word(&change.lifecycle)
-            );
+            ));
             for row in &change.settings {
-                say!(
+                crate::ui::stream(format_args!(
                     "  {}: {} -> {}",
                     row.path,
                     super::store::shown(&row.before),
                     super::store::shown(&row.after)
-                );
+                ));
             }
         }
-        say!(
+        crate::ui::stream(format_args!(
             "Decided by the Servers when it runs: {}.",
             plan.unresolved.join(", ")
-        );
-        say!("next: {hint}");
+        ));
+        crate::ui::stream(format_args!("next: {hint}"));
     })
 }
 
@@ -560,25 +557,24 @@ fn ls(root: &ArgMatches) -> Result<(), Error> {
         }
         next(matches, &words)
     });
-    crate::output::finish(&Next::new(&page, hint.clone()), || {
+    crate::ui::finish(&Next::new(&page, hint.clone()), || {
         if page.deployments.is_empty() {
-            say!(
+            crate::ui::stream(format_args!(
                 "No Deployments in {}/{}.",
-                page.environment.project,
-                page.environment.name
-            );
+                page.environment.project, page.environment.name
+            ));
         }
         for deployment in &page.deployments {
-            say!(
+            crate::ui::stream(format_args!(
                 "#{} {} Saved revision {} {}",
                 deployment.number,
                 super::store::word(&deployment.status),
                 deployment.saved,
                 deployment.id
-            );
+            ));
         }
         if let Some(hint) = &hint {
-            say!("next: {hint}");
+            crate::ui::stream(format_args!("next: {hint}"));
         }
     })
 }
@@ -669,20 +665,20 @@ fn show(root: &ArgMatches) -> Result<(), Error> {
 }
 
 pub(super) fn finish_view(view: &DeploymentView, hint: Option<String>) -> Result<(), Error> {
-    crate::output::finish(&Next::new(view, hint), || say_view(view))
+    crate::ui::finish(&Next::new(view, hint), || say_view(view))
 }
 
 /// A Deployment as human text.
 pub(super) fn say_view(view: &DeploymentView) {
-    say!(
+    crate::ui::stream(format_args!(
         "Deployment #{} of {}/{}: {}",
         view.deployment.number,
         view.environment.project,
         view.environment.name,
         super::store::word(&view.deployment.status)
-    );
+    ));
     if let Some(upload) = &view.deployment.upload {
-        say!("  {}", provenance(upload));
+        crate::ui::stream(format_args!("  {}", provenance(upload)));
     }
     if let Some(
         ployz_store::Outcome::NotExecuted { reason, .. }
@@ -692,30 +688,30 @@ pub(super) fn say_view(view: &DeploymentView) {
         },
     ) = &view.deployment.outcome
     {
-        say!("  {reason}");
+        crate::ui::stream(format_args!("  {reason}"));
     }
     if super::teardown::left_on_old_servers(&view.deployment) {
-        say!(
+        crate::ui::stream(format_args!(
             "  Left on old servers: no Server was left to take it off, so whatever ran there still runs"
-        );
+        ));
     }
     for node in &view.nodes {
-        say!(
+        crate::ui::stream(format_args!(
             "  {}: {}",
             node.node.name(),
             super::store::word(&node.outcome)
-        );
+        ));
     }
     for build in &view.builds {
         let commit = build.commit.as_ref().map_or("the upload", |commit| {
             commit.as_str().get(..7).unwrap_or(commit.as_str())
         });
         let reason = build.message.as_deref().unwrap_or_default();
-        say!(
+        crate::ui::stream(format_args!(
             "  build {} from {commit}: {} {reason}",
             build.service,
             super::store::word(&build.status)
-        );
+        ));
     }
 }
 

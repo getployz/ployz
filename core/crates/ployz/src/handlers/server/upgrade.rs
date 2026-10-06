@@ -14,7 +14,6 @@ use crate::{cluster::Client, connect::ConnectError, deploy::Outcome, ingress::In
 use serde_json::json;
 
 use super::super::{Error, leaf_matches, string_values, with_client};
-use crate::output::{self, say};
 
 const OBSERVATION_TIMEOUT: Duration = Duration::from_secs(16 * 60);
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -95,7 +94,7 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
             let machines = selected_machines(client, &selectors).await?;
             let (result, outcome) = run_all(client, &machines, release, ingress, rerun).await;
             match result {
-                Some(result) => output::emit_committed(result, outcome),
+                Some(result) => crate::ui::emit_committed(result, outcome),
                 None => outcome,
             }
         })
@@ -267,34 +266,34 @@ fn print_attempt_target(machine: &str, attempt: &MachineUpgradeAttempt) {
         outcome,
     } = attempt;
     match outcome {
-        MachineUpgradeOutcome::Accepted => say!(
+        MachineUpgradeOutcome::Accepted => crate::ui::stream(format_args!(
             "Server {machine}: upgrade {attempt_id} accepted for {target}; {}",
             journal_hint(*attempt_id)
-        ),
-        MachineUpgradeOutcome::Running { stage } => say!(
+        )),
+        MachineUpgradeOutcome::Running { stage } => crate::ui::stream(format_args!(
             "Server {machine}: upgrade {attempt_id} is {} for {target}; {}",
             stage.as_str(),
             journal_hint(*attempt_id)
-        ),
-        MachineUpgradeOutcome::Succeeded { version } => {
-            say!("Server {machine}: upgrade {attempt_id} succeeded; running version {version}")
-        }
-        MachineUpgradeOutcome::Failed { stage, error } => say!(
+        )),
+        MachineUpgradeOutcome::Succeeded { version } => crate::ui::stream(format_args!(
+            "Server {machine}: upgrade {attempt_id} succeeded; running version {version}"
+        )),
+        MachineUpgradeOutcome::Failed { stage, error } => crate::ui::stream(format_args!(
             "Server {machine}: upgrade {attempt_id} failed at {} for {target}: {error}; {}",
             stage.as_str(),
             journal_hint(*attempt_id)
-        ),
-        MachineUpgradeOutcome::Interrupted { stage } => say!(
+        )),
+        MachineUpgradeOutcome::Interrupted { stage } => crate::ui::stream(format_args!(
             "Server {machine}: upgrade {attempt_id} was interrupted at {} for {target}; {}",
             stage.as_str(),
             journal_hint(*attempt_id)
-        ),
+        )),
     }
 }
 
 fn print_unattempted<'a>(machines: impl IntoIterator<Item = &'a Machine>, after: &Machine) {
     for line in unattempted_lines(machines, after) {
-        say!("{line}");
+        crate::ui::stream(format_args!("{line}"));
     }
 }
 

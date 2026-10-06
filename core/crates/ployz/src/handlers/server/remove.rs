@@ -20,7 +20,6 @@ use ployz_core::{EnvironmentValues, ObservedDataLoss};
 use ployz_store::{EnvironmentRef, NamespacesQuery, VolumesQuery, docker_volume};
 use serde_json::json;
 
-use crate::output::{self, say};
 use crate::ui::Hint;
 
 pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
@@ -70,10 +69,10 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         Ok::<_, Error>((client, selected, hold, cloud, observed, services, replicated_services))
     })?;
     for line in service_warnings(&selected.name, &services) {
-        eprintln!("{line}");
+        crate::ui::note(format_args!("{line}"));
     }
     if hold == CloudHold::Last {
-        output::warn(format!(
+        crate::ui::warn(format!(
             "Server {} is the last Server: whatever runs on it stops, and nothing runs until you add a Server.",
             selected.name
         ));
@@ -108,7 +107,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             let removed = cloud_account::remove_server(credential, &selected.id, reset).await?;
             reset_failure = removed.reset_warning;
             if let Release::Kept { reason } = &removed.release {
-                output::warn(format!("Cloud keeps its hold on the Cluster: {reason}"));
+                crate::ui::warn(format!("Cloud keeps its hold on the Cluster: {reason}"));
             }
             cloud_released = Some(removed.release == Release::Released);
         } else if no_reset {
@@ -120,30 +119,30 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     .map_err(crate::failure::refusal_from_rpc)?;
             reset_failure = removed.reset_warning;
         }
-        say!("Removed Server {} ({}) membership", selected.name, selected.id);
+        crate::ui::stream(format_args!("Removed Server {} ({}) membership", selected.name, selected.id));
         if cloud_released == Some(true) {
-            say!("Cloud let go of the Cluster: this Organization has no Server now. Its Environments keep their config; nothing runs until you add a Server.\nnext: ployz server add");
+            crate::ui::stream(format_args!("Cloud let go of the Cluster: this Organization has no Server now. Its Environments keep their config; nothing runs until you add a Server.\nnext: ployz server add"));
         }
         if let Some(reason) = &reset_failure {
-            eprintln!("Server {} cleanup/reset incomplete: {reason}. Reset does not erase volume data.", selected.id);
+            crate::ui::note(format_args!("Server {} cleanup/reset incomplete: {reason}. Reset does not erase volume data.", selected.id));
         } else {
             for loss in &observed.data_loss {
-                say!("Volume data was not erased by reset: {loss}");
+                crate::ui::stream(format_args!("Volume data was not erased by reset: {loss}"));
             }
         }
         if !replicated_services.is_empty() {
-            eprintln!(
+            crate::ui::note(format_args!(
                 "WARNING: Replicated Services may now be under-replicated: {}. Their replicas were not moved.",
                 replicated_services
                     .iter()
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(", ")
-            );
+            ));
         }
 
         // The removal is committed: print it before local cleanup can fail.
-        output::emit(&json!({
+        crate::ui::emit(&json!({
             "server": super::server_json(&selected),
             "reset_warning": reset_failure,
             "data_loss": observed.data_loss,

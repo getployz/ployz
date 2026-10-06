@@ -11,7 +11,6 @@ use crate::context::{
 };
 
 use super::{Error, leaf_matches, required};
-use crate::output::{self, say};
 
 fn config(matches: &ArgMatches) -> Result<Config, Error> {
     if matches
@@ -53,20 +52,20 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
                 .collect(),
         })
         .collect::<Vec<_>>();
-    output::finish(&json!({ "contexts": contexts }), || {
+    crate::ui::finish(&json!({ "contexts": contexts }), || {
         if contexts.is_empty() {
-            say!("No contexts found");
+            crate::ui::stream(format_args!("No contexts found"));
             return;
         }
-        say!("NAME\tCURRENT\tDEFAULT\tCONNECTIONS");
+        crate::ui::stream(format_args!("NAME\tCURRENT\tDEFAULT\tCONNECTIONS"));
         for context in &contexts {
             let current = if context.current { "*" } else { "" };
             let default = context.connections.first().map_or("-", String::as_str);
-            say!(
+            crate::ui::stream(format_args!(
                 "{}\t{current}\t{default}\t{}",
                 context.name,
                 context.connections.len()
-            );
+            ));
         }
     })
 }
@@ -118,14 +117,20 @@ pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
     }
     let connection = context.connections.first().map(ToString::to_string);
     config.save()?;
-    output::finish(
+    crate::ui::finish(
         &json!({ "context": selected, "connection": connection }),
         || {
-            say!("Current context is now {}.", selected.escape_debug());
+            crate::ui::stream(format_args!(
+                "Current context is now {}.",
+                selected.escape_debug()
+            ));
             if let Some(connection) = &connection
                 && requested_connection.is_some()
             {
-                say!("Default connection is now {}.", connection.escape_debug());
+                crate::ui::stream(format_args!(
+                    "Default connection is now {}.",
+                    connection.escape_debug()
+                ));
             }
         },
     )
@@ -137,12 +142,12 @@ pub(super) fn remove(matches: &ArgMatches) -> Result<(), Error> {
     let removed = config.remove_context(&name)?;
     config.save()?;
     let was_current = removed == RemovedContext::Current;
-    output::finish(
+    crate::ui::finish(
         &json!({ "removed": name, "was_current": was_current }),
         || {
-            say!("Removed context {}.", name.escape_debug());
+            crate::ui::stream(format_args!("Removed context {}.", name.escape_debug()));
             if was_current {
-                say!("Current context is now unset.");
+                crate::ui::stream(format_args!("Current context is now unset."));
             }
         },
     )
@@ -195,22 +200,22 @@ fn prompt<'a>(
     choices: impl Iterator<Item = &'a str>,
     default: Option<usize>,
 ) -> Result<usize, Error> {
-    if !output::interactive() {
+    if !crate::ui::interactive() {
         return Err(Error::usage(format!(
             "cannot {title} interactively without a terminal; pass the context name: ployz ctx use <context-name>"
         )));
     }
     let choices = choices.collect::<Vec<_>>();
-    crate::output::say!("{title}:");
+    crate::ui::stream(format_args!("{title}:"));
     for (index, choice) in choices.iter().enumerate() {
         let marker = if Some(index) == default {
             " (current)"
         } else {
             ""
         };
-        crate::output::say!("  {}. {choice}{marker}", index + 1);
+        crate::ui::stream(format_args!("  {}. {choice}{marker}", index + 1));
     }
-    crate::output::say_inline!("> ");
+    crate::ui::note_inline(format_args!("> "));
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     let index = if input.trim().is_empty() {

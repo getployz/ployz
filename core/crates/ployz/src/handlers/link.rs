@@ -25,7 +25,6 @@ use super::{Error, config_path, leaf_matches};
 use crate::cli::env;
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{Account, CredentialStore, Organization};
-use crate::output::say;
 use crate::ui::Hint;
 
 pub(crate) fn link_command() -> Command {
@@ -305,13 +304,11 @@ pub(super) fn link(root: &ArgMatches) -> Result<(), Error> {
     let view = store.read(&query)?;
     let linked = record(&config, view.environment)?;
     let hint = Some("ployz status".to_owned());
-    crate::output::finish(&Next::new(&linked, hint), || {
-        say!(
+    crate::ui::finish(&Next::new(&linked, hint), || {
+        crate::ui::stream(format_args!(
             "Linked {} to {}/{}.",
-            linked.directory,
-            linked.project,
-            linked.environment
-        );
+            linked.directory, linked.project, linked.environment
+        ));
     })
 }
 
@@ -558,7 +555,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
         deploying,
         attention,
     };
-    crate::output::finish(&Next::new(&status, hint.clone()), || {
+    crate::ui::finish(&Next::new(&status, hint.clone()), || {
         print(&status, hint.as_deref())
     })
 }
@@ -574,17 +571,20 @@ fn print(status: &Status, hint: Option<&str>) {
         .as_ref()
         .map_or(identity.credential, |account| account.email.as_str());
     if let Some(cloud) = &identity.cloud {
-        say!("Cloud: {cloud}");
+        crate::ui::stream(format_args!("Cloud: {cloud}"));
     }
-    say!("Organization {organization} ({who}).");
+    crate::ui::stream(format_args!("Organization {organization} ({who})."));
     if let Some(environment) = &status.environment {
-        say!("Environment {}/{}.", environment.project, environment.name);
+        crate::ui::stream(format_args!(
+            "Environment {}/{}.",
+            environment.project, environment.name
+        ));
     }
     if let Some(link) = &status.scope.link {
-        say!("Linked from {link}.");
+        crate::ui::stream(format_args!("Linked from {link}."));
     }
     if let Some(staged) = &status.staged {
-        say!(
+        crate::ui::stream(format_args!(
             "{} staged {}.",
             staged.changes,
             if staged.changes == 1 {
@@ -592,20 +592,20 @@ fn print(status: &Status, hint: Option<&str>) {
             } else {
                 "changes"
             }
-        );
+        ));
     }
     for deployment in &status.deploying {
-        say!(
+        crate::ui::stream(format_args!(
             "Deployment {} is {}.",
             deployment.number,
             super::store::word(&deployment.status)
-        );
+        ));
     }
     for attention in &status.attention {
-        say!("Needs attention: {}", attention.message);
+        crate::ui::stream(format_args!("Needs attention: {}", attention.message));
     }
     if let Some(hint) = hint {
-        say!("next: {hint}");
+        crate::ui::stream(format_args!("next: {hint}"));
     }
 }
 
@@ -627,27 +627,31 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
         scope: &scope,
         servers: servers(matches, &config)?,
     };
-    crate::output::finish(&context, || {
+    crate::ui::finish(&context, || {
         let organization = context.organization.as_ref();
-        say!(
+        crate::ui::stream(format_args!(
             "Organization: {}",
             organization.map_or("(the token's)", |organization| organization.slug.as_str())
-        );
+        ));
         match &scope.project {
-            Some(project) => say!("Project: {} ({})", project.name, project.source.as_str()),
-            None => say!("Project: the only Project"),
+            Some(project) => crate::ui::stream(format_args!(
+                "Project: {} ({})",
+                project.name,
+                project.source.as_str()
+            )),
+            None => crate::ui::stream(format_args!("Project: the only Project")),
         }
         match &scope.environment {
-            Some(environment) => say!(
+            Some(environment) => crate::ui::stream(format_args!(
                 "Environment: {} ({})",
                 environment.name,
                 environment.source.as_str()
-            ),
-            None => say!("Environment: the Default Environment"),
+            )),
+            None => crate::ui::stream(format_args!("Environment: the Default Environment")),
         }
         match &context.servers.context {
-            Some(name) => say!("Servers: via context {name}"),
-            None => say!("Servers: via {}", context.servers.via),
+            Some(name) => crate::ui::stream(format_args!("Servers: via context {name}")),
+            None => crate::ui::stream(format_args!("Servers: via {}", context.servers.via)),
         }
     })
 }

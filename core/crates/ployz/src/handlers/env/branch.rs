@@ -13,7 +13,6 @@ use super::super::config::expected;
 use super::super::store::{self, Next, mint, project, store};
 use super::super::{Error, leaf_matches, required};
 use crate::cloud_account::StoreCallError;
-use crate::output::say;
 
 pub(super) fn branch(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -166,14 +165,12 @@ fn undo(root: &ArgMatches, sync: &str) -> Result<(), Error> {
     let undone: Undone = store(root)?.write(&request)?;
     let into = &undone.into;
     let next = in_project(matches, &["diff", "--env", into.name.as_str()]);
-    crate::output::finish(&Next::new(&undone, Some(next.clone())), || {
-        say!(
+    crate::ui::finish(&Next::new(&undone, Some(next.clone())), || {
+        crate::ui::stream(format_args!(
             "Undid Sync {} in {}/{}.",
-            request.sync,
-            into.project,
-            into.name
-        );
-        say!("next: {next}");
+            request.sync, into.project, into.name
+        ));
+        crate::ui::stream(format_args!("next: {next}"));
     })
 }
 
@@ -220,17 +217,26 @@ fn taken_out(matches: &ArgMatches, taken: &Taken) -> Result<(), Error> {
     let into = &taken.into;
     let next = (!taken.staged.is_empty())
         .then(|| in_project(matches, &["deploy", "--env", into.name.as_str()]));
-    crate::output::finish(&Next::new(taken, next.clone()), || {
+    crate::ui::finish(&Next::new(taken, next.clone()), || {
         let into = format!("{}/{}", into.project, into.name);
         match &taken.conditional_sync {
-            Some(sync) => say!("Took PR #{}'s value into {into}.", sync.pull_request),
-            None => say!("Took {}'s value into {into}.", taken.from.name),
+            Some(sync) => crate::ui::stream(format_args!(
+                "Took PR #{}'s value into {into}.",
+                sync.pull_request
+            )),
+            None => crate::ui::stream(format_args!(
+                "Took {}'s value into {into}.",
+                taken.from.name
+            )),
         }
         if !taken.staged.is_empty() {
-            say!("Staged: {}", crate::handlers::joined(&taken.staged));
+            crate::ui::stream(format_args!(
+                "Staged: {}",
+                crate::handlers::joined(&taken.staged)
+            ));
         }
         if let Some(next) = &next {
-            say!("next: {next}");
+            crate::ui::stream(format_args!("next: {next}"));
         }
     })
 }
@@ -258,19 +264,17 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
             &[words, &["--version", view.version.as_str()]].concat(),
         )
     });
-    crate::output::finish(&Next::new(view, next), || {
+    crate::ui::finish(&Next::new(view, next), || {
         let when = view
             .at_merge
             .map(|number| format!(" at #{number}'s merge"))
             .unwrap_or_default();
-        say!(
+        crate::ui::stream(format_args!(
             "{} → {}{when} (version {}):",
-            view.from.name,
-            view.into.name,
-            view.version
-        );
+            view.from.name, view.into.name, view.version
+        ));
         if view.rows.is_empty() {
-            say!("  nothing to sync");
+            crate::ui::stream(format_args!("  nothing to sync"));
         }
         for row in &view.rows {
             let mut notes = Vec::new();
@@ -294,12 +298,12 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
                 true => String::new(),
                 false => format!(" ({})", notes.join(", ")),
             };
-            say!(
+            crate::ui::stream(format_args!(
                 "  {}: {} → {}{notes}",
                 row.at.to_string(),
                 store::shown(&row.into),
                 store::shown(&row.from)
-            );
+            ));
         }
         for row in &view.never_synced {
             let sides: std::collections::BTreeSet<_> = row
@@ -307,11 +311,11 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
                 .iter()
                 .map(|mark| mark.environment.as_str())
                 .collect();
-            say!(
+            crate::ui::stream(format_args!(
                 "  {}: never synced (marked in {})",
                 row.at.to_string(),
                 Vec::from_iter(sides).join(", ")
-            );
+            ));
         }
     })
 }
@@ -321,12 +325,12 @@ fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
     let into = &synced.into;
     let next = matches!(&synced.when, SyncedWhen::Now { staged, .. } if !staged.is_empty())
         .then(|| in_project(matches, &["deploy", "--env", into.name.as_str()]));
-    crate::output::finish(&Next::new(synced, next.clone()), || {
+    crate::ui::finish(&Next::new(synced, next.clone()), || {
         let (from, into) = (&synced.from.name, format!("{}/{}", into.project, into.name));
         let undo = in_project(matches, &["env", "sync", "--undo", synced.sync.as_str()]);
         match &synced.when {
             SyncedWhen::AtMerge { conditional_sync } => {
-                say!(
+                crate::ui::stream(format_args!(
                     "Goes live in {into} with PR #{}'s merge: {}.",
                     conditional_sync.pull_request,
                     crate::handlers::joined(
@@ -336,22 +340,22 @@ fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
                             .map(ployz_store::NamedRow::to_string)
                             .collect::<Vec<_>>()
                     )
-                );
-                say!("Undo it: {undo}");
+                ));
+                crate::ui::stream(format_args!("Undo it: {undo}"));
             }
             SyncedWhen::Now { staged, closing } => {
-                say!("Synced {from} → {into}.");
-                say!("Undo it: {undo}");
+                crate::ui::stream(format_args!("Synced {from} → {into}."));
+                crate::ui::stream(format_args!("Undo it: {undo}"));
                 if !staged.is_empty() {
-                    say!("Staged: {}", crate::handlers::joined(staged));
+                    crate::ui::stream(format_args!("Staged: {}", crate::handlers::joined(staged)));
                 }
                 if *closing {
-                    say!("Closing {from}.");
+                    crate::ui::stream(format_args!("Closing {from}."));
                 }
             }
         }
         if let Some(next) = &next {
-            say!("next: {next}");
+            crate::ui::stream(format_args!("next: {next}"));
         }
     })
 }
@@ -412,21 +416,27 @@ fn stale(error: StoreCallError, matches: &ArgMatches) -> store::Refusal {
 /// A Branch after a change, and `deploy` when it staged something.
 fn finish(result: &Branched, deploy: Option<String>, what: &str) -> Result<(), Error> {
     let next = deploy.filter(|_| !result.staged.is_empty());
-    crate::output::finish(&Next::new(result, next), || {
+    crate::ui::finish(&Next::new(result, next), || {
         let branch = &result.branch;
-        say!(
+        crate::ui::stream(format_args!(
             "{what} {}/{} of {}.",
-            branch.environment.project,
-            branch.environment.name,
-            branch.parent
-        );
+            branch.environment.project, branch.environment.name, branch.parent
+        ));
         if !result.staged.is_empty() {
-            say!("Staged: {}", crate::handlers::joined(&result.staged));
+            crate::ui::stream(format_args!(
+                "Staged: {}",
+                crate::handlers::joined(&result.staged)
+            ));
         }
         for live in &branch.live {
             match &live.owner {
-                Some(owner) => say!("Uses {} live from {owner}.", live.name),
-                None => say!("Uses {} live, but nothing runs it.", live.name),
+                Some(owner) => {
+                    crate::ui::stream(format_args!("Uses {} live from {owner}.", live.name))
+                }
+                None => crate::ui::stream(format_args!(
+                    "Uses {} live, but nothing runs it.",
+                    live.name
+                )),
             }
         }
     })

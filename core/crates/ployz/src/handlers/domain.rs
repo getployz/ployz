@@ -13,7 +13,6 @@ use ployz_store::{
 use super::store::{self, Next};
 use super::{Error, leaf_matches, required};
 use crate::cli::{positional, value};
-use crate::output::{self, say};
 
 pub(crate) fn command() -> Command {
     Command::new("domain")
@@ -134,13 +133,12 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
         .domains
         .iter()
         .find_map(|row| next(matches, row.action.as_ref()));
-    output::finish(&Next::new(&view, next), || {
+    crate::ui::finish(&Next::new(&view, next), || {
         if view.domains.is_empty() {
-            say!(
+            crate::ui::stream(format_args!(
                 "No domains in {}/{}. Add one with: ployz domain add SERVICE",
-                view.environment.project,
-                view.environment.name
-            );
+                view.environment.project, view.environment.name
+            ));
         }
         for row in &view.domains {
             show(row);
@@ -156,21 +154,21 @@ fn check(root: &ArgMatches) -> Result<(), Error> {
     };
     let view = store::store(root)?.read(&query)?;
     let next = next(matches, view.domain.action.as_ref());
-    output::finish(&Next::new(&view, next), || show(&view.domain))
+    crate::ui::finish(&Next::new(&view, next), || show(&view.domain))
 }
 
 /// A staged domain change and, when it changed anything, `ployz deploy` to ship it.
 fn staged(matches: &ArgMatches, result: &DomainStaged, what: &str) -> Result<(), Error> {
     let hint = (!result.staged.is_empty()).then(|| store::next(matches, &["deploy"]));
-    output::finish(&Next::new(result, hint), || {
-        say!(
+    crate::ui::finish(&Next::new(result, hint), || {
+        crate::ui::stream(format_args!(
             "{what} {} on {} in {}/{} (revision {}).",
             result.domain.shown(),
             result.domain.service,
             result.environment.project,
             result.environment.name,
             result.environment.revision
-        );
+        ));
     })
 }
 
@@ -197,19 +195,17 @@ fn show(row: &DomainRow) {
         .reason
         .as_deref()
         .map_or_else(String::new, |reason| format!(" · {reason}"));
-    say!(
+    crate::ui::stream(format_args!(
         "{}\t{} → {port}\t{status}{reason}",
         row.domain.shown(),
         row.domain.service
-    );
+    ));
     if let Some(DomainAction::Dns { records }) = &row.action {
         for record in records {
-            say!(
+            crate::ui::stream(format_args!(
                 "  add DNS {}\t{}\t{}",
-                record.kind,
-                record.name,
-                record.value
-            );
+                record.kind, record.name, record.value
+            ));
         }
     }
 }

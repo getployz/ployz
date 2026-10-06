@@ -17,7 +17,6 @@ use super::super::{Error, config_path, leaf_matches, runtime};
 use crate::cli::{base, env, positional, switch, value};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::{CredentialStore, DEFAULT_CLOUD, LoginError, Organization};
-use crate::output::say;
 use crate::ui::Hint;
 
 const INSTALLER_URL: &str = "https://ployz.sh/";
@@ -147,8 +146,8 @@ async fn paste(
     storage: Option<StorageChoice>,
 ) -> Result<(), Error> {
     let line = pasted_command(&minted.token, acting.credential.cloud(), storage);
-    if crate::output::json() {
-        return crate::output::emit(&PendingReport {
+    if crate::ui::json() {
+        return crate::ui::emit(&PendingReport {
             status: "pending",
             enrollment: &minted.id,
             command: line,
@@ -156,11 +155,11 @@ async fn paste(
             next: format!("ployz server add --wait {}", minted.id),
         });
     }
-    say!(
+    crate::ui::stream(format_args!(
         "Run this on the Server (expires {}):\n\n  {line}\n",
         minted.expires_at
-    );
-    say!("Waiting for the Server to join...");
+    ));
+    crate::ui::stream(format_args!("Waiting for the Server to join..."));
     wait_joined(acting, &minted.id).await
 }
 
@@ -205,8 +204,8 @@ async fn wait_joined(acting: &Acting, enrollment: &str) -> Result<(), Error> {
                 .hint(Hint::Retry("ployz server add --command".into())));
             }
             Enrollment::Joined { machine_id } => {
-                say!("Server {machine_id} joined");
-                return crate::output::emit(
+                crate::ui::stream(format_args!("Server {machine_id} joined"));
+                return crate::ui::emit(
                     &json!({ "server": { "id": machine_id }, "status": "joined" }),
                 );
             }

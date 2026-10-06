@@ -317,20 +317,22 @@ pub(in crate::handlers) fn confirm(yes: bool, prompt: &str) -> Result<(), Error>
     if yes {
         return Ok(());
     }
-    if !crate::output::interactive() {
+    if !crate::ui::interactive() {
         return Err(Error::usage(format!(
             "cannot confirm {} without a terminal; pass --yes",
             prompt.escape_debug()
         )));
     }
-    crate::output::say!("{prompt}");
-    crate::output::say!(
+    crate::ui::stream(format_args!("{prompt}"));
+    crate::ui::stream(format_args!(
         "This removes Ployz-managed containers and resets this machine's cluster membership."
-    );
-    crate::output::say!(
+    ));
+    crate::ui::stream(format_args!(
         "Volume data will not be erased, but will lose access through the current cluster."
-    );
-    crate::output::say_inline!("Type yes to confirm, or press Enter to cancel: ");
+    ));
+    crate::ui::note_inline(format_args!(
+        "Type yes to confirm, or press Enter to cancel: "
+    ));
     let mut answer = String::new();
     io::stdin().read_line(&mut answer)?;
     if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {

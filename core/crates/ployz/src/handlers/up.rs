@@ -20,7 +20,6 @@ use super::deploy::{Request, open_events, say_view, upload_and_ship};
 use super::store::{mint, scoped, store};
 use super::{Error, config_path, leaf_matches};
 use crate::cli::{base, value};
-use crate::output::say;
 
 pub(crate) fn command() -> Command {
     super::deploy::following(scoped(base(
@@ -133,13 +132,13 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
         dashboard,
         next: &shipped.hint,
     };
-    crate::output::finish(&up, || {
+    crate::ui::finish(&up, || {
         say_view(view);
         for url in &up.urls {
-            say!("Open {url}");
+            crate::ui::stream(format_args!("Open {url}"));
         }
         if let Some(dashboard) = &up.dashboard {
-            say!("Dashboard: {dashboard}");
+            crate::ui::stream(format_args!("Dashboard: {dashboard}"));
         }
     })?;
     shipped.ran
@@ -171,7 +170,7 @@ fn add_server(
         .try_get_matches_from(args)
         .map_err(|error| super::clap_usage(&error))?;
     let handler = super::handler_for("server add").expect("server add has a handler");
-    let (added, server) = crate::output::captured(|| handler(&add));
+    let (added, server) = crate::ui::captured(|| handler(&add));
     added?;
     Ok(server)
 }
@@ -195,7 +194,7 @@ fn found_project(
             || shell_words::join(["ployz", "up", "--project", name.as_str()]),
         ))
     })?;
-    say!("Created Project {}.", created.project.name);
+    crate::ui::stream(format_args!("Created Project {}.", created.project.name));
     Ok(EnvironmentRef {
         project: Some(created.project.name),
         environment,
@@ -218,7 +217,7 @@ fn add_service(
         image: None,
         template: None,
     })?;
-    say!("Added Service {name}.");
+    crate::ui::stream(format_args!("Added Service {name}."));
     let dockerfile = std::fs::read_to_string(directory.join("Dockerfile")).ok();
     if dockerfile.is_some() {
         store.write(&Edit {

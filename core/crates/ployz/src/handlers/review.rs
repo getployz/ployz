@@ -7,7 +7,6 @@ use ployz_store::{DiffQuery, Discard, Publish, SettingPath};
 use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
 use crate::cli::{positional, value};
-use crate::output::say;
 
 pub(crate) fn diff_command() -> Command {
     scoped(Command::new("diff").about("Show staged Service and Volume changes"))
@@ -39,10 +38,10 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
     let view = store(root)?.read(&query)?;
     let hint = (!view.changes.is_empty())
         .then(|| next(matches, &["deploy", "--expect-version", &view.version]));
-    crate::output::finish(&Next::new(&view, hint.clone()), || {
+    crate::ui::finish(&Next::new(&view, hint.clone()), || {
         let where_ = format!("{}/{}", view.environment.project, view.environment.name);
         if view.changes.is_empty() {
-            say!("No staged changes in {where_}.");
+            crate::ui::stream(format_args!("No staged changes in {where_}."));
         }
         // Where a staged change came from, when another Environment sent it.
         let from = |row: Option<&ployz_store::RowId>| {
@@ -52,34 +51,34 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 .map_or_else(String::new, |incoming| format!(" (from {})", incoming.from))
         };
         for change in &view.changes {
-            say!(
+            crate::ui::stream(format_args!(
                 "{} ({}){}",
                 change.name,
                 super::store::word(&change.lifecycle),
                 from(Some(&change.row))
-            );
+            ));
             for row in &change.settings {
-                say!(
+                crate::ui::stream(format_args!(
                     "  {}: {} -> {}{}",
                     row.path,
                     super::store::shown(&row.before),
                     super::store::shown(&row.after),
                     from(row.row.as_ref())
-                );
+                ));
             }
             match change.data {
-                Some(ployz_store::DataEffect::Deleted) => say!(
+                Some(ployz_store::DataEffect::Deleted) => crate::ui::stream(format_args!(
                     "  deletes this Volume's data on the Servers: deploy asks to accept it by name"
-                ),
+                )),
                 Some(ployz_store::DataEffect::Kept) => {
-                    say!("  a detached Volume keeps its data");
+                    crate::ui::stream(format_args!("  a detached Volume keeps its data"));
                 }
                 None => {}
             }
         }
         for hint in &view.hints {
             match hint.landed {
-                ployz_store::Landed::Hint => say!(
+                ployz_store::Landed::Hint => crate::ui::stream(format_args!(
                     "PR #{} merged {} = {} beside your edit; use it: {}",
                     hint.pull_request,
                     hint.at.to_string(),
@@ -95,19 +94,19 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                             &hint.at.to_string()
                         ]
                     )
-                ),
+                )),
                 ployz_store::Landed::Staged => {
-                    say!(
+                    crate::ui::stream(format_args!(
                         "PR #{} staged {} = {}",
                         hint.pull_request,
                         hint.at.to_string(),
                         hint.value
-                    );
+                    ));
                 }
             }
         }
         for hint in &view.follow_hints {
-            say!(
+            crate::ui::stream(format_args!(
                 "{} deployed {} = {}, not staged here; use it: {}",
                 hint.from,
                 hint.at.to_string(),
@@ -123,16 +122,16 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                         &hint.at.to_string()
                     ]
                 )
-            );
+            ));
         }
         if view.published && !view.changes.is_empty() {
-            say!(
+            crate::ui::stream(format_args!(
                 "Published as Saved revision {}.",
                 view.saved.map_or(0, |saved| saved.0)
-            );
+            ));
         }
         if let Some(hint) = &hint {
-            say!("next: {hint}");
+            crate::ui::stream(format_args!("next: {hint}"));
         }
     })
 }
@@ -149,15 +148,21 @@ pub(super) fn publish(root: &ArgMatches) -> Result<(), Error> {
         .try_write(&publish)
         .map_err(|error| store.fail(with_refresh_hint(error, matches, "diff")))?;
     let hint = Some(next(matches, &["deploy"]));
-    crate::output::finish(&Next::new(&published, hint), || {
+    crate::ui::finish(&Next::new(&published, hint), || {
         let where_ = format!(
             "{}/{}",
             published.environment.project, published.environment.name
         );
         if published.created {
-            say!("Published {where_} as Saved revision {}.", published.saved);
+            crate::ui::stream(format_args!(
+                "Published {where_} as Saved revision {}.",
+                published.saved
+            ));
         } else {
-            say!("Saved revision {} already holds {where_}.", published.saved);
+            crate::ui::stream(format_args!(
+                "Saved revision {} already holds {where_}.",
+                published.saved
+            ));
         }
     })
 }
@@ -178,13 +183,13 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
         .try_write(&discard)
         .map_err(|error| store.fail(with_refresh_hint(error, matches, "diff")))?;
     let hint = Some(next(matches, &["diff"]));
-    crate::output::finish(&Next::new(&discarded, hint), || {
-        say!(
+    crate::ui::finish(&Next::new(&discarded, hint), || {
+        crate::ui::stream(format_args!(
             "Discarded {} in {}/{} (revision {}).",
             path.map_or_else(|| "every staged change".to_owned(), |path| path.to_string()),
             discarded.environment.project,
             discarded.environment.name,
             discarded.environment.revision
-        );
+        ));
     })
 }

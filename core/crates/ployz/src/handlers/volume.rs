@@ -17,7 +17,6 @@ use ployz_store::{
 use super::store::{self, Next};
 use super::{Error, leaf_matches};
 use crate::cli::{base, positional, switch, value};
-use crate::output::{self, say};
 
 pub(crate) fn command() -> Command {
     base("volume", "Manage Volumes")
@@ -116,7 +115,7 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
         shared_writes: matches.get_one("shared-writes") == Some(&true),
     })?;
     if matches!(storage, VolumeKind::Provisioned { .. }) && no_managed_host(matches) {
-        output::warn(NO_MANAGED_HOST);
+        crate::ui::warn(NO_MANAGED_HOST);
     }
     staged(matches, &created, "Staged new Volume", true)
 }
@@ -180,7 +179,7 @@ fn storage_flags(command: Command) -> Command {
 
 fn requested_storage(matches: &ArgMatches) -> VolumeKind {
     if matches.get_flag("docker") {
-        output::warn(DOCKER_VOLUME);
+        crate::ui::warn(DOCKER_VOLUME);
         VolumeKind::Docker {}
     } else if let Some(maximum_bytes) = matches.get_one::<ProvisionedVolumeMaximumBytes>("size") {
         VolumeKind::Provisioned {
@@ -200,14 +199,14 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
             volume,
             shared_writes: *shared_writes,
         })?;
-        return output::finish(&changed, || {
-            say!(
+        return crate::ui::finish(&changed, || {
+            crate::ui::stream(format_args!(
                 "Shared writes {} for Volume {} in {}/{}; this applies now.",
                 shared_writes_word(changed.volume.shared_writes),
                 changed.volume.name,
                 changed.environment.project,
                 changed.environment.name,
-            );
+            ));
         });
     }
     let changed = store::store(root)?.write(&SetVolumeStorage {
@@ -236,15 +235,17 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
     let view = store::store(root)?.read(&VolumesQuery {
         environment: store::environment(matches)?,
     })?;
-    output::finish(&view, || {
-        say!("VOLUME\tSTORAGE\tSHARED WRITES\tMOUNTS\tDEPLOYED\tNEXT DEPLOY");
+    crate::ui::finish(&view, || {
+        crate::ui::stream(format_args!(
+            "VOLUME\tSTORAGE\tSHARED WRITES\tMOUNTS\tDEPLOYED\tNEXT DEPLOY"
+        ));
         for listing in &view.volumes {
             let mounts: Vec<String> = listing
                 .mounts
                 .iter()
                 .map(|mount| format!("{}:{}", mount.service, mount.path))
                 .collect();
-            say!(
+            crate::ui::stream(format_args!(
                 "{}\t{}\t{}\t{}\t{}\t{}",
                 listing.volume.name,
                 storage_word(listing.volume.storage),
@@ -259,7 +260,7 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
                     .change
                     .as_ref()
                     .map_or("-".to_owned(), super::store::word)
-            );
+            ));
         }
     })
 }
@@ -271,28 +272,40 @@ fn inspect(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         volume: volume.clone(),
     })?;
-    output::finish(&view, || {
+    crate::ui::finish(&view, || {
         let listing = &view.volume;
-        say!("Volume {} ({})", listing.volume.name, listing.volume.id);
-        say!("Storage: {}", storage_word(listing.volume.storage));
-        say!(
+        crate::ui::stream(format_args!(
+            "Volume {} ({})",
+            listing.volume.name, listing.volume.id
+        ));
+        crate::ui::stream(format_args!(
+            "Storage: {}",
+            storage_word(listing.volume.storage)
+        ));
+        crate::ui::stream(format_args!(
             "Storage settings: {}",
             if listing.storage_locked {
                 "locked after deployment was requested"
             } else {
                 "editable before deployment"
             }
-        );
-        say!(
+        ));
+        crate::ui::stream(format_args!(
             "Shared writes: {}",
             shared_writes_word(listing.volume.shared_writes)
-        );
-        say!("Deployed: {}", if listing.deployed { "yes" } else { "no" });
+        ));
+        crate::ui::stream(format_args!(
+            "Deployed: {}",
+            if listing.deployed { "yes" } else { "no" }
+        ));
         if let Some(change) = &listing.change {
-            say!("Next Deploy: {}", super::store::word(change));
+            crate::ui::stream(format_args!("Next Deploy: {}", super::store::word(change)));
         }
         for mount in &listing.mounts {
-            say!("Mounted by {} at {}", mount.service, mount.path);
+            crate::ui::stream(format_args!(
+                "Mounted by {} at {}",
+                mount.service, mount.path
+            ));
         }
     })
 }
@@ -337,16 +350,19 @@ fn staged(
     storage: bool,
 ) -> Result<(), Error> {
     let hint = store::next(matches, &["diff"]);
-    output::finish(&Next::new(result, Some(hint)), || {
-        say!(
+    crate::ui::finish(&Next::new(result, Some(hint)), || {
+        crate::ui::stream(format_args!(
             "{what} {} in {}/{} (revision {}).",
             result.volume.name,
             result.environment.project,
             result.environment.name,
             result.environment.revision
-        );
+        ));
         if storage {
-            say!("Storage: {}", storage_word(result.volume.storage));
+            crate::ui::stream(format_args!(
+                "Storage: {}",
+                storage_word(result.volume.storage)
+            ));
         }
     })
 }

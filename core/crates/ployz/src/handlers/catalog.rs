@@ -10,7 +10,6 @@ use serde_json::Value;
 
 use super::{Error, leaf_matches};
 use crate::cli::positional;
-use crate::output::say;
 
 pub(crate) fn schema_command() -> Command {
     Command::new("schema")
@@ -45,7 +44,7 @@ pub(super) fn schema(root: &ArgMatches) -> Result<(), Error> {
     if let (None, Some(object)) = (path, schema.as_object_mut()) {
         object.insert("x-ployz-commands".into(), serde_json::to_value(commands())?);
     }
-    crate::output::show(&schema)?;
+    crate::ui::show(&schema)?;
     Ok(())
 }
 
@@ -143,12 +142,16 @@ pub(super) fn explain(root: &ArgMatches) -> Result<(), Error> {
     let explanation = Explanation { explained, example };
     let schema = &explanation.explained.schema;
     let text = |key: &str| schema.get(key).and_then(Value::as_str).unwrap_or_default();
-    crate::output::finish(&explanation, || {
-        say!("{} — {}", explanation.explained.path, text("title"));
-        say!("{}", text("description"));
-        say!("Type: {}", type_of(schema));
+    crate::ui::finish(&explanation, || {
+        crate::ui::stream(format_args!(
+            "{} — {}",
+            explanation.explained.path,
+            text("title")
+        ));
+        crate::ui::stream(format_args!("{}", text("description")));
+        crate::ui::stream(format_args!("Type: {}", type_of(schema)));
         if let Some(values) = schema.get("enum") {
-            say!("Allowed: {values}");
+            crate::ui::stream(format_args!("Allowed: {values}"));
         }
         // The bounds the Store enforces, so a refused value needs no second read.
         let low = schema
@@ -161,15 +164,17 @@ pub(super) fn explain(root: &ArgMatches) -> Result<(), Error> {
             });
         let high = schema.get("maximum").map(|high| format!("at most {high}"));
         match (low, high) {
-            (Some(low), Some(high)) => say!("Range: {low}, {high}"),
-            (Some(bound), None) | (None, Some(bound)) => say!("Range: {bound}"),
+            (Some(low), Some(high)) => crate::ui::stream(format_args!("Range: {low}, {high}")),
+            (Some(bound), None) | (None, Some(bound)) => {
+                crate::ui::stream(format_args!("Range: {bound}"))
+            }
             (None, None) => {}
         }
         if let Some(default) = schema.get("default") {
-            say!("Default: {default}");
+            crate::ui::stream(format_args!("Default: {default}"));
         }
-        say!("Applies: {}", text("x-ployz-apply"));
-        say!("Example: {}", explanation.example);
+        crate::ui::stream(format_args!("Applies: {}", text("x-ployz-apply")));
+        crate::ui::stream(format_args!("Example: {}", explanation.example));
     })
 }
 

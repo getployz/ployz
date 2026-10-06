@@ -25,7 +25,6 @@ pub mod image;
 pub mod ingress;
 pub mod namespace;
 pub mod operator;
-pub mod output;
 mod provisioning;
 pub mod sdk;
 pub mod service;

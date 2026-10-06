@@ -9,7 +9,7 @@ use serde_json::json;
 
 use crate::{
     handlers::{Error, leaf_matches},
-    output::{self, say},
+    ui,
 };
 
 pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
@@ -104,7 +104,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let follow_up = (|| {
         connection = connection.with_machine_id(assigned.id);
         config.save_connection(&context_name, connection.clone())?;
-        say!("{}", added_machine_line(&assigned));
+        crate::ui::stream(format_args!("{}", added_machine_line(&assigned)));
 
         runtime.block_on(helpers::wait_direct_participating(
             matches,
@@ -118,7 +118,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         })?;
         catch_up.map_err(|error| crate::global_catch_up::joined_catch_up_error(error, &assigned))
     })();
-    output::emit_committed(
+    crate::ui::emit_committed(
         json!({ "server": super::server_json(&assigned) }),
         follow_up,
     )

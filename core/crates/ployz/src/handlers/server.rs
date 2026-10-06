@@ -24,7 +24,7 @@ use crate::{
     connect::{Client, SystemConnector, TARGET_RPC_TIMEOUT},
     context::{Config, ConnectionSource, ContextError, SelectedConnections},
     ingress::IngressImage,
-    output::{self, say},
+    ui,
 };
 
 use super::{Error, leaf_matches, string_values, with_client};
@@ -66,8 +66,8 @@ pub(super) fn clear_build_cache(matches: &ArgMatches) -> Result<(), Error> {
             error,
         )
     })?;
-    output::finish(&json!({ "build_cache": { "cleared": true } }), || {
-        say!("Cleared this host user's Ployz build cache.");
+    crate::ui::finish(&json!({ "build_cache": { "cleared": true } }), || {
+        crate::ui::stream(format_args!("Cleared this host user's Ployz build cache."));
     })
 }
 
@@ -222,12 +222,15 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
                 )
                 .await?
                 .machine;
-            say!("Updated Server {} ({})", machine.name, machine.id);
+            crate::ui::stream(format_args!(
+                "Updated Server {} ({})",
+                machine.name, machine.id
+            ));
             // The update is committed; starting the Ingress Proxy for a new ingress role is a
             // follow-up. Turning the role off leaves the proxy serving: Hosted DNS stops
             // advertising the Server at its next sync, and `server rm` stops the proxy.
             if accepts_ingress != Some(true) {
-                return output::emit(&json!({ "server": server_json(&machine) }));
+                return crate::ui::emit(&json!({ "server": server_json(&machine) }));
             }
             let followed = async {
                 crate::cluster::wait_for_role(
@@ -246,7 +249,7 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
                 crate::ingress::follow_roles(client, ingress).await
             }
             .await;
-            output::emit_committed(
+            crate::ui::emit_committed(
                 json!({ "server": server_json(&machine), "ingress": followed.as_ref().ok().and_then(Option::as_ref) }),
                 followed
                     .map(drop)

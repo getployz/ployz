@@ -142,9 +142,9 @@ where
     match result {
         Err(error) if !ran.is_empty() => {
             for deployment in &ran {
-                crate::output::say!("Deployment #{} applied", deployment.number);
+                crate::ui::stream(format_args!("Deployment #{} applied", deployment.number));
             }
-            crate::output::emit_committed(json!({ "applied": ran }), Err(error)).map(|()| None)
+            crate::ui::emit_committed(json!({ "applied": ran }), Err(error)).map(|()| None)
         }
         result => result,
     }
@@ -198,11 +198,11 @@ pub(super) fn unfinished(
         applied: &'a [DeploymentSummary],
     }
     let hint = Some(again.to_owned());
-    crate::output::finish(
+    crate::ui::finish(
         &store::Next::new(&Unfinished { view, applied }, hint),
         || {
             for deployment in applied {
-                crate::output::say!("Deployment #{} applied", deployment.number);
+                crate::ui::stream(format_args!("Deployment #{} applied", deployment.number));
             }
             deploy::say_view(view);
         },

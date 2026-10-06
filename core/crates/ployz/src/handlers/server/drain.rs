@@ -14,7 +14,6 @@ use crate::drain::{
     ServicesRole,
 };
 use crate::handlers::{Error, leaf_matches, store, with_client};
-use crate::output::{self, say};
 
 const NOTHING_MOVES_BACK: &str = "Turning the services role back on does not move anything back.";
 
@@ -28,18 +27,18 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
             let cancellation = crate::cancellation::on_ctrl_c();
             let report = client
                 .drain(&target, &scope, &cancellation, &mut |step| {
-                    say!("{}", step_line(step));
+                    crate::ui::stream(format_args!("{}", step_line(step)));
                 })
                 .await
                 .map_err(refusal)?;
             for line in closing_lines(&report) {
-                say!("{line}");
+                crate::ui::stream(format_args!("{line}"));
             }
             let mut json = serde_json::to_value(&report).expect("a Drain report serializes");
             if let Value::Object(fields) = &mut json {
                 fields.insert("note".into(), NOTHING_MOVES_BACK.into());
             }
-            output::emit(&json)?;
+            crate::ui::emit(&json)?;
             if !report.complete() {
                 return Err(Error::partial());
             }

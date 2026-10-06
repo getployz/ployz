@@ -17,7 +17,6 @@ use super::{Error, Handler, leaf_matches};
 use crate::cli::{positional, switch};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::LoginError;
-use crate::output::{say, say_inline};
 use crate::ui::Hint;
 
 /// How long `github connect` waits for the App to be installed.
@@ -112,17 +111,20 @@ async fn connection(credential: &Credential) -> Result<Connection, LoginError> {
 }
 
 fn connect(root: &ArgMatches) -> Result<(), Error> {
-    let wait = leaf_matches(root).get_flag("wait") || !crate::output::json();
+    let wait = leaf_matches(root).get_flag("wait") || !crate::ui::json();
     let (before, after) = in_cloud(root, async |_, credential| {
         let before = connection(credential).await?;
         if !before.linked || !wait {
             return Ok((before, None));
         }
-        say!("Install the Ployz GitHub App: {}", before.install_url);
-        if crate::output::interactive() {
+        crate::ui::stream(format_args!(
+            "Install the Ployz GitHub App: {}",
+            before.install_url
+        ));
+        if crate::ui::interactive() {
             open_browser(&before.install_url);
         }
-        say_inline!("Waiting for GitHub... ");
+        crate::ui::note_inline(format_args!("Waiting for GitHub... "));
         let deadline = Instant::now() + INSTALL_TIMEOUT;
         while Instant::now() < deadline {
             tokio::time::sleep(POLL).await;
@@ -153,18 +155,18 @@ fn connect(root: &ArgMatches) -> Result<(), Error> {
         }
         let pending =
             json!({ "status": "pending", "url": before.install_url, "connection": before });
-        return crate::output::emit(&Next::new(
+        return crate::ui::emit(&Next::new(
             &pending,
             Some("ployz github connect --wait".to_owned()),
         ));
     };
-    crate::output::finish(
+    crate::ui::finish(
         &Next::new(
             &after,
             Some("ployz service add NAME --repo OWNER/REPO".to_owned()),
         ),
         || {
-            say!("done.");
+            crate::ui::stream(format_args!("done."));
             say_connection(&after);
         },
     )
@@ -174,10 +176,10 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
     let Some(repository) = leaf_matches(root).get_one::<String>("repository") else {
         let listed = in_cloud(root, async |_, credential| connection(credential).await)?;
         let next = (!listed.ready).then_some("ployz github connect");
-        return crate::output::finish(&Next::new(&listed, next.map(str::to_owned)), || {
+        return crate::ui::finish(&Next::new(&listed, next.map(str::to_owned)), || {
             say_connection(&listed);
             if let Some(next) = next {
-                say!("No repositories yet. Next: {next}");
+                crate::ui::stream(format_args!("No repositories yet. Next: {next}"));
             }
         });
     };
@@ -195,15 +197,13 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
         }
     })?
     .ok_or_else(|| not_found("No repository by that name that this Organization can read"))?;
-    crate::output::finish(&branches, || {
-        say!(
+    crate::ui::finish(&branches, || {
+        crate::ui::stream(format_args!(
             "{} ({}), default branch {}:",
-            branches.repository,
-            branches.access,
-            branches.default_branch
-        );
+            branches.repository, branches.access, branches.default_branch
+        ));
         for branch in &branches.branches {
-            say!("  {branch}");
+            crate::ui::stream(format_args!("  {branch}"));
         }
     })
 }
@@ -217,25 +217,21 @@ fn disconnect(root: &ArgMatches) -> Result<(), Error> {
         found(cloud_account::call(credential, Method::DELETE, &path, None).await)
     })?
     .ok_or_else(|| not_found("No such GitHub installation of yours"))?;
-    crate::output::finish(&removed, || {
-        say!(
+    crate::ui::finish(&removed, || {
+        crate::ui::stream(format_args!(
             "Disconnected installation {} ({}). Uninstall the App on GitHub to revoke its access: {}",
-            removed.disconnected.id,
-            removed.disconnected.account,
-            removed.uninstall_url
-        );
+            removed.disconnected.id, removed.disconnected.account, removed.uninstall_url
+        ));
     })
 }
 
 fn say_connection(connection: &Connection) {
-    say!("INSTALLATION\tACCOUNT\tREPOSITORIES");
+    crate::ui::stream(format_args!("INSTALLATION\tACCOUNT\tREPOSITORIES"));
     for installation in &connection.installations {
-        say!(
+        crate::ui::stream(format_args!(
             "{}\t{}\t{}",
-            installation.id,
-            installation.account,
-            installation.repositories
-        );
+            installation.id, installation.account, installation.repositories
+        ));
     }
     for repository in &connection.repositories {
         let private = if repository.private {
@@ -243,11 +239,10 @@ fn say_connection(connection: &Connection) {
         } else {
             "public"
         };
-        say!(
+        crate::ui::stream(format_args!(
             "  {} ({private}, {})",
-            repository.repository,
-            repository.default_branch
-        );
+            repository.repository, repository.default_branch
+        ));
     }
 }
 

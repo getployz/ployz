@@ -43,7 +43,7 @@ pub fn exit(result: Result<(), Failure>) -> ExitCode {
     let code = render(
         &failure,
         super::mode(),
-        crate::output::emitted(),
+        super::emitted(),
         &mut io::stdout().lock(),
         &mut anstream::stderr().lock(),
     );

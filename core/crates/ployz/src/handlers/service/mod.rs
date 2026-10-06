@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use crate::{
     cluster::ContainerObservationCondition,
-    output::{self, Gaps, say},
+    ui::{self, Gaps},
 };
 use ployz_core::EnvironmentValues;
 
@@ -49,12 +49,12 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
                 .iter()
                 .map(|container| container.as_observation())
                 .collect::<Vec<_>>();
-            output::finish_fanout(
+            crate::ui::finish_fanout(
                 "containers",
                 &observations,
                 &Gaps::of(&live.containers),
                 || {
-                    say!("CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE");
+                    crate::ui::stream(format_args!("CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE"));
                     for container in &containers {
                         let observation = container.as_observation();
                         // Scoped to one Environment, its Namespace on every row says nothing.
@@ -62,13 +62,13 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
                             Some(_) => observation.service_name().to_string(),
                             None => observation.identity().to_string(),
                         };
-                        say!(
+                        crate::ui::stream(format_args!(
                             "{}\t{service}\t{}\t{}\t{}",
                             short(observation.container_id.as_str()),
                             process_kind(*container),
                             observation.machine_id,
                             process_state(&observation.runtime)
-                        );
+                        ));
                     }
                 },
             )
@@ -230,7 +230,7 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
                 }
             }
             let outcome = outcome.expect("a lifecycle command has an action");
-            output::emit(&ServiceActionResult {
+            crate::ui::emit(&ServiceActionResult {
                 next: outcome.partial.then_some(hint.as_str()),
                 ..outcome.result(&live)
             })?;
@@ -328,13 +328,10 @@ async fn apply_service_action(
             .change_observed_service(service, action, signal.clone(), timeout)
             .await;
         for success in outcomes.successes {
-            say!(
+            crate::ui::stream(format_args!(
                 "{}\t{}\t{}\t{}",
-                action,
-                service.identity,
-                success.machine_id,
-                success.value
-            );
+                action, service.identity, success.machine_id, success.value
+            ));
             rows.push(ChangedContainer {
                 action: action.to_string(),
                 service: service.identity.clone(),
@@ -346,13 +343,13 @@ async fn apply_service_action(
             }
         }
         for failure in outcomes.failures {
-            eprintln!(
+            crate::ui::note(format_args!(
                 "WARNING: {} failed for {} on {}: {}",
                 action,
                 failure.error.container_id,
                 failure.machine_id,
                 crate::ui::row(&failure.error.error)
-            );
+            ));
             container_failures.push(ContainerFailure {
                 machine_id: failure.machine_id,
                 container_id: failure.error.container_id,
@@ -378,14 +375,16 @@ async fn apply_service_action(
         .await
         .err();
     if let Some(error) = &wait_error {
-        eprintln!(
+        crate::ui::note(format_args!(
             "WARNING: {action} was not confirmed: {}",
             crate::ui::row(error)
-        );
+        ));
         partial = true;
     }
     if !live.containers.all_targets_succeeded() {
-        eprintln!("WARNING: the Service selection came from a partial Live Observation");
+        crate::ui::note(format_args!(
+            "WARNING: the Service selection came from a partial Live Observation"
+        ));
         partial = true;
     }
     Ok(ServiceActionOutcome {
@@ -441,7 +440,7 @@ fn stop_options(
 
 fn print_observation_warning(live: &LiveServices<RpcError>) {
     for line in observation_warning_lines(live) {
-        eprintln!("{line}");
+        crate::ui::note(format_args!("{line}"));
     }
 }
 

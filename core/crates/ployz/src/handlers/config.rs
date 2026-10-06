@@ -17,7 +17,6 @@ use serde_json::{Value, json};
 use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
-use crate::output::say;
 
 pub(crate) fn get_command() -> Command {
     scoped(Command::new("get").about("Show Settings: every Service, one Service, or one Setting"))
@@ -103,13 +102,12 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
         all: matches.get_flag("all"),
     };
     let view = store(root)?.read(&query)?;
-    crate::output::finish(&view, || {
+    crate::ui::finish(&view, || {
         if view.settings.is_empty() {
-            say!(
+            crate::ui::stream(format_args!(
                 "No Services in {}/{}.",
-                view.environment.project,
-                view.environment.name
-            );
+                view.environment.project, view.environment.name
+            ));
         }
         for row in &view.settings {
             let default = if row.value == row.default {
@@ -117,7 +115,11 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
             } else {
                 ""
             };
-            say!("{} = {}{default}", row.path, display_value(&row.value));
+            crate::ui::stream(format_args!(
+                "{} = {}{default}",
+                row.path,
+                display_value(&row.value)
+            ));
         }
     })
 }
@@ -336,21 +338,24 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
         .try_write(&edit)
         .map_err(|error| store.fail(with_refresh_hint(error, matches, "get")))?;
     let hint = (!edited.staged.is_empty()).then(|| next(matches, &["diff"]));
-    crate::output::finish(&Next::new(&edited, hint), || {
+    crate::ui::finish(&Next::new(&edited, hint), || {
         let where_ = format!("{}/{}", edited.environment.project, edited.environment.name);
         if !edited.staged.is_empty() {
-            say!(
+            crate::ui::stream(format_args!(
                 "Staged {} in {where_} (revision {}).",
                 super::joined(&edited.staged),
                 edited.environment.revision
-            );
+            ));
         }
         if !edited.immediate.is_empty() {
-            say!("Applied {} in {where_}.", super::joined(&edited.immediate));
+            crate::ui::stream(format_args!(
+                "Applied {} in {where_}.",
+                super::joined(&edited.immediate)
+            ));
         }
         // A mutation always says what it did, nothing included.
         if edited.staged.is_empty() && edited.immediate.is_empty() {
-            say!("No change in {where_}: already set.");
+            crate::ui::stream(format_args!("No change in {where_}: already set."));
         }
         for typed in &edited.typed_addresses {
             say_typed_addresses(matches, typed);
@@ -379,12 +384,11 @@ fn hold(root: &ArgMatches, number: &str, asked: &str, secret: String) -> Result<
         value: secret,
     };
     let held = store.write(&request)?;
-    crate::output::finish(&held, || {
-        say!(
+    crate::ui::finish(&held, || {
+        crate::ui::stream(format_args!(
             "Holding {}'s value of {asked} for #{}'s merge.",
-            held.environment.name,
-            held.pull_request
-        );
+            held.environment.name, held.pull_request
+        ));
     })
 }
 
@@ -397,19 +401,19 @@ fn say_typed_addresses(matches: &ArgMatches, typed: &TypedAddresses) {
         "them"
     };
     let consumer = path.node();
-    say!(
+    crate::ui::stream(format_args!(
         "{path} types the private address of {services}, so Ployz can't see that {consumer} uses {them}: a Branch that doesn't copy {them} can't reach {them}, and a Deploy won't start {them} first."
-    );
+    ));
     match &typed.instead {
         Instead::Reference { value } => {
-            say!(
+            crate::ui::stream(format_args!(
                 "Set the reference instead: {}",
                 next(matches, &["set", &format!("{path}={value}")])
-            );
+            ));
         }
-        Instead::Sealed => say!(
+        Instead::Sealed => crate::ui::stream(format_args!(
             "It is sealed, so it can't hold a reference: seal only the password, in its own variable, and set {path} from references to it and to the address."
-        ),
+        )),
     }
 }
 
