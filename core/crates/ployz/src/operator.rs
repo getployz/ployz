@@ -113,6 +113,12 @@ pub enum OperatorError {
     Connect(#[from] ConnectError),
     #[error(transparent)]
     Selector(#[from] ployz_core::ServiceSelectorError),
+    /// No running Service matched; `running` names those that did run in scope.
+    #[error("{missing}")]
+    NotRunning {
+        missing: ployz_core::ServiceSelectorError,
+        running: Vec<String>,
+    },
     #[error(transparent)]
     MachineSelector(#[from] ployz_core::MachineSelectorError),
     #[error(transparent)]
@@ -471,7 +477,18 @@ pub async fn open_service_logs(
     };
     let mut inputs = Vec::new();
     for arg in args {
-        let service = select_service(&services, &arg.service)?;
+        let service = select_service(&services, &arg.service).map_err(|missing| {
+            OperatorError::NotRunning {
+                missing,
+                running: services
+                    .iter()
+                    .filter(|service| {
+                        namespace.is_none_or(|namespace| service.identity.namespace == *namespace)
+                    })
+                    .map(|service| service.identity.name.to_string())
+                    .collect(),
+            }
+        })?;
         let containers = select_log_containers(service, &arg.containers)?;
         let containers = containers
             .into_iter()

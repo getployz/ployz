@@ -1124,6 +1124,34 @@ impl RpcError {
     }
 }
 
+/// A gRPC status with `error`'s own sentence as the message and its sources in
+/// the details as `{"cause": [...]}`, read back by [`status_causes`].
+#[must_use]
+pub fn caused_status(
+    code: tonic::Code,
+    error: &(dyn std::error::Error + 'static),
+) -> tonic::Status {
+    let cause = crate::error_chain::causes(error);
+    if cause.is_empty() {
+        return tonic::Status::new(code, error.to_string());
+    }
+    let details = serde_json::to_vec(&serde_json::json!({ "cause": cause }))
+        .expect("a list of strings serializes");
+    tonic::Status::with_details(code, error.to_string(), details.into())
+}
+
+/// The causes a [`caused_status`] carried, or `None` for any other details.
+#[must_use]
+pub fn status_causes(details: &[u8]) -> Option<Vec<String>> {
+    #[derive(Deserialize)]
+    struct Caused {
+        cause: Vec<String>,
+    }
+    serde_json::from_slice::<Caused>(details)
+        .ok()
+        .map(|caused| caused.cause)
+}
+
 #[cfg(test)]
 mod rpc_error_wire {
     use super::*;
@@ -1143,6 +1171,23 @@ mod rpc_error_wire {
             Some(&json!(["Docker responded with status code 500: denied"]))
         );
         assert_eq!(serde_json::from_value::<RpcError>(wire).unwrap(), error);
+    }
+
+    #[test]
+    fn a_status_carries_its_causes_in_the_details() {
+        let error = RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "Machine did not answer".into(),
+            details: Value::Null,
+            cause: vec!["keep-alive timed out".into()],
+        };
+        let status = caused_status(tonic::Code::Unavailable, &error);
+        assert_eq!(status.message(), "Machine did not answer");
+        assert_eq!(
+            status_causes(status.details()),
+            Some(vec!["keep-alive timed out".to_owned()])
+        );
+        assert_eq!(status_causes(b"opaque"), None);
     }
 
     #[test]

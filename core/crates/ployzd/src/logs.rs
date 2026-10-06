@@ -104,7 +104,7 @@ async fn send_entry(
 ) -> Result<(), ()> {
     let payload = entry
         .encode()
-        .map_err(|error| Status::internal(ployz_core::error_chain::inline(&error)));
+        .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Internal, &error));
     sender.send(payload).await.map_err(|_| ())
 }
 

@@ -159,7 +159,7 @@ impl Service<http::Request<Body>> for MachineApi {
             // any operational RPC can activate it and retire the previous credential.
             if !verification && let Err(error) = local.activate_management_client(remote).await {
                 return Ok(
-                    tonic::Status::unavailable(ployz_core::error_chain::inline(&error)).into_http(),
+                    ployz_core::rpc::caused_status(tonic::Code::Unavailable, &error).into_http(),
                 );
             }
             let record = local.record();

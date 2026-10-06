@@ -70,12 +70,12 @@ pub fn resolve_route(
 /// An unknown Server is `not_found` only when this daemon can see the members;
 /// callers read `not_found` as already gone, which an empty view cannot prove.
 fn route_status(error: &TargetResolutionError, visible: &[Machine]) -> Status {
-    let message = ployz_core::error_chain::inline(error);
-    if matches!(error, TargetResolutionError::NotFound(_)) && !visible.is_empty() {
-        Status::not_found(message)
+    let code = if matches!(error, TargetResolutionError::NotFound(_)) && !visible.is_empty() {
+        tonic::Code::NotFound
     } else {
-        Status::invalid_argument(message)
-    }
+        tonic::Code::InvalidArgument
+    };
+    ployz_core::rpc::caused_status(code, error)
 }
 
 #[derive(Clone)]
@@ -119,7 +119,7 @@ impl MachineProxy {
             match routing_from_metadata(&MetadataMap::from_headers(request.headers().clone())) {
                 Ok(routing) => routing,
                 Err(error) => {
-                    return Status::invalid_argument(ployz_core::error_chain::inline(&error))
+                    return ployz_core::rpc::caused_status(tonic::Code::InvalidArgument, &error)
                         .into_http();
                 }
             };
@@ -177,7 +177,7 @@ impl MachineProxy {
         let request_body = match body.collect().await {
             Ok(body) => body.to_bytes(),
             Err(error) => {
-                return Status::invalid_argument(ployz_core::error_chain::inline(&error))
+                return ployz_core::rpc::caused_status(tonic::Code::InvalidArgument, &error)
                     .into_http();
             }
         };
@@ -213,14 +213,14 @@ impl MachineProxy {
     ) -> Result<http::Response<Body>, Status> {
         let mut channel = self
             .remote_backend(address)
-            .map_err(|error| Status::internal(ployz_core::error_chain::inline(&error)))?;
+            .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Internal, &error))?;
         poll_fn(|context| channel.poll_ready(context))
             .await
-            .map_err(|error| Status::unavailable(ployz_core::error_chain::inline(&error)))?;
+            .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Unavailable, &error))?;
         channel
             .call(request)
             .await
-            .map_err(|error| Status::unavailable(ployz_core::error_chain::inline(&error)))
+            .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Unavailable, &error))
     }
 
     fn remote_backend(&self, address: ManagementAddress) -> Result<Channel, BackendError> {
@@ -300,7 +300,7 @@ async fn stream_target(
                             send_failure(
                                 &sender,
                                 &target,
-                                Status::internal(ployz_core::error_chain::inline(&error)),
+                                ployz_core::rpc::caused_status(tonic::Code::Internal, &error),
                             )
                             .await;
                             return;
@@ -324,7 +324,7 @@ async fn stream_target(
         send_failure(
             &sender,
             &target,
-            Status::internal(ployz_core::error_chain::inline(&error)),
+            ployz_core::rpc::caused_status(tonic::Code::Internal, &error),
         )
         .await;
     } else if !sent_payload {
@@ -400,10 +400,11 @@ impl Service<http::Request<Body>> for MachineProxy {
             )) {
                 Ok(routing) => routing,
                 Err(error) => {
-                    return Ok(
-                        Status::invalid_argument(ployz_core::error_chain::inline(&error))
-                            .into_http(),
-                    );
+                    return Ok(ployz_core::rpc::caused_status(
+                        tonic::Code::InvalidArgument,
+                        &error,
+                    )
+                    .into_http());
                 }
             };
             if routing == RoutingRequest::Local {
@@ -413,8 +414,11 @@ impl Service<http::Request<Body>> for MachineProxy {
                 Some(store) => match store.machines().await {
                     Ok(snapshot) => snapshot.observations,
                     Err(error) => {
-                        return Ok(Status::unavailable(ployz_core::error_chain::inline(&error))
-                            .into_http());
+                        return Ok(ployz_core::rpc::caused_status(
+                            tonic::Code::Unavailable,
+                            &error,
+                        )
+                        .into_http());
                     }
                 },
                 None => Vec::new(),

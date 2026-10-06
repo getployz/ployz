@@ -30,8 +30,9 @@ pub(super) async fn read_history(
         let mut count = 0;
         let mut first_timestamp = None;
         while let Some(entry) = source.next().await {
-            let entry = entry
-                .map_err(|error| Status::unavailable(ployz_core::error_chain::inline(&error)))?;
+            let entry = entry.map_err(|error| {
+                ployz_core::rpc::caused_status(tonic::Code::Unavailable, &error)
+            })?;
             first_timestamp.get_or_insert(entry.timestamp_unix_nanos);
             count += 1;
             selected.push(entry)?;

@@ -920,9 +920,13 @@ impl From<&Error> for RpcError {
             }
             _ => serde_json::Value::Null,
         };
+        let code = error.rpc_code();
+        if code == RpcErrorCode::Internal {
+            tracing::warn!(error = %ployz_core::error_chain::inline(error), "Docker request failed");
+        }
         Self {
             details,
-            ..Self::caused(error.rpc_code(), error)
+            ..Self::caused(code, error)
         }
     }
 }

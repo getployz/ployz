@@ -29,8 +29,10 @@ impl ContainerRuntime {
             .message()
             .await?
             .ok_or_else(|| Status::invalid_argument("exec stream is empty"))?;
-        let ExecRequestFrame::Config(config) = ExecRequestFrame::decode(&first)
-            .map_err(|error| Status::invalid_argument(ployz_core::error_chain::inline(&error)))?
+        let ExecRequestFrame::Config(config) =
+            ExecRequestFrame::decode(&first).map_err(|error| {
+                ployz_core::rpc::caused_status(tonic::Code::InvalidArgument, &error)
+            })?
         else {
             return Err(Status::invalid_argument(
                 "first exec stream frame must contain config",
@@ -315,7 +317,7 @@ async fn send_exec(
 ) -> Result<(), Status> {
     let payload = frame
         .encode()
-        .map_err(|error| Status::internal(ployz_core::error_chain::inline(&error)))?;
+        .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Internal, &error))?;
     sender
         .send(Ok(payload))
         .await
@@ -362,7 +364,7 @@ fn docker_status(error: super::Error) -> Status {
         RpcErrorCode::Internal | RpcErrorCode::Unknown(_) => tonic::Code::Internal,
         RpcErrorCode::Unauthenticated => tonic::Code::Unauthenticated,
     };
-    Status::new(code, ployz_core::error_chain::inline(&error))
+    ployz_core::rpc::caused_status(code, &error)
 }
 
 fn parse_log_output(output: LogOutput) -> RawLogEntry {

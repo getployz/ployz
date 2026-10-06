@@ -551,7 +551,7 @@ impl MachineRpc for MachineService {
             .runtime_watch
             .subscribe(store, self.local.clone(), entry_id)
             .await
-            .map_err(|error| Status::unavailable(ployz_core::error_chain::inline(&error)))?;
+            .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Unavailable, &error))?;
         Ok(Response::new(stream))
     }
 
@@ -630,7 +630,7 @@ impl MachineRpc for MachineService {
         let images = containers
             .list_images(request.reference.as_deref(), request.last_tagged)
             .await
-            .map_err(|error| Status::internal(ployz_core::error_chain::inline(&error)))?;
+            .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Internal, &error))?;
         respond(images)
     }
 
@@ -819,8 +819,9 @@ async fn read_container_observations(
 fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Status> {
     match error {
         LocalMachineError::Store(error) => respond(store_error(error)),
-        LocalMachineError::ManagementRevoked => Err(Status::unauthenticated(
-            ployz_core::error_chain::inline(&error),
+        LocalMachineError::ManagementRevoked => Err(ployz_core::rpc::caused_status(
+            tonic::Code::Unauthenticated,
+            &error,
         )),
         LocalMachineError::NotParticipating => respond(unavailable("Machine is not participating")),
         LocalMachineError::ClusterStoreUnavailable => {
@@ -842,21 +843,25 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             details: Value::Null,
             cause: Vec::new(),
         }),
-        LocalMachineError::RecordOwner(error) => {
-            Err(Status::internal(ployz_core::error_chain::inline(&error)))
-        }
-        LocalMachineError::OperationTask(error) => {
-            Err(Status::internal(ployz_core::error_chain::inline(&error)))
-        }
-        LocalMachineError::Cluster(error) => {
-            Err(Status::internal(ployz_core::error_chain::inline(&error)))
-        }
+        LocalMachineError::RecordOwner(error) => Err(ployz_core::rpc::caused_status(
+            tonic::Code::Internal,
+            &error,
+        )),
+        LocalMachineError::OperationTask(error) => Err(ployz_core::rpc::caused_status(
+            tonic::Code::Internal,
+            &error,
+        )),
+        LocalMachineError::Cluster(error) => Err(ployz_core::rpc::caused_status(
+            tonic::Code::Internal,
+            &error,
+        )),
         LocalMachineError::IngressProxyServiceSpec(error) => {
             respond(RpcError::caused(RpcErrorCode::InvalidArgument, &error))
         }
-        LocalMachineError::Network(error) => {
-            Err(Status::internal(ployz_core::error_chain::inline(&error)))
-        }
+        LocalMachineError::Network(error) => Err(ployz_core::rpc::caused_status(
+            tonic::Code::Internal,
+            &error,
+        )),
         LocalMachineError::Docker(error) => respond(RpcError::from(&error)),
         LocalMachineError::StoragePreparation(error) => respond(error),
         LocalMachineError::Cleanup(message) => respond(RpcError {
@@ -874,9 +879,9 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             details: Value::Null,
             cause: Vec::new(),
         }),
-        LocalMachineError::Admission(crate::mutation::Error::Io(error)) => {
-            Err(Status::internal(ployz_core::error_chain::inline(&error)))
-        }
+        LocalMachineError::Admission(crate::mutation::Error::Io(error)) => Err(
+            ployz_core::rpc::caused_status(tonic::Code::Internal, &error),
+        ),
         LocalMachineError::Upgrade(error) => respond(upgrade_error(error)),
     }
 }
@@ -976,7 +981,7 @@ fn respond(response: impl Into<RpcResponse>) -> Result<Response<OpaquePayload>, 
 }
 
 fn invalid_request(error: impl std::error::Error + 'static) -> Status {
-    Status::invalid_argument(ployz_core::error_chain::inline(&error))
+    ployz_core::rpc::caused_status(tonic::Code::InvalidArgument, &error)
 }
 
 #[allow(clippy::result_large_err)]
@@ -994,7 +999,7 @@ fn expect<T: Rpc>(request: Request<OpaquePayload>) -> Result<T::Request, Status>
 }
 
 fn internal_response(error: impl std::error::Error + 'static) -> Status {
-    Status::internal(ployz_core::error_chain::inline(&error))
+    ployz_core::rpc::caused_status(tonic::Code::Internal, &error)
 }
 
 #[cfg(test)]

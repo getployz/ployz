@@ -847,7 +847,7 @@ impl TransportError {
             code: rpc_error_code(self.code),
             message: self.message.clone(),
             details: self.details.clone(),
-            cause: Vec::new(),
+            cause: ployz_core::error_chain::causes(self),
         }
     }
 }
@@ -858,20 +858,24 @@ impl From<tonic::Status> for TransportError {
         // only when the client connection or stream itself fails.
         let source = std::error::Error::source(&status);
         let unanswered = status.code() == tonic::Code::Cancelled || source.is_some();
-        let cause = source.and_then(|source| {
-            let mut lines: Vec<String> = std::iter::once(source.to_string())
-                .chain(crate::ui::causes(source))
-                .skip_while(|line| line == status.message())
-                .collect();
-            lines.dedup();
-            crate::failure::JoinedChain::of(lines)
-        });
+        let sent = ployz_core::rpc::status_causes(status.details());
+        let cause = match source {
+            Some(source) => {
+                let mut lines: Vec<String> = std::iter::once(source.to_string())
+                    .chain(crate::ui::causes(source))
+                    .skip_while(|line| line == status.message())
+                    .collect();
+                lines.dedup();
+                crate::failure::JoinedChain::of(lines)
+            }
+            None => sent.clone().and_then(crate::failure::JoinedChain::of),
+        };
         Self {
             unanswered,
             cause,
             code: status.code(),
             message: status.message().to_owned(),
-            details: if status.details().is_empty() {
+            details: if status.details().is_empty() || sent.is_some() {
                 Value::Null
             } else {
                 json!({ "grpc_details": String::from_utf8_lossy(status.details()) })
