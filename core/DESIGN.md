@@ -113,8 +113,15 @@ Declarative reconciliation decouples components but multiplies edge cases and
 hides failures behind "it will fix itself later." Docker restarts containers on a
 Machine; Ployz does not move them between Machines on its own.
 
-**Red flags:** controllers, persisted desired state, durable workflows,
-cluster-wide reconcilers, any behavior that continues after its command returns.
+A Volume Run (Mirror, Sync, Delete Mirror) is the one durable workflow, and it is
+still a bounded attempt. Cloud runs it as a fixed list of steps a user requested;
+it ends done, failed, cancelled or lost, and never runs again on its own. A retry
+reads every copy live and continues from what the disks show. A Cluster without
+Cloud keeps its Volumes where they are.
+
+**Red flags:** controllers, persisted desired state, durable workflows other than a
+requested Volume Run, cluster-wide reconcilers, any behavior that continues after
+its command returns.
 
 ## 4. Partial results are outcomes
 
@@ -195,6 +202,11 @@ Cloud stores encrypted, Organization-scoped connection candidates associated wit
 the current Cluster pairing. A saved candidate is neither membership nor presence;
 only a successful connection confirms reachability and the intended Machine.
 The Cluster remains independently operable without Cloud.
+
+Volume Runs need Cloud to start and to step. Each Machine fences them itself: it
+keeps a lease record per Volume and refuses a request from an older run or an
+earlier step. Without Cloud a Volume stays put. No Cluster operation's correctness
+depends on Cloud, only the availability of Volume Runs.
 
 Removing Cloud access disables that pairing's connections immediately. Endpoint
 revocation is confirmed separately; an offline Machine remains unconfirmed.

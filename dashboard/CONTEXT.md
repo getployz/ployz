@@ -37,8 +37,12 @@ A release whose latest Upgrade in the Organization didn't succeed, including one
 _Avoid_: Blocked release, paused rollout
 
 **Volume**:
-An Environment resource whose files survive deployments and restarts on the Server that hosts it. It is the Engine's Provisioned Volume by default, which product copy calls a Managed volume with a storage limit; a plain Docker volume is an explicit, not-recommended Advanced choice. Both stay local to that Server. Its storage is editable before deployment is requested, then fixed even if the attempt fails. A Server without managed storage reads Docker only. A Managed volume does not imply backups, replication, or resizing today.
+An Environment resource whose files survive deployments and restarts on the Server that hosts it. It is the Engine's Provisioned Volume by default, which product copy calls a Managed volume with a storage limit; a plain Docker volume is an explicit, not-recommended Advanced choice. Both stay local to that Server. Its storage is editable before deployment is requested, then fixed even if the attempt fails. A Server without managed storage reads Docker only. A Managed volume does not imply backups or resizing today. Its one copy elsewhere is a Mirror, refreshed only when a user asks.
 _Avoid_: Persistent storage as a resource name, network storage, replicated volume, Provisioned in product copy, ZFS in normal product copy except the Add Server opt-out
+
+**Volume Run**:
+One requested, bounded run over one Volume's copies: Mirror (make a read-only copy on another Server), Sync (refresh it) or Delete Mirror. Cloud runs it step by step, one at a time per Volume, and keeps its row as the user-facing record; the copies on the Servers decide what it does. A Mirror shows as `data-<server>`. Cloud also starts a Delete Mirror on its own for a mirror whose Volume no Environment still holds.
+_Avoid_: Replication, backup, job, sync job
 
 **Server Policy**:
 The roles (accepts builds, services, ingress) and labels of one Server, mirroring the runtime's Machine Role and Machine Label. Cloud requests a policy change as a queued operation and reads the resulting policy back from machine observation; it keeps no separate desired-policy record and policy is not part of any Environment's Saved State.

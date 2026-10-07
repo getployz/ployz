@@ -63,8 +63,32 @@ server. To keep deploying your other services meanwhile, see
 [When a server goes down](scaling.md#when-a-server-goes-down).
 
 > [!WARNING]
-> Ployz doesn't back up, replicate or snapshot volumes yet. If the server is lost, so is the
-> data. Keep your own copies off the server; see [Back up a database](databases.md#back-up-a-database).
+> Ployz doesn't back up volumes. A [mirror](#mirror-a-volume) holds the data as of its last
+> sync, nothing newer. Keep your own copies off the server; see
+> [Back up a database](databases.md#back-up-a-database).
+
+## Mirror a volume
+
+A mirror is a read-only copy of a volume on a second server. It refreshes only when you sync
+it, and a volume has at most one. Mirrors need Ployz Cloud; without it, volumes stay where they
+are.
+
+```
+ployz volume mirror data --to web-2     # copy data to web-2; it shows as data-web-2
+ployz volume sync data                   # send what changed since the last sync
+ployz volume mirror rm data-web-2        # delete the mirror
+ployz volume runs data                   # what ran on this volume, and how it ended
+```
+
+Each command starts a run in Ployz Cloud and prints its id. Add `--wait` to wait for it to
+finish. One run at a time per volume: a second one is refused and names the run in progress.
+
+- **A mirror that fell behind for good** is refused with `data-web-2 diverged`. Run
+  `ployz volume sync data --full` to copy everything again.
+- **Deleting a volume deletes its mirror.** So does deleting its environment. Ployz removes
+  the mirror after the deploy that deletes the volume.
+- **A mirror that is the only copy left** is removed only with `--confirm data`, because its
+  data goes with it.
 
 ## When a volume has no writer
 

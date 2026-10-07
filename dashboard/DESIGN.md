@@ -366,6 +366,8 @@ Bar text stays minimal: fewer words on mobile, and explanations belong in a pane
 - New Volumes refuse a second writer unless shared writes is on: one Service with one replica. Allow shared writes, under the volume's Advanced, applies at once and is never staged; turning it off with several writers is refused, and the reason shows on the switch.
 - Product copy does not expose ZFS or imply backups, replication, or resizing.
   - Exception: the Add Server dialog may name ZFS where it explains a requirement, because "managed volumes" alone doesn't tell someone why they'd opt out.
+  - Exception: a Volume may have one mirror, a read-only copy on another Server refreshed only on request. Copy calls it `mirror` and names it `data-<server>`, never a replica or a backup, and never says it updates on its own.
+- Volume Runs (Mirror, Sync, Delete Mirror) are one Inngest function, `run-volume`, on `attemptLifecycle` with a per-Volume `singleton`. The `volume_run` row is the record users read; the Machines' copies decide every step.
 
 ## Voice
 
