@@ -11,7 +11,6 @@ import {
   type VolumeRunState,
 } from "#/modules/volume-run/volume-run";
 
-/** One Mirror, Sync or DeleteMirror of a Volume: its request, its run, and how it ended. */
 export const volumeRun = pgTable(
   "volume_run",
   {
@@ -26,7 +25,7 @@ export const volumeRun = pgTable(
     kind: text("kind").notNull().$type<VolumeRunKind>(),
     args: jsonb("args").notNull().$type<AnyVolumeRunArgs>(),
     orphan: boolean("orphan").default(false).notNull(),
-    // What a declared slot's quota is: the Volume's maximum when requested, 0 for one without (a Docker Volume).
+    // 0 for a Volume without a maximum (a Docker Volume).
     refquotaBytes: bigint("refquota_bytes", { mode: "number" }).default(0).notNull(),
     state: text("state").default("requested").notNull().$type<VolumeRunState>(),
     lease: bigint("lease", { mode: "number" }),
@@ -38,7 +37,6 @@ export const volumeRun = pgTable(
     finishedAt: timestamp("finished_at", { mode: "date", withTimezone: true }),
   },
   (table) => [
-    // One run per Volume at a time: a second request is VolumeBusy.
     uniqueIndex("volume_run_one_active_idx")
       .on(table.volumeId)
       .where(sql`${table.state} in ('requested', 'running')`),

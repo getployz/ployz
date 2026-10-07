@@ -45,7 +45,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       await Promise.all(github.map((target) => walkGithub(event.data.organizationId, target, step, runEffect)));
       const ran = await step.run("run-deployment", () => runEffect(runStoreDeployment(event.data, storeDeploymentRunner(runId))));
       await step.run("forget-run", () => runEffect(forgetStoreDeploymentRun(runId)));
-      // An applied Deployment can drop a Volume or a whole Environment: its mirrors go with it.
+      // An applied Deployment can drop a Volume or an Environment, leaving its mirrors orphaned.
       if ("ran" in ran && ran.ran.status === "applied") {
         await step.run("delete-orphan-mirrors", () => runEffect(cleanOrphanSlots(event.data.organizationId)));
       }

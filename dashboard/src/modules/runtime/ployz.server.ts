@@ -42,7 +42,6 @@ export { ployzVersion };
 // SAFETY: the package exports this named CommonJS SDK surface at runtime.
 const { observeCopies } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "observeCopies">;
 
-/** Every Volume copy on the given Machines, read straight from each Machine's ZFS view. */
 export const observeVolumeCopies = (connections: Parameters<typeof observeCopies>[0]) =>
   sdkPromise("observe copies", () => observeCopies(connections));
 
@@ -98,7 +97,6 @@ export interface PloyzSession {
     machine: MachineTarget,
     attemptId: MachineUpgradeAttemptId,
   ) => Effect.Effect<MachineUpgradeAttempt, PloyzSdkError>;
-  /** One Volume Switch verb on one Machine. Refusals carry a SwitchError in the RPC error's details. */
   readonly volumeSwitch: <R extends VolumeSwitchRequest>(
     machine: MachineTarget,
     request: R,

@@ -49,7 +49,6 @@ export const inngestFunctionCancelledEnvelopeSchema = Schema.Struct({
   }),
 });
 
-/** Every run's end, however it ended: success carries `result`, failure `error`. */
 export const inngestFunctionFinishedEnvelopeSchema = Schema.Struct({
   ...inngestEventEnvelopeFields,
   name: Schema.Literal("inngest/function.finished"),
@@ -76,7 +75,6 @@ export const serverPolicyChangeRequestedEvent = "machine/policy-change.requested
 export const serverUpgradeRequestedEvent = "server/upgrade.requested";
 export const volumeRunRequestedEvent = "volume/run.requested";
 
-/** A Volume run was requested: its `volume_run` row is written. `volumeId` keys the Volume's one run at a time. */
 export type VolumeRunRequestedEventData = {
   organizationId: string;
   environment: string;

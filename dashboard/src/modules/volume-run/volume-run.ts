@@ -7,7 +7,6 @@ export const ACTIVE_VOLUME_RUN_STATES = ["requested", "running"] as const satisf
 export const VOLUME_RUN_KINDS = ["mirror", "sync", "delete_mirror"] as const;
 export type VolumeRunKind = (typeof VOLUME_RUN_KINDS)[number];
 
-/** What each kind was asked to do. A null `slot` deletes every slot: only orphan runs do. */
 export type VolumeRunArgs = {
   mirror: { readonly to: MachineName };
   sync: { readonly full: boolean };
@@ -15,9 +14,11 @@ export type VolumeRunArgs = {
 };
 export type AnyVolumeRunArgs = VolumeRunArgs[VolumeRunKind];
 
-/** A request no run claimed in this long never starts. */
+export type VolumeRunInput = {
+  [K in VolumeRunKind]: { readonly kind: K; readonly args: VolumeRunArgs[K] }
+}[VolumeRunKind];
+
 export const VOLUME_RUN_UNCLAIMED_LIMIT_MS = 10 * 60_000;
-/** A run this long in `running` gets its Inngest run looked up. */
 export const VOLUME_RUN_RUNNING_CHECK_MS = 15 * 60_000;
 export const VOLUME_RUN_MESSAGE_LIMIT = 1024;
 
@@ -36,11 +37,6 @@ export type VolumeRunView = {
   readonly finished_at: string | null;
 };
 
-/**
- * One runtime-frame Machine as 01-observe saw it. `address` is its management address, what StartReceive pulls from.
- * `pool` says it has a Machine Pool: the Volume Switch verbs that write need one, so a Machine without one is never
- * sent AdoptLease and can't take a Mirror.
- */
 export type Member =
   | {
       readonly machine: { readonly id: MachineId; readonly name: MachineName };
@@ -52,7 +48,6 @@ export type Member =
   | { readonly machine: { readonly id: MachineId; readonly name: MachineName }; readonly answered: false };
 export type AnsweredMember = Extract<Member, { answered: true }>;
 
-/** The management address of a Machine: fdcc followed by the first 14 bytes of its WireGuard public key. */
 export function managementAddress(publicKey: readonly number[]): string {
   const bytes = [0xfd, 0xcc, ...publicKey.slice(0, 14)];
   if (bytes.length !== 16) throw new Error("A WireGuard public key has 32 bytes.");
@@ -63,13 +58,10 @@ export function managementAddress(publicKey: readonly number[]): string {
   return groups.join(":");
 }
 
-/** How users name one copy: the Volume's name and the Server holding it. */
 export const copyName = (volumeName: string, server: string) => `${volumeName}-${server}`;
 
-/** The Docker Volume a config entry deploys as, the name every Machine verb takes. */
 export const dockerVolumeName = (namespace: string, volumeId: string) => `${namespace}_vol-${volumeId}`;
 
-/** A Docker Volume name split back into its Namespace and VolumeId, or null for one no config entry could deploy. */
 export function parseDockerVolumeName(name: string): { namespace: string; volumeId: string } | null {
   const at = name.lastIndexOf("_vol-");
   if (at <= 0) return null;

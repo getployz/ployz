@@ -325,7 +325,6 @@ function describeDrain(entry: DrainReport["services"][number]): string {
 }
 void describeDrain;
 
-// A Volume switch reply type follows its command; other Machine verbs are not Volume switch requests.
 declare const switchArgs: import("../generated/payloads").Switch;
 client.volumeSwitch("one" as MachineTarget, { command: "inspect_volume_copy", payload: { name: "data" } }) satisfies Promise<import("../generated/payloads").VolumeCopyView>;
 client.volumeSwitch("one" as MachineTarget, { command: "begin_round", payload: { switch: switchArgs, name: "data" } }) satisfies Promise<import("../generated/payloads").SwitchReply>;

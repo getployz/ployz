@@ -1,6 +1,5 @@
-import { type AnsweredMember, copyName, type Member, type VolumeRunArgs, type VolumeRunKind } from "#/modules/volume-run/volume-run";
+import { type AnsweredMember, copyName, type Member, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
-/** What a member's copy is to a run, read from its view alone. */
 export type Role = "writer" | "switching" | "handed" | "mirror" | "stale" | "empty" | "unanswered";
 
 export type RefusalCode =
@@ -23,9 +22,7 @@ export type Planned =
   | { readonly ok: true; readonly phase: { readonly kind: "delete_mirror"; readonly destroy: readonly AnsweredMember[]; readonly forget: AnsweredMember | null } }
   | { readonly ok: false; readonly refusal: Refusal };
 
-export type PlanInput = {
-  [K in VolumeRunKind]: { readonly kind: K; readonly args: VolumeRunArgs[K] }
-}[VolumeRunKind] & { readonly volumeName: string; readonly orphan: boolean };
+export type PlanInput = VolumeRunInput & { readonly volumeName: string; readonly orphan: boolean };
 
 export function roleOf(member: Member): Role {
   if (!member.answered) return "unanswered";
@@ -55,10 +52,7 @@ export function roleOf(member: Member): Role {
 
 const refuse = (code: RefusalCode, message: string): Planned => ({ ok: false, refusal: { code, message } });
 
-/**
- * Which Machines the run touches and how, from what 01-observe saw. Pure: the same members always plan the same run,
- * so a replayed step re-plans exactly.
- */
+/** Pure: Inngest re-runs it outside any step on every replay, so the same members must plan the same run. */
 export function planFromCopies(input: PlanInput, members: readonly Member[]): Planned {
   const name = input.volumeName;
   const answered = members.filter((member): member is AnsweredMember => member.answered);

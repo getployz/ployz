@@ -30,7 +30,8 @@ import type { MachineRemoveAttemptView } from "#/modules/machines/machine-remova
 import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
 import { NotFound, Validation } from "#/server/public-error";
-import { getVolumeRun, listVolumeRuns, requestVolumeRun, type VolumeRunInput } from "#/modules/volume-run/volume-run.server";
+import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
+import { getVolumeRun, listVolumeRuns, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
 
 const NewToken = Schema.Struct({
   name: Schema.Trim.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
@@ -46,7 +47,6 @@ const RemoveServer = Schema.Union([
 /** `server forget`: the Organization's slug, as the user typed it. */
 const ForgetServers = Schema.Struct({ organization: Schema.String });
 
-/** `volume mirror|sync|mirror rm`: the Volume's Environment, and what to run on it. */
 const RunEnvironment = Schema.Struct({ project: Schema.String, environment: Schema.String });
 const NewVolumeRun = Schema.Union([
   Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("mirror"), to: Schema.String.check(Schema.isNonEmpty()) }),
@@ -70,7 +70,7 @@ function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
   }
 }
 
-/** The CLI reads a bare public 404 as an unsupported route, so a missing Volume or run answers as a Store refusal. */
+// The CLI reads a bare 404 as an unsupported route, so a missing Volume or run answers as a refusal.
 const missingRefusal = (message: string) => refusal({ code: "not_found", message, details: null });
 
 const forgetter = (caller: Caller) => ({ userId: caller.userId, organizationId: caller.organization.id });

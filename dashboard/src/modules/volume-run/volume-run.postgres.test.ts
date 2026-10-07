@@ -22,7 +22,7 @@ import {
   startOrphanDeletes,
   volumeBusyMessage,
 } from "#/modules/volume-run/volume-run.server";
-import type { VolumeRunInput } from "#/modules/volume-run/volume-run.server";
+import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -36,7 +36,6 @@ const environment = { project: "shop", environment: "production" };
 const inngest = new Inngest({ id: "volume-run-test" });
 const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
-/** One Machine's copy of the Volume, as the fake Machines keep it. */
 type FakeMachine = {
   name: string;
   pool: boolean;
@@ -44,7 +43,6 @@ type FakeMachine = {
   silent?: boolean;
   copy: VolumeCopy | null;
   lease: LeaseRecord | null;
-  /** Snapshots WarmSnapshot hands out in turn on a writer; the last repeats once they run out. */
   warms?: number[];
   receiving?: { target: string; guid: number; polls: number; resumable?: boolean };
 };
@@ -61,7 +59,6 @@ const first = <T>(items: readonly T[]): T => {
   return item;
 };
 
-/** Verbs a step sends to several Servers at once arrive in any order; sort each such run so assertions see one order. */
 const ordered = (sent: readonly string[]) => {
   const keyOf = (verb: string) => verb.startsWith("adopt_lease@") ? "adopt_lease" : verb.replace(/@[^(]*/, "@");
   const groups: string[][] = [];
@@ -76,7 +73,6 @@ const ordered = (sent: readonly string[]) => {
 describe("volume runs", () => {
   let harness: PostgresTestHarness;
   let machines: FakeMachine[];
-  /** Every Volume Switch verb the run sent, as `command@server(seq,round,sub)`. */
   let verbs: string[];
   let failNext: Map<string, unknown>;
   let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" } }>;
@@ -180,7 +176,6 @@ describe("volume runs", () => {
     function: createRunVolume(new Inngest({ id: "test" }), runEffect),
     events: [{ name: "volume/run.requested", data: { organizationId, environment: "env-1", volumeId: volume, runId: runRowId } }],
     transformCtx: (ctx) => ({ ...mockCtx(ctx), runId }),
-    // Each poll's sleep ends at once.
     steps: [...(steps ?? []), ...[0, 1, 2].flatMap((round) =>
       Array.from({ length: 6 }, (_, poll) => ({ id: `04-r${round}-3-wait-${poll}`, handler: () => undefined })))],
   }).execute();

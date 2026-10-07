@@ -16,14 +16,12 @@ use crate::cli::{positional, switch, value};
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::ui::{Cell, Fields, Hint, Table, Tone};
 
-/// How often `--wait` asks Cloud about the run it follows.
 const POLL: Duration = if cfg!(test) {
     Duration::from_millis(10)
 } else {
     Duration::from_secs(2)
 };
 
-/// Cloud's ID of one Volume run.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub(crate) struct VolumeRunId(String);
@@ -264,7 +262,6 @@ pub(super) fn runs_command() -> Command {
     .arg(positional("run", false).help("A run ID, to show that run"))
 }
 
-/// The Cloud credential runs go through; the in-process Store has no runs.
 fn cloud(backend: &Backend) -> Result<(&tokio::runtime::Runtime, &Credential), Error> {
     match backend {
         Backend::Cloud(runtime, credential) => Ok((runtime, credential)),
@@ -275,7 +272,6 @@ fn cloud(backend: &Backend) -> Result<(&tokio::runtime::Runtime, &Credential), E
     }
 }
 
-/// The Volume `name` as Cloud addresses it: its ID and its Environment's.
 fn located(
     store: &store::Store<'_>,
     matches: &ArgMatches,
@@ -369,7 +365,6 @@ pub(crate) fn mirror_of(
     }
 }
 
-/// Start the run `ask` describes on `volume`, say it, and with `--wait`, follow it.
 fn request(
     root: &ArgMatches,
     volume: &VolumeName,
@@ -408,7 +403,6 @@ fn request(
     ended(&run, &started, follow)
 }
 
-/// A run that ended: done finishes the command; anything else is its failure.
 fn ended(run: &VolumeRun, started: &str, follow: String) -> Result<(), Error> {
     if run.state == VolumeRunState::Done {
         return crate::ui::finish(&OneRun { run: run.clone() }, || {
@@ -444,7 +438,6 @@ const fn ended_word(state: VolumeRunState) -> &'static str {
     }
 }
 
-/// A refused start; a Mirror removal that needs the Volume's name names the retry with it.
 fn refused(
     store: &store::Store<'_>,
     matches: &ArgMatches,
@@ -538,7 +531,6 @@ fn record(run: &VolumeRun) -> Fields {
     record
 }
 
-/// A run's arguments as one short line, like `to web-2` or `full`.
 fn asked(args: &VolumeRunArgs) -> String {
     let mut words = Vec::new();
     if let Some(to) = &args.to {

@@ -31,7 +31,6 @@ const remove = (slot: string | null, confirmed: string | null = null): PlanInput
   ({ kind: "delete_mirror", args: { slot, confirmed_name: confirmed }, volumeName: "data", orphan: false });
 const orphan: PlanInput = { kind: "delete_mirror", args: { slot: null, confirmed_name: null }, volumeName: "ns_vol-1", orphan: true };
 
-/** What a plan comes to, in one comparable word: the refusal code, or the Servers each step touches. */
 function outcome(input: PlanInput, members: Member[]) {
   const planned = planFromCopies(input, members);
   if (!planned.ok) return `refuse ${planned.refusal.code}`;

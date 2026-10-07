@@ -9,7 +9,7 @@ import {
   volumeRunRequestedEventType,
 } from "#/modules/inngest/events";
 import { planFromCopies } from "#/modules/volume-run/plan";
-import { copyName, type AnsweredMember, type Member } from "#/modules/volume-run/volume-run";
+import { copyName, type Member } from "#/modules/volume-run/volume-run";
 import {
   claimVolumeRun,
   cleanOrphanSlots,
@@ -32,7 +32,7 @@ type StepTools = Pick<PloyzStepTools, "run" | "sleep">;
 type EffectRunner = typeof runInngestEffect;
 
 export const RUN_VOLUME_FUNCTION_ID = "run-volume";
-/** At most this many rounds: a Volume written faster than it ships never converges, and the last round is still a mirror. */
+// A Volume written faster than it ships never converges, so the rounds are capped.
 export const MAX_ROUNDS = 3;
 const POLL_INTERVAL = "5s";
 const MAX_POLLS = 500;
@@ -51,13 +51,6 @@ const newestOf = (snapshot: Snapshot | null | undefined): Newest =>
     ? null
     : { name: snapshot.name, guid: snapshot.guid, created_unix_seconds: snapshot.created_unix_seconds };
 
-const machineOf = (member: AnsweredMember): MachineRef => member.machine;
-
-/**
- * One Mirror, Sync or DeleteMirror run. 00-claim takes the row, 01-observe reads every Machine's copy, the plan
- * decides from those alone, 02-lease fences every Machine to this run, then each kind's verbs run one step each.
- * Every step after the claim checks the row is still this run's, so a late retry of a closed run does nothing.
- */
 export async function runVolume(
   { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },
   runEffect: EffectRunner,
@@ -88,13 +81,13 @@ export async function runVolume(
   const { phase } = plan;
   if (phase.kind === "delete_mirror") {
     for (const slot of phase.destroy) {
-      await verb(`03-destroy-${slot.machine.name}`, sendSwitch(run, runId, machineOf(slot), (notAfter) => ({
+      await verb(`03-destroy-${slot.machine.name}`, sendSwitch(run, runId, slot.machine, (notAfter) => ({
         command: "destroy_mirror",
         payload: mirrorRequest({ seq: 3, round: 0, sub: 0 })(notAfter),
       })));
     }
     if (phase.forget !== null) {
-      await verb("04-forget", sendSwitch(run, runId, machineOf(phase.forget), (notAfter) => ({
+      await verb("04-forget", sendSwitch(run, runId, phase.forget.machine, (notAfter) => ({
         command: "forget_snapshots",
         payload: mirrorRequest({ seq: 4, round: 0, sub: 0 })(notAfter),
       })));
@@ -105,8 +98,8 @@ export async function runVolume(
 
   const writer = phase.writer;
   const mirror = phase.kind === "mirror" ? phase.target : phase.mirror;
-  const A = machineOf(writer);
-  const B = machineOf(mirror);
+  const A = writer.machine;
+  const B = mirror.machine;
   const declare = (id: string, pos: Pos) =>
     verb(id, sendSwitch(run, runId, B, (notAfter) => ({
       command: "declare_mirror",
@@ -203,7 +196,6 @@ async function runRounds(
   return MAX_ROUNDS;
 }
 
-/** Wait out one StartReceive: done gives the received snapshot, resumable starts it again from its token. */
 async function pollReceive(
   step: StepTools,
   runEffect: EffectRunner,
@@ -242,7 +234,6 @@ async function pollReceive(
   throw new Error("unreachable: failRun ends the run");
 }
 
-/** The orphan slots of every Organization with a cluster, one step each so one cluster's failure skips only it. */
 async function sweepOrphans(step: Pick<PloyzStepTools, "run">, runEffect: EffectRunner) {
   const organizations = await step.run("list-organizations", () => runEffect(organizationsWithMachines()));
   let orphanRuns = 0;
@@ -273,7 +264,6 @@ const lifecycle = attemptLifecycle({
   },
 });
 
-/** Every run's end, however it ended: a run that returned or failed must not leave its row running. */
 export const createCloseFinishedVolumeRun = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) =>
   inngest.createFunction(
     {

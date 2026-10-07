@@ -82,7 +82,7 @@ const rawFields = {
   marketingOrigin: optional(Config.url("MARKETING_ORIGIN")),
   inngestEventKey: Config.schema(NonEmptySecret, "INNGEST_EVENT_KEY"),
   inngestSigningKey: Config.schema(NonEmptySecret, "INNGEST_SIGNING_KEY"),
-  // The Inngest SDK reads the same variable; the REST API that looks up a run lives at this origin.
+  // The Inngest SDK also reads INNGEST_BASE_URL.
   inngestBaseUrl: Config.url("INNGEST_BASE_URL").pipe(Config.withDefault(new URL("https://api.inngest.com"))),
   encryptionSecret: Config.schema(EncryptionSecret, "APP_ENCRYPTION_SECRET"),
 };

@@ -24,7 +24,7 @@ import {
   VOLUME_RUN_MESSAGE_LIMIT,
   VOLUME_RUN_RUNNING_CHECK_MS,
   VOLUME_RUN_UNCLAIMED_LIMIT_MS,
-  type VolumeRunArgs,
+  type VolumeRunInput,
   type VolumeRunKind,
   type VolumeRunState,
   type VolumeRunView,
@@ -33,10 +33,9 @@ import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 
-
 type VolumeRunRow = typeof volumeRun.$inferSelect;
 
-/** What every step after the claim needs from the row; plain JSON, so it survives Inngest's memo. */
+/** Plain JSON: Inngest memoizes step output as JSON. */
 export type RunContext = {
   readonly id: string;
   readonly organizationId: string;
@@ -50,11 +49,6 @@ export type RunContext = {
 };
 
 export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
-
-/** One request to run: the kind and its args, already shaped. */
-export type VolumeRunInput = {
-  [K in VolumeRunKind]: { readonly kind: K; readonly args: VolumeRunArgs[K] }
-}[VolumeRunKind];
 
 const SWITCH_STEP_SECONDS = 60;
 const OBSERVE_TIMEOUT = "10 seconds";
@@ -97,10 +91,6 @@ const ended = (state: Exclude<VolumeRunState, "requested" | "running">, message:
 export const volumeBusyMessage = (row: Pick<VolumeRunRow, "id" | "kind" | "state">) =>
   `VolumeBusy: run ${row.id} (${row.kind}) is ${row.state}; volume runs ${row.id} shows it`;
 
-/**
- * Ask for the row's run. A row whose event could not be sent no run will claim: it ends `not_started` at once, so
- * the Volume is free for the next request.
- */
 const dispatch = Effect.fn("VolumeRun.dispatch")(function* (row: VolumeRunRow) {
   const { drizzle } = yield* Database;
   yield* sendInngestEvent(createVolumeRunRequestedEvent({
@@ -122,7 +112,6 @@ const readRow = Effect.fn("VolumeRun.readRow")(function* (id: string) {
   return row;
 });
 
-/** The Environment's Namespace and the Volume's config entry, from the Store. */
 const resolveVolume = Effect.fn("VolumeRun.resolveVolume")(function* (
   organizationId: string,
   environment: EnvironmentRef,
@@ -142,10 +131,6 @@ const resolveVolume = Effect.fn("VolumeRun.resolveVolume")(function* (
   };
 });
 
-/**
- * `volume mirror|sync|mirror rm`: write the run's row, then ask for its run. The partial unique index allows one
- * requested or running row per Volume; a second request is refused as VolumeBusy and names the run in the way.
- */
 export const requestVolumeRun = Effect.fn("VolumeRun.request")(function* (
   caller: { readonly userId: string | null; readonly organizationId: string },
   input: { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput,
@@ -176,7 +161,6 @@ export const requestVolumeRun = Effect.fn("VolumeRun.request")(function* (
   return { ok: true, run: volumeRunView(row ?? inserted) } as const;
 });
 
-/** `volume runs <volume>`: the Volume's runs, newest first. */
 export const listVolumeRuns = Effect.fn("VolumeRun.list")(function* (organizationId: string, volumeId: string) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select().from(volumeRun)
@@ -186,7 +170,6 @@ export const listVolumeRuns = Effect.fn("VolumeRun.list")(function* (organizatio
   return rows.map(volumeRunView);
 });
 
-/** `volume runs <volume> <run>`. */
 export const getVolumeRun = Effect.fn("VolumeRun.get")(function* (organizationId: string, id: string) {
   const row = yield* readRow(id);
   if (row === undefined || row.organizationId !== organizationId) return yield* new NotFound({ message: "No such volume run." });
@@ -199,10 +182,7 @@ export type ClaimResult =
 
 const claimedRun = (run: RunContext): ClaimResult => ({ kind: "claimed", run });
 
-/**
- * 00-claim: the requested row becomes this run's. A row already running under this same run is returned (the claim
- * committed and the step is replayed); anything else is settled and the run does nothing.
- */
+/** Inngest can rerun a step whose write committed, so a row already running under this run counts as claimed. */
 export const claimVolumeRun = Effect.fn("VolumeRun.claim")(function* (
   request: { readonly runId: string; readonly organizationId: string; readonly volumeId: string },
   inngestRunId: string,
@@ -227,7 +207,6 @@ export const claimVolumeRun = Effect.fn("VolumeRun.claim")(function* (
   return settled;
 });
 
-/** Every effect step's guard: the row is still running under this run, or the step does nothing. */
 export const requireOwner = Effect.fn("VolumeRun.requireOwner")(function* (rowId: string, inngestRunId: string) {
   const { drizzle } = yield* Database;
   const [owned] = yield* drizzle.select({ id: volumeRun.id }).from(volumeRun)
@@ -235,7 +214,6 @@ export const requireOwner = Effect.fn("VolumeRun.requireOwner")(function* (rowId
   if (owned === undefined) return yield* Effect.fail(new NonRetriableError(`This run no longer owns volume run ${rowId}.`));
 });
 
-/** End an owned running row; a row this run no longer owns stays as it is. */
 export const endRun = Effect.fn("VolumeRun.end")(function* (
   ctx: Pick<RunContext, "id">,
   inngestRunId: string,
@@ -249,7 +227,6 @@ export const endRun = Effect.fn("VolumeRun.end")(function* (
   return rows.length;
 });
 
-/** Fail the row with `message`, then stop the run for good. */
 export const failRun = (ctx: Pick<RunContext, "id">, inngestRunId: string, message: string) =>
   endRun(ctx, inngestRunId, "failed", message).pipe(Effect.andThen(Effect.fail(new NonRetriableError(clip(message)))));
 
@@ -276,7 +253,6 @@ export function switchErrorOf(error: PloyzSdkError): SwitchError["reason"] | nul
 
 export type SwitchMessages = Partial<Record<SwitchError["reason"], string>>;
 
-/** The user's words for a refusal that ends the run; undefined for one the step retries. */
 export function switchFailureMessage(
   reason: SwitchError["reason"],
   ctx: Pick<RunContext, "volumeName">,
@@ -305,10 +281,6 @@ export function switchFailureMessage(
   }
 }
 
-/**
- * One Volume Switch verb on one Machine, as one step. A refusal the run can't outlive fails the row and the run; a
- * busy Machine, an expired step or a transport error fails only this attempt, which Inngest retries.
- */
 export const sendSwitch = <R extends VolumeSwitchRequest>(
   ctx: RunContext,
   inngestRunId: string,
@@ -332,14 +304,11 @@ export const sendSwitch = <R extends VolumeSwitchRequest>(
   }).pipe(Effect.scoped) as Effect.Effect<VolumeSwitchReply<R["command"]>, Error, Database | OrganizationRuntime>;
 };
 
-/**
- * 01-observe: every runtime-frame Machine's copy of the Volume. One that does not answer in 10 s is unanswered. A
- * Docker-only Machine holds no copy and may not serve the verb, so it is left out rather than blocking the run.
- */
 export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: RunContext, inngestRunId: string) {
   yield* requireOwner(ctx.id, inngestRunId);
   const session = yield* openSession(ctx.organizationId);
   const frame = yield* session.watchFirstFrame(5_000);
+  // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
   const managed = frame.machines.filter((observed) => observed.storage?.state !== "stateless");
   return yield* Effect.forEach(managed, ({ machine, storage }) =>
     session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: ctx.dockerVolume } }).pipe(
@@ -360,12 +329,7 @@ export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: Run
     ), { concurrency: "unbounded" });
 }, Effect.scoped);
 
-/**
- * 02-lease: one above every lease the answering Machines hold and every lease an earlier run on this Volume took, so
- * a Cloud database reset can't hand out a lease the Machines already moved past. Written to the row once, so a
- * replayed step adopts the same lease. Only Machines with a Pool adopt it: the verb needs one, and a Machine without
- * one holds no copy this run touches. The ones skipped are returned so the step output names them.
- */
+/** Above every lease the Machines hold and every lease this Volume's runs took, so a Cloud database reset can't reuse one. */
 export const takeLease = Effect.fn("VolumeRun.lease")(function* (
   ctx: RunContext,
   inngestRunId: string,
@@ -398,7 +362,6 @@ const CLOSED_BY = {
   cancellation: { state: "cancelled", message: "the run was cancelled" },
 } as const;
 
-/** A run that failed for good or was cancelled must not leave its row running. How many rows this ended. */
 export const closeVolumeRun = Effect.fn("VolumeRun.close")(function* (
   inngestRunId: string,
   end: keyof typeof CLOSED_BY | { readonly error: string | null },
@@ -424,10 +387,6 @@ const STALE_ENDS = {
   missing: ["lost", "Inngest has no record of this run"],
 } as const;
 
-/**
- * The hourly sweep. A request no run claimed in 10 minutes never starts. A row running for 15 minutes without a
- * write gets its run looked up; a run Inngest ended closes the row by how it ended.
- */
 export const closeStaleVolumeRuns = <R>(lookup: InngestRunLookup<R>) => Effect.gen(function* () {
   const { drizzle } = yield* Database;
   const now = Date.now();
@@ -451,17 +410,13 @@ export const closeStaleVolumeRuns = <R>(lookup: InngestRunLookup<R>) => Effect.g
   return { lost: unclaimed.length, closed };
 }).pipe(Effect.withSpan("VolumeRun.closeStale"));
 
-/**
- * Slot copies that no config entry holds and no Machine writes: what an orphan DeleteMirror run removes. A staged
- * removal not yet applied still holds its name, so its slot is not an orphan.
- */
+/** A staged removal not yet applied still holds its name, so its slot is not an orphan. */
 export function orphanSlotNames(copies: CopyObservation["copies"], configNames: ReadonlySet<string>): string[] {
   const written = new Set(copies.filter((copy) => copy.role !== "slot").map((copy) => copy.name));
   const orphans = copies.filter((copy) => copy.role === "slot" && !configNames.has(copy.name) && !written.has(copy.name));
   return [...new Set(orphans.map((copy) => copy.name))].sort();
 }
 
-/** Every Docker Volume name the Organization's config entries deploy as. */
 const configVolumeNames = Effect.fn("VolumeRun.configVolumeNames")(function* (organizationId: string) {
   const names = new Set<string>();
   const { namespaces } = yield* readStore(organizationId, { query: "namespaces" });
@@ -475,7 +430,6 @@ const configVolumeNames = Effect.fn("VolumeRun.configVolumeNames")(function* (or
   return names;
 });
 
-/** Every Volume copy on the Organization's Machines, as the SDK's copy observation reports them. */
 export type CopyObserver = (organizationId: string) => Effect.Effect<CopyObservation["copies"], unknown, Database | SecretEncryption>;
 
 export const observeOrganizationCopies: CopyObserver = (organizationId) =>
@@ -494,7 +448,6 @@ export const findOrphanSlots = Effect.fn("VolumeRun.findOrphanSlots")(function* 
   return orphanSlotNames(copies, yield* configVolumeNames(organizationId));
 });
 
-/** Start one orphan DeleteMirror run per orphan slot name. A Volume with a run already active is skipped. */
 export const startOrphanDeletes = Effect.fn("VolumeRun.startOrphanDeletes")(function* (
   organizationId: string,
   observe: CopyObserver = observeOrganizationCopies,
@@ -525,13 +478,11 @@ export const startOrphanDeletes = Effect.fn("VolumeRun.startOrphanDeletes")(func
 
 const NO_RUNS: readonly string[] = [];
 
-/** Orphan cleanup that never fails its caller: a Deployment or the sweep logs the failure, and the next sweep retries. */
 export const cleanOrphanSlots = (organizationId: string) =>
   startOrphanDeletes(organizationId).pipe(
     Effect.catch((error) => Effect.logWarning("Orphan slot cleanup failed.", { organizationId, error }).pipe(Effect.as(NO_RUNS))),
   );
 
-/** The Organizations with a cluster: the sweep looks for orphan slots on each. */
 export const organizationsWithMachines = Effect.fn("VolumeRun.organizationsWithMachines")(function* () {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.selectDistinct({ organizationId: organizationMachine.organizationId }).from(organizationMachine);
