@@ -125,9 +125,13 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "volume add",
             "volume inspect",
             "volume ls",
+            "volume mirror",
+            "volume mirror rm",
             "volume rename",
             "volume rm",
+            "volume runs",
             "volume set",
+            "volume sync",
         ]
     );
 }

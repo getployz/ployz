@@ -3,6 +3,8 @@
 //! `volume add --mount` or `set SERVICE.mounts.VOLUME=/PATH`; `unset` detaches it and
 //! keeps its data. Only a Deploy of a removed, deployed Volume deletes data, and it
 //! asks for `--accept-volume-loss NAME`.
+//!
+//! Mirror, Sync and Mirror removal are Volume runs in Ployz Cloud; see [`run`].
 
 use clap::{ArgAction, ArgMatches, Command};
 use ployz_core::config::VolumeKind;
@@ -18,6 +20,8 @@ use super::store::{self, Next};
 use super::{Error, leaf_matches};
 use crate::cli::{base, positional, switch, value};
 use crate::ui::{Cell, Fields, Hint, Table, Tone};
+
+mod run;
 
 pub(crate) fn command() -> Command {
     base("volume", "Manage Volumes")
@@ -72,6 +76,9 @@ pub(crate) fn command() -> Command {
             )
             .arg(positional("volume", true)),
         )
+        .subcommand(run::mirror_command())
+        .subcommand(run::sync_command())
+        .subcommand(run::runs_command())
 }
 
 pub(super) fn handler(path: &str) -> Option<super::Handler> {
@@ -82,6 +89,10 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
         "ls" => list,
         "rename" => rename,
         "rm" => remove,
+        "mirror" => run::mirror,
+        "mirror rm" => run::remove_mirror,
+        "sync" => run::sync,
+        "runs" => run::runs,
         _ => return None,
     })
 }
