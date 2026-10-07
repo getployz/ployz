@@ -706,6 +706,7 @@ async fn build_grant_contract() {
         ended.pushed.as_ref().map(ployz_core::ImageDigest::as_str),
         Some(format!("sha256:{hex}").as_str())
     );
+    wait_until(|| registry.refusal().is_some()).await;
     assert!(http.head(&blob).send().await.is_err());
     let again = open_grant_registry(&minted.grant, relay).await.unwrap();
     assert!(

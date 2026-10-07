@@ -300,7 +300,8 @@ pub(crate) fn check_storage(
         {
             return Err(error::conflict(
                 format!(
-                    "Volume {} storage cannot change after deployment has been requested",
+                    "Volume {} keeps its storage once a Deploy has been requested; add a new \
+                     Volume for other storage",
                     volume.name
                 ),
                 json!({ "volume": volume.name, "storage_locked": true }),

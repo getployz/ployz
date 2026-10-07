@@ -5,7 +5,8 @@ use std::{
     time::Duration,
 };
 
-use axum::{Router, extract::Request, response::IntoResponse};
+use axum::{Router, body::Body, extract::Request, response::IntoResponse};
+use futures_util::{StreamExt as _, stream};
 use tokio::{net::TcpListener, sync::Notify};
 
 use super::fake_zfs::SLOT_BOUND_BYTES;
@@ -20,6 +21,7 @@ struct Writer {
     /// While held, responses wait on `release` before any byte is sent.
     hold: Arc<StdMutex<bool>>,
     release: Arc<Notify>,
+    stall: Arc<StdMutex<bool>>,
     port: u16,
 }
 
@@ -29,14 +31,16 @@ impl Writer {
         let stream = Arc::new(StdMutex::new(stream.to_owned()));
         let hold = Arc::new(StdMutex::new(false));
         let release = Arc::new(Notify::new());
+        let stall = Arc::new(StdMutex::new(false));
         let state = (
             Arc::clone(&requests),
             Arc::clone(&stream),
             Arc::clone(&hold),
             Arc::clone(&release),
+            Arc::clone(&stall),
         );
         let router = Router::new().fallback(move |request: Request| {
-            let (requests, stream, hold, release) = state.clone();
+            let (requests, stream, hold, release, stall) = state.clone();
             async move {
                 let uri = request.uri().to_string();
                 requests.lock().unwrap().push(uri);
@@ -44,6 +48,10 @@ impl Writer {
                     release.notified().await;
                 }
                 let body = stream.lock().unwrap().clone();
+                if *stall.lock().unwrap() {
+                    let sent = stream::once(async move { Ok::<_, io::Error>(body) });
+                    return Body::from_stream(sent.chain(stream::pending())).into_response();
+                }
                 body.into_response()
             }
         });
@@ -55,6 +63,7 @@ impl Writer {
             stream,
             hold,
             release,
+            stall,
             port,
         }
     }
@@ -73,6 +82,15 @@ fn start(
     markers: &[&str],
     writer: &Writer,
 ) -> (PathBuf, tokio::task::JoinHandle<io::Result<()>>) {
+    start_stalling_after(test, markers, writer, Duration::from_secs(60))
+}
+
+fn start_stalling_after(
+    test: &TestDir,
+    markers: &[&str],
+    writer: &Writer,
+    stall: Duration,
+) -> (PathBuf, tokio::task::JoinHandle<io::Result<()>>) {
     for marker in markers {
         fs::write(test.0.join(marker), "").unwrap();
     }
@@ -81,6 +99,7 @@ fn start(
     let listener = UnixListener::bind(&socket).unwrap();
     let mut storage = VolumeStorage::with_programs(zpool, zfs);
     storage.send_port = writer.port;
+    storage.receive_stall = stall;
     let server = tokio::spawn(serve(listener, storage));
     (socket, server)
 }
@@ -221,12 +240,72 @@ async fn a_broken_stream_is_resumable_and_resumes_by_token() {
         writer.requests(),
         [
             "/volume-send/data?target=w-1-1",
-            "/volume-send/data?token=token-1"
+            "/volume-send/data?target=w-1-1&token=token-1"
         ]
     );
     assert_eq!(
         property(&test, "tank/ployz-mirror/data/fs", "readonly").as_deref(),
         Some("on")
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_stalled_stream_frees_the_slot_and_resumes_by_token() {
+    let writer = Writer::start("break\n").await;
+    *writer.stall.lock().unwrap() = true;
+    let test = TestDir::new();
+    let stall = Duration::from_millis(200);
+    let (socket, server) = start_stalling_after(&test, &["root", "mirror"], &writer, stall);
+
+    let started = tokio::time::Instant::now();
+    post(&socket, "/Volume.StartReceive", receive(4, 1, json!({}))).await;
+    let view = settled(&socket, 1).await;
+    assert!(started.elapsed() >= stall, "settled before the deadline");
+    assert_eq!(
+        view.pointer("/Ok/status").unwrap(),
+        &json!({"state": "resumable", "target": "w-1-1", "token": "token-1"})
+    );
+
+    set_property(
+        &test,
+        "tank/ployz-mirror/data/fs",
+        "receive_resume_token",
+        "-",
+    );
+    let failed = settled(&socket, 1).await;
+    assert_eq!(failed.pointer("/Ok/status/state").unwrap(), "failed");
+    let reason = failed
+        .pointer("/Ok/status/reason")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(reason.contains("stream:"), "{reason}");
+    set_property(
+        &test,
+        "tank/ployz-mirror/data/fs",
+        "receive_resume_token",
+        "token-1",
+    );
+
+    *writer.stall.lock().unwrap() = false;
+    writer.answer("snapshot w-1-1 77\n");
+    let request = receive(5, 1, json!({"resume_token": "token-1"}));
+    let response = post(&socket, "/Volume.StartReceive", request).await;
+    assert_eq!(
+        response
+            .pointer("/Ok/decision")
+            .unwrap_or_else(|| panic!("{response}")),
+        "admit"
+    );
+    let view = settled(&socket, 1).await;
+    assert_eq!(view.pointer("/Ok/status/state").unwrap(), "done", "{view}");
+    assert_eq!(
+        writer.requests(),
+        [
+            "/volume-send/data?target=w-1-1",
+            "/volume-send/data?target=w-1-1&token=token-1"
+        ]
     );
     server.abort();
 }
@@ -402,5 +481,86 @@ async fn start_receive_is_fenced_and_needs_a_slot() {
         "precondition"
     );
     assert!(writer.requests().is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_stalled_receive_process_fails_and_frees_the_slot() {
+    for marker in ["stall-read", "stall-exit"] {
+        let writer = Writer::start(&"x".repeat(2 * 1024 * 1024)).await;
+        let test = TestDir::new();
+        fs::create_dir_all(test.0.join("props")).unwrap();
+        fs::write(test.0.join("props").join(marker), "").unwrap();
+        let (socket, server) = start_stalling_after(
+            &test,
+            &["root", "mirror"],
+            &writer,
+            Duration::from_millis(200),
+        );
+        post(&socket, "/Volume.StartReceive", receive(4, 1, json!({}))).await;
+        let view = settled(&socket, 1).await;
+        assert_eq!(
+            view.pointer("/Ok/status/state").unwrap(),
+            "failed",
+            "{marker}: {view}"
+        );
+        let reason = view.pointer("/Ok/status/reason").unwrap().as_str().unwrap();
+        assert!(reason.contains("stalled"), "{marker}: {reason}");
+        let pid = fs::read_to_string(test.0.join("props/receive-pid")).unwrap();
+        for _ in 0..100 {
+            if !Path::new(&format!("/proc/{}", pid.trim())).exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            !Path::new(&format!("/proc/{}", pid.trim())).exists(),
+            "receive child survived its deadline"
+        );
+        for (route, step) in [
+            ("/Volume.PruneMirror", at(1, 4, 1, 4, json!({}))),
+            ("/Volume.BeginRound", at(1, 4, 2, 0, json!({}))),
+            ("/Volume.DestroyMirror", at(1, 5, 0, 0, json!({}))),
+        ] {
+            let reply = post(&socket, route, step).await;
+            assert!(reply.get("Ok").is_some(), "{route}: {reply}");
+        }
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn a_replayed_receive_repairs_properties_and_clears_a_transient_failure() {
+    let writer = Writer::start("snapshot w-1-1 77\n").await;
+    let test = TestDir::new();
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/fail-properties"), "").unwrap();
+    let (socket, server) = start(&test, &["root", "mirror"], &writer);
+    let request = receive(4, 1, json!({}));
+    post(&socket, "/Volume.StartReceive", request.clone()).await;
+    let view = settled(&socket, 1).await;
+    assert_eq!(
+        view.pointer("/Ok/status/state").unwrap(),
+        "failed",
+        "{view}"
+    );
+    set_property(&test, "tank/ployz-mirror/data/fs", "readonly", "off");
+    set_property(&test, "tank/ployz-mirror/data/fs", "refquota", "1");
+    let failed_replay = post(&socket, "/Volume.StartReceive", request.clone()).await;
+    assert!(failed_replay.get("Err").is_some(), "{failed_replay}");
+    fs::remove_file(test.0.join("props/fail-properties")).unwrap();
+    let reply = post(&socket, "/Volume.StartReceive", request).await;
+    assert_eq!(reply.pointer("/Ok/decision").unwrap(), "replay", "{reply}");
+    let view = settled(&socket, 1).await;
+    assert_eq!(view.pointer("/Ok/status/state").unwrap(), "done", "{view}");
+    assert_eq!(
+        property(&test, "tank/ployz-mirror/data/fs", "readonly").as_deref(),
+        Some("on")
+    );
+    assert_eq!(
+        property(&test, "tank/ployz-mirror/data/fs", "refquota"),
+        Some(SLOT_BOUND_BYTES.to_string())
+    );
+    assert_eq!(writer.requests().len(), 1);
     server.abort();
 }

@@ -1277,8 +1277,10 @@ async fn fake_docker_service(
         ..Default::default()
     })
     .await;
-    let service =
+    let mut service =
         MachineService::with_cluster(store.clone(), None).with_optional_containers(Some(runtime));
+    // `true` lists no pools, which reads as ZFS ready whatever the host has.
+    service.local = service.local.with_zpool("true");
     (data_dir, store, service, fake)
 }
 

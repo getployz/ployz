@@ -11,7 +11,8 @@ use std::time::Duration;
 use ployz_core::{DeployOutcome, RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
     BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeploymentId,
-    DeploymentStatus, DeploymentSummary, RunEvidence, RunnerId,
+    DeploymentStatus, DeploymentSummary, Failure, LOG_TAIL, RowState, RowTracker, RunEvidence,
+    RunnerId,
 };
 use serde::Deserialize as _;
 use serde_json::Value;
@@ -27,6 +28,8 @@ const CANCEL_POLL: Duration = Duration::from_secs(2);
 
 /// How often a build's new log output is recorded.
 const LOG_FLUSH: Duration = Duration::from_secs(3);
+
+const LOG_READ: Duration = Duration::from_secs(5);
 
 /// Each Git Service's checkout at its pinned commit, by runtime Service name, and the
 /// Deployment's upload, if Cloud still holds it; or why Cloud could not read them.
@@ -147,18 +150,27 @@ pub async fn run_deployment(
             .not_executed("No Server is enrolled in this Organization".into())
             .await;
     }
-    let session = match connect_connections(connections, Arc::new(SystemConnector::default())).await
+    let session = match run
+        .connecting(connect_connections(
+            connections,
+            Arc::new(SystemConnector::default()),
+        ))
+        .await
     {
-        Ok(session) => session,
+        Ok(Some(session)) => session,
+        Ok(None) => return run.not_executed("Cancelled before connecting".into()).await,
         // Users read it on the Deployment: plain words and one action first, then
         // what the connection said.
         Err(error) => {
+            let Failure { reason, mut cause } = Failure::from(&error);
+            cause.insert(0, reason);
             return run
-                .not_executed(format!(
-                    "Ployz couldn't reach your Servers. Check that they're online, then retry. \
-                     ({})",
-                    crate::ui::row(&error)
-                ))
+                .not_executed(Failure {
+                    reason:
+                        "Ployz couldn't reach your Servers. Check that they're online, then retry."
+                            .into(),
+                    cause,
+                })
                 .await;
         }
     };
@@ -214,7 +226,10 @@ impl Run {
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
         let prepared = if targets.is_empty() && built.is_empty() {
-            self.renewing(session.preview(claimed.intent), || ()).await
+            self.renewing(session.preview(claimed.intent), || {
+                session.inner.cancel.cancel()
+            })
+            .await
         } else {
             match self.build(session, &claimed, &targets).await? {
                 Ok(mut receipts) => {
@@ -229,7 +244,7 @@ impl Run {
             Err(error) => {
                 return match needs_upload(&error) {
                     Some(services) => self.unbuilt(Unbuilt::UploadNeeded(services)).await,
-                    None => self.not_executed(crate::ui::row(&error)).await,
+                    None => self.not_executed(Failure::from(&error)).await,
                 };
             }
         };
@@ -244,13 +259,13 @@ impl Run {
         let log_id = self.deployment.as_str().parse().ok();
         let running = match prepared.confirm_with_log_id(log_id, ImageCleanup::Auto) {
             Ok(running) => running,
-            Err(error) => return self.not_executed(crate::ui::row(&error)).await,
+            Err(error) => return self.not_executed(Failure::from(&error)).await,
         };
         let outcome = self
-            .renewing(self.executing(&running), || running.abort())
+            .renewing(self.executing(session, &running), || running.abort())
             .await;
         match outcome {
-            Ok(outcome) => {
+            Ok((outcome, progress)) => {
                 let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
                     // Deleting is never interrupted: a half-deleted set stays accepted.
                     self.renewing(remove_volumes(session, deletes), || ()).await
@@ -258,6 +273,7 @@ impl Run {
                     Vec::new()
                 };
                 self.record(RunEvidence::Executed {
+                    progress,
                     outcome: Box::new(outcome),
                     removed,
                 })
@@ -293,7 +309,17 @@ impl Run {
                 ..PreparationInput::default()
             };
             target.input(&mut input);
-            builds.push((target, session.build(input, None)?));
+            let running = match session.build(input, None) {
+                Ok(running) => running,
+                Err(error) => return Err(stop_builds(&builds, error).await),
+            };
+            builds.push((target, running));
+            if let Err(error) = self
+                .report(service, BuildStatus::Building, None, String::new())
+                .await
+            {
+                return Err(stop_builds(&builds, error).await);
+            }
         }
         let all = futures_util::future::join_all(
             builds
@@ -341,8 +367,6 @@ impl Run {
         running: &RunningBuild,
     ) -> Result<Result<BuildReceipt, RpcError>, RpcError> {
         let service = &target.service;
-        self.report(service, BuildStatus::Building, None, String::new())
-            .await?;
         // GitHub can't build uploaded source: the walk skips it, and says so when the
         // Build Order has it.
         let github_skipped = matches!(
@@ -450,13 +474,38 @@ impl Run {
     /// stays so if this runner is lost before the outcome.
     async fn executing(
         &self,
+        session: &Session,
         running: &super::RunningDeploy,
-    ) -> Result<DeployOutcome<ployz_core::ExecutionError>, RpcError> {
+    ) -> Result<
+        (
+            DeployOutcome<ployz_core::ExecutionError>,
+            Vec<ployz_store::ServerProgress>,
+        ),
+        RpcError,
+    > {
         let mut confirmed = std::collections::BTreeSet::new();
+        let mut tracker = RowTracker::default();
+        let mut pending = BTreeMap::new();
         while let Some(event) = running.next().await {
             let ployz_core::DeployEvent::Progress { rows, .. } = event else {
                 continue;
             };
+            for mut row in tracker.changes(&rows) {
+                let container = tracker.container(&row);
+                if let (RowState::Failed { log, .. }, Some(container)) = (&mut row.state, container)
+                {
+                    *log = log_tail(session, row.machine, container).await;
+                }
+                pending.insert((row.service.clone(), row.machine), row);
+            }
+            if !pending.is_empty()
+                && self
+                    .record(RunEvidence::Progress(pending.values().cloned().collect()))
+                    .await
+                    .is_ok()
+            {
+                pending.clear();
+            }
             let mut done: BTreeMap<&ServiceName, bool> = BTreeMap::new();
             for row in &rows {
                 if let Some(service) = &row.service_name {
@@ -481,7 +530,27 @@ impl Run {
                 confirmed.extend(new);
             }
         }
-        running.finished().await
+        let outcome = running.finished().await?;
+        Ok((outcome, pending.into_values().collect()))
+    }
+
+    async fn connecting<T>(
+        &self,
+        work: impl std::future::Future<Output = Result<T, RpcError>>,
+    ) -> Result<Option<T>, RpcError> {
+        tokio::pin!(work);
+        let mut poll = tokio::time::interval(CANCEL_POLL);
+        loop {
+            tokio::select! {
+                biased;
+                _ = poll.tick() => {
+                    if self.status().await.ok() == Some(DeploymentStatus::Cancelling) {
+                        return Ok(None);
+                    }
+                }
+                done = &mut work => return done.map(Some),
+            }
+        }
     }
 
     /// Await `work` while renewing this runner's lease on the Deployment; a cancel
@@ -520,15 +589,15 @@ impl Run {
 
     async fn unbuilt(&self, unbuilt: Unbuilt) -> Result<DeploymentSummary, RpcError> {
         match unbuilt {
-            Unbuilt::Failed(reason) => self.not_executed(reason).await,
+            Unbuilt::Failed(reason) => self.not_executed(reason.into()).await,
             Unbuilt::UploadNeeded(services) => {
                 self.record(RunEvidence::UploadNeeded(services)).await
             }
         }
     }
 
-    async fn not_executed(&self, reason: String) -> Result<DeploymentSummary, RpcError> {
-        self.record(RunEvidence::NotExecuted(reason)).await
+    async fn not_executed(&self, failure: Failure) -> Result<DeploymentSummary, RpcError> {
+        self.record(RunEvidence::NotExecuted(failure)).await
     }
 
     async fn record(&self, evidence: RunEvidence) -> Result<DeploymentSummary, RpcError> {
@@ -546,6 +615,33 @@ impl Run {
             .await
             .map(|summary| summary.status)
     }
+}
+
+async fn stop_builds(builds: &[(&Target, RunningBuild)], mut error: RpcError) -> RpcError {
+    for (_, running) in builds {
+        running.abort();
+    }
+    let settled = futures_util::future::join_all(builds.iter().map(|(target, running)| async {
+        running
+            .finished()
+            .await
+            .err()
+            .map(|error| serde_json::json!({ "service": target.service, "error": error }))
+    }))
+    .await;
+    let cleanup: Vec<_> = settled.into_iter().flatten().collect();
+    if !cleanup.is_empty() {
+        let mut details = match error.details {
+            Value::Object(details) => details,
+            Value::Null => serde_json::Map::new(),
+            original @ (Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Array(_)) => {
+                serde_json::Map::from_iter([("original".into(), original)])
+            }
+        };
+        details.insert("build_cleanup".into(), Value::Array(cleanup));
+        error.details = Value::Object(details);
+    }
+    error
 }
 
 /// What to build on the Servers, and the images GitHub already built, by Service.
@@ -676,6 +772,38 @@ pub(super) fn log_line(event: &Value) -> String {
     String::new()
 }
 
+async fn log_tail(
+    session: &Session,
+    machine: ployz_core::MachineId,
+    container: ployz_core::ContainerId,
+) -> Vec<String> {
+    let read = async {
+        let stream = session
+            .container_logs(super::logs::ContainerLogInput {
+                machine_id: machine,
+                container_id: container,
+                tail: i32::try_from(LOG_TAIL).unwrap_or(i32::MAX),
+                follow: false,
+                before_nanos: None,
+                since_unix_seconds: None,
+            })
+            .await
+            .ok()?;
+        let mut lines = Vec::new();
+        while let Ok(Some(record)) = stream.next().await {
+            lines.extend(record.message.lines().map(str::to_owned));
+        }
+        Some(lines)
+    };
+    let mut lines = tokio::time::timeout(LOG_READ, read)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    lines.drain(..lines.len().saturating_sub(LOG_TAIL));
+    lines
+}
+
 /// Delete exactly the Docker Volumes admission accepted, never others of the same
 /// name. Failing to reach the Cluster deletes none, so their Volumes stay deployed.
 async fn remove_volumes(
@@ -702,3 +830,7 @@ pub(super) fn internal(message: &str) -> RpcError {
         cause: Vec::new(),
     }
 }
+
+#[cfg(test)]
+#[path = "store_runner_tests.rs"]
+mod tests;

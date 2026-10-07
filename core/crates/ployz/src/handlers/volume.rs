@@ -25,7 +25,6 @@ mod run;
 
 pub(crate) fn command() -> Command {
     base("volume", "Manage Volumes")
-        .arg_required_else_help(true)
         .subcommand(
             storage_flags(store::scoped(
                 Command::new("add")
@@ -126,6 +125,7 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
         mounts,
         shared_writes: matches.get_one("shared-writes") == Some(&true),
     })?;
+    warn_docker(storage);
     if matches!(storage, VolumeKind::Provisioned { .. }) && no_managed_host(matches) {
         crate::ui::warn(NO_MANAGED_HOST);
     }
@@ -191,7 +191,6 @@ fn storage_flags(command: Command) -> Command {
 
 fn requested_storage(matches: &ArgMatches) -> VolumeKind {
     if matches.get_flag("docker") {
-        crate::ui::warn(DOCKER_VOLUME);
         VolumeKind::Docker {}
     } else if let Some(maximum_bytes) = matches.get_one::<ProvisionedVolumeMaximumBytes>("size") {
         VolumeKind::Provisioned {
@@ -221,12 +220,21 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
             ));
         });
     }
+    let storage = requested_storage(matches);
     let changed = store::store(root)?.write(&SetVolumeStorage {
         environment: store::environment(matches)?,
         volume: volume.clone(),
-        storage: requested_storage(matches),
+        storage,
     })?;
+    warn_docker(storage);
     staged(matches, &changed, "Staged Volume storage", true)
+}
+
+/// Said once the store took a Docker volume, so a refused change stays quiet.
+fn warn_docker(storage: VolumeKind) {
+    if matches!(storage, VolumeKind::Docker {}) {
+        crate::ui::warn(DOCKER_VOLUME);
+    }
 }
 
 fn shared_writes_word(shared_writes: bool) -> &'static str {

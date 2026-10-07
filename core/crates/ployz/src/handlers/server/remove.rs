@@ -1,7 +1,6 @@
 use clap::ArgMatches;
 use ployz_core::{
-    DescribeContractRequest, Machine, MachineId, MachineTarget, QualifiedService, RpcError,
-    RpcErrorCode, op,
+    DescribeContractRequest, Machine, MachineId, MachineTarget, RpcError, RpcErrorCode, op,
 };
 
 use super::super::runtime;
@@ -88,23 +87,33 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     }
     // The Store reads block on their own runtime, so they run between the two.
     let labels = volume_labels(root, &observed);
-    typed_confirmation(root, &client, &selected, &observed, &services, &labels)?;
-    let Some(confirmation) = super::super::data_loss::confirm_removal(
+    let confirmation = super::super::data_loss::confirm_removal(
         root,
         &client,
         &observed,
-        &format!("Remove Server {}", selected.name),
-        &[selected.name.to_string()],
+        selected.name.as_str(),
         if no_reset {
             VolumeEffect::Preserve
         } else {
             VolumeEffect::LoseAccess
         },
         &labels,
-    )?
-    else {
-        return Ok(());
-    };
+        |retry| {
+            Error::detailed(
+                RpcErrorCode::ConfirmationRequired,
+                format!(
+                    "Removing Server {} needs its name typed. No changes made.",
+                    selected.name
+                ),
+                json!({
+                    "server": { "id": selected.id, "name": selected.name },
+                    "services": services,
+                    "data_loss": observed.data_loss,
+                }),
+            )
+            .hint(Hint::Retry(retry))
+        },
+    )?;
     let selected_target = MachineTarget::from(&selected.id);
     runtime.block_on(async {
         let mut reset_failure = None;
@@ -319,55 +328,6 @@ fn qualified_labels(owners: &[VolumeOwner]) -> VolumeLabels {
             (owner.docker.clone(), label)
         })
         .collect()
-}
-
-/// `--confirm` must name the Server exactly. Without it, fail with `confirmation_required`,
-/// naming what goes and the one command that removes it.
-fn typed_confirmation(
-    root: &ArgMatches,
-    client: &crate::connect::Client,
-    selected: &Machine,
-    observed: &ObservedDataLoss,
-    services: &[QualifiedService],
-    labels: &VolumeLabels,
-) -> Result<(), Error> {
-    let retry = || {
-        let mut retry = super::super::data_loss::retry_args(root, client.connection_source());
-        retry.extend(["--confirm".into(), selected.name.to_string()]);
-        let volumes = observed
-            .data_loss
-            .iter()
-            .map(|loss| volume_label(labels, loss));
-        for name in volumes.collect::<std::collections::BTreeSet<_>>() {
-            retry.extend(["--accept-volume-loss".into(), name.to_owned()]);
-        }
-        shell_words::join(retry)
-    };
-    match leaf_matches(root).get_one::<String>("confirm") {
-        Some(typed) if typed == selected.name.as_str() => Ok(()),
-        Some(typed) => Err(Error::usage(format!(
-            "--confirm {} does not match Server {}. No changes made.",
-            typed.escape_debug(),
-            selected.name
-        ))
-        .hint(Hint::Retry(retry()))),
-        None => {
-            let retry = retry();
-            Err(Error::detailed(
-                RpcErrorCode::ConfirmationRequired,
-                format!(
-                    "Removing Server {} needs its name typed. No changes made.",
-                    selected.name
-                ),
-                json!({
-                    "server": { "id": selected.id, "name": selected.name },
-                    "services": services,
-                    "data_loss": observed.data_loss,
-                }),
-            )
-            .hint(Hint::Retry(retry)))
-        }
-    }
 }
 
 pub(super) fn select_machine(

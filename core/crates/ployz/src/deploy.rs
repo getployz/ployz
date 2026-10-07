@@ -241,6 +241,7 @@ impl VolumeSnapshot {
         self.machine_failures
             .iter()
             .map(|failure| DeployWarning::ObservationFailed {
+                gap: None,
                 kind: ObservationKind::Volume,
                 machine_id: failure.machine_id,
                 message: crate::ui::row(&failure.error),
@@ -249,6 +250,7 @@ impl VolumeSnapshot {
                 self.omissions
                     .iter()
                     .map(|machine_id| DeployWarning::ObservationOmitted {
+                        gap: None,
                         kind: ObservationKind::Volume,
                         machine_id: *machine_id,
                     }),
@@ -257,6 +259,7 @@ impl VolumeSnapshot {
                 self.named_failures
                     .iter()
                     .map(|failure| DeployWarning::ObservationFailed {
+                        gap: None,
                         kind: ObservationKind::Volume,
                         machine_id: failure.id.machine_id,
                         message: failure.to_string(),
@@ -303,7 +306,7 @@ impl DeploySnapshot {
         let required = self
             .machines
             .iter()
-            .filter(|machine| machine.membership.invites_rpc())
+            .filter(|machine| machine.invites_rpc())
             .map(|machine| machine.machine.id)
             .collect::<BTreeSet<_>>();
         !affects_required(
@@ -642,4 +645,29 @@ impl PlanError {
             constraints: EliminatingConstraints::new(constraints),
         }
     }
+}
+
+pub(super) fn observation_warnings(
+    kind: ObservationKind,
+    failures: &[MachineFailure<RpcError>],
+    omissions: &[MachineId],
+) -> Vec<DeployWarning> {
+    failures
+        .iter()
+        .map(|failure| DeployWarning::ObservationFailed {
+            gap: None,
+            kind,
+            machine_id: failure.machine_id,
+            message: crate::ui::row(&failure.error),
+        })
+        .chain(
+            omissions
+                .iter()
+                .map(|machine| DeployWarning::ObservationOmitted {
+                    gap: None,
+                    kind,
+                    machine_id: *machine,
+                }),
+        )
+        .collect()
 }

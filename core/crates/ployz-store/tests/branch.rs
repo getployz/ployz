@@ -230,6 +230,7 @@ fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8, applied: b
             &id,
             &runner,
             RunEvidence::Executed {
+                progress: Vec::new(),
                 outcome: Box::new(outcome),
                 removed: Vec::new(),
             },

@@ -10,15 +10,14 @@ use ployz_store::{
 use serde_json::json;
 
 use super::store::{Store, mint, store};
-use super::teardown::{confirmed, inventory, remove_all};
+use super::teardown::{confirm, inventory, remove_all};
 use super::{Error, deploy, leaf_matches, required};
 use crate::cli::{base, positional, value};
-use crate::ui::{Hint, Table};
+use crate::ui::{Hint, Table, Tree};
 
 pub(crate) fn command() -> Command {
     Command::new("project")
         .about("Manage Projects")
-        .arg_required_else_help(true)
         .subcommand(
             Command::new("new")
                 .about("Create a Project with its Default Environment, production")
@@ -41,8 +40,8 @@ pub(crate) fn command() -> Command {
                  a removal Deployment, Branches before their Parents and the Default \
                  Environment last, deleting deployed Volumes once each is accepted by \
                  name; then the Project, its configuration and history go. Type its name \
-                 with --confirm; without it the command fails with confirmation_required, \
-                 naming what goes and the exact retry. If a removal doesn't apply, the \
+                 with --confirm, or in a terminal when it asks; elsewhere it fails with \
+                 confirmation_required, naming what goes and the exact retry. If a removal doesn't apply, the \
                  same command finishes it.",
             )
             .arg(positional("name", true))
@@ -149,9 +148,9 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = ProjectName::parse(required(matches, "name")?)?;
     let store = store(root)?.args([name.as_str(), "--confirm", name.as_str()]);
-    if !confirmed(matches, name.as_str(), "Project", store.again(&[]))? {
-        return Err(unconfirmed(&store, &name)?);
-    }
+    confirm(matches, name.as_str(), "Project", store.again(&[]), || {
+        unconfirmed(&store, &name)
+    })?;
     let remove = RemoveProject {
         project: name.clone(),
     };
@@ -163,8 +162,8 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// Refuse an unconfirmed `project rm`, naming every Environment with what goes
-/// with it, and the exact retry.
-fn unconfirmed(store: &Store, project: &ProjectName) -> Result<Error, Error> {
+/// with it, and the exact retry; and the same as a tree for the prompt.
+fn unconfirmed(store: &Store, project: &ProjectName) -> Result<(Error, Tree), Error> {
     let listed = store.read(&ployz_store::ProjectsQuery {})?;
     let Some(listing) = listed
         .projects
@@ -186,7 +185,16 @@ fn unconfirmed(store: &Store, project: &ProjectName) -> Result<Error, Error> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     let retry = store.again(&[]);
-    Ok(Error::detailed(
+    let loss = Tree::new(
+        format!("Removing Project {project} deletes, for good:"),
+        environments
+            .iter()
+            .map(|inventory| {
+                Tree::new(inventory.environment.name.to_string(), inventory.branches())
+            })
+            .collect(),
+    );
+    let refusal = Error::detailed(
         RpcErrorCode::ConfirmationRequired,
         format!(
             "Removing Project {project} deletes every Environment in it ({}) with its \
@@ -196,7 +204,8 @@ fn unconfirmed(store: &Store, project: &ProjectName) -> Result<Error, Error> {
         ),
         json!({ "project": project, "environments": environments }),
     )
-    .hint(Hint::Retry(retry)))
+    .hint(Hint::Retry(retry));
+    Ok((refusal, loss))
 }
 
 fn finish(removed: &ProjectRemoved, ran: &[DeploymentSummary]) -> Result<(), Error> {

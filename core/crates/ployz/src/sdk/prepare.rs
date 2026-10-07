@@ -51,7 +51,7 @@ pub struct BuildPreference {
 }
 
 fn may_build(observed: &MachineObservation) -> bool {
-    observed.membership.invites_rpc() && observed.machine.accepts_builds
+    observed.invites_rpc() && observed.machine.accepts_builds
 }
 
 /// Rank the preferred Machine first, then the cache holder, then Machines that accept Builds, rotated by
@@ -125,14 +125,14 @@ pub async fn select_build_machine(
             break;
         }
         let machine = &observed.machine;
-        let category = if !observed.membership.invites_rpc() {
+        let category = if !observed.invites_rpc() {
             "membership unavailable"
         } else if !machine.accepts_builds {
             "builds disabled"
         } else {
             "capability unverified"
         };
-        let rejection = if !observed.membership.invites_rpc() {
+        let rejection = if !observed.invites_rpc() {
             format!("membership is {:?}", observed.membership)
         } else if !machine.accepts_builds {
             "does not accept Builds".into()

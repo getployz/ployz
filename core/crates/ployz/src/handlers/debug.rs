@@ -41,7 +41,6 @@ mod enabled {
     pub(super) fn command() -> Command {
         base("debug", "Verification-only commands")
             .hide(true)
-            .arg_required_else_help(true)
             .subcommand(
                 base("volume-rpc", "Send one unary Machine RPC as JSON and print its response")
                     .long_about("Send one unary Machine RPC to a Server and print the response body. REQUEST is the JSON request body, for example {\"command\":\"adopt_lease\",\"payload\":{...}}. An error response fails the command with the error's code and details.")

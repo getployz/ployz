@@ -920,6 +920,7 @@ fn run(store: &ConfigStore, id: &ployz_store::DeploymentId, services: &[&str]) {
             id,
             &runner,
             ployz_store::RunEvidence::Executed {
+                progress: Vec::new(),
                 outcome: Box::new(outcome),
                 removed: Vec::new(),
             },

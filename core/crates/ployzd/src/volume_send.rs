@@ -5,7 +5,11 @@
 //! token. The body is `zfs send`'s stdout, so the mirroring Machine pipes it straight
 //! into `zfs receive`. The firewall admits the port from the mesh only.
 
-use std::{io, path::PathBuf, process::Stdio};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    process::Stdio,
+};
 
 use axum::{
     Router,
@@ -18,6 +22,14 @@ use ployz_core::{DATASET_ROOT, SendSource, SendStream};
 use tokio::{net::TcpListener, process::Command};
 use tokio_util::{io::ReaderStream, sync::CancellationToken};
 
+use crate::machine_pool;
+
+#[derive(Clone)]
+struct Programs {
+    zfs: PathBuf,
+    zpool: PathBuf,
+}
+
 /// Serves send streams until `shutdown` fires.
 ///
 /// # Errors
@@ -26,27 +38,27 @@ use tokio_util::{io::ReaderStream, sync::CancellationToken};
 pub async fn serve(
     listener: TcpListener,
     zfs: PathBuf,
+    zpool: PathBuf,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
-    axum::serve(listener, router(zfs))
+    let router = Router::new()
+        .fallback(send)
+        .with_state(Programs { zfs, zpool });
+    axum::serve(listener, router)
         .with_graceful_shutdown(shutdown.cancelled_owned())
         .await
 }
 
-fn router(zfs: PathBuf) -> Router {
-    Router::new().fallback(send).with_state(zfs)
-}
-
-async fn send(State(zfs): State<PathBuf>, request: Request) -> Response {
+async fn send(State(programs): State<Programs>, request: Request) -> Response {
     if request.method() != axum::http::Method::GET {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
     let Some(stream) = SendStream::parse(request.uri().path(), request.uri().query()) else {
         return (StatusCode::NOT_FOUND, "no such send stream").into_response();
     };
-    match stream_args(&zfs, &stream).await {
+    match stream_args(&programs, &stream).await {
         Ok(args) => {
-            let mut child = match Command::new(&zfs)
+            let mut child = match Command::new(&programs.zfs)
                 .arg("send")
                 .args(&args)
                 .stdin(Stdio::null())
@@ -82,20 +94,36 @@ enum Refusal {
 }
 
 /// The `zfs send` arguments for `stream`, once its names resolve on this Machine.
-async fn stream_args(zfs: &PathBuf, stream: &SendStream) -> Result<Vec<String>, Refusal> {
-    if let SendSource::Resume { token } = &stream.source {
-        return Ok(vec!["-t".to_owned(), token.clone()]);
-    }
-    let roots = zfs_lines(zfs, &["list", "-H", "-o", "name", "-t", "filesystem"]).await?;
-    let suffix = format!("/{DATASET_ROOT}/{}", stream.name);
-    let Some(root) = roots.into_iter().find(|name| name.ends_with(&suffix)) else {
+async fn stream_args(programs: &Programs, stream: &SendStream) -> Result<Vec<String>, Refusal> {
+    let pools = lines(
+        &programs.zpool,
+        &[
+            "list",
+            "-Hp",
+            "-o",
+            "name,size,allocated,free,health,readonly",
+        ],
+    )
+    .await?;
+    let pool = machine_pool::one_usable(&pools.join("\n"))
+        .map_err(|error| Refusal::Zfs(error.to_string()))?
+        .ok_or_else(|| {
+            Refusal::Unknown("no Machine Pool is imported on this Machine".to_owned())
+        })?;
+    let root = format!("{}/{DATASET_ROOT}/{}", pool.name(), stream.name);
+    let roots = lines(
+        &programs.zfs,
+        &["list", "-H", "-o", "name", "-t", "filesystem"],
+    )
+    .await?;
+    if !roots.contains(&root) {
         return Err(Refusal::Unknown(format!(
             "Volume {} has no writer on this Machine",
             stream.name
         )));
-    };
-    let snapshots = zfs_lines(
-        zfs,
+    }
+    let snapshots = lines(
+        &programs.zfs,
         &[
             "list",
             "-H",
@@ -116,13 +144,39 @@ async fn stream_args(zfs: &PathBuf, stream: &SendStream) -> Result<Vec<String>, 
     let (target, base) = match &stream.source {
         SendSource::Full { target } => (target, None),
         SendSource::Incremental { base, target } => (target, Some(base)),
-        SendSource::Resume { .. } => unreachable!("resumes return above"),
+        SendSource::Resume { target, .. } => (target, None),
     };
     let target = format!("{root}@{target}");
     if !snapshots.iter().any(|(name, _)| *name == target) {
         return Err(Refusal::Unknown(format!(
             "snapshot {target} does not exist"
         )));
+    }
+    if let SendSource::Resume { token, .. } = &stream.source {
+        let output = Command::new(&programs.zfs)
+            .args(["send", "-nvP", "-t", token])
+            .env("LC_ALL", "C")
+            .output()
+            .await
+            .map_err(|error| Refusal::Zfs(format!("could not inspect resume token: {error}")))?;
+        if !output.status.success() {
+            return Err(Refusal::Zfs(format!(
+                "could not inspect resume token: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let mut names = stdout
+            .lines()
+            .chain(stderr.lines())
+            .filter_map(|line| line.trim().strip_prefix("toname = "));
+        if names.next() != Some(target.as_str()) || names.next().is_some() {
+            return Err(Refusal::Unknown(format!(
+                "resume token does not match requested snapshot {target}"
+            )));
+        }
+        return Ok(vec!["-t".to_owned(), token.clone()]);
     }
     let mut args = Vec::new();
     if let Some(base) = base {
@@ -139,15 +193,16 @@ async fn stream_args(zfs: &PathBuf, stream: &SendStream) -> Result<Vec<String>, 
     Ok(args)
 }
 
-async fn zfs_lines(zfs: &PathBuf, args: &[&str]) -> Result<Vec<String>, Refusal> {
-    let output = Command::new(zfs)
+async fn lines(program: &Path, args: &[&str]) -> Result<Vec<String>, Refusal> {
+    let output = Command::new(program)
         .args(args)
         .output()
         .await
-        .map_err(|error| Refusal::Zfs(format!("could not run zfs: {error}")))?;
+        .map_err(|error| Refusal::Zfs(format!("could not run {}: {error}", program.display())))?;
     if !output.status.success() {
         return Err(Refusal::Zfs(format!(
-            "zfs {} failed: {}",
+            "{} {} failed: {}",
+            program.display(),
             args.join(" "),
             String::from_utf8_lossy(&output.stderr).trim()
         )));
@@ -165,17 +220,33 @@ mod tests {
     use super::*;
     use crate::test_dir::TestDir;
 
-    async fn start(dir: &TestDir) -> (String, CancellationToken) {
+    const POOLS: &str = "tank\t4294967296\t0\t4294967296\tONLINE\toff\nold\t4294967296\t0\t4294967296\tONLINE\ton\n";
+
+    async fn start(dir: &TestDir, pools: &str) -> (String, CancellationToken) {
         fs::create_dir_all(&dir.0).unwrap();
+        let zpool = dir.0.join("zpool");
+        fs::write(
+            &zpool,
+            format!("#!/bin/sh\nprintf '{}'\n", pools.escape_default()),
+        )
+        .unwrap();
+        fs::set_permissions(&zpool, fs::Permissions::from_mode(0o755)).unwrap();
         let zfs = dir.0.join("zfs");
         fs::write(
             &zfs,
             r#"#!/bin/sh
 case "$*" in
-  'list -H -o name -t filesystem') printf 'tank\ntank/ployz\ntank/ployz/data\ntank/ployz-mirror/other\n' ;;
+  'list -H -o name -t filesystem') printf 'old\nold/ployz\nold/ployz/data\ntank\ntank/ployz\ntank/ployz/data\ntank/ployz-mirror/other\n' ;;
   'list -H -o name,guid -t snapshot -d 1 tank/ployz/data') printf 'tank/ployz/data@w-1-1\t11\ntank/ployz/data@w-1-2\t12\n' ;;
   'send tank/ployz/data@w-1-2') printf 'full stream' ;;
   'send -i tank/ployz/data@w-1-1 tank/ployz/data@w-1-2') printf 'incremental stream' ;;
+  'send -nvP -t token-1') printf 'resume token contents:\n\ttoname = tank/ployz/data@w-1-2\n' >&2 ;;
+  'send -nvP -t token-other') printf 'resume token contents:\n\ttoname = tank/ployz/sibling@w-1-2\n' ;;
+  'send -nvP -t token-old') printf 'resume token contents:\n\ttoname = old/ployz/data@w-1-2\n' ;;
+  'send -nvP -t token-wrong-target') printf 'resume token contents:\n\ttoname = tank/ployz/data@w-1-1\n' ;;
+  'send -nvP -t token-missing') printf 'resume token contents:\n\ttoname = tank/ployz/data@w-1-3\n' ;;
+  'send -nvP -t token-child') printf 'resume token contents:\n\ttoname = tank/ployz/data/child@w-1-2\n' ;;
+  'send -t token-other') printf 'unrelated stream' ;;
   'send -t token-1') printf 'resumed stream' ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
@@ -186,7 +257,7 @@ esac
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let shutdown = CancellationToken::new();
-        tokio::spawn(serve(listener, zfs, shutdown.clone()));
+        tokio::spawn(serve(listener, zfs, zpool, shutdown.clone()));
         (format!("http://{address}"), shutdown)
     }
 
@@ -199,7 +270,7 @@ esac
     #[tokio::test]
     async fn streams_full_incremental_and_resumed_sends() {
         let dir = TestDir::new("ployzd-volume-send");
-        let (base, shutdown) = start(&dir).await;
+        let (base, shutdown) = start(&dir, POOLS).await;
         assert_eq!(
             get(&base, "/volume-send/data?target=w-1-2").await,
             (StatusCode::OK, "full stream".to_owned())
@@ -209,7 +280,7 @@ esac
             (StatusCode::OK, "incremental stream".to_owned())
         );
         assert_eq!(
-            get(&base, "/volume-send/data?token=token-1").await,
+            get(&base, "/volume-send/data?target=w-1-2&token=token-1").await,
             (StatusCode::OK, "resumed stream".to_owned())
         );
         shutdown.cancel();
@@ -218,7 +289,7 @@ esac
     #[tokio::test]
     async fn refuses_streams_this_machine_cannot_send() {
         let dir = TestDir::new("ployzd-volume-send");
-        let (base, shutdown) = start(&dir).await;
+        let (base, shutdown) = start(&dir, POOLS).await;
         for (path, reason) in [
             ("/volume-send/other?target=w-1-2", "no writer"),
             ("/volume-send/data?target=w-1-3", "does not exist"),
@@ -228,7 +299,7 @@ esac
             ),
             ("/volume-send/data", "no such send stream"),
             (
-                "/volume-send/data?target=w-1-2&token=t",
+                "/volume-send/data?target=w-1-2&base=11&token=t",
                 "no such send stream",
             ),
             ("/other", "no such send stream"),
@@ -237,6 +308,64 @@ esac
             assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
             assert!(body.contains(reason), "{path}: {body}");
         }
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn refuses_streams_without_one_usable_machine_pool() {
+        let both_writable = POOLS.replace("ONLINE\ton", "ONLINE\toff");
+        for (pools, status, reason) in [
+            ("", StatusCode::NOT_FOUND, "no Machine Pool"),
+            (
+                both_writable.as_str(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "ambiguous",
+            ),
+        ] {
+            let dir = TestDir::new("ployzd-volume-send");
+            let (base, shutdown) = start(&dir, pools).await;
+            let (actual, body) = get(&base, "/volume-send/data?target=w-1-2").await;
+            assert_eq!(actual, status, "{body}");
+            assert!(body.contains(reason), "{body}");
+            shutdown.cancel();
+        }
+    }
+
+    #[tokio::test]
+    async fn resumed_sends_require_the_requested_root_and_target() {
+        let dir = TestDir::new("ployzd-volume-send");
+        let (base, shutdown) = start(&dir, POOLS).await;
+        let (status, body) = get(&base, "/volume-send/data?token=token-other").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        for token in [
+            "token-other",
+            "token-old",
+            "token-wrong-target",
+            "token-missing",
+            "token-child",
+        ] {
+            let path = format!("/volume-send/data?target=w-1-2&token={token}");
+            let (status, body) = get(&base, &path).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+            assert!(body.contains("does not match"), "{path}: {body}");
+        }
+        let (status, body) = get(&base, "/volume-send/other?target=w-1-2&token=token-other").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        let (status, body) = get(&base, "/volume-send/data?target=w-1-2&token=token-1").await;
+        assert_eq!(
+            (status, body),
+            (StatusCode::OK, "resumed stream".to_owned())
+        );
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn resumed_sends_require_a_usable_pool() {
+        let dir = TestDir::new("ployzd-volume-send");
+        let (base, shutdown) = start(&dir, "").await;
+        let (status, body) = get(&base, "/volume-send/data?target=w-1-2&token=token-1").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert!(body.contains("no Machine Pool"), "{body}");
         shutdown.cancel();
     }
 }

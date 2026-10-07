@@ -264,44 +264,44 @@ Exit 2 is applied by hand in about ten handlers through `.with_exit(USAGE_EXIT)`
 - Every subcommand repeats the globals. `--connect <connect>` has no description. `--ployz-config` shows the env path.
 - Placeholders mix casing: `<name>`, `<context>`, `<SECONDS>`, `<PROJECT>`, `<VERSION>`, `<FILE>`.
 - project rm help leaves `<name>` blank and says `--yes cannot bypass this` on a command that has no `--yes`.
-- Top-level help ends with `Settings catalog: …` and `Agent tooling: …` lines. `--version` prints `0.2.3`.
+- Top-level help ends with a `Settings catalog: …` line. `--version` prints `0.2.3`.
 
 ## Likely bugs
 
-Each item was checked against the captures.
+Each item was checked against the captures. Its status after the output PRs follows it in bold.
 
-1. `unset web.env.MISSING` says `No change in shop/production: already set.` and exits 0, while `get` of the same name fails. [store/settings.md](store/settings.md)
-2. `publish` on an Environment with nothing staged claims `Published empty/production as Saved revision 1.` [store/staging.md](store/staging.md)
-3. `discard` with nothing staged claims `Discarded every staged change in empty/production (revision 1).` [store/staging.md](store/staging.md)
-4. After `org rm` of the acting Organization, `org ls` fails with `…is no longer one of yours` and `next: ployz org ls`, which loops. [cloud/org.md](cloud/org.md)
-5. A Managed volume whose deploy failed can't switch: `Volume cache storage cannot change after deployment has been requested`, after an unrelated Docker WARNING. [cluster/volume.md](cluster/volume.md)
-6. Local `deploy --detach` exits 2 with `…so it can't detach`, yet `deployment ls` then shows `#6 queued`. [cluster/deploy.md](cluster/deploy.md)
-7. server ls with gamma down exits 3 with no warning and shows gamma as `up`. [cluster/errors.md](cluster/errors.md)
-8. A wrong `--confirm` exits 2; a missing `--confirm` exits 1. [store/project.md](store/project.md)
-9. server upgrade prints its failure line twice on stdout, then the cause again on stderr. [cluster/server.md](cluster/server.md)
-10. `domain add` of an existing domain prints `Staged … (revision N)` although nothing changed. [cloud-cluster/domain.md](cloud-cluster/domain.md)
-11. `env shutdown qa` on a never-deployed Environment prints a bare `applied: `, then `This Deployment already ended`. [store/env.md](store/env.md)
-12. `cannot Select a context interactively…` capitalizes Select mid-sentence. [store/context.md](store/context.md)
-13. Signed-out `ps` and `logs` report `could not inspect /run/ployz/ployz.sock: Permission denied (os error 13)` instead of a sign-in hint. [cloud/errors.md](cloud/errors.md)
-14. The server rm `Retry:` line includes `--ployz-config '~/.config/ployz/config.yaml'`; the quoted `~` won't expand. [cluster/errors.md](cluster/errors.md)
-15. server rm removes first, then warns `Move them off first: ployz server drain gamma`, and prints `Volumes the Cluster loses (0)` with an empty list. [cluster/server.md](cluster/server.md)
-16. service restart prints the partial Live Observation warning twice. [cluster/errors.md](cluster/errors.md)
-17. logs and server logs exit 0 with no warning when a Machine is down. [cluster/errors.md](cluster/errors.md)
-18. server drain `--json` prints `public_key` as a byte array; other commands print a base64 string. [cluster/server.md](cluster/server.md)
-19. `server inspect nope --json` uses code `invalid_argument`, not `not_found`. [cloud-cluster/errors.md](cloud-cluster/errors.md)
-20. A registry error's embedded newline (`denied` / `denied`) breaks the indented Deployment result. [cloud-cluster/deploy.md](cloud-cluster/deploy.md)
-21. up prints `  build workspace from the upload: built ` with an empty detail. [cloud-cluster/deploy.md](cloud-cluster/deploy.md)
-22. Clap Usage lines expose the hidden global: `Usage: ployz service add --image <REF> --project <project> --ployz-config <ployz-config> <name>`. [store/service.md](store/service.md)
-23. `exec` of a missing binary prints `OCI runtime exec failed: …` on stdout, exit 127. [cloud-cluster/errors.md](cloud-cluster/errors.md)
-24. status for a directory linked to a deleted Project says `Needs attention: No Project named workspace` with no repair step. [cloud-cluster/deploy.md](cloud-cluster/deploy.md)
-25. The `--secret` empty-stdin error's JSON details carry an unrelated postgres `example`. [store/settings.md](store/settings.md)
-26. `env branch --live` reads `db can't be used live: the Branch copies it: nothing running can lend it`, with two colons. [store/env.md](store/env.md)
-27. `deploy --expect-version 1` is a clap parse error (exit 2); a stale but well-formed version exits 1. [cloud/deploy.md](cloud/deploy.md)
-28. server add over SSH ends on `Waiting for … retrying for up to 299s` and exits 0 with no joined line. [cluster/server.md](cluster/server.md)
-29. `deployment start 1` with no Server follows forever after `queued:`; the capture had to kill it. [cloud/deploy.md](cloud/deploy.md)
-30. Human `service add`, `set`, `domain add` and `env branch` omit the `next` their JSON carries. [store/service.md](store/service.md)
-31. The `Docker only` prompt prints its WARNING on the prompt's own line. [cluster/server.md](cluster/server.md)
-32. Bare `ployz org` prints help on stderr with exit 2; bare `ployz` uses stdout and 0. [cloud/org.md](cloud/org.md)
+1. `unset web.env.MISSING` says `No change in shop/production: already set.` and exits 0, while `get` of the same name fails. [store/settings.md](store/settings.md) **Fixed by an earlier output PR.**
+2. `publish` on an Environment with nothing staged claims `Published empty/production as Saved revision 1.` [store/staging.md](store/staging.md) **Fixed in P7.**
+3. `discard` with nothing staged claims `Discarded every staged change in empty/production (revision 1).` [store/staging.md](store/staging.md) **Fixed in P7.**
+4. After `org rm` of the acting Organization, `org ls` fails with `…is no longer one of yours` and `next: ployz org ls`, which loops. [cloud/org.md](cloud/org.md) **Fixed in P7.**
+5. A Managed volume whose deploy failed can't switch: `Volume cache storage cannot change after deployment has been requested`, after an unrelated Docker WARNING. [cluster/volume.md](cluster/volume.md) **Fixed in P7.**
+6. Local `deploy --detach` exits 2 with `…so it can't detach`, yet `deployment ls` then shows `#6 queued`. [cluster/deploy.md](cluster/deploy.md) **Fixed in P7.**
+7. server ls with gamma down exits 3 with no warning and shows gamma as `up`. [cluster/errors.md](cluster/errors.md) **Fixed by an earlier output PR.**
+8. A wrong `--confirm` exits 2; a missing `--confirm` exits 1. [store/project.md](store/project.md) **Fixed by an earlier output PR.**
+9. server upgrade prints its failure line twice on stdout, then the cause again on stderr. [cluster/server.md](cluster/server.md) **Fixed in P7.**
+10. `domain add` of an existing domain prints `Staged … (revision N)` although nothing changed. [cloud-cluster/domain.md](cloud-cluster/domain.md) **Fixed in P7.**
+11. `env shutdown qa` on a never-deployed Environment prints a bare `applied: `, then `This Deployment already ended`. [store/env.md](store/env.md) **Fixed in P7.**
+12. `cannot Select a context interactively…` capitalizes Select mid-sentence. [store/context.md](store/context.md) **Fixed by an earlier output PR.**
+13. Signed-out `ps` and `logs` report `could not inspect /run/ployz/ployz.sock: Permission denied (os error 13)` instead of a sign-in hint. [cloud/errors.md](cloud/errors.md) **Fixed in P7.**
+14. The server rm `Retry:` line includes `--ployz-config '~/.config/ployz/config.yaml'`; the quoted `~` won't expand. [cluster/errors.md](cluster/errors.md) **Fixed in P7.**
+15. server rm removes first, then warns `Move them off first: ployz server drain gamma`, and prints `Volumes the Cluster loses (0)` with an empty list. [cluster/server.md](cluster/server.md) **Fixed by an earlier output PR.**
+16. service restart prints the partial Live Observation warning twice. [cluster/errors.md](cluster/errors.md) **Fixed by an earlier output PR.**
+17. logs and server logs exit 0 with no warning when a Machine is down. [cluster/errors.md](cluster/errors.md) **Fixed in P7.**
+18. server drain `--json` prints `public_key` as a byte array; other commands print a base64 string. [cluster/server.md](cluster/server.md) **Fixed in P7.**
+19. `server inspect nope --json` uses code `invalid_argument`, not `not_found`. [cloud-cluster/errors.md](cloud-cluster/errors.md) **Fixed in P7: the code is `not_found`. The message still ends in the daemon's `; ployz server ls lists them`.**
+20. A registry error's embedded newline (`denied` / `denied`) breaks the indented Deployment result. [cloud-cluster/deploy.md](cloud-cluster/deploy.md) **Fixed in P7.**
+21. up prints `  build workspace from the upload: built ` with an empty detail. [cloud-cluster/deploy.md](cloud-cluster/deploy.md) **Fixed by an earlier output PR.**
+22. Clap Usage lines expose the hidden global: `Usage: ployz service add --image <REF> --project <project> --ployz-config <ployz-config> <name>`. [store/service.md](store/service.md) **Fixed in P7.**
+23. `exec` of a missing binary prints `OCI runtime exec failed: …` on stdout, exit 127. [cloud-cluster/errors.md](cloud-cluster/errors.md) **Kept: `exec` passes the remote command's output and exit code through.**
+24. status for a directory linked to a deleted Project says `Needs attention: No Project named workspace` with no repair step. [cloud-cluster/deploy.md](cloud-cluster/deploy.md) **Fixed in P7.**
+25. The `--secret` empty-stdin error's JSON details carry an unrelated postgres `example`. [store/settings.md](store/settings.md) **Fixed in P7.**
+26. `env branch --live` reads `db can't be used live: the Branch copies it: nothing running can lend it`, with two colons. [store/env.md](store/env.md) **Fixed in P7.**
+27. `deploy --expect-version 1` is a clap parse error (exit 2); a stale but well-formed version exits 1. [cloud/deploy.md](cloud/deploy.md) **Fixed by an earlier output PR.**
+28. server add over SSH ends on `Waiting for … retrying for up to 299s` and exits 0 with no joined line. [cluster/server.md](cluster/server.md) **Fixed in P7.**
+29. `deployment start 1` with no Server follows forever after `queued:`; the capture had to kill it. [cloud/deploy.md](cloud/deploy.md) **Fixed in P7.**
+30. Human `service add`, `set`, `domain add` and `env branch` omit the `next` their JSON carries. [store/service.md](store/service.md) **Fixed in P7.**
+31. The `Docker only` prompt prints its WARNING on the prompt's own line. [cluster/server.md](cluster/server.md) **Fixed by an earlier output PR.**
+32. Bare `ployz org` prints help on stderr with exit 2; bare `ployz` uses stdout and 0. [cloud/org.md](cloud/org.md) **Fixed in P7.**
 
 ## Open design questions
 

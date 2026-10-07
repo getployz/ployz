@@ -187,6 +187,11 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
                 secret.pop();
             }
         }
+        if secret.is_empty() {
+            return Err(Error::usage(format!(
+                "No secret on stdin for {path}; pipe one in: printf %s \"$VALUE\" | ployz set {path} --secret"
+            )));
+        }
         if let Some(number) = matches.get_one::<String>("at-merge") {
             return hold(root, number, &path, secret);
         }

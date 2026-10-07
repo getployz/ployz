@@ -514,7 +514,6 @@ mod tests;
 
 pub(crate) fn command() -> Command {
     base("service", "Manage services")
-        .arg_required_else_help(true)
         .subcommand(authored::add_command())
         .subcommand(authored::inspect_command())
         .subcommand(authored::ls_command())

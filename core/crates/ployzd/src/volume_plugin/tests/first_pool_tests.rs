@@ -434,6 +434,7 @@ async fn concurrent_and_retried_first_creates_converge_on_one_pool() {
         installation: first.installation.clone(),
         receives: Default::default(),
         send_port: first.send_port,
+        receive_stall: first.receive_stall,
     };
     let first_socket = test.0.join("first-plugin.sock");
     let second_socket = test.0.join("second-plugin.sock");
@@ -504,6 +505,7 @@ async fn a_second_process_cannot_use_a_pool_before_its_owner_finishes() {
         installation: first.installation.clone(),
         receives: Default::default(),
         send_port: first.send_port,
+        receive_stall: first.receive_stall,
     };
     let first_socket = test.0.join("first-plugin.sock");
     let second_socket = test.0.join("second-plugin.sock");
@@ -980,5 +982,6 @@ esac
         ),
         receives: Default::default(),
         send_port: ployz_core::VOLUME_SEND_PORT,
+        receive_stall: super::super::transfer::RECEIVE_STALL,
     }
 }

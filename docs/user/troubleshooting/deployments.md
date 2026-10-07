@@ -7,6 +7,33 @@ Start on the deployment's page. Why it failed is under the header, in red, with 
 name first. That service's tab has its **Build** and **Deploy** logs. See
 [Deployments](../deploy/deployments.md).
 
+## Following a deploy in the CLI
+
+`ployz deploy` and `ployz up` show progress on stderr. On a terminal, the live block
+ends with the full Service and Server rows and a summary. In CI or redirected output,
+Ployz prints changes as lines and says `still waiting:` after 30 seconds without a
+change. To capture those lines through a pipe, use `ployz deploy 2>&1 | cat`.
+`--json` keeps the result on stdout; progress stays on stderr. `--events FILE` also
+records the existing Deployment events as NDJSON. Source builds appear against their
+Service before Server placement is known. Once execution starts, the rows identify the
+Servers where work runs.
+
+A failed deploy shows the deepest cause, available failed-container log tails, and
+`inspect:` and `retry:` commands. A Deployment result that did not fully succeed exits
+with code 3. A warning that names an incomplete Server observation also makes an
+otherwise successful invocation exit 3 when that Server was relevant to the selected
+Services or their dependencies, or to observed work the deploy affected. An Entry's
+Down observation is evidence from that Entry, not proof that somebody stopped the
+Server. Missing telemetry and unknown membership values alone do not establish Down.
+
+Ctrl-C stops following a Cloud Deployment and exits 130; an active Cloud Deployment
+keeps running. The command returns its last known result when one is available, including
+a completion observed during interruption. An active
+Cloud request can take up to 15 seconds to return. For local execution, Ctrl-C requests
+cancellation and waits for owned work and cleanup to settle. Server enrollment that
+already committed remains committed; follow the recovery hint if Global catch-up or
+ingress work was interrupted.
+
 ## My build failed
 
 `Build failed. web: …`

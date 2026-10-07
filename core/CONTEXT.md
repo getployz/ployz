@@ -59,7 +59,7 @@ A Machine's own lifecycle phase: uninitialized, joining, participating, or reset
 _Avoid_: Machine state, membership state, readiness
 
 **Membership Observation**:
-One Machine's potentially incomplete or stale judgment that another Machine is unknown, up, suspect, or down. It is not the observed Machine's lifecycle or an authoritative liveness fact.
+One Machine's potentially incomplete or stale judgment that another Machine is unknown, up, suspect, or down. It is not the observed Machine's lifecycle or an authoritative liveness fact. Optional Membership Evidence distinguishes a recognized admin observation from synthetic absence. Missing evidence and unrecognized raw admin values do not prove Down; unknown values retain their decoder classification across transport.
 _Avoid_: Machine status, cluster membership truth
 
 **Service**:
@@ -368,7 +368,7 @@ The ephemeral sequence of operations calculated for one Deploy. It may complete 
 _Avoid_: Desired state, workflow
 
 **Deploy Preview**:
-The observer-relative plan-plus-warnings offered for confirmation before one Deploy executes. It is Live Observation shaped for a decision, not persisted state.
+The observer-relative plan-plus-warnings offered for confirmation before one Deploy executes. It is Live Observation shaped for a decision, not persisted state. A qualified observation gap names a Machine relevant to the bound Service Attempts and their dependencies, namespace-aware placement and acceptance, or independently observed affected work. It requires a failed observation or recognized Down evidence; generic omissions and synthetic absence do not establish it.
 _Avoid_: persisted plan, cluster decision record
 
 **Destructive Change**:

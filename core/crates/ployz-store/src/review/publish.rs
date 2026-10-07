@@ -46,9 +46,10 @@ pub struct Publish {
 pub struct Published {
     /// The Environment.
     pub environment: EnvironmentSummary,
-    /// The Saved revision that now holds Working State.
-    pub saved: Revision,
-    /// False when Saved State already held it.
+    /// The Saved revision that now holds Working State; none when nothing was ever
+    /// published and nothing is staged.
+    pub saved: Option<Revision>,
+    /// False when Saved State already held it, or nothing is staged.
     pub created: bool,
 }
 
@@ -77,6 +78,8 @@ pub struct Discarded {
     pub environment: EnvironmentSummary,
     /// The latest Saved revision, which follows the discard so the next Deploy ships it.
     pub saved: Option<Revision>,
+    /// False when nothing it names was staged.
+    pub changed: bool,
 }
 
 pub(crate) fn publish(
@@ -88,6 +91,17 @@ pub(crate) fn publish(
     let environment = scope::lock(tx, who, &publish.environment)?;
     let review = review::review(tx, &environment)?;
     review::check(&review, publish.version.as_deref())?;
+    if review.saved.is_none()
+        && canonicalize_environment_intent(environment.working.clone())
+            == canonicalize_environment_intent(review.head.intent.clone())
+    {
+        // Nothing staged: Head already is Working State.
+        return Ok(Published {
+            environment: environment.summary,
+            saved: None,
+            created: false,
+        });
+    }
     // Saved State then holds the removal, which the next full Deploy ships: the
     // same destructive review, before anything is saved.
     let target = canonicalize_environment_intent(environment.working.clone());
@@ -108,7 +122,7 @@ pub(crate) fn publish(
     )?;
     Ok(Published {
         environment: environment.summary,
-        saved,
+        saved: Some(saved),
         created,
     })
 }
@@ -136,13 +150,17 @@ pub(crate) fn discard(
         )?,
     };
     let mut revision = saved.as_ref().map(|saved| saved.revision);
+    let mut changed = false;
     if let Some(restored) = restored {
-        revision =
-            Some(review::publish(tx, who, &environment.summary.id, restored, saved.as_ref())?.0);
+        let (saved, created) =
+            review::publish(tx, who, &environment.summary.id, restored, saved.as_ref())?;
+        revision = Some(saved);
+        changed = created;
     }
     if canonicalize_environment_intent(working.clone())
         != canonicalize_environment_intent(environment.working.clone())
     {
+        changed = true;
         crate::branch::rewind(
             tx,
             &environment.summary.id,
@@ -154,6 +172,7 @@ pub(crate) fn discard(
     Ok(Discarded {
         environment: environment.summary,
         saved: revision,
+        changed,
     })
 }
 

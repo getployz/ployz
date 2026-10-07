@@ -63,7 +63,7 @@ pub(crate) fn create_branch(
         let lineage = lineage_named(working, name)?;
         if !live.contains(&lineage) {
             let why = if own.contains(&lineage) {
-                "the Branch copies it: nothing running can lend it"
+                "the Branch copies it, so nothing running can lend it"
             } else {
                 "nothing the Branch copies uses it"
             };

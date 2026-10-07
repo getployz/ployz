@@ -269,7 +269,7 @@ fn a_git_service_round_trips_get_edit_publish() {
             &Trusted::default(),
         )
         .unwrap();
-    assert!(published.saved.0 >= 1);
+    assert!(published.saved.is_some_and(|saved| saved.0 >= 1));
     assert!(store.read(&who, &DiffQuery::default()).unwrap().published);
 }
 

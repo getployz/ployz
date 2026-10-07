@@ -8,11 +8,11 @@ use ployz_store::{NamespacesQuery, OwnedNamespace};
 use serde::Serialize;
 use serde_json::json;
 
-use super::super::teardown::confirmed;
+use super::super::teardown::confirm;
 use super::super::{Error, leaf_matches, runtime, store};
 use crate::cli::{base, value};
 use crate::deploy::VolumeFate;
-use crate::ui::{Hint, Table};
+use crate::ui::{Hint, Table, Tree};
 
 pub(super) fn command() -> Command {
     base(
@@ -22,8 +22,9 @@ pub(super) fn command() -> Command {
     .long_about(
         "Remove a Namespace the Servers run that no Environment owns, such as one a failed \
          teardown left behind: its containers, and its Volumes with their data. Without \
-         --namespace, lists those Namespaces. Type the Namespace with --confirm; without it \
-         the command fails with confirmation_required, naming the Volumes whose data goes.",
+         --namespace, lists those Namespaces. Type the Namespace with --confirm, or in a \
+         terminal when it asks; elsewhere it fails with confirmation_required, naming the \
+         Volumes whose data goes.",
     )
     .arg(value("namespace", None).value_name("NAMESPACE"))
     .arg(
@@ -156,22 +157,39 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
         });
     };
     let next = retry(matches, &namespace);
-    if !confirmed(matches, namespace.as_str(), "Namespace", next.clone())? {
-        return Err(Error::detailed(
-            RpcErrorCode::ConfirmationRequired,
-            format!(
-                "Removing Namespace {namespace} deletes its containers and the data of Volumes \
+    confirm(
+        matches,
+        namespace.as_str(),
+        "Namespace",
+        next.clone(),
+        || {
+            let refusal = Error::detailed(
+                RpcErrorCode::ConfirmationRequired,
+                format!(
+                    "Removing Namespace {namespace} deletes its containers and the data of Volumes \
                  {}; this can't be undone. No changes made.",
-                volume_names(&found.volumes)
-            ),
-            json!({
-                "namespace": namespace,
-                "services": found.services,
-                "volumes": found.volumes,
-            }),
-        )
-        .hint(Hint::Retry(next)));
-    }
+                    volume_names(&found.volumes)
+                ),
+                json!({
+                    "namespace": namespace,
+                    "services": found.services,
+                    "volumes": found.volumes,
+                }),
+            )
+            .hint(Hint::Retry(next.clone()));
+            let loss = Tree::new(
+                format!("Removing Namespace {namespace} deletes, for good:"),
+                vec![
+                    Tree::leaf("its containers"),
+                    Tree::leaf(format!(
+                        "the data of Volumes {}",
+                        volume_names(&found.volumes)
+                    )),
+                ],
+            );
+            Ok((refusal, loss))
+        },
+    )?;
     let (volumes, outcome) = runtime.block_on(async {
         let token = crate::cancellation::on_ctrl_c();
         // ponytail: the loss confirmed is the one observed now, which the refusal

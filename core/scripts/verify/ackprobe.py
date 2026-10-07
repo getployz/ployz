@@ -93,6 +93,7 @@ class Probe:
         self.query(f"CREATE TABLE IF NOT EXISTS {TABLE} (id bigint PRIMARY KEY, at timestamptz NOT NULL DEFAULT now())",
                    deadline=time.monotonic() + 300)
         next_id = int(self.query(f"SELECT coalesce(max(id), 0) + 1 FROM {TABLE}", deadline=time.monotonic() + 60))
+        first_id = next_id
         session, reader = self.session()
         interval = 1 / self.rate
         due = time.monotonic()
@@ -126,7 +127,7 @@ class Probe:
         present = [int(line) for line in self.query(f"SELECT id FROM {TABLE}", deadline=time.monotonic() + 300).split()]
         with self.lock:
             result = report(self.acks, present)
-        result.update(sent=next_id - 1, sessions=self.sessions)
+        result.update(sent=next_id - first_id, sessions=self.sessions)
         self.event(report=result)
         return result
 

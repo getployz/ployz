@@ -21,15 +21,14 @@ use serde_json::json;
 use super::config::expect;
 use super::deploy;
 use super::store::{self, mint, project, project_arg, store};
-use super::teardown::{Inventory, confirmed, inventory, remove_all};
+use super::teardown::{Inventory, confirm, inventory, remove_all};
 use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, repeated, switch, value};
-use crate::ui::Hint;
+use crate::ui::{Hint, Tree};
 
 pub(crate) fn command() -> Command {
     Command::new("env")
         .about("Manage Environments and Branches")
-        .arg_required_else_help(true)
         .subcommand(
             Command::new("new")
                 .about("Create an empty Environment")
@@ -72,8 +71,9 @@ pub(crate) fn command() -> Command {
                 "Remove an Environment. If anything of it ran, a removal Deployment \
                          takes it off the Servers first, deleting its deployed Volumes once \
                          each is accepted by name; then its configuration and history go. \
-                         Type PROJECT/ENV with --confirm; without it the command fails with \
-                         confirmation_required, naming what goes and the exact retry.",
+                         Type PROJECT/ENV with --confirm, or in a terminal when it asks; \
+                         elsewhere it fails with confirmation_required, naming what goes and \
+                         the exact retry.",
             )
             .arg(positional("name", true))
             .arg(project_arg())
@@ -444,10 +444,10 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
     // Not removed yet (queued, failed, cancelled, or its outcome unknown): this same
     // command finishes it once the removal applied, or queues it again.
     let store = store.args(["--confirm", typed.as_str()]);
-    if !confirmed(matches, &typed, "Environment", store.again(&[]))? {
-        return Err(unconfirmed(inventory, &store.again(&[])));
-    }
     let project = inventory.environment.project.clone();
+    confirm(matches, &typed, "Environment", store.again(&[]), || {
+        Ok(unconfirmed(inventory, &store.again(&[])))
+    })?;
     let remove = RemoveEnvironment { environment: at };
     let events = deploy::open_events(matches)?;
     match remove_all(matches, &store, &remove, &project, events)? {
@@ -456,9 +456,17 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
     }
 }
 
-/// Refuse an unconfirmed `env rm`, naming what goes and the exact retry.
-fn unconfirmed(inventory: Inventory, retry: &str) -> Error {
-    Error::detailed(
+/// Refuse an unconfirmed `env rm`, naming what goes and the exact retry; and
+/// the same as a tree for the prompt.
+fn unconfirmed(inventory: Inventory, retry: &str) -> (Error, Tree) {
+    let loss = Tree::new(
+        format!(
+            "Removing Environment {}/{} deletes, for good:",
+            inventory.environment.project, inventory.environment.name
+        ),
+        inventory.branches(),
+    );
+    let refusal = Error::detailed(
         RpcErrorCode::ConfirmationRequired,
         format!(
             "Removing Environment {} deletes its configuration, history and every Service \
@@ -471,7 +479,8 @@ fn unconfirmed(inventory: Inventory, retry: &str) -> Error {
             "volumes": inventory.volumes,
         }),
     )
-    .hint(Hint::Retry(retry.to_owned()))
+    .hint(Hint::Retry(retry.to_owned()));
+    (refusal, loss)
 }
 
 fn finish_removal(

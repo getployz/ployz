@@ -80,8 +80,11 @@ fn membership_is_responder_relative_and_keeps_duplicate_names() {
     let suspect = machine('3', "suspect", 3);
     let down = machine('4', "down", 4);
     let states = BTreeMap::from([
-        (up.management_address(), MembershipObservation::Up),
-        (suspect.management_address(), MembershipObservation::Suspect),
+        (up.management_address(), ployz_core::MembershipEvidence::Up),
+        (
+            suspect.management_address(),
+            ployz_core::MembershipEvidence::Suspect,
+        ),
     ]);
 
     let observations =
@@ -350,4 +353,53 @@ fn admitted_machine_labels_are_selectable_by_literal_swarm_constraints() {
                 .unwrap();
         assert!(missing.matches(&selected));
     }
+}
+
+#[test]
+fn admin_membership_evidence_survives_machine_wire_roundtrip_and_absence_stays_unproven() {
+    use ployz_core::{MachineList, MembershipEvidence};
+    let entry = machine('1', "entry", 1);
+    let peer = machine('2', "peer", 2);
+    for raw in ["down", "up", "suspect", "future-state"] {
+        let states = BTreeMap::from([(
+            peer.management_address(),
+            MembershipEvidence::Unrecognized { raw: raw.into() },
+        )]);
+        let response = MachineList {
+            enrollment: None,
+            machines: synthesize_membership(vec![entry.clone(), peer.clone()], &entry.id, &states),
+        };
+        let decoded: MachineList =
+            serde_json::from_value(serde_json::to_value(response).unwrap()).unwrap();
+        let observed = decoded
+            .machines
+            .iter()
+            .find(|row| row.machine.id == peer.id)
+            .unwrap();
+        assert_eq!(
+            observed.membership_evidence,
+            Some(MembershipEvidence::Unrecognized { raw: raw.into() })
+        );
+        assert!(
+            !observed.invites_rpc(),
+            "unknown raw {raw} must not become a responding peer"
+        );
+    }
+    let rows = synthesize_membership(
+        vec![entry.clone(), peer.clone()],
+        &entry.id,
+        &BTreeMap::new(),
+    );
+    let absent = rows.iter().find(|row| row.machine.id == peer.id).unwrap();
+    assert_eq!(absent.membership, MembershipObservation::Down);
+    assert_eq!(absent.membership_evidence, None);
+    let states = BTreeMap::from([(peer.management_address(), MembershipEvidence::Down)]);
+    let rows = synthesize_membership(vec![peer.clone()], &entry.id, &states);
+    assert_eq!(
+        rows.first().unwrap().membership_evidence,
+        Some(MembershipEvidence::Down)
+    );
+    let legacy: ployz_core::MachineObservation =
+        serde_json::from_value(serde_json::to_value(absent).unwrap()).unwrap();
+    assert_eq!(legacy.membership_evidence, None);
 }
