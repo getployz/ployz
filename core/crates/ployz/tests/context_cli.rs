@@ -327,7 +327,13 @@ fn explicit_config_beats_environment_and_interactive_errors_do_not_mutate() {
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("needs a terminal"), "{stderr}");
-    assert!(stderr.contains("ployz ctx use CONTEXT"), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "retry: ployz ctx use --ployz-config {} CONTEXT",
+            shell_words::quote(flag_path.to_str().unwrap())
+        )),
+        "{stderr}"
+    );
     assert_eq!(Config::load(&flag_path).unwrap(), before);
 
     fs::remove_dir_all(root).unwrap();
