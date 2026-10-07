@@ -342,7 +342,11 @@ impl MachineRpc for MachineService {
             .await
         {
             Ok(details) => {
-                containers.mark_stopping(request.container_id);
+                if let Some(volume) = request.volume {
+                    containers.mark_source_stopping(request.container_id, volume.switch.lease);
+                } else {
+                    containers.mark_stopping(request.container_id);
+                }
                 respond(details)
             }
             Err(error) => respond(RpcError::from(&error)),
@@ -541,7 +545,7 @@ impl MachineRpc for MachineService {
         match result {
             Ok(reply) => {
                 if let Ok(containers) = self.containers() {
-                    containers.mark_stopping(request.container_id);
+                    containers.mark_source_stopping(request.container_id, request.switch.lease);
                 }
                 respond(reply)
             }
@@ -585,7 +589,7 @@ impl MachineRpc for MachineService {
         match result {
             Ok(reply) => {
                 if let Ok(containers) = self.containers() {
-                    containers.clear_stopping(&request.container_id);
+                    containers.clear_source_stopping(&request.container_id, request.switch.lease);
                 }
                 respond(reply)
             }

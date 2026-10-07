@@ -32,10 +32,15 @@ case "$1 $2" in
     printf '%s' "$response" > "$fixture/mount-reply"
     printf '%s' "$response" | python3 -c 'import json,sys; sys.exit(bool(json.load(sys.stdin)["Err"]))'
     touch "$fixture/running" ;;
-  'rm '*) : > "$fixture/holders" ;;
+  'rm '*)
+    : > "$fixture/holders"
+    touch "$fixture/holders-removed"
+    while [ -e "$fixture/hold-holder-removal" ]; do sleep 0.01; done ;;
   'volume ls')
     curl --max-time 5 -sS --unix-socket "$fixture/plugin.sock" -H 'Content-Type: application/json' -d '{{}}' http://localhost/VolumeDriver.List | python3 -c 'import json,sys; print("\n".join(v["Name"] for v in json.load(sys.stdin)["Volumes"]))' ;;
   'volume rm')
+    exec 8>"$fixture/docker-volume.lock"
+    flock 8
     response=$(curl --max-time 5 -sS --unix-socket "$fixture/plugin.sock" -H 'Content-Type: application/json' -d '{{"Name":"data"}}' http://localhost/VolumeDriver.Get)
     if printf '%s' "$response" | python3 -c 'import json,sys; sys.exit("Volume" not in json.load(sys.stdin))'; then
       response=$(curl --max-time 5 -sS --unix-socket "$fixture/plugin.sock" -H 'Content-Type: application/json' -d '{{"Name":"data"}}' http://localhost/VolumeDriver.Remove)
@@ -425,6 +430,63 @@ async fn every_source_verb_finishes_after_a_real_kill_after_record() {
         }
         server.abort();
     }
+}
+
+#[tokio::test]
+async fn concurrent_docker_remove_refuses_without_blocking_close() {
+    let (test, socket, server) = setup("handed:900", true);
+    fs::write(test.0.join("hold-holder-removal"), "").unwrap();
+    let close = tokio::spawn({
+        let socket = socket.clone();
+        async move { post(&socket, "/Volume.Close", at(1, 12, 0, 0, json!({}))).await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !test.0.join("holders-removed").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let get = post(&socket, "/VolumeDriver.Get", json!({"Name":"data"})).await;
+    assert!(
+        get.get("Volume").is_some(),
+        "concurrent Docker Remove resolved the root before rename"
+    );
+    let removed = tokio::time::timeout(
+        Duration::from_secs(1),
+        tokio::process::Command::new("flock")
+            .arg(test.0.join("docker-volume.lock"))
+            .args(["curl", "--max-time", "5", "-sS", "--unix-socket"])
+            .arg(&socket)
+            .args([
+                "-H",
+                "Content-Type: application/json",
+                "-d",
+                r#"{"Name":"data"}"#,
+                "http://localhost/VolumeDriver.Remove",
+            ])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    fs::remove_file(test.0.join("hold-holder-removal")).unwrap();
+    let closed = tokio::time::timeout(Duration::from_secs(7), close)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        closed.pointer("/Ok/lease/cycle"),
+        Some(&json!("closed")),
+        "{closed}"
+    );
+    let removed = removed
+        .expect("Docker Remove must refuse before Close awaits Docker's per-volume lock")
+        .unwrap();
+    assert!(removed.status.success());
+    let response: Value = serde_json::from_slice(&removed.stdout).unwrap();
+    assert!(error(&response).contains("VolumeSwitching"), "{response}");
+    assert_eq!(snapshot_names(&test, "tank/ployz-mirror/data/fs"), ["f-1"]);
+    server.abort();
 }
 
 #[cfg(feature = "verify-faults")]

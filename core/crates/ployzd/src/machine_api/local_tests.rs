@@ -891,6 +891,7 @@ async fn thaw_waits_for_withdraw_to_publish_stopping_then_restores_ingress() {
         "decision":"adopt", "lease":{"lease":1,"pos":{"seq":13,"round":0,"sub":0},"cycle":"closed"},
         "copy":{"kind":"root","writer":{"phase":"idle"},"readonly":false,"newest":null}
     }});
+    let thawed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let router = Router::new()
         .route(
             "/Volume.Withdraw",
@@ -916,9 +917,13 @@ async fn thaw_waits_for_withdraw_to_publish_stopping_then_restores_ingress() {
                 let thaw_entered = thaw_entered.clone();
                 move || {
                     let thaw_entered = thaw_entered.clone();
-                    let reply = reply.clone();
+                    let mut reply = reply.clone();
+                    let thawed = thawed.clone();
                     async move {
                         thaw_entered.notify_one();
+                        if thawed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                            reply["Ok"]["decision"] = json!("replay");
+                        }
                         Json(reply)
                     }
                 }
@@ -999,6 +1004,48 @@ async fn thaw_waits_for_withdraw_to_publish_stopping_then_restores_ingress() {
     assert!(
         matches!(&details.container.runtime, ContainerRuntimeObservation::Running { health } if *health != HealthObservation::Stopping),
         "successful Thaw must restore ingress eligibility"
+    );
+    service
+        .mark_container_stopping(Request::new(
+            op::MarkContainerStopping::into_request(ployz_core::MarkContainerStoppingRequest {
+                container_id: created.container_id,
+                volume: None,
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::MarkContainerStopping>()
+        .unwrap();
+    let replay = service.thaw(Request::new(op::Thaw::into_request(
+        serde_json::from_value(json!({
+            "name":"data", "container_id":created.container_id,
+            "switch":{"lease":1,"pos":{"seq":13,"round":0,"sub":0},"not_after_unix_seconds":i64::MAX}
+        })).unwrap()
+    ).encode().unwrap())).await.unwrap().into_inner().decode_response().unwrap().decode::<op::Thaw>().unwrap();
+    assert_eq!(replay.decision, ployz_core::FenceDecision::Replay);
+    let details = service
+        .inspect_container(Request::new(
+            op::InspectContainer::into_request(InspectContainerRequest {
+                container_id: created.container_id,
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::InspectContainer>()
+        .unwrap();
+    assert!(
+        matches!(&details.container.runtime, ContainerRuntimeObservation::Running { health } if *health == HealthObservation::Stopping),
+        "a completed Thaw replay must preserve a later ordinary stop's withdrawal"
     );
     server.abort();
     std::fs::remove_dir_all(data_dir).unwrap();
