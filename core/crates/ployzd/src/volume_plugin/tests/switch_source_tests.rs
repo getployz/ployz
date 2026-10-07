@@ -490,6 +490,70 @@ async fn concurrent_docker_remove_refuses_without_blocking_close() {
     server.abort();
 }
 
+#[tokio::test]
+async fn docker_remove_queued_behind_close_refuses_once_close_runs_docker() {
+    let (test, socket, server) = setup("handed:900", true);
+    for marker in ["hold-list", "hold-holder-removal"] {
+        fs::write(test.0.join(marker), "").unwrap();
+    }
+    let list = tokio::spawn({
+        let socket = socket.clone();
+        async move { post(&socket, "/VolumeDriver.List", json!({})).await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !test.0.join("list-held").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let close = tokio::spawn({
+        let socket = socket.clone();
+        async move { post(&socket, "/Volume.Close", at(1, 12, 0, 0, json!({}))).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let remove = tokio::process::Command::new("flock")
+        .arg(test.0.join("docker-volume.lock"))
+        .args(["curl", "--max-time", "5", "-sS", "--unix-socket"])
+        .arg(&socket)
+        .args([
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            r#"{"Name":"data"}"#,
+            "http://localhost/VolumeDriver.Remove",
+        ])
+        .kill_on_drop(true)
+        .output();
+    let remove = tokio::spawn(remove);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    fs::remove_file(test.0.join("hold-list")).unwrap();
+    assert_eq!(error(&list.await.unwrap()), "");
+
+    let removed = tokio::time::timeout(Duration::from_secs(2), remove)
+        .await
+        .expect("Remove must refuse once Close holds the mutation and runs Docker")
+        .unwrap()
+        .unwrap();
+    fs::remove_file(test.0.join("hold-holder-removal")).unwrap();
+    assert!(removed.status.success());
+    let response: Value = serde_json::from_slice(&removed.stdout).unwrap();
+    assert!(
+        error(&response).contains("has an active storage mutation"),
+        "{response}"
+    );
+    let closed = tokio::time::timeout(Duration::from_secs(7), close)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        closed.pointer("/Ok/lease/cycle"),
+        Some(&json!("closed")),
+        "{closed}"
+    );
+    server.abort();
+}
+
 #[cfg(feature = "verify-faults")]
 #[tokio::test]
 async fn close_finishes_docker_deregistration_after_a_kill_between_rename_and_remove() {

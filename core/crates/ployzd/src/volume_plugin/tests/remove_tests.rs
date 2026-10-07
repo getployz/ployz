@@ -341,3 +341,53 @@ async fn busy_executable_retries_are_bounded_and_do_not_repeat_commands() {
         "zpool list\nzfs invalid\n"
     );
 }
+
+#[tokio::test]
+async fn remove_waits_for_a_list_holding_the_storage_mutation() {
+    let test = TestDir::new();
+    for marker in ["root", "volume", "hold-list"] {
+        fs::write(test.0.join(marker), "").unwrap();
+    }
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+    let socket = test.0.join("plugin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+    let list = tokio::spawn({
+        let socket = socket.clone();
+        async move { post(&socket, "/VolumeDriver.List", json!({})).await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !test.0.join("list-held").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let remove = tokio::spawn({
+        let socket = socket.clone();
+        async move { post(&socket, "/VolumeDriver.Remove", json!({"Name":"data"})).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !remove.is_finished(),
+        "Remove answered while List held the mutation: {}",
+        remove.await.unwrap()
+    );
+    fs::remove_file(test.0.join("hold-list")).unwrap();
+
+    assert_eq!(error(&list.await.unwrap()), "");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), remove)
+            .await
+            .unwrap()
+            .unwrap(),
+        json!({"Err":""})
+    );
+    assert!(
+        fs::read_to_string(test.0.join("commands"))
+            .unwrap()
+            .contains("zfs destroy -r tank/ployz/data")
+    );
+    server.abort();
+}

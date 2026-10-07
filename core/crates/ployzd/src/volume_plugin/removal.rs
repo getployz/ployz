@@ -15,11 +15,15 @@ use super::{
 
 impl VolumeStorage {
     async fn remove(&self, name: &DockerVolumeName) -> Result<()> {
-        let _guard = self.mutation.try_lock().map_err(|_| {
-            super::VolumeError::from(format!(
-                "VolumeSwitching: Volume {name} has an active storage mutation"
-            ))
-        })?;
+        let _guard = self
+            .mutation
+            .lock_unless_docker_bound()
+            .await
+            .ok_or_else(|| {
+                super::VolumeError::from(format!(
+                    "VolumeSwitching: Volume {name} has an active storage mutation"
+                ))
+            })?;
         let _installation = self
             .installation
             .try_mutation()

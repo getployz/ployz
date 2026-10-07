@@ -5,8 +5,9 @@
 //! (`name<TAB>guid<TAB>creation` per line, newest first). A `zfs receive` reads one line
 //! of stream text: `snapshot <name> <guid>` lands that snapshot; `break` leaves a resume
 //! token behind and fails like an interrupted stream. The `readonly-lost` marker stands for
-//! a ZFS that does not keep `readonly=on` on the received copy, however it is set. Like ZFS,
-//! a command naming a dataset no marker stands for fails with `dataset does not exist`.
+//! a ZFS that does not keep `readonly=on` on the received copy, however it is set. While the
+//! `hold-list` marker exists, a dataset listing touches `list-held` and waits. Like ZFS, a
+//! command naming a dataset no marker stands for fails with `dataset does not exist`.
 
 use std::{
     fs,
@@ -38,6 +39,8 @@ pub(super) fn fake_zfs(directory: &Path, pools: &str) -> (PathBuf, PathBuf) {
     let rename_fails = directory.join("rename-fails");
     let inherit_fails = directory.join("inherit-fails");
     let list_fails = directory.join("list-fails");
+    let hold_list = directory.join("hold-list");
+    let list_held = directory.join("list-held");
     let slot = directory.join("slot");
     let mirror_root = directory.join("mirror-root");
     let mirror = directory.join("mirror");
@@ -84,6 +87,10 @@ require() {{
 case "$*" in
   'list -Hp -o name,refquota,used,usedbydataset,mountpoint,mounted,readonly -r tank')
     if [ -e '{list_fails}' ]; then echo 'pool is busy' >&2; exit 1; fi
+    if [ -e '{hold_list}' ]; then
+      touch '{list_held}'
+      while [ -e '{hold_list}' ]; do sleep 0.01; done
+    fi
     printf 'tank\t0\t0\t0\t/tank\tyes\toff\n'
     if [ -e '{root}' ]; then
       if [ -e '{incompatible_root}' ]; then root_mountpoint=/tank/ployz; else root_mountpoint=/var/lib/ployz-volumes; fi
@@ -294,6 +301,8 @@ esac
         rename_fails = rename_fails.display(),
         inherit_fails = inherit_fails.display(),
         list_fails = list_fails.display(),
+        hold_list = hold_list.display(),
+        list_held = list_held.display(),
         slot = slot.display(),
         mirror_root = mirror_root.display(),
         mirror = mirror.display(),

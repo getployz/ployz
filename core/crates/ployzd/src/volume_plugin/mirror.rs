@@ -9,13 +9,13 @@ use ployz_core::{
     Snapshot, SnapshotName, Switch, SwitchError, SwitchReply, WarmRequest,
 };
 use ployzd::machine_pool::MachinePool;
-use tokio::sync::OwnedMutexGuard;
 
 use super::{
     Dataset, DockerVolumeName, MIRROR_ROOT, VolumeStorage,
     lease::{
         Admitted, MIRROR_PROPERTY, RESUME_TOKEN_PROPERTY, internal, root_dataset, slot_parent,
     },
+    storage::HeldMutation,
     transfer::RECEIVE_PROPERTY,
 };
 
@@ -23,7 +23,7 @@ pub(super) const MIRROR_MOUNT_ROOT: &str = "/var/lib/ployz-mirror";
 
 /// A leased verb's admitted scope: the lock, the Pool and the datasets it read under it.
 pub(super) struct Leased {
-    _guard: (OwnedMutexGuard<()>, ployzd::mutation::MutationGuard),
+    _guard: (HeldMutation, ployzd::mutation::MutationGuard),
     pub(super) pool: MachinePool,
     pub(super) datasets: Vec<Dataset>,
     pub(super) admitted: Admitted,
