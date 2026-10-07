@@ -177,14 +177,14 @@ impl ContainerRuntime {
         });
     }
 
-    /// Clear only the source withdrawal owned by this lease.
+    /// Clear source withdrawals through this lease, preserving ordinary stops.
     pub(crate) fn clear_source_stopping(
         &self,
         container_id: &ContainerId,
         lease: ployz_core::Lease,
     ) {
         self.stopping.send_if_modified(|stopping| {
-            if stopping.get(container_id) != Some(&Withdrawal::Source(lease)) {
+            if !matches!(stopping.get(container_id), Some(Withdrawal::Source(withdrawn)) if *withdrawn <= lease) {
                 return false;
             }
             stopping.remove(container_id);
