@@ -186,6 +186,7 @@ impl VolumeStorage {
         let source = match (&request.resume_token, request.base) {
             (Some(token), _) => SendSource::Resume {
                 token: token.clone(),
+                target: request.target.clone(),
             },
             (None, Some(base)) => SendSource::Incremental {
                 base,

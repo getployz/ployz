@@ -500,6 +500,7 @@ pub enum SendSource {
     },
     Resume {
         token: String,
+        target: SnapshotName,
     },
 }
 
@@ -518,7 +519,7 @@ impl SendStream {
         let query = match &self.source {
             SendSource::Full { target } => format!("target={target}"),
             SendSource::Incremental { base, target } => format!("target={target}&base={base}"),
-            SendSource::Resume { token } => format!("token={token}"),
+            SendSource::Resume { token, target } => format!("target={target}&token={token}"),
         };
         format!("{}{}?{query}", Self::PATH_PREFIX, self.name)
     }
@@ -544,7 +545,7 @@ impl SendStream {
         let source = match (target, base, token) {
             (Some(target), None, None) => SendSource::Full { target },
             (Some(target), Some(base), None) => SendSource::Incremental { base, target },
-            (None, None, Some(token)) => SendSource::Resume { token },
+            (Some(target), None, Some(token)) => SendSource::Resume { token, target },
             _ => return None,
         };
         Some(Self { name, source })

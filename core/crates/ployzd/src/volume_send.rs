@@ -95,9 +95,6 @@ enum Refusal {
 
 /// The `zfs send` arguments for `stream`, once its names resolve on this Machine.
 async fn stream_args(programs: &Programs, stream: &SendStream) -> Result<Vec<String>, Refusal> {
-    if let SendSource::Resume { token } = &stream.source {
-        return Ok(vec!["-t".to_owned(), token.clone()]);
-    }
     let pools = lines(
         &programs.zpool,
         &[
@@ -147,13 +144,39 @@ async fn stream_args(programs: &Programs, stream: &SendStream) -> Result<Vec<Str
     let (target, base) = match &stream.source {
         SendSource::Full { target } => (target, None),
         SendSource::Incremental { base, target } => (target, Some(base)),
-        SendSource::Resume { .. } => unreachable!("resumes return above"),
+        SendSource::Resume { target, .. } => (target, None),
     };
     let target = format!("{root}@{target}");
     if !snapshots.iter().any(|(name, _)| *name == target) {
         return Err(Refusal::Unknown(format!(
             "snapshot {target} does not exist"
         )));
+    }
+    if let SendSource::Resume { token, .. } = &stream.source {
+        let output = Command::new(&programs.zfs)
+            .args(["send", "-nvP", "-t", token])
+            .env("LC_ALL", "C")
+            .output()
+            .await
+            .map_err(|error| Refusal::Zfs(format!("could not inspect resume token: {error}")))?;
+        if !output.status.success() {
+            return Err(Refusal::Zfs(format!(
+                "could not inspect resume token: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let mut names = stdout
+            .lines()
+            .chain(stderr.lines())
+            .filter_map(|line| line.trim().strip_prefix("toname = "));
+        if names.next() != Some(target.as_str()) || names.next().is_some() {
+            return Err(Refusal::Unknown(format!(
+                "resume token does not match requested snapshot {target}"
+            )));
+        }
+        return Ok(vec!["-t".to_owned(), token.clone()]);
     }
     let mut args = Vec::new();
     if let Some(base) = base {
@@ -217,7 +240,7 @@ case "$*" in
   'list -H -o name,guid -t snapshot -d 1 tank/ployz/data') printf 'tank/ployz/data@w-1-1\t11\ntank/ployz/data@w-1-2\t12\n' ;;
   'send tank/ployz/data@w-1-2') printf 'full stream' ;;
   'send -i tank/ployz/data@w-1-1 tank/ployz/data@w-1-2') printf 'incremental stream' ;;
-  'send -nvP -t token-1') printf 'resume token contents:\n\ttoname = tank/ployz/data@w-1-2\n' ;;
+  'send -nvP -t token-1') printf 'resume token contents:\n\ttoname = tank/ployz/data@w-1-2\n' >&2 ;;
   'send -nvP -t token-other') printf 'resume token contents:\n\ttoname = tank/ployz/sibling@w-1-2\n' ;;
   'send -nvP -t token-old') printf 'resume token contents:\n\ttoname = old/ployz/data@w-1-2\n' ;;
   'send -nvP -t token-wrong-target') printf 'resume token contents:\n\ttoname = tank/ployz/data@w-1-1\n' ;;
@@ -257,7 +280,7 @@ esac
             (StatusCode::OK, "incremental stream".to_owned())
         );
         assert_eq!(
-            get(&base, "/volume-send/data?token=token-1").await,
+            get(&base, "/volume-send/data?target=w-1-2&token=token-1").await,
             (StatusCode::OK, "resumed stream".to_owned())
         );
         shutdown.cancel();
@@ -276,7 +299,7 @@ esac
             ),
             ("/volume-send/data", "no such send stream"),
             (
-                "/volume-send/data?target=w-1-2&token=t",
+                "/volume-send/data?target=w-1-2&base=11&token=t",
                 "no such send stream",
             ),
             ("/other", "no such send stream"),
@@ -326,7 +349,7 @@ esac
             assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
             assert!(body.contains("does not match"), "{path}: {body}");
         }
-        let (status, body) = get(&base, "/volume-send/other?token=token-other").await;
+        let (status, body) = get(&base, "/volume-send/other?target=w-1-2&token=token-other").await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
         let (status, body) = get(&base, "/volume-send/data?target=w-1-2&token=token-1").await;
         assert_eq!(

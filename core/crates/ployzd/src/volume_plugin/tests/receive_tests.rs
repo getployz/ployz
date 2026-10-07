@@ -240,7 +240,7 @@ async fn a_broken_stream_is_resumable_and_resumes_by_token() {
         writer.requests(),
         [
             "/volume-send/data?target=w-1-1",
-            "/volume-send/data?token=token-1"
+            "/volume-send/data?target=w-1-1&token=token-1"
         ]
     );
     assert_eq!(
@@ -304,7 +304,7 @@ async fn a_stalled_stream_frees_the_slot_and_resumes_by_token() {
         writer.requests(),
         [
             "/volume-send/data?target=w-1-1",
-            "/volume-send/data?token=token-1"
+            "/volume-send/data?target=w-1-1&token=token-1"
         ]
     );
     server.abort();
