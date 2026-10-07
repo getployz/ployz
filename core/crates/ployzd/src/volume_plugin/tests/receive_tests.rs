@@ -483,3 +483,84 @@ async fn start_receive_is_fenced_and_needs_a_slot() {
     assert!(writer.requests().is_empty());
     server.abort();
 }
+
+#[tokio::test]
+async fn a_stalled_receive_process_fails_and_frees_the_slot() {
+    for marker in ["stall-read", "stall-exit"] {
+        let writer = Writer::start(&"x".repeat(2 * 1024 * 1024)).await;
+        let test = TestDir::new();
+        fs::create_dir_all(test.0.join("props")).unwrap();
+        fs::write(test.0.join("props").join(marker), "").unwrap();
+        let (socket, server) = start_stalling_after(
+            &test,
+            &["root", "mirror"],
+            &writer,
+            Duration::from_millis(200),
+        );
+        post(&socket, "/Volume.StartReceive", receive(4, 1, json!({}))).await;
+        let view = settled(&socket, 1).await;
+        assert_eq!(
+            view.pointer("/Ok/status/state").unwrap(),
+            "failed",
+            "{marker}: {view}"
+        );
+        let reason = view.pointer("/Ok/status/reason").unwrap().as_str().unwrap();
+        assert!(reason.contains("stalled"), "{marker}: {reason}");
+        let pid = fs::read_to_string(test.0.join("props/receive-pid")).unwrap();
+        for _ in 0..100 {
+            if !Path::new(&format!("/proc/{}", pid.trim())).exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            !Path::new(&format!("/proc/{}", pid.trim())).exists(),
+            "receive child survived its deadline"
+        );
+        for (route, step) in [
+            ("/Volume.PruneMirror", at(1, 4, 1, 4, json!({}))),
+            ("/Volume.BeginRound", at(1, 4, 2, 0, json!({}))),
+            ("/Volume.DestroyMirror", at(1, 5, 0, 0, json!({}))),
+        ] {
+            let reply = post(&socket, route, step).await;
+            assert!(reply.get("Ok").is_some(), "{route}: {reply}");
+        }
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn a_replayed_receive_repairs_properties_and_clears_a_transient_failure() {
+    let writer = Writer::start("snapshot w-1-1 77\n").await;
+    let test = TestDir::new();
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/fail-properties"), "").unwrap();
+    let (socket, server) = start(&test, &["root", "mirror"], &writer);
+    let request = receive(4, 1, json!({}));
+    post(&socket, "/Volume.StartReceive", request.clone()).await;
+    let view = settled(&socket, 1).await;
+    assert_eq!(
+        view.pointer("/Ok/status/state").unwrap(),
+        "failed",
+        "{view}"
+    );
+    set_property(&test, "tank/ployz-mirror/data/fs", "readonly", "off");
+    set_property(&test, "tank/ployz-mirror/data/fs", "refquota", "1");
+    let failed_replay = post(&socket, "/Volume.StartReceive", request.clone()).await;
+    assert!(failed_replay.get("Err").is_some(), "{failed_replay}");
+    fs::remove_file(test.0.join("props/fail-properties")).unwrap();
+    let reply = post(&socket, "/Volume.StartReceive", request).await;
+    assert_eq!(reply.pointer("/Ok/decision").unwrap(), "replay", "{reply}");
+    let view = settled(&socket, 1).await;
+    assert_eq!(view.pointer("/Ok/status/state").unwrap(), "done", "{view}");
+    assert_eq!(
+        property(&test, "tank/ployz-mirror/data/fs", "readonly").as_deref(),
+        Some("on")
+    );
+    assert_eq!(
+        property(&test, "tank/ployz-mirror/data/fs", "refquota"),
+        Some(SLOT_BOUND_BYTES.to_string())
+    );
+    assert_eq!(writer.requests().len(), 1);
+    server.abort();
+}

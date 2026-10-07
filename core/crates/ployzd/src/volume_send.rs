@@ -217,6 +217,13 @@ case "$*" in
   'list -H -o name,guid -t snapshot -d 1 tank/ployz/data') printf 'tank/ployz/data@w-1-1\t11\ntank/ployz/data@w-1-2\t12\n' ;;
   'send tank/ployz/data@w-1-2') printf 'full stream' ;;
   'send -i tank/ployz/data@w-1-1 tank/ployz/data@w-1-2') printf 'incremental stream' ;;
+  'send -nvP -t token-1') printf 'resume token contents:\n\ttoname = tank/ployz/data@w-1-2\n' ;;
+  'send -nvP -t token-other') printf 'resume token contents:\n\ttoname = tank/ployz/sibling@w-1-2\n' ;;
+  'send -nvP -t token-old') printf 'resume token contents:\n\ttoname = old/ployz/data@w-1-2\n' ;;
+  'send -nvP -t token-wrong-target') printf 'resume token contents:\n\ttoname = tank/ployz/data@w-1-1\n' ;;
+  'send -nvP -t token-missing') printf 'resume token contents:\n\ttoname = tank/ployz/data@w-1-3\n' ;;
+  'send -nvP -t token-child') printf 'resume token contents:\n\ttoname = tank/ployz/data/child@w-1-2\n' ;;
+  'send -t token-other') printf 'unrelated stream' ;;
   'send -t token-1') printf 'resumed stream' ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
@@ -299,5 +306,43 @@ esac
             assert!(body.contains(reason), "{body}");
             shutdown.cancel();
         }
+    }
+
+    #[tokio::test]
+    async fn resumed_sends_require_the_requested_root_and_target() {
+        let dir = TestDir::new("ployzd-volume-send");
+        let (base, shutdown) = start(&dir, POOLS).await;
+        let (status, body) = get(&base, "/volume-send/data?token=token-other").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        for token in [
+            "token-other",
+            "token-old",
+            "token-wrong-target",
+            "token-missing",
+            "token-child",
+        ] {
+            let path = format!("/volume-send/data?target=w-1-2&token={token}");
+            let (status, body) = get(&base, &path).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+            assert!(body.contains("does not match"), "{path}: {body}");
+        }
+        let (status, body) = get(&base, "/volume-send/other?token=token-other").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        let (status, body) = get(&base, "/volume-send/data?target=w-1-2&token=token-1").await;
+        assert_eq!(
+            (status, body),
+            (StatusCode::OK, "resumed stream".to_owned())
+        );
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn resumed_sends_require_a_usable_pool() {
+        let dir = TestDir::new("ployzd-volume-send");
+        let (base, shutdown) = start(&dir, "").await;
+        let (status, body) = get(&base, "/volume-send/data?target=w-1-2&token=token-1").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert!(body.contains("no Machine Pool"), "{body}");
+        shutdown.cancel();
     }
 }

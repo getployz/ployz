@@ -133,6 +133,7 @@ case "$*" in
     prop "$6" "$5" -
     ;;
   'set readonly=on tank/ployz-mirror/data/fs')
+    if [ -e '{props}/fail-properties' ]; then echo 'property unavailable' >&2; exit 1; fi
     require tank/ployz-mirror/data/fs
     [ -e '{readonly_lost}' ] || {{ mkdir -p '{props}/tank/ployz-mirror/data/fs'; echo on > '{props}/tank/ployz-mirror/data/fs/readonly'; }}
     ;;
@@ -184,7 +185,10 @@ case "$*" in
     rm -f '{props}/tank/ployz-mirror/data/fs/receive_resume_token'
     ;;
   'receive -u -s -o readonly=on -o refquota='*' tank/ployz-mirror/data/fs')
+    echo $$ > '{props}/receive-pid'
+    if [ -e '{props}/stall-read' ]; then exec sleep 30; fi
     read -r verb arg guid || verb=empty
+    if [ -e '{props}/stall-exit' ]; then cat >/dev/null; exec sleep 30; fi
     touch '{mirror_fs}'
     d='{props}/tank/ployz-mirror/data/fs'
     mkdir -p "$d"
