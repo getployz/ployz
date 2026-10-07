@@ -922,7 +922,7 @@ async fn thaw_waits_for_withdraw_to_publish_stopping_then_restores_ingress() {
                     async move {
                         thaw_entered.notify_one();
                         if thawed.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                            reply["Ok"]["decision"] = json!("replay");
+                            *reply.pointer_mut("/Ok/decision").unwrap() = json!("replay");
                         }
                         Json(reply)
                     }
