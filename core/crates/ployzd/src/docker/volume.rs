@@ -45,7 +45,7 @@ impl ContainerRuntime {
         Ok(())
     }
 
-    async fn ensure_volume_source(
+    pub(crate) async fn ensure_volume_source(
         &self,
         machine_id: &MachineId,
         source: &VolumeSource,

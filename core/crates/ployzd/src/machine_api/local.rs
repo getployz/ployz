@@ -29,6 +29,65 @@ use crate::{
 
 const MAX_CONTAINER_OBSERVATION_WAIT: Duration = Duration::from_secs(5);
 
+/// The Volumes whose Promote task runs in this process.
+#[derive(Clone, Default)]
+struct Promotions(Arc<std::sync::Mutex<BTreeSet<ployz_core::DockerVolumeName>>>);
+
+struct Promoting {
+    promotions: Promotions,
+    name: ployz_core::DockerVolumeName,
+}
+
+impl Promotions {
+    fn start(&self, name: &ployz_core::DockerVolumeName) -> Option<Promoting> {
+        self.0
+            .lock()
+            .expect("promotion registry is not poisoned")
+            .insert(name.clone())
+            .then(|| Promoting {
+                promotions: self.clone(),
+                name: name.clone(),
+            })
+    }
+}
+
+impl Drop for Promoting {
+    fn drop(&mut self) {
+        self.promotions
+            .0
+            .lock()
+            .expect("promotion registry is not poisoned")
+            .remove(&self.name);
+    }
+}
+
+fn mirror(request: &ployz_core::ServiceVolumeRequest) -> ployz_core::MirrorRequest {
+    ployz_core::MirrorRequest {
+        switch: request.switch,
+        name: request.name.clone(),
+    }
+}
+
+/// The Provisioned source `resolved_spec` mounts under the requested Volume name.
+#[allow(clippy::result_large_err)]
+fn volume_source(
+    request: &ployz_core::ServiceVolumeRequest,
+) -> Result<ployz_core::VolumeSource, RpcError> {
+    request
+        .resolved_spec
+        .volume_graph()
+        .mounted_provisioned_volumes()
+        .map(|volume| &volume.source)
+        .find(|source| source.docker_volume_name() == Some(&request.name))
+        .cloned()
+        .ok_or_else(|| {
+            ployz_core::SwitchError::Precondition.rpc_error(format!(
+                "the resolved spec mounts no Provisioned Volume {}",
+                request.name
+            ))
+        })
+}
+
 #[derive(Clone)]
 pub struct MachineService {
     local: LocalMachine,
@@ -37,6 +96,7 @@ pub struct MachineService {
     machine_api_port: u16,
     runtime_watch: Arc<RuntimeWatch>,
     switch_mutation: Arc<tokio::sync::Mutex<()>>,
+    promotions: Promotions,
     pub(crate) builds: Arc<crate::build::Runner>,
     pub(crate) grants: Arc<crate::management::BuildGrants>,
 }
@@ -54,6 +114,7 @@ impl MachineService {
             machine_api_port: MACHINE_API_PORT,
             runtime_watch: Arc::default(),
             switch_mutation: Arc::default(),
+            promotions: Promotions::default(),
             builds: crate::build::Runner::new(Default::default(), Default::default())
                 .expect("default Build policy"),
             grants: Arc::default(),
@@ -167,6 +228,46 @@ impl MachineService {
             Ok(reply) => respond(reply),
             Err(error) => respond(error),
         }
+    }
+
+    /// Leaves Docker holding the Volume with `source`'s labels and options. A record Docker
+    /// took without labels, through Get after a crash inside Create, is dropped and made again.
+    #[allow(clippy::result_large_err)]
+    async fn register_volume(
+        &self,
+        request: &ployz_core::ServiceVolumeRequest,
+        source: &ployz_core::VolumeSource,
+    ) -> Result<(), RpcError> {
+        let containers = self.containers()?;
+        let machine_id = self.local_record().id();
+        if let Ok(volume) = containers.inspect_volume(&machine_id, &request.name).await
+            && volume.driver() == ployz_core::PROVISIONED_VOLUME_DRIVER
+            && !volume.labels.contains_key(ployz_core::MANAGED_LABEL)
+        {
+            self.local
+                .plugin()
+                .call::<()>("Volume.Unregister", &mirror(request))
+                .await?;
+        }
+        containers
+            .ensure_volume_source(&machine_id, source)
+            .await
+            .map_err(|error| RpcError::from(&error))
+    }
+
+    #[allow(clippy::result_large_err)]
+    async fn finish_promote(
+        &self,
+        request: &ployz_core::ServiceVolumeRequest,
+        source: &ployz_core::VolumeSource,
+    ) -> Result<(), RpcError> {
+        crate::faults::hold_task("Promote").await;
+        let _guard = self.switch_mutation.lock().await;
+        self.local
+            .plugin()
+            .call::<()>("Volume.FinishPromote", &mirror(request))
+            .await?;
+        self.register_volume(request, source).await
     }
 }
 
@@ -624,8 +725,38 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::Promote>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>("Promote", "Volume.Promote", &request)
+        let source = match volume_source(&request) {
+            Ok(source) => source,
+            Err(error) => return respond(error),
+        };
+        let _guard = self.switch_mutation.lock().await;
+        if let Err(error) = self.require_joined() {
+            return respond(error);
+        }
+        crate::faults::apply("Promote").await;
+        let Some(promoting) = self.promotions.start(&request.name) else {
+            return respond(
+                ployz_core::SwitchError::Busy
+                    .rpc_error(format!("Volume {} is being promoted", request.name)),
+            );
+        };
+        let reply = match self
+            .local
+            .plugin()
+            .call::<ployz_core::SwitchReply>("Volume.Promote", &mirror(&request))
             .await
+        {
+            Ok(reply) => reply,
+            Err(error) => return respond(error),
+        };
+        let service = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = service.finish_promote(&request, &source).await {
+                tracing::warn!(volume = %request.name, error = error.message, "Promote stopped");
+            }
+            drop(promoting);
+        });
+        respond(reply)
     }
 
     async fn start_handed_container(
@@ -633,19 +764,19 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::StartHandedContainer>(request)?;
+        let source = match volume_source(&request) {
+            Ok(source) => source,
+            Err(error) => return respond(error),
+        };
         let _guard = self.switch_mutation.lock().await;
         if let Err(error) = self.require_joined() {
             return respond(error);
         }
         crate::faults::apply("StartHandedContainer").await;
-        let volume = ployz_core::MirrorRequest {
-            switch: request.switch,
-            name: request.name.clone(),
-        };
         let admitted = match self
             .local
             .plugin()
-            .call::<ployz_core::SwitchReply>("Volume.AdmitHandedStart", &volume)
+            .call::<ployz_core::SwitchReply>("Volume.AdmitHandedStart", &mirror(&request))
             .await
         {
             Ok(admitted) => admitted,
@@ -664,6 +795,9 @@ impl MachineRpc for MachineService {
                 request.name
             )));
         };
+        if let Err(error) = self.register_volume(&request, &source).await {
+            return respond(error);
+        }
         let created = match self
             .local
             .create_container(
@@ -713,8 +847,28 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::Restore>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>("Restore", "Volume.Restore", &request)
+        let source = match volume_source(&request) {
+            Ok(source) => source,
+            Err(error) => return respond(error),
+        };
+        let _guard = self.switch_mutation.lock().await;
+        if let Err(error) = self.require_joined() {
+            return respond(error);
+        }
+        crate::faults::apply("Restore").await;
+        let reply = match self
+            .local
+            .plugin()
+            .call::<ployz_core::SwitchReply>("Volume.Restore", &mirror(&request))
             .await
+        {
+            Ok(reply) => reply,
+            Err(error) => return respond(error),
+        };
+        match self.register_volume(&request, &source).await {
+            Ok(()) => respond(reply),
+            Err(error) => respond(error),
+        }
     }
 
     async fn declare_mirror(

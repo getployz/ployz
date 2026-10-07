@@ -1,7 +1,7 @@
 use crate::{
     AdoptLeaseRequest, CommitRequest, DeclareMirrorRequest, HandOverRequest, InspectReceiveRequest,
-    InspectVolumeCopyRequest, MirrorRequest, ReceiveView, SourceContainerRequest,
-    StartHandedContainerRequest, StartReceiveRequest, StorageCapacity, SwitchReply, VolumeCopyView,
+    InspectVolumeCopyRequest, MirrorRequest, ReceiveView, ServiceVolumeRequest,
+    SourceContainerRequest, StartReceiveRequest, StorageCapacity, SwitchReply, VolumeCopyView,
     WarmRequest,
 };
 use std::{
