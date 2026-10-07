@@ -104,7 +104,8 @@ class CommandModel:
             return 0, name + "\n"
         if args[:3] == ["docker", "volume", "ls"]:
             names = sorted(self.volumes)
-            if self.slot and self.mutation == "slot-listed":
+            if self.slot and (self.mutation == "slot-listed" or
+                              self.mutation == "slot-listed-with-normal" and any(name.endswith("-normal") for name in self.volumes)):
                 names.append(self.slot)
             return 0, "\n".join(names) + "\n"
         if args[:2] == ["docker", "run"]:
@@ -207,7 +208,7 @@ class VolumeFenceTests(unittest.TestCase):
         self.assertTrue(result["hidden"])
 
     def test_malformed_or_listed_slot_fails(self):
-        for mutation in ("malformed-slot", "slot-listed"):
+        for mutation in ("malformed-slot", "slot-listed", "slot-listed-with-normal"):
             with self.subTest(mutation=mutation), self.assertRaises(AssertionError):
                 self.check_scenario("slot", mutation)
 
