@@ -370,7 +370,7 @@ impl VolumeStorage {
 pub(super) struct Admitted {
     pub(super) decision: FenceDecision,
     pub(super) lease: LeaseRecord,
-    recorded: Option<LeaseRecord>,
+    pub(super) recorded: Option<LeaseRecord>,
 }
 
 pub(super) fn slot_parent(pool: &MachinePool, name: &DockerVolumeName) -> String {

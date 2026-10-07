@@ -14,14 +14,14 @@ use super::{
     mirror::{Leased, name},
 };
 
-const HOLDER_PROPERTY: &str = "ployz:source-container";
+pub(super) const HOLDER_PROPERTY: &str = "ployz:source-container";
 
 #[derive(Clone)]
 pub(super) struct MountGrant {
-    name: String,
-    record: LeaseRecord,
-    container: ContainerId,
-    mountpoint: String,
+    pub(super) name: String,
+    pub(super) record: LeaseRecord,
+    pub(super) container: ContainerId,
+    pub(super) mountpoint: String,
 }
 
 struct Granted(Arc<Mutex<Option<MountGrant>>>);
@@ -32,7 +32,7 @@ impl Drop for Granted {
     }
 }
 
-fn precondition(message: impl Into<String>) -> RpcError {
+pub(super) fn precondition(message: impl Into<String>) -> RpcError {
     SwitchError::Precondition.rpc_error(message)
 }
 
@@ -53,11 +53,11 @@ impl VolumeStorage {
         Ok(())
     }
 
-    async fn docker(&self, arguments: &[&str]) -> super::Result<String> {
+    pub(super) async fn docker(&self, arguments: &[&str]) -> super::Result<String> {
         checked_command(&self.docker, arguments).await
     }
 
-    async fn holders(&self, name: &DockerVolumeName) -> super::Result<Vec<String>> {
+    pub(super) async fn holders(&self, name: &DockerVolumeName) -> super::Result<Vec<String>> {
         Ok(self
             .docker(&[
                 "ps",
@@ -319,27 +319,34 @@ impl VolumeStorage {
         if !root.mounted {
             self.zfs(&["mount", &root_name]).await.map_err(internal)?;
         }
-        let grant = MountGrant {
+        self.start_granted(MountGrant {
             name: name.to_string(),
             record: scope.admitted.lease,
             container: request.container_id,
             mountpoint: name.mountpoint(),
-        };
-        *self
-            .mount_grant
-            .lock()
-            .expect("mount grant is never poisoned") = Some(grant);
-        let granted = Granted(Arc::clone(&self.mount_grant));
-        self.docker(&["start", request.container_id.as_str()])
-            .await
-            .map_err(internal)?;
-        drop(granted);
+        })
+        .await?;
         self.set_writer(&root_name, WriterMarker::Idle).await?;
         self.zfs(&["inherit", HOLDER_PROPERTY, &root_name])
             .await
             .map_err(internal)?;
         scope.admitted.lease.cycle = Cycle::Closed;
         self.reply(&scope.pool, &name, scope.admitted).await
+    }
+
+    /// Starts the grant's Container while its Mount may use the root the open record holds.
+    pub(super) async fn start_granted(&self, grant: MountGrant) -> Result<(), RpcError> {
+        let container = grant.container;
+        *self
+            .mount_grant
+            .lock()
+            .expect("mount grant is never poisoned") = Some(grant);
+        let granted = Granted(Arc::clone(&self.mount_grant));
+        self.docker(&["start", container.as_str()])
+            .await
+            .map_err(internal)?;
+        drop(granted);
+        Ok(())
     }
 
     pub(super) async fn granted_mountpoint(
