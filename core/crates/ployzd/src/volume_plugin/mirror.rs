@@ -1,6 +1,8 @@
 //! The mirror verbs: a slot's life from DeclareMirror to Destroy, and the writer's
 //! snapshot retention between rounds.
 
+use std::num::NonZeroU64;
+
 use axum::{Json, extract::State};
 use ployz_core::{
     CommitRequest, DeclareMirrorRequest, FenceDecision, MirrorMarker, MirrorRequest, RpcError,
@@ -94,6 +96,9 @@ impl VolumeStorage {
         &self,
         request: &DeclareMirrorRequest,
     ) -> Result<SwitchReply, RpcError> {
+        let bound = NonZeroU64::new(request.refquota_bytes).ok_or_else(|| {
+            SwitchError::Precondition.rpc_error("a mirror's bound must be nonzero")
+        })?;
         let name = name(&request.name)?;
         let mut scope = self.leased(&name, &request.switch).await?;
         if scope.slot(&name).is_some() {
@@ -109,7 +114,7 @@ impl VolumeStorage {
                 "Volume {name} has its writer on this Machine; a mirror goes elsewhere"
             )));
         }
-        self.ensure_commitment(&scope.pool, &scope.datasets, request.refquota_bytes)
+        self.ensure_commitment(&scope.pool, &scope.datasets, bound.get())
             .await
             .map_err(internal)?;
         self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
@@ -141,7 +146,7 @@ impl VolumeStorage {
             "-o",
             "readonly=on",
             "-o",
-            &format!("refquota={}", request.refquota_bytes),
+            &format!("refquota={bound}"),
             &parent,
         ])
         .await
