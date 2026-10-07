@@ -243,10 +243,13 @@ impl VolumeStorage {
         let name = name(&request.name)?;
         let mut scope = self.leased(&name, &request.switch).await?;
         let root = scope.require_root(&name)?;
-        if scope.replayed() {
+        // Named for its round, so a replay finds the snapshot it took in ZFS, and takes it
+        // when the plugin died after recording and before `zfs snapshot`.
+        let target = SnapshotName::warm(request.switch.lease, request.switch.pos.round);
+        let snapshots = self.snapshots(&root).await.map_err(internal)?;
+        if snapshots.iter().any(|snapshot| snapshot.name == target) {
             return self.reply(&scope.pool, &name, scope.admitted).await;
         }
-        let snapshots = self.snapshots(&root).await.map_err(internal)?;
         let captured = match snapshots.first() {
             Some(newest) => {
                 let written = self
@@ -265,12 +268,6 @@ impl VolumeStorage {
             None => false,
         };
         if !captured {
-            let index = snapshots
-                .iter()
-                .filter_map(|snapshot| snapshot.name.warm_index(request.switch.lease))
-                .max()
-                .map_or(1, |index| index + 1);
-            let target = SnapshotName::warm(request.switch.lease, index);
             self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
                 .await?;
             self.zfs(&["snapshot", &format!("{root}@{target}")])
