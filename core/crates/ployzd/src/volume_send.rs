@@ -172,7 +172,7 @@ mod tests {
             &zfs,
             r#"#!/bin/sh
 case "$*" in
-  'list -H -o name -t filesystem') printf 'tank\ntank/ployz\ntank/ployz/data\ntank/ployz-mirror/other\n' ;;
+  'list -H -o name -t filesystem') printf 'old\nold/ployz\nold/ployz/data\ntank\ntank/ployz\ntank/ployz/data\ntank/ployz-mirror/other\n' ;;
   'list -H -o name,guid -t snapshot -d 1 tank/ployz/data') printf 'tank/ployz/data@w-1-1\t11\ntank/ployz/data@w-1-2\t12\n' ;;
   'send tank/ployz/data@w-1-2') printf 'full stream' ;;
   'send -i tank/ployz/data@w-1-1 tank/ployz/data@w-1-2') printf 'incremental stream' ;;
