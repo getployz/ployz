@@ -26,7 +26,6 @@ const POLL: Duration = Duration::from_secs(3);
 pub(crate) fn command() -> Command {
     Command::new("github")
         .about("Connect GitHub so Services can build your repositories")
-        .arg_required_else_help(true)
         .subcommand(
             Command::new("connect")
                 .about("Print the GitHub App install link and wait until it is installed")

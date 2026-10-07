@@ -1,6 +1,6 @@
 //! Durable ZFS Volume storage ownership and mutation admission.
 
-use std::{collections::BTreeMap, io, path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, io, path::PathBuf, sync::Arc, time::Duration};
 
 use ployzd::machine_pool::MachinePool;
 use tokio::{
@@ -8,7 +8,7 @@ use tokio::{
     sync::{Mutex, OwnedMutexGuard},
 };
 
-use super::{DockerVolumeName, Result, VolumeError, pool::PoolStorage};
+use super::{DockerVolumeName, Result, VolumeError, pool::PoolStorage, transfer::RECEIVE_STALL};
 
 pub(super) use ployz_core::{DATASET_ROOT, MIRROR_ROOT};
 pub(super) const MOUNT_ROOT: &str = "/var/lib/ployz-volumes";
@@ -53,6 +53,7 @@ pub(super) struct VolumeStorage {
     pub(super) receives: super::transfer::Receives,
     /// Where a writer Machine serves send streams; tests point it at a local server.
     pub(super) send_port: u16,
+    pub(super) receive_stall: Duration,
 }
 
 /// Bytes a dataset commits the Pool to: a root's `refquota`, or a slot parent's. The
@@ -60,7 +61,9 @@ pub(super) struct VolumeStorage {
 pub(super) fn committed_bytes(dataset: &Dataset, pool: &str) -> u64 {
     match Place::of(&dataset.name, pool) {
         Place::Root(_) => dataset.refquota,
-        Place::Slot(name) if dataset.name.ends_with(&format!("/{name}")) => dataset.refquota,
+        Place::Slot(name) if dataset.name == format!("{pool}/{MIRROR_ROOT}/{name}") => {
+            dataset.refquota
+        }
         Place::Slot(_) | Place::Outside => 0,
     }
 }
@@ -81,6 +84,7 @@ impl VolumeStorage {
             installation: ployzd::mutation::MutationGate::new(run_dir, data_dir),
             receives: super::transfer::Receives::default(),
             send_port: ployz_core::VOLUME_SEND_PORT,
+            receive_stall: RECEIVE_STALL,
         }
     }
 
@@ -104,6 +108,7 @@ impl VolumeStorage {
             ),
             receives: super::transfer::Receives::default(),
             send_port: ployz_core::VOLUME_SEND_PORT,
+            receive_stall: RECEIVE_STALL,
         }
     }
 

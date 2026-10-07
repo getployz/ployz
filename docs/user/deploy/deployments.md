@@ -72,6 +72,22 @@ header. Each service it included has a tab with its **Build** and **Deploy**
 | **Cancelled** | Someone cancelled it |
 | **Unknown** | Ployz can't tell what applied. Retry it. |
 
+To inspect per-server progress from the CLI, run:
+
+```sh
+ployz --json deployment show 37
+```
+
+Each service's `nodes[].rows[]` records the servers where work ran, its state, and its start
+and finish times. Each row identifies its server with `machine_id`. The `server` field is a
+display name and can repeat across servers. Volume rows use the same Machine IDs to group
+the work of services that mount them. A running row also names its phase. Failed rows retain
+the cause chain and up to ten final container log lines when available. These outcomes stay with that deployment
+when you deploy again. Unchanged services have no rows because no server work ran.
+
+If the runner stops reporting, unfinished rows read `unknown`. Completed and failed rows keep
+their recorded outcomes.
+
 ## Retry or cancel a deployment
 
 - **Retry**, on a failed, cancelled or unknown deployment, ships the same commit and settings

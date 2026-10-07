@@ -1,12 +1,13 @@
-use std::{io, sync::Arc};
+use std::sync::Arc;
 
 use clap::ArgMatches;
 use ployz_core::{
     DOCKER_NETWORK_CONFLICT_RECOVERY, InspectRequest, LocalMachinePhase, MACHINE_START_WAIT,
-    MachineName, MachineToken, MachineTokenRequest, PublicIpDiscovery, op,
+    MachineName, MachineToken, MachineTokenRequest, PublicIpDiscovery, RpcErrorCode, op,
 };
 
 use super::parse_endpoints;
+use crate::ui::Hint;
 use crate::{
     connect::{Client, ConnectError, SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections, Transport},
@@ -313,33 +314,27 @@ pub(in crate::handlers) fn readiness_timeout_message(message: &str) -> String {
     )
 }
 
-pub(in crate::handlers) fn confirm(yes: bool, prompt: &str) -> Result<(), Error> {
+pub(in crate::handlers) fn confirm(yes: bool, question: &str) -> Result<(), Error> {
     if yes {
         return Ok(());
     }
-    if !crate::ui::interactive() {
-        return Err(Error::usage(format!(
-            "cannot confirm {} without a terminal; pass --yes",
-            prompt.escape_debug()
-        )));
-    }
-    crate::ui::note(prompt);
     crate::ui::note(
         "This removes Ployz-managed containers and resets this machine's cluster membership.",
     );
     crate::ui::note(
         "Volume data will not be erased, but will lose access through the current cluster.",
     );
-    crate::ui::note_inline(format_args!(
-        "Type yes to confirm, or press Enter to cancel: "
-    ));
-    let mut answer = String::new();
-    io::stdin().read_line(&mut answer)?;
-    if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-        Ok(())
-    } else {
-        Err(Error::usage("Cancelled. The machine was not reset."))
-    }
+    crate::ui::confirm(
+        question,
+        || {
+            Error::coded(
+                RpcErrorCode::ConfirmationRequired,
+                "Resetting the Server needs confirmation. No changes made.",
+            )
+            .hint(Hint::Retry(crate::handlers::typed_with(&["--yes"])))
+        },
+        "Cancelled. The Server was not reset.",
+    )
 }
 
 #[cfg(test)]

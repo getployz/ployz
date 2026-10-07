@@ -199,11 +199,11 @@ async fn machine_add_with_membership(
     let config = root.join("config.yaml");
     Config::new(
         &config,
-        Some("test".into()),
+        Some("staging".into()),
         BTreeMap::from([(
-            "test".into(),
+            "staging".into(),
             Context {
-                connections: vec![Connection::tcp(entry_address)],
+                connections: vec![Connection::tcp("127.0.0.1:1".parse().unwrap())],
             },
         )]),
     )
@@ -213,10 +213,14 @@ async fn machine_add_with_membership(
         .args([
             "--ployz-config",
             config.to_str().unwrap(),
+            "--connect",
+            &format!("ssh://root@{entry_address}"),
             "server",
             "add",
             "--standalone",
             &format!("ssh://root@{target_address}"),
+            "--context",
+            "staging",
             "--no-install",
             "--name",
             "joiner",
@@ -225,6 +229,27 @@ async fn machine_add_with_membership(
         .output()
         .await
         .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for hint in stderr.lines().filter_map(|line| {
+        line.strip_prefix("retry: ")
+            .or_else(|| line.strip_prefix("inspect: "))
+    }) {
+        let args = shell_words::split(hint).unwrap();
+        let parsed = ployz::cli::command().try_get_matches_from(args).unwrap();
+        let mut leaf = &parsed;
+        while let Some((_, child)) = leaf.subcommand() {
+            leaf = child;
+        }
+        assert_eq!(
+            leaf.get_one::<String>("ployz-config").unwrap(),
+            config.to_str().unwrap()
+        );
+        assert_eq!(leaf.get_one::<String>("context").unwrap(), "staging");
+        assert_eq!(
+            leaf.get_one::<String>("connect").unwrap(),
+            &format!("ssh://root@{entry_address}")
+        );
+    }
     fs::remove_dir_all(root).unwrap();
     (output, entry, target)
 }
@@ -236,15 +261,40 @@ fn assert_joined_with_incomplete_catch_up(output: &Output) {
         stderr.contains("remains a Cluster member"),
         "stderr: {stderr}"
     );
-    assert!(
-        stderr.contains("--accepts-ingress=true`"),
-        "stderr: {stderr}"
-    );
+    assert_ingress_retry(&stderr);
     assert!(stderr.contains("shop/worker"), "stderr: {stderr}");
-    assert!(
-        stderr.contains("redeploy Namespace Service `shop/worker`"),
+    assert_eq!(
+        stderr
+            .matches("redeploy Namespace Service `shop/worker`")
+            .count(),
+        1,
         "stderr: {stderr}"
     );
+    assert_eq!(
+        stderr
+            .lines()
+            .filter(|line| line.starts_with("inspect: ")
+                && line.contains("logs shop/worker --machine "))
+            .count(),
+        1
+    );
+}
+
+pub(super) fn assert_ingress_retry(stderr: &str) {
+    let retry = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("retry: "))
+        .unwrap_or_else(|| panic!("missing retry command: {stderr}"));
+    let retry = shell_words::split(retry).unwrap();
+    let parsed = ployz::cli::command().try_get_matches_from(retry).unwrap();
+    let Some(("server", group)) = parsed.subcommand() else {
+        panic!("retry must address a Server");
+    };
+    let Some(("set", leaf)) = group.subcommand() else {
+        panic!("retry must set its ingress role");
+    };
+    assert!(ployz_core::MachineId::parse(leaf.get_one::<String>("server").unwrap()).is_ok());
+    assert_eq!(leaf.get_one::<bool>("accepts-ingress"), Some(&true));
 }
 
 fn globals_on(machine: &ployz_core::Machine) -> Vec<ContainerObservation> {

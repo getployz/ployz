@@ -43,7 +43,6 @@ Commands:
   publish     Put staged changes in Saved State without deploying
   schema      Print the settings catalog as JSON Schema, with every command at the root: all of it, one Service, or one Setting
   set         Stage Setting values
-  setup       Set up tooling around the CLI
   status      Show who you are, where commands act, and what is staged, deploying or needs attention
   unset       Return Settings to their defaults
   up          Deploy this directory: create and link its Project if needed, upload, build and deploy it
@@ -73,11 +72,16 @@ Options:
       --json
           Print the result as one JSON object on stdout
 
+      --color <WHEN>
+          When to color output; overrides NO_COLOR and CLICOLOR
+          
+          [default: auto]
+          [possible values: auto, always, never]
+
   -h, --help
           Print help (see a summary with '-h')
 
 Settings catalog: `ployz schema --json` lists every command and Setting; `ployz explain SERVICE.SETTING` describes one Setting.
-Agent tooling: no Ployz skill is installed; `ployz setup agent` installs it.
 ```
 
 ### ployz -h
@@ -121,7 +125,6 @@ Commands:
   publish     Put staged changes in Saved State without deploying
   schema      Print the settings catalog as JSON Schema, with every command at the root: all of it, one Service, or one Setting
   set         Stage Setting values
-  setup       Set up tooling around the CLI
   status      Show who you are, where commands act, and what is staged, deploying or needs attention
   unset       Return Settings to their defaults
   up          Deploy this directory: create and link its Project if needed, upload, build and deploy it
@@ -136,10 +139,10 @@ Options:
   -c, --context <context>            [env: PLOYZ_CONTEXT=]
   -V, --version                      Print version
       --json                         Print the result as one JSON object on stdout
+      --color <WHEN>                 When to color output; overrides NO_COLOR and CLICOLOR [default: auto] [possible values: auto, always, never]
   -h, --help                         Print help (see more with '--help')
 
 Settings catalog: `ployz schema --json` lists every command and Setting; `ployz explain SERVICE.SETTING` describes one Setting.
-Agent tooling: no Ployz skill is installed; `ployz setup agent` installs it.
 ```
 
 ### ployz (no args)
@@ -183,7 +186,6 @@ Commands:
   publish     Put staged changes in Saved State without deploying
   schema      Print the settings catalog as JSON Schema, with every command at the root: all of it, one Service, or one Setting
   set         Stage Setting values
-  setup       Set up tooling around the CLI
   status      Show who you are, where commands act, and what is staged, deploying or needs attention
   unset       Return Settings to their defaults
   up          Deploy this directory: create and link its Project if needed, upload, build and deploy it
@@ -198,10 +200,10 @@ Options:
   -c, --context <context>            [env: PLOYZ_CONTEXT=]
   -V, --version                      Print version
       --json                         Print the result as one JSON object on stdout
+      --color <WHEN>                 When to color output; overrides NO_COLOR and CLICOLOR [default: auto] [possible values: auto, always, never]
   -h, --help                         Print help (see more with '--help')
 
 Settings catalog: `ployz schema --json` lists every command and Setting; `ployz explain SERVICE.SETTING` describes one Setting.
-Agent tooling: no Ployz skill is installed; `ployz setup agent` installs it.
 
 ```
 
@@ -272,6 +274,12 @@ Options:
       --json
           Print the result as one JSON object on stdout
 
+      --color <WHEN>
+          When to color output; overrides NO_COLOR and CLICOLOR
+          
+          [default: auto]
+          [possible values: auto, always, never]
+
       --expect <REVISION>
           Refuse unless Working State is still at this revision
 
@@ -323,6 +331,12 @@ Options:
       --json
           Print the result as one JSON object on stdout
 
+      --color <WHEN>
+          When to color output; overrides NO_COLOR and CLICOLOR
+          
+          [default: auto]
+          [possible values: auto, always, never]
+
   -h, --help
           Print help (see a summary with '-h')
 ```
@@ -351,6 +365,7 @@ Options:
       --only <ROW>                   Sync only this row (web.image), or every row under a prefix (web, web.env); repeatable
       --json                         Print the result as one JSON object on stdout
       --skip <ROW>                   Leave out this row, or every row under a prefix; repeatable
+      --color <WHEN>                 When to color output; overrides NO_COLOR and CLICOLOR [default: auto] [possible values: auto, always, never]
       --value <ROW>                  Give a secret the receiver lacks its value, read as one line of stdin per --value, in order; repeatable
       --version <version>            Refuse unless this is still the version --plan showed
       --plan                         List the changes and the version; sync nothing
@@ -370,7 +385,7 @@ $ ployz project rm --help
 
 stdout:
 ```
-Remove a Project. Each Environment that ran is taken off the Servers by a removal Deployment, Branches before their Parents and the Default Environment last, deleting deployed Volumes once each is accepted by name; then the Project, its configuration and history go. Type its name with --confirm; without it the command fails with confirmation_required, naming what goes and the exact retry. If a removal doesn't apply, the same command finishes it.
+Remove a Project. Each Environment that ran is taken off the Servers by a removal Deployment, Branches before their Parents and the Default Environment last, deleting deployed Volumes once each is accepted by name; then the Project, its configuration and history go. Type its name with --confirm, or in a terminal when it asks; elsewhere it fails with confirmation_required, naming what goes and the exact retry. If a removal doesn't apply, the same command finishes it.
 
 Usage: ployz project rm [OPTIONS] <name>
 
@@ -402,6 +417,12 @@ Options:
 
       --json
           Print the result as one JSON object on stdout
+
+      --color <WHEN>
+          When to color output; overrides NO_COLOR and CLICOLOR
+          
+          [default: auto]
+          [possible values: auto, always, never]
 
       --expect-version <VERSION>
           Refuse unless this is still the reviewed version; a data-loss refusal names it
@@ -440,6 +461,7 @@ Options:
       --all                          Include Settings at their default across the Environment
       --ployz-config <ployz-config>  [env: PLOYZ_CONFIG=/tmp/ployz-cli-outputs-store/home/config.yaml] [default: ~/.config/ployz/config.yaml]
       --json                         Print the result as one JSON object on stdout
+      --color <WHEN>                 When to color output; overrides NO_COLOR and CLICOLOR [default: auto] [possible values: auto, always, never]
   -h, --help                         Print help (see more with '--help')
 ```
 
@@ -492,6 +514,12 @@ Options:
       --json
           Print the result as one JSON object on stdout
 
+      --color <WHEN>
+          When to color output; overrides NO_COLOR and CLICOLOR
+          
+          [default: auto]
+          [possible values: auto, always, never]
+
   -h, --help
           Print help (see a summary with '-h')
 ```
@@ -503,7 +531,7 @@ $ ployz completion bash
 # exit 0
 ```
 
-stdout (34 lines, first 25 shown):
+stdout (      34 lines, first 25 shown):
 ```
 
 _clap_complete_ployz() {

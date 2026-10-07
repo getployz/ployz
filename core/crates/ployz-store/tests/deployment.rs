@@ -7,15 +7,16 @@
 
 use ployz_core::config::ReviewLifecycleKind;
 use ployz_core::{
-    DeployOutcome, DeployPreview, ExecutionError, RpcError, RpcErrorCode, ServiceName,
+    DeployOutcome, DeployPreview, ExecutionError, OperationRow, RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::{
     Actor, Admit, Cancel, Change, Command, ConfigStore, CreateProject, CreateService, Deploy,
     DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView,
     Discard, Edit, EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId,
     PlanQuery, Principal, ProjectId, ProjectName, Query, RemoveService, RenameService, Retry,
-    Revision, RunEvidence, RunnerId, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath,
-    Start, Trusted, UploadBase, UploadedSource, View, Written,
+    Revision, RowPhase, RowState, RowTracker, RunEvidence, RunnerId, ServerRow, ServiceLineageId,
+    ServiceQuery, ServicesQuery, SettingPath, Start, Trusted, UploadBase, UploadedSource, View,
+    Written,
 };
 use serde_json::{Value, json};
 
@@ -26,7 +27,10 @@ const ENVIRONMENT: &str = "00000000-0000-4000-8000-000000000002";
 
 /// A store with Project `shop` and new Services `web` and `api`.
 fn shop() -> (ConfigStore, Actor) {
-    let store = backend::open();
+    shop_in(backend::open())
+}
+
+fn shop_in(store: ConfigStore) -> (ConfigStore, Actor) {
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .write(
@@ -137,6 +141,7 @@ fn preview(services: &[&str]) -> DeployPreview {
 
 fn succeeded(services: &[&str]) -> RunEvidence {
     RunEvidence::Executed {
+        progress: Vec::new(),
         outcome: Box::new(outcome(json!({
             "type": "success",
             "completed": services.iter().map(|service| operation(service)).collect::<Vec<_>>()
@@ -275,6 +280,7 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
         RpcErrorCode::InvalidArgument
     );
     let partial = |done: &str, failed: &str| RunEvidence::Executed {
+        progress: Vec::new(),
         outcome: Box::new(outcome(json!({
             "type": "failed", "completed": [operation(done)],
             "failed": {"type": "operation", "operation": operation(failed), "error": {
@@ -296,13 +302,11 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
         .unwrap();
     assert_eq!(view.deployment.status, DeploymentStatus::Failed);
     // The Deployment says why, in words users read.
-    let Some(ployz_store::Outcome::Executed { reason, .. }) = view.deployment.outcome else {
+    let Some(ployz_store::Outcome::Executed { reason, cause, .. }) = view.deployment.outcome else {
         panic!("an executed outcome");
     };
-    assert_eq!(
-        reason.as_deref(),
-        Some("remove Container failed: the daemon is busy")
-    );
+    assert_eq!(reason.as_deref(), Some("remove Container failed"));
+    assert_eq!(cause, ["the daemon is busy"]);
     assert_eq!(
         nodes(&store, &who, 1),
         [
@@ -315,6 +319,650 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
     assert_eq!(
         code(store.record(&id(1), &a, succeeded(&["web", "api"]))),
         RpcErrorCode::Conflict
+    );
+}
+
+fn progress(rows: &[(&str, &str, Value)]) -> Vec<OperationRow> {
+    serde_json::from_value(Value::Array(
+        rows.iter()
+            .enumerate()
+            .map(|(index, (service, server, status))| {
+                json!({
+                    "index": index, "machine_id": server.chars().next().unwrap().to_string().repeat(32),
+                    "machine_name": server, "service_name": service,
+                    "operation": operation(service), "status": status
+                })
+            })
+            .collect(),
+    ))
+    .unwrap()
+}
+
+fn waiting(elapsed_ms: u64) -> Value {
+    json!({"type": "running", "phase": {
+        "type": "waiting_for_health", "container_id": "c".repeat(64),
+        "elapsed_ms": elapsed_ms, "deadline_ms": 60_000
+    }})
+}
+
+fn rows(store: &ConfigStore, who: &Actor, n: u8) -> Vec<(String, Vec<ServerRow>)> {
+    store
+        .read(who, &ployz_store::DeploymentQuery { id: id(n) })
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| (node.node.name().to_owned(), node.rows))
+        .collect()
+}
+
+#[test]
+fn final_progress_and_known_outcome_are_recorded_together() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &["web"], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    let RunEvidence::Executed {
+        outcome, removed, ..
+    } = succeeded(&["web"])
+    else {
+        unreachable!()
+    };
+    let evidence = RunEvidence::Executed {
+        outcome,
+        removed,
+        progress: RowTracker::default().changes(&progress(&[(
+            "web",
+            "alpha",
+            json!({"type": "completed"}),
+        )])),
+    };
+    store.record(&id(1), &a, evidence.clone()).unwrap();
+    store.record(&id(1), &a, evidence).unwrap();
+    assert_eq!(status(&store, &who, 1), DeploymentStatus::Applied);
+    assert_eq!(
+        nodes(&store, &who, 1),
+        [("web".to_owned(), NodeStatus::Deployed)]
+    );
+    let original = rows(&store, &who, 1);
+    assert_eq!(original[0].1[0].state, RowState::Completed);
+    assert!(original[0].1[0].finished_at.is_some());
+    admit(&store, &who, 2, &["web"], None).unwrap();
+    store.claim(&id(2), &runner("runner-b")).unwrap();
+    assert_eq!(rows(&store, &who, 1), original);
+}
+
+#[test]
+fn terminal_progress_refusal_rolls_back_and_the_known_outcome_can_be_retried() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.db");
+    let (store, who) =
+        shop_in(ConfigStore::open(&format!("sqlite:{}", path.display()), backend::key()).unwrap());
+    admit(&store, &who, 1, &["web"], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    let mut evidence = succeeded(&["web"]);
+    let RunEvidence::Executed {
+        progress: final_rows,
+        ..
+    } = &mut evidence
+    else {
+        unreachable!()
+    };
+    *final_rows =
+        RowTracker::default().changes(&progress(&[("web", "alpha", json!({"type":"completed"}))]));
+    let sql = rusqlite::Connection::open(path).unwrap();
+    sql.execute_batch("CREATE TRIGGER refuse_progress BEFORE INSERT ON config_deployment_row BEGIN SELECT RAISE(ABORT, 'injected Store failure'); END;").unwrap();
+    assert!(store.record(&id(1), &a, evidence.clone()).is_err());
+    assert_eq!(status(&store, &who, 1), DeploymentStatus::Running);
+    assert!(rows(&store, &who, 1)[0].1.is_empty());
+    assert_ne!(nodes(&store, &who, 1)[0].1, NodeStatus::Deployed);
+    sql.execute_batch("DROP TRIGGER refuse_progress").unwrap();
+    store.record(&id(1), &a, evidence).unwrap();
+    assert_eq!(status(&store, &who, 1), DeploymentStatus::Applied);
+    assert_eq!(nodes(&store, &who, 1)[0].1, NodeStatus::Deployed);
+    assert_eq!(rows(&store, &who, 1)[0].1[0].state, RowState::Completed);
+}
+
+#[test]
+fn an_unattempted_row_has_no_start_time() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &["web"], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    let mut tracker = RowTracker::default();
+    for state in ["pending", "unexecuted"] {
+        store
+            .record(
+                &id(1),
+                &a,
+                RunEvidence::Progress(tracker.changes(&progress(&[(
+                    "web",
+                    "alpha",
+                    json!({"type": state}),
+                )]))),
+            )
+            .unwrap();
+    }
+    let row = &rows(&store, &who, 1)[0].1[0];
+    assert_eq!(row.state, RowState::NotAttempted);
+    assert_eq!(row.started_at, None);
+    assert!(row.finished_at.is_some());
+}
+
+#[test]
+fn failed_rows_use_the_failed_operations_container() {
+    let mut tracker = RowTracker::default();
+    tracker.changes(&progress(&[
+        ("web", "alpha", json!({"type": "running", "phase": {"type":"waiting_for_hook", "container_id":"a".repeat(64), "elapsed_ms":0,"deadline_ms":1000}})),
+        ("web", "alpha", json!({"type":"pending"})),
+    ]));
+    let failed = json!({"type":"failed","error":{"type":"machine","action":"CreateContainer","error":{"code":"internal","message":"create failed","details":{}}}});
+    let changed = tracker.changes(&progress(&[
+        ("web", "alpha", json!({"type":"completed"})),
+        ("web", "alpha", failed.clone()),
+    ]));
+    assert_eq!(
+        tracker.container(&changed[0]),
+        None,
+        "the successful hook's Container is unrelated"
+    );
+    let mut tracker = RowTracker::default();
+    tracker.changes(&progress(&[("web", "alpha", waiting(0))]));
+    let mut inspect_failed = failed;
+    inspect_failed["error"]["action"] = json!("InspectContainer");
+    let changed = tracker.changes(&progress(&[("web", "alpha", inspect_failed)]));
+    assert_eq!(
+        tracker.container(&changed[0]),
+        Some("c".repeat(64).parse().unwrap())
+    );
+}
+
+#[test]
+fn replacement_failure_logs_follow_the_old_or_new_container_that_failed() {
+    let replacement: ployz_core::DeployOperation = serde_json::from_value(json!({
+        "type":"replace_container", "machine_id":"a".repeat(32), "old_container_id":"b".repeat(64),
+        "spec":{"service_id":"a".repeat(32),"name":"web","mode":{"mode":"replicated","replicas":1},"container":{"image":"nginx:1","pull_policy":"missing"}},
+        "skip_health_monitor": false
+    })).unwrap();
+    for (phase, action, expected) in [
+        ("stopping_container", "StopContainer", Some("b")),
+        ("removing_container", "RemoveContainer", Some("b")),
+        ("removing_container", "InspectContainer", Some("b")),
+        ("creating_container", "CreateContainer", None),
+        ("starting_container", "StartContainer", None),
+    ] {
+        let mut tracker = RowTracker::default();
+        let mut snapshot = progress(&[("web", "alpha", waiting(0))]);
+        snapshot[0].operation = replacement.clone();
+        tracker.changes(&snapshot);
+        snapshot[0].status =
+            serde_json::from_value(json!({"type":"running","phase":{"type":phase}})).unwrap();
+        tracker.changes(&snapshot);
+        snapshot[0].status = serde_json::from_value(json!({"type":"failed","error":{"type":"machine","action":action,"error":{"code":"internal","message":"failed","details":{}}}})).unwrap();
+        let changed = tracker.changes(&snapshot);
+        assert_eq!(
+            tracker.container(&changed[0]),
+            expected.map(|id| id.repeat(64).parse().unwrap()),
+            "{phase} {action}"
+        );
+    }
+}
+
+#[test]
+fn dependency_and_hook_failures_keep_nested_rpc_causes() {
+    let rpc = json!({"code":"unavailable","message":"Observation failed","details":{},"cause":["transport unavailable","connection refused"]});
+    for (error, expected) in [
+        (
+            json!({"type":"dependency_health","dependency":"shop-production/api","failure":{"type":"observation","error":rpc}}),
+            vec![
+                "Container observation failed",
+                "Observation failed",
+                "transport unavailable",
+                "connection refused",
+            ],
+        ),
+        (
+            json!({"type":"hook","container_id":"a".repeat(64),"failure":{"type":"timed_out","stop_error":rpc}}),
+            vec![
+                "timed out",
+                "Stopping the hook failed",
+                "Observation failed",
+                "transport unavailable",
+                "connection refused",
+            ],
+        ),
+    ] {
+        let error: ExecutionError = serde_json::from_value(error).unwrap();
+        assert_eq!(ployz_store::Failure::from(&error).cause, expected);
+    }
+}
+
+#[test]
+fn deployment_rows_record_state_changes_once() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &["web"], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    let mut tracker = RowTracker::default();
+    let mut writes = 0;
+    let mut observe = |status: Value| {
+        let changed = tracker.changes(&progress(&[("web", "alpha", status)]));
+        if !changed.is_empty() {
+            writes += 1;
+            store
+                .record(&id(1), &a, RunEvidence::Progress(changed))
+                .unwrap();
+        }
+    };
+    observe(json!({"type": "pending"}));
+    for elapsed in (0..=30_000).step_by(500) {
+        observe(waiting(elapsed));
+    }
+    observe(json!({"type": "completed"}));
+    assert_eq!(writes, 3, "pending, waiting for health, completed");
+    let [(web, row)] = &rows(&store, &who, 1)[..] else {
+        panic!("one node");
+    };
+    assert_eq!(web, "web");
+    let [row] = &row[..] else {
+        panic!("one row per Server");
+    };
+    assert_eq!(
+        (row.server.as_str(), &row.state),
+        ("alpha", &RowState::Completed)
+    );
+    assert!(row.started_at.is_some() && row.finished_at.is_some());
+}
+
+#[test]
+fn terminal_row_retries_preserve_the_recorded_clocks() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    admit(&store, &who, 1, &["web"], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    let error = json!({
+        "type": "machine", "action": "RemoveContainer",
+        "error": {"code": "internal", "message": "disk failure", "details": {}}
+    });
+    let changes = RowTracker::default().changes(&progress(&[
+        ("web", "alpha", json!({"type": "completed"})),
+        ("web", "beta", json!({"type": "failed", "error": error})),
+        ("web", "charlie", json!({"type": "unexecuted"})),
+    ]));
+    store
+        .record(&id(1), &a, RunEvidence::Progress(changes.clone()))
+        .unwrap();
+    let age_clocks = "UPDATE config_deployment_row SET \
+        started = CASE WHEN started IS NULL THEN NULL ELSE 123 END, finished = 124";
+    if let Some(path) = url.strip_prefix("sqlite:") {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute_batch(age_clocks)
+            .unwrap();
+    } else {
+        postgres::Client::connect(&url, postgres::NoTls)
+            .unwrap()
+            .batch_execute(age_clocks)
+            .unwrap();
+    }
+    let original = rows(&store, &who, 1);
+    assert_eq!(original[0].1.len(), 3);
+    assert_eq!(original[0].1[0].state, RowState::Completed);
+    assert!(matches!(original[0].1[1].state, RowState::Failed { .. }));
+    assert_eq!(original[0].1[2].state, RowState::NotAttempted);
+    assert!(original[0].1.iter().all(|row| row.finished_at == Some(124)));
+    assert_eq!(original[0].1[2].started_at, None);
+    store
+        .record(&id(1), &a, RunEvidence::Progress(changes.clone()))
+        .unwrap();
+    assert_eq!(rows(&store, &who, 1), original);
+    let finished = RunEvidence::Executed {
+        progress: changes,
+        outcome: Box::new(outcome(json!({
+            "type": "failed", "completed": [],
+            "failed": {"type": "operation", "operation": operation("web"), "error": error},
+            "unexecuted": []
+        }))),
+        removed: Vec::new(),
+    };
+    store.record(&id(1), &a, finished.clone()).unwrap();
+    assert_eq!(rows(&store, &who, 1), original);
+    store.record(&id(1), &a, finished).unwrap();
+    assert_eq!(rows(&store, &who, 1), original);
+}
+
+#[test]
+fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    let error = json!({
+        "type": "machine", "action": "RemoveContainer",
+        "error": {"code": "internal", "message": "the daemon is busy", "details": {},
+                  "cause": ["connection refused"]}
+    });
+    let mut tracker = RowTracker::default();
+    for snapshot in [
+        progress(&[
+            ("web", "alpha", json!({"type": "pending"})),
+            ("api", "beta", json!({"type": "pending"})),
+        ]),
+        progress(&[
+            ("web", "alpha", json!({"type": "failed", "error": error})),
+            ("api", "beta", json!({"type": "pending"})),
+        ]),
+    ] {
+        store
+            .record(
+                &id(1),
+                &a,
+                RunEvidence::Progress(tracker.changes(&snapshot)),
+            )
+            .unwrap();
+    }
+    store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome(json!({
+                    "type": "failed", "completed": [],
+                    "failed": {"type": "operation", "operation": operation("web"), "error": error},
+                    "unexecuted": [operation("api")]
+                }))),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    let states: Vec<(String, String, RowState)> = rows(&store, &who, 1)
+        .into_iter()
+        .flat_map(|(node, rows)| {
+            rows.into_iter()
+                .map(move |row| (node.clone(), row.server, row.state))
+        })
+        .collect();
+    assert_eq!(
+        states,
+        [
+            (
+                "web".to_owned(),
+                "alpha".to_owned(),
+                RowState::Failed {
+                    reason: "remove Container failed".into(),
+                    cause: vec!["the daemon is busy".into(), "connection refused".into()],
+                    log: Vec::new(),
+                }
+            ),
+            ("api".to_owned(), "beta".to_owned(), RowState::NotAttempted),
+        ]
+    );
+}
+
+#[test]
+fn volume_rows_keep_distinct_machines_and_failed_mounting_services() {
+    for api_status in [
+        json!({"type": "completed"}),
+        json!({"type": "pending"}),
+        waiting(1_000),
+    ] {
+        let api_finished = api_status["type"] == "completed";
+        let (store, who) = shop();
+        store
+            .write(
+                &who,
+                &ployz_store::CreateVolume {
+                    id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005")
+                        .unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ployz_store::VolumeName::parse("data").unwrap(),
+                    storage: ployz_core::config::VolumeKind::Docker {},
+                    shared_writes: true,
+                    mounts: ["web", "api"]
+                        .into_iter()
+                        .map(|service| ployz_store::Mount {
+                            service: ServiceName::parse(service).unwrap(),
+                            path: "/data".into(),
+                        })
+                        .collect(),
+                },
+            )
+            .unwrap();
+        admit(&store, &who, 1, &[], None).unwrap();
+        let a = runner("runner-a");
+        store.claim(&id(1), &a).unwrap();
+        store
+            .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        let mut snapshot = progress(&[
+            ("api", "alpha", api_status),
+            (
+                "web",
+                "alpha",
+                json!({"type": "failed", "error": {
+                    "type": "machine", "action": "RemoveContainer",
+                    "error": {"code": "internal", "message": "disk failure", "details": {}}
+                }}),
+            ),
+            ("web", "beta", waiting(5_000)),
+        ]);
+        for row in &mut snapshot {
+            row.machine_name = Some("same-name".parse().unwrap());
+        }
+        let mut changes = RowTracker::default().changes(&snapshot);
+        for row in &mut changes {
+            if let RowState::Failed { log, .. } = &mut row.state {
+                *log = vec!["alpha disk log".into()];
+            }
+        }
+        store
+            .record(&id(1), &a, RunEvidence::Progress(changes))
+            .unwrap();
+        let deployment = store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+            .unwrap();
+        let serialized = serde_json::to_value(&deployment).unwrap();
+        for name in ["web", "data"] {
+            let node = serialized["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|node| node["name"] == name)
+                .unwrap();
+            let actual: Vec<_> = node["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| {
+                    json!({
+                        "machine_id": row["machine_id"], "server": row["server"],
+                        "state": row["state"], "phase": row["phase"],
+                        "reason": row["reason"], "cause": row["cause"], "log": row["log"]
+                    })
+                })
+                .collect();
+            assert_eq!(
+                actual,
+                [
+                    json!({
+                        "machine_id": snapshot[1].machine_id, "server": "same-name",
+                        "state": "failed", "phase": null,
+                        "reason": "remove Container failed", "cause": ["disk failure"],
+                        "log": ["alpha disk log"]
+                    }),
+                    json!({
+                        "machine_id": snapshot[2].machine_id, "server": "same-name",
+                        "state": "running", "phase": "waiting_for_health",
+                        "reason": null, "cause": null, "log": null
+                    })
+                ]
+            );
+        }
+        let view = rows(&store, &who, 1);
+        let volume = &view.iter().find(|(name, _)| name == "data").unwrap().1;
+        assert_eq!(volume.len(), 2, "Machine names are not identities");
+        assert!(volume.iter().all(|row| row.server == "same-name"));
+        assert!(volume.iter().any(
+            |row| matches!(&row.state, RowState::Failed { cause, .. } if cause == &["disk failure"])
+        ));
+        assert!(volume.iter().any(|row| row.state
+            == RowState::Running {
+                phase: RowPhase::WaitingForHealth
+            }));
+        assert!(volume.iter().all(|row| row.started_at.is_some()));
+        assert_eq!(
+            volume
+                .iter()
+                .filter(|row| row.finished_at.is_some())
+                .count(),
+            usize::from(api_finished)
+        );
+    }
+}
+
+#[test]
+fn deployment_rows_require_identity_but_older_node_outcomes_need_no_rows() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &["web"], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    let snapshot = progress(&[("web", "alpha", json!({"type": "completed"}))]);
+    store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Progress(RowTracker::default().changes(&snapshot)),
+        )
+        .unwrap();
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap();
+    let mut node = serde_json::to_value(&view.nodes[0]).unwrap();
+    let round_trip: ployz_store::NodeOutcome = serde_json::from_value(node.clone()).unwrap();
+    assert_eq!(round_trip.rows[0].machine_id, snapshot[0].machine_id);
+    node["rows"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("machine_id");
+    assert!(serde_json::from_value::<ployz_store::NodeOutcome>(node.clone()).is_err());
+    node["rows"][0]["machine_id"] = json!("same-name");
+    assert!(serde_json::from_value::<ployz_store::NodeOutcome>(node.clone()).is_err());
+    node.as_object_mut().unwrap().remove("rows");
+    let older: ployz_store::NodeOutcome = serde_json::from_value(node).unwrap();
+    assert!(older.rows.is_empty());
+    assert_eq!(older.node, round_trip.node);
+    assert_eq!(older.outcome, round_trip.outcome);
+}
+
+#[test]
+fn forgetting_the_cluster_leaves_unfinished_rows_unknown() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &["web"], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Progress(RowTracker::default().changes(&progress(&[
+                ("web", "alpha", json!({"type":"completed"})),
+                ("web", "beta", waiting(0)),
+                ("web", "delta", json!({"type":"pending"})),
+            ]))),
+        )
+        .unwrap();
+    store
+        .system(
+            &who.organization,
+            &ployz_store::SystemEvent::ClusterForgotten,
+            &Trusted::default(),
+        )
+        .unwrap();
+    assert_eq!(status(&store, &who, 1), DeploymentStatus::Cancelled);
+    let row = &rows(&store, &who, 1)[0].1;
+    assert_eq!(
+        row.iter().map(|row| &row.state).collect::<Vec<_>>(),
+        [&RowState::Completed, &RowState::Unknown, &RowState::Unknown]
+    );
+    assert!(row[0].finished_at.is_some());
+    assert_eq!(row[1].finished_at, None);
+    assert_eq!(row[2].started_at, None);
+    assert_eq!(
+        code(store.record(&id(1), &a, RunEvidence::Alive)),
+        RpcErrorCode::Conflict
+    );
+}
+
+#[test]
+fn a_lost_runners_unfinished_rows_read_unknown() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    let mut tracker = RowTracker::default();
+    let snapshot = progress(&[
+        ("web", "alpha", json!({"type": "completed"})),
+        ("web", "beta", waiting(5_000)),
+        ("web", "delta", json!({"type": "pending"})),
+    ]);
+    store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Progress(tracker.changes(&snapshot)),
+        )
+        .unwrap();
+    let running = |store: &ConfigStore| -> Vec<(String, RowState)> {
+        rows(store, &who, 1)
+            .into_iter()
+            .flat_map(|(_, rows)| rows.into_iter().map(|row| (row.server, row.state)))
+            .collect()
+    };
+    assert_eq!(
+        running(&store)[1],
+        (
+            "beta".to_owned(),
+            RowState::Running {
+                phase: RowPhase::WaitingForHealth
+            }
+        )
+    );
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &runner("runner-b")).unwrap();
+    assert_eq!(
+        running(&store),
+        [
+            ("alpha".to_owned(), RowState::Completed),
+            ("beta".to_owned(), RowState::Unknown),
+            ("delta".to_owned(), RowState::Unknown),
+        ]
     );
 }
 
@@ -453,6 +1101,7 @@ fn a_cancelled_running_deployment_keeps_its_confirmed_node_outcomes() {
     );
     // Its runner stops it partway and records what ran.
     let stopped = RunEvidence::Executed {
+        progress: Vec::new(),
         outcome: Box::new(outcome(json!({
             "type": "failed", "completed": [operation("web")],
             "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
@@ -571,6 +1220,7 @@ fn fail_api(store: &ConfigStore, n: u8) -> ployz_core::DeployIntent {
         .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
         .unwrap();
     let failed = RunEvidence::Executed {
+        progress: Vec::new(),
         outcome: Box::new(outcome(json!({
             "type": "failed", "completed": [operation("web")],
             "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},

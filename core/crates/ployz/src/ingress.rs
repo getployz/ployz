@@ -217,7 +217,7 @@ async fn wait_for_withdrawal(client: &Client, observation: &ContainerObservation
         machines
             .into_iter()
             // A Server known down gets no config either; waiting on it only costs the cap.
-            .filter(|entry| entry.machine.accepts_ingress && entry.membership.invites_rpc())
+            .filter(|entry| entry.machine.accepts_ingress && entry.invites_rpc())
             .map(|entry| entry.machine)
             .map(|machine| async move {
                 let confirmed = tokio::time::timeout_at(deadline, async {

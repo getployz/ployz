@@ -25,6 +25,7 @@ pub mod env {
 pub fn command() -> Command {
     let command = base("ployz", "Manage Ployz machines, services, and volumes")
         .styles(crate::ui::clap_styles())
+        .after_help(handlers::catalog::SIGNPOST)
         .arg(switch("version", Some('V')).help("Print version"))
         .arg(
             switch("json", None)
@@ -66,7 +67,6 @@ pub fn command() -> Command {
         .subcommand(handlers::review::publish_command())
         .subcommand(handlers::catalog::schema_command())
         .subcommand(handlers::config::set_command())
-        .subcommand(handlers::setup::command())
         .subcommand(handlers::link::status_command())
         .subcommand(handlers::config::unset_command())
         .subcommand(handlers::up::command())
@@ -94,6 +94,8 @@ pub(crate) fn connection_args(include_context: bool) -> Vec<Arg> {
             .env(env::CONFIG)
             .default_value("~/.config/ployz/config.yaml")
             .value_hint(ValueHint::FilePath)
+            // PLOYZ_CONFIG is the way to point elsewhere; the flag stays for tests.
+            .hide(true)
             .global(true),
     ];
     if include_context {

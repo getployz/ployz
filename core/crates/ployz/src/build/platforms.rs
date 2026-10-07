@@ -4,8 +4,8 @@
 use std::collections::BTreeSet;
 
 use ployz_core::{
-    DeployIntent, Machine, MachineObservation, MembershipObservation, RequestedServiceSpec,
-    ServicePlacementEligibility, config::BuildMethod,
+    DeployIntent, Machine, MachineObservation, RequestedServiceSpec, ServicePlacementEligibility,
+    config::BuildMethod,
 };
 
 use super::{CapturedBuild, Error, invalid};
@@ -97,14 +97,14 @@ fn machine_platforms(
     Ok(required)
 }
 
-/// Machines the Service may be placed on: not Down and not ineligible.
+/// Responding Machines the Service may be placed on, excluding known ineligibility.
 pub(super) fn placeable<'observed>(
     spec: &'observed RequestedServiceSpec,
     namespace: &'observed ployz_core::Namespace,
     machines: &'observed [MachineObservation],
 ) -> impl Iterator<Item = &'observed MachineObservation> {
     machines.iter().filter(|machine| {
-        machine.membership != MembershipObservation::Down
+        machine.invites_rpc()
             && !matches!(
                 spec.placement_eligibility_in_namespace(
                     namespace,
@@ -119,7 +119,10 @@ pub(super) fn placeable<'observed>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::{MachineId, MachineName, MachineStorageObservation, WireGuardPublicKey};
+    use ployz_core::{
+        MachineId, MachineName, MachineStorageObservation, MembershipObservation,
+        WireGuardPublicKey,
+    };
 
     fn observed(
         seed: u8,

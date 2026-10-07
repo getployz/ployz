@@ -12,7 +12,11 @@ import subprocess
 import sys
 import time
 
+sys.dont_write_bytecode = True
 core = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(core / "scripts" / "verify"))
+from cloud_recovery import recover_deploy  # noqa: E402
+
 helper = core / "scripts" / "verify-cluster"
 cloud = "--cloud" in sys.argv[1:]
 positional = [arg for arg in sys.argv[1:] if arg != "--cloud"]
@@ -79,16 +83,7 @@ try:
         cli("service", "add", "web", "--image", "nginx:1.29-alpine")
         deploy = subprocess.Popen([helper, "cli", "--timeout", "900", manifest, "--", "deploy"],
                                   stdout=subprocess.PIPE, text=True)
-        wait(lambda: newest()["number"] == number and newest()["status"] == "running", 120, "The Deploy never started running")
-        verify("runner", "kill", manifest)
-        time.sleep(10)
-        assert deploy.poll() is None and newest()["status"] == "running", f"The Deploy settled without its runner: {newest()}"
-        verify("runner", "start", manifest)
-        output = deploy.communicate(timeout=900)[0]
-        assert deploy.returncode == 0 and "of verify/production: applied" in output, f"The Deploy did not complete:\n{output}"
-        web = [container for container in json.loads(cli("--json", "ps"))["containers"]
-               if container["labels"].get("ployz.service.name") == "web"]
-        assert len(web) == 1, f"Expected one web container after the resumed Deploy: {web}"
+        report["cloud_recovery"] = recover_deploy(manifest, deploy, number, verify, cli)
     print(json.dumps(dict(daemon=daemon, writer=writer, cloud=cloud, **report)))
 finally:
     if probe and probe.poll() is None:

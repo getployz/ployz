@@ -7,6 +7,7 @@ use std::{
     process::Stdio,
     str::FromStr,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use axum::{Json, extract::State};
@@ -29,6 +30,8 @@ pub(super) const RECEIVE_PROPERTY: &str = "ployz:receive";
 /// `kill-daemon:StartReceive` fires once this much of the stream is in, so ZFS holds a
 /// partial receive to resume.
 const KILL_AFTER_BYTES: u64 = 1 << 20;
+
+pub(super) const RECEIVE_STALL: Duration = Duration::from_secs(60);
 
 /// Which receive a slot last admitted. Outlives the plugin process, unlike the task.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -100,6 +103,13 @@ impl Receives {
             .and_then(Result::err)
     }
 
+    fn forget(&self, name: &DockerVolumeName) {
+        self.0
+            .lock()
+            .expect("receive registry is not poisoned")
+            .remove(&name.0);
+    }
+
     fn start(&self, name: &DockerVolumeName) -> Arc<Mutex<Option<Result<(), String>>>> {
         let outcome = Arc::new(Mutex::new(None));
         self.0
@@ -140,6 +150,11 @@ impl VolumeStorage {
         let (slot, bound) = (slot.name.clone(), slot.refquota);
         self.require_no_receive(&name)?;
         let fs = slot_fs(&scope.pool, &name);
+        if bound == 0 {
+            return Err(
+                SwitchError::Precondition.rpc_error(format!("mirror slot {slot} carries no bound"))
+            );
+        }
         // The plugin can die after recording and before the receive creates `fs`, so a
         // replay looks for the landed target in ZFS and otherwise starts the receive again.
         if scope.replayed()
@@ -151,12 +166,11 @@ impl VolumeStorage {
                 .first()
             && newest.name == request.target
         {
+            self.finish_copy(&received.name, bound)
+                .await
+                .map_err(|error| internal(error.into()))?;
+            self.receives.forget(&name);
             return self.reply(&scope.pool, &name, scope.admitted).await;
-        }
-        if bound == 0 {
-            return Err(
-                SwitchError::Precondition.rpc_error(format!("mirror slot {slot} carries no bound"))
-            );
         }
         let record = ReceiveRecord {
             lease: request.switch.lease,
@@ -172,6 +186,7 @@ impl VolumeStorage {
         let source = match (&request.resume_token, request.base) {
             (Some(token), _) => SendSource::Resume {
                 token: token.clone(),
+                target: request.target.clone(),
             },
             (None, Some(base)) => SendSource::Incremental {
                 base,
@@ -213,7 +228,12 @@ impl VolumeStorage {
             self.send_port,
             stream.path_and_query()
         );
-        let response = reqwest::Client::new()
+        let client = reqwest::Client::builder()
+            .connect_timeout(self.receive_stall)
+            .read_timeout(self.receive_stall)
+            .build()
+            .map_err(|error| format!("could not build the receive client: {error}"))?;
+        let response = client
             .get(&url)
             .send()
             .await
@@ -234,6 +254,7 @@ impl VolumeStorage {
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
+            .kill_on_drop(true)
             .spawn()
             .map_err(|error| format!("could not run zfs receive: {error}"))?;
         let mut stdin = child.stdin.take().expect("zfs receive stdin is piped");
@@ -243,8 +264,17 @@ impl VolumeStorage {
         while let Some(chunk) = body.next().await {
             match chunk {
                 Ok(bytes) => {
-                    if stdin.write_all(&bytes).await.is_err() {
-                        break;
+                    match tokio::time::timeout(self.receive_stall, stdin.write_all(&bytes)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => {
+                            broke = Some(error.to_string());
+                            break;
+                        }
+                        Err(_) => {
+                            return Err(format!(
+                                "zfs receive into {fs} stalled writing after {received} bytes"
+                            ));
+                        }
                     }
                     let before = received;
                     received += bytes.len() as u64;
@@ -259,9 +289,9 @@ impl VolumeStorage {
             }
         }
         drop(stdin);
-        let output = child
-            .wait_with_output()
+        let output = tokio::time::timeout(self.receive_stall, child.wait_with_output())
             .await
+            .map_err(|_| format!("zfs receive into {fs} stalled finishing after {received} bytes"))?
             .map_err(|error| format!("zfs receive did not finish: {error}"))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -276,6 +306,11 @@ impl VolumeStorage {
                 "stream from {url} broke after {received} bytes: {error}"
             ));
         }
+        self.finish_copy(fs, bound).await
+    }
+
+    async fn finish_copy(&self, fs: &str, bound: u64) -> Result<(), String> {
+        let refquota = format!("refquota={bound}");
         for property in ["readonly=on", &refquota] {
             self.zfs(&["set", property, fs])
                 .await

@@ -1,6 +1,6 @@
 //! Machine-local container admission and creation.
 
-use std::{path::Path, sync::Arc};
+use std::sync::Arc;
 
 use ployz_core::{
     ContainerChanged, ContainerCreated, ContainerId, ContainerKind, CreateVolumeReport,
@@ -17,7 +17,7 @@ use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 impl LocalMachine {
     /// Return fresh local storage evidence for container admission and Global reconciliation.
     pub(crate) async fn observe_storage(&self) -> Option<MachineStorageObservation> {
-        local_storage(Path::new("zpool"), STORAGE_OBSERVATION_TIMEOUT).await
+        local_storage(&self.zpool, STORAGE_OBSERVATION_TIMEOUT).await
     }
 
     /// Recheck the complete local placement and secure all provisioned Volumes before applications start.

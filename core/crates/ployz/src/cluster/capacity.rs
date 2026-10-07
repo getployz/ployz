@@ -15,7 +15,7 @@ pub(super) async fn observe(
 ) -> BTreeMap<MachineId, BridgeEndpointCapacity> {
     let requests = machines.iter().filter_map(|machine| {
         let machine_id = machine.machine.id;
-        machine.membership.invites_rpc().then(|| {
+        machine.invites_rpc().then(|| {
             let mut client = client.clone();
             async move {
                 let result = client
