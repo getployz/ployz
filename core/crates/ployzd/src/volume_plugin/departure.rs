@@ -2,16 +2,36 @@
 //! holds becomes a slot and every lease record moves on, so nothing left behind is taken
 //! for the writer and a later restore starts from an ordinary slot.
 
+use std::collections::BTreeSet;
+
 use axum::{Json, extract::State};
 use ployz_core::{Cycle, Lease, LeaseRecord, MirrorMarker, Pos, RpcError};
+use ployzd::machine_pool::MachinePool;
 
 use super::{
     DATASET_ROOT, Dataset, DockerVolumeName, Place, VolumeStorage,
-    lease::{LEASE_PROPERTY_PREFIX, MIRROR_PROPERTY, WRITER_PROPERTY, internal, slot_parent},
+    lease::{
+        LEASE_PROPERTY_PREFIX, MIRROR_PROPERTY, WRITER_PROPERTY, internal, slot_fs, slot_parent,
+    },
 };
 
 /// Prefix of the snapshot a departure takes on each root before demoting it.
 pub(super) const DEPARTURE_SNAPSHOT_PREFIX: &str = "dep-";
+
+/// Where one Volume's departure stands, read from ZFS on every call so a retry finishes
+/// whatever step an interrupted departure reached.
+enum Departure<'datasets> {
+    /// A root and no slot: nothing has moved yet.
+    Root(&'datasets Dataset),
+    /// A root beside an empty slot parent: a departure stopped before moving the root in.
+    RootBesideEmptySlot(&'datasets Dataset),
+    /// A root beside a slot that holds a copy. No departure leaves this, so it refuses.
+    RootBesideMirror,
+    /// A slot fs still writable or marked writer: a departure stopped after the move.
+    UnsealedSlot(&'datasets Dataset),
+    /// A read-only slot with no writer marker, or no fs yet.
+    Slot,
+}
 
 impl VolumeStorage {
     /// Demotes every root to a slot, idles every slot marker and bumps every lease
@@ -23,48 +43,84 @@ impl VolumeStorage {
         };
         let _pool_guard = self.pool.lock_mutation().await?;
         let datasets = self.datasets(&pool).await?;
+        let names: BTreeSet<&str> = datasets
+            .iter()
+            .filter_map(|dataset| match Place::of(&dataset.name, pool.name()) {
+                Place::Root(name) | Place::Slot(name) => Some(name),
+                Place::Outside => None,
+            })
+            .collect();
         let mut demoted = Vec::new();
-        for dataset in &datasets {
-            match Place::of(&dataset.name, pool.name()) {
-                Place::Root(name) => {
-                    let name = name.parse::<DockerVolumeName>()?;
-                    let root =
-                        Self::dataset(&datasets, &pool, &name)?.expect("the root was just listed");
-                    root.require_provisioned(&name)?;
-                    self.demote_root(&pool, &datasets, root, &name, now_unix_seconds)
+        for name in names {
+            let name = name.parse::<DockerVolumeName>()?;
+            match self.departure(&pool, &datasets, &name).await? {
+                Departure::Root(root) => {
+                    self.snapshot_root(root, &name, now_unix_seconds).await?;
+                    self.ensure_mirror_root(&pool, &datasets).await?;
+                    self.create_slot_parent(&slot_parent(&pool, &name), root.refquota)
                         .await?;
+                    self.move_into_slot(&pool, root, &name).await?;
                     demoted.push(name.to_string());
                 }
-                Place::Slot(name) if dataset.name.ends_with(&format!("/{name}")) => {
-                    self.zfs(&[
-                        "set",
-                        &format!("{MIRROR_PROPERTY}={}", MirrorMarker::Idle),
-                        &dataset.name,
-                    ])
-                    .await?;
+                Departure::RootBesideEmptySlot(root) => {
+                    self.snapshot_root(root, &name, now_unix_seconds).await?;
+                    self.move_into_slot(&pool, root, &name).await?;
+                    demoted.push(name.to_string());
                 }
-                Place::Slot(_) | Place::Outside => {}
+                Departure::RootBesideMirror => {
+                    return Err(format!(
+                        "Volume {name} has both a writer and a mirror on this Machine; remove one before departing"
+                    )
+                    .into());
+                }
+                Departure::UnsealedSlot(fs) => {
+                    self.seal(&fs.name).await?;
+                    demoted.push(name.to_string());
+                }
+                Departure::Slot => {}
+            }
+            if let Some(slot) = Self::slot(&datasets, &pool, &name) {
+                self.zfs(&[
+                    "set",
+                    &format!("{MIRROR_PROPERTY}={}", MirrorMarker::Idle),
+                    &slot.name,
+                ])
+                .await?;
             }
         }
         self.bump_lease_records(&pool, &datasets).await?;
         Ok(demoted)
     }
 
-    async fn demote_root(
+    async fn departure<'datasets>(
         &self,
-        pool: &ployzd::machine_pool::MachinePool,
-        datasets: &[Dataset],
+        pool: &MachinePool,
+        datasets: &'datasets [Dataset],
+        name: &DockerVolumeName,
+    ) -> super::Result<Departure<'datasets>> {
+        let root = Self::dataset(datasets, pool, name)?;
+        let slot = Self::slot(datasets, pool, name);
+        Ok(match (root, slot, Self::slot_fs(datasets, pool, name)) {
+            (Some(_), _, Some(_)) => Departure::RootBesideMirror,
+            (Some(root), Some(_), None) => Departure::RootBesideEmptySlot(root),
+            (Some(root), None, None) => Departure::Root(root),
+            (None, _, Some(fs))
+                if !fs.readonly || self.property(&fs.name, WRITER_PROPERTY).await?.is_some() =>
+            {
+                Departure::UnsealedSlot(fs)
+            }
+            (None, _, _) => Departure::Slot,
+        })
+    }
+
+    /// Unmounts the root and replaces its departure snapshot with one taken now.
+    async fn snapshot_root(
+        &self,
         root: &Dataset,
         name: &DockerVolumeName,
         now_unix_seconds: i64,
     ) -> super::Result<()> {
-        let parent = slot_parent(pool, name);
-        if datasets.iter().any(|dataset| dataset.name == parent) {
-            return Err(format!(
-                "Volume {name} has both a writer and a mirror on this Machine; remove one before departing"
-            )
-            .into());
-        }
+        root.require_provisioned(name)?;
         if root.mounted {
             self.zfs(&["unmount", &root.name]).await?;
         }
@@ -84,12 +140,24 @@ impl VolumeStorage {
             ),
         ])
         .await?;
-        self.ensure_mirror_root(pool, datasets).await?;
-        self.create_slot_parent(&parent, root.refquota).await?;
-        let fs = format!("{parent}/fs");
+        Ok(())
+    }
+
+    async fn move_into_slot(
+        &self,
+        pool: &MachinePool,
+        root: &Dataset,
+        name: &DockerVolumeName,
+    ) -> super::Result<()> {
+        let fs = slot_fs(pool, name);
         self.zfs(&["rename", &root.name, &fs]).await?;
-        self.zfs(&["set", "readonly=on", &fs]).await?;
-        self.zfs(&["inherit", WRITER_PROPERTY, &fs]).await?;
+        self.seal(&fs).await
+    }
+
+    /// A slot fs is read-only and names no writer.
+    async fn seal(&self, fs: &str) -> super::Result<()> {
+        self.zfs(&["set", "readonly=on", fs]).await?;
+        self.zfs(&["inherit", WRITER_PROPERTY, fs]).await?;
         Ok(())
     }
 
@@ -97,7 +165,7 @@ impl VolumeStorage {
     /// position a new run's `02-lease` would write.
     async fn bump_lease_records(
         &self,
-        pool: &ployzd::machine_pool::MachinePool,
+        pool: &MachinePool,
         datasets: &[Dataset],
     ) -> super::Result<()> {
         let root = format!("{}/{DATASET_ROOT}", pool.name());
