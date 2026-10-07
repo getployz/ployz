@@ -47,6 +47,18 @@ pub(crate) struct PreparedReset {
     resetting: LocalMachineRecord,
 }
 
+/// A join or initialize validated against an Uninitialized record and not yet saved.
+/// Storage departs between planning it and [`LocalMachineStore::install`].
+pub(crate) struct Installation {
+    body: LocalMachineBody,
+    wireguard_mtu: Option<u32>,
+}
+
+pub(crate) enum JoinPlan {
+    AlreadyAccepted,
+    Install(Installation),
+}
+
 impl PreparedReset {
     pub(crate) fn commit(self, store: &mut LocalMachineStore) -> Result<(), StoreError> {
         let mut current = store.record.clone();
@@ -213,6 +225,17 @@ impl LocalMachineStore {
         &mut self,
         request: ployz_core::InitializeRequest,
     ) -> Result<Machine, StoreError> {
+        let (machine, installation) = self.plan_initialize(request)?;
+        self.install(installation)?;
+        Ok(machine)
+    }
+
+    /// # Errors
+    /// Rejects an initialized Machine, missing endpoints, or an invalid network.
+    pub(crate) fn plan_initialize(
+        &self,
+        request: ployz_core::InitializeRequest,
+    ) -> Result<(Machine, Installation), StoreError> {
         let ployz_core::InitializeRequest {
             initial_policy,
             name,
@@ -245,27 +268,47 @@ impl LocalMachineStore {
             runtime: local_runtime(),
             build_concurrency: None,
         };
-        let mut initialized = self.record.clone();
-        initialized.body = LocalMachineBody::Participating {
-            machine: machine.clone(),
-            origin: ParticipationOrigin::Founder {
-                cluster: founding_cluster,
+        let installation = Installation {
+            body: LocalMachineBody::Participating {
+                machine: machine.clone(),
+                origin: ParticipationOrigin::Founder {
+                    cluster: founding_cluster,
+                },
             },
+            wireguard_mtu,
         };
-        initialized.wireguard_mtu = wireguard_mtu;
-        save(&self.data_dir, &initialized)?;
-        self.record = initialized;
-        Ok(machine)
+        Ok((machine, installation))
     }
 
     /// Returns true when this assignment was already durably accepted.
     pub fn join(
         &mut self,
-        mut assigned_machine: Machine,
+        assigned_machine: Machine,
         visible_peers: Vec<Machine>,
         target_versions: BTreeMap<String, i64>,
         wireguard_mtu: Option<u32>,
     ) -> Result<bool, StoreError> {
+        match self.plan_join(
+            assigned_machine,
+            visible_peers,
+            target_versions,
+            wireguard_mtu,
+        )? {
+            JoinPlan::AlreadyAccepted => Ok(true),
+            JoinPlan::Install(installation) => {
+                self.install(installation)?;
+                Ok(false)
+            }
+        }
+    }
+
+    pub(crate) fn plan_join(
+        &self,
+        mut assigned_machine: Machine,
+        visible_peers: Vec<Machine>,
+        target_versions: BTreeMap<String, i64>,
+        wireguard_mtu: Option<u32>,
+    ) -> Result<JoinPlan, StoreError> {
         if self.record.id() != assigned_machine.id {
             return Err(StoreError::IdentityMismatch);
         }
@@ -285,23 +328,33 @@ impl LocalMachineStore {
                 machine,
                 origin: ParticipationOrigin::Join { .. },
             } if machine == &assigned_machine && self.record.wireguard_mtu == wireguard_mtu => {
-                return Ok(true);
+                return Ok(JoinPlan::AlreadyAccepted);
             }
             LocalMachineBody::Uninitialized { .. } => {}
             LocalMachineBody::Joining { .. }
             | LocalMachineBody::Participating { .. }
             | LocalMachineBody::Resetting { .. } => return Err(StoreError::AlreadyInitialized),
         }
-        let mut joining = self.record.clone();
-        joining.body = LocalMachineBody::Joining {
-            machine: assigned_machine,
-            bootstrap: visible_peers,
-            min_store_version: target_versions,
-        };
-        joining.wireguard_mtu = wireguard_mtu;
-        save(&self.data_dir, &joining)?;
-        self.record = joining;
-        Ok(false)
+        Ok(JoinPlan::Install(Installation {
+            body: LocalMachineBody::Joining {
+                machine: assigned_machine,
+                bootstrap: visible_peers,
+                min_store_version: target_versions,
+            },
+            wireguard_mtu,
+        }))
+    }
+
+    /// # Errors
+    /// Rejects a record that left Uninitialized since planning, or a failed save.
+    pub(crate) fn install(&mut self, installation: Installation) -> Result<(), StoreError> {
+        self.require_uninitialized()?;
+        let mut installed = self.record.clone();
+        installed.body = installation.body;
+        installed.wireguard_mtu = installation.wireguard_mtu;
+        save(&self.data_dir, &installed)?;
+        self.record = installed;
+        Ok(())
     }
 
     pub fn update(

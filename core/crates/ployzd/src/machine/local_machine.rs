@@ -21,6 +21,7 @@ use thiserror::Error;
 use super::{
     LocalMachineRecord, LocalMachineStore, RecordOwner, RecordOwnerStopped, StoreError,
     local_runtime,
+    store::{Installation, JoinPlan},
 };
 
 use crate::{
@@ -415,11 +416,11 @@ impl LocalMachine {
     /// Returns [`Error::RecordOwner`] when the record owner has stopped and
     /// [`Error::Store`] when initialize is not legal in the current phase.
     async fn initialize_admitted(&self, request: InitializeRequest) -> Result<Initialized, Error> {
-        self.depart_storage().await?;
-        let machine = self
+        let (machine, installation) = self
             .owner
-            .mutate(move |store| store.initialize(request))
+            .mutate(move |store| store.plan_initialize(request))
             .await??;
+        self.install(installation).await?;
         tracing::info!(
             name = machine.name.as_str(),
             id = machine.id.as_str(),
@@ -517,11 +518,10 @@ impl LocalMachine {
     /// Returns [`Error::RecordOwner`] when the record owner has stopped
     /// and [`Error::Store`] when join is not legal in the current phase.
     async fn join_admitted(&self, request: JoinRequest) -> Result<JoinAccepted, Error> {
-        self.depart_storage().await?;
-        let already_accepted = self
+        let plan = self
             .owner
             .mutate(move |store| {
-                store.join(
+                store.plan_join(
                     request.registration.assigned_machine,
                     request.registration.visible_peers,
                     request.registration.target_versions,
@@ -529,6 +529,13 @@ impl LocalMachine {
                 )
             })
             .await??;
+        let already_accepted = match plan {
+            JoinPlan::AlreadyAccepted => true,
+            JoinPlan::Install(installation) => {
+                self.install(installation).await?;
+                false
+            }
+        };
         let record = self.record();
         let machine = record
             .machine()
@@ -755,6 +762,16 @@ impl LocalMachine {
 }
 
 impl LocalMachine {
+    /// Departs storage before saving, so a crash in between leaves the record
+    /// Uninitialized and the retry departs again.
+    async fn install(&self, installation: Installation) -> Result<(), Error> {
+        self.depart_storage().await?;
+        self.owner
+            .mutate(move |store| store.install(installation))
+            .await??;
+        Ok(())
+    }
+
     /// Demote every root through the plugin, then make Docker forget each demoted name.
     /// A Machine without Docker has no volume driver and nothing to depart.
     ///
