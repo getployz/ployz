@@ -186,6 +186,8 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         )
         .route("/Volume.ClearFinal", post(switch_target::clear_final))
         .route("/Volume.Promote", post(switch_target::promote))
+        .route("/Volume.FinishPromote", post(switch_target::finish_promote))
+        .route("/Volume.Unregister", post(switch_target::unregister))
         .route(
             "/Volume.AdmitHandedStart",
             post(switch_target::admit_handed_start),

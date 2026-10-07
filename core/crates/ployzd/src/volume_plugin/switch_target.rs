@@ -1,12 +1,7 @@
 //! Target switch effects: accepting the handed-over mirror, promoting it to the writer,
 //! starting its Service Container, and restoring a copy as the writer.
 
-use std::{
-    collections::BTreeSet,
-    fmt,
-    str::FromStr,
-    sync::{Arc, Mutex},
-};
+use std::{fmt, str::FromStr};
 
 use axum::{Json, extract::State};
 use ployz_core::{
@@ -17,7 +12,7 @@ use ployzd::machine_pool::MachinePool;
 
 use super::{
     Dataset, DockerVolumeName, VolumeStorage,
-    lease::{Admitted, MIRROR_PROPERTY, WRITER_PROPERTY, internal, root_dataset},
+    lease::{Admitted, MIRROR_PROPERTY, PROMOTE_PROPERTY, WRITER_PROPERTY, internal, root_dataset},
     mirror::{Leased, name},
     switch_source::{HOLDER_PROPERTY, MountGrant, precondition},
 };
@@ -58,45 +53,6 @@ impl FromStr for Task {
             lease: Lease::new(lease.parse().map_err(|_| invalid())?),
             admitted_unix_seconds: admitted.parse().map_err(|_| invalid())?,
         })
-    }
-}
-
-/// The Promote tasks this process is running, by Volume name.
-#[derive(Clone, Default)]
-pub(super) struct Tasks(Arc<Mutex<BTreeSet<String>>>);
-
-struct Running {
-    tasks: Tasks,
-    name: String,
-}
-
-impl Drop for Running {
-    fn drop(&mut self) {
-        self.tasks
-            .0
-            .lock()
-            .expect("task registry is not poisoned")
-            .remove(&self.name);
-    }
-}
-
-impl Tasks {
-    fn running(&self, name: &DockerVolumeName) -> bool {
-        self.0
-            .lock()
-            .expect("task registry is not poisoned")
-            .contains(&name.0)
-    }
-
-    fn start(&self, name: &DockerVolumeName) -> Running {
-        self.0
-            .lock()
-            .expect("task registry is not poisoned")
-            .insert(name.0.clone());
-        Running {
-            tasks: self.clone(),
-            name: name.0.clone(),
-        }
     }
 }
 
@@ -142,6 +98,26 @@ impl VolumeStorage {
         }
     }
 
+    /// This Machine's record of `name` still names `lease`.
+    async fn require_recorded(
+        &self,
+        pool: &MachinePool,
+        datasets: &[Dataset],
+        name: &DockerVolumeName,
+        lease: Lease,
+    ) -> Result<(), RpcError> {
+        let record = self
+            .lease_record(datasets, pool, name)
+            .await
+            .map_err(internal)?;
+        if record.map(|record| record.lease) != Some(lease) {
+            return Err(SwitchError::StaleLease.rpc_error(format!(
+                "the record of Volume {name} no longer names lease {lease}"
+            )));
+        }
+        Ok(())
+    }
+
     /// The guard a task passes, under the lock, before its irreversible effect: its marker
     /// and this Machine's record still name `lease`, and its budget has not run out.
     async fn require_task(
@@ -157,15 +133,7 @@ impl VolumeStorage {
                 "{dataset} carries no task of lease {lease}"
             )));
         };
-        let record = self
-            .lease_record(datasets, pool, name)
-            .await
-            .map_err(internal)?;
-        if record.map(|record| record.lease) != Some(lease) {
-            return Err(SwitchError::StaleLease.rpc_error(format!(
-                "the record of Volume {name} no longer names lease {lease}"
-            )));
-        }
+        self.require_recorded(pool, datasets, name, lease).await?;
         let now = now();
         if task.expired(now) {
             return Err(SwitchError::Expired {
@@ -266,9 +234,6 @@ impl VolumeStorage {
     async fn promote(&self, request: &MirrorRequest) -> Result<SwitchReply, RpcError> {
         let name = name(&request.name)?;
         let mut scope = self.leased(&name, &request.switch).await?;
-        if self.tasks.running(&name) {
-            return Err(SwitchError::Busy.rpc_error(format!("Volume {name} is being promoted")));
-        }
         let root = root_dataset(&scope.pool, &name);
         let rooted = scope.datasets.iter().any(|dataset| dataset.name == root);
         let target = match (scope.slot(&name), scope.fs(&name)) {
@@ -310,31 +275,25 @@ impl VolumeStorage {
             .await?;
         ployzd::faults::kill_after_record("Promote");
         self.admit_task(&target, request.switch.lease).await?;
-        let running = self.tasks.start(&name);
-        let storage = self.clone();
-        let lease = request.switch.lease;
-        let task_name = DockerVolumeName(name.0.clone());
-        tokio::spawn(async move {
-            if let Err(error) = storage.finish_promote(&task_name, lease).await {
-                tracing::warn!(volume = %task_name, error = error.message, "Promote stopped");
-            }
-            drop(running);
-        });
         self.reply(&scope.pool, &name, scope.admitted).await
     }
 
-    /// Renames the handed-in copy over the root and makes it writable. Every step checks
-    /// ZFS first, so a task restarted after a crash finishes what the last one began.
-    pub(super) async fn finish_promote(
-        &self,
-        name: &DockerVolumeName,
-        lease: Lease,
-    ) -> Result<(), RpcError> {
-        ployzd::faults::hold_task("Promote").await;
+    /// Renames the handed-in copy over the root, unregistered, and makes it writable. Every
+    /// step checks ZFS first, so a task restarted after a crash finishes what the last began.
+    pub(super) async fn finish_promote(&self, request: &MirrorRequest) -> Result<(), RpcError> {
+        let name = &name(&request.name)?;
+        let lease = request.switch.lease;
         let _guard = self.admit_mutation().await.map_err(internal)?;
         let pool = self.one_pool().await.map_err(internal)?;
         let datasets = self.datasets(&pool).await.map_err(internal)?;
         let root = root_dataset(&pool, name);
+        let rooted = datasets.iter().any(|dataset| dataset.name == root);
+        if rooted
+            && Self::slot(&datasets, &pool, name).is_none()
+            && self.task(&root).await?.is_none()
+        {
+            return Ok(());
+        }
         let marker = match Self::slot(&datasets, &pool, name) {
             Some(slot) => Some(self.mirror_marker(slot).await.map_err(internal)?),
             None => None,
@@ -357,7 +316,7 @@ impl VolumeStorage {
             ])
             .await
             .map_err(internal)?;
-            self.zfs(&["rename", fs, &root]).await.map_err(internal)?;
+            self.rename_unregistered(fs, &root, lease).await?;
         }
         if let Some(slot) = &slot {
             self.zfs(&["destroy", slot]).await.map_err(internal)?;
@@ -515,7 +474,8 @@ impl VolumeStorage {
         ployzd::faults::kill_after_record("Restore");
         self.restore_snapshot(&copy).await?;
         if let (Some(fs), false) = (&fs, rooted) {
-            self.zfs(&["rename", fs, &root]).await.map_err(internal)?;
+            self.rename_unregistered(fs, &root, request.switch.lease)
+                .await?;
         }
         if let Some(slot) = &slot {
             self.zfs(&["destroy", slot]).await.map_err(internal)?;
@@ -533,6 +493,46 @@ impl VolumeStorage {
         }
         scope.admitted.lease.cycle = Cycle::Closed;
         self.reply(&scope.pool, &name, scope.admitted).await
+    }
+
+    /// Renames a copy over the root marked unregistered: Docker sees it only once its Create
+    /// registers it with the spec's labels.
+    async fn rename_unregistered(
+        &self,
+        fs: &str,
+        root: &str,
+        lease: Lease,
+    ) -> Result<(), RpcError> {
+        self.zfs(&["set", &format!("{PROMOTE_PROPERTY}={lease}"), fs])
+            .await
+            .map_err(internal)?;
+        self.zfs(&["rename", fs, root]).await.map_err(internal)?;
+        Ok(())
+    }
+
+    /// Hides a root Docker recorded without its labels, so Docker forgets it and the next
+    /// Create registers it again.
+    async fn unregister(&self, request: &MirrorRequest) -> Result<(), RpcError> {
+        let name = name(&request.name)?;
+        let lease = request.switch.lease;
+        let _guard = self.admit_mutation().await.map_err(internal)?;
+        let pool = self.one_pool().await.map_err(internal)?;
+        let datasets = self.datasets(&pool).await.map_err(internal)?;
+        let root = Self::dataset(&datasets, &pool, &name)
+            .map_err(internal)?
+            .ok_or_else(|| precondition(format!("Volume {name} has no root here")))?;
+        root.require_provisioned(&name).map_err(internal)?;
+        self.require_recorded(&pool, &datasets, &name, lease)
+            .await?;
+        if !self.holders(&name).await.map_err(internal)?.is_empty() {
+            return Err(precondition(format!(
+                "Volume {name} is held by a Container; it cannot be registered again"
+            )));
+        }
+        self.zfs(&["set", &format!("{PROMOTE_PROPERTY}={lease}"), &root.name])
+            .await
+            .map_err(internal)?;
+        Ok(())
     }
 
     /// Keeps one restore snapshot per copy: older `@restore-*` go before the new one.
@@ -571,6 +571,20 @@ pub(super) async fn promote(
     Json(request): Json<MirrorRequest>,
 ) -> Json<Result<SwitchReply, RpcError>> {
     Json(storage.promote(&request).await)
+}
+
+pub(super) async fn finish_promote(
+    State(storage): State<VolumeStorage>,
+    Json(request): Json<MirrorRequest>,
+) -> Json<Result<(), RpcError>> {
+    Json(storage.finish_promote(&request).await)
+}
+
+pub(super) async fn unregister(
+    State(storage): State<VolumeStorage>,
+    Json(request): Json<MirrorRequest>,
+) -> Json<Result<(), RpcError>> {
+    Json(storage.unregister(&request).await)
 }
 
 pub(super) async fn admit_handed_start(

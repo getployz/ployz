@@ -1,7 +1,5 @@
 //! Target switch effects and crash replay through the Docker plugin routes.
 
-use ployz_core::Lease;
-
 use super::lease_tests::set_property;
 use super::mirror_tests::{at, commands, property, snapshot_names};
 use super::switch_source_tests::{CONTAINER, programs, serve_storage};
@@ -56,18 +54,39 @@ fn promoted() -> (TestDir, PathBuf, tokio::task::JoinHandle<io::Result<()>>) {
     (test, socket, server)
 }
 
+/// The renamed root stays out of Get and List until Docker's Create registers it.
+async fn assert_registered_only_by_create(test: &TestDir, socket: &Path) {
+    assert_eq!(property(test, ROOT, "ployz:promote").as_deref(), Some("1"));
+    assert_eq!(
+        post(socket, "/VolumeDriver.Get", json!({"Name":"data"})).await,
+        json!({"Err":"Provisioned Volume data does not exist"})
+    );
+    assert_eq!(
+        post(socket, "/VolumeDriver.List", json!({})).await,
+        json!({"Volumes":[],"Err":""})
+    );
+    assert_eq!(create(socket).await, json!({"Err":""}));
+    assert_eq!(property(test, ROOT, "ployz:promote"), None);
+    let got = post(socket, "/VolumeDriver.Get", json!({"Name":"data"})).await;
+    assert_eq!(got.pointer("/Volume/Name"), Some(&json!("data")), "{got}");
+}
+
 fn reason(response: &Value) -> Option<&Value> {
     response.pointer("/Err/details/reason")
 }
 
-async fn promoted_by_task(test: &TestDir) {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !test.0.join("volume").exists() || property(test, ROOT, "ployz:task").is_some() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+async fn finish_promote(socket: &Path) {
+    let response = post(socket, "/Volume.FinishPromote", at(1, 10, 0, 0, json!({}))).await;
+    assert_eq!(response, json!({"Ok":null}));
+}
+
+async fn create(socket: &Path) -> Value {
+    post(
+        socket,
+        "/VolumeDriver.Create",
+        json!({"Name":"data","Opts":{"size":"1073741824b"}}),
+    )
     .await
-    .expect("the Promote task finishes");
 }
 
 #[tokio::test]
@@ -151,7 +170,7 @@ async fn promote_renames_the_handed_in_copy_over_the_root_and_replays() {
         Some(&json!("adopt")),
         "{response}"
     );
-    promoted_by_task(&test).await;
+    finish_promote(&socket).await;
     assert!(!test.0.join("mirror").exists());
     assert!(!test.0.join("mirror-fs").exists());
     assert!(!test.0.join("readonly-volume").exists());
@@ -161,6 +180,8 @@ async fn promote_renames_the_handed_in_copy_over_the_root_and_replays() {
         Some("900")
     );
     assert_eq!(snapshot_names(&test, ROOT), ["f-1"]);
+    finish_promote(&socket).await;
+    assert_registered_only_by_create(&test, &socket).await;
     let response = post(&socket, "/Volume.Promote", at(1, 10, 0, 0, json!({}))).await;
     assert_eq!(
         response.pointer("/Ok/decision"),
@@ -181,19 +202,11 @@ async fn promote_renames_the_handed_in_copy_over_the_root_and_replays() {
 
 #[tokio::test]
 async fn the_promote_task_stops_when_the_record_names_a_later_lease() {
-    let (test, _socket, server) = mirror("handed_in:900", 900);
+    let (test, socket, server) = mirror("handed_in:900", 900);
     set_property(&test, FS, "ployz:task", &format!("1:{}", now()));
     set_property(&test, RECORD.0, RECORD.1, "2:3.0.0:open");
-    let storage = VolumeStorage::with_programs(test.0.join("zpool"), test.0.join("zfs"));
-    let error = storage
-        .finish_promote(&"data".parse().unwrap(), Lease::new(1))
-        .await
-        .unwrap_err();
-    assert_eq!(
-        error.details.get("reason"),
-        Some(&json!("stale_lease")),
-        "{error:?}"
-    );
+    let response = post(&socket, "/Volume.FinishPromote", at(1, 10, 0, 0, json!({}))).await;
+    assert_eq!(reason(&response), Some(&json!("stale_lease")), "{response}");
     assert!(test.0.join("mirror-fs").exists());
     assert_eq!(property(&test, FS, "readonly").as_deref(), Some("on"));
     assert!(!commands(&test).contains("zfs rename"));
@@ -202,19 +215,11 @@ async fn the_promote_task_stops_when_the_record_names_a_later_lease() {
 
 #[tokio::test]
 async fn the_promote_task_stops_past_its_budget() {
-    let (test, _socket, server) = mirror("handed_in:900", 900);
+    let (test, socket, server) = mirror("handed_in:900", 900);
     set_property(&test, FS, "ployz:task", &format!("1:{}", now() - 601));
     set_property(&test, RECORD.0, RECORD.1, "1:10.0.0:open");
-    let storage = VolumeStorage::with_programs(test.0.join("zpool"), test.0.join("zfs"));
-    let error = storage
-        .finish_promote(&"data".parse().unwrap(), Lease::new(1))
-        .await
-        .unwrap_err();
-    assert_eq!(
-        error.details.get("reason"),
-        Some(&json!("expired")),
-        "{error:?}"
-    );
+    let response = post(&socket, "/Volume.FinishPromote", at(1, 10, 0, 0, json!({}))).await;
+    assert_eq!(reason(&response), Some(&json!("expired")), "{response}");
     assert!(test.0.join("mirror-fs").exists());
     assert_eq!(property(&test, FS, "readonly").as_deref(), Some("on"));
     server.abort();
@@ -363,6 +368,7 @@ async fn restore_makes_the_mirror_the_writable_root_with_one_restore_snapshot() 
         assert_eq!(response.pointer("/Ok/copy/readonly"), Some(&json!(false)));
     }
     assert!(!test.0.join("mirror").exists());
+    assert_registered_only_by_create(&test, &socket).await;
     let snapshots = snapshot_names(&test, ROOT);
     let [restore, finale] = snapshots.as_slice() else {
         panic!("{snapshots:?}");
@@ -394,6 +400,28 @@ async fn restore_reopens_a_handed_root_and_keeps_one_restore_snapshot() {
         .count();
     assert_eq!(restores, 1);
     assert!(!test.0.join("readonly-volume").exists());
+    server.abort();
+}
+
+#[tokio::test]
+async fn unregister_hides_the_root_of_the_recorded_lease_while_no_container_holds_it() {
+    let (test, socket, server) = promoted();
+    set_property(&test, RECORD.0, RECORD.1, "2:3.0.0:open");
+    let response = post(&socket, "/Volume.Unregister", at(1, 12, 0, 0, json!({}))).await;
+    assert_eq!(reason(&response), Some(&json!("stale_lease")), "{response}");
+    set_property(&test, RECORD.0, RECORD.1, "1:11.0.0:closed");
+    fs::write(test.0.join("holders"), format!("{CONTAINER}\n")).unwrap();
+    let response = post(&socket, "/Volume.Unregister", at(1, 12, 0, 0, json!({}))).await;
+    assert_eq!(
+        reason(&response),
+        Some(&json!("precondition")),
+        "{response}"
+    );
+    assert_eq!(property(&test, ROOT, "ployz:promote"), None);
+    fs::write(test.0.join("holders"), "").unwrap();
+    let response = post(&socket, "/Volume.Unregister", at(1, 12, 0, 0, json!({}))).await;
+    assert_eq!(response, json!({"Ok":null}));
+    assert_registered_only_by_create(&test, &socket).await;
     server.abort();
 }
 
@@ -486,7 +514,7 @@ async fn every_target_verb_finishes_after_a_real_kill_after_record() {
                 );
             }
             "Promote" => {
-                promoted_by_task(&test).await;
+                finish_promote(&socket).await;
                 assert_eq!(property(&test, ROOT, "readonly").as_deref(), Some("off"));
             }
             "StartHandedContainer" => {
