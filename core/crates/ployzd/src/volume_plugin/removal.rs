@@ -35,6 +35,13 @@ impl VolumeStorage {
         let dataset = Self::dataset(&datasets, &pool, name)?
             .expect("the requested dataset was just observed");
         dataset.require_provisioned(name)?;
+        if self.unregistered(&dataset.name).await? {
+            return Err(format!(
+                "VolumeSwitching: Volume {name} is a promoted root Docker has not registered yet; refusing to remove {}",
+                dataset.name
+            )
+            .into());
+        }
         let writer = self.writer_marker(dataset).await?;
         if writer != WriterMarker::Idle {
             return Err(format!(

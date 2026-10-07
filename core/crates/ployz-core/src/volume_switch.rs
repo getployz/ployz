@@ -679,10 +679,17 @@ pub fn admit_plain_mount(
     }
 }
 
-/// The refusal a plain Deploy of `name` reads when no Machine holds its writer, naming
-/// every copy and the restore that would make one a writer.
+/// The refusal a plain Deploy of `name` reads when this Machine cannot mount its writer:
+/// the Machine that holds the writer, or else every copy and the restore that would make
+/// one a writer.
 #[must_use]
 pub fn no_writer_message(name: &DockerVolumeName, copies: &[KnownCopy]) -> String {
+    if let Some(writer) = copies.iter().find(|copy| copy.role == CopyRole::Writer) {
+        return format!(
+            "Volume {name}'s writer is on {}, so this Machine cannot mount it",
+            writer.machine
+        );
+    }
     let Some(first) = copies.first() else {
         return format!(
             "Volume {name} has no writer: no Machine holds a copy and this Machine recorded a run for it; restore it from a backup or remove it before deploying"
@@ -691,10 +698,10 @@ pub fn no_writer_message(name: &DockerVolumeName, copies: &[KnownCopy]) -> Strin
     let listed = copies
         .iter()
         .map(|copy| {
-            let role = match copy.role {
-                CopyRole::Writer => "writer",
-                CopyRole::Slot => "copy",
-                CopyRole::Switching => "switching",
+            let role = if copy.role == CopyRole::Switching {
+                "switching"
+            } else {
+                "copy"
             };
             format!("{} ({role})", copy.machine)
         })
@@ -827,6 +834,25 @@ mod tests {
             "Volume data has no writer; it is held as fsn-2 (copy), hel-1 (switching). Make one the writer: ployz volume restore data --from fsn-2"
         );
         assert!(no_writer_message(&volume, &[]).contains("no Machine holds a copy"));
+    }
+
+    #[test]
+    fn no_writer_message_names_a_writer_elsewhere_without_a_restore_line() {
+        let volume = DockerVolumeName::parse("data").unwrap();
+        let copies = [
+            KnownCopy {
+                machine: name("fsn-2"),
+                role: CopyRole::Slot,
+            },
+            KnownCopy {
+                machine: name("hel-1"),
+                role: CopyRole::Writer,
+            },
+        ];
+        assert_eq!(
+            no_writer_message(&volume, &copies),
+            "Volume data's writer is on hel-1, so this Machine cannot mount it"
+        );
     }
 
     #[test]

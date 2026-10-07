@@ -1,5 +1,6 @@
 //! Docker Volume removal and lookup behavior through plugin routes.
 
+use super::lease_tests::set_property;
 use super::*;
 
 #[tokio::test]
@@ -121,6 +122,29 @@ async fn docker_receives_dataset_destruction_failures() {
 
     assert!(error(&response).contains("dataset is busy"));
     assert!(test.0.join("volume").exists());
+    server.abort();
+}
+
+#[tokio::test]
+async fn remove_refuses_a_promoted_root_docker_has_not_registered() {
+    let test = TestDir::new();
+    fs::write(test.0.join("root"), "").unwrap();
+    fs::write(test.0.join("volume"), "").unwrap();
+    set_property(&test, "tank/ployz/data", "ployz:promote", "1");
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+    let socket = test.0.join("plugin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+
+    let response = post(&socket, "/VolumeDriver.Remove", json!({"Name":"data"})).await;
+
+    assert!(error(&response).contains("not registered"), "{response}");
+    assert!(test.0.join("volume").exists());
+    assert!(
+        !fs::read_to_string(test.0.join("commands"))
+            .unwrap()
+            .contains("zfs destroy")
+    );
     server.abort();
 }
 

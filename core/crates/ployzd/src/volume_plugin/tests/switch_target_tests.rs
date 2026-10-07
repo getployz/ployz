@@ -326,6 +326,63 @@ async fn start_stops_before_docker_start_past_its_budget() {
 }
 
 #[tokio::test]
+async fn a_replayed_start_admission_keeps_the_first_admission_time() {
+    let (test, socket, server) = promoted();
+    let admitted = post(
+        &socket,
+        "/Volume.AdmitHandedStart",
+        at(1, 11, 0, 0, json!({})),
+    )
+    .await;
+    assert!(admitted.get("Ok").is_some(), "{admitted}");
+    let first = format!("1:{}", now() - 300);
+    set_property(&test, ROOT, "ployz:task", &first);
+    let replay = post(
+        &socket,
+        "/Volume.AdmitHandedStart",
+        at(1, 11, 0, 0, json!({})),
+    )
+    .await;
+    assert_eq!(
+        replay.pointer("/Ok/decision"),
+        Some(&json!("replay")),
+        "{replay}"
+    );
+    assert_eq!(
+        property(&test, ROOT, "ployz:task").as_deref(),
+        Some(first.as_str())
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn start_refuses_while_a_second_container_holds_the_volume() {
+    let (test, socket, server) = promoted();
+    let admitted = post(
+        &socket,
+        "/Volume.AdmitHandedStart",
+        at(1, 11, 0, 0, json!({})),
+    )
+    .await;
+    assert!(admitted.get("Ok").is_some(), "{admitted}");
+    fs::write(test.0.join("holders"), format!("{CONTAINER}\nforeign\n")).unwrap();
+    let response = post(
+        &socket,
+        "/Volume.StartHandedContainer",
+        at(1, 11, 0, 0, json!({"container_id": CONTAINER})),
+    )
+    .await;
+    assert_eq!(
+        reason(&response),
+        Some(&json!("precondition")),
+        "{response}"
+    );
+    assert!(!commands(&test).contains("docker start"));
+    assert!(property(&test, ROOT, "ployz:task").is_some());
+    server.abort();
+}
+
+#[tokio::test]
 async fn start_admission_refuses_a_root_whose_newest_snapshot_is_not_handed_over() {
     let (test, socket, server) = promoted();
     set_property(&test, ROOT, "ployz:handoff", "899");
