@@ -31,7 +31,6 @@ pub(super) const RECEIVE_PROPERTY: &str = "ployz:receive";
 /// partial receive to resume.
 const KILL_AFTER_BYTES: u64 = 1 << 20;
 
-/// `zfs send` streams without pauses, so a writer this long silent is cut off from us.
 pub(super) const RECEIVE_STALL: Duration = Duration::from_secs(60);
 
 /// Which receive a slot last admitted. Outlives the plugin process, unlike the task.

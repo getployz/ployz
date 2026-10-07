@@ -24,7 +24,6 @@ use tokio_util::{io::ReaderStream, sync::CancellationToken};
 
 use crate::machine_pool;
 
-/// The ZFS programs a send runs, so tests can stand in fakes.
 #[derive(Clone)]
 struct Programs {
     zfs: PathBuf,
@@ -198,8 +197,6 @@ mod tests {
     use super::*;
     use crate::test_dir::TestDir;
 
-    /// The writer's Pool `tank`, and a stale read-only import `old` holding a Volume of
-    /// the same name.
     const POOLS: &str = "tank\t4294967296\t0\t4294967296\tONLINE\toff\nold\t4294967296\t0\t4294967296\tONLINE\ton\n";
 
     async fn start(dir: &TestDir, pools: &str) -> (String, CancellationToken) {

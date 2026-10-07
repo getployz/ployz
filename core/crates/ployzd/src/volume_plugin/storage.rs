@@ -51,7 +51,6 @@ pub(super) struct VolumeStorage {
     pub(super) receives: super::transfer::Receives,
     /// Where a writer Machine serves send streams; tests point it at a local server.
     pub(super) send_port: u16,
-    /// How long a receive waits on a silent writer before it gives up, keeping its resume token.
     pub(super) receive_stall: Duration,
 }
 

@@ -199,6 +199,7 @@ case "$*" in
         printf '%s\n' "${{7#refquota=}}" > "$d/refquota"
         ;;
       break)
+        cat >/dev/null
         echo 'cannot receive: connection reset' >&2
         echo 'token-1' > "$d/receive_resume_token"
         echo off > "$d/readonly"

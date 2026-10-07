@@ -21,7 +21,6 @@ struct Writer {
     /// While held, responses wait on `release` before any byte is sent.
     hold: Arc<StdMutex<bool>>,
     release: Arc<Notify>,
-    /// While set, responses send the stream text and then go silent without ending.
     stall: Arc<StdMutex<bool>>,
     port: u16,
 }
@@ -266,6 +265,27 @@ async fn a_stalled_stream_frees_the_slot_and_resumes_by_token() {
     assert_eq!(
         view.pointer("/Ok/status").unwrap(),
         &json!({"state": "resumable", "target": "w-1-1", "token": "token-1"})
+    );
+
+    set_property(
+        &test,
+        "tank/ployz-mirror/data/fs",
+        "receive_resume_token",
+        "-",
+    );
+    let failed = settled(&socket, 1).await;
+    assert_eq!(failed.pointer("/Ok/status/state").unwrap(), "failed");
+    let reason = failed
+        .pointer("/Ok/status/reason")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(reason.contains("stream:"), "{reason}");
+    set_property(
+        &test,
+        "tank/ployz-mirror/data/fs",
+        "receive_resume_token",
+        "token-1",
     );
 
     *writer.stall.lock().unwrap() = false;
