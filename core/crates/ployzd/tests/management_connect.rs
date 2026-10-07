@@ -706,7 +706,14 @@ async fn build_grant_contract() {
         ended.pushed.as_ref().map(ployz_core::ImageDigest::as_str),
         Some(format!("sha256:{hex}").as_str())
     );
-    assert!(http.head(&blob).send().await.is_err());
+    let after_end = http.head(&blob).send().await;
+    assert!(
+        after_end.is_err(),
+        "after end returned {:?}; close signal {:?}; ingest requests {:?}",
+        after_end.as_ref().map(reqwest::Response::status),
+        registry.refusal(),
+        seen.lock().unwrap(),
+    );
     let again = open_grant_registry(&minted.grant, relay).await.unwrap();
     assert!(
         http.get(format!("http://{}/v2/", again.address()))
