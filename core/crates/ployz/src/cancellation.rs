@@ -13,14 +13,21 @@ static DIES: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 static GRACEFUL: AtomicBool = AtomicBool::new(false);
 
 /// Subscribe to Ctrl-C for async-only commands already running on Tokio.
+/// The listener is registered before SIGINT stops ending the process, so no
+/// Ctrl-C falls between the two; without one, SIGINT keeps its default action.
 pub(crate) fn on_ctrl_c() -> CancellationToken {
-    claim_graceful();
     let cancellation = CancellationToken::new();
+    let Ok(mut interrupt) =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+    else {
+        return cancellation;
+    };
+    claim_graceful();
     let signal = cancellation.clone();
     tokio::spawn(async move {
         tokio::select! {
             () = signal.cancelled() => {}
-            result = tokio::signal::ctrl_c() => if result.is_ok() {
+            received = interrupt.recv() => if received.is_some() {
                 signal.cancel();
             }
         }
