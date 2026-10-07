@@ -693,6 +693,36 @@ impl MachineRpc for DeployService {
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
+    async fn withdraw(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
+    async fn freeze(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
+    async fn hand_over(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
+    async fn thaw(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
+    async fn close(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
     async fn declare_mirror(
         &self,
         _request: Request<OpaquePayload>,

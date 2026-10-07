@@ -36,6 +36,7 @@ pub struct MachineService {
     ingest: Arc<ImageIngest>,
     machine_api_port: u16,
     runtime_watch: Arc<RuntimeWatch>,
+    switch_mutation: Arc<tokio::sync::Mutex<()>>,
     pub(crate) builds: Arc<crate::build::Runner>,
     pub(crate) grants: Arc<crate::management::BuildGrants>,
 }
@@ -52,6 +53,7 @@ impl MachineService {
             ingest: ImageIngest::new(None, None),
             machine_api_port: MACHINE_API_PORT,
             runtime_watch: Arc::default(),
+            switch_mutation: Arc::default(),
             builds: crate::build::Runner::new(Default::default(), Default::default())
                 .expect("default Build policy"),
             grants: Arc::default(),
@@ -156,6 +158,7 @@ impl MachineService {
         route: &str,
         request: &impl serde::Serialize,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let _guard = self.switch_mutation.lock().await;
         if let Err(error) = self.require_joined() {
             return respond(error);
         }
@@ -309,6 +312,26 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::MarkContainerStopping>(request)?;
+        let _guard = self.switch_mutation.lock().await;
+        if let Some(volume) = &request.volume {
+            if let Err(error) = self.require_joined() {
+                return respond(error);
+            }
+            crate::faults::apply("MarkContainerStopping").await;
+            let source = ployz_core::SourceContainerRequest {
+                switch: volume.switch,
+                name: volume.name.clone(),
+                container_id: request.container_id,
+            };
+            if let Err(error) = self
+                .local
+                .plugin()
+                .call::<ployz_core::SwitchReply>("Volume.MarkContainerStopping", &source)
+                .await
+            {
+                return respond(error);
+            }
+        }
         let containers = match self.containers() {
             Ok(containers) => containers,
             Err(error) => return respond(error),
@@ -497,6 +520,85 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::AdoptLease>(request)?;
         self.switch_verb::<ployz_core::SwitchReply>("AdoptLease", "Volume.AdoptLease", &request)
+            .await
+    }
+
+    async fn withdraw(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::Withdraw>(request)?;
+        let _guard = self.switch_mutation.lock().await;
+        if let Err(error) = self.require_joined() {
+            return respond(error);
+        }
+        crate::faults::apply("Withdraw").await;
+        let result = self
+            .local
+            .plugin()
+            .call::<ployz_core::SwitchReply>("Volume.Withdraw", &request)
+            .await;
+        match result {
+            Ok(reply) => {
+                if let Ok(containers) = self.containers() {
+                    containers.mark_stopping(request.container_id);
+                }
+                respond(reply)
+            }
+            Err(error) => respond(error),
+        }
+    }
+
+    async fn freeze(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::Freeze>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>("Freeze", "Volume.Freeze", &request)
+            .await
+    }
+
+    async fn hand_over(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::HandOver>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>("HandOver", "Volume.HandOver", &request)
+            .await
+    }
+
+    async fn thaw(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::Thaw>(request)?;
+        let _guard = self.switch_mutation.lock().await;
+        if let Err(error) = self.require_joined() {
+            return respond(error);
+        }
+        crate::faults::apply("Thaw").await;
+        let result = self
+            .local
+            .plugin()
+            .call::<ployz_core::SwitchReply>("Volume.Thaw", &request)
+            .await;
+        match result {
+            Ok(reply) => {
+                if let Ok(containers) = self.containers() {
+                    containers.clear_stopping(&request.container_id);
+                }
+                respond(reply)
+            }
+            Err(error) => respond(error),
+        }
+    }
+
+    async fn close(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::Close>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>("Close", "Volume.Close", &request)
             .await
     }
 

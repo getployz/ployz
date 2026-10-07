@@ -156,7 +156,7 @@ impl ContainerRuntime {
             .send_if_modified(|stopping| stopping.insert(container_id));
     }
 
-    fn clear_stopping(&self, container_id: &ContainerId) {
+    pub(crate) fn clear_stopping(&self, container_id: &ContainerId) {
         self.stopping
             .send_if_modified(|stopping| stopping.remove(container_id));
     }

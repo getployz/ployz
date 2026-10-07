@@ -428,6 +428,8 @@ async fn concurrent_and_retried_first_creates_converge_on_one_pool() {
     let second = VolumeStorage {
         pool: first.pool.clone(),
         zfs: first.zfs.clone(),
+        docker: first.docker.clone(),
+        mount_grant: Arc::default(),
         mutation: Arc::new(Mutex::new(())),
         installation: first.installation.clone(),
         receives: Default::default(),
@@ -496,6 +498,8 @@ async fn a_second_process_cannot_use_a_pool_before_its_owner_finishes() {
     let second = VolumeStorage {
         pool: first.pool.clone(),
         zfs: first.zfs.clone(),
+        docker: first.docker.clone(),
+        mount_grant: Arc::default(),
         mutation: Arc::new(Mutex::new(())),
         installation: first.installation.clone(),
         receives: Default::default(),
@@ -966,6 +970,8 @@ esac
             sys_dev_block,
         ),
         zfs: program("zfs"),
+        docker: program("docker"),
+        mount_grant: Arc::default(),
         mutation: Arc::new(Mutex::new(())),
         installation: ployzd::mutation::MutationGate::new(
             directory.join("admission-run"),

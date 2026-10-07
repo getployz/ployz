@@ -1,7 +1,7 @@
 use crate::{
-    AdoptLeaseRequest, CommitRequest, DeclareMirrorRequest, InspectReceiveRequest,
-    InspectVolumeCopyRequest, MirrorRequest, ReceiveView, StartReceiveRequest, StorageCapacity,
-    SwitchReply, VolumeCopyView, WarmRequest,
+    AdoptLeaseRequest, CommitRequest, DeclareMirrorRequest, HandOverRequest, InspectReceiveRequest,
+    InspectVolumeCopyRequest, MirrorRequest, ReceiveView, SourceContainerRequest,
+    StartReceiveRequest, StorageCapacity, SwitchReply, VolumeCopyView, WarmRequest,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -338,6 +338,8 @@ pub struct StopContainerRequest {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MarkContainerStoppingRequest {
     pub container_id: ContainerId,
+    #[serde(default)]
+    pub volume: Option<MirrorRequest>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

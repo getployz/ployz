@@ -7,7 +7,7 @@ pub use enabled::{kill_after_record, kill_inside};
 
 /// Verbs whose effect outlives the RPC; `kill-daemon` fires inside them, from [`kill_inside`].
 #[cfg_attr(not(feature = "verify-faults"), allow(dead_code))]
-const LONG_EFFECTS: [&str; 1] = ["StartReceive"];
+const LONG_EFFECTS: [&str; 2] = ["StartReceive", "Close"];
 
 #[cfg(not(feature = "verify-faults"))]
 pub(crate) async fn apply(_verb: &'static str) {}

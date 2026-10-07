@@ -40,7 +40,6 @@ impl VolumeStorage {
     }
 
     async fn inspect(&self, name: &DockerVolumeName) -> Result<Option<PluginVolume>> {
-        let _guard = self.mutation.lock().await;
         let pool = self.one_pool().await?;
         let datasets = self.datasets(&pool).await?;
         let Some(dataset) = Self::dataset(&datasets, &pool, name)? else {
