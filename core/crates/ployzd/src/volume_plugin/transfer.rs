@@ -242,6 +242,7 @@ impl VolumeStorage {
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
+            .kill_on_drop(true)
             .spawn()
             .map_err(|error| format!("could not run zfs receive: {error}"))?;
         let mut stdin = child.stdin.take().expect("zfs receive stdin is piped");
@@ -251,8 +252,17 @@ impl VolumeStorage {
         while let Some(chunk) = body.next().await {
             match chunk {
                 Ok(bytes) => {
-                    if stdin.write_all(&bytes).await.is_err() {
-                        break;
+                    match tokio::time::timeout(self.receive_stall, stdin.write_all(&bytes)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => {
+                            broke = Some(error.to_string());
+                            break;
+                        }
+                        Err(_) => {
+                            return Err(format!(
+                                "zfs receive into {fs} stalled writing after {received} bytes"
+                            ));
+                        }
                     }
                     let before = received;
                     received += bytes.len() as u64;
@@ -267,9 +277,9 @@ impl VolumeStorage {
             }
         }
         drop(stdin);
-        let output = child
-            .wait_with_output()
+        let output = tokio::time::timeout(self.receive_stall, child.wait_with_output())
             .await
+            .map_err(|_| format!("zfs receive into {fs} stalled finishing after {received} bytes"))?
             .map_err(|error| format!("zfs receive did not finish: {error}"))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
