@@ -47,8 +47,6 @@ pub(crate) struct PreparedReset {
     resetting: LocalMachineRecord,
 }
 
-/// A join or initialize validated against an Uninitialized record and not yet saved.
-/// Storage departs between planning it and [`LocalMachineStore::install`].
 pub(crate) struct Installation {
     body: LocalMachineBody,
     wireguard_mtu: Option<u32>,
@@ -230,8 +228,6 @@ impl LocalMachineStore {
         Ok(machine)
     }
 
-    /// # Errors
-    /// Rejects an initialized Machine, missing endpoints, or an invalid network.
     pub(crate) fn plan_initialize(
         &self,
         request: ployz_core::InitializeRequest,
@@ -345,8 +341,6 @@ impl LocalMachineStore {
         }))
     }
 
-    /// # Errors
-    /// Rejects a record that left Uninitialized since planning, or a failed save.
     pub(crate) fn install(&mut self, installation: Installation) -> Result<(), StoreError> {
         self.require_uninitialized()?;
         let mut installed = self.record.clone();

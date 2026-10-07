@@ -762,8 +762,6 @@ impl LocalMachine {
 }
 
 impl LocalMachine {
-    /// Departs storage before saving, so a crash in between leaves the record
-    /// Uninitialized and the retry departs again.
     async fn install(&self, installation: Installation) -> Result<(), Error> {
         self.depart_storage().await?;
         self.owner

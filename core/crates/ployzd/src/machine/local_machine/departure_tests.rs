@@ -309,3 +309,25 @@ async fn a_refused_initialize_does_not_depart() {
     assert!(test.plugin.routes_called().is_empty());
     assert!(!forgot_data(&test.docker));
 }
+
+#[tokio::test]
+async fn a_join_whose_departure_fails_stays_uninitialized_and_retries() {
+    let test = harness(false).await;
+    let request = join_request(&test.local.record());
+    test.plugin.reply(
+        "Storage.Demote",
+        json!({"Err": {"code": "internal", "message": "zfs rename failed", "details": null}}),
+    );
+    let error = test.local.join(request.clone()).await.unwrap_err();
+    assert!(matches!(error, Error::Cleanup(_)), "{error}");
+    assert_eq!(
+        test.local.record().phase(),
+        LocalMachinePhase::Uninitialized
+    );
+
+    test.plugin.reply("Storage.Demote", json!({"Ok": ["data"]}));
+    let joined = test.local.join(request).await.unwrap();
+    assert!(!joined.already_accepted);
+    assert_eq!(test.plugin.routes_called(), ["Storage.Demote", "Storage.Demote"]);
+    assert_eq!(test.local.record().phase(), LocalMachinePhase::Joining);
+}
