@@ -439,6 +439,16 @@ pub struct HandOverRequest {
     pub guid: SnapshotGuid,
 }
 
+/// StartHandedContainer on the target: create the Service Container on the promoted root
+/// under the creation key `handoff-<guid>` and start it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StartHandedContainerRequest {
+    pub switch: Switch,
+    pub name: DockerVolumeName,
+    pub namespace: crate::Namespace,
+    pub resolved_spec: crate::ResolvedServiceSpec,
+}
+
 /// Commit on the writer: drop run snapshots older than the mirror's newest.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct CommitRequest {
