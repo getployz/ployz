@@ -1328,9 +1328,23 @@ async fn a_replayed_handed_start_adopts_the_container_created_under_its_handoff_
             .unwrap();
         let reply = response.decode::<op::StartHandedContainer>().unwrap();
         assert_eq!(reply.lease.cycle, ployz_core::Cycle::Closed);
-        started.push(plugin.calls.lock().unwrap().last().unwrap().1["container_id"].clone());
+        started.push(
+            plugin
+                .calls
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .1
+                .get("container_id")
+                .cloned(),
+        );
     }
-    assert_eq!(started[0], started[1]);
+    let [first, replayed] = started.as_slice() else {
+        panic!("{started:?}");
+    };
+    assert!(first.is_some());
+    assert_eq!(first, replayed);
     let containers = fake.named_containers.as_ref().unwrap().lock().unwrap();
     assert_eq!(containers.len(), 1, "{:?}", containers.keys());
     assert!(

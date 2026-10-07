@@ -364,9 +364,11 @@ async fn restore_makes_the_mirror_the_writable_root_with_one_restore_snapshot() 
     }
     assert!(!test.0.join("mirror").exists());
     let snapshots = snapshot_names(&test, ROOT);
-    assert_eq!(snapshots.len(), 2, "{snapshots:?}");
-    assert!(snapshots[0].starts_with("restore-") && snapshots[0] != "restore-5");
-    assert_eq!(snapshots[1], "f-1");
+    let [restore, finale] = snapshots.as_slice() else {
+        panic!("{snapshots:?}");
+    };
+    assert!(restore.starts_with("restore-") && restore != "restore-5");
+    assert_eq!(finale, "f-1");
     assert!(!commands(&test).contains("docker start"));
     server.abort();
 }
