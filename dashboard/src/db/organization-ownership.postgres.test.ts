@@ -37,6 +37,7 @@ const notOrganizationOwned = {
   config_branch: "The GitHub branch heads the Store's automation compares from; no view reads them, so they need no change log.",
   config_check_suite: "GitHub check-suite results only the Store's automation reads; no view reads them, so they need no change log.",
   config_waiting_deploy: "Auto-deploys waiting for CI, read only by the Store's automation; no view reads them, so they need no change log.",
+  volume_run: "A volume command's run record, read only by its own run, the sweep and `volume runs`; no view reads it, so it needs no change log.",
 } satisfies Record<string, string>;
 
 let harness: PostgresTestHarness;

@@ -240,7 +240,7 @@ async fn commit_keeps_the_mirror_newest_and_destroys_older_run_snapshots() {
     );
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
 
-    let request = at(1, 4, 1, 1, json!({"mirror_newest": 2}));
+    let request = at(1, 4, 1, 1, json!({"mirror_newest": "2"}));
     let response = post(&socket, "/Volume.CommitSnapshots", request).await;
     assert_eq!(response.pointer("/Ok/decision").unwrap(), "adopt");
     assert_eq!(response.pointer("/Ok/copy/newest/name").unwrap(), "w-1-3");
@@ -266,7 +266,7 @@ async fn commit_refuses_a_newest_the_writer_does_not_hold() {
     );
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
 
-    let request = at(1, 4, 1, 1, json!({"mirror_newest": 77}));
+    let request = at(1, 4, 1, 1, json!({"mirror_newest": "77"}));
     let response = post(&socket, "/Volume.CommitSnapshots", request).await;
     assert_eq!(
         response.pointer("/Err/details/reason").unwrap(),
@@ -364,7 +364,7 @@ async fn prune_keeps_the_newest_and_the_receive_in_flight() {
     let (socket, server) = start(&test, USABLE_POOL, &["root", "mirror", "mirror-fs"]);
 
     let response = post(&socket, "/Volume.PruneMirror", at(1, 4, 1, 4, json!({}))).await;
-    assert_eq!(response.pointer("/Ok/copy/newest/guid").unwrap(), 3);
+    assert_eq!(response.pointer("/Ok/copy/newest/guid").unwrap(), "3");
     assert_eq!(
         snapshot_names(&test, "tank/ployz-mirror/data/fs"),
         ["w-1-3", "w-1-2"]
@@ -448,7 +448,7 @@ async fn every_mirror_verb_is_fenced() {
     for (route, fields) in [
         ("/Volume.DeclareMirror", json!({"refquota_bytes": 1})),
         ("/Volume.BeginRound", json!({})),
-        ("/Volume.CommitSnapshots", json!({"mirror_newest": 1})),
+        ("/Volume.CommitSnapshots", json!({"mirror_newest": "1"})),
         ("/Volume.WarmSnapshot", json!({})),
         ("/Volume.PruneMirror", json!({})),
         ("/Volume.DestroyMirror", json!({})),

@@ -95,7 +95,7 @@ async fn accept_refuses_a_mirror_without_the_handed_over_snapshot() {
     let response = post(
         &socket,
         "/Volume.AcceptHandOff",
-        at(1, 9, 0, 0, json!({"guid":900})),
+        at(1, 9, 0, 0, json!({"guid":"900"})),
     )
     .await;
     assert_eq!(
@@ -118,7 +118,7 @@ async fn accept_marks_the_final_mirror_handed_in_and_replays() {
         let response = post(
             &socket,
             "/Volume.AcceptHandOff",
-            at(1, 9, 0, 0, json!({"guid":900})),
+            at(1, 9, 0, 0, json!({"guid":"900"})),
         )
         .await;
         assert_eq!(
@@ -246,7 +246,7 @@ async fn start_mounts_through_the_grant_while_open_then_closes_and_replays() {
     .await;
     assert_eq!(
         admitted.pointer("/Ok/copy/newest/guid"),
-        Some(&json!(900)),
+        Some(&json!("900")),
         "{admitted}"
     );
     assert_eq!(admitted.pointer("/Ok/lease/cycle"), Some(&json!("open")));
@@ -322,6 +322,63 @@ async fn start_stops_before_docker_start_past_its_budget() {
     .await;
     assert_eq!(reason(&response), Some(&json!("expired")), "{response}");
     assert!(!commands(&test).contains("docker start"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_replayed_start_admission_keeps_the_first_admission_time() {
+    let (test, socket, server) = promoted();
+    let admitted = post(
+        &socket,
+        "/Volume.AdmitHandedStart",
+        at(1, 11, 0, 0, json!({})),
+    )
+    .await;
+    assert!(admitted.get("Ok").is_some(), "{admitted}");
+    let first = format!("1:{}", now() - 300);
+    set_property(&test, ROOT, "ployz:task", &first);
+    let replay = post(
+        &socket,
+        "/Volume.AdmitHandedStart",
+        at(1, 11, 0, 0, json!({})),
+    )
+    .await;
+    assert_eq!(
+        replay.pointer("/Ok/decision"),
+        Some(&json!("replay")),
+        "{replay}"
+    );
+    assert_eq!(
+        property(&test, ROOT, "ployz:task").as_deref(),
+        Some(first.as_str())
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn start_refuses_while_a_second_container_holds_the_volume() {
+    let (test, socket, server) = promoted();
+    let admitted = post(
+        &socket,
+        "/Volume.AdmitHandedStart",
+        at(1, 11, 0, 0, json!({})),
+    )
+    .await;
+    assert!(admitted.get("Ok").is_some(), "{admitted}");
+    fs::write(test.0.join("holders"), format!("{CONTAINER}\nforeign\n")).unwrap();
+    let response = post(
+        &socket,
+        "/Volume.StartHandedContainer",
+        at(1, 11, 0, 0, json!({"container_id": CONTAINER})),
+    )
+    .await;
+    assert_eq!(
+        reason(&response),
+        Some(&json!("precondition")),
+        "{response}"
+    );
+    assert!(!commands(&test).contains("docker start"));
+    assert!(property(&test, ROOT, "ployz:task").is_some());
     server.abort();
 }
 
@@ -456,7 +513,7 @@ async fn every_target_verb_finishes_after_a_real_kill_after_record() {
         "Restore",
     ] {
         let (route, request) = match verb {
-            "AcceptHandOff" => ("AcceptHandOff", at(1, 9, 0, 0, json!({"guid":900}))),
+            "AcceptHandOff" => ("AcceptHandOff", at(1, 9, 0, 0, json!({"guid":"900"}))),
             "StartHandedContainer" => ("AdmitHandedStart", at(1, 11, 0, 0, json!({}))),
             _ => (verb, at(1, 10, 0, 0, json!({}))),
         };

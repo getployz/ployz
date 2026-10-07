@@ -60,6 +60,19 @@ pub async fn observe_volumes(
     to_json(ployz::sdk::observe_volumes(connections, sought).await)
 }
 
+/// Every copy of every Volume on `connections`' Servers, by role
+/// (`CopyObservation`): what Cloud's sweep finds orphaned mirror slots with. Servers
+/// that don't answer are named, never assumed empty.
+///
+/// # Errors
+/// Returns `invalid_argument` for malformed input, or the connection's error when
+/// no Server can be reached.
+#[napi]
+pub async fn observe_copies(connections: serde_json::Value) -> Result<serde_json::Value> {
+    let connections = connections_of(connections)?;
+    to_json(ployz::sdk::observe_copies(connections).await)
+}
+
 #[napi]
 impl ConfigStore {
     /// Answer a `ConfigQuery` as the given Organization. `trusted` is what Cloud

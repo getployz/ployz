@@ -195,6 +195,21 @@ pub async fn observe_volumes(
     observed
 }
 
+/// Every copy of every Volume on `connections`' Servers, by role: what Cloud's sweep
+/// finds orphaned mirror slots with.
+///
+/// # Errors
+/// Returns the connection's error when no Server can be reached, or listing the
+/// Machines fails.
+pub async fn observe_copies(
+    connections: Vec<Connection>,
+) -> Result<super::CopyObservation, RpcError> {
+    let session = connect_connections(connections, Arc::new(SystemConnector::default())).await?;
+    let observed = session.observe_copies().await;
+    session.close().await;
+    observed
+}
+
 struct Run {
     store: Arc<ConfigStore>,
     deployment: DeploymentId,

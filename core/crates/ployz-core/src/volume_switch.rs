@@ -153,8 +153,12 @@ pub enum FenceDecision {
 }
 
 /// ZFS `guid` of a snapshot; stable across send and receive.
+///
+/// A decimal string on the wire: guids span all of u64, and a JSON number above 2^53 loses
+/// digits in JavaScript.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
-#[serde(transparent)]
+#[serde(try_from = "String", into = "String")]
+#[ts(type = "string")]
 pub struct SnapshotGuid(u64);
 
 impl SnapshotGuid {
@@ -172,6 +176,20 @@ impl SnapshotGuid {
 impl fmt::Display for SnapshotGuid {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(formatter)
+    }
+}
+
+impl TryFrom<String> for SnapshotGuid {
+    type Error = std::num::ParseIntError;
+
+    fn try_from(guid: String) -> Result<Self, Self::Error> {
+        guid.parse().map(Self)
+    }
+}
+
+impl From<SnapshotGuid> for String {
+    fn from(guid: SnapshotGuid) -> Self {
+        guid.to_string()
     }
 }
 
@@ -680,10 +698,17 @@ pub fn admit_plain_mount(
     }
 }
 
-/// The refusal a plain Deploy of `name` reads when no Machine holds its writer, naming
-/// every copy and the restore that would make one a writer.
+/// The refusal a plain Deploy of `name` reads when this Machine cannot mount its writer:
+/// the Machine that holds the writer, or else every copy and the restore that would make
+/// one a writer.
 #[must_use]
 pub fn no_writer_message(name: &DockerVolumeName, copies: &[KnownCopy]) -> String {
+    if let Some(writer) = copies.iter().find(|copy| copy.role == CopyRole::Writer) {
+        return format!(
+            "Volume {name}'s writer is on {}, so this Machine cannot mount it",
+            writer.machine
+        );
+    }
     let Some(first) = copies.first() else {
         return format!(
             "Volume {name} has no writer: no Machine holds a copy and this Machine recorded a run for it; restore it from a backup or remove it before deploying"
@@ -692,10 +717,10 @@ pub fn no_writer_message(name: &DockerVolumeName, copies: &[KnownCopy]) -> Strin
     let listed = copies
         .iter()
         .map(|copy| {
-            let role = match copy.role {
-                CopyRole::Writer => "writer",
-                CopyRole::Slot => "copy",
-                CopyRole::Switching => "switching",
+            let role = if copy.role == CopyRole::Switching {
+                "switching"
+            } else {
+                "copy"
             };
             format!("{} ({role})", copy.machine)
         })
@@ -831,6 +856,25 @@ mod tests {
     }
 
     #[test]
+    fn no_writer_message_names_a_writer_elsewhere_without_a_restore_line() {
+        let volume = DockerVolumeName::parse("data").unwrap();
+        let copies = [
+            KnownCopy {
+                machine: name("fsn-2"),
+                role: CopyRole::Slot,
+            },
+            KnownCopy {
+                machine: name("hel-1"),
+                role: CopyRole::Writer,
+            },
+        ];
+        assert_eq!(
+            no_writer_message(&volume, &copies),
+            "Volume data's writer is on hel-1, so this Machine cannot mount it"
+        );
+    }
+
+    #[test]
     fn lease_record_round_trips_through_its_property_value() {
         let record = LeaseRecord {
             lease: Lease(7),
@@ -925,6 +969,32 @@ mod tests {
         }
         assert!("final".parse::<MirrorMarker>().is_err());
         assert!("thawing".parse::<MirrorMarker>().is_err());
+    }
+
+    fn through_javascript(value: serde_json::Value) -> serde_json::Value {
+        use serde_json::Value;
+        match value {
+            Value::Number(number) => Value::from(number.as_f64().unwrap()),
+            Value::Array(items) => {
+                Value::Array(items.into_iter().map(through_javascript).collect())
+            }
+            Value::Object(fields) => Value::Object(
+                fields
+                    .into_iter()
+                    .map(|(key, value)| (key, through_javascript(value)))
+                    .collect(),
+            ),
+            other @ (Value::Null | Value::Bool(_) | Value::String(_)) => other,
+        }
+    }
+
+    #[test]
+    fn a_guid_above_two_to_the_53_survives_javascript() {
+        let guid = SnapshotGuid(5_695_289_101_028_938_467);
+        let json = serde_json::to_string(&guid).unwrap();
+        let js = through_javascript(serde_json::from_str(&json).unwrap());
+        let back: SnapshotGuid = serde_json::from_value(js).unwrap();
+        assert_eq!(back, guid);
     }
 
     #[test]

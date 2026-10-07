@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, io, path::PathBuf, sync::Arc, time::Duration};
 use ployzd::machine_pool::MachinePool;
 use tokio::{
     process::Command,
-    sync::{Mutex, OwnedMutexGuard},
+    sync::{Mutex, OwnedMutexGuard, watch},
 };
 
 use super::{DockerVolumeName, Result, VolumeError, pool::PoolStorage, transfer::RECEIVE_STALL};
@@ -48,7 +48,7 @@ pub(super) struct VolumeStorage {
     pub(super) zfs: PathBuf,
     pub(super) docker: PathBuf,
     pub(super) mount_grant: Arc<std::sync::Mutex<Option<super::switch_source::MountGrant>>>,
-    pub(super) mutation: Arc<Mutex<()>>,
+    pub(super) mutation: MutationLock,
     pub(super) installation: ployzd::mutation::MutationGate,
     pub(super) receives: super::transfer::Receives,
     /// Where a writer Machine serves send streams; tests point it at a local server.
@@ -68,6 +68,64 @@ pub(super) fn committed_bytes(dataset: &Dataset, pool: &str) -> u64 {
     }
 }
 
+/// Docker holds a per-Volume lock across a plugin Remove, so Remove refuses rather than
+/// wait behind a holder that may need that lock; it waits behind any other holder.
+#[derive(Clone)]
+pub(super) struct MutationLock {
+    lock: Arc<Mutex<()>>,
+    docker_bound: Arc<watch::Sender<bool>>,
+}
+
+impl Default for MutationLock {
+    fn default() -> Self {
+        Self {
+            lock: Arc::default(),
+            docker_bound: Arc::new(watch::Sender::new(false)),
+        }
+    }
+}
+
+pub(super) struct HeldMutation {
+    _guard: OwnedMutexGuard<()>,
+    docker_bound: Arc<watch::Sender<bool>>,
+}
+
+impl Drop for HeldMutation {
+    fn drop(&mut self) {
+        self.docker_bound.send_replace(false);
+    }
+}
+
+impl MutationLock {
+    pub(super) async fn lock(&self) -> HeldMutation {
+        self.held(Arc::clone(&self.lock).lock_owned().await)
+    }
+
+    pub(super) async fn lock_unless_docker_bound(&self) -> Option<HeldMutation> {
+        if let Ok(guard) = Arc::clone(&self.lock).try_lock_owned() {
+            return Some(self.held(guard));
+        }
+        let mut docker_bound = self.docker_bound.subscribe();
+        tokio::select! {
+            biased;
+            guard = Arc::clone(&self.lock).lock_owned() => Some(self.held(guard)),
+            _ = docker_bound.wait_for(|bound| *bound) => None,
+        }
+    }
+
+    pub(super) fn raise_docker_bound(&self) {
+        self.docker_bound.send_replace(true);
+    }
+
+    fn held(&self, guard: OwnedMutexGuard<()>) -> HeldMutation {
+        self.docker_bound.send_replace(false);
+        HeldMutation {
+            _guard: guard,
+            docker_bound: Arc::clone(&self.docker_bound),
+        }
+    }
+}
+
 pub(super) enum CapacityAdmission {
     Required,
     Ensured,
@@ -80,7 +138,7 @@ impl VolumeStorage {
             zfs: "zfs".into(),
             docker: "docker".into(),
             mount_grant: Arc::default(),
-            mutation: Arc::new(Mutex::new(())),
+            mutation: MutationLock::default(),
             installation: ployzd::mutation::MutationGate::new(run_dir, data_dir),
             receives: super::transfer::Receives::default(),
             send_port: ployz_core::VOLUME_SEND_PORT,
@@ -101,7 +159,7 @@ impl VolumeStorage {
             zfs: zfs.into(),
             docker: fixture.join("docker"),
             mount_grant: Arc::default(),
-            mutation: Arc::new(Mutex::new(())),
+            mutation: MutationLock::default(),
             installation: ployzd::mutation::MutationGate::new(
                 fixture.join("admission-run"),
                 fixture.join("admission-data"),
@@ -114,8 +172,8 @@ impl VolumeStorage {
 
     pub(super) async fn admit_mutation(
         &self,
-    ) -> Result<(OwnedMutexGuard<()>, ployzd::mutation::MutationGuard)> {
-        let local = Arc::clone(&self.mutation).lock_owned().await;
+    ) -> Result<(HeldMutation, ployzd::mutation::MutationGuard)> {
+        let local = self.mutation.lock().await;
         let installation = self
             .installation
             .try_mutation()

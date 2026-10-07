@@ -54,6 +54,7 @@ impl VolumeStorage {
     }
 
     pub(super) async fn docker(&self, arguments: &[&str]) -> super::Result<String> {
+        self.mutation.raise_docker_bound();
         checked_command(&self.docker, arguments).await
     }
 

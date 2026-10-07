@@ -658,6 +658,22 @@ pub(crate) async fn remove_server(
     }
 }
 
+/// Call `/api/cli/<path>`, answered as its reply or as Cloud's refusal, verbatim.
+///
+/// # Errors
+///
+/// Returns Cloud's refusal, or a Cloud failure; a Cloud without the route is
+/// [`LoginError::Unsupported`].
+pub(crate) async fn refusable<T: DeserializeOwned>(
+    credential: &Credential,
+    method: Method,
+    path: &str,
+    body: Option<&serde_json::Value>,
+) -> Result<T, StoreCallError> {
+    let url = format!("{}/api/cli/{path}", credential.cloud());
+    store_answer(credential, send(credential, method, &url, body).await?).await
+}
+
 /// Keep `archive`, a gzipped tar of a source directory, in Cloud as the upload of
 /// Deployment `deployment`, which the CLI admits next.
 ///

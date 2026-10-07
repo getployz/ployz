@@ -20,6 +20,7 @@ import { callStore } from "#/modules/config-store/config-store.server";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
+import { volumeRun } from "#/modules/volume-run/tables";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { handleCliRequest } from "#/routes/api/cli/-cli.handler";
 import { handleCliRequest as handleOrganizationCliRequest } from "#/routes/api/cli/-handlers";
@@ -118,6 +119,7 @@ const cliLayer = Effect.fn(function* (polar: PolarService, ployz: Layer.Layer<Pl
 
 /** The fields these tests read from `/api/cli` replies. */
 type Reply = {
+  readonly run?: { readonly id: string; readonly state: string };
   readonly organizations?: ReadonlyArray<{ readonly id: string; readonly slug: string; readonly current: boolean }>;
   readonly token?: { readonly id: string; readonly secret: string; readonly organization: string };
   readonly tokens?: ReadonlyArray<{ readonly id: string; readonly current: boolean; readonly expired: boolean }>;
@@ -145,7 +147,9 @@ type Reply = {
 
 type As = { readonly cookie?: string; readonly bearer?: string };
 
-const cli = Effect.fn(function* (method: string, path: string, as: As, body?: Readonly<Record<string, string | number>>) {
+type CliBody = Readonly<Record<string, string | number | boolean | Readonly<Record<string, string>>>>;
+
+const cli = Effect.fn(function* (method: string, path: string, as: As, body?: CliBody) {
   const headers = new Headers();
   if (as.cookie !== undefined) headers.set("cookie", as.cookie);
   if (as.bearer !== undefined) headers.set("authorization", `Bearer ${as.bearer}`);
@@ -259,6 +263,61 @@ it.live(
         assert.deepStrictEqual(removed.json.removed, { id: device.id, kind: "device" });
         assert.lengthOf(yield* database.drizzle.select().from(session).where(eq(session.id, device.id)), 0);
         assert.strictEqual((yield* cli("GET", "tokens", alice)).status, 401);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a volume run the caller cannot see answers as a not_found refusal, not a bare 404",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer({ mode: "self_hosted" });
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const bob = yield* signUp("bob");
+        const [run] = yield* database.drizzle.insert(volumeRun).values({
+          organizationId: bob.organization.id,
+          environmentId: "env-1",
+          volumeId: "vol-1",
+          volumeName: "data",
+          dockerVolume: "ns_vol-1",
+          kind: "sync",
+          args: { full: false },
+        }).returning();
+        const id = run?.id ?? assert.fail("no run row");
+        assert.deepInclude((yield* cli("GET", `volume-runs/${id}`, bob)).json.run, { id, state: "requested" });
+        for (const path of [`volume-runs/${id}`, "volume-runs/00000000-0000-4000-8000-000000000000", "volume-runs/not-a-run"]) {
+          const missing = yield* cli("GET", path, alice);
+          assert.strictEqual(missing.status, 404, path);
+          assert.strictEqual(missing.json.error?.code, "not_found", path);
+        }
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+/** The bodies `ployz volume mirror|sync|mirror rm` send, pinned the same in the CLI's `each_kind_posts_only_its_own_fields`. */
+const cliVolumeRunBodies: ReadonlyArray<CliBody> = [
+  { environment: { project: "shop", environment: "production" }, kind: "mirror", to: "web-2" },
+  { environment: { project: "shop", environment: "production" }, kind: "sync", full: false },
+  { environment: { project: "shop", environment: "production" }, kind: "delete_mirror", slot: "web-2", confirm: "data" },
+];
+
+it.live(
+  "Cloud decodes every volume run body the CLI sends, and refuses an Environment named by id",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer({ mode: "self_hosted" });
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        for (const body of cliVolumeRunBodies) {
+          const reply = yield* cli("POST", "volumes/vol-1/runs", alice, body);
+          assert.notStrictEqual(reply.status, 422, JSON.stringify(body));
+        }
+        const byId = yield* cli("POST", "volumes/vol-1/runs", alice, { environment: "env-1", kind: "sync" });
+        assert.strictEqual(byId.status, 422);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

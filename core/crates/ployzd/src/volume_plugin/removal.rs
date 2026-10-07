@@ -15,11 +15,15 @@ use super::{
 
 impl VolumeStorage {
     async fn remove(&self, name: &DockerVolumeName) -> Result<()> {
-        let _guard = self.mutation.try_lock().map_err(|_| {
-            super::VolumeError::from(format!(
-                "VolumeSwitching: Volume {name} has an active storage mutation"
-            ))
-        })?;
+        let _guard = self
+            .mutation
+            .lock_unless_docker_bound()
+            .await
+            .ok_or_else(|| {
+                super::VolumeError::from(format!(
+                    "VolumeSwitching: Volume {name} has an active storage mutation"
+                ))
+            })?;
         let _installation = self
             .installation
             .try_mutation()
@@ -35,6 +39,13 @@ impl VolumeStorage {
         let dataset = Self::dataset(&datasets, &pool, name)?
             .expect("the requested dataset was just observed");
         dataset.require_provisioned(name)?;
+        if self.unregistered(&dataset.name).await? {
+            return Err(format!(
+                "VolumeSwitching: Volume {name} is a promoted root Docker has not registered yet; refusing to remove {}",
+                dataset.name
+            )
+            .into());
+        }
         let writer = self.writer_marker(dataset).await?;
         if writer != WriterMarker::Idle {
             return Err(format!(

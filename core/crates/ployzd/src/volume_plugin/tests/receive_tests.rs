@@ -155,7 +155,7 @@ async fn a_full_receive_lands_the_target_read_only_within_the_bound() {
             "round": 1,
             "status": {
                 "state": "done",
-                "newest": {"name": "w-1-1", "guid": 77, "created_unix_seconds": 1_700_000_000},
+                "newest": {"name": "w-1-1", "guid": "77", "created_unix_seconds": 1_700_000_000},
             },
         }})
     );
@@ -183,7 +183,7 @@ async fn a_full_receive_lands_the_target_read_only_within_the_bound() {
 
     let inspect = post(&socket, "/Volume.Inspect", json!({"name": "data"})).await;
     assert_eq!(inspect.pointer("/Ok/copy/readonly").unwrap(), true);
-    assert_eq!(inspect.pointer("/Ok/copy/newest/guid").unwrap(), 77);
+    assert_eq!(inspect.pointer("/Ok/copy/newest/guid").unwrap(), "77");
     server.abort();
 }
 
@@ -199,11 +199,11 @@ async fn an_incremental_receive_names_its_base() {
     );
     let (socket, server) = start(&test, &["root", "mirror", "mirror-fs"], &writer);
 
-    let request = receive(4, 2, json!({"base": 77, "target": "w-1-2"}));
+    let request = receive(4, 2, json!({"base": "77", "target": "w-1-2"}));
     post(&socket, "/Volume.StartReceive", request).await;
     let view = settled(&socket, 2).await;
     assert_eq!(view.pointer("/Ok/status/state").unwrap(), "done");
-    assert_eq!(view.pointer("/Ok/status/newest/guid").unwrap(), 78);
+    assert_eq!(view.pointer("/Ok/status/newest/guid").unwrap(), "78");
     assert_eq!(
         writer.requests(),
         ["/volume-send/data?target=w-1-2&base=77"]
@@ -334,7 +334,7 @@ async fn a_replayed_start_after_completion_answers_without_receiving_again() {
     settled(&socket, 1).await;
     let response = post(&socket, "/Volume.StartReceive", receive(4, 1, json!({}))).await;
     assert_eq!(response.pointer("/Ok/decision").unwrap(), "replay");
-    assert_eq!(response.pointer("/Ok/copy/newest/guid").unwrap(), 77);
+    assert_eq!(response.pointer("/Ok/copy/newest/guid").unwrap(), "77");
     assert_eq!(writer.requests().len(), 1);
     assert_eq!(commands(&test).matches("zfs receive").count(), 1);
     server.abort();

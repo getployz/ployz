@@ -1,0 +1,112 @@
+import { type AnsweredMember, copyName, type Member, type VolumeRunInput } from "#/modules/volume-run/volume-run";
+
+export type Role = "writer" | "switching" | "handed" | "mirror" | "stale" | "empty" | "unanswered";
+
+export type RefusalCode =
+  | "unanswered"
+  | "no_writer"
+  | "two_writers"
+  | "volume_switching"
+  | "stale_slot"
+  | "second_mirror"
+  | "invalid"
+  | "no_pool"
+  | "no_mirror"
+  | "confirm_required";
+
+export type Refusal = { readonly code: RefusalCode; readonly message: string };
+
+export type Planned =
+  | { readonly ok: true; readonly phase: { readonly kind: "mirror"; readonly writer: AnsweredMember; readonly target: AnsweredMember; readonly declare: boolean } }
+  | { readonly ok: true; readonly phase: { readonly kind: "sync"; readonly writer: AnsweredMember; readonly mirror: AnsweredMember; readonly full: boolean } }
+  | { readonly ok: true; readonly phase: { readonly kind: "delete_mirror"; readonly destroy: readonly AnsweredMember[]; readonly forget: AnsweredMember | null } }
+  | { readonly ok: false; readonly refusal: Refusal };
+
+export type PlanInput = VolumeRunInput & { readonly volumeName: string; readonly orphan: boolean };
+
+export function roleOf(member: Member): Role {
+  if (!member.answered) return "unanswered";
+  const copy = member.view.copy;
+  if (copy === null) return "empty";
+  if (copy.kind === "root") {
+    switch (copy.writer.phase) {
+      case "idle":
+        return "writer";
+      case "handed":
+        return "handed";
+      case "stopping":
+      case "frozen":
+      case "thawing":
+        return "switching";
+    }
+  }
+  switch (copy.mirror.phase) {
+    case "idle":
+    case "final":
+      return "mirror";
+    case "handed_in":
+    case "promoting":
+      return "stale";
+  }
+}
+
+const refuse = (code: RefusalCode, message: string): Planned => ({ ok: false, refusal: { code, message } });
+
+/** Pure: Inngest re-runs it outside any step on every replay, so the same members must plan the same run. */
+export function planFromCopies(input: PlanInput, members: readonly Member[]): Planned {
+  const name = input.volumeName;
+  const answered = members.filter((member): member is AnsweredMember => member.answered);
+  const withRole = (...roles: Role[]) => answered.filter((member) => roles.includes(roleOf(member)));
+  const named = (member: Member) => copyName(name, member.machine.name);
+  const roots = withRole("writer", "switching", "handed");
+  const switching = withRole("switching", "handed");
+  const writer = withRole("writer")[0];
+  const mirrors = withRole("mirror");
+  const stale = withRole("stale");
+  const unanswered = members.find((member) => !member.answered);
+  const midRun = () => refuse("volume_switching", `${name} is mid-run; wait or volume release ${name}`);
+
+  if (input.kind === "delete_mirror") {
+    const slots = [...mirrors, ...stale];
+    if (input.orphan) {
+      if (roots.length > 0) return refuse("invalid", `${name} still has a writer on ${roots.map(named).join(", ")}`);
+      if (slots.length === 0) return refuse("no_mirror", `${name} has no mirror`);
+      return { ok: true, phase: { kind: "delete_mirror", destroy: slots, forget: null } };
+    }
+    if (unanswered !== undefined) return refuse("unanswered", `${unanswered.machine.name} did not answer; ${name}'s copies are unknown`);
+    if (switching.length > 0 || writer?.view.lease?.cycle === "open") return midRun();
+    const { slot, confirmed_name } = input.args;
+    const destroy = slot === null ? slots : slots.filter((member) => member.machine.name === slot);
+    if (destroy.length === 0) return refuse("no_mirror", slot === null ? `${name} has no mirror` : `${name} has no mirror on ${slot}`);
+    if (roots.length === 0 && confirmed_name !== name) {
+      const only = destroy.map(named).join(", ");
+      return refuse("confirm_required", `${only} is ${name}'s only copy; volume mirror rm ${only} --confirm ${name}`);
+    }
+    return { ok: true, phase: { kind: "delete_mirror", destroy, forget: writer ?? null } };
+  }
+
+  if (unanswered !== undefined) return refuse("unanswered", `${unanswered.machine.name} did not answer; ${name}'s copies are unknown`);
+  if (roots.length > 1) return refuse("two_writers", `${name} has two writers, ${roots.map(named).join(" and ")}`);
+  if (switching.length > 0) return midRun();
+  if (writer === undefined) return refuse("no_writer", `${name} has no writer; deploy ${name} before mirroring it`);
+  const firstStale = stale[0];
+  if (firstStale !== undefined) {
+    return refuse("stale_slot", `${named(firstStale)} holds a stale copy; volume mirror rm ${named(firstStale)} first`);
+  }
+
+  if (input.kind === "sync") {
+    const [mirror, second] = mirrors;
+    if (mirror === undefined) return refuse("no_mirror", `${name} has no mirror; volume mirror ${name} --to <server>`);
+    if (second !== undefined) return refuse("second_mirror", `${name} already has a mirror, ${named(mirror)}`);
+    return { ok: true, phase: { kind: "sync", writer, mirror, full: input.args.full } };
+  }
+
+  const { to } = input.args;
+  if (writer.machine.name === to) return refuse("invalid", `${name}'s writer is already on ${to}`);
+  const elsewhere = mirrors.find((member) => member.machine.name !== to);
+  if (elsewhere !== undefined) return refuse("second_mirror", `${name} already has a mirror, ${named(elsewhere)}`);
+  const target = answered.find((member) => member.machine.name === to);
+  if (target === undefined) return refuse("invalid", `${to} is not a Server of this cluster`);
+  if (!target.pool) return refuse("no_pool", `${to} has no managed volume storage yet`);
+  return { ok: true, phase: { kind: "mirror", writer, target, declare: roleOf(target) !== "mirror" } };
+}

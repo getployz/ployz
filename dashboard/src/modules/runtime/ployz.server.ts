@@ -21,11 +21,14 @@ import type {
   ObservedDataLoss,
   PublishCertificateMaterialRequest,
   RuntimeWatchView,
+  VolumeSwitchReply,
+  VolumeSwitchRequest,
   WatchOptions,
 } from "@ployz/sdk";
 import type * as PloyzSdk from "@ployz/sdk";
 import { Context, Data, Effect, Layer, Option, Schema, type Scope } from "effect";
 import type { JsonValue } from "#/db/tables";
+import { describeFailureCause } from "#/lib/error-message";
 import { projectJsonValue } from "#/lib/json";
 import { MissingDataLossIdentities } from "#/modules/runtime/data-loss-confirm";
 import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
@@ -36,6 +39,12 @@ const { connect: connectSdk, ployzVersion } = createRequire(import.meta.url)("@p
 
 /** The release this SDK speaks; it needs no Machine. */
 export { ployzVersion };
+
+// SAFETY: the package exports this named CommonJS SDK surface at runtime.
+const { observeCopies } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "observeCopies">;
+
+export const observeVolumeCopies = (connections: Parameters<typeof observeCopies>[0]) =>
+  sdkPromise("observe copies", () => observeCopies(connections));
 
 export class PloyzProviderError extends Data.TaggedError(
   "PloyzProviderError",
@@ -89,6 +98,10 @@ export interface PloyzSession {
     machine: MachineTarget,
     attemptId: MachineUpgradeAttemptId,
   ) => Effect.Effect<MachineUpgradeAttempt, PloyzSdkError>;
+  readonly volumeSwitch: <R extends VolumeSwitchRequest>(
+    machine: MachineTarget,
+    request: R,
+  ) => Effect.Effect<VolumeSwitchReply<R["command"]>, PloyzSdkError>;
   /** What removing Namespace `namespace`, its Volumes included, deletes. */
   readonly dataLossIfNamespaceDestroyed: (namespace: string) => Effect.Effect<ObservedDataLoss, PloyzSdkError>;
   /** Remove Namespace `namespace` from every Server, its Volumes included, accepting exactly `confirmDataLoss`. */
@@ -155,6 +168,12 @@ export function rpcErrorCode(error: PloyzSdkError) {
   return Option.isSome(rpc) ? rpc.value.code : undefined;
 }
 
+export function sdkFailureMessage(error: PloyzSdkError) {
+  const cause = "cause" in error ? error.cause : error;
+  const rpc = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String, message: Schema.String }))(cause);
+  return Option.isSome(rpc) ? `${rpc.value.code}: ${rpc.value.message}` : describeFailureCause(cause);
+}
+
 function sdkPromise<A>(operation: string, run: (signal: AbortSignal) => Promise<A>) {
   return Effect.tryPromise({
     try: run,
@@ -206,6 +225,8 @@ function wrapClient(client: Client): PloyzSession {
       ),
     drainMachine: (machine, scope) =>
       sdkPromise("drain machine", () => client.drainMachine(machine, scope)),
+    volumeSwitch: (machine, request) =>
+      sdkPromise("volume switch", () => client.volumeSwitch(machine, request)),
     requestMachineUpgrade: (machine, attemptId, release) =>
       sdkPromise("request machine upgrade", () => client.requestMachineUpgrade(machine, { attempt_id: attemptId, release })),
     inspectMachineUpgrade: (machine, attemptId) =>

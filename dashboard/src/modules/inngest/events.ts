@@ -49,6 +49,17 @@ export const inngestFunctionCancelledEnvelopeSchema = Schema.Struct({
   }),
 });
 
+export const inngestFunctionFinishedEnvelopeSchema = Schema.Struct({
+  ...inngestEventEnvelopeFields,
+  name: Schema.Literal("inngest/function.finished"),
+  data: Schema.Struct({
+    function_id: inngestEventIdentitySchema,
+    run_id: inngestEventIdentitySchema,
+    error: Schema.optionalKey(Schema.NullOr(inngestFailureErrorSchema)),
+    event: Schema.optionalKey(Schema.Unknown),
+  }),
+});
+
 export const githubInstallationReceivedEvent = "github/installation.received";
 export const githubInstallationRepositoriesReceivedEvent =
   "github/installation-repositories.received";
@@ -62,6 +73,14 @@ export const githubPullRequestReceivedEvent = "github/pull-request.received";
 export const machineRemoveRequestedEvent = "machine/remove.requested";
 export const serverPolicyChangeRequestedEvent = "machine/policy-change.requested";
 export const serverUpgradeRequestedEvent = "server/upgrade.requested";
+export const volumeRunRequestedEvent = "volume/run.requested";
+
+export type VolumeRunRequestedEventData = {
+  organizationId: string;
+  environment: string;
+  volumeId: string;
+  runId: string;
+};
 export const serverDrainRequestedEvent = "server/drain.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
 export const configDeploymentAdmittedEvent = "config/deployment.admitted";
@@ -222,6 +241,14 @@ export const serverDrainRequestedEventType = eventType(
   serverDrainRequestedEvent,
   { schema: staticSchema<ServerDrainRequestedEventData>() },
 );
+export const volumeRunRequestedEventType = eventType(
+  volumeRunRequestedEvent,
+  { schema: staticSchema<VolumeRunRequestedEventData>() },
+);
+export const inngestFunctionFinishedEventType = eventType(
+  "inngest/function.finished",
+  { schema: staticSchema<{ function_id: string; run_id: string; error?: { name: string; message: string } | null }>() },
+);
 export const configFirstServerJoinedEventType = eventType(
   configFirstServerJoinedEvent,
   { schema: staticSchema<ConfigFirstServerJoinedEventData>() },
@@ -301,6 +328,11 @@ export function createServerPolicyChangeRequestedEvent(
 
 export function createServerUpgradeRequestedEvent(data: ServerUpgradeRequestedEventData) {
   return { name: serverUpgradeRequestedEvent, data } as const;
+}
+
+/** Keyed by the run's row: sending it again for the same request runs nothing new. */
+export function createVolumeRunRequestedEvent(data: VolumeRunRequestedEventData) {
+  return { id: `volume-run-${data.runId}`, name: volumeRunRequestedEvent, data } as const;
 }
 
 /** Keyed by the Drain's row: sending it again for the same request runs nothing new. */
@@ -472,6 +504,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createServerPolicyChangeRequestedEvent>
   | ReturnType<typeof createServerUpgradeRequestedEvent>
   | ReturnType<typeof createServerDrainRequestedEvent>
+  | ReturnType<typeof createVolumeRunRequestedEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
   | ReturnType<typeof createConfigFirstServerJoinedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>

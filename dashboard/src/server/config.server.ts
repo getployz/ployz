@@ -82,6 +82,8 @@ const rawFields = {
   marketingOrigin: optional(Config.url("MARKETING_ORIGIN")),
   inngestEventKey: Config.schema(NonEmptySecret, "INNGEST_EVENT_KEY"),
   inngestSigningKey: Config.schema(NonEmptySecret, "INNGEST_SIGNING_KEY"),
+  // The Inngest SDK also reads INNGEST_BASE_URL.
+  inngestBaseUrl: Config.url("INNGEST_BASE_URL").pipe(Config.withDefault(new URL("https://api.inngest.com"))),
   encryptionSecret: Config.schema(EncryptionSecret, "APP_ENCRYPTION_SECRET"),
 };
 /**
@@ -179,6 +181,7 @@ const makeAppConfig = Effect.gen(function* () {
     inngest: {
       eventKey: raw.inngestEventKey,
       signingKey: raw.inngestSigningKey,
+      baseUrl: raw.inngestBaseUrl,
     },
     // Unset (Self-hosted Cloud): no marketing proxy; / sends signed-out visitors to /auth.
     marketingOrigin: raw.marketingOrigin,

@@ -135,7 +135,7 @@ async fn freeze_stops_the_holder_and_keeps_one_final_snapshot_on_replay() {
         );
         assert_eq!(
             response.pointer("/Ok/copy/writer"),
-            Some(&json!({"phase":"frozen","guid":900}))
+            Some(&json!({"phase":"frozen","guid":"900"}))
         );
         assert_eq!(response.pointer("/Ok/copy/readonly"), Some(&json!(true)));
     }
@@ -151,7 +151,7 @@ async fn freeze_creates_the_final_snapshot_after_unmounting() {
     let response = post(&socket, "/Volume.Freeze", source(6)).await;
     assert_eq!(
         response.pointer("/Ok/copy/writer"),
-        Some(&json!({"phase":"frozen","guid":1000})),
+        Some(&json!({"phase":"frozen","guid":"1000"})),
         "{response}"
     );
     assert_eq!(snapshot_names(&test, "tank/ployz/data"), ["f-1"]);
@@ -188,7 +188,7 @@ async fn hand_over_matches_the_final_guid_and_thaw_is_refused_without_changing_r
     let bad = post(
         &socket,
         "/Volume.HandOver",
-        at(1, 8, 0, 0, json!({"guid":901})),
+        at(1, 8, 0, 0, json!({"guid":"901"})),
     )
     .await;
     assert_eq!(
@@ -199,7 +199,7 @@ async fn hand_over_matches_the_final_guid_and_thaw_is_refused_without_changing_r
         let response = post(
             &socket,
             "/Volume.HandOver",
-            at(1, 8, 0, 0, json!({"guid":900})),
+            at(1, 8, 0, 0, json!({"guid":"900"})),
         )
         .await;
         assert_eq!(response.pointer("/Ok/decision"), Some(&json!(decision)));
@@ -371,7 +371,7 @@ async fn every_source_verb_finishes_after_a_real_kill_after_record() {
             "HandOver",
             "frozen:900",
             true,
-            at(1, 8, 0, 0, json!({"guid":900})),
+            at(1, 8, 0, 0, json!({"guid":"900"})),
             "handed",
             "open",
         ),
@@ -487,6 +487,70 @@ async fn concurrent_docker_remove_refuses_without_blocking_close() {
     let response: Value = serde_json::from_slice(&removed.stdout).unwrap();
     assert!(error(&response).contains("VolumeSwitching"), "{response}");
     assert_eq!(snapshot_names(&test, "tank/ployz-mirror/data/fs"), ["f-1"]);
+    server.abort();
+}
+
+#[tokio::test]
+async fn docker_remove_queued_behind_close_refuses_once_close_runs_docker() {
+    let (test, socket, server) = setup("handed:900", true);
+    for marker in ["hold-list", "hold-holder-removal"] {
+        fs::write(test.0.join(marker), "").unwrap();
+    }
+    let list = tokio::spawn({
+        let socket = socket.clone();
+        async move { post(&socket, "/VolumeDriver.List", json!({})).await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !test.0.join("list-held").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let close = tokio::spawn({
+        let socket = socket.clone();
+        async move { post(&socket, "/Volume.Close", at(1, 12, 0, 0, json!({}))).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let remove = tokio::process::Command::new("flock")
+        .arg(test.0.join("docker-volume.lock"))
+        .args(["curl", "--max-time", "5", "-sS", "--unix-socket"])
+        .arg(&socket)
+        .args([
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            r#"{"Name":"data"}"#,
+            "http://localhost/VolumeDriver.Remove",
+        ])
+        .kill_on_drop(true)
+        .output();
+    let remove = tokio::spawn(remove);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    fs::remove_file(test.0.join("hold-list")).unwrap();
+    assert_eq!(error(&list.await.unwrap()), "");
+
+    let removed = tokio::time::timeout(Duration::from_secs(2), remove)
+        .await
+        .expect("Remove must refuse once Close holds the mutation and runs Docker")
+        .unwrap()
+        .unwrap();
+    fs::remove_file(test.0.join("hold-holder-removal")).unwrap();
+    assert!(removed.status.success());
+    let response: Value = serde_json::from_slice(&removed.stdout).unwrap();
+    assert!(
+        error(&response).contains("has an active storage mutation"),
+        "{response}"
+    );
+    let closed = tokio::time::timeout(Duration::from_secs(7), close)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        closed.pointer("/Ok/lease/cycle"),
+        Some(&json!("closed")),
+        "{closed}"
+    );
     server.abort();
 }
 

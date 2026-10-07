@@ -248,7 +248,7 @@ async fn a_plain_deploy_mounts_only_on_the_writer() {
             "writer elsewhere",
             nothing,
             Some(("writer", true)),
-            Some("no writer"),
+            Some("Volume app_data's writer is on fsn-2, so this Machine cannot mount it"),
         ),
         ("slot held", slot, None, Some("no writer")),
         ("open record", root("idle", "open"), None, Some("mid-run")),
