@@ -126,6 +126,13 @@ restores the prior release: Replacement Compensation, allowed only within one
 release line, where the Stable promise keeps everything the newer daemon wrote
 readable by the older one.
 
+**Volume handover.** A Volume Move can restart its stopped source Container with
+Thaw until HandOver records the handed marker. HandOver is the point of no
+return: after it, the only exit is forward through target promotion and start.
+Thaw and HandOver make that decision under the source's dataset lock. Close
+keeps the read-only source as the reverse mirror before Docker forgets its
+Volume registration. Moving back is another Move, with that mirror as its base.
+
 **Why.** Pretending a multi-Machine operation is atomic requires either lying in
 the result or coordination machinery bet 1 forbids. Reporting the true
 prefix/suffix lets the operator or a retry act on facts.

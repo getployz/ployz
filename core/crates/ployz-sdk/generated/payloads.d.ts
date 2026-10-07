@@ -1496,6 +1496,8 @@ repository: RepositoryName, installation_id: number, };
 
 export type GithubTimestamp = string;
 
+export type HandOverRequest = { switch: Switch, name: DockerVolumeName, guid: SnapshotGuid, };
+
 export type HealthFailure = { "type": "cancelled" } | { "type": "timed_out", last_check?: LastHealthCheck, } | { "type": "runtime", observation: ContainerRuntimeObservation, last_check?: LastHealthCheck, };
 
 export type HealthObservation = "not_configured" | "starting" | "healthy" | "unhealthy" | "failing" | "stopping" | string;
@@ -1612,6 +1614,8 @@ kept: boolean, };
 export type Landed = "staged" | "hint";
 
 export type LastHealthCheck = { "type": "exited", code: number, output: string, } | { "type": "http_status", status: number, } | { "type": "http_unreachable", error: HttpCheckError, };
+
+export type Lease = number;
 
 export type LiveLineageUse = { lineageId: string, keys: Array<string>, };
 
@@ -2168,6 +2172,8 @@ data: boolean, };
 export type PlannedRole = "own" | "live" | "left_out";
 
 export type PortPublication = { "mode": "ingress", hostname: IngressHost, load_balancer_port: number, container_port: number, http_protocol: HttpProtocol, } | { "mode": "host", bind: HostBind, published_port: number, container_port: number, transport_protocol: TransportProtocol, };
+
+export type Pos = { seq: number, round: number, sub: number, };
 
 export type PrEnvironment = { environment: EnvironmentSummary,
 /**
@@ -3133,6 +3139,10 @@ export type Skipped = { environment: EnvironmentId,
  */
 reason: string, };
 
+export type SnapshotGuid = number;
+
+export type SourceContainerRequest = { switch: Switch, name: DockerVolumeName, container_id: ContainerId, };
+
 export type SourceKind = "empty" | "uploaded" | "git" | "image";
 
 export type Start = { deployment: DeploymentId, };
@@ -3203,6 +3213,12 @@ export type Sweep = {
  * Cloud's clock, in seconds since the Unix epoch.
  */
 now: number, };
+
+export type Switch = { lease: Lease, pos: Pos,
+/**
+ * Step deadline: step start plus the request timeout, as Unix seconds.
+ */
+not_after_unix_seconds: number, };
 
 export type SyncChange = "new" | "changed" | "conflict";
 
