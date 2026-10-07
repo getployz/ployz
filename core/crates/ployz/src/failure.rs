@@ -837,14 +837,18 @@ impl From<LoginError> for Failure {
     /// Sign-in failures name the command that fixes them.
     fn from(error: LoginError) -> Self {
         let next = match &error {
-            LoginError::Corrupt { .. } | LoginError::OtherCloud { .. } => Some("ployz logout"),
+            // Cloud binds every call to the acting Organization, `org ls` included: a
+            // sign-in left outside it can only start over.
+            LoginError::Corrupt { .. }
+            | LoginError::OtherCloud { .. }
+            | LoginError::NotMember(_) => Some("ployz logout"),
             LoginError::SignedOut
             | LoginError::Expired
             | LoginError::Denied
             | LoginError::Ended => Some("ployz login"),
             LoginError::AwaitingApproval { .. } => Some("ployz login --wait"),
             LoginError::TokenRefused => Some("ployz token new"),
-            LoginError::NotMember(_) | LoginError::UnknownOrganization(_) => Some("ployz org ls"),
+            LoginError::UnknownOrganization(_) => Some("ployz org ls"),
             LoginError::UnknownCredential(_) => Some("ployz token ls"),
             LoginError::AlreadyPro => Some("ployz billing manage"),
             LoginError::Unreachable { .. }

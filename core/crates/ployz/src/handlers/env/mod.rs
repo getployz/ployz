@@ -29,7 +29,6 @@ use crate::ui::{Hint, Tree};
 pub(crate) fn command() -> Command {
     Command::new("env")
         .about("Manage Environments and Branches")
-        .arg_required_else_help(true)
         .subcommand(
             Command::new("new")
                 .about("Create an empty Environment")

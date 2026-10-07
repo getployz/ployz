@@ -51,7 +51,7 @@ pub(crate) enum LoginError {
         signed_in: String,
         requested: String,
     },
-    #[error("not signed in to Cloud")]
+    #[error("Not signed in to Cloud.")]
     SignedOut,
     #[error("the sign-in code expired before it was approved")]
     Expired,

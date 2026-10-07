@@ -571,12 +571,18 @@ pub fn resolve_connections(
         Err(ConfigError::Read { source, .. }) if source.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(ConnectError::Config(error)),
     }
-    let socket_available = local_socket
-        .try_exists()
-        .map_err(|source| ConnectError::Path {
-            path: local_socket.to_owned(),
-            source,
-        })?;
+    // A socket this user can't even see is not one it can use: fall through
+    // to Cloud, whose sign-in hint is the useful one.
+    let socket_available = match local_socket.try_exists() {
+        Ok(exists) => exists,
+        Err(source) if source.kind() == io::ErrorKind::PermissionDenied => false,
+        Err(source) => {
+            return Err(ConnectError::Path {
+                path: local_socket.to_owned(),
+                source,
+            });
+        }
+    };
     select_connections(None, None, context_override, socket_available, local_socket)
         .map_err(ConnectError::Context)
 }

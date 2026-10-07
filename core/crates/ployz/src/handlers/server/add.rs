@@ -117,7 +117,10 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             crate::global_catch_up::joined_catch_up_error(error, &assigned, |args| {
                 super::super::recovery_command(matches, &context_name, args)
             })
-        })
+        })?;
+        // The wait above may have printed retries; this line says it ended well.
+        crate::ui::stream(format_args!("Server {} is ready.", assigned.name));
+        Ok(())
     })();
     crate::ui::emit_committed(
         json!({ "server": super::server_json(&assigned) }),

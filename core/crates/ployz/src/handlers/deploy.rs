@@ -91,11 +91,12 @@ pub(super) fn following_args(matches: &ArgMatches) -> Vec<&str> {
 
 /// How often `deploy` reads a Deployment Cloud runs while following it.
 const FOLLOW_POLL: Duration = Duration::from_secs(1);
+/// How long a followed Deployment may sit queued before the follow says why it waits.
+const UNCLAIMED: Duration = Duration::from_secs(30);
 
 pub(crate) fn deployment_command() -> Command {
     Command::new("deployment")
         .about("Read, retry, start and cancel Deployments")
-        .arg_required_else_help(true)
         .subcommand(
             scoped(Command::new("ls").about("List Deployments, newest first"))
                 .arg(
@@ -210,6 +211,7 @@ pub(super) fn upload_and_ship(
         accept,
         message,
     } = request;
+    refuse_local_detach(matches, store)?;
     let upload = source.as_deref().map(uploaded_source).transpose()?;
     let id = DeploymentId::parse(mint())?;
     if let Some(dir) = source.as_deref() {
@@ -227,6 +229,17 @@ pub(super) fn upload_and_ship(
         }))
         .map_err(|error| store.accepting(with_refresh_hint(error, matches, "diff")))?;
     execute(matches, store, &admitted, source.as_deref(), events)
+}
+
+/// Refuse `--detach` on the hidden local Store before anything is queued: it runs
+/// Deployments in this process, so nothing would run a detached one.
+pub(super) fn refuse_local_detach(matches: &ArgMatches, store: &Store) -> Result<(), Error> {
+    if store.local().is_some() && matches.get_flag("detach") {
+        return Err(Error::usage(
+            "The hidden local Store runs Deployments in this process, so it can't detach",
+        ));
+    }
+    Ok(())
 }
 
 /// Open `--events` before queueing anything, so a bad path ships nothing.
@@ -285,17 +298,13 @@ pub(super) fn execute(
     let hint = show_hint(matches, admitted.number);
     let signal = crate::cancellation::interrupted()?;
     let mut runner = match store.local() {
-        Some(_) if matches.get_flag("detach") => {
-            return Err(Error::usage(
-                "The hidden local Store runs Deployments in this process, so it can't detach",
-            ));
-        }
-        Some(local) => Some(OwnedRunner {
+        // Admission can end it at once, with nothing to run.
+        Some(local) if admitted.status.in_flight() => Some(OwnedRunner {
             store,
             id: admitted.id.clone(),
             handle: Some(run_here(matches, local, admitted, source)?),
         }),
-        None => None,
+        Some(_) | None => None,
     };
     let detached = runner.is_none() && matches.get_flag("detach");
     let followed = if detached {
@@ -556,6 +565,7 @@ fn follow(
     let mut last = None;
     let mut followed: Option<Followed> = None;
     let mut id = admitted.id.clone();
+    let mut unclaimed = Some(std::time::Instant::now() + UNCLAIMED);
     loop {
         if signal.is_cancelled() {
             return followed.ok_or_else(Error::cancelled);
@@ -606,6 +616,18 @@ fn follow(
             }
         }
         tap(&current.view, &mut events, &mut last);
+        if current.view.deployment.status != DeploymentStatus::Queued {
+            unclaimed = None;
+        } else if runner.is_none()
+            && unclaimed.is_some_and(|after| std::time::Instant::now() >= after)
+        {
+            unclaimed = None;
+            ui::note(format_args!(
+                "No Server has started Deployment #{} yet; it stays queued until one does.",
+                current.view.deployment.number
+            ));
+            ui::hint(&Hint::Inspect("ployz server ls".into()));
+        }
         if !current.view.deployment.status.in_flight() || runner.is_some_and(OwnedRunner::finished)
         {
             return followed.ok_or_else(Error::cancelled);
@@ -869,6 +891,7 @@ fn retry(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = store(root)?;
     let source = deployment_id(matches, &store, "id")?;
+    refuse_local_detach(matches, &store)?;
     let events = open_events(matches)?;
     let admitted = store
         .admit(&Admit::Retry(ployz_store::Retry {
@@ -883,6 +906,7 @@ fn start(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = store(root)?;
     let id = deployment_id(matches, &store, "id")?;
+    refuse_local_detach(matches, &store)?;
     let events = open_events(matches)?;
     let queued = store
         .try_write(&Start {

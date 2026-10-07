@@ -72,11 +72,15 @@ pub(super) fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Vec<St
     if leaf.try_get_one::<bool>("no-reset").ok().flatten() == Some(&true) {
         args.push("--no-reset".into());
     }
-    for id in ["connect", "ployz-config"] {
-        if let Some(value) = leaf.try_get_one::<String>(id).ok().flatten() {
-            args.extend([format!("--{id}"), value.clone()]);
-        }
+    if let Some(connect) = leaf.try_get_one::<String>("connect").ok().flatten() {
+        args.extend(["--connect".into(), connect.clone()]);
     }
+    args.extend(
+        super::config_flag(leaf)
+            .into_iter()
+            .flatten()
+            .map(String::from),
+    );
     if let ConnectionSource::Context(name) = source {
         args.extend(["--context".into(), name.clone()]);
     }

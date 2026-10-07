@@ -1076,7 +1076,11 @@ environment: EnvironmentSummary,
 /**
  * The latest Saved revision, which follows the discard so the next Deploy ships it.
  */
-saved: Revision | null, };
+saved: Revision | null,
+/**
+ * False when nothing it names was staged.
+ */
+changed: boolean, };
 
 export type DnsLookup = { hostname: Hostname, cname: string | null, addresses: Array<string>, };
 
@@ -2297,11 +2301,12 @@ export type Published = {
  */
 environment: EnvironmentSummary,
 /**
- * The Saved revision that now holds Working State.
+ * The Saved revision that now holds Working State; none when nothing was ever
+ * published and nothing is staged.
  */
-saved: Revision,
+saved: Revision | null,
 /**
- * False when Saved State already held it.
+ * False when Saved State already held it, or nothing is staged.
  */
 created: boolean, };
 

@@ -175,6 +175,7 @@ pub(super) fn take_off(
     (accept, version): (&[VolumeName], Option<String>),
     events: Option<std::io::BufWriter<std::fs::File>>,
 ) -> Result<(DeploymentView, Result<(), Error>), Error> {
+    deploy::refuse_local_detach(matches, store)?;
     let admitted = store
         .admit(&Admit::Remove(ployz_store::Removal {
             id: DeploymentId::parse(mint())?,

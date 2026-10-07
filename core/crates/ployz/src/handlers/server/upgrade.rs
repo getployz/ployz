@@ -27,14 +27,14 @@ trait UpgradeRequests {
     async fn request_upgrade(
         &mut self,
         request: RequestMachineUpgradeRequest,
-        target: &MachineTarget,
+        machine: &Machine,
         wait: Duration,
     ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>>;
 
     async fn inspect_upgrade(
         &mut self,
         request: InspectMachineUpgradeRequest,
-        target: &MachineTarget,
+        machine: &Machine,
         wait: Duration,
     ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>>;
 
@@ -46,22 +46,29 @@ impl UpgradeRequests for Client {
     async fn request_upgrade(
         &mut self,
         request: RequestMachineUpgradeRequest,
-        target: &MachineTarget,
+        machine: &Machine,
         wait: Duration,
     ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
-        self.call_repeatable_for::<op::RequestMachineUpgrade>(request, Some(target), None, wait)
-            .await
+        self.call_repeatable_for::<op::RequestMachineUpgrade>(
+            request,
+            Some(&MachineTarget::from(&machine.id)),
+            Some(machine.name.as_str()),
+            None,
+            wait,
+        )
+        .await
     }
 
     async fn inspect_upgrade(
         &mut self,
         request: InspectMachineUpgradeRequest,
-        target: &MachineTarget,
+        machine: &Machine,
         wait: Duration,
     ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
         self.call_repeatable_for::<op::InspectMachineUpgrade>(
             request,
-            Some(target),
+            Some(&MachineTarget::from(&machine.id)),
+            Some(machine.name.as_str()),
             Some(RESTART),
             wait,
         )
@@ -230,18 +237,14 @@ async fn run_one(
     // The latest observed evidence, kept when a later poll fails.
     seen: &mut Option<MachineUpgradeAttempt>,
 ) -> Result<MachineUpgradeAttempt, Error> {
-    let target = MachineTarget::from(&machine.id);
     let deadline = Instant::now() + OBSERVATION_TIMEOUT;
     let request = RequestMachineUpgradeRequest {
         attempt_id,
         release,
     };
     let accepted = match client
-        .request_upgrade(
-            request,
-            &target,
-            deadline.saturating_duration_since(Instant::now()),
-        )
+        // A Server that cannot take the request within a minute is down, not busy.
+        .request_upgrade(request, machine, crate::setup_retry::WAIT)
         .await
     {
         Ok(accepted) => accepted,
@@ -266,7 +269,7 @@ async fn run_one(
                 InspectMachineUpgradeRequest {
                     attempt_id: Some(attempt_id),
                 },
-                &target,
+                machine,
                 deadline.saturating_duration_since(Instant::now()),
             )
             .await
@@ -368,18 +371,20 @@ mod tests {
         async fn request_upgrade(
             &mut self,
             request: RequestMachineUpgradeRequest,
-            target: &MachineTarget,
+            machine: &Machine,
             _wait: Duration,
         ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
-            self.seen
-                .push((request.attempt_id, target.as_str().to_owned()));
+            self.seen.push((
+                request.attempt_id,
+                MachineTarget::from(&machine.id).as_str().to_owned(),
+            ));
             self.request.take().expect("one request result")
         }
 
         async fn inspect_upgrade(
             &mut self,
             _request: InspectMachineUpgradeRequest,
-            _target: &MachineTarget,
+            _machine: &Machine,
             _wait: Duration,
         ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
             panic!("an unaccepted request is not inspected")
@@ -401,7 +406,7 @@ mod tests {
         async fn request_upgrade(
             &mut self,
             request: RequestMachineUpgradeRequest,
-            _target: &MachineTarget,
+            _machine: &Machine,
             _wait: Duration,
         ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
             Ok(MachineUpgradeAttempt {
@@ -414,7 +419,7 @@ mod tests {
         async fn inspect_upgrade(
             &mut self,
             _request: InspectMachineUpgradeRequest,
-            _target: &MachineTarget,
+            _machine: &Machine,
             _wait: Duration,
         ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
             panic!("terminal answers are not inspected")

@@ -165,7 +165,7 @@ impl Client {
         request: T::Request,
         target: Option<&MachineTarget>,
     ) -> Result<T::Response, ConnectError> {
-        self.call_repeatable_for::<T>(request, target, None, crate::setup_retry::WAIT)
+        self.call_repeatable_for::<T>(request, target, None, None, crate::setup_retry::WAIT)
             .await
             .map_err(|error| match error {
                 crate::setup_retry::Error::Permanent(error) => error,
@@ -174,11 +174,13 @@ impl Client {
     }
 
     /// Retry a read or stable-identity request for the caller's remaining time budget.
-    /// `expected` announces an anticipated outage in place of the connectivity warning.
+    /// `server` names the target in the connectivity warning; `expected` announces an
+    /// anticipated outage in its place.
     pub(crate) async fn call_repeatable_for<T: Rpc>(
         &mut self,
         request: T::Request,
         target: Option<&MachineTarget>,
+        server: Option<&str>,
         expected: Option<crate::setup_retry::Expected>,
         wait: Duration,
     ) -> Result<T::Response, crate::setup_retry::Error<ConnectError>> {
@@ -187,12 +189,15 @@ impl Client {
             .map_err(ConnectError::from)
             .map_err(crate::setup_retry::Error::Permanent)?;
         let mut redial = false;
-        let operation = T::PATH.rsplit('/').next().unwrap_or(T::PATH);
-        let destination = target.map_or_else(
-            || self.connection.to_string(),
-            |target| format!("{} via {}", target.as_str().escape_debug(), self.connection),
-        );
-        let progress = format!("{operation} on {destination}");
+        let progress = match (server, target) {
+            (Some(server), _) => format!("Could not reach Server {server}"),
+            (None, Some(target)) => format!(
+                "Could not reach Server {} via {}",
+                target.as_str().escape_debug(),
+                self.connection
+            ),
+            (None, None) => format!("Could not reach {}", self.connection),
+        };
         crate::setup_retry::run_expecting(
             self,
             &progress,

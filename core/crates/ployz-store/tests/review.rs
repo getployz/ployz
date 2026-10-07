@@ -151,7 +151,10 @@ fn publish_saves_working_state_once() {
     let (store, who) = shop();
     let version = diff(&store, &who).version;
     let published = publish(&store, &who, Some(&version)).unwrap();
-    assert_eq!((published.saved, published.created), (Revision(1), true));
+    assert_eq!(
+        (published.saved, published.created),
+        (Some(Revision(1)), true)
+    );
     let view = diff(&store, &who);
     assert_eq!(view.saved, Some(Revision(1)));
     assert!(view.published);
@@ -159,10 +162,13 @@ fn publish_saves_working_state_once() {
     assert_eq!(view.changes.len(), 2);
 
     let again = publish(&store, &who, None).unwrap();
-    assert_eq!((again.saved, again.created), (Revision(1), false));
+    assert_eq!((again.saved, again.created), (Some(Revision(1)), false));
     set(&store, &who, "web.replicas", json!(2));
     assert!(!diff(&store, &who).published);
-    assert_eq!(publish(&store, &who, None).unwrap().saved, Revision(2));
+    assert_eq!(
+        publish(&store, &who, None).unwrap().saved,
+        Some(Revision(2))
+    );
 }
 
 #[test]
@@ -353,7 +359,7 @@ fn simultaneous_publishers_save_one_revision() {
         (Ok(saved), Err(refused)) | (Err(refused), Ok(saved)) => (saved, refused),
         other => panic!("one publisher wins: {other:?}"),
     };
-    assert_eq!((saved.saved, saved.created), (Revision(1), true));
+    assert_eq!((saved.saved, saved.created), (Some(Revision(1)), true));
     assert_eq!(refused.code, RpcErrorCode::Conflict);
 }
 
