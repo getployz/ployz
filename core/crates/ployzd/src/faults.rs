@@ -3,11 +3,11 @@
 #[cfg(feature = "verify-faults")]
 pub(crate) use enabled::{apply, check_env};
 #[cfg(feature = "verify-faults")]
-pub use enabled::{kill_after_record, kill_inside};
+pub use enabled::{hold_task, kill_after_record, kill_inside};
 
 /// Verbs whose effect outlives the RPC; `kill-daemon` fires inside them, from [`kill_inside`].
 #[cfg_attr(not(feature = "verify-faults"), allow(dead_code))]
-const LONG_EFFECTS: [&str; 2] = ["StartReceive", "Close"];
+const LONG_EFFECTS: [&str; 4] = ["StartReceive", "Close", "Promote", "StartHandedContainer"];
 
 #[cfg(not(feature = "verify-faults"))]
 pub(crate) async fn apply(_verb: &'static str) {}
@@ -17,6 +17,9 @@ pub fn kill_inside(_verb: &'static str) {}
 
 #[cfg(not(feature = "verify-faults"))]
 pub fn kill_after_record(_verb: &'static str) {}
+
+#[cfg(not(feature = "verify-faults"))]
+pub async fn hold_task(_verb: &'static str) {}
 
 #[cfg(not(feature = "verify-faults"))]
 pub(crate) fn check_env() -> std::io::Result<()> {
@@ -42,12 +45,17 @@ mod enabled {
         KillAfterRecord {
             verb: String,
         },
+        /// Holds `verb`'s spawned task for `secs` before it takes the mutation lock.
+        HoldTask {
+            verb: String,
+            secs: u64,
+        },
         Unanswered,
     }
 
     #[derive(Debug, thiserror::Error)]
     #[error(
-        "{ENV}={0:?} is not a fault point (delay-rpc:<verb>:<secs>, kill-daemon:<verb>, kill-after-record:<verb>, unanswered)"
+        "{ENV}={0:?} is not a fault point (delay-rpc:<verb>:<secs>, kill-daemon:<verb>, kill-after-record:<verb>, hold-task:<verb>:<secs>, unanswered)"
     )]
     pub(crate) struct FaultParseError(String);
 
@@ -72,6 +80,12 @@ mod enabled {
                 (Some("kill-after-record"), Some(verb), None, None) if !verb.is_empty() => {
                     FaultPoint::KillAfterRecord {
                         verb: verb.to_owned(),
+                    }
+                }
+                (Some("hold-task"), Some(verb), Some(secs), None) if !verb.is_empty() => {
+                    FaultPoint::HoldTask {
+                        verb: verb.to_owned(),
+                        secs: secs.parse().map_err(|_| malformed())?,
                     }
                 }
                 (Some("unanswered"), None, None, None) => FaultPoint::Unanswered,
@@ -116,7 +130,18 @@ mod enabled {
             }
             FaultPoint::DelayRpc { .. }
             | FaultPoint::KillDaemon { .. }
-            | FaultPoint::KillAfterRecord { .. } => {}
+            | FaultPoint::KillAfterRecord { .. }
+            | FaultPoint::HoldTask { .. } => {}
+        }
+    }
+
+    /// Sleeps inside `verb`'s spawned task when `hold-task:<verb>:<secs>` names it.
+    pub async fn hold_task(verb: &'static str) {
+        if let Ok(Some(FaultPoint::HoldTask { verb: wanted, secs })) = FaultPoint::from_env()
+            && wanted == verb
+        {
+            tracing::warn!(verb, secs, "fault: holding the task");
+            tokio::time::sleep(Duration::from_secs(secs)).await;
         }
     }
 
@@ -169,6 +194,13 @@ mod enabled {
                         verb: "WarmSnapshot".into(),
                     },
                 ),
+                (
+                    "hold-task:Promote:610",
+                    FaultPoint::HoldTask {
+                        verb: "Promote".into(),
+                        secs: 610,
+                    },
+                ),
                 ("unanswered", FaultPoint::Unanswered),
             ] {
                 assert_eq!(value.parse::<FaultPoint>().unwrap(), fault, "{value}");
@@ -182,6 +214,8 @@ mod enabled {
                 "kill-daemon",
                 "kill-daemon:AdoptLease:extra",
                 "kill-after-record",
+                "hold-task:Promote",
+                "hold-task:Promote:later",
                 "busy-mount:data",
                 "unanswered:AdoptLease",
                 "explode",
