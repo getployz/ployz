@@ -591,7 +591,15 @@ async fn serve_volume_send(
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     match listener {
-        Some(listener) => crate::volume_send::serve(listener, PathBuf::from("zfs"), shutdown).await,
+        Some(listener) => {
+            crate::volume_send::serve(
+                listener,
+                PathBuf::from("zfs"),
+                PathBuf::from("zpool"),
+                shutdown,
+            )
+            .await
+        }
         None => {
             shutdown.cancelled().await;
             Ok(())
