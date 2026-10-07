@@ -520,3 +520,57 @@ fn qualified_notices_group_by_machine_identity_and_count_each_gap_once() {
     assert!(text.contains(&format!("edge ({second})")), "{text}");
     assert!(text.contains("2 Server observation gaps"), "{text}");
 }
+
+/// The terminal echoes `^C` after the last live row, which indicatif does not track.
+#[test]
+fn ctrl_c_echo_after_a_full_width_frame_leaves_no_stale_caption() {
+    let terminal = InMemoryTerm::new(20, 90);
+    let backend = Backend::new(
+        Mode::Interactive,
+        ProgressDrawTarget::term_like(Box::new(EchoRoom(terminal.clone()))),
+        room,
+    );
+    let mut wide = frame(State::Running(RowPhase::Starting));
+    wide.rows.first_mut().unwrap().detail = Some("x".repeat(200));
+    backend.draw(&wide, 0, false);
+    terminal.write_str("^C").unwrap();
+    drop(backend);
+    let visible = terminal.contents();
+    assert!(!visible.contains("Deploying shop"), "{visible:?}");
+}
+
+/// Reports the narrowed width the stderr draw target gives indicatif.
+#[derive(Debug)]
+struct EchoRoom(InMemoryTerm);
+impl TermLike for EchoRoom {
+    fn width(&self) -> u16 {
+        self.0.width() - terminal::ECHO_ROOM
+    }
+    fn height(&self) -> u16 {
+        self.0.height()
+    }
+    fn move_cursor_up(&self, n: usize) -> io::Result<()> {
+        self.0.move_cursor_up(n)
+    }
+    fn move_cursor_down(&self, n: usize) -> io::Result<()> {
+        self.0.move_cursor_down(n)
+    }
+    fn move_cursor_right(&self, n: usize) -> io::Result<()> {
+        self.0.move_cursor_right(n)
+    }
+    fn move_cursor_left(&self, n: usize) -> io::Result<()> {
+        self.0.move_cursor_left(n)
+    }
+    fn write_line(&self, value: &str) -> io::Result<()> {
+        self.0.write_line(value)
+    }
+    fn write_str(&self, value: &str) -> io::Result<()> {
+        self.0.write_str(value)
+    }
+    fn clear_line(&self) -> io::Result<()> {
+        self.0.clear_line()
+    }
+    fn flush(&self) -> io::Result<()> {
+        self.0.flush()
+    }
+}

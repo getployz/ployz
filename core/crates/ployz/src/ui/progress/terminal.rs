@@ -6,6 +6,11 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use console::Term;
 use indicatif::{ProgressDrawTarget, TermLike};
 
+/// Columns kept free right of the live block. indicatif pads rows to the width it is
+/// given, so a full-width row would let the terminal's `^C` echo wrap onto a row
+/// indicatif doesn't count, and its next clear would leave the caption behind.
+pub(super) const ECHO_ROOM: u16 = 2;
+
 pub(super) fn draw_target() -> ProgressDrawTarget {
     let term = Term::buffered_stderr();
     if !term.is_term() || console::is_dumb() {
@@ -25,7 +30,7 @@ impl TermLike for DrawTerm {
     fn width(&self) -> u16 {
         let (height, width) = self.term.size();
         self.height.store(height, Ordering::Relaxed);
-        width
+        width.saturating_sub(ECHO_ROOM)
     }
 
     fn height(&self) -> u16 {

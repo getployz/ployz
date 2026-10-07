@@ -530,7 +530,7 @@ fn clip(text: &str, width: usize) -> String {
 }
 
 fn live_lines(frame: &Frame, tick: usize, width: usize, height: usize, color: bool) -> Vec<String> {
-    let width = width.saturating_sub(1);
+    let width = width.saturating_sub(1 + usize::from(terminal::ECHO_ROOM));
     let height = height.saturating_sub(1).max(1);
     let mut rows: Vec<_> = frame.rows.iter().collect();
     rows.sort_by_key(|row| {
