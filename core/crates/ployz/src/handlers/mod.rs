@@ -88,9 +88,21 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         return Ok(());
     }
     let path = command_path(matches);
-    // Every leaf has a handler, so a missing one means a group without its subcommand.
-    let handler = handler_for(&path)
-        .ok_or_else(|| Error::usage(format!("ployz {path} requires a subcommand")))?;
+    // Every leaf has a handler, so a missing one means a group without its
+    // subcommand: its help, as a bare `ployz` shows the top level's.
+    let Some(handler) = handler_for(&path) else {
+        if matches.get_flag("json") {
+            return Err(Error::usage(format!("ployz {path} requires a subcommand")));
+        }
+        command.build();
+        let group = path
+            .split(' ')
+            .try_fold(command, |command, name| command.find_subcommand_mut(name))
+            .ok_or_else(|| Error::usage(format!("ployz {path} requires a subcommand")))?;
+        group.print_help()?;
+        crate::ui::stream("");
+        return Ok(());
+    };
     if json_refused(&path) && matches.get_flag("json") {
         return Err(Error::usage(format!(
             "ployz {path} does not support --json"
@@ -249,6 +261,15 @@ async fn reconnect_client(
     .map_err(Into::into)
 }
 
+/// `--ployz-config PATH` when the command line gave it. A default or `PLOYZ_CONFIG`
+/// holds for the next command too, and a quoted `~` would not expand.
+pub(super) fn config_flag(matches: &ArgMatches) -> Option<[&str; 2]> {
+    (matches.value_source("ployz-config") == Some(clap::parser::ValueSource::CommandLine))
+        .then(|| matches.get_one::<String>("ployz-config"))
+        .flatten()
+        .map(|config| ["--ployz-config", config.as_str()])
+}
+
 /// The command as typed, plus `extra`.
 pub(crate) fn typed_with(extra: &[&str]) -> String {
     let typed = std::env::args().skip(1);
@@ -260,12 +281,11 @@ pub(crate) fn typed_with(extra: &[&str]) -> String {
 }
 
 fn rerun(matches: &ArgMatches, args: &[&str]) -> String {
-    let config = config_path(matches).expect("the command resolved its config");
-    let config = config.to_string_lossy();
     let connect = matches.get_one::<String>("connect");
     let context = matches.try_get_one::<String>("context").ok().flatten();
-    let args = ["ployz", "--ployz-config", config.as_ref()]
+    let args = ["ployz"]
         .into_iter()
+        .chain(config_flag(matches).into_iter().flatten())
         .chain(
             connect
                 .map(|connect| ["--connect", connect.as_str()])
@@ -283,14 +303,13 @@ fn rerun(matches: &ArgMatches, args: &[&str]) -> String {
 }
 
 fn recovery_command(matches: &ArgMatches, context: &str, command: &[&str]) -> String {
-    let config = config_path(matches).expect("setup already resolved the config path");
-    let config = config.to_string_lossy();
     let connect = matches
         .get_one::<String>("connect")
         .into_iter()
         .flat_map(|connect| ["--connect", connect.as_str()]);
-    let args = ["ployz", "--ployz-config", config.as_ref()]
+    let args = ["ployz"]
         .into_iter()
+        .chain(config_flag(matches).into_iter().flatten())
         .chain(connect)
         .chain(command.iter().copied())
         .chain(["--context", context]);
@@ -712,7 +731,7 @@ mod tests {
 
     #[test]
     fn server_add_takes_a_token_or_prints_a_command() {
-        assert!(command().try_get_matches_from(["ployz", "cloud"]).is_err());
+        assert!(command().try_get_matches_from(["ployz", "cloud"]).is_ok());
         let parsed = command()
             .try_get_matches_from(["ployz", "server", "add", "--token", "pmet_test"])
             .unwrap();

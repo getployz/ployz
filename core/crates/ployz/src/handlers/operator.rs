@@ -22,9 +22,9 @@ use crate::{
     cloud_login::LoginError,
     context::Transport,
     operator::{
-        ExecMode, ProxyPorts, ServiceArg, exec_options, merge_logs, observe_service_logs,
-        open_exec, open_machine_logs, open_service_logs, parse_log_time, parse_proxy_ports,
-        parse_service_args, parse_tail, select_proxy_container,
+        ExecMode, ProxyPorts, ServiceArg, asked_machines, exec_options, merge_logs,
+        observe_service_logs, open_exec, open_machine_logs, open_service_logs, parse_log_time,
+        parse_proxy_ports, parse_service_args, parse_tail, select_proxy_container,
     },
 };
 
@@ -339,10 +339,26 @@ pub fn machine_logs(root: &ArgMatches) -> Result<(), Error> {
         Box::pin(async move {
             let cancellation = cancellation_on_ctrl_c();
             let _parent = cancellation.clone().drop_guard();
+            // A Server that can't take RPC is skipped, so it is named, not silently missing.
+            let observed = client.machines().await?;
+            let asked = asked_machines(&observed, &machines)?;
+            let skipped = observed
+                .iter()
+                .filter(|machine| asked.contains(&machine.machine.id) && !machine.invites_rpc())
+                .map(|machine| machine.machine.id)
+                .collect::<Vec<_>>();
+            let mut gaps = crate::ui::Gaps::default().named(
+                observed
+                    .iter()
+                    .map(|machine| (machine.machine.id, &machine.machine.name)),
+            );
+            gaps.extend(&[], &skipped);
+            gaps.warn();
             let inputs =
                 open_machine_logs(client, &services, &machines, options, cancellation.clone())
                     .await?;
-            print_logs(merge_logs(inputs, cancellation), utc).await
+            print_logs(merge_logs(inputs, cancellation), utc).await?;
+            gaps.outcome()
         })
     })
 }

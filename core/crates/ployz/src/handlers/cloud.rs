@@ -707,8 +707,6 @@ async fn wait_phase(
 pub(crate) fn command() -> Command {
     Command::new("cloud")
         .about("Manage Cloud")
-        .subcommand_required(true)
-        .arg_required_else_help(true)
         .subcommand(
             base("reset", "Give up your Organization's founding that never finished")
                 .long_about("Give up your Organization's founding that never finished, so the next ployz server add founds the Cluster again. Stop or erase the founding Server first. Needs `ployz login`.")

@@ -18,7 +18,6 @@ use crate::ui::{Hint, Table, Tree};
 pub(crate) fn command() -> Command {
     Command::new("project")
         .about("Manage Projects")
-        .arg_required_else_help(true)
         .subcommand(
             Command::new("new")
                 .about("Create a Project with its Default Environment, production")

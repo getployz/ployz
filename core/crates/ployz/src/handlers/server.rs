@@ -400,7 +400,6 @@ pub(super) fn parse_endpoints(values: &[String]) -> Result<Vec<AdvertisedEndpoin
 
 pub(crate) fn command() -> Command {
     base("server", "Manage Servers")
-        .arg_required_else_help(true)
         .subcommand(enroll::command())
         .subcommand(clean::command())
         .subcommand(base("build-cache-clear", "Clear this execution host user's Ployz build cache")

@@ -157,7 +157,19 @@ pub use ployz_core::error_chain::causes;
     reason = "the one-line sinks below are the only callers"
 )]
 fn inline(error: Chain<'_>) -> String {
-    ployz_core::error_chain::inline(error)
+    one_line(&ployz_core::error_chain::inline(error))
+}
+
+/// Foreign text on one line: a registry's `denied\ndenied` would break the
+/// indented line it lands in. Repeated lines print once.
+fn one_line(text: &str) -> String {
+    let mut lines: Vec<&str> = Vec::new();
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if lines.last() != Some(&line) {
+            lines.push(line);
+        }
+    }
+    lines.join("; ")
 }
 
 type Chain<'a> = &'a (dyn std::error::Error + 'static);
@@ -215,7 +227,7 @@ pub fn write(
         writeln!(out, "{line}")?;
     }
     if let Some(cause) = cause {
-        writeln!(out, "  {} {cause}", Tone::Bad.paint("cause:"))?;
+        writeln!(out, "  {} {}", Tone::Bad.paint("cause:"), one_line(cause))?;
     }
     for hint in hints {
         hint.write(out)?;
@@ -264,6 +276,22 @@ mod tests {
             })
         );
         assert_eq!(Hint::from_details(&details), hints);
+    }
+
+    #[test]
+    fn a_foreign_cause_stays_on_its_line() {
+        let mut out = anstream::StripStream::new(Vec::new());
+        write(
+            &mut out,
+            "Could not create the Container.",
+            Some("error from registry: denied\ndenied\n"),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out.into_inner()).unwrap(),
+            "error: Could not create the Container.\n  cause: error from registry: denied; denied\n"
+        );
     }
 
     #[test]

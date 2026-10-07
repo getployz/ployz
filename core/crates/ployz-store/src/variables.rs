@@ -375,10 +375,7 @@ fn exported_flag(key: &VariableKey, value: Value) -> Result<bool, RpcError> {
 fn invalid(key: &VariableKey, message: &str) -> RpcError {
     error::invalid(
         format!("{key}: {message}"),
-        json!({
-            "variable": key.as_str(),
-            "example": "postgres://${{ db.USER }}@${{ db.PLOYZ_PRIVATE_DOMAIN }}:5432/app",
-        }),
+        json!({ "variable": key.as_str() }),
     )
 }
 

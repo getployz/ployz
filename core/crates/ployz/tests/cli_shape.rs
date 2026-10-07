@@ -560,6 +560,26 @@ fn json_with_a_missing_subcommand_is_a_usage_error_not_help() {
 }
 
 #[test]
+fn a_group_without_its_subcommand_prints_its_help_like_bare_ployz() {
+    for group in ["org", "server", "cloud", "deployment"] {
+        let home = tempfile::tempdir().unwrap();
+        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg(group)
+            .env("HOME", home.path())
+            .env_remove("PLOYZ_CONTEXT")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(0), "{group}");
+        assert!(output.stderr.is_empty(), "{group}");
+        assert!(
+            stdout.contains(&format!("Usage: ployz {group} ")),
+            "{group}: {stdout}"
+        );
+    }
+}
+
+#[test]
 fn cloud_commands_act_with_ployz_token_or_the_signed_in_device() {
     for args in [
         &["token", "ls", "--json"][..],
