@@ -6,9 +6,10 @@ use super::lease_tests::set_property;
 use super::mirror_tests::{at, commands, property, snapshot_names};
 use super::*;
 
-const CONTAINER: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+pub(super) const CONTAINER: &str =
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-fn programs(test: &TestDir) -> VolumeStorage {
+pub(super) fn programs(test: &TestDir) -> VolumeStorage {
     let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
     fs::write(test.0.join("holders"), format!("{CONTAINER}\n")).unwrap();
     fs::write(test.0.join("registered"), "data\n").unwrap();
@@ -54,7 +55,7 @@ esac
     VolumeStorage::with_programs(zpool, zfs)
 }
 
-fn serve_storage(
+pub(super) fn serve_storage(
     test: &TestDir,
     storage: VolumeStorage,
 ) -> (PathBuf, tokio::task::JoinHandle<io::Result<()>>) {

@@ -51,6 +51,7 @@ pub(super) struct VolumeStorage {
     pub(super) mutation: Arc<Mutex<()>>,
     pub(super) installation: ployzd::mutation::MutationGate,
     pub(super) receives: super::transfer::Receives,
+    pub(super) tasks: super::switch_target::Tasks,
     /// Where a writer Machine serves send streams; tests point it at a local server.
     pub(super) send_port: u16,
 }
@@ -80,6 +81,7 @@ impl VolumeStorage {
             mutation: Arc::new(Mutex::new(())),
             installation: ployzd::mutation::MutationGate::new(run_dir, data_dir),
             receives: super::transfer::Receives::default(),
+            tasks: super::switch_target::Tasks::default(),
             send_port: ployz_core::VOLUME_SEND_PORT,
         }
     }
@@ -103,6 +105,7 @@ impl VolumeStorage {
                 fixture.join("admission-data"),
             ),
             receives: super::transfer::Receives::default(),
+            tasks: super::switch_target::Tasks::default(),
             send_port: ployz_core::VOLUME_SEND_PORT,
         }
     }

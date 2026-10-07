@@ -433,6 +433,7 @@ async fn concurrent_and_retried_first_creates_converge_on_one_pool() {
         mutation: Arc::new(Mutex::new(())),
         installation: first.installation.clone(),
         receives: Default::default(),
+        tasks: Default::default(),
         send_port: first.send_port,
     };
     let first_socket = test.0.join("first-plugin.sock");
@@ -503,6 +504,7 @@ async fn a_second_process_cannot_use_a_pool_before_its_owner_finishes() {
         mutation: Arc::new(Mutex::new(())),
         installation: first.installation.clone(),
         receives: Default::default(),
+        tasks: Default::default(),
         send_port: first.send_port,
     };
     let first_socket = test.0.join("first-plugin.sock");
@@ -978,6 +980,7 @@ esac
             directory.join("admission-data"),
         ),
         receives: Default::default(),
+        tasks: Default::default(),
         send_port: ployz_core::VOLUME_SEND_PORT,
     }
 }
