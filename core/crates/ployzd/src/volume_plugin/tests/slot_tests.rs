@@ -1,5 +1,6 @@
 //! The hidden slot layout: Docker never sees a slot, the Pool still pays for it.
 
+use super::super::storage::committed_bytes;
 use super::lease_tests::start;
 use super::*;
 
@@ -94,5 +95,27 @@ fn places_follow_the_dataset_layout() {
         ("tankard/ployz/data", Place::Outside),
     ] {
         assert_eq!(Place::of(dataset, "tank"), place, "{dataset}");
+    }
+}
+
+#[test]
+fn mirror_commitment_counts_only_the_slot_parent() {
+    let bound = 1_073_741_824_u64;
+    for name in ["crash", "fs"] {
+        let datasets = [
+            format!("tank/{MIRROR_ROOT}/{name}"),
+            format!("tank/{MIRROR_ROOT}/{name}/fs"),
+            format!("other/{MIRROR_ROOT}/{name}"),
+            format!("other/{MIRROR_ROOT}/{name}/fs"),
+        ]
+        .map(|dataset| {
+            Dataset::parse(&format!("{dataset}\t{bound}\t0\t0\tnone\tno\toff"), "tank")
+                .unwrap()
+        });
+        let commitment = datasets
+            .iter()
+            .map(|dataset| committed_bytes(dataset, "tank"))
+            .sum::<u64>();
+        assert_eq!(commitment, bound, "Volume {name}");
     }
 }
