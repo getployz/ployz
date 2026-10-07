@@ -46,7 +46,6 @@ pub(crate) fn interrupted() -> std::io::Result<CancellationToken> {
     if let Some(token) = token.as_ref() {
         return Ok(token.clone());
     }
-    claim_graceful();
     let mut signals = signal_hook::iterator::Signals::new([signal_hook::consts::SIGINT])?;
     let cancelled = CancellationToken::new();
     let cancel = cancelled.clone();
@@ -57,6 +56,7 @@ pub(crate) fn interrupted() -> std::io::Result<CancellationToken> {
                 cancel.cancel();
             }
         })?;
+    claim_graceful();
     Ok(token.insert(cancelled).clone())
 }
 
