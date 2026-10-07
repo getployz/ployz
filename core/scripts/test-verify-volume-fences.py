@@ -171,6 +171,7 @@ class VolumeFences:
         self.guest("docker", "volume", "create", "-d", "ployz", "-o", "size=64m", self.normal)
         listing = self.guest("docker", "volume", "ls", "-q").stdout.splitlines()
         assert self.normal in listing, "Docker did not list the ordinary Volume"
+        assert not any(name == self.slot or name.startswith(self.slot + "/") for name in listing), listing
         result = self.guest("docker", "run", "--rm", "-v", self.normal + ":/data", "alpine:3.20",
                             "sh", "-ec", "printf volume-fence-ok > /data/marker; sync; cat /data/marker")
         assert result.stdout.strip() == "volume-fence-ok", "The ordinary Volume did not mount and retain its write"
