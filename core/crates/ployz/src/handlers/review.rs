@@ -145,21 +145,25 @@ pub(super) fn publish(root: &ArgMatches) -> Result<(), Error> {
     let published = store
         .try_write(&publish)
         .map_err(|error| store.fail(with_refresh_hint(error, matches, "diff")))?;
+    let where_ = format!(
+        "{}/{}",
+        published.environment.project, published.environment.name
+    );
+    let Some(saved) = published.saved else {
+        return crate::ui::done(
+            &Next::new(&published, None),
+            format_args!("Nothing staged in {where_}; nothing to publish."),
+        );
+    };
     let hint = next(matches, &["deploy"]);
     crate::ui::finish(&Next::new(&published, Some(hint.clone())), || {
-        let where_ = format!(
-            "{}/{}",
-            published.environment.project, published.environment.name
-        );
         if published.created {
             crate::ui::stream(format_args!(
-                "Published {where_} as Saved revision {}.",
-                published.saved
+                "Published {where_} as Saved revision {saved}."
             ));
         } else {
             crate::ui::stream(format_args!(
-                "Saved revision {} already holds {where_}.",
-                published.saved
+                "Saved revision {saved} already holds {where_}."
             ));
         }
         crate::ui::hint(&crate::ui::Hint::Next(hint));
@@ -181,13 +185,24 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
     let discarded = store
         .try_write(&discard)
         .map_err(|error| store.fail(with_refresh_hint(error, matches, "diff")))?;
+    let where_ = format!(
+        "{}/{}",
+        discarded.environment.project, discarded.environment.name
+    );
+    if !discarded.changed {
+        return crate::ui::done(
+            &Next::new(&discarded, None),
+            format_args!(
+                "Nothing staged{} in {where_}; nothing to discard.",
+                path.map_or_else(String::new, |path| format!(" at {path}"))
+            ),
+        );
+    }
     let hint = next(matches, &["diff"]);
     crate::ui::finish(&Next::new(&discarded, Some(hint.clone())), || {
         crate::ui::stream(format_args!(
-            "Discarded {} in {}/{} (revision {}).",
+            "Discarded {} in {where_} (revision {}).",
             path.map_or_else(|| "every staged change".to_owned(), |path| path.to_string()),
-            discarded.environment.project,
-            discarded.environment.name,
             discarded.environment.revision
         ));
         crate::ui::hint(&crate::ui::Hint::Inspect(hint));

@@ -35,6 +35,8 @@ pub(super) fn fake_zfs(directory: &Path, pools: &str) -> (PathBuf, PathBuf) {
     let sibling = directory.join("sibling");
     let mounted = directory.join("mounted");
     let destroy_fails = directory.join("destroy-fails");
+    let rename_fails = directory.join("rename-fails");
+    let inherit_fails = directory.join("inherit-fails");
     let list_fails = directory.join("list-fails");
     let slot = directory.join("slot");
     let mirror_root = directory.join("mirror-root");
@@ -142,6 +144,7 @@ case "$*" in
     prop "$6" "$5" -
     ;;
   'set readonly=on tank/ployz-mirror/data/fs')
+    if [ -e '{props}/fail-properties' ]; then echo 'property unavailable' >&2; exit 1; fi
     require tank/ployz-mirror/data/fs
     [ -e '{readonly_lost}' ] || {{ mkdir -p '{props}/tank/ployz-mirror/data/fs'; echo on > '{props}/tank/ployz-mirror/data/fs/readonly'; }}
     ;;
@@ -161,6 +164,7 @@ case "$*" in
     printf '%s\n' "${{2#*=}}" > "$f"
     ;;
   'inherit '*)
+    if [ -e '{inherit_fails}' ]; then echo 'property unavailable' >&2; exit 1; fi
     require "$3"
     rm -f '{props}'/"$3/$2"
     ;;
@@ -178,6 +182,7 @@ case "$*" in
   'create -o refquota=1073741824 tank/ployz/data') touch '{volume}' ;;
   'create -o canmount=off -o mountpoint=/var/lib/ployz-mirror -o readonly=on tank/ployz-mirror') touch '{mirror_root}' ;;
   'create -o canmount=off -o readonly=on -o refquota='*' tank/ployz-mirror/data')
+    if [ -e '{mirror}' ]; then echo "cannot create 'tank/ployz-mirror/data': dataset already exists" >&2; exit 1; fi
     touch '{mirror}'
     mkdir -p '{props}/tank/ployz-mirror/data'
     printf '%s\n' "${{7#refquota=}}" > '{props}/tank/ployz-mirror/data/refquota'
@@ -187,6 +192,10 @@ case "$*" in
     if [ -e '{props}/busy-mount' ]; then echo 'filesystem is busy' >&2; exit 1; fi
     rm -f '{mounted}' ;;
   'rename tank/ployz/data tank/ployz-mirror/data/fs')
+    if [ -e '{rename_fails}' ]; then echo 'rename interrupted' >&2; exit 1; fi
+    require tank/ployz/data
+    require tank/ployz-mirror/data
+    if [ -e '{readonly_volume}' ]; then moved_readonly=on; else moved_readonly=off; fi
     rm -f '{volume}' '{mounted}'
     touch '{mirror_fs}'
     rm -rf '{props}/tank/ployz-mirror/data/fs'
@@ -199,6 +208,7 @@ case "$*" in
       rm -rf '{props}/tank/ployz/data'
     fi
     echo 1073741824 > '{props}/tank/ployz-mirror/data/fs/refquota'
+    echo "$moved_readonly" > '{props}/tank/ployz-mirror/data/fs/readonly'
     ;;
   'destroy -r tank/ployz/data')
     if [ -e '{destroy_fails}' ]; then echo 'dataset is busy' >&2; exit 1; fi
@@ -218,7 +228,10 @@ case "$*" in
     rm -f '{props}/tank/ployz-mirror/data/fs/receive_resume_token'
     ;;
   'receive -u -s -o readonly=on -o refquota='*' tank/ployz-mirror/data/fs')
+    echo $$ > '{props}/receive-pid'
+    if [ -e '{props}/stall-read' ]; then exec sleep 30; fi
     read -r verb arg guid || verb=empty
+    if [ -e '{props}/stall-exit' ]; then cat >/dev/null; exec sleep 30; fi
     touch '{mirror_fs}'
     d='{props}/tank/ployz-mirror/data/fs'
     mkdir -p "$d"
@@ -234,6 +247,7 @@ case "$*" in
         printf '%s\n' "${{7#refquota=}}" > "$d/refquota"
         ;;
       break)
+        cat >/dev/null
         echo 'cannot receive: connection reset' >&2
         echo 'token-1' > "$d/receive_resume_token"
         echo off > "$d/readonly.new"
@@ -259,6 +273,8 @@ esac
         sibling = sibling.display(),
         mounted = mounted.display(),
         destroy_fails = destroy_fails.display(),
+        rename_fails = rename_fails.display(),
+        inherit_fails = inherit_fails.display(),
         list_fails = list_fails.display(),
         slot = slot.display(),
         mirror_root = mirror_root.display(),

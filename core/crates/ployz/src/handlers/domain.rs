@@ -18,7 +18,6 @@ use crate::ui::{self, Cell, Fields, Hint, Table, Tone};
 pub(crate) fn command() -> Command {
     Command::new("domain")
         .about("Manage public domains")
-        .arg_required_else_help(true)
         .subcommand(
             store::scoped(Command::new("add").about(
                 "Give a Service a domain: HOST for a custom one (Ployz Pro), none for a generated one",
@@ -93,7 +92,7 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
         port: matches.get_one::<u16>("port").copied(),
     };
     let added = store::store(root)?.write(&add)?;
-    staged(matches, &added, "Staged domain")
+    staged(matches, &added, "Staged domain", "is already on")
 }
 
 fn set(root: &ArgMatches) -> Result<(), Error> {
@@ -106,7 +105,12 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
         port: matches.get_one::<u16>("port").copied().map(Some),
     };
     let changed = store::store(root)?.write(&set)?;
-    staged(matches, &changed, "Staged generated domain")
+    staged(
+        matches,
+        &changed,
+        "Staged generated domain",
+        "already reaches",
+    )
 }
 
 fn remove(root: &ArgMatches) -> Result<(), Error> {
@@ -116,7 +120,12 @@ fn remove(root: &ArgMatches) -> Result<(), Error> {
         domain: required(matches, "domain")?,
     };
     let removed = store::store(root)?.write(&remove)?;
-    staged(matches, &removed, "Staged removal of domain")
+    staged(
+        matches,
+        &removed,
+        "Staged removal of domain",
+        "is already off",
+    )
 }
 
 fn list(root: &ArgMatches) -> Result<(), Error> {
@@ -181,20 +190,36 @@ fn check(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// A staged domain change and, when it changed anything, `ployz deploy` to ship it.
-fn staged(matches: &ArgMatches, result: &DomainStaged, what: &str) -> Result<(), Error> {
-    let hint = (!result.staged.is_empty()).then(|| store::next(matches, &["deploy"]));
+/// A change that was already so says nothing changed: `already` joins the domain
+/// to its Service, as in `example.com is already on web`.
+fn staged(
+    matches: &ArgMatches,
+    result: &DomainStaged,
+    what: &str,
+    already: &str,
+) -> Result<(), Error> {
+    let where_ = format!("{}/{}", result.environment.project, result.environment.name);
+    if result.staged.is_empty() {
+        return ui::done(
+            &Next::new(result, None),
+            format_args!(
+                "Nothing changed in {where_}; {} {already} {}.",
+                result.domain.shown(),
+                result.domain.service
+            ),
+        );
+    }
+    let hint = store::next(matches, &["deploy"]);
     ui::done(
-        &Next::new(result, hint.clone()),
+        &Next::new(result, Some(hint.clone())),
         format_args!(
-            "{what} {} on {} in {}/{} (revision {}).",
+            "{what} {} on {} in {where_} (revision {}).",
             result.domain.shown(),
             result.domain.service,
-            result.environment.project,
-            result.environment.name,
             result.environment.revision
         ),
     )?;
-    say_next(hint);
+    say_next(Some(hint));
     Ok(())
 }
 

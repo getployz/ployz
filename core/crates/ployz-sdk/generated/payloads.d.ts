@@ -804,7 +804,7 @@ machine_id: MachineId,
 /**
  * Bytes left after preparation and the OS reserve.
  */
-remaining_bytes: number, } | { "type": "unbudgeted_disk_usage" } | { "type": "observation_failed", kind: ObservationKind, machine_id: MachineId, message: string, } | { "type": "observation_omitted", kind: ObservationKind, machine_id: MachineId, } | { "type": "storage_observation_unknown",
+remaining_bytes: number, } | { "type": "unbudgeted_disk_usage" } | { "type": "observation_failed", gap?: ObservationGap, kind: ObservationKind, machine_id: MachineId, message: string, } | { "type": "observation_omitted", gap?: ObservationGap, kind: ObservationKind, machine_id: MachineId, } | { "type": "storage_observation_unknown",
 /**
  * Machine whose storage capability could not be checked.
  */
@@ -1078,7 +1078,11 @@ environment: EnvironmentSummary,
 /**
  * The latest Saved revision, which follows the discard so the next Deploy ships it.
  */
-saved: Revision | null, };
+saved: Revision | null,
+/**
+ * False when nothing it names was staged.
+ */
+changed: boolean, };
 
 export type DnsLookup = { hostname: Hostname, cname: string | null, addresses: Array<string>, };
 
@@ -1714,6 +1718,10 @@ export type MachineName = string;
 
 export type MachineObservation = { machine: Machine, membership: MembershipObservation,
 /**
+ * Raw admin evidence, absent for synthetic membership and older responders.
+ */
+membership_evidence?: MembershipEvidence,
+/**
  * Current storage evidence, absent when this observer could not obtain it.
  */
 storage: MachineStorageObservation | null, selected_endpoint: SelectedEndpoint | null,
@@ -1890,6 +1898,8 @@ environment: EnvironmentName,
  */
 row: RowId, };
 
+export type MembershipEvidence = { "kind": "up" } | { "kind": "suspect" } | { "kind": "down" } | { "kind": "unrecognized", raw: string, };
+
 export type MembershipObservation = "unknown" | "up" | "suspect" | "down" | string;
 
 export type MintBuildGrantRequest = {
@@ -2029,11 +2039,19 @@ data: DataEffect | null, type: EnvironmentNodeType, id: string, };
 
 export type NodeName = string;
 
-export type NodeOutcome = { outcome: NodeStatus, } & ({ "type": "service", id: ServiceLineageId, name: ServiceName, } | { "type": "volume", id: VolumeId, name: VolumeName, });
+export type NodeOutcome = { outcome: NodeStatus,
+/**
+ * Its work on each Server, once its runner started executing.
+ */
+rows: Array<ServerRow>, } & ({ "type": "service", id: ServiceLineageId, name: ServiceName, } | { "type": "volume", id: VolumeId, name: VolumeName, });
 
 export type NodeStatus = "pending" | "deployed" | "removed" | "failed" | "not_attempted" | "unchanged" | "unknown";
 
 export type NumberedDeploymentQuery = { environment: EnvironmentRef, number: number, };
+
+export type ObservationGap = { machine_name: MachineName, reason: ObservationGapReason, };
+
+export type ObservationGapReason = "failed" | "down";
 
 export type ObservationKind = "container" | "volume";
 
@@ -2083,7 +2101,7 @@ export type OrganizationId = string;
 
 export type OrganizationRemoved = { organization: OrganizationId, };
 
-export type Outcome = { "type": "executed", summary: JsonValue, reason: string | null, } | { "type": "not_executed", reason: string, needs_upload: Array<ServiceName>, } | { "type": "never_ran" } | { "type": "forgotten" };
+export type Outcome = { "type": "executed", summary: JsonValue, reason: string | null, cause: Array<string>, } | { "type": "not_executed", reason: string, cause: Array<string>, needs_upload: Array<ServiceName>, } | { "type": "never_ran" } | { "type": "forgotten" };
 
 export type OwnedNamespace = { namespace: Namespace, project: ProjectName, environment: EnvironmentName, };
 
@@ -2296,11 +2314,12 @@ export type Published = {
  */
 environment: EnvironmentSummary,
 /**
- * The Saved revision that now holds Working State.
+ * The Saved revision that now holds Working State; none when nothing was ever
+ * published and nothing is staged.
  */
-saved: Revision,
+saved: Revision | null,
 /**
- * False when Saved State already held it.
+ * False when Saved State already held it, or nothing is staged.
  */
 created: boolean, };
 
@@ -2639,6 +2658,8 @@ export type Revision = number;
 
 export type RowId = string & { readonly __brand: "RowId" };
 
+export type RowPhase = "starting" | "creating_container" | "starting_container" | "waiting_for_health" | "waiting_for_hook" | "stopping_container" | "removing_container" | "removing_volume" | "compensating";
+
 export type RowRef = string;
 
 export type RpcError = { code: RpcErrorCode, message: string, details: JsonValue,
@@ -2757,6 +2778,24 @@ export type SecretRow = {
 held: boolean, };
 
 export type SelectedEndpoint = string;
+
+export type ServerRow = {
+/**
+ * The Machine whose work this row records, independent of its display name.
+ */
+machine_id: MachineId,
+/**
+ * The Server's name, or its Machine ID when it has none.
+ */
+server: string,
+/**
+ * When its work started, in Unix seconds.
+ */
+started_at: number | null,
+/**
+ * When it finished, in Unix seconds.
+ */
+finished_at: number | null, } & ({ "state": "pending" } | { "state": "running", phase: RowPhase, } | { "state": "completed" } | { "state": "failed", reason: string, cause: Array<string>, log: Array<string>, } | { "state": "not_attempted" } | { "state": "unknown" });
 
 export type ServiceAttempt = {
 /**

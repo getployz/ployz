@@ -216,6 +216,7 @@ fn execute(store: &ConfigStore, n: u8, removed: Vec<VolumeRemoval>) {
             &id(n),
             &RunnerId::parse("runner").unwrap(),
             RunEvidence::Executed {
+                progress: Vec::new(),
                 outcome: Box::new(outcome),
                 removed,
             },

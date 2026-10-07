@@ -44,6 +44,7 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
             }
             let mut json = serde_json::to_value(&report).expect("a Drain report serializes");
             if let Value::Object(fields) = &mut json {
+                fields.insert("server".into(), super::machine_json(&report.server));
                 fields.insert("note".into(), NOTHING_MOVES_BACK.into());
             }
             crate::ui::finish(&json, || {

@@ -50,12 +50,8 @@ async fn machine_removal_reports_complete_and_partial_results() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stdout.contains("Removed Server one"), "{stdout}");
-        assert!(
-            stderr.contains(
-                "Volumes the Cluster loses (1); only the Server's disk keeps their data:"
-            ),
-            "{stderr}"
-        );
+        // Flags that accept everything ask nothing, so the loss isn't listed.
+        assert!(!stderr.contains("Volumes the Cluster loses"), "{stderr}");
         assert!(
             !stdout.contains("Permanently delete") && !stdout.contains("Deleted volume"),
             "{stdout}"

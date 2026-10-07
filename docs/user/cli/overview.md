@@ -33,17 +33,19 @@ your app's directory.
 
 ## Set up your coding agent
 
-```sh
-ployz setup agent
+Paste this into your coding agent, such as Claude Code or Codex:
+
+```text
+Set me up for Ployz: https://ployz.sh/agent.md
 ```
 
-This installs the Ployz skill for coding agents, including Claude Code. Your agent learns every
-command and setting from it, `ployz --help` and `ployz schema --json`, so you can ask it to
-deploy, add a database or read logs.
+The agent installs the CLI and the Ployz skill, then signs you in: it gives you a link and a
+code, and you click **Approve**. Restart or reload the agent afterwards so it loads the skill.
+From then on you can ask it to deploy, add a database or read logs. The skill points the agent
+to `ployz --help` and `ployz schema --json` for every command and setting.
 
-Run it again after you upgrade the CLI; `ployz --help` tells you when the skill is out of date.
-An agent can also sign you in: it runs `ployz login`, and you click **Approve** on the link it
-gives you.
+To set it up by hand, follow the steps in [ployz.sh/agent.md](https://ployz.sh/agent.md)
+yourself. Run step 2 again to update the skill.
 
 ## Deploy a directory
 
@@ -110,8 +112,15 @@ Scripts can tell failures apart by exit code:
 | 1 | It failed: something wasn't found, a server couldn't be reached, Ployz refused, or the server or Cloud doesn't support what you asked. |
 | 2 | Fix the command: a bad argument, a flag the command doesn't take, a missing `--confirm`, or a name that matches more than one thing. |
 | 3 | You got a result, but some servers didn't answer, so part of it is missing. Run it again once they're back. |
+| 130 | You cancelled: pressed Ctrl-C, or didn't confirm a prompt. Nothing was removed. |
 
 `ployz exec` exits with your command's own exit code.
+
+A command that deletes something, such as `ployz project rm shop`, shows what goes and asks you
+to type its name. Anything else, or Ctrl-C, cancels. Without a terminal, in CI, or with
+`--json` it never asks: it exits 2 and prints the command to run instead, which passes the name
+with `--confirm`. Commands that would otherwise ask you to choose, such as `ployz ctx use` without
+a name or the storage choice in `ployz server add`, work the same way.
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in
 one. Set `NO_COLOR=1` or pass `--color never` to turn color off, or `--color always` to keep it

@@ -152,6 +152,7 @@ pub fn run(store: &ConfigStore, id: &ployz_store::DeploymentId) -> serde_json::V
             id,
             &runner,
             ployz_store::RunEvidence::Executed {
+                progress: Vec::new(),
                 outcome: Box::new(outcome),
                 removed: Vec::new(),
             },

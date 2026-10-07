@@ -91,21 +91,114 @@ async fn departure_idles_a_slot_marker_and_keeps_its_data() {
     server.abort();
 }
 
+async fn assert_departed_into_a_slot(test: &TestDir, socket: &Path) {
+    assert!(!test.0.join("volume").exists(), "the root is still there");
+    assert!(test.0.join("mirror-fs").exists(), "the slot holds no fs");
+    assert_eq!(
+        property(test, "tank/ployz-mirror/data/fs", "readonly").as_deref(),
+        Some("on")
+    );
+    assert_eq!(
+        property(test, "tank/ployz-mirror/data/fs", "ployz:writer"),
+        None
+    );
+    let kept = snapshot_names(test, "tank/ployz-mirror/data/fs");
+    assert!(kept.iter().any(|name| name.starts_with("dep-")), "{kept:?}");
+    let capacity = post(socket, "/Storage.Inspect", json!(null)).await;
+    assert_eq!(
+        capacity.pointer("/Ok/copies/data/role").unwrap(),
+        &json!("slot"),
+        "{capacity}"
+    );
+}
+
+fn error_message(response: &Value) -> &str {
+    response
+        .pointer("/Err/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+}
+
 #[tokio::test]
-async fn departure_refuses_a_root_that_already_has_a_slot() {
+async fn departure_moves_a_root_into_the_empty_slot_beside_it() {
     let test = TestDir::new();
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "mirror"]);
 
     let response = post(&socket, "/Storage.Demote", json!(null)).await;
-    let message = response
-        .pointer("/Err/message")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    assert!(message.contains("both a writer and a mirror"), "{response}");
+    assert_eq!(response, json!({"Ok": ["data"]}));
+    assert_departed_into_a_slot(&test, &socket).await;
+    let log = commands(&test);
+    assert!(
+        !log.contains("zfs create -o canmount=off -o readonly=on"),
+        "{log}"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn departure_refuses_a_root_beside_a_slot_that_holds_a_copy() {
+    let test = TestDir::new();
+    let (socket, server) = start(
+        &test,
+        USABLE_POOL,
+        &["root", "volume", "mirror", "mirror-fs"],
+    );
+
+    let response = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert!(
+        error_message(&response).contains("both a writer and a mirror"),
+        "{response}"
+    );
     let log = commands(&test);
     assert!(!log.contains("zfs rename"), "{log}");
     assert!(!log.contains("zfs snapshot"), "{log}");
+    assert!(test.0.join("volume").exists());
     server.abort();
+}
+
+#[tokio::test]
+async fn departure_interrupted_before_the_rename_finishes_on_retry() {
+    let test = TestDir::new();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "rename-fails"]);
+
+    let interrupted = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert!(
+        error_message(&interrupted).contains("rename interrupted"),
+        "{interrupted}"
+    );
+    assert!(
+        test.0.join("mirror").exists(),
+        "the slot parent was not made"
+    );
+    fs::remove_file(test.0.join("rename-fails")).unwrap();
+
+    let retried = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(retried, json!({"Ok": ["data"]}));
+    assert_departed_into_a_slot(&test, &socket).await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn departure_interrupted_after_the_rename_seals_the_slot_on_retry() {
+    for toggle in ["props/fail-properties", "inherit-fails"] {
+        let test = TestDir::new();
+        set_property(&test, "tank/ployz/data", "ployz:writer", "stopping");
+        let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
+        fs::write(test.0.join(toggle), "").unwrap();
+
+        let interrupted = post(&socket, "/Storage.Demote", json!(null)).await;
+        assert!(
+            error_message(&interrupted).contains("property unavailable"),
+            "{toggle}: {interrupted}"
+        );
+        assert!(test.0.join("mirror-fs").exists(), "{toggle}: no rename");
+        fs::remove_file(test.0.join(toggle)).unwrap();
+
+        let retried = post(&socket, "/Storage.Demote", json!(null)).await;
+        assert_departed_into_a_slot(&test, &socket).await;
+        assert_eq!(retried, json!({"Ok": ["data"]}), "{toggle}");
+        server.abort();
+    }
 }
 
 #[tokio::test]

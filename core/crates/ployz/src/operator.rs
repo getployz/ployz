@@ -763,7 +763,7 @@ pub(crate) fn select_machines<'a>(
 ) -> Result<Vec<&'a MachineObservation>, OperatorError> {
     let eligible = machines
         .iter()
-        .filter(|machine| machine.membership.invites_rpc())
+        .filter(|machine| machine.invites_rpc())
         .collect::<Vec<_>>();
     if selectors.is_empty() {
         if eligible.is_empty() {

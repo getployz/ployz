@@ -2,12 +2,15 @@
 """ackprobe's verdict: which acknowledged ids are missing from the writer, and the longest acknowledgement gap."""
 
 from pathlib import Path
+import re
 import sys
+import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ackprobe import report  # noqa: E402
+from ackprobe import Probe, report  # noqa: E402
 
 
 class Report(unittest.TestCase):
@@ -30,6 +33,32 @@ class Report(unittest.TestCase):
     def test_no_acknowledgements_has_no_gap(self):
         result = report([], present=[])
         self.assertEqual((result["lost"], result["longest_gap_seconds"]), ([], None))
+
+
+class ProbeRun(unittest.TestCase):
+    def test_sent_counts_only_inserts_from_this_invocation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            probe = Probe("ployz", {}, directory, Path(directory) / "acks.jsonl", service="db",
+                          user="postgres", database="postgres", rate=200, window=16, stall=2)
+            self.addCleanup(probe.log.close)
+            self.addCleanup(probe.stderr.close)
+            session, reader = Mock(), Mock()
+            session.poll.return_value = None
+            inserted = []
+
+            def insert(sql):
+                ack_id = int(re.search(r"VALUES \((\d+)\)", sql)[1])
+                inserted.append(ack_id)
+                probe.in_flight.pop(ack_id)
+                probe.acks.append((ack_id, 1.0))
+                probe.stopping.set()
+
+            session.stdin.write.side_effect = insert
+            with patch.object(probe, "query", side_effect=["", "100", "100"]), \
+                 patch.object(probe, "session", return_value=(session, reader)):
+                result = probe.run()
+            self.assertEqual(inserted, [100])
+            self.assertEqual((result["sent"], result["acked"], result["lost"]), (1, 1, []))
 
 
 if __name__ == "__main__":

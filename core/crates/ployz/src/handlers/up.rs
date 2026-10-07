@@ -133,7 +133,9 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
         next: &shipped.hint,
     };
     crate::ui::finish(&up, || {
-        say_view(view);
+        if !shipped.presented {
+            say_view(view);
+        }
         for url in &up.urls {
             crate::ui::stream(format_args!("Open {url}"));
         }

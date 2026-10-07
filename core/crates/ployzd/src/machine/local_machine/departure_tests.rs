@@ -13,7 +13,7 @@ use super::{Error, LocalMachine};
 use crate::{
     corrosion::{AdminClient, fake_cluster},
     docker::test_support::{FakeDocker, fake_runtime_with, provisioned_source, spec_with_sources},
-    machine::{LocalMachineStore, RecordOwner},
+    machine::{LocalMachineStore, RecordOwner, StoreError},
     storage::test_support::FakePlugin,
 };
 
@@ -41,7 +41,8 @@ fn initialize_request() -> InitializeRequest {
     }
 }
 
-/// A Machine over a fake plugin that demotes `data`, a fake Docker, and a fake Cluster.
+/// A Machine over a fake plugin that demotes `data`, a fake Docker, a fake Cluster, and
+/// ZFS ready.
 async fn harness(initialized: bool) -> Harness {
     let data_dir = std::env::temp_dir().join(format!("ployzd-departure-{}", MachineId::random()));
     std::fs::create_dir_all(&data_dir).unwrap();
@@ -58,7 +59,9 @@ async fn harness(initialized: bool) -> Harness {
     let local = LocalMachine::new(owner)
         .with_containers(Some(runtime))
         .with_cluster(Some((replicated, AdminClient::new("/no/such/admin.sock"))))
-        .with_plugin(client);
+        .with_plugin(client)
+        // `true` lists no pools, which reads as ZFS ready whatever the host has.
+        .with_zpool("true");
     Harness {
         local,
         plugin,
@@ -286,4 +289,55 @@ async fn a_plain_deploy_mounts_only_on_the_writer() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn a_resumed_join_does_not_depart_again() {
+    let test = harness(false).await;
+    let request = join_request(&test.local.record());
+    test.local.join(request.clone()).await.unwrap();
+    let again = test.local.join(request).await.unwrap();
+    assert!(again.already_accepted);
+    assert_eq!(test.plugin.routes_called(), ["Storage.Demote"]);
+}
+
+#[tokio::test]
+async fn a_refused_initialize_does_not_depart() {
+    let test = harness(true).await;
+    let error = test
+        .local
+        .initialize(initialize_request())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, Error::Store(StoreError::AlreadyInitialized)),
+        "{error}"
+    );
+    assert!(test.plugin.routes_called().is_empty());
+    assert!(!forgot_data(&test.docker));
+}
+
+#[tokio::test]
+async fn a_join_whose_departure_fails_stays_uninitialized_and_retries() {
+    let test = harness(false).await;
+    let request = join_request(&test.local.record());
+    test.plugin.reply(
+        "Storage.Demote",
+        json!({"Err": {"code": "internal", "message": "zfs rename failed", "details": null}}),
+    );
+    let error = test.local.join(request.clone()).await.unwrap_err();
+    assert!(matches!(error, Error::Cleanup(_)), "{error}");
+    assert_eq!(
+        test.local.record().phase(),
+        LocalMachinePhase::Uninitialized
+    );
+
+    test.plugin.reply("Storage.Demote", json!({"Ok": ["data"]}));
+    let joined = test.local.join(request).await.unwrap();
+    assert!(!joined.already_accepted);
+    assert_eq!(
+        test.plugin.routes_called(),
+        ["Storage.Demote", "Storage.Demote"]
+    );
+    assert_eq!(test.local.record().phase(), LocalMachinePhase::Joining);
 }

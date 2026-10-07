@@ -416,7 +416,7 @@ fn stale(error: StoreCallError, matches: &ArgMatches) -> store::Refusal {
 /// A Branch after a change, and `deploy` when it staged something.
 fn finish(result: &Branched, deploy: Option<String>, what: &str) -> Result<(), Error> {
     let next = deploy.filter(|_| !result.staged.is_empty());
-    crate::ui::finish(&Next::new(result, next), || {
+    crate::ui::finish(&Next::new(result, next.clone()), || {
         let branch = &result.branch;
         crate::ui::stream(format_args!(
             "{what} {}/{} of {}.",
@@ -438,6 +438,9 @@ fn finish(result: &Branched, deploy: Option<String>, what: &str) -> Result<(), E
                     live.name
                 )),
             }
+        }
+        if let Some(next) = next {
+            crate::ui::hint(&crate::ui::Hint::Next(next));
         }
     })
 }

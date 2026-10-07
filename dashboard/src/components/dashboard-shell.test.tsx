@@ -3,6 +3,7 @@ import { orgStoreOptions } from "#/collections/org-store";
 import { orgStoreSeed, orgStoreTableNames } from "#/test/org-store-tables";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Fragment } from "react";
+import { cleanStores } from "nanostores";
 import { getDbClient } from "#/collections/scope";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
@@ -46,6 +47,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  cleanStores(...Object.values(authClient.$store.atoms));
   document.cookie = "theme=; path=/; max-age=0";
   document.documentElement.classList.remove("light", "dark", "system");
   document.documentElement.style.removeProperty("color-scheme");

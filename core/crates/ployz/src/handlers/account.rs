@@ -16,7 +16,6 @@ use crate::ui::{self, Cell, Hint, Table, Tone};
 pub(crate) fn token_command() -> Command {
     Command::new("token")
         .about("Manage Organization Tokens and signed-in devices")
-        .arg_required_else_help(true)
         .subcommand(
             Command::new("new")
                 .about("Make a token for PLOYZ_TOKEN; its secret is shown once")
@@ -42,7 +41,6 @@ pub(crate) fn token_command() -> Command {
 pub(crate) fn org_command() -> Command {
     Command::new("org")
         .about("List or switch Organizations")
-        .arg_required_else_help(true)
         .subcommand(Command::new("ls").about("List the Organizations you can act in"))
         .subcommand(
             Command::new("use")
@@ -348,8 +346,8 @@ fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         .expect("organization is required");
     let again = ["org", "rm", slug.as_str(), "--confirm", slug.as_str()];
     let retry = shell_words::join(std::iter::once("ployz").chain(again));
-    if !super::teardown::confirmed(matches, slug, "Organization", retry.clone())? {
-        return Err(Error::detailed(
+    super::teardown::confirm(matches, slug, "Organization", retry.clone(), || {
+        let refusal = Error::detailed(
             RpcErrorCode::ConfirmationRequired,
             format!(
                 "Removing Organization {slug} deletes it with its tokens, Servers' pairing and \
@@ -357,15 +355,51 @@ fn org_remove(root: &ArgMatches) -> Result<(), Error> {
             ),
             serde_json::json!({ "organization": slug }),
         )
-        .hint(Hint::Retry(retry)));
-    }
+        .hint(Hint::Retry(retry.clone()));
+        let loss = ui::Tree::new(
+            format!("Removing Organization {slug} deletes, for good:"),
+            vec![
+                ui::Tree::leaf("its tokens and settings"),
+                ui::Tree::leaf("its Servers' pairing"),
+            ],
+        );
+        Ok((refusal, loss))
+    })?;
     let store = CredentialStore::beside(&config_path(matches)?);
-    let removal = runtime()?.block_on(async {
+    let (removal, acting) = runtime()?.block_on(async {
         let credential = cloud_account::from_env(&store).await?;
-        cloud_account::remove_organization(&credential, slug).await
+        // A device acts in the Organization it removes; afterwards Cloud refuses it
+        // everything, `org ls` included, so it moves to another of the user's first.
+        let others: Vec<cloud_account::OrganizationEntry> = match &credential {
+            Credential::Device(signed_in) if signed_in.organization.slug == *slug => {
+                cloud_account::organizations(&credential)
+                    .await?
+                    .into_iter()
+                    .filter(|organization| organization.slug != *slug)
+                    .collect()
+            }
+            Credential::Device(_) | Credential::Token { .. } => Vec::new(),
+        };
+        let removal = cloud_account::remove_organization(&credential, slug).await?;
+        let acting = match others.first() {
+            Some(other) if removal.removed => Some(
+                cloud_account::use_organization(&store, &credential, &other.slug)
+                    .await
+                    .map(|organization| organization.slug)
+                    .map_err(|error| (other.slug.clone(), error)),
+            ),
+            _ => None,
+        };
+        Ok::<_, Error>((removal, acting))
     })?;
     let next = (!removal.removed).then_some(retry.as_str());
-    let report = Next::new(&removal, next.map(str::to_owned));
+    let value = serde_json::json!({
+            "organization": removal.organization,
+            "removed": removal.removed,
+            "servers": removal.servers,
+        "acting": acting.as_ref().and_then(|acting| acting.as_ref().ok()),
+    });
+    let report = Next::new(&value, next.map(str::to_owned));
     ui::finish(&report, || {
         if !removal.servers.confirmed.is_empty() {
             ui::note(format_args!(
@@ -374,10 +408,25 @@ fn org_remove(root: &ArgMatches) -> Result<(), Error> {
             ));
         }
         match next {
-            None => ui::stream(format_args!(
-                "Removed Organization {}.",
-                removal.organization
-            )),
+            None => {
+                ui::stream(format_args!(
+                    "Removed Organization {}.",
+                    removal.organization
+                ));
+                match &acting {
+                    Some(Ok(slug)) => {
+                        ui::note(format_args!("This device now acts in Organization {slug}."));
+                    }
+                    Some(Err((slug, error))) => {
+                        ui::warn_cause(
+                            format_args!("Could not move this device to Organization {slug}"),
+                            error,
+                        );
+                        ui::hint(&Hint::Next(format!("ployz org use {slug}")));
+                    }
+                    None => {}
+                }
+            }
             Some(next) => {
                 ui::stream(format_args!(
                     "Disabled Organization {}; it stays until its Servers confirm unpairing.",

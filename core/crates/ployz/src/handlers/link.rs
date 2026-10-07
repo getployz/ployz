@@ -481,12 +481,11 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             if matches!(error.code, RpcErrorCode::NotFound | RpcErrorCode::Ambiguous) =>
         {
             let next = match error.details.get("next").and_then(|next| next.as_str()) {
-                Some(next) => Some(next.to_owned()),
-                None if error.code == RpcErrorCode::Ambiguous => {
-                    Some("ployz link --project PROJECT".to_owned())
-                }
-                None => None,
+                Some(next) => next.to_owned(),
+                // Ambiguous, or the linked Project is gone: pick one to act in.
+                None => "ployz link --project PROJECT".to_owned(),
             };
+            let next = Some(next);
             attention.push(Attention {
                 reason: error.code.to_string(),
                 message: crate::ui::row(&error),

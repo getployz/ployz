@@ -26,6 +26,8 @@ use crate::{
 #[derive(Debug)]
 pub struct Failure {
     inner: Inner,
+    interrupted: bool,
+    diagnostic: Option<Box<ui::progress::Diagnostic>>,
 }
 
 #[derive(Debug)]
@@ -68,6 +70,8 @@ impl Error for Message {
 impl Failure {
     pub(crate) fn command(error: impl Error + Send + Sync + 'static) -> Self {
         Self {
+            interrupted: false,
+            diagnostic: None,
             inner: Inner::Command {
                 error: Box::new(error),
                 hints: Vec::new(),
@@ -89,6 +93,8 @@ impl Failure {
     pub fn exit(code: u8) -> Self {
         Self {
             inner: Inner::Exit(code),
+            interrupted: false,
+            diagnostic: None,
         }
     }
 
@@ -97,7 +103,33 @@ impl Failure {
     pub fn partial() -> Self {
         Self {
             inner: Inner::Partial,
+            interrupted: false,
+            diagnostic: None,
         }
+    }
+
+    /// The invocation was interrupted; cancellation takes precedence over a committed result.
+    #[must_use]
+    pub fn cancelled() -> Self {
+        Self::coded(RpcErrorCode::Internal, "Cancelled.").interrupted()
+    }
+
+    pub(crate) fn interrupted(mut self) -> Self {
+        self.interrupted = true;
+        self
+    }
+
+    pub(crate) const fn is_interrupted(&self) -> bool {
+        self.interrupted
+    }
+
+    pub(crate) fn with_diagnostic(mut self, diagnostic: ui::progress::Diagnostic) -> Self {
+        self.diagnostic = Some(Box::new(diagnostic));
+        self
+    }
+
+    pub(crate) fn diagnostic(&self) -> Option<&ui::progress::Diagnostic> {
+        self.diagnostic.as_deref()
     }
 
     /// The input was wrong.
@@ -159,14 +191,19 @@ impl Failure {
     }
 
     #[must_use]
-    pub(crate) fn context(self, message: impl Into<Cow<'static, str>>) -> Self {
+    pub(crate) fn context(mut self, message: impl Into<Cow<'static, str>>) -> Self {
         let RpcError { code, details, .. } = self.report();
-        Self::command(Message {
+        let interrupted = self.interrupted;
+        let diagnostic = self.diagnostic.take();
+        let mut contextual = Self::command(Message {
             code,
             text: message.into(),
             details,
             source: Some(Box::new(self)),
-        })
+        });
+        contextual.interrupted = interrupted;
+        contextual.diagnostic = diagnostic;
+        contextual
     }
 
     fn own_hints(&self) -> &[Hint] {
@@ -219,6 +256,15 @@ impl Failure {
             Inner::Partial | Inner::Exit(_) => (RpcErrorCode::Internal, Value::Null),
         };
         Hint::into_details(self.own_hints(), &mut details);
+        if let Some(diagnostic) = &self.diagnostic {
+            if !details.is_object() {
+                details = serde_json::json!({});
+            }
+            details
+                .as_object_mut()
+                .expect("error details object")
+                .insert("progress".into(), diagnostic.json());
+        }
         RpcError {
             code,
             message: self.to_string(),
@@ -472,7 +518,6 @@ fn provision_code(error: &ProvisionError) -> RpcErrorCode {
         ProvisionError::MissingDestination
         | ProvisionError::RemoteTransport(_)
         | ProvisionError::Connection(_)
-        | ProvisionError::StorageChoice(_)
         | ProvisionError::ZfsWithoutInstaller => RpcErrorCode::InvalidArgument,
         ProvisionError::NotRoot | ProvisionError::SudoRequired { .. } => {
             RpcErrorCode::Unauthenticated
@@ -498,8 +543,7 @@ fn provision_code(error: &ProvisionError) -> RpcErrorCode {
         | ProvisionError::Install(_)
         | ProvisionError::InstallFailed { .. }
         | ProvisionError::Cleanup(_)
-        | ProvisionError::CleanupFailed { .. }
-        | ProvisionError::StorageInput(_) => RpcErrorCode::Internal,
+        | ProvisionError::CleanupFailed { .. } => RpcErrorCode::Internal,
     }
 }
 
@@ -794,14 +838,18 @@ impl From<LoginError> for Failure {
     /// Sign-in failures name the command that fixes them.
     fn from(error: LoginError) -> Self {
         let next = match &error {
-            LoginError::Corrupt { .. } | LoginError::OtherCloud { .. } => Some("ployz logout"),
+            // Cloud binds every call to the acting Organization, `org ls` included: a
+            // sign-in left outside it can only start over.
+            LoginError::Corrupt { .. }
+            | LoginError::OtherCloud { .. }
+            | LoginError::NotMember(_) => Some("ployz logout"),
             LoginError::SignedOut
             | LoginError::Expired
             | LoginError::Denied
             | LoginError::Ended => Some("ployz login"),
             LoginError::AwaitingApproval { .. } => Some("ployz login --wait"),
             LoginError::TokenRefused => Some("ployz token new"),
-            LoginError::NotMember(_) | LoginError::UnknownOrganization(_) => Some("ployz org ls"),
+            LoginError::UnknownOrganization(_) => Some("ployz org ls"),
             LoginError::UnknownCredential(_) => Some("ployz token ls"),
             LoginError::AlreadyPro => Some("ployz billing manage"),
             LoginError::Unreachable { .. }
