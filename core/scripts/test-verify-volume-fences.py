@@ -84,11 +84,22 @@ class VolumeFences:
 
     def remove_machine(self):
         before = self.record()
+        old_id = self.machine["machine_id"]
         self.cli("--json", "--connect", "ssh://root@" + self.survivor["address"],
                  "server", "rm", self.machine["name"], "--confirm", self.machine["name"])
+        deadline = time.monotonic() + 60
+        while True:
+            result = self.cli("--json", "--connect", "ssh://root@" + self.survivor["address"],
+                              "server", "ls", check=False)
+            if result.returncode == 0 and all(server["machine"]["id"] != old_id
+                                              for server in json.loads(result.stdout)["servers"]):
+                break
+            assert time.monotonic() < deadline, f"Removed Machine still listed by survivor: {old_id}"
+            time.sleep(1)
         return self.record(int(before.split(":", 1)[0]))
 
     def rejoin_machine(self, before):
+        old_id = self.machine["machine_id"]
         deadline = time.monotonic() + 120
         while True:
             result = self.cli("--json", "server", "add", "root@" + self.machine["address"],
@@ -103,6 +114,7 @@ class VolumeFences:
                 raise RuntimeError(f"Machine rejoin failed: {reply}")
             time.sleep(1)
         new_id = reply["server"]["machine"]["id"]
+        assert new_id != old_id, f"Machine reset kept its original ID: {old_id}"
         self.machine["machine_id"] = new_id
         temporary = self.manifest.with_suffix(".tmp")
         temporary.write_text(json.dumps(self.run, indent=2) + "\n")
@@ -124,12 +136,14 @@ class VolumeFences:
         assert self.record() == before, "The stale request changed the lease record"
 
     def lease_scenario(self):
+        old_id = self.machine["machine_id"]
         before = self.prepare_lease()
         self.remove_volume(before)
         removed = self.remove_machine()
         rejoined = self.rejoin_machine(removed)
         self.stale_lease()
-        return dict(before=before, after_remove=removed, after_rejoin=rejoined, stale_lease="refused")
+        return dict(old_machine_id=old_id, new_machine_id=self.machine["machine_id"],
+                    before=before, after_remove=removed, after_rejoin=rejoined, stale_lease="refused")
 
     def prepare_slot(self):
         seed = self.prefix + "-seed"
