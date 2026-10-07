@@ -5,7 +5,8 @@ use std::{
     time::Duration,
 };
 
-use axum::{Router, extract::Request, response::IntoResponse};
+use axum::{Router, body::Body, extract::Request, response::IntoResponse};
+use futures_util::{StreamExt as _, stream};
 use tokio::{net::TcpListener, sync::Notify};
 
 use super::fake_zfs::SLOT_BOUND_BYTES;
@@ -20,6 +21,8 @@ struct Writer {
     /// While held, responses wait on `release` before any byte is sent.
     hold: Arc<StdMutex<bool>>,
     release: Arc<Notify>,
+    /// While set, responses send the stream text and then go silent without ending.
+    stall: Arc<StdMutex<bool>>,
     port: u16,
 }
 
@@ -29,14 +32,16 @@ impl Writer {
         let stream = Arc::new(StdMutex::new(stream.to_owned()));
         let hold = Arc::new(StdMutex::new(false));
         let release = Arc::new(Notify::new());
+        let stall = Arc::new(StdMutex::new(false));
         let state = (
             Arc::clone(&requests),
             Arc::clone(&stream),
             Arc::clone(&hold),
             Arc::clone(&release),
+            Arc::clone(&stall),
         );
         let router = Router::new().fallback(move |request: Request| {
-            let (requests, stream, hold, release) = state.clone();
+            let (requests, stream, hold, release, stall) = state.clone();
             async move {
                 let uri = request.uri().to_string();
                 requests.lock().unwrap().push(uri);
@@ -44,6 +49,10 @@ impl Writer {
                     release.notified().await;
                 }
                 let body = stream.lock().unwrap().clone();
+                if *stall.lock().unwrap() {
+                    let sent = stream::once(async move { Ok::<_, io::Error>(body) });
+                    return Body::from_stream(sent.chain(stream::pending())).into_response();
+                }
                 body.into_response()
             }
         });
@@ -55,6 +64,7 @@ impl Writer {
             stream,
             hold,
             release,
+            stall,
             port,
         }
     }
@@ -73,6 +83,15 @@ fn start(
     markers: &[&str],
     writer: &Writer,
 ) -> (PathBuf, tokio::task::JoinHandle<io::Result<()>>) {
+    start_stalling_after(test, markers, writer, Duration::from_secs(60))
+}
+
+fn start_stalling_after(
+    test: &TestDir,
+    markers: &[&str],
+    writer: &Writer,
+    stall: Duration,
+) -> (PathBuf, tokio::task::JoinHandle<io::Result<()>>) {
     for marker in markers {
         fs::write(test.0.join(marker), "").unwrap();
     }
@@ -81,6 +100,7 @@ fn start(
     let listener = UnixListener::bind(&socket).unwrap();
     let mut storage = VolumeStorage::with_programs(zpool, zfs);
     storage.send_port = writer.port;
+    storage.receive_stall = stall;
     let server = tokio::spawn(serve(listener, storage));
     (socket, server)
 }
@@ -227,6 +247,45 @@ async fn a_broken_stream_is_resumable_and_resumes_by_token() {
     assert_eq!(
         property(&test, "tank/ployz-mirror/data/fs", "readonly").as_deref(),
         Some("on")
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_stalled_stream_frees_the_slot_and_resumes_by_token() {
+    let writer = Writer::start("break\n").await;
+    *writer.stall.lock().unwrap() = true;
+    let test = TestDir::new();
+    let stall = Duration::from_millis(200);
+    let (socket, server) = start_stalling_after(&test, &["root", "mirror"], &writer, stall);
+
+    let started = tokio::time::Instant::now();
+    post(&socket, "/Volume.StartReceive", receive(4, 1, json!({}))).await;
+    let view = settled(&socket, 1).await;
+    assert!(started.elapsed() >= stall, "settled before the deadline");
+    assert_eq!(
+        view.pointer("/Ok/status").unwrap(),
+        &json!({"state": "resumable", "target": "w-1-1", "token": "token-1"})
+    );
+
+    *writer.stall.lock().unwrap() = false;
+    writer.answer("snapshot w-1-1 77\n");
+    let request = receive(5, 1, json!({"resume_token": "token-1"}));
+    let response = post(&socket, "/Volume.StartReceive", request).await;
+    assert_eq!(
+        response
+            .pointer("/Ok/decision")
+            .unwrap_or_else(|| panic!("{response}")),
+        "admit"
+    );
+    let view = settled(&socket, 1).await;
+    assert_eq!(view.pointer("/Ok/status/state").unwrap(), "done", "{view}");
+    assert_eq!(
+        writer.requests(),
+        [
+            "/volume-send/data?target=w-1-1",
+            "/volume-send/data?token=token-1"
+        ]
     );
     server.abort();
 }
