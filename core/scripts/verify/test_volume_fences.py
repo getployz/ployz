@@ -4,11 +4,13 @@
 from contextlib import redirect_stdout
 import importlib.util
 import io
+import itertools
 import json
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 spec = importlib.util.spec_from_file_location("volume_fences", Path(__file__).resolve().parents[1] /
@@ -25,6 +27,8 @@ class CommandModel:
         self.datasets = set()
         self.slot = None
         self.joined = True
+        self.machine_id = "original-id"
+        self.removal_pending = mutation == "removal-delayed"
 
     def __call__(self, args, **kwargs):
         command = args[args.index("--") + 1:]
@@ -56,18 +60,30 @@ class CommandModel:
         if "server" in args:
             verb = args[args.index("server") + 1]
             if verb == "rm":
-                self.joined = False
+                if self.mutation != "remove-noop":
+                    self.joined = False
                 if self.mutation == "reset-deleted-record":
                     self.record = "-"
                 return 0, "{}"
             if verb == "add":
                 self.joined = True
+                if self.mutation not in ("remove-noop", "unchanged-rejoin-id"):
+                    self.machine_id = "rejoined-id"
                 if self.mutation == "join-deleted-record":
                     self.record = "-"
-                return 0, json.dumps(dict(server=dict(machine=dict(id="rejoined-id"))))
+                return 0, json.dumps(dict(server=dict(machine=dict(id=self.machine_id))))
             if verb == "ls":
-                assert self.joined
-                return 0, json.dumps(dict(servers=[dict(machine=dict(id="rejoined-id"), membership="up")]))
+                servers = [dict(machine=dict(id="survivor-id"), membership="up")]
+                if self.joined:
+                    servers.append(dict(machine=dict(id=self.machine_id), membership="up"))
+                elif self.mutation == "removed-but-down":
+                    servers.append(dict(machine=dict(id=self.machine_id), membership="down"))
+                else:
+                    assert args[args.index("--connect") + 1] == "ssh://root@192.0.2.2"
+                    if self.removal_pending:
+                        servers.append(dict(machine=dict(id=self.machine_id), membership="down"))
+                        self.removal_pending = False
+                return 0, json.dumps(dict(servers=servers))
         raise AssertionError(f"Unexpected CLI command: {args}")
 
     def guest(self, args):
@@ -121,17 +137,23 @@ class CommandModel:
 
 
 class VolumeFenceTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.manifest = Path(directory.name) / "cluster.json"
+        self.initial_manifest = json.dumps(dict(machines=[
+            dict(name="machine-1", address="192.0.2.1", machine_id="original-id"),
+            dict(name="machine-2", address="192.0.2.2", machine_id="survivor-id")]))
+        self.manifest.write_text(self.initial_manifest)
+
     def check_scenario(self, scenario, mutation=None):
-        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):
-            manifest = Path(directory) / "cluster.json"
-            manifest.write_text(json.dumps(dict(machines=[
-                dict(name="machine-1", address="192.0.2.1", machine_id="original-id"),
-                dict(name="machine-2", address="192.0.2.2", machine_id="survivor-id")])))
+        self.manifest.write_text(self.initial_manifest)
+        with redirect_stdout(io.StringIO()):
             model = CommandModel(mutation)
-            checks = volume_fences.VolumeFences(manifest, prefix="model", runner=model)
+            checks = volume_fences.VolumeFences(self.manifest, prefix="model", runner=model)
             result = getattr(checks, scenario + "_scenario")()
             if scenario == "lease":
-                self.assertEqual(json.loads(manifest.read_text())["machines"][0]["machine_id"], "rejoined-id")
+                self.assertEqual(json.loads(self.manifest.read_text())["machines"][0]["machine_id"], "rejoined-id")
             else:
                 self.assertIsNone(model.slot)
                 self.assertEqual(model.volumes, set())
@@ -141,6 +163,34 @@ class VolumeFenceTests(unittest.TestCase):
         result = self.check_scenario("lease")
         self.assertEqual(result["after_rejoin"], "2:2.0.0:closed")
         self.assertEqual(result["stale_lease"], "refused")
+        self.assertEqual(result["old_machine_id"], "original-id")
+        self.assertEqual(result["new_machine_id"], "rejoined-id")
+
+    def test_removal_observation_can_converge(self):
+        with patch.object(volume_fences.time, "sleep"):
+            result = self.check_scenario("lease", "removal-delayed")
+        self.assertEqual(result["new_machine_id"], "rejoined-id")
+
+    def test_remove_must_disappear_from_survivor_observation(self):
+        for mutation in ("remove-noop", "removed-but-down"):
+            self.manifest.write_text(self.initial_manifest)
+            model = CommandModel(mutation)
+            checks = volume_fences.VolumeFences(self.manifest, prefix="model", runner=model)
+            clock = itertools.count(0, 61)
+            with (self.subTest(mutation=mutation),
+                  patch.object(volume_fences.time, "monotonic", side_effect=lambda: next(clock))):
+                with redirect_stdout(io.StringIO()), self.assertRaisesRegex(AssertionError, "Removed Machine still listed"):
+                    checks.lease_scenario()
+                self.assertEqual(json.loads(self.manifest.read_text())["machines"][0]["machine_id"], "original-id")
+
+    def test_unchanged_rejoin_id_fails_before_manifest_update(self):
+        before = self.manifest.read_bytes()
+        model = CommandModel("unchanged-rejoin-id")
+        checks = volume_fences.VolumeFences(self.manifest, prefix="model", runner=model)
+        with redirect_stdout(io.StringIO()), self.assertRaisesRegex(AssertionError, "Machine reset kept its original ID"):
+            checks.lease_scenario()
+        self.assertEqual(checks.machine["machine_id"], "original-id")
+        self.assertEqual(self.manifest.read_bytes(), before)
 
     def test_deleted_record_fails_at_each_lifecycle_boundary(self):
         for mutation in ("remove-deleted-record", "reset-deleted-record", "join-deleted-record"):
