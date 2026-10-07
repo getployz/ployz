@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { PgClient } from "@effect/sql-pg";
 import { makeWithDefaults } from "drizzle-orm/effect-postgres";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -64,9 +65,16 @@ export async function startPostgresTestHarness({ ownServer = false } = {}) {
     const { url } = await Effect.runPromise(testDatabase.pipe(Scope.provide(scope)));
     const databaseUrl = url.href;
     const pool = new Pool({ connectionString: databaseUrl, max: 8 });
-    // Closed before the database is dropped.
+    let openClients = 0;
+    pool.on("connect", () => { openClients += 1; });
+    pool.on("remove", () => { openClients -= 1; });
+    // pool.end() resolves before its clients' sockets close; dropping the database while one is
+    // still open terminates it, and the pool rethrows that as an uncaught error.
     await Effect.runPromise(
-      Scope.addFinalizer(scope, Effect.promise(() => pool.end().catch(() => undefined))),
+      Scope.addFinalizer(scope, Effect.promise(async () => {
+        await pool.end().catch(() => undefined);
+        while (openClients > 0) await once(pool, "remove");
+      })),
     );
     const databaseRuntime = ManagedRuntime.make(
       Layer.effect(
