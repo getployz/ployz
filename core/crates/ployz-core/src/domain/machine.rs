@@ -472,6 +472,10 @@ pub enum MachineStorageObservation {
 pub struct MachineObservation {
     pub machine: Machine,
     pub membership: MembershipObservation,
+    /// Raw admin evidence, absent for synthetic membership and older responders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub membership_evidence: Option<MembershipEvidence>,
     /// Current storage evidence, absent when this observer could not obtain it.
     #[serde(default)]
     pub storage: Option<MachineStorageObservation>,
@@ -483,12 +487,22 @@ pub struct MachineObservation {
 }
 
 impl MachineObservation {
+    /// Recognized responding peers invite RPC; unrecognized admin values never do.
+    #[must_use]
+    pub fn invites_rpc(&self) -> bool {
+        self.membership_evidence.as_ref().map_or_else(
+            || self.membership.invites_rpc(),
+            MembershipEvidence::invites_rpc,
+        )
+    }
+
     /// Start an observer-relative Machine view with optional observations absent.
     #[must_use]
     pub fn new(machine: Machine, membership: MembershipObservation) -> Self {
         Self {
             machine,
             membership,
+            membership_evidence: None,
             storage: None,
             selected_endpoint: None,
             rtt: None,
@@ -586,20 +600,25 @@ pub enum MachineSelectorError {
 pub fn synthesize_membership(
     machines: Vec<Machine>,
     responder_id: &MachineId,
-    states: &BTreeMap<ManagementAddress, MembershipObservation>,
+    states: &BTreeMap<ManagementAddress, MembershipEvidence>,
 ) -> Vec<MachineObservation> {
     machines
         .into_iter()
         .map(|machine| {
+            let evidence = (&machine.id != responder_id)
+                .then(|| states.get(&machine.management_address()).cloned())
+                .flatten();
             let membership = if &machine.id == responder_id {
                 MembershipObservation::Up
             } else {
-                states
-                    .get(&machine.management_address())
-                    .cloned()
-                    .unwrap_or(MembershipObservation::Down)
+                evidence
+                    .as_ref()
+                    .map_or(MembershipObservation::Down, MembershipEvidence::membership)
             };
-            MachineObservation::new(machine, membership)
+            MachineObservation {
+                membership_evidence: evidence,
+                ..MachineObservation::new(machine, membership)
+            }
         })
         .collect()
 }
@@ -715,6 +734,36 @@ crate::value::open_string_enum!(MembershipObservation, Unrecognized {
     Suspect => "suspect",
     Down => "down",
 });
+
+/// Membership evidence from the Entry Machine's admin decoder. The tag preserves
+/// unrecognized raw values even when they equal a known Membership Observation wire value.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MembershipEvidence {
+    Up,
+    Suspect,
+    Down,
+    Unrecognized { raw: String },
+}
+
+impl MembershipEvidence {
+    /// The legacy observation value, without discarding the separate decoder evidence.
+    #[must_use]
+    pub fn membership(&self) -> MembershipObservation {
+        match self {
+            Self::Up => MembershipObservation::Up,
+            Self::Suspect => MembershipObservation::Suspect,
+            Self::Down => MembershipObservation::Down,
+            Self::Unrecognized { raw } => MembershipObservation::Unrecognized(raw.clone()),
+        }
+    }
+
+    /// Only recognized Up and Suspect evidence invites a peer RPC.
+    #[must_use]
+    pub fn invites_rpc(&self) -> bool {
+        matches!(self, Self::Up | Self::Suspect)
+    }
+}
 
 impl MembershipObservation {
     /// Up and Suspect invite one peer RPC. Down, Unknown, and Unrecognized do not.

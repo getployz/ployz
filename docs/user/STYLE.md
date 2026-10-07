@@ -86,7 +86,7 @@ of these headings without updating the dashboard's link.
 ## The CLI
 
 Write for the dashboard. People use the dashboard; coding agents learn the CLI on their own
-(`ployz setup agent`, `ployz --help`). So feature pages have no "From the CLI" blocks.
+(the Ployz skill from `https://ployz.sh/agent.md`, `ployz --help`). So feature pages have no "From the CLI" blocks.
 
 The one exception is something the dashboard can't do yet. Then show the command, say so
 plainly, and keep it short:

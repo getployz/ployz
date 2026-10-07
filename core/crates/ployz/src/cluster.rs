@@ -462,7 +462,7 @@ impl Client {
         let mut requests = Vec::new();
         let mut omissions = Vec::new();
         for machine in machines {
-            if !machine.membership.invites_rpc() {
+            if !machine.invites_rpc() {
                 omissions.push(machine.machine.id);
                 continue;
             }
@@ -493,7 +493,7 @@ impl Client {
         let mut requests = Vec::new();
         let mut omissions = Vec::new();
         for machine in machines {
-            if !machine.membership.invites_rpc() {
+            if !machine.invites_rpc() {
                 omissions.push(machine.machine.id);
                 continue;
             }
@@ -824,7 +824,7 @@ impl Client {
     ) -> StorageGaps {
         let mut tasks = JoinSet::new();
         for (index, machine) in machines.iter().enumerate() {
-            if machine.membership.invites_rpc() {
+            if machine.invites_rpc() {
                 tasks.spawn(observe_machine_storage(
                     self.clone(),
                     index,
@@ -873,7 +873,7 @@ impl Client {
         for machine in machines {
             // TODO: the entry Machine's observer-relative Membership Observation is the
             // current trust boundary; it can be stale and is not an authority or freshness proof.
-            if machine.membership.invites_rpc() {
+            if machine.invites_rpc() {
                 tasks.spawn(list_on_machine(
                     self.clone(),
                     machine.machine.id,
@@ -1039,7 +1039,7 @@ async fn remove_volumes_on(
     join_all(request.volumes.into_iter().map(|id| async move {
         let outcome = if machines
             .iter()
-            .any(|machine| machine.machine.id == id.machine_id && machine.membership.invites_rpc())
+            .any(|machine| machine.machine.id == id.machine_id && machine.invites_rpc())
         {
             match client
                 .invoke::<op::RemoveVolume>(
@@ -1316,7 +1316,7 @@ async fn data_loss_on_machine(
     observation: &MachineObservation,
 ) -> Result<ObservedDataLoss, RpcError> {
     let selected = observation.machine.id;
-    if !observation.membership.invites_rpc() {
+    if !observation.invites_rpc() {
         return Err(machine_did_not_respond(selected));
     }
     let volumes = list_volumes_on_machine(client.clone(), selected)

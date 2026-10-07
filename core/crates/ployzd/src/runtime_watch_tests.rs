@@ -53,7 +53,10 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
         population_stddev_ns: 250_000,
     };
     let telemetry = RuntimeWatchTelemetry {
-        states: BTreeMap::from([(peer.management_address(), MembershipObservation::Suspect)]),
+        states: BTreeMap::from([(
+            peer.management_address(),
+            ployz_core::MembershipEvidence::Suspect,
+        )]),
         selected_endpoints: BTreeMap::from([(entry.id, endpoint)]),
         rtts: vec![rtt_on(&entry, rtt.clone())],
     };
@@ -87,7 +90,10 @@ fn assembled_frame_keeps_replicated_rows_and_derives_services() {
                 rtt: Some(rtt),
                 ..MachineObservation::new(entry, MembershipObservation::Up)
             },
-            MachineObservation::new(peer, MembershipObservation::Suspect),
+            MachineObservation {
+                membership_evidence: Some(ployz_core::MembershipEvidence::Suspect),
+                ..MachineObservation::new(peer, MembershipObservation::Suspect)
+            },
         ]
     );
     assert_eq!(frame.containers, vec![service.clone(), hook.clone()]);
@@ -341,7 +347,7 @@ fn rtt_on(machine: &Machine, statistics: RttStatistics) -> RttObservation {
 
 fn peer_sample(
     peer: &Machine,
-    membership: MembershipObservation,
+    membership: ployz_core::MembershipEvidence,
     rtt: Option<RttStatistics>,
 ) -> RuntimeWatchTelemetry {
     RuntimeWatchTelemetry {
@@ -645,7 +651,7 @@ async fn watch_stream_reports_entry_up_and_sampled_rtt() {
         median_ns: 1_500_000,
         population_stddev_ns: 250_000,
     };
-    let telemetry = peer_sample(&peer, MembershipObservation::Up, Some(rtt.clone()));
+    let telemetry = peer_sample(&peer, ployz_core::MembershipEvidence::Up, Some(rtt.clone()));
     let fixture = WatchFixture::new(snapshot(vec![entry.clone(), peer.clone()], Vec::new()));
     fixture.set_sample(Some(telemetry), OBSERVED_AT);
     let (_wake, changes) = mpsc::channel(1);
@@ -665,8 +671,8 @@ async fn watch_stream_reports_entry_up_and_sampled_rtt() {
 async fn semantic_telemetry_change_yields_a_new_complete_frame() {
     let entry = machine("edge", ENTRY_ID, 1);
     let peer = machine("peer", PEER_ID, 2);
-    let first = peer_sample(&peer, MembershipObservation::Up, None);
-    let second = peer_sample(&peer, MembershipObservation::Suspect, None);
+    let first = peer_sample(&peer, ployz_core::MembershipEvidence::Up, None);
+    let second = peer_sample(&peer, ployz_core::MembershipEvidence::Suspect, None);
     let fixture = WatchFixture::new(snapshot(vec![entry.clone(), peer.clone()], Vec::new()));
     fixture.set_sample(Some(first), OBSERVED_AT);
     let (_wake, changes) = mpsc::channel(1);
@@ -694,7 +700,7 @@ async fn semantic_telemetry_change_yields_a_new_complete_frame() {
 async fn unchanged_telemetry_sample_does_not_yield_when_observed_at_advances() {
     let entry = machine("edge", ENTRY_ID, 1);
     let peer = machine("peer", PEER_ID, 2);
-    let telemetry = peer_sample(&peer, MembershipObservation::Up, None);
+    let telemetry = peer_sample(&peer, ployz_core::MembershipEvidence::Up, None);
     let fixture = WatchFixture::new(snapshot(vec![entry.clone(), peer.clone()], Vec::new()));
     fixture.set_sample(Some(telemetry.clone()), OBSERVED_AT);
     let (_wake, changes) = mpsc::channel(1);
@@ -718,7 +724,7 @@ async fn unchanged_telemetry_sample_does_not_yield_when_observed_at_advances() {
 async fn unavailable_sample_after_telemetry_keeps_replicated_rows() {
     let entry = machine("edge", ENTRY_ID, 1);
     let peer = machine("peer", PEER_ID, 2);
-    let telemetry = peer_sample(&peer, MembershipObservation::Up, None);
+    let telemetry = peer_sample(&peer, ployz_core::MembershipEvidence::Up, None);
     let fixture = WatchFixture::new(snapshot(vec![entry.clone(), peer.clone()], Vec::new()));
     fixture.set_sample(Some(telemetry), OBSERVED_AT);
     let (_wake, changes) = mpsc::channel(1);

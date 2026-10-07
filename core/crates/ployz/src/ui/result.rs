@@ -77,6 +77,11 @@ pub(crate) fn hint(hint: &Hint) {
 pub(crate) fn warn(warning: impl Into<String>) {
     let warning = warning.into();
     flag(&warning);
+    record_warning(warning);
+}
+
+/// Retain a warning in the next JSON result when a progress worker owns its display.
+pub(crate) fn record_warning(warning: String) {
     WARNINGS.with_borrow_mut(|warnings| warnings.push(warning));
 }
 

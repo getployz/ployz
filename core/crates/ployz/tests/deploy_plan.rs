@@ -27,3 +27,6 @@ mod volumes;
 
 #[path = "deploy_plan/storage.rs"]
 mod storage;
+
+#[path = "deploy_plan/observation.rs"]
+mod observation;

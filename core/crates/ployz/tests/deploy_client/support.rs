@@ -61,6 +61,7 @@ pub(super) struct DeployService {
     hold_health: bool,
     start_error: Option<RpcError>,
     listing_failures: Vec<MachineId>,
+    pub(super) listing_blocked: Option<Arc<tokio::sync::Notify>>,
     /// Docker Volumes created and not yet removed.
     pub(super) volumes: Arc<Mutex<Vec<DockerVolume>>>,
     /// Volume copies every Machine reports from storage.
@@ -90,6 +91,7 @@ impl DeployService {
             hold_health: false,
             start_error: None,
             listing_failures: Vec::new(),
+            listing_blocked: None,
             volumes: Arc::new(Mutex::new(Vec::new())),
             copies: Arc::new(Mutex::new(BTreeMap::new())),
         }
@@ -117,6 +119,7 @@ impl DeployService {
             hold_health: false,
             start_error: None,
             listing_failures: Vec::new(),
+            listing_blocked: None,
             volumes: Arc::new(Mutex::new(Vec::new())),
             copies: Arc::new(Mutex::new(BTreeMap::new())),
         }
@@ -325,6 +328,10 @@ impl MachineRpc for DeployService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if let Some(blocked) = &self.listing_blocked {
+            blocked.notify_one();
+            std::future::pending::<()>().await;
+        }
         let machine_id = machine_from_metadata(&request)?;
         if self.listing_failures.contains(&machine_id) {
             return encoded(RpcResponse::from(RpcError {

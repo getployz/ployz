@@ -280,7 +280,7 @@ where
     };
     // Mint a fresh capability; Cloud verifies replacements when enrollment resumes.
     let capability = set_cloud_management_client(matches, &mut ready).await?;
-    let catch_up = crate::global_catch_up::catch_up_globals(&mut ready, &assigned).await;
+    let catch_up = crate::global_catch_up::follow_globals(&mut ready, &assigned).await;
     // Cloud may use the replacement after publication, revoking this key.
     // A committed join remains enrolled even when Global catch-up needs a separate retry.
     cloud_enroll::publish(callback_url, assigned.id, &pairing.secret, &capability).await?;
@@ -289,7 +289,11 @@ where
     // The join is committed; a catch-up failure makes it partial.
     Ok(ui::emit_committed(
         serde_json::json!({ "server": super::server::server_json(&assigned), "founded": false }),
-        catch_up.map_err(|error| crate::global_catch_up::joined_catch_up_error(error, &assigned)),
+        catch_up.map_err(|error| {
+            crate::global_catch_up::joined_catch_up_error(error, &assigned, |args| {
+                super::rerun(matches, args)
+            })
+        }),
     ))
 }
 
@@ -406,7 +410,7 @@ where
     {
         // An interrupted Apply may have completed mutations. Do not replay it.
         let _ingress = crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
-            Error::from(error).context("Server initialized; Ingress deployment incomplete. Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it.")
+            super::ingress_hints(Error::from(error), |args| super::rerun(matches, args)).context("Server initialized; Ingress deployment incomplete. Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it.")
         })?;
     }
     // Repeated Set stages a fresh capability; its first operational RPC completes rotation.

@@ -476,3 +476,23 @@ async fn every_mirror_verb_is_fenced() {
     }
     server.abort();
 }
+
+#[tokio::test]
+async fn declare_mirror_rejects_zero_before_any_effect() {
+    let test = TestDir::new();
+    let (socket, server) = start(&test, USABLE_POOL, &["root"]);
+    let request = at(1, 3, 0, 0, json!({"refquota_bytes": 0}));
+    let reply = post(&socket, "/Volume.DeclareMirror", request).await;
+    assert!(reply.get("Err").is_some(), "{reply}");
+    assert_eq!(property(&test, "tank/ployz", "ployz:lease.data"), None);
+    assert!(!test.0.join("mirror").exists());
+    assert!(!test.0.join("mirror-root").exists());
+    let valid = at(1, 3, 0, 0, json!({"refquota_bytes": SLOT_BOUND_BYTES}));
+    let reply = post(&socket, "/Volume.DeclareMirror", valid).await;
+    assert_eq!(reply.pointer("/Ok/decision").unwrap(), "adopt", "{reply}");
+    assert_eq!(
+        property(&test, "tank/ployz-mirror/data", "refquota"),
+        Some(SLOT_BOUND_BYTES.to_string())
+    );
+    server.abort();
+}

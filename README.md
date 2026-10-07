@@ -58,7 +58,8 @@ You need a Linux server you can reach as root over SSH.
 To deploy on every push and get preview environments, connect your repository with
 `ployz github connect` or from the dashboard at [ployz.dev](https://ployz.dev).
 
-Using a coding agent? Run `ployz setup agent` to teach it the CLI.
+Using a coding agent? Paste `Set me up for Ployz: https://ployz.sh/agent.md` into it. The agent
+installs the CLI and the Ployz skill and signs you in.
 
 ## How it works
 

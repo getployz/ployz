@@ -92,7 +92,7 @@ pub(crate) async fn image_stores(
 ) -> Option<PartialResult<crate::cluster::MachineImagesObservation, RpcError>> {
     let visible = machines
         .iter()
-        .filter(|machine| machine.membership.invites_rpc())
+        .filter(|machine| machine.invites_rpc())
         .map(|machine| machine.machine.clone())
         .collect::<Vec<_>>();
     tokio::select! {

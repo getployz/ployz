@@ -1,6 +1,8 @@
 //! Session-level preview/confirm/run behaviour against a fake Machine.
 #[path = "deploy_client/operate.rs"]
 mod operate;
+#[path = "deploy_client/runner_cancellation.rs"]
+mod runner_cancellation;
 #[path = "deploy_client/support.rs"]
 mod support;
 use support::*;

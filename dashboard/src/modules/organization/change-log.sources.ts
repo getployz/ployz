@@ -11,6 +11,7 @@ export const storeChangeSources = {
   config_namespace: { key: ["environment_id"] },
   config_deployment: { key: ["id"] },
   config_build: { key: ["deployment_id"] },
+  config_deployment_row: { key: ["deployment_id"] },
   config_applied: { key: ["environment_id"] },
   config_registry_credential: { key: ["environment_id"] },
   config_service_policy: { key: ["environment_id"] },

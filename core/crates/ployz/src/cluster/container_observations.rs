@@ -47,7 +47,7 @@ impl Client {
         .await?;
         let probes = machines
             .into_iter()
-            .filter(|machine| machine.membership.invites_rpc())
+            .filter(|machine| machine.invites_rpc())
             .map(|machine| {
                 let client = self.clone();
                 async move {

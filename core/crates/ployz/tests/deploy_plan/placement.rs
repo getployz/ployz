@@ -1713,3 +1713,26 @@ fn reserved_ingress_deploy_uses_ingress_acceptance_independently() {
             .contains("do not accept this work")
     );
 }
+
+#[test]
+fn unrecognized_membership_cannot_admit_creation_after_wire_roundtrip_or_remove_existing_work() {
+    use ployz_core::MembershipEvidence;
+    let requested = requested(ServiceMode::Global);
+    let existing = container('a', '2', &requested, &ServiceId::random());
+    for raw in ["down", "up", "suspect"] {
+        let mut peer = machine('2', "future-peer");
+        peer.membership = MembershipObservation::Unrecognized(raw.into());
+        peer.membership_evidence = Some(MembershipEvidence::Unrecognized { raw: raw.into() });
+        let peer: MachineObservation =
+            serde_json::from_value(serde_json::to_value(peer).unwrap()).unwrap();
+        let snapshot = DeploySnapshot {
+            machines: vec![machine('1', "known-peer"), peer],
+            containers: vec![existing.clone()],
+            ..Default::default()
+        };
+        let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
+        assert!(
+            matches!(operations(&plan).as_slice(), [DeployOperation::RunContainer { machine_id: placed, .. }] if *placed == machine_id('1'))
+        );
+    }
+}

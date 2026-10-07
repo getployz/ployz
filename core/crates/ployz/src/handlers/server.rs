@@ -207,10 +207,11 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
             .iter()
             .flat_map(|image| ["--ingress-image", image.as_str()]),
     );
-    let rerun = rerun(matches, &args);
+    let rerun = super::rerun(matches, &args);
     let ingress = IngressImage::given_or(image.cloned(), IngressImage::Keep);
     let accepts_ingress = update.accepts_ingress;
     let selector = MachineTarget::parse(selector)?;
+    let recovery_matches = matches.clone();
     with_client(root, |client| {
         Box::pin(async move {
             let machine = client
@@ -247,24 +248,16 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
             .await;
             crate::ui::emit_committed(
                 json!({ "server": server_json(&machine), "ingress": followed.as_ref().ok().and_then(Option::as_ref) }),
-                followed
-                    .map(drop)
-                    .map_err(|error| ingress_incomplete("Server updated", error, rerun)),
+                followed.map(drop).map_err(|error| {
+                    ingress_incomplete(
+                        "Server updated",
+                        super::ingress_hints(error, |args| super::rerun(&recovery_matches, args)),
+                        rerun,
+                    )
+                }),
             )
         })
     })
-}
-
-/// The exact rerun of a Server command, keeping an explicit `--context`.
-pub(super) fn rerun(matches: &ArgMatches, args: &[&str]) -> String {
-    let context = matches.get_one::<String>("context");
-    let args = std::iter::once("ployz").chain(args.iter().copied()).chain(
-        context
-            .map(|context| ["--context", context.as_str()])
-            .into_iter()
-            .flatten(),
-    );
-    shell_words::join(args)
 }
 
 /// A committed Server change whose Ingress Proxy follow-up failed: name it and the exact rerun.

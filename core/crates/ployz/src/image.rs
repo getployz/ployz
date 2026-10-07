@@ -99,7 +99,7 @@ pub(crate) fn delivery_selection(
     let omissions = if selectors.is_empty() {
         observations
             .iter()
-            .filter(|observation| !observation.membership.invites_rpc())
+            .filter(|observation| !observation.invites_rpc())
             .map(|observation| observation.machine.id)
             .collect()
     } else {
@@ -114,7 +114,7 @@ fn select_targets(
 ) -> Result<Vec<Machine>, PushError> {
     let machines = observations
         .iter()
-        .filter(|observation| observation.membership.invites_rpc())
+        .filter(|observation| observation.invites_rpc())
         .map(|observation| observation.machine.clone())
         .collect::<Vec<_>>();
     let selectors = if selectors.is_empty() {
@@ -163,7 +163,7 @@ pub(crate) async fn ensure_cluster_image(
     };
     let targets = machines
         .into_iter()
-        .filter(|machine| machine.membership.invites_rpc())
+        .filter(|machine| machine.invites_rpc())
         .map(|machine| machine.machine)
         .collect::<Vec<_>>();
     // Docker's reference filter does not match repository@digest.
