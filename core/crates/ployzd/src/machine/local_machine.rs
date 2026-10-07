@@ -141,7 +141,6 @@ impl LocalMachine {
     }
 
     /// Reach the volume plugin at another socket; tests serve a fake there.
-    #[cfg(test)]
     #[must_use]
     pub(crate) fn with_plugin(mut self, plugin: crate::storage::Plugin) -> Self {
         self.plugin = plugin;

@@ -79,6 +79,12 @@ impl MachineService {
     }
 
     #[must_use]
+    pub(crate) fn with_volume_plugin(mut self, plugin: crate::storage::Plugin) -> Self {
+        self.local = self.local.with_plugin(plugin);
+        self
+    }
+
+    #[must_use]
     /// Make exact Ingress Proxy configuration available through the Machine RPC.
     pub fn with_ingress_data_dir(mut self, path: PathBuf) -> Self {
         self.ingress_data_dir = Some(path);

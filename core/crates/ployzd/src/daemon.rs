@@ -58,6 +58,8 @@ pub struct DaemonConfig {
     pub dns_upstreams: Vec<SocketAddr>,
     pub machine_api_address: Option<SocketAddr>,
     pub containerd_socket: Option<PathBuf>,
+    /// The volume plugin's Docker plugin socket; tests serve a fake elsewhere.
+    pub volume_plugin_socket: Option<PathBuf>,
     pub containers: ContainerMode,
     /// Management transport bind port and relay; defaults are production values.
     pub management: ManagementConfig,
@@ -209,7 +211,12 @@ impl Daemon {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let running_builds = builds.running_builds();
         builds.follow(local.watch());
+        let plugin = config
+            .volume_plugin_socket
+            .clone()
+            .map_or_else(crate::storage::Plugin::default, crate::storage::Plugin::at);
         let machine_api = MachineApi::builder(local.clone())
+            .with_volume_plugin(plugin.clone())
             .with_build_grants(Arc::clone(&grants))
             .with_builds(builds)
             .with_cluster(
@@ -251,7 +258,8 @@ impl Daemon {
                         management::serve(
                             management_endpoint,
                             crate::machine::LocalMachine::new(local.clone())
-                                .with_containers(containers.clone()),
+                                .with_containers(containers.clone())
+                                .with_plugin(plugin.clone()),
                             machine_api.clone(),
                             grants,
                             shutdown.clone(),
@@ -748,6 +756,7 @@ mod tests {
                 dns_upstreams: Vec::new(),
                 machine_api_address: None,
                 containerd_socket: None,
+                volume_plugin_socket: None,
                 containers,
                 management: test_management(),
             },
@@ -881,6 +890,7 @@ mod tests {
             dns_upstreams: Vec::new(),
             machine_api_address: None,
             containerd_socket: None,
+            volume_plugin_socket: None,
             containers: ContainerMode::Absent,
             management: test_management(),
         })
@@ -892,6 +902,7 @@ mod tests {
             dns_upstreams: Vec::new(),
             machine_api_address: None,
             containerd_socket: None,
+            volume_plugin_socket: None,
             containers: ContainerMode::Absent,
             management: test_management(),
         })

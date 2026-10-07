@@ -158,7 +158,15 @@ fn join_leaves_a_journal_line_and_records_the_restart() {
     fs::create_dir_all(&root.0).unwrap();
     let notify_socket = root.0.join("notify.sock");
     let socket = root.0.join("run/ployz.sock");
-    let mut daemon = start_daemon(&root.0.join("data"), &socket, &notify_socket);
+    let plugin_socket = root.0.join("plugin.sock");
+    serve_empty_plugin(&plugin_socket);
+    let mut daemon = start_daemon_with(
+        &root.0.join("data"),
+        &socket,
+        &notify_socket,
+        &[],
+        &["--volume-plugin-socket", plugin_socket.to_str().unwrap()],
+    );
     join(&socket);
     let stderr = wait_and_stderr(&mut daemon.0, "join");
     assert!(
@@ -220,6 +228,23 @@ fn invalid_log_level_fails_before_start() {
 
 fn start_daemon(data_dir: &Path, socket: &Path, notify_socket: &Path) -> ChildGuard {
     start_daemon_with(data_dir, socket, notify_socket, &[], &[])
+}
+
+/// A volume plugin that answers every route with an empty success, served on `socket`
+/// for the life of the test process: the daemon under test departs storage through it.
+fn serve_empty_plugin(socket: &Path) {
+    let socket = socket.to_path_buf();
+    thread::spawn(move || {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async move {
+                let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+                let router = axum::Router::new().fallback(axum::routing::post(|| async {
+                    axum::Json(serde_json::json!({"Ok": []}))
+                }));
+                axum::serve(listener, router).await.unwrap();
+            });
+    });
 }
 
 fn start_daemon_with(
