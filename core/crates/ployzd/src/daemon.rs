@@ -58,7 +58,7 @@ pub struct DaemonConfig {
     pub dns_upstreams: Vec<SocketAddr>,
     pub machine_api_address: Option<SocketAddr>,
     pub containerd_socket: Option<PathBuf>,
-    /// The volume plugin's Docker plugin socket; tests serve a fake elsewhere.
+    /// Volume plugin socket; None uses the Docker plugin socket.
     pub volume_plugin_socket: Option<PathBuf>,
     pub containers: ContainerMode,
     /// Management transport bind port and relay; defaults are production values.
@@ -182,9 +182,13 @@ impl Daemon {
         let corrosion = start_corrosion(&config, &local).await?;
         let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
         let admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
+        let plugin = config
+            .volume_plugin_socket
+            .clone()
+            .map_or_else(crate::storage::Plugin::default, crate::storage::Plugin::at);
         let containers = match (containers, replicated_store.clone()) {
             (Some(runtime), Some(replicated)) => {
-                Some(runtime.replicating(replicated, local.clone()))
+                Some(runtime.replicating(replicated, local.clone(), plugin.clone()))
             }
             (runtime, _) => runtime,
         };
@@ -211,10 +215,6 @@ impl Daemon {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let running_builds = builds.running_builds();
         builds.follow(local.watch());
-        let plugin = config
-            .volume_plugin_socket
-            .clone()
-            .map_or_else(crate::storage::Plugin::default, crate::storage::Plugin::at);
         let machine_api = MachineApi::builder(local.clone())
             .with_volume_plugin(plugin.clone())
             .with_build_grants(Arc::clone(&grants))

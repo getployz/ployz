@@ -77,7 +77,11 @@ async fn docker_volume_events_and_rescans_publish_named_local_observations() {
     replicated.publish_volume(&stale_foreign).await.unwrap();
 
     let runtime = runtime
-        .replicating(replicated.clone(), local.clone())
+        .replicating(
+            replicated.clone(),
+            local.clone(),
+            crate::storage::Plugin::default(),
+        )
         .with_rescan_interval(Duration::from_secs(3));
     let shutdown = CancellationToken::new();
     let task = tokio::spawn({

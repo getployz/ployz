@@ -896,7 +896,11 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
     }
 
     let runtime = ContainerRuntime::new(docker.clone(), specs.clone())
-        .replicating(replicated.clone(), local.clone())
+        .replicating(
+            replicated.clone(),
+            local.clone(),
+            crate::storage::Plugin::default(),
+        )
         .with_rescan_interval(Duration::from_secs(3));
     let shutdown = CancellationToken::new();
     let task = tokio::spawn({
@@ -1039,8 +1043,11 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
     let invalid_socket = root.0.join("not-docker.sock");
     fs::write(&invalid_socket, []).unwrap();
     let failed_docker = LocalDocker::connect_socket(invalid_socket.to_str().unwrap()).unwrap();
-    let failed_runtime =
-        ContainerRuntime::new(failed_docker, specs).replicating(replicated.clone(), local.clone());
+    let failed_runtime = ContainerRuntime::new(failed_docker, specs).replicating(
+        replicated.clone(),
+        local.clone(),
+        crate::storage::Plugin::default(),
+    );
     let fail_shutdown = CancellationToken::new();
     let fail_task = tokio::spawn({
         let shutdown = fail_shutdown.clone();

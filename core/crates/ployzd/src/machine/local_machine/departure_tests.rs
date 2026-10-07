@@ -218,7 +218,15 @@ async fn a_plain_deploy_mounts_only_on_the_writer() {
         "lease": null,
     }});
     let nothing = json!({"Ok": {"copy": null, "lease": null}});
-    let cases: [(&str, serde_json::Value, Option<(&str, bool)>, Option<&str>); 7] = [
+    /// Case name, the plugin's inspection, a copy elsewhere (role, Machine still listed),
+    /// and the refusal text when the mount is refused.
+    type Case = (
+        &'static str,
+        serde_json::Value,
+        Option<(&'static str, bool)>,
+        Option<&'static str>,
+    );
+    let cases: [Case; 7] = [
         ("fresh name", nothing.clone(), None, None),
         ("idle writer", root("idle", "closed"), None, None),
         (

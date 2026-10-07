@@ -28,11 +28,16 @@ pub(super) struct ObservationSink {
 
 impl ContainerRuntime {
     #[must_use]
-    pub fn replicating(mut self, replicated: ReplicatedStore, local: RecordOwner) -> Self {
+    pub(crate) fn replicating(
+        mut self,
+        replicated: ReplicatedStore,
+        local: RecordOwner,
+        plugin: crate::storage::Plugin,
+    ) -> Self {
         self.sink = Some(ObservationSink {
             replicated,
             local,
-            plugin: crate::storage::Plugin::default(),
+            plugin,
             rescan_interval: RESCAN_INTERVAL,
         });
         self
