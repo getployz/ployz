@@ -13,7 +13,7 @@ use super::{Error, LocalMachine};
 use crate::{
     corrosion::{AdminClient, fake_cluster},
     docker::test_support::{FakeDocker, fake_runtime_with, provisioned_source, spec_with_sources},
-    machine::{LocalMachineStore, RecordOwner},
+    machine::{LocalMachineStore, RecordOwner, StoreError},
     storage::test_support::FakePlugin,
 };
 
@@ -286,4 +286,26 @@ async fn a_plain_deploy_mounts_only_on_the_writer() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn a_resumed_join_does_not_depart_again() {
+    let test = harness(false).await;
+    let request = join_request(&test.local.record());
+    test.local.join(request.clone()).await.unwrap();
+    let again = test.local.join(request).await.unwrap();
+    assert!(again.already_accepted);
+    assert_eq!(test.plugin.routes_called(), ["Storage.Demote"]);
+}
+
+#[tokio::test]
+async fn a_refused_initialize_does_not_depart() {
+    let test = harness(true).await;
+    let error = test.local.initialize(initialize_request()).await.unwrap_err();
+    assert!(
+        matches!(error, Error::Store(StoreError::AlreadyInitialized)),
+        "{error}"
+    );
+    assert!(test.plugin.routes_called().is_empty());
+    assert!(!forgot_data(&test.docker));
 }
