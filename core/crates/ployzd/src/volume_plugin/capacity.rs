@@ -58,7 +58,7 @@ impl VolumeStorage {
                     .ok_or("Dataset occupancy overflows u64")?;
                 let super::Place::Root(name) = place else {
                     slot_bound_bytes = slot_bound_bytes
-                        .checked_add(dataset.refquota)
+                        .checked_add(super::storage::committed_bytes(&dataset, pool.name()))
                         .ok_or("Volume commitments overflow u64")?;
                     continue;
                 };

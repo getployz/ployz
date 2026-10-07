@@ -308,7 +308,7 @@ EnvironmentFile=-/etc/default/ployz
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true
-RestrictAddressFamilies=AF_UNIX
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictNamespaces=true
 "
     )

@@ -21,13 +21,15 @@ use tower_service::Service;
 
 mod capacity;
 mod lease;
+mod mirror;
 mod pool;
 mod removal;
 mod storage;
+mod transfer;
 
 use storage::{
-    CapacityAdmission, DATASET_ROOT, Dataset, MOUNT_ROOT, Place, VolumeStorage, checked_command,
-    parse_size,
+    CapacityAdmission, DATASET_ROOT, Dataset, MIRROR_ROOT, MOUNT_ROOT, Place, VolumeStorage,
+    checked_command, parse_size,
 };
 
 type Result<T> = std::result::Result<T, VolumeError>;
@@ -165,6 +167,15 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route("/Storage.Prepare", post(capacity::prepare))
         .route("/Volume.Inspect", post(lease::inspect))
         .route("/Volume.AdoptLease", post(lease::adopt_lease))
+        .route("/Volume.DeclareMirror", post(mirror::declare))
+        .route("/Volume.BeginRound", post(mirror::begin_round))
+        .route("/Volume.CommitSnapshots", post(mirror::commit))
+        .route("/Volume.WarmSnapshot", post(mirror::warm))
+        .route("/Volume.StartReceive", post(transfer::start_receive))
+        .route("/Volume.InspectReceive", post(transfer::inspect_receive))
+        .route("/Volume.PruneMirror", post(mirror::prune))
+        .route("/Volume.DestroyMirror", post(mirror::destroy))
+        .route("/Volume.ForgetSnapshots", post(mirror::forget))
         .route("/VolumeDriver.Create", post(create))
         .route("/VolumeDriver.Remove", post(removal::remove))
         .route("/VolumeDriver.Get", post(removal::get))
@@ -341,6 +352,12 @@ mod tests {
 
     #[path = "slot_tests.rs"]
     mod slot_tests;
+
+    #[path = "mirror_tests.rs"]
+    mod mirror_tests;
+
+    #[path = "receive_tests.rs"]
+    mod receive_tests;
 
     use fake_zfs::{USABLE_POOL, fake_zfs};
 

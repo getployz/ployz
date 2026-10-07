@@ -969,6 +969,78 @@ impl MachineRpc for DiscoveryService {
             "Volume switch verbs are not used by this fixture",
         ))
     }
+    async fn declare_mirror(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "Volume switch verbs are not used by this fixture",
+        ))
+    }
+    async fn begin_round(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "Volume switch verbs are not used by this fixture",
+        ))
+    }
+    async fn commit_snapshots(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "Volume switch verbs are not used by this fixture",
+        ))
+    }
+    async fn warm_snapshot(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "Volume switch verbs are not used by this fixture",
+        ))
+    }
+    async fn start_receive(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "Volume switch verbs are not used by this fixture",
+        ))
+    }
+    async fn inspect_receive(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "Volume switch verbs are not used by this fixture",
+        ))
+    }
+    async fn prune_mirror(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "Volume switch verbs are not used by this fixture",
+        ))
+    }
+    async fn destroy_mirror(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "Volume switch verbs are not used by this fixture",
+        ))
+    }
+    async fn forget_snapshots(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "Volume switch verbs are not used by this fixture",
+        ))
+    }
 
     async fn remove_volume(
         &self,

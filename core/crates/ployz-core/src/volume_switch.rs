@@ -5,7 +5,7 @@ use std::{fmt, str::FromStr};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{DockerVolumeName, RpcError, RpcErrorCode};
+use crate::{DockerVolumeName, ManagementAddress, RpcError, RpcErrorCode};
 
 /// Lease number of one Volume run, decided on the Machines (max over their records plus one).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
@@ -175,9 +175,72 @@ impl fmt::Display for SnapshotGuid {
     }
 }
 
-/// One snapshot of a copy, by GUID and creation time.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+/// Name of a run's snapshot without the `@`: `w-<lease>-<round>` taken warm, `f-<lease>` taken final.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, TS)]
+#[serde(try_from = "String", into = "String")]
+pub struct SnapshotName(String);
+
+impl SnapshotName {
+    #[must_use]
+    pub fn warm(lease: Lease, round: u32) -> Self {
+        Self(format!("w-{lease}-{round}"))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// A snapshot name that is not `w-<lease>-<round>` or `f-<lease>`.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("invalid run snapshot name {0:?}; expected w-<lease>-<round> or f-<lease>")]
+pub struct SnapshotNameParseError(pub String);
+
+impl FromStr for SnapshotName {
+    type Err = SnapshotNameParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let invalid = || SnapshotNameParseError(value.to_owned());
+        let valid = match value.split_once('-') {
+            Some(("w", rest)) => rest
+                .split_once('-')
+                .is_some_and(|(lease, index)| is_number(lease) && is_number(index)),
+            Some(("f", lease)) => is_number(lease),
+            _ => false,
+        };
+        valid.then(|| Self(value.to_owned())).ok_or_else(invalid)
+    }
+}
+
+fn is_number(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+impl TryFrom<String> for SnapshotName {
+    type Error = SnapshotNameParseError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value.parse()
+    }
+}
+
+impl From<SnapshotName> for String {
+    fn from(name: SnapshotName) -> Self {
+        name.0
+    }
+}
+
+impl fmt::Display for SnapshotName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// One snapshot of a copy, by name, GUID and creation time.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Snapshot {
+    pub name: SnapshotName,
     pub guid: SnapshotGuid,
     pub created_unix_seconds: i64,
 }
@@ -290,7 +353,7 @@ impl FromStr for MirrorMarker {
 }
 
 /// The copy of a Volume this Machine holds, by its place in the dataset layout.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum VolumeCopy {
     /// `<pool>/ployz/<name>`: the writer's dataset, mounted for Containers.
@@ -299,16 +362,19 @@ pub enum VolumeCopy {
         readonly: bool,
         newest: Option<Snapshot>,
     },
-    /// `<pool>/ployz-mirror/<name>/fs`: a read-only copy Docker never sees.
+    /// `<pool>/ployz-mirror/<name>`: a read-only copy Docker never sees. `newest` is of
+    /// its `fs` child; `resume_token` is set while a receive into `fs` is interrupted.
     Slot {
         mirror: MirrorMarker,
         readonly: bool,
         newest: Option<Snapshot>,
+        #[serde(default)]
+        resume_token: Option<String>,
     },
 }
 
 /// Live answer to `InspectVolumeCopy`: what this Machine holds and what it last admitted.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct VolumeCopyView {
     pub copy: Option<VolumeCopy>,
     pub lease: Option<LeaseRecord>,
@@ -342,8 +408,157 @@ impl AdoptLeaseRequest {
     }
 }
 
+/// `03-declare`: create the slot parent for a mirror bounded by `refquota_bytes`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct DeclareMirrorRequest {
+    pub switch: Switch,
+    pub name: DockerVolumeName,
+    pub refquota_bytes: u64,
+}
+
+/// A leased verb that needs only the Volume name: BeginRound, Prune, Destroy, Forget.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct MirrorRequest {
+    pub switch: Switch,
+    pub name: DockerVolumeName,
+}
+
+/// Commit on the writer: drop run snapshots older than the mirror's newest.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct CommitRequest {
+    pub switch: Switch,
+    pub name: DockerVolumeName,
+    pub mirror_newest: SnapshotGuid,
+}
+
+/// Warm on the writer: take `w-<lease>-<round>` unless the newest warm snapshot already
+/// captures every write.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct WarmRequest {
+    pub switch: Switch,
+    pub name: DockerVolumeName,
+}
+
+/// StartReceive on the mirror: pull `target` from the writer Machine at `from`, as a full
+/// stream, an increment over `base`, or a resume of an interrupted stream.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StartReceiveRequest {
+    pub switch: Switch,
+    pub name: DockerVolumeName,
+    pub from: ManagementAddress,
+    pub base: Option<SnapshotGuid>,
+    pub target: SnapshotName,
+    pub resume_token: Option<String>,
+}
+
+/// Ask a mirror Machine how the receive of `round` is going. Carries no lease.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct InspectReceiveRequest {
+    pub name: DockerVolumeName,
+    pub round: u32,
+}
+
+/// What the last admitted receive left on the slot.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ReceiveStatus {
+    /// No receive of the asked round was admitted on this slot.
+    Idle,
+    Running {
+        target: SnapshotName,
+    },
+    Done {
+        newest: Snapshot,
+    },
+    /// The stream broke; StartReceive again with `token` at the same position.
+    Resumable {
+        target: SnapshotName,
+        token: String,
+    },
+    Failed {
+        target: SnapshotName,
+        reason: String,
+    },
+}
+
+/// Answer to `InspectReceive`: the round the slot last admitted and its state.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct ReceiveView {
+    pub round: Option<u32>,
+    pub status: ReceiveStatus,
+}
+
+/// Which stream a mirror asks its writer Machine for over the mesh.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SendSource {
+    Full {
+        target: SnapshotName,
+    },
+    Incremental {
+        base: SnapshotGuid,
+        target: SnapshotName,
+    },
+    Resume {
+        token: String,
+        target: SnapshotName,
+    },
+}
+
+/// `GET /volume-send/<name>?<query>` on the writer Machine's management address.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SendStream {
+    pub name: DockerVolumeName,
+    pub source: SendSource,
+}
+
+impl SendStream {
+    pub const PATH_PREFIX: &'static str = "/volume-send/";
+
+    #[must_use]
+    pub fn path_and_query(&self) -> String {
+        let query = match &self.source {
+            SendSource::Full { target } => format!("target={target}"),
+            SendSource::Incremental { base, target } => format!("target={target}&base={base}"),
+            SendSource::Resume { token, target } => format!("target={target}&token={token}"),
+        };
+        format!("{}{}?{query}", Self::PATH_PREFIX, self.name)
+    }
+
+    /// Reads a request path and query; `None` when it names no stream this Machine can send.
+    ///
+    /// Values are a Volume name, a snapshot name, a GUID or a ZFS resume token, none of
+    /// which contain `&` or `=`, so the query needs no decoding.
+    #[must_use]
+    pub fn parse(path: &str, query: Option<&str>) -> Option<Self> {
+        let name = DockerVolumeName::parse(path.strip_prefix(Self::PATH_PREFIX)?).ok()?;
+        let mut target = None;
+        let mut base = None;
+        let mut token = None;
+        for pair in query?.split('&') {
+            match pair.split_once('=')? {
+                ("target", value) => target = Some(value.parse::<SnapshotName>().ok()?),
+                ("base", value) => base = Some(SnapshotGuid(value.parse().ok()?)),
+                ("token", value) if !value.is_empty() => token = Some(value.to_owned()),
+                _ => return None,
+            }
+        }
+        let source = match (target, base, token) {
+            (Some(target), None, None) => SendSource::Full { target },
+            (Some(target), Some(base), None) => SendSource::Incremental { base, target },
+            (Some(target), None, Some(token)) => SendSource::Resume { token, target },
+            _ => return None,
+        };
+        Some(Self { name, source })
+    }
+}
+
+/// The managed root under a Pool: `<pool>/ployz/<name>` holds a Volume's writer.
+pub const DATASET_ROOT: &str = "ployz";
+/// The mirror root under a Pool: `<pool>/ployz-mirror/<name>` holds a Volume's slot.
+pub const MIRROR_ROOT: &str = "ployz-mirror";
+
 /// Every admitted switch verb answers the same shape, so a replay answers as the original did.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct SwitchReply {
     pub decision: FenceDecision,
     /// The record after admission.

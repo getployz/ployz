@@ -489,6 +489,107 @@ impl MachineRpc for MachineService {
             .await
     }
 
+    async fn declare_mirror(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::DeclareMirror>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>(
+            "DeclareMirror",
+            "Volume.DeclareMirror",
+            &request,
+        )
+        .await
+    }
+
+    async fn begin_round(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::BeginRound>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>("BeginRound", "Volume.BeginRound", &request)
+            .await
+    }
+
+    async fn commit_snapshots(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::CommitSnapshots>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>(
+            "CommitSnapshots",
+            "Volume.CommitSnapshots",
+            &request,
+        )
+        .await
+    }
+
+    async fn warm_snapshot(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::WarmSnapshot>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>("WarmSnapshot", "Volume.WarmSnapshot", &request)
+            .await
+    }
+
+    async fn start_receive(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::StartReceive>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>("StartReceive", "Volume.StartReceive", &request)
+            .await
+    }
+
+    async fn inspect_receive(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::InspectReceive>(request)?;
+        self.switch_verb::<ployz_core::ReceiveView>(
+            "InspectReceive",
+            "Volume.InspectReceive",
+            &request,
+        )
+        .await
+    }
+
+    async fn prune_mirror(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::PruneMirror>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>("PruneMirror", "Volume.PruneMirror", &request)
+            .await
+    }
+
+    async fn destroy_mirror(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::DestroyMirror>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>(
+            "DestroyMirror",
+            "Volume.DestroyMirror",
+            &request,
+        )
+        .await
+    }
+
+    async fn forget_snapshots(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::ForgetSnapshots>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>(
+            "ForgetSnapshots",
+            "Volume.ForgetSnapshots",
+            &request,
+        )
+        .await
+    }
+
     async fn build(
         &self,
         request: Request<tonic::Streaming<OpaquePayload>>,
