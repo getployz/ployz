@@ -64,17 +64,28 @@ pub(crate) mod test_support {
 
     use super::Plugin;
 
+    type Effect = Arc<dyn Fn() + Send + Sync>;
+
     /// A plugin that answers each route with a canned reply and records every call. A
     /// route without a reply answers an internal error.
     #[derive(Clone, Default)]
     pub(crate) struct FakePlugin {
         pub(crate) calls: Arc<Mutex<Vec<(String, Value)>>>,
         pub(crate) replies: Arc<Mutex<BTreeMap<String, Value>>>,
+        effects: Arc<Mutex<BTreeMap<String, Effect>>>,
     }
 
     impl FakePlugin {
         pub(crate) fn reply(&self, route: &str, reply: Value) {
             self.replies.lock().unwrap().insert(route.to_owned(), reply);
+        }
+
+        /// Runs `effect` each time `route` is called, before the canned reply.
+        pub(crate) fn on(&self, route: &str, effect: impl Fn() + Send + Sync + 'static) {
+            self.effects
+                .lock()
+                .unwrap()
+                .insert(route.to_owned(), Arc::new(effect));
         }
 
         pub(crate) fn routes_called(&self) -> Vec<String> {
@@ -107,6 +118,10 @@ pub(crate) mod test_support {
     ) -> axum::response::Response {
         let route = uri.path().trim_start_matches('/').to_owned();
         fake.calls.lock().unwrap().push((route.clone(), request));
+        let effect = fake.effects.lock().unwrap().get(&route).cloned();
+        if let Some(effect) = effect {
+            effect();
+        }
         let reply = fake.replies.lock().unwrap().get(&route).cloned();
         match reply {
             Some(reply) => axum::Json(reply).into_response(),

@@ -210,6 +210,24 @@ case "$*" in
     echo 1073741824 > '{props}/tank/ployz-mirror/data/fs/refquota'
     echo "$moved_readonly" > '{props}/tank/ployz-mirror/data/fs/readonly'
     ;;
+  'rename tank/ployz-mirror/data/fs tank/ployz/data')
+    require tank/ployz-mirror/data/fs
+    rm -rf '{props}/tank/ployz/data'
+    mkdir -p '{props}/tank/ployz/data'
+    for f in '{props}'/tank/ployz-mirror/data/fs/*; do
+      [ -f "$f" ] || continue
+      sed 's#^tank/ployz-mirror/data/fs@#tank/ployz/data@#' "$f" > '{props}'/tank/ployz/data/"${{f##*/}}"
+    done
+    rm -rf '{props}/tank/ployz-mirror/data/fs'
+    if [ "$(prop tank/ployz/data readonly off)" = on ]; then touch '{readonly_volume}'; fi
+    rm -f '{mirror_fs}'
+    touch '{volume}'
+    ;;
+  'destroy tank/ployz-mirror/data')
+    require tank/ployz-mirror/data
+    if [ -e '{mirror_fs}' ]; then echo 'filesystem has children' >&2; exit 1; fi
+    rm -rf '{mirror}' '{props}/tank/ployz-mirror/data'
+    ;;
   'destroy -r tank/ployz/data')
     if [ -e '{destroy_fails}' ]; then echo 'dataset is busy' >&2; exit 1; fi
     rm -f '{volume}' '{mounted}'

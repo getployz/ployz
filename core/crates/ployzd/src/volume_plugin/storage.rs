@@ -135,7 +135,13 @@ impl VolumeStorage {
         let volume = format!("{root}/{name}");
 
         if let Some(existing) = Self::dataset(&datasets, pool, name)? {
-            return existing.require_requested(name, requested);
+            existing.require_requested(name, requested)?;
+            if self.unregistered(&existing.name).await? {
+                self.zfs(&["inherit", super::lease::PROMOTE_PROPERTY, &existing.name])
+                    .await?;
+                ployzd::faults::kill_inside("Create");
+            }
+            return Ok(());
         }
 
         if matches!(origin, CapacityAdmission::Required) {

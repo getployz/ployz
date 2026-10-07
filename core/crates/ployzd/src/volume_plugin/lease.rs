@@ -15,6 +15,9 @@ use super::{
 pub(super) const LEASE_PROPERTY_PREFIX: &str = "ployz:lease.";
 pub(super) const WRITER_PROPERTY: &str = "ployz:writer";
 pub(super) const MIRROR_PROPERTY: &str = "ployz:mirror";
+/// Set on a root renamed into place until Docker's Create registers it with its labels.
+/// Get and List hide a marked root, so Docker never records it without them.
+pub(super) const PROMOTE_PROPERTY: &str = "ployz:promote";
 /// Set by ZFS on a dataset whose `receive -s` was interrupted; `-` otherwise.
 pub(super) const RESUME_TOKEN_PROPERTY: &str = "receive_resume_token";
 
@@ -137,6 +140,10 @@ impl VolumeStorage {
         self.zfs(&["set", &format!("{}={record}", lease_property(name)), &root])
             .await?;
         Ok(())
+    }
+
+    pub(super) async fn unregistered(&self, dataset: &str) -> Result<bool> {
+        Ok(self.property(dataset, PROMOTE_PROPERTY).await?.is_some())
     }
 
     pub(super) async fn writer_marker(&self, root: &Dataset) -> Result<WriterMarker> {
@@ -370,7 +377,7 @@ impl VolumeStorage {
 pub(super) struct Admitted {
     pub(super) decision: FenceDecision,
     pub(super) lease: LeaseRecord,
-    recorded: Option<LeaseRecord>,
+    pub(super) recorded: Option<LeaseRecord>,
 }
 
 pub(super) fn slot_parent(pool: &MachinePool, name: &DockerVolumeName) -> String {

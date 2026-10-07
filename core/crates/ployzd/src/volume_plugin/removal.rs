@@ -54,6 +54,9 @@ impl VolumeStorage {
             return Ok(None);
         };
         dataset.require_provisioned(name)?;
+        if self.unregistered(&dataset.name).await? {
+            return Ok(None);
+        }
         Ok(Some(PluginVolume::new(name, dataset)))
     }
 
@@ -87,6 +90,9 @@ impl VolumeStorage {
             }
             let name = name.parse::<DockerVolumeName>()?;
             dataset.require_provisioned(&name)?;
+            if self.unregistered(&dataset.name).await? {
+                continue;
+            }
             volumes.push(PluginVolume::new(&name, dataset));
         }
         Ok(volumes)

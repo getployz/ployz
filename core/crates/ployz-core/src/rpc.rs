@@ -1,7 +1,8 @@
 use crate::{
     AdoptLeaseRequest, CommitRequest, DeclareMirrorRequest, HandOverRequest, InspectReceiveRequest,
-    InspectVolumeCopyRequest, MirrorRequest, ReceiveView, SourceContainerRequest,
-    StartReceiveRequest, StorageCapacity, SwitchReply, VolumeCopyView, WarmRequest,
+    InspectVolumeCopyRequest, MirrorRequest, ReceiveView, ServiceVolumeRequest,
+    SourceContainerRequest, StartReceiveRequest, StorageCapacity, SwitchReply, VolumeCopyView,
+    WarmRequest,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},

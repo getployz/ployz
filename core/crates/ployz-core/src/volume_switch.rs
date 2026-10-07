@@ -439,6 +439,17 @@ pub struct HandOverRequest {
     pub guid: SnapshotGuid,
 }
 
+/// A target verb that leaves Docker holding the Volume as `resolved_spec` declares it:
+/// Promote, Restore, and StartHandedContainer, which also creates the Service Container
+/// under the creation key `handoff-<guid>` and starts it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ServiceVolumeRequest {
+    pub switch: Switch,
+    pub name: DockerVolumeName,
+    pub namespace: crate::Namespace,
+    pub resolved_spec: crate::ResolvedServiceSpec,
+}
+
 /// Commit on the writer: drop run snapshots older than the mirror's newest.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct CommitRequest {

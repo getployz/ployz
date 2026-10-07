@@ -27,6 +27,7 @@ mod pool;
 mod removal;
 mod storage;
 mod switch_source;
+mod switch_target;
 mod transfer;
 
 use storage::{
@@ -179,6 +180,23 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route("/Volume.HandOver", post(switch_source::hand_over))
         .route("/Volume.Thaw", post(switch_source::thaw))
         .route("/Volume.Close", post(switch_source::close))
+        .route(
+            "/Volume.AcceptHandOff",
+            post(switch_target::accept_hand_off),
+        )
+        .route("/Volume.ClearFinal", post(switch_target::clear_final))
+        .route("/Volume.Promote", post(switch_target::promote))
+        .route("/Volume.FinishPromote", post(switch_target::finish_promote))
+        .route("/Volume.Unregister", post(switch_target::unregister))
+        .route(
+            "/Volume.AdmitHandedStart",
+            post(switch_target::admit_handed_start),
+        )
+        .route(
+            "/Volume.StartHandedContainer",
+            post(switch_target::start_handed_container),
+        )
+        .route("/Volume.Restore", post(switch_target::restore))
         .route("/Volume.DeclareMirror", post(mirror::declare))
         .route("/Volume.BeginRound", post(mirror::begin_round))
         .route("/Volume.CommitSnapshots", post(mirror::commit))
@@ -370,6 +388,9 @@ mod tests {
 
     #[path = "switch_source_tests.rs"]
     mod switch_source_tests;
+
+    #[path = "switch_target_tests.rs"]
+    mod switch_target_tests;
 
     #[path = "mirror_tests.rs"]
     mod mirror_tests;

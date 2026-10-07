@@ -1277,7 +1277,277 @@ async fn fake_docker_service(
         ..Default::default()
     })
     .await;
-    let service =
+    let mut service =
         MachineService::with_cluster(store.clone(), None).with_optional_containers(Some(runtime));
+    // `true` lists no pools, which reads as ZFS ready whatever the host has.
+    service.local = service.local.with_zpool("true");
     (data_dir, store, service, fake)
+}
+
+#[tokio::test]
+async fn a_replayed_handed_start_adopts_the_container_created_under_its_handoff_key() {
+    use crate::storage::test_support::FakePlugin;
+    use ployz_core::ServiceVolumeRequest;
+    use serde_json::json;
+
+    let (data_dir, _store, service, fake) = fake_docker_service("ployzd-handed-start").await;
+    let plugin = FakePlugin::default();
+    let lease = json!({"lease":1,"pos":{"seq":11,"round":0,"sub":0},"cycle":"open"});
+    plugin.reply(
+        "Volume.AdmitHandedStart",
+        json!({"Ok": {"decision":"adopt", "lease":lease, "copy":{
+            "kind":"root", "writer":{"phase":"idle"}, "readonly":false,
+            "newest":{"name":"f-1", "guid":900, "created_unix_seconds":1_700_000_000}
+        }}}),
+    );
+    plugin.reply(
+        "Volume.StartHandedContainer",
+        json!({"Ok": {"decision":"replay",
+            "lease":{"lease":1,"pos":{"seq":11,"round":0,"sub":0},"cycle":"closed"},
+            "copy":{"kind":"root", "writer":{"phase":"idle"}, "readonly":false, "newest":null}
+        }}),
+    );
+    let (socket, server) = plugin.serve(&data_dir);
+    let service = service.with_volume_plugin(socket);
+    let request: ServiceVolumeRequest = serde_json::from_value(handed_volume_request()).unwrap();
+    let mut started = Vec::new();
+    for _ in 0..2 {
+        let response = service
+            .start_handed_container(Request::new(
+                op::StartHandedContainer::into_request(request.clone())
+                    .encode()
+                    .unwrap(),
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap();
+        let reply = response.decode::<op::StartHandedContainer>().unwrap();
+        assert_eq!(reply.lease.cycle, ployz_core::Cycle::Closed);
+        started.push(
+            plugin
+                .calls
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .1
+                .get("container_id")
+                .cloned(),
+        );
+    }
+    let [first, replayed] = started.as_slice() else {
+        panic!("{started:?}");
+    };
+    assert!(first.is_some());
+    assert_eq!(first, replayed);
+    let containers = fake.named_containers.as_ref().unwrap().lock().unwrap();
+    assert_eq!(containers.len(), 1, "{:?}", containers.keys());
+    assert!(
+        containers.values().all(
+            |container| container.pointer("/Config/Labels/ployz.creation.key")
+                == Some(&json!("handoff-900"))
+        ),
+        "{containers:?}"
+    );
+    drop(containers);
+    server.abort();
+    std::fs::remove_dir_all(data_dir).unwrap();
+}
+
+fn promoted_without_registration(
+    fake: &crate::docker::test_support::FakeDocker,
+) -> crate::storage::test_support::FakePlugin {
+    use serde_json::json;
+    fake.volumes.lock().unwrap().insert(
+        "app_data".into(),
+        json!({
+            "Name":"app_data",
+            "Driver":"ployz",
+            "Mountpoint":"/var/lib/ployz-volumes/app_data",
+            "Status":{"bound_bytes":1073741824,"used_bytes":4096}
+        }),
+    );
+    let plugin = crate::storage::test_support::FakePlugin::default();
+    plugin.reply("Volume.Unregister", json!({"Ok": null}));
+    let volumes = fake.volumes.clone();
+    plugin.on("Volume.Unregister", move || {
+        volumes.lock().unwrap().remove("app_data");
+    });
+    plugin
+}
+
+fn handed_volume_request() -> serde_json::Value {
+    use crate::docker::test_support::{provisioned_source, spec_with_sources};
+    serde_json::json!({
+        "name":"app_data", "namespace":"app",
+        "resolved_spec": spec_with_sources(vec![provisioned_source("data", 1_073_741_824)]),
+        "switch":{"lease":1,"pos":{"seq":11,"round":0,"sub":0},"not_after_unix_seconds":i64::MAX}
+    })
+}
+
+fn assert_registered(fake: &crate::docker::test_support::FakeDocker) {
+    let volumes = fake.volumes.lock().unwrap();
+    let labels = volumes
+        .get("app_data")
+        .and_then(|volume| volume.get("Labels"));
+    assert_eq!(
+        labels,
+        Some(&serde_json::json!({
+            "backup":"daily",
+            ployz_core::MANAGED_LABEL:"",
+            ployz_core::NAMESPACE_LABEL:"app"
+        })),
+        "{volumes:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_handed_start_registers_the_promoted_volume_docker_saw_without_labels() {
+    let (data_dir, _store, service, fake) = fake_docker_service("ployzd-handed-register").await;
+    let plugin = promoted_without_registration(&fake);
+    admitted_handed_start(&plugin);
+    let (socket, server) = plugin.serve(&data_dir);
+    let service = service.with_volume_plugin(socket);
+
+    let response = start_handed(&service).await;
+
+    let reply = response
+        .clone()
+        .decode::<op::StartHandedContainer>()
+        .unwrap_or_else(|error| panic!("{error}: {response:?}"));
+    assert_eq!(reply.lease.cycle, ployz_core::Cycle::Closed);
+    assert_registered(&fake);
+    assert_eq!(
+        fake.named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .len(),
+        1
+    );
+    server.abort();
+    std::fs::remove_dir_all(data_dir).unwrap();
+}
+
+fn admitted_handed_start(plugin: &crate::storage::test_support::FakePlugin) {
+    use serde_json::json;
+    plugin.reply(
+        "Volume.AdmitHandedStart",
+        json!({"Ok": {"decision":"adopt",
+            "lease":{"lease":1,"pos":{"seq":11,"round":0,"sub":0},"cycle":"open"},
+            "copy":{"kind":"root", "writer":{"phase":"idle"}, "readonly":false,
+                "newest":{"name":"f-1", "guid":900, "created_unix_seconds":1_700_000_000}}
+        }}),
+    );
+    plugin.reply(
+        "Volume.StartHandedContainer",
+        json!({"Ok": {"decision":"admit",
+            "lease":{"lease":1,"pos":{"seq":11,"round":0,"sub":0},"cycle":"closed"},
+            "copy":{"kind":"root", "writer":{"phase":"idle"}, "readonly":false, "newest":null}
+        }}),
+    );
+}
+
+async fn start_handed(service: &MachineService) -> ployz_core::RpcResponse {
+    service
+        .start_handed_container(Request::new(
+            op::StartHandedContainer::into_request(
+                serde_json::from_value(handed_volume_request()).unwrap(),
+            )
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_restore_registers_the_volume_docker_saw_without_labels() {
+    use serde_json::json;
+
+    let (data_dir, _store, service, fake) = fake_docker_service("ployzd-restore-register").await;
+    let plugin = promoted_without_registration(&fake);
+    plugin.reply(
+        "Volume.Restore",
+        json!({"Ok": {"decision":"admit",
+            "lease":{"lease":1,"pos":{"seq":11,"round":0,"sub":0},"cycle":"closed"},
+            "copy":{"kind":"root", "writer":{"phase":"idle"}, "readonly":false, "newest":null}
+        }}),
+    );
+    let (socket, server) = plugin.serve(&data_dir);
+    let service = service.with_volume_plugin(socket);
+
+    let response = service
+        .restore(Request::new(
+            op::Restore::into_request(serde_json::from_value(handed_volume_request()).unwrap())
+                .encode()
+                .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+
+    response
+        .clone()
+        .decode::<op::Restore>()
+        .unwrap_or_else(|error| panic!("{error}: {response:?}"));
+    assert_registered(&fake);
+    server.abort();
+    std::fs::remove_dir_all(data_dir).unwrap();
+}
+
+#[tokio::test]
+async fn a_handed_start_replayed_after_a_crash_inside_create_registers_the_volume() {
+    let (data_dir, _store, service, fake) = fake_docker_service("ployzd-create-crash").await;
+    let plugin = promoted_without_registration(&fake);
+    admitted_handed_start(&plugin);
+    fake.crash_inside_create
+        .lock()
+        .unwrap()
+        .insert("app_data".into());
+    let (socket, server) = plugin.serve(&data_dir);
+    let service = service.with_volume_plugin(socket);
+
+    let crashed = start_handed(&service).await;
+    assert!(
+        crashed
+            .clone()
+            .decode::<op::StartHandedContainer>()
+            .is_err(),
+        "{crashed:?}"
+    );
+    assert!(
+        fake.named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
+
+    let replayed = start_handed(&service).await;
+    replayed
+        .clone()
+        .decode::<op::StartHandedContainer>()
+        .unwrap_or_else(|error| panic!("{error}: {replayed:?}"));
+    assert_registered(&fake);
+    assert_eq!(
+        fake.named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .len(),
+        1
+    );
+    server.abort();
+    std::fs::remove_dir_all(data_dir).unwrap();
 }
