@@ -971,7 +971,6 @@ mod tests {
         assert!("thawing".parse::<MirrorMarker>().is_err());
     }
 
-    /// What `JSON.parse` then `JSON.stringify` does to a value: every number becomes an f64.
     fn through_javascript(value: serde_json::Value) -> serde_json::Value {
         use serde_json::Value;
         match value {

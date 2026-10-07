@@ -68,8 +68,6 @@ pub(super) fn committed_bytes(dataset: &Dataset, pool: &str) -> u64 {
     }
 }
 
-/// The plugin's storage mutation lock, and whether its holder has run Docker.
-///
 /// Docker holds a per-Volume lock across a plugin Remove, so Remove refuses rather than
 /// wait behind a holder that may need that lock; it waits behind any other holder.
 #[derive(Clone)]
@@ -103,7 +101,6 @@ impl MutationLock {
         self.held(Arc::clone(&self.lock).lock_owned().await)
     }
 
-    /// Waits for the lock unless its holder runs Docker, now or once it holds the lock.
     pub(super) async fn lock_unless_docker_bound(&self) -> Option<HeldMutation> {
         if let Ok(guard) = Arc::clone(&self.lock).try_lock_owned() {
             return Some(self.held(guard));

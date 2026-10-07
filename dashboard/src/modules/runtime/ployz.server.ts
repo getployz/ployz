@@ -168,7 +168,6 @@ export function rpcErrorCode(error: PloyzSdkError) {
   return Option.isSome(rpc) ? rpc.value.code : undefined;
 }
 
-/** What a failure said: the runtime's RPC error as "code: message", or the underlying error's message. */
 export function sdkFailureMessage(error: PloyzSdkError) {
   const cause = "cause" in error ? error.cause : error;
   const rpc = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String, message: Schema.String }))(cause);
