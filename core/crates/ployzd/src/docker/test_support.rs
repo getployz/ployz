@@ -28,6 +28,9 @@ pub(crate) struct FakeDocker {
     pub(crate) request_bodies: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
     pub(crate) volumes: Arc<Mutex<BTreeMap<String, serde_json::Value>>>,
     pub(crate) fail_after_create: Arc<Mutex<BTreeSet<String>>>,
+    /// Volumes whose next Create fails after Docker recorded them without labels or options,
+    /// as when the plugin dies inside Create and a later Get hands Docker the root.
+    pub(crate) crash_inside_create: Arc<Mutex<BTreeSet<String>>>,
     pub(crate) fail_inspect_once: Arc<Mutex<BTreeSet<String>>>,
     pub(crate) existing_container: Arc<Mutex<Option<serde_json::Value>>>,
     pub(crate) volume_users: Arc<Mutex<BTreeMap<String, Vec<serde_json::Value>>>>,
@@ -283,6 +286,17 @@ async fn fake_docker(
                     "Status".into(),
                     serde_json::json!({"bound_bytes":bound,"used_bytes":0}),
                 );
+            }
+            if fake.crash_inside_create.lock().unwrap().remove(&name) {
+                let record = observed.as_object_mut().unwrap();
+                record.remove("Labels");
+                record.remove("Options");
+                fake.volumes.lock().unwrap().insert(name, observed);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"message":"plugin ployz exited"})),
+                )
+                    .into_response();
             }
             let mut response = observed.clone();
             if driver == ployz_core::PROVISIONED_VOLUME_DRIVER {
