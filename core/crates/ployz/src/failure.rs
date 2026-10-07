@@ -517,7 +517,6 @@ fn provision_code(error: &ProvisionError) -> RpcErrorCode {
         ProvisionError::MissingDestination
         | ProvisionError::RemoteTransport(_)
         | ProvisionError::Connection(_)
-        | ProvisionError::StorageChoice(_)
         | ProvisionError::ZfsWithoutInstaller => RpcErrorCode::InvalidArgument,
         ProvisionError::NotRoot | ProvisionError::SudoRequired { .. } => {
             RpcErrorCode::Unauthenticated
@@ -543,8 +542,7 @@ fn provision_code(error: &ProvisionError) -> RpcErrorCode {
         | ProvisionError::Install(_)
         | ProvisionError::InstallFailed { .. }
         | ProvisionError::Cleanup(_)
-        | ProvisionError::CleanupFailed { .. }
-        | ProvisionError::StorageInput(_) => RpcErrorCode::Internal,
+        | ProvisionError::CleanupFailed { .. } => RpcErrorCode::Internal,
     }
 }
 

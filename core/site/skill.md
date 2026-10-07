@@ -25,7 +25,7 @@ This file tracks the latest Ployz release. The installed CLI is the source of tr
 - `ployz set SERVICE.SETTING=VALUE` stages an edit; `ployz diff` shows what is staged and `ployz publish` saves it.
 - Reach another Service by reference, so Ployz knows the two are linked: `ployz set 'web.env.API_URL=http://${{ api.PLOYZ_PRIVATE_DOMAIN }}:${{ api.PORT }}'`. Single-quote it: in double quotes the shell rejects `${{`. A typed `api.internal` comes back in `typed_addresses` with the reference to set instead.
 - `ployz diff --json` carries a `version`; `ployz deploy --expect-version VERSION` deploys exactly that review or refuses with `conflict`.
-- A destructive command without its confirmation fails with `confirmation_required`, naming what goes; `details.retry` is the exact command that confirms it.
+- A destructive command without its confirmation fails with `confirmation_required` (a person at a terminal is asked instead), naming what goes; `details.retry` is the exact command that confirms it.
 
 ## Output and errors
 

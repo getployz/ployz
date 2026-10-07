@@ -385,7 +385,7 @@ $ ployz project rm --help
 
 stdout:
 ```
-Remove a Project. Each Environment that ran is taken off the Servers by a removal Deployment, Branches before their Parents and the Default Environment last, deleting deployed Volumes once each is accepted by name; then the Project, its configuration and history go. Type its name with --confirm; without it the command fails with confirmation_required, naming what goes and the exact retry. If a removal doesn't apply, the same command finishes it.
+Remove a Project. Each Environment that ran is taken off the Servers by a removal Deployment, Branches before their Parents and the Default Environment last, deleting deployed Volumes once each is accepted by name; then the Project, its configuration and history go. Type its name with --confirm, or in a terminal when it asks; elsewhere it fails with confirmation_required, naming what goes and the exact retry. If a removal doesn't apply, the same command finishes it.
 
 Usage: ployz project rm [OPTIONS] <name>
 

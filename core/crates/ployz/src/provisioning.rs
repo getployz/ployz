@@ -123,40 +123,42 @@ pub enum ProvisionError {
     /// Local Machine installation requires root privileges.
     #[error("run this command with sudo")]
     NotRoot,
-    /// Reading an interactive storage selection failed.
-    #[error("Could not read the storage choice.")]
-    StorageInput(#[source] io::Error),
-    /// The selected storage value is invalid.
-    #[error(transparent)]
-    StorageChoice(#[from] ployz_core::ValueError),
     /// ZFS was selected while installation was explicitly disabled.
     #[error("zfs storage preparation requires the installer; remove --no-install")]
     ZfsWithoutInstaller,
 }
 
 /// Resolve Machine storage preparation once before provisioning or enrollment.
-pub(crate) fn resolve_storage(matches: &ArgMatches) -> Result<StorageChoice, ProvisionError> {
+pub(crate) fn resolve_storage(
+    matches: &ArgMatches,
+) -> Result<StorageChoice, crate::failure::Failure> {
     let storage = match matches.get_one::<StorageChoice>("storage").copied() {
         Some(storage) => storage,
-        None if matches.get_flag("yes") || !crate::ui::interactive() => StorageChoice::None,
+        None if matches.get_flag("yes") || matches.get_flag("no-install") => StorageChoice::None,
         None => {
-            crate::ui::note_inline(format_args!(
-                "Storage preparation [zfs/none] (none is Docker only, not recommended): "
-            ));
-            let mut answer = String::new();
-            io::stdin()
-                .read_line(&mut answer)
-                .map_err(ProvisionError::StorageInput)?;
-            let answer = answer.trim();
-            if answer.is_empty() {
-                StorageChoice::None
+            let index = crate::ui::select(
+                "Storage preparation",
+                &["zfs (recommended)", "none (Docker only, not recommended)"],
+                0,
+                || {
+                    crate::failure::Failure::usage(
+                        "Choosing storage needs a terminal; pass --storage zfs or --storage none.",
+                    )
+                    .hint(crate::ui::Hint::Retry(crate::handlers::typed_with(
+                        &["--storage", "zfs"],
+                    )))
+                },
+                "Cancelled. Nothing was installed.",
+            )?;
+            if index == 0 {
+                StorageChoice::Zfs
             } else {
-                StorageChoice::parse(answer)?
+                StorageChoice::None
             }
         }
     };
     if storage == StorageChoice::Zfs && matches.get_flag("no-install") {
-        return Err(ProvisionError::ZfsWithoutInstaller);
+        return Err(ProvisionError::ZfsWithoutInstaller.into());
     }
     announce_storage(storage);
     Ok(storage)
