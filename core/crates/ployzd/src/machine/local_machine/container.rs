@@ -107,11 +107,15 @@ impl LocalMachine {
                 else {
                     return None;
                 };
-                let machine = machines
+                let machine = match machines
                     .iter()
-                    .find(|machine| machine.id == volume.id.machine_id)?;
+                    .find(|machine| machine.id == volume.id.machine_id)
+                {
+                    Some(machine) => machine.name.clone(),
+                    None => ployz_core::MachineName::parse(volume.id.machine_id.as_str()).ok()?,
+                };
                 Some(KnownCopy {
-                    machine: machine.name.clone(),
+                    machine,
                     role: role.unwrap_or(ployz_core::CopyRole::Writer),
                 })
             })

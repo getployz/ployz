@@ -218,19 +218,25 @@ async fn a_plain_deploy_mounts_only_on_the_writer() {
         "lease": null,
     }});
     let nothing = json!({"Ok": {"copy": null, "lease": null}});
-    let cases: [(&str, serde_json::Value, Option<&str>, Option<&str>); 6] = [
+    let cases: [(&str, serde_json::Value, Option<(&str, bool)>, Option<&str>); 7] = [
         ("fresh name", nothing.clone(), None, None),
         ("idle writer", root("idle", "closed"), None, None),
         (
             "slot elsewhere",
             nothing.clone(),
-            Some("slot"),
+            Some(("slot", true)),
             Some("ployz volume restore app_data --from fsn-2"),
+        ),
+        (
+            "slot on a Machine the Cluster no longer lists",
+            nothing.clone(),
+            Some(("slot", false)),
+            Some("no writer"),
         ),
         (
             "writer elsewhere",
             nothing,
-            Some("writer"),
+            Some(("writer", true)),
             Some("no writer"),
         ),
         ("slot held", slot, None, Some("no writer")),
@@ -239,11 +245,12 @@ async fn a_plain_deploy_mounts_only_on_the_writer() {
     for (case, inspect, elsewhere, refusal) in cases {
         let (test, other) = participating().await;
         test.plugin.reply("Volume.Inspect", inspect);
-        if let Some(role) = elsewhere {
+        if let Some((role, listed)) = elsewhere {
+            let holder = if listed { other } else { MachineId::random() };
             test.local
                 .replicated()
                 .unwrap()
-                .publish_volume(&held(other, role))
+                .publish_volume(&held(holder, role))
                 .await
                 .unwrap();
         }
