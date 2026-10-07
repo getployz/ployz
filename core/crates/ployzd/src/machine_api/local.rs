@@ -606,6 +606,117 @@ impl MachineRpc for MachineService {
             .await
     }
 
+    async fn accept_hand_off(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::AcceptHandOff>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>(
+            "AcceptHandOff",
+            "Volume.AcceptHandOff",
+            &request,
+        )
+        .await
+    }
+
+    async fn promote(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::Promote>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>("Promote", "Volume.Promote", &request)
+            .await
+    }
+
+    async fn start_handed_container(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::StartHandedContainer>(request)?;
+        let _guard = self.switch_mutation.lock().await;
+        if let Err(error) = self.require_joined() {
+            return respond(error);
+        }
+        crate::faults::apply("StartHandedContainer").await;
+        let volume = ployz_core::MirrorRequest {
+            switch: request.switch,
+            name: request.name.clone(),
+        };
+        let admitted = match self
+            .local
+            .plugin()
+            .call::<ployz_core::SwitchReply>("Volume.AdmitHandedStart", &volume)
+            .await
+        {
+            Ok(admitted) => admitted,
+            Err(error) => return respond(error),
+        };
+        if admitted.lease.cycle == ployz_core::Cycle::Closed {
+            return respond(admitted);
+        }
+        let Some(ployz_core::VolumeCopy::Root {
+            newest: Some(handed),
+            ..
+        }) = admitted.copy
+        else {
+            return respond(ployz_core::SwitchError::Precondition.rpc_error(format!(
+                "Volume {} has no handed-over snapshot to start from",
+                request.name
+            )));
+        };
+        let created = match self
+            .local
+            .create_container(
+                ployz_core::ContainerKind::ServiceContainer,
+                &request.namespace,
+                &request.resolved_spec,
+                Some(format!("handoff-{}", handed.guid)),
+                None,
+                None,
+            )
+            .await
+        {
+            Ok(created) => created,
+            Err(error) => return local_error(error),
+        };
+        crate::faults::kill_inside("StartHandedContainer");
+        let start = ployz_core::SourceContainerRequest {
+            switch: request.switch,
+            name: request.name,
+            container_id: created.container_id,
+        };
+        match self
+            .local
+            .plugin()
+            .call::<ployz_core::SwitchReply>("Volume.StartHandedContainer", &start)
+            .await
+        {
+            Ok(reply) => respond(ployz_core::SwitchReply {
+                decision: admitted.decision,
+                ..reply
+            }),
+            Err(error) => respond(error),
+        }
+    }
+
+    async fn clear_final(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::ClearFinal>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>("ClearFinal", "Volume.ClearFinal", &request)
+            .await
+    }
+
+    async fn restore(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::Restore>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>("Restore", "Volume.Restore", &request)
+            .await
+    }
+
     async fn declare_mirror(
         &self,
         request: Request<OpaquePayload>,

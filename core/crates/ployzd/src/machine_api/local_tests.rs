@@ -1281,3 +1281,66 @@ async fn fake_docker_service(
         MachineService::with_cluster(store.clone(), None).with_optional_containers(Some(runtime));
     (data_dir, store, service, fake)
 }
+
+#[tokio::test]
+async fn a_replayed_handed_start_adopts_the_container_created_under_its_handoff_key() {
+    use crate::storage::test_support::FakePlugin;
+    use ployz_core::StartHandedContainerRequest;
+    use serde_json::json;
+
+    let (data_dir, _store, service, fake) = fake_docker_service("ployzd-handed-start").await;
+    let plugin = FakePlugin::default();
+    let lease = json!({"lease":1,"pos":{"seq":11,"round":0,"sub":0},"cycle":"open"});
+    plugin.reply(
+        "Volume.AdmitHandedStart",
+        json!({"Ok": {"decision":"adopt", "lease":lease, "copy":{
+            "kind":"root", "writer":{"phase":"idle"}, "readonly":false,
+            "newest":{"name":"f-1", "guid":900, "created_unix_seconds":1_700_000_000}
+        }}}),
+    );
+    plugin.reply(
+        "Volume.StartHandedContainer",
+        json!({"Ok": {"decision":"replay",
+            "lease":{"lease":1,"pos":{"seq":11,"round":0,"sub":0},"cycle":"closed"},
+            "copy":{"kind":"root", "writer":{"phase":"idle"}, "readonly":false, "newest":null}
+        }}),
+    );
+    let (socket, server) = plugin.serve(&data_dir);
+    let service = service.with_volume_plugin(socket);
+    let request: StartHandedContainerRequest = serde_json::from_value(json!({
+        "name":"data", "namespace":"app",
+        "resolved_spec": container_observation('a').resolved_spec,
+        "switch":{"lease":1,"pos":{"seq":11,"round":0,"sub":0},"not_after_unix_seconds":i64::MAX}
+    }))
+    .unwrap();
+    let mut started = Vec::new();
+    for _ in 0..2 {
+        let response = service
+            .start_handed_container(Request::new(
+                op::StartHandedContainer::into_request(request.clone())
+                    .encode()
+                    .unwrap(),
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap();
+        let reply = response.decode::<op::StartHandedContainer>().unwrap();
+        assert_eq!(reply.lease.cycle, ployz_core::Cycle::Closed);
+        started.push(plugin.calls.lock().unwrap().last().unwrap().1["container_id"].clone());
+    }
+    assert_eq!(started[0], started[1]);
+    let containers = fake.named_containers.as_ref().unwrap().lock().unwrap();
+    assert_eq!(containers.len(), 1, "{:?}", containers.keys());
+    assert!(
+        containers.values().all(
+            |container| container.pointer("/Config/Labels/ployz.creation.key")
+                == Some(&json!("handoff-900"))
+        ),
+        "{containers:?}"
+    );
+    drop(containers);
+    server.abort();
+    std::fs::remove_dir_all(data_dir).unwrap();
+}
