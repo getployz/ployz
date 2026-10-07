@@ -30,6 +30,7 @@ import type { MachineRemoveAttemptView } from "#/modules/machines/machine-remova
 import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
 import { NotFound, Validation } from "#/server/public-error";
+import { getVolumeRun, listVolumeRuns, requestVolumeRun, type VolumeRunInput } from "#/modules/volume-run/volume-run.server";
 
 const NewToken = Schema.Struct({
   name: Schema.Trim.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
@@ -44,6 +45,33 @@ const RemoveServer = Schema.Union([
 
 /** `server forget`: the Organization's slug, as the user typed it. */
 const ForgetServers = Schema.Struct({ organization: Schema.String });
+
+/** `volume mirror|sync|mirror rm`: the Volume's Environment, and what to run on it. */
+const RunEnvironment = Schema.Struct({ project: Schema.String, environment: Schema.String });
+const NewVolumeRun = Schema.Union([
+  Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("mirror"), to: Schema.String.check(Schema.isNonEmpty()) }),
+  Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("sync"), full: Schema.optional(Schema.Boolean) }),
+  Schema.Struct({
+    environment: RunEnvironment,
+    kind: Schema.Literal("delete_mirror"),
+    slot: Schema.optional(Schema.String.check(Schema.isNonEmpty())),
+    confirm: Schema.optional(Schema.String),
+  }),
+]);
+
+function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
+  switch (body.kind) {
+    case "mirror":
+      return { kind: "mirror", args: { to: body.to } };
+    case "sync":
+      return { kind: "sync", args: { full: body.full ?? false } };
+    case "delete_mirror":
+      return { kind: "delete_mirror", args: { slot: body.slot ?? null, confirmed_name: body.confirm ?? null } };
+  }
+}
+
+/** The CLI reads a bare public 404 as an unsupported route, so a missing Volume or run answers as a Store refusal. */
+const missingRefusal = (message: string) => refusal({ code: "not_found", message, details: null });
 
 const forgetter = (caller: Caller) => ({ userId: caller.userId, organizationId: caller.organization.id });
 
@@ -61,8 +89,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
   const caller = yield* resolveCaller(request.headers);
   const path = new URL(request.url).pathname.replace(/^\/api\/cli\//, "");
   const [noun, id, ...rest] = path.split("/");
-  const route = `${request.method} ${noun}${id === undefined ? "" : "/:id"}`;
-  if (rest.length > 0) return yield* new NotFound({ message: "Not found." });
+  const route = `${request.method} ${noun}${id === undefined ? "" : "/:id"}${rest.map((segment) => `/${segment}`).join("")}`;
   switch (route) {
     case "GET organizations":
       return { organizations: yield* callerOrganizations(caller) };
@@ -156,6 +183,25 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
         return { url: portal.customerPortalUrl };
       }
       return yield* new NotFound({ message: "Not found." });
+    case "POST volumes/:id/runs": {
+      const body = yield* decodeBody(NewVolumeRun, request, "A volume run takes its environment and what to run.");
+      return yield* requestVolumeRun(forgetter(caller), {
+        volumeId: id ?? "",
+        environment: body.environment,
+        ...volumeRunInput(body),
+      }).pipe(
+        Effect.map((requested) => requested.ok ? { run: requested.run } : refusal(requested.refusal)),
+        Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))),
+      );
+    }
+    case "GET volumes/:id/runs":
+      return { runs: yield* listVolumeRuns(caller.organization.id, id ?? "") };
+    case "GET volume-runs/:id":
+      if (!Schema.is(Uuid)(id)) return missingRefusal("No such volume run.");
+      return yield* getVolumeRun(caller.organization.id, id).pipe(
+        Effect.map((run) => ({ run })),
+        Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))),
+      );
     default:
       return yield* new NotFound({ message: "Not found." });
   }

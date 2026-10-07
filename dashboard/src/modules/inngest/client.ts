@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { Context, Data, Effect, Layer, Redacted } from "effect";
+import { Context, Data, Effect, Layer, Redacted, Schema } from "effect";
 import { Inngest, type ClientOptions, type GetStepTools } from "inngest";
 import type { InngestSendableEvent } from "#/modules/inngest/events";
 import { AppConfig } from "#/server/config.server";
@@ -49,3 +49,24 @@ export const InngestLive = Layer.effect(
       }),
   ),
 );
+
+/** What Inngest says of one run; `missing` when it has no such run. */
+export type InngestRunStatus = "running" | "completed" | "failed" | "cancelled" | "missing";
+
+const RunStatusBody = Schema.Struct({ data: Schema.Struct({ status: Schema.String }) });
+const ENDED_RUN_STATUSES = ["completed", "failed", "cancelled"] as const;
+const runStatusOf = (status: string | null): InngestRunStatus =>
+  status === null ? "missing" : (ENDED_RUN_STATUSES.find((ended) => ended === status.toLowerCase()) ?? "running");
+
+/** GET /v1/runs/{id} on Inngest's REST API. */
+export const inngestRunStatus = (runId: string) =>
+  Effect.gen(function* () {
+    const config = yield* AppConfig;
+    const url = new URL(`/v1/runs/${encodeURIComponent(runId)}`, config.inngest.baseUrl);
+    const response = yield* Effect.tryPromise(() =>
+      fetch(url, { headers: { authorization: `Bearer ${Redacted.value(config.inngest.signingKey)}` } }));
+    if (response.status === 404) return runStatusOf(null);
+    if (!response.ok) return yield* Effect.fail(new Error(`Inngest answered ${response.status} for run ${runId}.`));
+    const body = yield* Effect.tryPromise(() => response.json()).pipe(Effect.flatMap(Schema.decodeUnknownEffect(RunStatusBody)));
+    return runStatusOf(body.data.status);
+  });

@@ -21,6 +21,8 @@ import type {
   ObservedDataLoss,
   PublishCertificateMaterialRequest,
   RuntimeWatchView,
+  VolumeSwitchReply,
+  VolumeSwitchRequest,
   WatchOptions,
 } from "@ployz/sdk";
 import type * as PloyzSdk from "@ployz/sdk";
@@ -36,6 +38,13 @@ const { connect: connectSdk, ployzVersion } = createRequire(import.meta.url)("@p
 
 /** The release this SDK speaks; it needs no Machine. */
 export { ployzVersion };
+
+// SAFETY: the package exports this named CommonJS SDK surface at runtime.
+const { observeCopies } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "observeCopies">;
+
+/** Every Volume copy on the given Machines, read straight from each Machine's ZFS view. */
+export const observeVolumeCopies = (connections: Parameters<typeof observeCopies>[0]) =>
+  sdkPromise("observe copies", () => observeCopies(connections));
 
 export class PloyzProviderError extends Data.TaggedError(
   "PloyzProviderError",
@@ -89,6 +98,11 @@ export interface PloyzSession {
     machine: MachineTarget,
     attemptId: MachineUpgradeAttemptId,
   ) => Effect.Effect<MachineUpgradeAttempt, PloyzSdkError>;
+  /** One Volume Switch verb on one Machine. Refusals carry a SwitchError in the RPC error's details. */
+  readonly volumeSwitch: <R extends VolumeSwitchRequest>(
+    machine: MachineTarget,
+    request: R,
+  ) => Effect.Effect<VolumeSwitchReply<R["command"]>, PloyzSdkError>;
   /** What removing Namespace `namespace`, its Volumes included, deletes. */
   readonly dataLossIfNamespaceDestroyed: (namespace: string) => Effect.Effect<ObservedDataLoss, PloyzSdkError>;
   /** Remove Namespace `namespace` from every Server, its Volumes included, accepting exactly `confirmDataLoss`. */
@@ -206,6 +220,8 @@ function wrapClient(client: Client): PloyzSession {
       ),
     drainMachine: (machine, scope) =>
       sdkPromise("drain machine", () => client.drainMachine(machine, scope)),
+    volumeSwitch: (machine, request) =>
+      sdkPromise("volume switch", () => client.volumeSwitch(machine, request)),
     requestMachineUpgrade: (machine, attemptId, release) =>
       sdkPromise("request machine upgrade", () => client.requestMachineUpgrade(machine, { attempt_id: attemptId, release })),
     inspectMachineUpgrade: (machine, attemptId) =>

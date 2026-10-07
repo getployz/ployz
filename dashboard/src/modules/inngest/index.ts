@@ -25,6 +25,7 @@ import {
   createStoreGithubCheckSuite, createStoreGithubPush, createStorePrCheck, createStorePullRequest, createStoreSweep,
   createStoreSweepRequested,
 } from "#/modules/config-store/store-github.inngest";
+import { createVolumeRunFunctions } from "#/modules/volume-run/volume-run.inngest";
 
 export function createInngestFunctions(inngest: PloyzInngest) {
   return [
@@ -51,5 +52,6 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createStorePrCheck(inngest),
     createStoreSweep(inngest),
     createStoreSweepRequested(inngest),
+    ...createVolumeRunFunctions(inngest),
   ];
 }
