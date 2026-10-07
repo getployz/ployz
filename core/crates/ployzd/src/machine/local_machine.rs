@@ -4,23 +4,24 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::IpAddr,
+    path::PathBuf,
     sync::Arc,
 };
 
 use ployz_core::{
-    InitializeRequest, Initialized, InspectRequest, JoinAccepted, JoinRequest, LocalMachinePhase,
-    LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineIdentity, MachineList,
-    MachineObservation, MachineRemoved, MachineToken, MachineTokenRequest, MachineUpdated,
-    ManagementAddress, MembershipEvidence, PublicIpDiscovery, RegisterRequest, Registered,
-    RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, RttObservation, RttStatistics,
-    SelectedEndpoint, UpdateMachineRequest, WireGuardInspected, associate_wireguard_peers,
-    synthesize_membership,
+    DockerVolumeName, InitializeRequest, Initialized, InspectRequest, JoinAccepted, JoinRequest,
+    LocalMachinePhase, LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineIdentity,
+    MachineList, MachineObservation, MachineRemoved, MachineToken, MachineTokenRequest,
+    MachineUpdated, ManagementAddress, MembershipEvidence, PublicIpDiscovery, RegisterRequest,
+    Registered, RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, RttObservation,
+    RttStatistics, SelectedEndpoint, UpdateMachineRequest, WireGuardInspected,
+    associate_wireguard_peers, synthesize_membership,
 };
 use thiserror::Error;
 
 use super::{
     LocalMachineRecord, LocalMachineStore, RecordOwner, RecordOwnerStopped, StoreError,
-    local_runtime,
+    local_runtime, store::Installation,
 };
 
 use crate::{
@@ -37,6 +38,8 @@ pub struct LocalMachine {
     management_client: Option<[u8; 32]>,
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
+    plugin: crate::storage::Plugin,
+    zpool: PathBuf,
 }
 
 mod container;
@@ -135,7 +138,26 @@ impl LocalMachine {
             management_client: None,
             cluster: None,
             containers: None,
+            plugin: crate::storage::Plugin::default(),
+            zpool: PathBuf::from("zpool"),
         }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_zpool(mut self, program: impl Into<PathBuf>) -> Self {
+        self.zpool = program.into();
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_plugin(mut self, plugin: crate::storage::Plugin) -> Self {
+        self.plugin = plugin;
+        self
+    }
+
+    pub(crate) fn plugin(&self) -> &crate::storage::Plugin {
+        &self.plugin
     }
 
     /// Bind subsequent mutation admission to this authenticated management client.
@@ -403,10 +425,11 @@ impl LocalMachine {
     /// Returns [`Error::RecordOwner`] when the record owner has stopped and
     /// [`Error::Store`] when initialize is not legal in the current phase.
     async fn initialize_admitted(&self, request: InitializeRequest) -> Result<Initialized, Error> {
-        let machine = self
+        let (machine, installation) = self
             .owner
-            .mutate(move |store| store.initialize(request))
+            .mutate(move |store| store.plan_initialize(request))
             .await??;
+        self.install(installation).await?;
         tracing::info!(
             name = machine.name.as_str(),
             id = machine.id.as_str(),
@@ -504,10 +527,10 @@ impl LocalMachine {
     /// Returns [`Error::RecordOwner`] when the record owner has stopped
     /// and [`Error::Store`] when join is not legal in the current phase.
     async fn join_admitted(&self, request: JoinRequest) -> Result<JoinAccepted, Error> {
-        let already_accepted = self
+        let installation = self
             .owner
             .mutate(move |store| {
-                store.join(
+                store.plan_join(
                     request.registration.assigned_machine,
                     request.registration.visible_peers,
                     request.registration.target_versions,
@@ -515,6 +538,10 @@ impl LocalMachine {
                 )
             })
             .await??;
+        let already_accepted = installation.is_none();
+        if let Some(installation) = installation {
+            self.install(installation).await?;
+        }
         let record = self.record();
         let machine = record
             .machine()
@@ -696,6 +723,7 @@ impl LocalMachine {
         if let Err(error) = containers.remove_all_managed().await {
             return Err(Error::Cleanup(ployz_core::error_chain::inline(&error)));
         }
+        self.depart_storage().await?;
         if let Some(prepared_reset) = prepared_reset {
             self.owner
                 .mutate(move |store| prepared_reset.commit(store))
@@ -732,9 +760,44 @@ impl LocalMachine {
         if let Some(containers) = &self.containers {
             containers.remove_all_managed().await?;
         }
+        self.depart_storage().await?;
         self.owner.mutate(LocalMachineStore::begin_reset).await??;
         self.owner.request_restart();
         Ok(ResetAccepted {})
+    }
+}
+
+impl LocalMachine {
+    async fn install(&self, installation: Installation) -> Result<(), Error> {
+        self.depart_storage().await?;
+        self.owner
+            .mutate(move |store| store.install(installation))
+            .await??;
+        Ok(())
+    }
+
+    /// Demote every root through the plugin, then make Docker forget each demoted name.
+    /// A Machine without Docker has no volume driver and nothing to depart.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Cleanup`] when the plugin cannot demote or Docker keeps a name.
+    async fn depart_storage(&self) -> Result<(), Error> {
+        let Some(containers) = &self.containers else {
+            return Ok(());
+        };
+        let demoted: Vec<DockerVolumeName> = self
+            .plugin
+            .call("Storage.Demote", &())
+            .await
+            .map_err(|error| Error::Cleanup(format!("storage departure failed: {error}")))?;
+        for name in &demoted {
+            containers
+                .forget_volume(name)
+                .await
+                .map_err(|error| Error::Cleanup(format!("Docker kept Volume {name}: {error}")))?;
+        }
+        Ok(())
     }
 }
 
@@ -846,6 +909,10 @@ fn local_removal_response(
     }
     LocalMachineRemoved { reset_warning }
 }
+
+#[cfg(test)]
+#[path = "local_machine/departure_tests.rs"]
+mod departure_tests;
 
 #[cfg(test)]
 mod tests {

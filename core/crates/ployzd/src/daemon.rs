@@ -58,6 +58,8 @@ pub struct DaemonConfig {
     pub dns_upstreams: Vec<SocketAddr>,
     pub machine_api_address: Option<SocketAddr>,
     pub containerd_socket: Option<PathBuf>,
+    /// Volume plugin socket; None uses the Docker plugin socket.
+    pub volume_plugin_socket: Option<PathBuf>,
     pub containers: ContainerMode,
     /// Management transport bind port and relay; defaults are production values.
     pub management: ManagementConfig,
@@ -180,9 +182,13 @@ impl Daemon {
         let corrosion = start_corrosion(&config, &local).await?;
         let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
         let admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
+        let plugin = config
+            .volume_plugin_socket
+            .clone()
+            .map_or_else(crate::storage::Plugin::default, crate::storage::Plugin::at);
         let containers = match (containers, replicated_store.clone()) {
             (Some(runtime), Some(replicated)) => {
-                Some(runtime.replicating(replicated, local.clone()))
+                Some(runtime.replicating(replicated, local.clone(), plugin.clone()))
             }
             (runtime, _) => runtime,
         };
@@ -210,6 +216,7 @@ impl Daemon {
         let running_builds = builds.running_builds();
         builds.follow(local.watch());
         let machine_api = MachineApi::builder(local.clone())
+            .with_volume_plugin(plugin.clone())
             .with_build_grants(Arc::clone(&grants))
             .with_builds(builds)
             .with_cluster(
@@ -250,7 +257,9 @@ impl Daemon {
                     async {
                         management::serve(
                             management_endpoint,
-                            crate::machine::LocalMachine::new(local.clone()),
+                            crate::machine::LocalMachine::new(local.clone())
+                                .with_containers(containers.clone())
+                                .with_plugin(plugin.clone()),
                             machine_api.clone(),
                             grants,
                             shutdown.clone(),
@@ -755,6 +764,7 @@ mod tests {
                 dns_upstreams: Vec::new(),
                 machine_api_address: None,
                 containerd_socket: None,
+                volume_plugin_socket: None,
                 containers,
                 management: test_management(),
             },
@@ -888,6 +898,7 @@ mod tests {
             dns_upstreams: Vec::new(),
             machine_api_address: None,
             containerd_socket: None,
+            volume_plugin_socket: None,
             containers: ContainerMode::Absent,
             management: test_management(),
         })
@@ -899,6 +910,7 @@ mod tests {
             dns_upstreams: Vec::new(),
             machine_api_address: None,
             containerd_socket: None,
+            volume_plugin_socket: None,
             containers: ContainerMode::Absent,
             management: test_management(),
         })

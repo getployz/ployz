@@ -1,8 +1,8 @@
 use super::support::*;
 use ployz_core::{
-    DockerVolume, DockerVolumeStorageObservation, MachineFailure, MachineStorageObservation,
-    PreservedVolume, ProvisionedVolumeMaximumBytes, PruneRefusal, RpcError, RpcErrorCode,
-    ServiceAttempt, ServiceName, VolumeObservationFailure,
+    CopyRole, DockerVolume, DockerVolumeStorageObservation, MachineFailure,
+    MachineStorageObservation, PreservedVolume, ProvisionedVolumeMaximumBytes, PruneRefusal,
+    RpcError, RpcErrorCode, ServiceAttempt, ServiceName, VolumeObservationFailure,
 };
 use std::{collections::BTreeMap, num::NonZeroU64};
 
@@ -344,6 +344,7 @@ fn ordinary_volume_does_not_adopt_an_existing_provisioned_volume() {
         mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
         bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
         used_bytes: 0,
+        role: None,
     };
 
     let error = plan_deploy(
@@ -405,6 +406,7 @@ fn existing_matching_provisioned_volume_is_reused_without_creation() {
         mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
         bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
         used_bytes: 0,
+        role: None,
     };
 
     let preview = explicitly_targeted_provisioned_deploy(
@@ -438,6 +440,7 @@ fn provisioned_volume_requires_requested_labels() {
         mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
         bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
         used_bytes: 0,
+        role: None,
     };
 
     let error = explicitly_targeted_provisioned_deploy(
@@ -460,6 +463,7 @@ fn existing_provisioned_volume_is_not_implicitly_resized() {
         mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
         bound_bytes: NonZeroU64::new(2_147_483_648).unwrap(),
         used_bytes: 0,
+        role: None,
     };
 
     let error = explicitly_targeted_provisioned_deploy(
@@ -613,6 +617,7 @@ fn automatic_provisioned_volume_keeps_its_existing_machine_pin() {
         mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
         bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
         used_bytes: 0,
+        role: None,
     };
 
     assert_no_eligible(
@@ -631,6 +636,107 @@ fn automatic_provisioned_volume_keeps_its_existing_machine_pin() {
         }],
         &["app_data", "pinned"],
     );
+}
+
+fn provisioned_row(machine: char) -> DockerVolume {
+    let mut existing = observed_volume(machine_id(machine), "data");
+    existing.options = BTreeMap::from([("size".into(), "1073741824b".into())]);
+    existing.storage = DockerVolumeStorageObservation::Provisioned {
+        mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
+        bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
+        used_bytes: 0,
+        role: None,
+    };
+    existing
+}
+
+/// Two ready Machines whose storage reports `copies` of `app_data`, and Docker `rows`.
+fn copies_snapshot(copies: &[(char, CopyRole)], rows: Vec<DockerVolume>) -> DeploySnapshot {
+    let mut snapshot = storage_snapshot();
+    for (machine, role) in copies {
+        let Some(Ok(capacity)) = snapshot.storage_capacity.get_mut(&machine_id(*machine)) else {
+            panic!("fixture capacity for {machine}")
+        };
+        capacity.copies.insert(
+            app_volume("data"),
+            ployz_core::ProvisionedCopy {
+                role: *role,
+                maximum_bytes: maximum_bytes(1_073_741_824),
+                used_bytes: 0,
+            },
+        );
+    }
+    let mut first = machine('1', "first");
+    first.storage = Some(MachineStorageObservation::Ready);
+    let mut second = machine('2', "second");
+    second.storage = Some(MachineStorageObservation::Ready);
+    snapshot.machines = vec![first, second];
+    snapshot.volume_snapshot =
+        VolumeSnapshot::try_from_observations(rows).expect("valid Volume Snapshot fixture");
+    snapshot
+}
+
+#[test]
+fn only_a_writer_copy_pins_a_provisioned_volume() {
+    let intent = automatic_provisioned_intent();
+    for (case, copies) in [
+        ("a daemon that reports no copies", vec![]),
+        ("a writer", vec![('1', CopyRole::Writer)]),
+        (
+            "a writer beside a slot",
+            vec![('1', CopyRole::Writer), ('2', CopyRole::Slot)],
+        ),
+    ] {
+        let preview = preview_deploy(
+            &intent,
+            &copies_snapshot(&copies, vec![provisioned_row('1')]),
+        )
+        .unwrap_or_else(|error| panic!("{case}: {error}"));
+        assert!(
+            matches!(
+                operations(&preview).as_slice(),
+                [DeployOperation::PrepareVolumes { .. }, DeployOperation::RunContainer { machine_id: target, .. }] if target == &machine_id('1')
+            ),
+            "{case}: {:?}",
+            operations(&preview)
+        );
+        assert!(preview.volumes_to_create.is_empty(), "{case}");
+    }
+}
+
+#[test]
+fn a_provisioned_volume_without_a_writer_refuses_and_names_the_restore_line() {
+    let intent = automatic_provisioned_intent();
+    for (case, copies, rows, needle) in [
+        (
+            "a slot alone",
+            vec![('2', CopyRole::Slot)],
+            vec![],
+            "ployz volume restore app_data --from second",
+        ),
+        (
+            "a switching root",
+            vec![('1', CopyRole::Switching)],
+            vec![provisioned_row('1')],
+            "first (switching)",
+        ),
+        (
+            "slots on both",
+            vec![('1', CopyRole::Slot), ('2', CopyRole::Slot)],
+            vec![],
+            "first (copy), second (copy)",
+        ),
+    ] {
+        let error = preview_deploy(&intent, &copies_snapshot(&copies, rows)).unwrap_err();
+        assert!(
+            matches!(error, PlanError::NoWriter { .. }),
+            "{case}: {error}"
+        );
+        assert!(error.to_string().contains(needle), "{case}: {error}");
+        let rpc = error.into_rpc_error();
+        assert_eq!(rpc.code, RpcErrorCode::Conflict, "{case}");
+        assert_eq!(rpc.details.get("reason").unwrap(), "no_writer", "{case}");
+    }
 }
 
 #[test]
@@ -989,6 +1095,7 @@ fn storage_snapshot() -> DeploySnapshot {
                         },
                         unmanaged_used_bytes: 0,
                         volumes: BTreeMap::new(),
+                        copies: BTreeMap::new(),
                     }),
                 )
             })

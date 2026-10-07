@@ -549,6 +549,8 @@ node: ServiceName,
  */
 expect: Revision | null, };
 
+export type CopyRole = "writer" | "slot" | "switching";
+
 export type CpuNanos = number;
 
 export type CreateBranch = {
@@ -1118,7 +1120,12 @@ bound_bytes: number,
 /**
  * Current referenced ZFS dataset bytes.
  */
-used_bytes: number, };
+used_bytes: number,
+/**
+ * The copy's role; unset when the plugin did not report one, which readers treat
+ * as a writer.
+ */
+role: CopyRole | null, };
 
 export type Domain = { service: ServiceName,
 /**

@@ -824,6 +824,7 @@ fn docker_volume_preserves_provisioned_usage_at_alert_threshold() {
             mountpoint: ployz_core::MachinePath::parse("/var/lib/ployz-volumes/data").unwrap(),
             bound_bytes: std::num::NonZeroU64::new(1_073_741_824).unwrap(),
             used_bytes: 966_367_642,
+            role: None,
         }
     );
 }

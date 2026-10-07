@@ -20,6 +20,7 @@ use tokio::net::UnixListener;
 use tower_service::Service;
 
 mod capacity;
+mod departure;
 mod lease;
 mod mirror;
 mod pool;
@@ -165,6 +166,7 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route("/Plugin.Activate", post(activate))
         .route("/Storage.Inspect", post(capacity::inspect))
         .route("/Storage.Prepare", post(capacity::prepare))
+        .route("/Storage.Demote", post(departure::demote))
         .route("/Volume.Inspect", post(lease::inspect))
         .route("/Volume.AdoptLease", post(lease::adopt_lease))
         .route("/Volume.DeclareMirror", post(mirror::declare))
@@ -352,6 +354,9 @@ mod tests {
 
     #[path = "slot_tests.rs"]
     mod slot_tests;
+
+    #[path = "departure_tests.rs"]
+    mod departure_tests;
 
     #[path = "mirror_tests.rs"]
     mod mirror_tests;

@@ -502,6 +502,14 @@ pub enum PlanError {
         /// Service Name repeated in the Deploy Intent target.
         service: ServiceName,
     },
+    /// Every copy of a Managed Volume is a slot or mid-switch; nothing can mount it.
+    #[error("{}", ployz_core::no_writer_message(.name, .copies))]
+    NoWriter {
+        /// The Docker Volume without a writer.
+        name: DockerVolumeName,
+        /// Each copy and its role, in Machine order.
+        copies: Vec<ployz_core::KnownCopy>,
+    },
     /// The selected Machine has no usable ZFS storage preparation.
     #[error(
         "Server '{machine}' is Docker only and cannot host Managed volumes; pick a Server with Managed volumes, or keep this data in a Docker volume instead (ployz volume add NAME --docker)"
@@ -603,6 +611,9 @@ impl PlanError {
                 let mut error = source.into_rpc_error();
                 error.message = format!("Service {service}: {}", error.message);
                 error
+            }
+            error @ Self::NoWriter { .. } => {
+                ployz_core::SwitchError::NoWriter.rpc_error(error.to_string())
             }
             error @ (Self::ConflictingHostPublications { .. }
             | Self::HostPortConflict { .. }

@@ -421,6 +421,10 @@ pub enum DockerVolumeStorageObservation {
         bound_bytes: NonZeroU64,
         /// Current referenced ZFS dataset bytes.
         used_bytes: u64,
+        /// The copy's role; unset when the plugin did not report one, which readers treat
+        /// as a writer.
+        #[serde(default)]
+        role: Option<crate::CopyRole>,
     },
 }
 

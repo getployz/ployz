@@ -563,6 +563,7 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
                     mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
                     bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
                     used_bytes: 0,
+                    role: None,
                 };
                 target_machine.storage = Some(MachineStorageObservation::Ready);
                 snapshot.machines = vec![target_machine.clone()];
@@ -579,6 +580,7 @@ fn inferred_update_order_preserves_the_two_stop_first_heuristics() {
                                 NonZeroU64::new(1_073_741_824).unwrap(),
                             ),
                         )]),
+                        copies: BTreeMap::new(),
                     }),
                 );
             }

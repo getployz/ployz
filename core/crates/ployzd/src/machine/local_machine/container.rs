@@ -1,6 +1,6 @@
 //! Machine-local container admission and creation.
 
-use std::{path::Path, sync::Arc};
+use std::sync::Arc;
 
 use ployz_core::{
     ContainerChanged, ContainerCreated, ContainerId, ContainerKind, CreateVolumeReport,
@@ -17,7 +17,7 @@ use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 impl LocalMachine {
     /// Return fresh local storage evidence for container admission and Global reconciliation.
     pub(crate) async fn observe_storage(&self) -> Option<MachineStorageObservation> {
-        local_storage(Path::new("zpool"), STORAGE_OBSERVATION_TIMEOUT).await
+        local_storage(&self.zpool, STORAGE_OBSERVATION_TIMEOUT).await
     }
 
     /// Recheck the complete local placement and secure all provisioned Volumes before applications start.
@@ -66,14 +66,71 @@ impl LocalMachine {
             containers
                 .validate_provisioned_volumes(&machine.id, &specs)
                 .await?;
+            for name in requested.keys() {
+                local.admit_plain_mount(&machine.id, name).await?;
+            }
             let names: Vec<ployz_core::DockerVolumeName> =
-                crate::storage::plugin("Storage.Prepare", &requested).await?;
+                local.plugin().call("Storage.Prepare", &requested).await?;
             containers
                 .ensure_provisioned_volumes(&machine.id, &specs)
                 .await?;
             Ok(ployz_core::PreparedVolumes { names })
         })
         .await
+    }
+
+    /// A plain Deploy mounts `name` only on its writer: a root nothing holds, or nothing at
+    /// all while no Machine holds a copy and this Machine never recorded a run for it.
+    async fn admit_plain_mount(
+        &self,
+        me: &ployz_core::MachineId,
+        name: &DockerVolumeName,
+    ) -> Result<(), Error> {
+        use ployz_core::{DockerVolumeStorageObservation, KnownCopy, SwitchError};
+        let held: ployz_core::VolumeCopyView = self
+            .plugin()
+            .call(
+                "Volume.Inspect",
+                &ployz_core::InspectVolumeCopyRequest { name: name.clone() },
+            )
+            .await?;
+        let replicated = self.replicated()?;
+        let machines = replicated.machines().await?.observations;
+        let elsewhere: Vec<KnownCopy> = replicated
+            .volumes()
+            .await?
+            .observations
+            .into_iter()
+            .filter(|volume| volume.id.machine_id != *me && volume.id.name == *name)
+            .filter_map(|volume| {
+                let DockerVolumeStorageObservation::Provisioned { role, .. } = volume.storage
+                else {
+                    return None;
+                };
+                let machine = match machines
+                    .iter()
+                    .find(|machine| machine.id == volume.id.machine_id)
+                {
+                    Some(machine) => machine.name.clone(),
+                    None => ployz_core::MachineName::parse(volume.id.machine_id.as_str()).ok()?,
+                };
+                Some(KnownCopy {
+                    machine,
+                    role: role.unwrap_or(ployz_core::CopyRole::Writer),
+                })
+            })
+            .collect();
+        match ployz_core::admit_plain_mount(&held, &elsewhere) {
+            Ok(()) => Ok(()),
+            Err(SwitchError::NoWriter) => Err(SwitchError::NoWriter
+                .rpc_error(ployz_core::no_writer_message(name, &elsewhere))
+                .into()),
+            Err(reason) => Err(reason
+                .rpc_error(format!(
+                    "Volume {name} is mid-run on this Machine; wait for the run to finish"
+                ))
+                .into()),
+        }
     }
 
     /// Create a container after storage admission and deferred Machine-local validation.
@@ -346,6 +403,7 @@ mod tests {
     use serde_json::json;
 
     use crate::machine::{LocalMachine, LocalMachineError, LocalMachineStore, RecordOwner};
+    use crate::storage::test_support::FakePlugin;
 
     #[tokio::test]
     async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
@@ -491,8 +549,13 @@ mod tests {
             })
             .await;
             let owner = RecordOwner::spawn(store).unwrap();
+            let plugin = FakePlugin::default();
+            plugin.reply("Storage.Demote", json!({"Ok": []}));
+            let (plugin, _plugin_server) = plugin.serve(&data_dir);
             let local = LocalMachine::new(owner.clone()).with_containers(Some(runtime.clone()));
-            let resetting = LocalMachine::new(owner).with_containers(Some(runtime));
+            let resetting = LocalMachine::new(owner)
+                .with_containers(Some(runtime))
+                .with_plugin(plugin);
             let spec: ResolvedServiceSpec = serde_json::from_value(json!({
             "service_id": ServiceId::random(), "name": "api", "mode": serde_json::to_value(ServiceMode::Replicated { replicas: 1.try_into().unwrap() }).unwrap(),
             "container":{"image":"example.test/api", "pull_policy":"missing"}
@@ -653,9 +716,13 @@ mod tests {
         let (runtime, _) = fake_runtime_with(FakeDocker::default()).await;
         let owner = RecordOwner::spawn(store).unwrap();
         let restarting = owner.restart_requested();
+        let plugin = FakePlugin::default();
+        plugin.reply("Storage.Demote", json!({"Ok": []}));
+        let (plugin, _plugin_server) = plugin.serve(&data_dir);
         let local = LocalMachine::new(owner)
             .with_containers(Some(runtime))
-            .with_cluster(Some((replicated, AdminClient::new("/no/such/admin.sock"))));
+            .with_cluster(Some((replicated, AdminClient::new("/no/such/admin.sock"))))
+            .with_plugin(plugin);
         let removed = local
             .remove_local(RemoveLocalMachineRequest {
                 restart_on_cleanup_failure: false,

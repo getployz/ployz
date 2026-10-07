@@ -7,17 +7,18 @@ use std::{
 use futures_util::future::join_all;
 use ployz_core::{
     BridgeEndpointCapacity, ContainerAction, ContainerCreated, ContainerId, ContainerKind,
-    ContainerObservation, CreateContainerRequest, DataLoss, DataLossConfirmation,
-    DescribeContractRequest, DockerVolume, DockerVolumeName, EnvironmentValues, InspectRequest,
-    InspectVolumeRequest, ListContainersRequest, ListImagesRequest, ListMachinesRequest,
-    ListVolumesRequest, LiveServices, LocalMachineRemoved, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
-    Machine, MachineFailure, MachineId, MachineImages, MachineName, MachineObservation,
-    MachineRpcClient, MachineStorageObservation, MachineSuccess, MachineTarget, NameMatches,
-    Namespace, ObservedDataLoss, OpaquePayload, PartialResult, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
-    RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest,
-    RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
-    StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss, VolumeInventory,
-    VolumeRemoval, VolumeRemovalOutcome, derive_live_services, op,
+    ContainerObservation, CopyRole, CreateContainerRequest, DataLoss, DataLossConfirmation,
+    DescribeContractRequest, DockerVolume, DockerVolumeId, DockerVolumeName, EnvironmentValues,
+    InspectRequest, InspectStorageRequest, InspectVolumeRequest, ListContainersRequest,
+    ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
+    MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineFailure, MachineId, MachineImages,
+    MachineName, MachineObservation, MachineRpcClient, MachineStorageObservation, MachineSuccess,
+    MachineTarget, NameMatches, Namespace, ObservedDataLoss, OpaquePayload, PartialResult,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveContainerRequest, RemoveLocalMachineRequest,
+    RemoveMachineRequest, RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc,
+    RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest, StopContainerRequest,
+    StorageCapacity, UnconfirmedDataLoss, VolumeInventory, VolumeRemoval, VolumeRemovalOutcome,
+    derive_live_services, op,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -528,6 +529,44 @@ impl Client {
         result
     }
 
+    /// Inspect storage on each Machine that invites an RPC.
+    pub async fn inspect_storage(
+        &self,
+        machines: &[MachineObservation],
+    ) -> PartialResult<StorageCapacity, RpcError> {
+        let mut requests = Vec::new();
+        let mut omissions = Vec::new();
+        for machine in machines {
+            if !machine.membership.invites_rpc() {
+                omissions.push(machine.machine.id);
+                continue;
+            }
+            let mut client = self.clone();
+            let machine_id = machine.machine.id;
+            requests.push(async move {
+                let result = client
+                    .read::<op::InspectStorage>(
+                        InspectStorageRequest {},
+                        &MachineTarget::from(&machine_id),
+                    )
+                    .await;
+                (machine_id, result)
+            });
+        }
+        let mut result = PartialResult {
+            successes: Vec::new(),
+            failures: Vec::new(),
+            omissions,
+        };
+        for (machine_id, outcome) in join_all(requests).await {
+            match outcome {
+                Ok(value) => result.successes.push(MachineSuccess { machine_id, value }),
+                Err(error) => result.failures.push(MachineFailure { machine_id, error }),
+            }
+        }
+        result
+    }
+
     /// Destroy named Docker Volumes. The list is the confirmation.
     ///
     /// Each volume is identified by Machine plus name. Fan-out is a Partial
@@ -549,9 +588,10 @@ impl Client {
         Ok(remove_volumes_on(self, &machines.machines, request).await)
     }
 
-    /// Which Machines hold each of the Docker Volumes `sought`: the evidence a
-    /// Deploy that deletes Volume data is reviewed against. Every Machine that did not
-    /// answer, or could not read one of them, is named in `unanswered`.
+    /// Which Machines hold each of the Docker Volumes `sought`, as the Docker Volume
+    /// or as a mirror slot: the evidence a Deploy that deletes Volume data is reviewed
+    /// against. Every Machine that did not answer, or could not read one of them, is
+    /// named in `unanswered`.
     ///
     /// # Errors
     ///
@@ -564,15 +604,20 @@ impl Client {
             .call::<op::ListMachines>(ListMachinesRequest {}, None)
             .await
             .map_err(RpcError::from)?;
-        let result = self.list_volumes(&machines.machines).await;
-        let mut unanswered: BTreeSet<MachineId> = result
+        let inspector = self.clone();
+        let (listed, inspected) = tokio::join!(
+            self.list_volumes(&machines.machines),
+            inspector.inspect_storage(&machines.machines)
+        );
+        let mut unanswered: BTreeSet<MachineId> = listed
             .failures
             .iter()
+            .chain(&inspected.failures)
             .map(|failure| failure.machine_id)
-            .chain(result.omissions.iter().copied())
+            .chain(listed.omissions.iter().copied())
             .collect();
-        let mut held = Vec::new();
-        for success in result.successes {
+        let mut held = BTreeSet::new();
+        for success in listed.successes {
             for failure in &success.value.failures {
                 if sought.contains(&failure.id.name) {
                     unanswered.insert(failure.id.machine_id);
@@ -587,9 +632,21 @@ impl Client {
                     .filter(|id| sought.contains(&id.name)),
             );
         }
+        for success in inspected.successes {
+            held.extend(
+                success
+                    .value
+                    .roles()
+                    .filter(|(name, role)| *role == CopyRole::Slot && sought.contains(name))
+                    .map(|(name, _)| DockerVolumeId {
+                        machine_id: success.machine_id,
+                        name: name.clone(),
+                    }),
+            );
+        }
         Ok(ployz_store::VolumeObservation {
             sought,
-            held,
+            held: held.into_iter().collect(),
             unanswered: unanswered.into_iter().collect(),
         })
     }

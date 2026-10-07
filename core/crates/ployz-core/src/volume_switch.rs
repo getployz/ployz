@@ -5,7 +5,7 @@ use std::{fmt, str::FromStr};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{DockerVolumeName, ManagementAddress, RpcError, RpcErrorCode};
+use crate::{CopyRole, DockerVolumeName, MachineName, ManagementAddress, RpcError, RpcErrorCode};
 
 /// Lease number of one Volume run, decided on the Machines (max over their records plus one).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
@@ -615,9 +615,193 @@ impl SwitchError {
     }
 }
 
+/// A copy of a Volume on another Machine, as this Machine's replicated observation names it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KnownCopy {
+    pub machine: MachineName,
+    pub role: CopyRole,
+}
+
+/// Whether a plain Deploy may mount a Volume on this Machine. `held` is what the Machine
+/// holds and last admitted; `elsewhere` is every copy its replicated observation knows on
+/// other Machines.
+///
+/// A Machine holding nothing mounts only a Volume no Machine holds and it never admitted a
+/// run for: a fresh Volume. Its own root mounts only while idle, closed and writable.
+///
+/// # Errors
+/// `NoWriter` when the data lives elsewhere or was departed; `VolumeSwitching` when a run
+/// holds the root.
+pub fn admit_plain_mount(
+    held: &VolumeCopyView,
+    elsewhere: &[KnownCopy],
+) -> Result<(), SwitchError> {
+    match &held.copy {
+        None if elsewhere.is_empty() && held.lease.is_none() => Ok(()),
+        None | Some(VolumeCopy::Slot { .. }) => Err(SwitchError::NoWriter),
+        Some(VolumeCopy::Root {
+            writer: WriterMarker::Idle,
+            readonly: false,
+            ..
+        }) if held
+            .lease
+            .is_none_or(|record| record.cycle == Cycle::Closed) =>
+        {
+            Ok(())
+        }
+        Some(VolumeCopy::Root { .. }) => Err(SwitchError::VolumeSwitching),
+    }
+}
+
+/// The refusal a plain Deploy of `name` reads when no Machine holds its writer, naming
+/// every copy and the restore that would make one a writer.
+#[must_use]
+pub fn no_writer_message(name: &DockerVolumeName, copies: &[KnownCopy]) -> String {
+    let Some(first) = copies.first() else {
+        return format!(
+            "Volume {name} has no writer: no Machine holds a copy and this Machine recorded a run for it; restore it from a backup or remove it before deploying"
+        );
+    };
+    let listed = copies
+        .iter()
+        .map(|copy| {
+            let role = match copy.role {
+                CopyRole::Writer => "writer",
+                CopyRole::Slot => "copy",
+                CopyRole::Switching => "switching",
+            };
+            format!("{} ({role})", copy.machine)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Volume {name} has no writer; it is held as {listed}. Make one the writer: ployz volume restore {name} --from {}",
+        first.machine
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn name(machine: &str) -> MachineName {
+        MachineName::parse(machine).unwrap()
+    }
+
+    #[test]
+    fn plain_mount_admission_table() {
+        let record = |cycle| LeaseRecord {
+            lease: Lease(3),
+            pos: Pos::ADOPT_LEASE,
+            cycle,
+        };
+        let root = |writer, readonly| {
+            Some(VolumeCopy::Root {
+                writer,
+                readonly,
+                newest: None,
+            })
+        };
+        let slot = Some(VolumeCopy::Slot {
+            mirror: MirrorMarker::Idle,
+            readonly: true,
+            newest: None,
+            resume_token: None,
+        });
+        let known = |role| {
+            vec![KnownCopy {
+                machine: name("fsn-2"),
+                role,
+            }]
+        };
+        let rows = [
+            (None, None, vec![], Ok(())),
+            (
+                None,
+                None,
+                known(CopyRole::Slot),
+                Err(SwitchError::NoWriter),
+            ),
+            (
+                None,
+                None,
+                known(CopyRole::Writer),
+                Err(SwitchError::NoWriter),
+            ),
+            (
+                None,
+                Some(record(Cycle::Closed)),
+                vec![],
+                Err(SwitchError::NoWriter),
+            ),
+            (slot.clone(), None, vec![], Err(SwitchError::NoWriter)),
+            (root(WriterMarker::Idle, false), None, vec![], Ok(())),
+            (
+                root(WriterMarker::Idle, false),
+                Some(record(Cycle::Closed)),
+                known(CopyRole::Slot),
+                Ok(()),
+            ),
+            (
+                root(WriterMarker::Idle, false),
+                Some(record(Cycle::Open)),
+                vec![],
+                Err(SwitchError::VolumeSwitching),
+            ),
+            (
+                root(WriterMarker::Idle, true),
+                None,
+                vec![],
+                Err(SwitchError::VolumeSwitching),
+            ),
+            (
+                root(WriterMarker::Stopping, false),
+                None,
+                vec![],
+                Err(SwitchError::VolumeSwitching),
+            ),
+            (
+                root(
+                    WriterMarker::Handed {
+                        guid: SnapshotGuid(1),
+                    },
+                    true,
+                ),
+                Some(record(Cycle::Closed)),
+                known(CopyRole::Slot),
+                Err(SwitchError::VolumeSwitching),
+            ),
+        ];
+        for (copy, lease, elsewhere, expected) in rows {
+            let held = VolumeCopyView { copy, lease };
+            assert_eq!(
+                admit_plain_mount(&held, &elsewhere),
+                expected,
+                "held {held:?}, elsewhere {elsewhere:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_writer_message_names_every_copy_and_the_restore_line() {
+        let volume = DockerVolumeName::parse("data").unwrap();
+        let copies = [
+            KnownCopy {
+                machine: name("fsn-2"),
+                role: CopyRole::Slot,
+            },
+            KnownCopy {
+                machine: name("hel-1"),
+                role: CopyRole::Switching,
+            },
+        ];
+        let message = no_writer_message(&volume, &copies);
+        assert_eq!(
+            message,
+            "Volume data has no writer; it is held as fsn-2 (copy), hel-1 (switching). Make one the writer: ployz volume restore data --from fsn-2"
+        );
+        assert!(no_writer_message(&volume, &[]).contains("no Machine holds a copy"));
+    }
 
     #[test]
     fn lease_record_round_trips_through_its_property_value() {

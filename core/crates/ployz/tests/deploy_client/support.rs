@@ -64,6 +64,8 @@ pub(super) struct DeployService {
     pub(super) listing_blocked: Option<Arc<tokio::sync::Notify>>,
     /// Docker Volumes created and not yet removed.
     pub(super) volumes: Arc<Mutex<Vec<DockerVolume>>>,
+    /// Volume copies every Machine reports from storage.
+    pub(super) copies: Arc<Mutex<BTreeMap<DockerVolumeName, ployz_core::ProvisionedCopy>>>,
 }
 
 impl DeployService {
@@ -91,6 +93,7 @@ impl DeployService {
             listing_failures: Vec::new(),
             listing_blocked: None,
             volumes: Arc::new(Mutex::new(Vec::new())),
+            copies: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -118,6 +121,7 @@ impl DeployService {
             listing_failures: Vec::new(),
             listing_blocked: None,
             volumes: Arc::new(Mutex::new(Vec::new())),
+            copies: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -247,6 +251,7 @@ impl MachineRpc for DeployService {
             },
             unmanaged_used_bytes: 0,
             volumes: BTreeMap::new(),
+            copies: self.copies.lock().unwrap().clone(),
         }))
     }
 
@@ -388,6 +393,7 @@ impl MachineRpc for DeployService {
                 .unwrap(),
                 bound_bytes,
                 used_bytes: 0,
+                role: None,
             }
         } else {
             ployz_core::DockerVolumeStorageObservation::Plain {

@@ -84,6 +84,12 @@ impl MachineApiBuilder {
     }
 
     #[must_use]
+    pub(crate) fn with_volume_plugin(mut self, plugin: crate::storage::Plugin) -> Self {
+        self.service = self.service.with_volume_plugin(plugin);
+        self
+    }
+
+    #[must_use]
     pub(crate) fn with_ingress_data_dir(mut self, path: PathBuf) -> Self {
         self.service = self.service.with_ingress_data_dir(path);
         self

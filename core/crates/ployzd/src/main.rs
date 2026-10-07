@@ -45,6 +45,8 @@ struct Args {
     management_port: u16,
     #[arg(long)]
     containerd_socket: Option<PathBuf>,
+    #[arg(long, hide = true)]
+    volume_plugin_socket: Option<PathBuf>,
     /// Tracing filter. Overrides `PLOYZ_LOG`. Default: info.
     #[arg(long, value_name = "FILTER")]
     log_level: Option<String>,
@@ -178,6 +180,7 @@ async fn run(args: Args) -> Result<(), Error> {
         dns_upstreams: args.dns_upstreams,
         machine_api_address: args.machine_api_address,
         containerd_socket: args.containerd_socket,
+        volume_plugin_socket: args.volume_plugin_socket,
         containers: ContainerMode::Auto,
         management: ManagementConfig {
             port: args.management_port,

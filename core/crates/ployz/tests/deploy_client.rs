@@ -1100,6 +1100,45 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
 }
 
 #[tokio::test]
+async fn deletion_review_holds_a_mirror_slot_as_the_server_keeping_it() {
+    use ployz_core::{CopyRole, DockerVolumeId, DockerVolumeName, ProvisionedCopy};
+    use std::sync::Arc;
+
+    let service = DeployService::new(machine('a', "one"));
+    let copies = Arc::clone(&service.copies);
+    let (address, server) = listening(service).await;
+    let copy = |role| ProvisionedCopy {
+        role,
+        maximum_bytes: ployz_core::ProvisionedVolumeMaximumBytes::new(
+            NonZeroU64::new(ployz_core::STORAGE_GIB).unwrap(),
+        ),
+        used_bytes: 0,
+    };
+    let name = |suffix: &str| DockerVolumeName::parse(format!("shop-production_{suffix}")).unwrap();
+    copies.lock().unwrap().extend([
+        (name("slot"), copy(CopyRole::Slot)),
+        (name("unlisted-writer"), copy(CopyRole::Writer)),
+        (name("unsought-slot"), copy(CopyRole::Slot)),
+    ]);
+
+    let observed = ployz::sdk::observe_volumes(
+        vec![ployz::context::Connection::tcp(address)],
+        vec![name("slot"), name("unlisted-writer"), name("gone")],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        observed.held,
+        [DockerVolumeId {
+            machine_id: ployz_core::MachineId::parse("a".repeat(32)).unwrap(),
+            name: name("slot"),
+        }]
+    );
+    assert!(observed.unanswered.is_empty());
+    server.abort();
+}
+
+#[tokio::test]
 async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
     use ployz_store::{
         Actor, Admit, ConfigStore, CreateProject, CreateService, CreateVolume, Deploy,

@@ -896,6 +896,7 @@ case "$name" in
         touch '{other}'
         ;;
       'get -H -o value ployz:writer '*) echo '-' ;;
+      'get -H -o value ployz:lease'*) echo '-' ;;
       'destroy -r ployz/ployz/other') rm '{other}' '{other_bound}' ;;
       *) echo "unexpected fake zfs command: $*" >&2; exit 2 ;;
     esac

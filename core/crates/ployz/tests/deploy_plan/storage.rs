@@ -11,6 +11,7 @@ fn capacity(free_gib: u64) -> StorageCapacity {
         },
         unmanaged_used_bytes: 0,
         volumes: BTreeMap::new(),
+        copies: BTreeMap::new(),
     }
 }
 
@@ -268,6 +269,7 @@ fn placement_budgets_include_observed_pinned_commitments() {
             mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
             bound_bytes: std::num::NonZeroU64::new(30 * STORAGE_GIB).unwrap(),
             used_bytes: 0,
+            role: None,
         };
         let snapshot = DeploySnapshot {
             // Capacity was collected before Docker discovered the concurrent creation.
@@ -388,6 +390,7 @@ fn preparation_and_preview_include_unchanged_assigned_storage() {
         mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
         bound_bytes: std::num::NonZeroU64::new(30 * STORAGE_GIB).unwrap(),
         used_bytes: 0,
+        role: None,
     };
     let snapshot = DeploySnapshot {
         storage_capacity: BTreeMap::from([(target.machine.id, Ok(capacity(60)))]),

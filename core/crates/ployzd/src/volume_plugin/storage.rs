@@ -194,6 +194,8 @@ impl VolumeStorage {
             .ok_or_else(|| format!("Provisioned Volume {name} does not exist"))?;
         dataset.require_provisioned(name)?;
         dataset.require_not_switching(name)?;
+        self.require_writer_idle(&pool, &datasets, dataset, name)
+            .await?;
         if dataset.mounted {
             return Ok(dataset.mountpoint.clone());
         }
@@ -207,6 +209,33 @@ impl VolumeStorage {
             return Err(format!("Provisioned Volume {name} did not mount").into());
         }
         Ok(dataset.mountpoint.clone())
+    }
+
+    /// A root mounts for a Container only while no run holds it: idle marker and no
+    /// open cycle in this Machine's record.
+    async fn require_writer_idle(
+        &self,
+        pool: &MachinePool,
+        datasets: &[Dataset],
+        root: &Dataset,
+        name: &DockerVolumeName,
+    ) -> Result<()> {
+        let writer = self.writer_marker(root).await?;
+        if writer != ployz_core::WriterMarker::Idle {
+            return Err(format!(
+                "VolumeSwitching: Volume {name} is mid-run on this Machine (writer {writer}); wait for the run to finish"
+            )
+            .into());
+        }
+        if let Some(record) = self.lease_record(datasets, pool, name).await?
+            && record.cycle == ployz_core::Cycle::Open
+        {
+            return Err(format!(
+                "VolumeSwitching: Volume {name} is mid-run on this Machine (record {record} is open); wait for the run to finish"
+            )
+            .into());
+        }
+        Ok(())
     }
 
     pub(super) async fn one_pool(&self) -> Result<MachinePool> {

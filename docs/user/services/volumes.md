@@ -66,6 +66,19 @@ server. To keep deploying your other services meanwhile, see
 > Ployz doesn't back up, replicate or snapshot volumes yet. If the server is lost, so is the
 > data. Keep your own copies off the server; see [Back up a database](databases.md#back-up-a-database).
 
+## When a volume has no writer
+
+Each volume has one writer, the server that mounts it. A server you remove or reinstall turns
+every volume it held into a copy, so the volume keeps its data but has no writer. A deploy of a
+service that mounts such a volume refuses and names where the data is:
+
+```
+Volume shop-production_data has no writer; it is held as web-2 (copy). Make one the writer: ployz volume restore shop-production_data --from web-2
+```
+
+Run the `ployz volume restore` line it prints to make that copy the writer again, then deploy.
+A volume whose server is mid-move refuses the same way until the move finishes.
+
 ## When your servers show Docker only
 
 A volume needs a server that shows **Managed volumes available** on the **Servers** page. A
