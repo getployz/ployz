@@ -147,7 +147,9 @@ type Reply = {
 
 type As = { readonly cookie?: string; readonly bearer?: string };
 
-const cli = Effect.fn(function* (method: string, path: string, as: As, body?: Readonly<Record<string, string | number>>) {
+type CliBody = Readonly<Record<string, string | number | boolean | Readonly<Record<string, string>>>>;
+
+const cli = Effect.fn(function* (method: string, path: string, as: As, body?: CliBody) {
   const headers = new Headers();
   if (as.cookie !== undefined) headers.set("cookie", as.cookie);
   if (as.bearer !== undefined) headers.set("authorization", `Bearer ${as.bearer}`);
@@ -291,6 +293,31 @@ it.live(
           assert.strictEqual(missing.status, 404, path);
           assert.strictEqual(missing.json.error?.code, "not_found", path);
         }
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+/** The bodies `ployz volume mirror|sync|mirror rm` send, pinned the same in the CLI's `each_kind_posts_only_its_own_fields`. */
+const cliVolumeRunBodies: ReadonlyArray<CliBody> = [
+  { environment: { project: "shop", environment: "production" }, kind: "mirror", to: "web-2" },
+  { environment: { project: "shop", environment: "production" }, kind: "sync", full: false },
+  { environment: { project: "shop", environment: "production" }, kind: "delete_mirror", slot: "web-2", confirm: "data" },
+];
+
+it.live(
+  "Cloud decodes every volume run body the CLI sends, and refuses an Environment named by id",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer({ mode: "self_hosted" });
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        for (const body of cliVolumeRunBodies) {
+          const reply = yield* cli("POST", "volumes/vol-1/runs", alice, body);
+          assert.notStrictEqual(reply.status, 422, JSON.stringify(body));
+        }
+        const byId = yield* cli("POST", "volumes/vol-1/runs", alice, { environment: "env-1", kind: "sync" });
+        assert.strictEqual(byId.status, 422);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

@@ -26,6 +26,13 @@ fn environment() -> EnvironmentId {
     EnvironmentId::parse(ENVIRONMENT.to_owned()).unwrap()
 }
 
+fn named() -> RunEnvironment {
+    RunEnvironment {
+        project: ProjectName::parse("shop".to_owned()).unwrap(),
+        environment: EnvironmentName::parse("production".to_owned()).unwrap(),
+    }
+}
+
 fn run(state: &str, kind: &str, args: Value) -> Value {
     json!({
         "id": RUN, "volume_id": VOLUME, "volume_name": "data", "kind": kind, "args": args,
@@ -153,38 +160,38 @@ async fn each_kind_posts_only_its_own_fields() {
     let cases = [
         (
             RunRequest {
-                environment: environment(),
+                environment: named(),
                 kind: VolumeRunKind::Mirror,
                 to: Some(MachineName::parse("web-2").unwrap()),
                 full: None,
                 slot: None,
                 confirm: None,
             },
-            json!({ "environment": ENVIRONMENT, "kind": "mirror", "to": "web-2" }),
+            json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "mirror", "to": "web-2" }),
             json!({ "to": "web-2" }),
         ),
         (
             RunRequest {
-                environment: environment(),
+                environment: named(),
                 kind: VolumeRunKind::Sync,
                 to: None,
                 full: Some(false),
                 slot: None,
                 confirm: None,
             },
-            json!({ "environment": ENVIRONMENT, "kind": "sync", "full": false }),
+            json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "sync", "full": false }),
             json!({ "full": false }),
         ),
         (
             RunRequest {
-                environment: environment(),
+                environment: named(),
                 kind: VolumeRunKind::DeleteMirror,
                 to: None,
                 full: None,
                 slot: Some(MachineName::parse("web-2").unwrap()),
                 confirm: Some("data".to_owned()),
             },
-            json!({ "environment": ENVIRONMENT, "kind": "delete_mirror", "slot": "web-2", "confirm": "data" }),
+            json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "delete_mirror", "slot": "web-2", "confirm": "data" }),
             json!({ "slot": "web-2", "confirmed_name": "data" }),
         ),
     ];
@@ -214,7 +221,7 @@ async fn a_refused_run_keeps_cloud_s_refusal() {
         )
     });
     let request = RunRequest {
-        environment: environment(),
+        environment: named(),
         kind: VolumeRunKind::Sync,
         to: None,
         full: Some(false),

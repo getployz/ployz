@@ -6,7 +6,10 @@ use std::time::Duration;
 
 use clap::{ArgMatches, Command};
 use ployz_core::{MachineName, RpcErrorCode};
-use ployz_store::{EnvironmentId, VolumeId, VolumeName, VolumeQuery, VolumesQuery};
+use ployz_store::{
+    EnvironmentId, EnvironmentName, EnvironmentSummary, ProjectName, VolumeId, VolumeName,
+    VolumeQuery, VolumesQuery,
+};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 
@@ -116,10 +119,17 @@ pub(crate) struct VolumeRun {
     pub(crate) finished_at: Option<String>,
 }
 
+/// The Environment a run is asked in, by name, as Cloud reads the Store with it.
+#[derive(Debug, Serialize, PartialEq)]
+pub(crate) struct RunEnvironment {
+    pub(crate) project: ProjectName,
+    pub(crate) environment: EnvironmentName,
+}
+
 /// What `POST volumes/{id}/runs` asks for.
 #[derive(Debug, Serialize, PartialEq)]
 pub(crate) struct RunRequest {
-    pub(crate) environment: EnvironmentId,
+    pub(crate) environment: RunEnvironment,
     pub(crate) kind: VolumeRunKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) to: Option<MachineName>,
@@ -276,12 +286,12 @@ fn located(
     store: &store::Store<'_>,
     matches: &ArgMatches,
     name: &VolumeName,
-) -> Result<(VolumeId, EnvironmentId), Error> {
+) -> Result<(VolumeId, EnvironmentSummary), Error> {
     let view = store.read(&VolumeQuery {
         environment: store::environment(matches)?,
         volume: name.clone(),
     })?;
-    Ok((view.volume.volume.id, view.environment.id))
+    Ok((view.volume.volume.id, view.environment))
 }
 
 pub(super) fn mirror(root: &ArgMatches) -> Result<(), Error> {
@@ -369,13 +379,16 @@ fn request(
     root: &ArgMatches,
     volume: &VolumeName,
     started: String,
-    ask: impl FnOnce(EnvironmentId) -> RunRequest,
+    ask: impl FnOnce(RunEnvironment) -> RunRequest,
 ) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = store::store(root)?;
     let (runtime, credential) = cloud(store.backend())?;
     let (volume_id, environment) = located(&store, matches, volume)?;
-    let asked = ask(environment);
+    let asked = ask(RunEnvironment {
+        project: environment.project,
+        environment: environment.name,
+    });
     let confirming = asked.kind == VolumeRunKind::DeleteMirror && asked.confirm.is_none();
     let run = runtime
         .block_on(start(credential, &volume_id, &asked))
@@ -489,7 +502,7 @@ pub(super) fn runs(root: &ArgMatches) -> Result<(), Error> {
         return crate::ui::fields(&OneRun { run: run.clone() }, &record(&run));
     }
     let runs = runtime
-        .block_on(list(credential, &volume_id, &environment))
+        .block_on(list(credential, &volume_id, &environment.id))
         .map_err(|error| store.fail(error))?;
     let mut table = Table::new(
         ["RUN", "KIND", "STATE", "ASKED", "STARTED", "MESSAGE"],
