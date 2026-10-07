@@ -103,6 +103,13 @@ impl Receives {
             .and_then(Result::err)
     }
 
+    fn forget(&self, name: &DockerVolumeName) {
+        self.0
+            .lock()
+            .expect("receive registry is not poisoned")
+            .remove(&name.0);
+    }
+
     fn start(&self, name: &DockerVolumeName) -> Arc<Mutex<Option<Result<(), String>>>> {
         let outcome = Arc::new(Mutex::new(None));
         self.0
@@ -143,6 +150,11 @@ impl VolumeStorage {
         let (slot, bound) = (slot.name.clone(), slot.refquota);
         self.require_no_receive(&name)?;
         let fs = slot_fs(&scope.pool, &name);
+        if bound == 0 {
+            return Err(
+                SwitchError::Precondition.rpc_error(format!("mirror slot {slot} carries no bound"))
+            );
+        }
         // The plugin can die after recording and before the receive creates `fs`, so a
         // replay looks for the landed target in ZFS and otherwise starts the receive again.
         if scope.replayed()
@@ -154,12 +166,11 @@ impl VolumeStorage {
                 .first()
             && newest.name == request.target
         {
+            self.finish_copy(&received.name, bound)
+                .await
+                .map_err(|error| internal(error.into()))?;
+            self.receives.forget(&name);
             return self.reply(&scope.pool, &name, scope.admitted).await;
-        }
-        if bound == 0 {
-            return Err(
-                SwitchError::Precondition.rpc_error(format!("mirror slot {slot} carries no bound"))
-            );
         }
         let record = ReceiveRecord {
             lease: request.switch.lease,
@@ -294,6 +305,11 @@ impl VolumeStorage {
                 "stream from {url} broke after {received} bytes: {error}"
             ));
         }
+        self.finish_copy(fs, bound).await
+    }
+
+    async fn finish_copy(&self, fs: &str, bound: u64) -> Result<(), String> {
+        let refquota = format!("refquota={bound}");
         for property in ["readonly=on", &refquota] {
             self.zfs(&["set", property, fs])
                 .await
