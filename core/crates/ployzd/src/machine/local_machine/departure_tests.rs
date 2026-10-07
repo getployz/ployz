@@ -41,7 +41,8 @@ fn initialize_request() -> InitializeRequest {
     }
 }
 
-/// A Machine over a fake plugin that demotes `data`, a fake Docker, and a fake Cluster.
+/// A Machine over a fake plugin that demotes `data`, a fake Docker, a fake Cluster, and
+/// ZFS ready.
 async fn harness(initialized: bool) -> Harness {
     let data_dir = std::env::temp_dir().join(format!("ployzd-departure-{}", MachineId::random()));
     std::fs::create_dir_all(&data_dir).unwrap();
@@ -58,7 +59,9 @@ async fn harness(initialized: bool) -> Harness {
     let local = LocalMachine::new(owner)
         .with_containers(Some(runtime))
         .with_cluster(Some((replicated, AdminClient::new("/no/such/admin.sock"))))
-        .with_plugin(client);
+        .with_plugin(client)
+        // `true` lists no pools, which reads as ZFS ready whatever the host has.
+        .with_zpool("true");
     Harness {
         local,
         plugin,

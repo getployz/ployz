@@ -4,6 +4,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::IpAddr,
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -38,6 +39,7 @@ pub struct LocalMachine {
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
     plugin: crate::storage::Plugin,
+    zpool: PathBuf,
 }
 
 mod container;
@@ -137,7 +139,15 @@ impl LocalMachine {
             cluster: None,
             containers: None,
             plugin: crate::storage::Plugin::default(),
+            zpool: PathBuf::from("zpool"),
         }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_zpool(mut self, program: impl Into<PathBuf>) -> Self {
+        self.zpool = program.into();
+        self
     }
 
     #[must_use]
