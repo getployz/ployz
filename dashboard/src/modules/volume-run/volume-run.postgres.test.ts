@@ -268,7 +268,7 @@ describe("volume runs", () => {
       const output = await execute(run.id, "run-1");
 
       expect(output.error).toBeUndefined();
-      expect(verbs[0]).toBe("adopt_lease@fsn-1");
+      expect(verbs.slice(0, 2).sort()).toEqual(["adopt_lease@fsn-1", "adopt_lease@fsn-2"]);
       expect(await rows()).toMatchObject([{ state: "done", inngest_run_id: "run-1" }]);
     });
 
