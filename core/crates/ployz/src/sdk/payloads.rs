@@ -133,6 +133,18 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_store::Unclaimed>();
     declarations.add::<ployz_store::OrganizationRemoved>();
     declarations.add::<ployz_store::AppliedVolume>();
+    declarations.add::<super::CopyObservation>();
+    declarations.add::<ployz_core::InspectVolumeCopyRequest>();
+    declarations.add::<ployz_core::VolumeCopyView>();
+    declarations.add::<ployz_core::AdoptLeaseRequest>();
+    declarations.add::<ployz_core::DeclareMirrorRequest>();
+    declarations.add::<ployz_core::MirrorRequest>();
+    declarations.add::<ployz_core::CommitRequest>();
+    declarations.add::<ployz_core::WarmRequest>();
+    declarations.add::<ployz_core::InspectReceiveRequest>();
+    declarations.add::<ployz_core::ReceiveView>();
+    declarations.add::<ployz_core::SwitchReply>();
+    declarations.add::<ployz_core::SwitchError>();
 
     let mut out = String::from(HEADER);
     for declaration in declarations.by_name.values() {

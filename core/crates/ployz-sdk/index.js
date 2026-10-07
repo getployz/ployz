@@ -134,6 +134,10 @@ class Client {
     return withRpcError(this._inner.updateMachine(machine, update));
   }
 
+  volumeSwitch(machine, request) {
+    return withRpcError(this._inner.volumeSwitch(machine, request));
+  }
+
   requestMachineUpgrade(machine, request) {
     return withRpcError(this._inner.requestMachineUpgrade(machine, request));
   }
@@ -357,6 +361,7 @@ async function openConfigStore(url, sealingSecret) {
 module.exports = {
   openConfigStore,
   observeVolumes: (connections, sought) => withRpcError(native.observeVolumes(connections, sought)),
+  observeCopies: (connections) => withRpcError(native.observeCopies(connections)),
   allocateEnrollment: (...args) => {
     try { return native.allocateEnrollment(...args); } catch (error) { throwRpcError(error); }
   },

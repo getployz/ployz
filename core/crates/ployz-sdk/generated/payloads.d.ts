@@ -13,6 +13,8 @@ port: number | null, };
 
 export type Admit = { "admit": "deploy" } & Deploy | { "admit": "retry" } & Retry | { "admit": "remove" } & Removal;
 
+export type AdoptLeaseRequest = { lease: Lease, not_after_unix_seconds: number, name: DockerVolumeName, };
+
 export type AdvertisedEndpoint = string;
 
 export type AppliedVolume = { project: ProjectName, environment: EnvironmentName, volume: VolumeName, };
@@ -386,6 +388,8 @@ export type ClusterDomainStatus = { "kind": "setting_up" } | { "kind": "ready" }
 
 export type ClusterTeardown = { destroyed_namespaces: Array<Namespace>, machines: PartialResult<LocalMachineRemoved, RpcError>, pairing_revoked: boolean, };
 
+export type CommitRequest = { switch: Switch, name: DockerVolumeName, mirror_newest: SnapshotGuid, };
+
 export type CommitSha = string;
 
 export type CompiledEnvironmentIntent = { nodeSnapshots: Array<CompiledEnvironmentNode>, variableProducers: Array<SavedVariableProducer>, };
@@ -549,6 +553,8 @@ node: ServiceName,
  */
 expect: Revision | null, };
 
+export type CopyObservation = { copies: Array<ObservedCopy>, unanswered: Array<MachineId>, };
+
 export type CopyRole = "writer" | "slot" | "switching";
 
 export type CpuNanos = number;
@@ -689,11 +695,15 @@ mounts: Array<Mount>,
  */
 shared_writes?: boolean, };
 
+export type Cycle = "open" | "closed";
+
 export type DataEffect = "deleted" | "kept";
 
 export type DataLoss = { "kind": "docker_volume", id: DockerVolumeId, };
 
 export type DataLossConfirmation = { confirmed: Array<DataLoss>, };
+
+export type DeclareMirrorRequest = { switch: Switch, name: DockerVolumeName, refquota_bytes: number, };
 
 export type DependencyCondition = "service_started" | "service_healthy";
 
@@ -1370,6 +1380,8 @@ export type ExtraHost = string;
 
 export type FailedOperation<E> = { "type": "operation", operation: DeployOperation, error: E, } | { "type": "replacement", operation: ReplacementOperation, error: E, compensation: ReplacementCompensation<E>, };
 
+export type FenceDecision = "admit" | "replay" | "adopt" | "refuse_stale_lease" | "refuse_stale_step" | "refuse_expired";
+
 export type FollowHint = {
 /**
  * The Parent it comes from: pass to [`Take::from`] to use it.
@@ -1597,6 +1609,10 @@ export type InspectMachineUpgradeRequest = {
  */
 attempt_id?: MachineUpgradeAttemptId | null, };
 
+export type InspectReceiveRequest = { name: DockerVolumeName, round: number, };
+
+export type InspectVolumeCopyRequest = { name: DockerVolumeName, };
+
 export type Instead = { "kind": "reference", value: string, } | { "kind": "sealed" };
 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
@@ -1616,6 +1632,8 @@ export type Landed = "staged" | "hint";
 export type LastHealthCheck = { "type": "exited", code: number, output: string, } | { "type": "http_status", status: number, } | { "type": "http_unreachable", error: HttpCheckError, };
 
 export type Lease = number;
+
+export type LeaseRecord = { lease: Lease, pos: Pos, cycle: Cycle, };
 
 export type LiveLineageUse = { lineageId: string, keys: Array<string>, };
 
@@ -1898,6 +1916,10 @@ export type MintBuildGrantRequest = {
  */
 repository: BuildGrantRepository, };
 
+export type MirrorMarker = { "phase": "idle" } | { "phase": "final", guid: SnapshotGuid, } | { "phase": "handed_in", guid: SnapshotGuid, } | { "phase": "promoting" };
+
+export type MirrorRequest = { switch: Switch, name: DockerVolumeName, };
+
 export type MissingLiveValue = { lineageId: string, key: string, };
 
 export type Mount = {
@@ -2036,6 +2058,8 @@ export type NodeStatus = "pending" | "deployed" | "removed" | "failed" | "not_at
 export type NumberedDeploymentQuery = { environment: EnvironmentRef, number: number, };
 
 export type ObservationKind = "container" | "volume";
+
+export type ObservedCopy = { machine_id: MachineId, name: DockerVolumeName, role: CopyRole, };
 
 export type ObservedDataLoss = { data_loss: Array<DataLoss>, };
 
@@ -2413,6 +2437,10 @@ passing: boolean,
 reason: string, };
 
 export type QualifiedService = string;
+
+export type ReceiveStatus = { "state": "idle" } | { "state": "running", target: SnapshotName, } | { "state": "done", newest: Snapshot, } | { "state": "resumable", target: SnapshotName, token: string, } | { "state": "failed", target: SnapshotName, reason: string, };
+
+export type ReceiveView = { round: number | null, status: ReceiveStatus, };
 
 export type RegisterRequest = {
 /**
@@ -3139,7 +3167,11 @@ export type Skipped = { environment: EnvironmentId,
  */
 reason: string, };
 
+export type Snapshot = { name: SnapshotName, guid: SnapshotGuid, created_unix_seconds: number, };
+
 export type SnapshotGuid = number;
+
+export type SnapshotName = string;
 
 export type SourceContainerRequest = { switch: Switch, name: DockerVolumeName, container_id: ContainerId, };
 
@@ -3219,6 +3251,14 @@ export type Switch = { lease: Lease, pos: Pos,
  * Step deadline: step start plus the request timeout, as Unix seconds.
  */
 not_after_unix_seconds: number, };
+
+export type SwitchError = { "reason": "stale_lease" } | { "reason": "stale_step" } | { "reason": "expired", skew_seconds: number, } | { "reason": "precondition" } | { "reason": "busy" } | { "reason": "volume_switching" } | { "reason": "no_writer" } | { "reason": "no_capacity" };
+
+export type SwitchReply = { decision: FenceDecision,
+/**
+ * The record after admission.
+ */
+lease: LeaseRecord, copy: VolumeCopy | null, };
 
 export type SyncChange = "new" | "changed" | "conflict";
 
@@ -3508,6 +3548,10 @@ export type VolumeAttachment = { volumeResourceId: string, mountPath: string, };
 
 export type VolumeConfig = { version: 2, name: string, storage: VolumeKind, };
 
+export type VolumeCopy = { "kind": "root", writer: WriterMarker, readonly: boolean, newest: Snapshot | null, } | { "kind": "slot", mirror: MirrorMarker, readonly: boolean, newest: Snapshot | null, resume_token: string | null, };
+
+export type VolumeCopyView = { copy: VolumeCopy | null, lease: LeaseRecord | null, };
+
 export type VolumeDriver = { name: string, options: { [key in string]: string }, };
 
 export type VolumeId = string;
@@ -3701,6 +3745,8 @@ environment: EnvironmentSummary,
  */
 volumes: Array<VolumeListing>, };
 
+export type WarmRequest = { switch: Switch, name: DockerVolumeName, };
+
 export type When = { "kind": "now",
 /**
  * Close the Branch once its changes landed in its Parent: refused for a
@@ -3709,4 +3755,6 @@ export type When = { "kind": "now",
 close_after?: boolean, } | { "kind": "at_merge" };
 
 export type WireGuardPublicKey = Array<number>;
+
+export type WriterMarker = { "phase": "idle" } | { "phase": "stopping" } | { "phase": "frozen", guid: SnapshotGuid, } | { "phase": "thawing" } | { "phase": "handed", guid: SnapshotGuid, };
 

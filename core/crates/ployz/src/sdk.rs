@@ -20,8 +20,8 @@ use ployz_core::{
     DeployEvent, DeployOutcome, DescribeContractRequest, EnrollmentAssignment, EnrollmentSnapshot,
     ExecutionError, LocalMachineRemoved, MachineTarget, Namespace, ObservedDataLoss, OpaquePayload,
     PublishCertificateMaterialRequest, RUNTIME_WATCH_CAPABILITY, Registered, RemoveVolumesRequest,
-    Rpc, RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, ServiceObservation,
-    VolumeRemoval, decode_runtime_watch_frame, op,
+    Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponseBody, RuntimeWatchFrame,
+    RuntimeWatchRequest, ServiceObservation, VolumeRemoval, decode_runtime_watch_frame, op,
 };
 
 pub use payloads::typescript_declarations;
@@ -44,7 +44,7 @@ pub use github_build::{
 };
 pub use running::Running;
 pub use store_call::store_call;
-pub use store_runner::{Sources, observe_volumes, run_deployment};
+pub use store_runner::{Sources, observe_copies, observe_volumes, run_deployment};
 
 /// Cancellable preparation whose progress is retained until read, within a byte budget.
 pub type RunningPreparation = Running<PreparedDeploy>;
@@ -87,6 +87,53 @@ impl From<RuntimeWatchFrame> for RuntimeWatchView {
             services,
             effective_build_concurrency,
         }
+    }
+}
+
+/// Every copy of every Volume a Cluster's Machines hold, by role. Machines that did
+/// not answer are named in `unanswered`, never assumed to hold nothing.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
+pub struct CopyObservation {
+    pub copies: Vec<ObservedCopy>,
+    pub unanswered: Vec<ployz_core::MachineId>,
+}
+
+/// One copy of a Volume on one Machine.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
+pub struct ObservedCopy {
+    pub machine_id: ployz_core::MachineId,
+    pub name: ployz_core::DockerVolumeName,
+    pub role: ployz_core::CopyRole,
+}
+
+/// The gRPC path of `body` when it is one of the Volume switch verbs a Volume run sends.
+///
+/// # Errors
+/// Returns `invalid_argument` for every other command.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "an allowlist: every command not named is refused"
+)]
+fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
+    use RpcRequestBody as Body;
+    match body {
+        Body::InspectVolumeCopy(_)
+        | Body::AdoptLease(_)
+        | Body::DeclareMirror(_)
+        | Body::BeginRound(_)
+        | Body::CommitSnapshots(_)
+        | Body::WarmSnapshot(_)
+        | Body::StartReceive(_)
+        | Body::InspectReceive(_)
+        | Body::PruneMirror(_)
+        | Body::DestroyMirror(_)
+        | Body::ForgetSnapshots(_) => body
+            .unary_path()
+            .ok_or_else(|| invalid_argument(format!("{} is not a unary RPC", body.command()))),
+        _ => Err(invalid_argument(format!(
+            "{} is not a Volume switch command",
+            body.command()
+        ))),
     }
 }
 
@@ -579,6 +626,73 @@ impl Session {
         self.until_closed(client.observe_volumes(sought)).await
     }
 
+    /// Every copy of every Volume on every Machine, by role, naming every Machine that
+    /// did not answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed or listing
+    /// Machines fails.
+    pub async fn observe_copies(&self) -> Result<CopyObservation, RpcError> {
+        let mut client = self.client()?;
+        self.until_closed(client.observe_copies()).await
+    }
+
+    /// Send one Volume switch request (`{command, payload}`) to `machine` and answer the
+    /// reply payload. One-shot: the Machine's fence makes a resend safe, so the caller
+    /// decides whether to retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_argument` when `request` is not one of the Volume switch
+    /// commands or `machine` is not a Machine Target, and the Machine's [`RpcError`]
+    /// otherwise, its `details` a `SwitchError` when the fence refused.
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "the switch verbs answer with three reply kinds; any other kind is a Machine fault"
+    )]
+    pub async fn volume_switch(&self, machine: &str, request: Value) -> Result<Value, RpcError> {
+        let target =
+            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let body: RpcRequestBody =
+            serde_json::from_value(request).map_err(|error| invalid_argument(error.to_string()))?;
+        let path = volume_switch_path(&body)?;
+        let request = ployz_core::RpcRequest::from(body);
+        let client = self.client()?;
+        let response = self
+            .until_closed(client.invoke_raw(
+                &request,
+                path,
+                &target,
+                Some(crate::connect::TARGET_RPC_TIMEOUT),
+            ))
+            .await?;
+        let payload = match response.body {
+            RpcResponseBody::SwitchReply(reply) => serde_json::to_value(reply),
+            RpcResponseBody::VolumeCopyView(view) => serde_json::to_value(view),
+            RpcResponseBody::ReceiveView(view) => serde_json::to_value(view),
+            RpcResponseBody::Error(error) => return Err(error),
+            other => {
+                return Err(RpcError {
+                    code: RpcErrorCode::Internal,
+                    message: format!(
+                        "Machine answered {} with {}",
+                        request.body.command(),
+                        other.kind().as_str()
+                    ),
+                    details: Value::Null,
+                    cause: Vec::new(),
+                });
+            }
+        };
+        payload.map_err(|error| RpcError {
+            code: RpcErrorCode::Internal,
+            message: "Volume switch reply could not be encoded".into(),
+            details: Value::Null,
+            cause: vec![error.to_string()],
+        })
+    }
+
     /// Live Observation of Data Loss that removing `machine` would cause.
     ///
     /// `machine` is a Machine Target. This is not a complete Cluster view.
@@ -1049,3 +1163,7 @@ pub(crate) fn preparation_error(
 #[cfg(test)]
 #[path = "sdk_tests.rs"]
 mod preparation_tests;
+
+#[cfg(test)]
+#[path = "sdk/volume_switch_tests.rs"]
+mod volume_switch_tests;

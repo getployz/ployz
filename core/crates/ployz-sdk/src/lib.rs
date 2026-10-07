@@ -464,6 +464,26 @@ impl Client {
             .map_err(rpc_to_napi)
     }
 
+    /// Send one Volume switch request (`{command, payload}`, one of the eleven Volume run
+    /// verbs) to `machine` and answer the reply payload. Not retried.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `request` is not a Volume
+    /// switch request, the session is closed, or the Machine refuses; a fence refusal
+    /// carries its `SwitchError` in `details`.
+    #[napi]
+    pub async fn volume_switch(
+        &self,
+        machine: String,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.inner
+            .volume_switch(&machine, request)
+            .await
+            .map_err(rpc_to_napi)
+    }
+
     /// Apply one Machine policy edit (Machine Roles and build concurrency) to `machine`.
     ///
     /// `update` is a partial MachineUpdate; omitted fields keep their values.

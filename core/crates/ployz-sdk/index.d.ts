@@ -55,6 +55,48 @@ import type {
   ContainerLogRecord,
 } from "./generated/payloads";
 export * from "./generated/payloads";
+import type {
+  AdoptLeaseRequest,
+  CommitRequest,
+  CopyObservation,
+  DeclareMirrorRequest,
+  InspectReceiveRequest,
+  InspectVolumeCopyRequest,
+  MirrorRequest,
+  ReceiveView,
+  SwitchReply,
+  Switch,
+  VolumeCopyView,
+  WarmRequest,
+} from "./generated/payloads";
+
+/** StartReceive on a mirror: pull `target` from the writer Machine at management address `from`. */
+export type StartReceiveRequest = {
+  switch: Switch;
+  name: string;
+  from: string;
+  base: number | null;
+  target: string;
+  resume_token: string | null;
+};
+
+/** One request `Client.volumeSwitch` sends: a Volume run verb and its payload. */
+export type VolumeSwitchRequest =
+  | { command: "inspect_volume_copy"; payload: InspectVolumeCopyRequest }
+  | { command: "adopt_lease"; payload: AdoptLeaseRequest }
+  | { command: "declare_mirror"; payload: DeclareMirrorRequest }
+  | { command: "begin_round"; payload: MirrorRequest }
+  | { command: "commit_snapshots"; payload: CommitRequest }
+  | { command: "warm_snapshot"; payload: WarmRequest }
+  | { command: "start_receive"; payload: StartReceiveRequest }
+  | { command: "inspect_receive"; payload: InspectReceiveRequest }
+  | { command: "prune_mirror"; payload: MirrorRequest }
+  | { command: "destroy_mirror"; payload: MirrorRequest }
+  | { command: "forget_snapshots"; payload: MirrorRequest };
+
+/** The reply payload of one Volume run verb. */
+export type VolumeSwitchReply<C extends VolumeSwitchRequest["command"]> =
+  C extends "inspect_volume_copy" ? VolumeCopyView : C extends "inspect_receive" ? ReceiveView : SwitchReply;
 
 /** Same serialized descriptors as CLI contexts. Backend only: Management is an admin capability. */
 export type Connection = (
@@ -255,6 +297,15 @@ export declare class Client {
     machine: MachineTarget,
     update: Partial<MachineUpdate>,
   ): Promise<MachineUpdated>;
+  /**
+   * Send one Volume switch request to one Machine and answer its reply payload. Only the eleven
+   * Volume run verbs are accepted; any other command rejects `invalid_argument`. Not retried. A fence
+   * refusal rejects with an `RpcError` whose `details` is a `SwitchError`.
+   */
+  volumeSwitch<R extends VolumeSwitchRequest>(
+    machine: MachineTarget,
+    request: R,
+  ): Promise<VolumeSwitchReply<R["command"]>>;
   /** Ask one Machine to Upgrade. Repeating the request with the same attempt ID returns that attempt. */
   requestMachineUpgrade(
     machine: MachineTarget,
@@ -372,3 +423,8 @@ export declare function openConfigStore(url: string, sealingSecret: string): Pro
  * admitting a Deploy that removes deployed Volumes. Servers that don't answer are listed as `unanswered`.
  */
 export declare function observeVolumes(connections: Connection[], sought: string[]): Promise<VolumeObservation>;
+/**
+ * Every copy of every Volume on `connections`' Servers, by role. Servers that don't answer are listed as
+ * `unanswered`, never assumed to hold nothing.
+ */
+export declare function observeCopies(connections: Connection[]): Promise<CopyObservation>;

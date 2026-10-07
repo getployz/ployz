@@ -322,7 +322,6 @@ impl Client {
     }
 
     /// One unary RPC from an already-shaped request body. No retry, as [`Self::invoke`].
-    #[cfg(feature = "verify-faults")]
     pub(crate) async fn invoke_raw(
         &self,
         request: &ployz_core::RpcRequest,
@@ -642,6 +641,44 @@ impl Client {
         Ok(ployz_store::VolumeObservation {
             sought,
             held: held.into_iter().collect(),
+            unanswered: unanswered.into_iter().collect(),
+        })
+    }
+
+    /// Every copy of every Volume on every Machine, by role, slots included. Every
+    /// Machine that did not answer is named in `unanswered`, never assumed empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when listing Machines fails.
+    pub async fn observe_copies(&mut self) -> Result<crate::sdk::CopyObservation, RpcError> {
+        let machines = self
+            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .await
+            .map_err(RpcError::from)?;
+        let inspected = self.inspect_storage(&machines.machines).await;
+        let unanswered: BTreeSet<MachineId> = inspected
+            .failures
+            .iter()
+            .map(|failure| failure.machine_id)
+            .chain(inspected.omissions.iter().copied())
+            .collect();
+        let copies = inspected
+            .successes
+            .iter()
+            .flat_map(|success| {
+                success
+                    .value
+                    .roles()
+                    .map(|(name, role)| crate::sdk::ObservedCopy {
+                        machine_id: success.machine_id,
+                        name: name.clone(),
+                        role,
+                    })
+            })
+            .collect();
+        Ok(crate::sdk::CopyObservation {
+            copies,
             unanswered: unanswered.into_iter().collect(),
         })
     }
