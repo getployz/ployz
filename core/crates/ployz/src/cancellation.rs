@@ -14,6 +14,7 @@ static GRACEFUL: AtomicBool = AtomicBool::new(false);
 
 /// Subscribe to Ctrl-C for async-only commands already running on Tokio.
 pub(crate) fn on_ctrl_c() -> CancellationToken {
+    claim_graceful();
     let cancellation = CancellationToken::new();
     let signal = cancellation.clone();
     tokio::spawn(async move {
@@ -38,10 +39,7 @@ pub(crate) fn interrupted() -> std::io::Result<CancellationToken> {
     if let Some(token) = token.as_ref() {
         return Ok(token.clone());
     }
-    GRACEFUL.store(true, Ordering::SeqCst);
-    if let Some(dies) = DIES.get() {
-        dies.store(false, Ordering::SeqCst);
-    }
+    claim_graceful();
     let mut signals = signal_hook::iterator::Signals::new([signal_hook::consts::SIGINT])?;
     let cancelled = CancellationToken::new();
     let cancel = cancelled.clone();
@@ -53,6 +51,15 @@ pub(crate) fn interrupted() -> std::io::Result<CancellationToken> {
             }
         })?;
     Ok(token.insert(cancelled).clone())
+}
+
+/// From here on a listener answers SIGINT, so it must no longer end the
+/// process the default way, even after a prompt closes.
+fn claim_graceful() {
+    GRACEFUL.store(true, Ordering::SeqCst);
+    if let Some(dies) = DIES.get() {
+        dies.store(false, Ordering::SeqCst);
+    }
 }
 
 /// Run a prompt with Ctrl-C reaching it as a keypress. The prompt's terminal
