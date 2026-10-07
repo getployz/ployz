@@ -59,7 +59,9 @@ pub(super) struct VolumeStorage {
 pub(super) fn committed_bytes(dataset: &Dataset, pool: &str) -> u64 {
     match Place::of(&dataset.name, pool) {
         Place::Root(_) => dataset.refquota,
-        Place::Slot(name) if dataset.name.ends_with(&format!("/{name}")) => dataset.refquota,
+        Place::Slot(name) if dataset.name == format!("{pool}/{MIRROR_ROOT}/{name}") => {
+            dataset.refquota
+        }
         Place::Slot(_) | Place::Outside => 0,
     }
 }

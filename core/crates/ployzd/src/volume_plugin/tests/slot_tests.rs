@@ -109,8 +109,7 @@ fn mirror_commitment_counts_only_the_slot_parent() {
             format!("other/{MIRROR_ROOT}/{name}/fs"),
         ]
         .map(|dataset| {
-            Dataset::parse(&format!("{dataset}\t{bound}\t0\t0\tnone\tno\toff"), "tank")
-                .unwrap()
+            Dataset::parse(&format!("{dataset}\t{bound}\t0\t0\tnone\tno\toff"), "tank").unwrap()
         });
         let commitment = datasets
             .iter()
