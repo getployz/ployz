@@ -583,7 +583,7 @@ pub enum MachineSelectorError {
     NoTargets,
     #[error("no Machines are visible to this entry Machine")]
     NoVisibleMachines,
-    #[error("No Server named {}; ployz server ls lists them", .0.iter().map(|target| format!("{:?}", target.as_str())).collect::<Vec<_>>().join(", "))]
+    #[error("No Server named {}", .0.iter().map(|target| format!("{:?}", target.as_str())).collect::<Vec<_>>().join(", "))]
     NotFound(Vec<MachineTarget>),
     #[error("{} matches more than one Server; name one by ID: {}", .selector.as_str().escape_debug(), .matches.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))]
     Ambiguous {

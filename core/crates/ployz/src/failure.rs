@@ -294,6 +294,20 @@ fn classify(error: &(dyn Error + Send + Sync + 'static)) -> (RpcErrorCode, Value
     if let Some(ConnectError::Remote(error)) = error.downcast_ref::<ConnectError>() {
         return (error.code.clone(), error.details.clone());
     }
+    let transport = match error.downcast_ref::<ConnectError>() {
+        Some(ConnectError::Rpc(error)) => Some(error),
+        _ => error.downcast_ref::<TransportError>(),
+    };
+    if let Some(error) = transport {
+        let RpcError { code, details, .. } = error.to_rpc_error();
+        return (code, details);
+    }
+    if let Some(MachineSelectorError::NotFound(_)) = error.downcast_ref::<MachineSelectorError>() {
+        return (
+            RpcErrorCode::NotFound,
+            serde_json::json!({ "inspect": ["ployz server ls"] }),
+        );
+    }
     if let Some(OperatorError::NotRunning {
         running_in_scope, ..
     }) = error.downcast_ref::<OperatorError>()
@@ -1153,6 +1167,24 @@ mod tests {
         assert_eq!(failure.report().code, RpcErrorCode::NotFound);
         assert_eq!(failure.report().message, "No running Service \"nope\"");
         assert_eq!(failure.hints(), [Hint::valid(["web"])]);
+    }
+
+    #[test]
+    fn a_missing_server_points_at_server_ls_locally_and_over_the_wire() {
+        let missing =
+            MachineSelectorError::NotFound(vec![ployz_core::MachineTarget::parse("nope").unwrap()]);
+        let local = Failure::from(missing.clone());
+        let wire = Failure::from(ployz_core::rpc::hinted_status(
+            tonic::Code::NotFound,
+            &missing,
+            serde_json::json!({ "inspect": ["ployz server ls"] }),
+        ));
+        for failure in [local, wire] {
+            assert_eq!(failure.report().code, RpcErrorCode::NotFound);
+            assert_eq!(failure.to_string(), "No Server named \"nope\"");
+            assert_eq!(failure.hints(), [Hint::Inspect("ployz server ls".into())]);
+            assert!(failure.causes().is_empty(), "{:?}", failure.causes());
+        }
     }
 
     #[test]

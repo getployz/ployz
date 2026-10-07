@@ -83,9 +83,12 @@ fn routing_resolves_visible_targets_without_repairing_ambiguity() {
 fn an_unknown_server_is_not_found_only_when_members_are_visible() {
     let visible = [machine('a', "alpha", 1)];
     let missing = TargetResolutionError::NotFound(vec![target("nope")]);
+    let status = super::route_status(&missing, &visible);
+    assert_eq!(status.code(), tonic::Code::NotFound);
+    assert_eq!(status.message(), r#"No Server named "nope""#);
     assert_eq!(
-        super::route_status(&missing, &visible).code(),
-        tonic::Code::NotFound
+        ployz_core::rpc::status_details(status.details()),
+        Some(serde_json::json!({ "inspect": ["ployz server ls"] }))
     );
     assert_eq!(
         super::route_status(&missing, &[]).code(),

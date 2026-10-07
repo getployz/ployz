@@ -1160,6 +1160,39 @@ pub fn caused_status(
     tonic::Status::with_details(code, error.to_string(), details.into())
 }
 
+/// [`caused_status`] whose details also carry `hints`: an object keyed like an
+/// [`RpcError`]'s details (`next`, `inspect`, `retry`), read back by [`status_details`].
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn hinted_status(
+    code: tonic::Code,
+    error: &(dyn std::error::Error + 'static),
+    hints: Value,
+) -> tonic::Status {
+    let mut details = hints;
+    if let Some(fields) = details.as_object_mut() {
+        fields.insert("cause".into(), crate::error_chain::causes(error).into());
+    }
+    let details = serde_json::to_vec(&details).expect("a JSON value serializes");
+    tonic::Status::with_details(code, error.to_string(), details.into())
+}
+
+/// The details a [`caused_status`] or [`hinted_status`] carried, without their
+/// causes: `Null` when they carried none, `None` for any other details.
+#[must_use]
+pub fn status_details(details: &[u8]) -> Option<Value> {
+    status_causes(details)?;
+    let Ok(Value::Object(mut fields)) = serde_json::from_slice::<Value>(details) else {
+        return None;
+    };
+    fields.remove("cause");
+    Some(if fields.is_empty() {
+        Value::Null
+    } else {
+        Value::Object(fields)
+    })
+}
+
 /// The causes a [`caused_status`] carried, or `None` for any other details.
 #[must_use]
 pub fn status_causes(details: &[u8]) -> Option<Vec<String>> {

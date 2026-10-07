@@ -1,6 +1,6 @@
-# One output system for the ployz CLI: proposal
+# One output system for the ployz CLI
 
-Status: proposal, 2026-10-05. It builds on the catalog in [README.md](README.md) and the research in [research/](research/).
+Status: shipped, 2026-10-07, in eight PRs; see [Rollout](#7-rollout) for how that differs from the plan. Proposed 2026-10-05. It builds on the catalog in [README.md](README.md) and the research in [research/](research/).
 
 It is based on the decisions the operator made after reading the catalog:
 
@@ -249,3 +249,18 @@ These ship as five stacked PRs, each verified on the verify-server cluster with 
 5. **The 32 bugs in [README.md](README.md#likely-bugs) that this doesn't already fix.** This includes ids, partial results and wording. About 1 day.
 
 Each PR adds snapshot tests of all three modes. In Interactive mode a test forces `--color always`.
+
+### What shipped
+
+The plan's five PRs became eight, all merged by 2026-10-07:
+
+- [#1409](https://github.com/getployz/ployz/pull/1409) captured the outputs and proposed this design.
+- [#1410](https://github.com/getployz/ployz/pull/1410) is the `ui` core (step 1).
+- [#1425](https://github.com/getployz/ployz/pull/1425) carries daemon error causes to the CLI. The plan assumed the CLI already had them.
+- [#1430](https://github.com/getployz/ployz/pull/1430) routes every result through `ui` (step 2).
+- [#1437](https://github.com/getployz/ployz/pull/1437) records per-Server Deployment progress in the store, which the progress renderer reads.
+- [#1445](https://github.com/getployz/ployz/pull/1445) is progress and scoped cancellation (step 3).
+- [#1451](https://github.com/getployz/ployz/pull/1451) is prompts (step 4).
+- [#1455](https://github.com/getployz/ployz/pull/1455) fixes the catalog's bugs (step 5). [README.md](README.md#likely-bugs) records each bug's outcome.
+
+Each PR added targeted tests of the behavior it changed rather than snapshots of all three modes, and was checked on the verify-server cluster by hand. The captures in this folder still show the output from before the change; regenerate them to see the current output.

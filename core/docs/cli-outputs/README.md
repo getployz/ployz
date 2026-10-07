@@ -288,7 +288,7 @@ Each item was checked against the captures. Its status after the output PRs foll
 16. service restart prints the partial Live Observation warning twice. [cluster/errors.md](cluster/errors.md) **Fixed by an earlier output PR.**
 17. logs and server logs exit 0 with no warning when a Machine is down. [cluster/errors.md](cluster/errors.md) **Fixed in P7.**
 18. server drain `--json` prints `public_key` as a byte array; other commands print a base64 string. [cluster/server.md](cluster/server.md) **Fixed in P7.**
-19. `server inspect nope --json` uses code `invalid_argument`, not `not_found`. [cloud-cluster/errors.md](cloud-cluster/errors.md) **Fixed in P7: the code is `not_found`. The message still ends in the daemon's `; ployz server ls lists them`.**
+19. `server inspect nope --json` uses code `invalid_argument`, not `not_found`. [cloud-cluster/errors.md](cloud-cluster/errors.md) **Fixed in P7: the code is `not_found`. The message is `No Server named "nope"`, followed by `inspect: ployz server ls`.**
 20. A registry error's embedded newline (`denied` / `denied`) breaks the indented Deployment result. [cloud-cluster/deploy.md](cloud-cluster/deploy.md) **Fixed in P7.**
 21. up prints `  build workspace from the upload: built ` with an empty detail. [cloud-cluster/deploy.md](cloud-cluster/deploy.md) **Fixed by an earlier output PR.**
 22. Clap Usage lines expose the hidden global: `Usage: ployz service add --image <REF> --project <project> --ployz-config <ployz-config> <name>`. [store/service.md](store/service.md) **Fixed in P7.**
