@@ -249,6 +249,16 @@ async fn reconnect_client(
     .map_err(Into::into)
 }
 
+/// The command as typed, plus `extra`.
+pub(crate) fn typed_with(extra: &[&str]) -> String {
+    let typed = std::env::args().skip(1);
+    shell_words::join(
+        std::iter::once("ployz".to_owned())
+            .chain(typed)
+            .chain(extra.iter().map(|arg| (*arg).to_owned())),
+    )
+}
+
 fn rerun(matches: &ArgMatches, args: &[&str]) -> String {
     let config = config_path(matches).expect("the command resolved its config");
     let config = config.to_string_lossy();

@@ -348,8 +348,8 @@ fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         .expect("organization is required");
     let again = ["org", "rm", slug.as_str(), "--confirm", slug.as_str()];
     let retry = shell_words::join(std::iter::once("ployz").chain(again));
-    if !super::teardown::confirmed(matches, slug, "Organization", retry.clone())? {
-        return Err(Error::detailed(
+    super::teardown::confirm(matches, slug, "Organization", retry.clone(), || {
+        let refusal = Error::detailed(
             RpcErrorCode::ConfirmationRequired,
             format!(
                 "Removing Organization {slug} deletes it with its tokens, Servers' pairing and \
@@ -357,8 +357,16 @@ fn org_remove(root: &ArgMatches) -> Result<(), Error> {
             ),
             serde_json::json!({ "organization": slug }),
         )
-        .hint(Hint::Retry(retry)));
-    }
+        .hint(Hint::Retry(retry.clone()));
+        let loss = ui::Tree::new(
+            format!("Removing Organization {slug} deletes, for good:"),
+            vec![
+                ui::Tree::leaf("its tokens and settings"),
+                ui::Tree::leaf("its Servers' pairing"),
+            ],
+        );
+        Ok((refusal, loss))
+    })?;
     let store = CredentialStore::beside(&config_path(matches)?);
     let removal = runtime()?.block_on(async {
         let credential = cloud_account::from_env(&store).await?;

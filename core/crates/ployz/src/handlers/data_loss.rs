@@ -4,12 +4,9 @@ use super::{Error, leaf_matches, string_values};
 use crate::{connect::Client, context::ConnectionSource};
 use clap::ArgMatches;
 use ployz_core::{DataLoss, DataLossConfirmation, ObservedDataLoss};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io::{self, Write},
-};
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::ui::{self, Hint};
+use crate::ui::{self, Hint, Tree};
 
 #[derive(Clone, Copy)]
 pub(super) enum VolumeEffect {
@@ -25,47 +22,43 @@ pub(super) fn volume_label<'a>(labels: &'a VolumeLabels, loss: &'a DataLoss) -> 
     labels.get(loss.name()).map_or(loss.name(), String::as_str)
 }
 
+/// Accept removing Server `server` and the Volumes it takes. `--confirm` with
+/// every lost Volume named by `--accept-volume-loss` accepts outright; without
+/// `--confirm` a terminal shows the loss and asks for the name, which accepts
+/// them all. Anywhere else, `refusal` gets the full retry.
 pub(super) fn confirm_removal(
     root: &ArgMatches,
     client: &Client,
     observed: &ObservedDataLoss,
-    operation: &str,
-    targets: &[String],
+    server: &str,
     volume_effect: VolumeEffect,
     labels: &VolumeLabels,
-) -> Result<Option<DataLossConfirmation>, Error> {
+    refusal: impl FnOnce(String) -> Error,
+) -> Result<DataLossConfirmation, Error> {
     let leaf = leaf_matches(root);
-    let context = match client.connection_source() {
-        ConnectionSource::Context(name) => name.as_str(),
-        ConnectionSource::Direct => "direct connection",
-        ConnectionSource::LocalSocket => "local socket",
-        ConnectionSource::Cloud => "Cloud",
-    };
-    crate::ui::note(format_args!(
-        "{operation}: {}\nContext: {context}",
-        targets.join(" ")
-    ));
-    let retry = retry_args(root, client.connection_source());
-    confirm_with(
+    let request = Request {
         observed,
-        &string_values(leaf, "accept-volume-loss"),
-        targets,
-        ConfirmationOptions {
-            volume_effect,
-            labels,
-            // A typed `--confirm` stands in for `--yes`.
-            yes: leaf.try_get_one::<bool>("yes").ok().flatten() == Some(&true)
-                || leaf
-                    .try_get_one::<String>("confirm")
-                    .ok()
-                    .flatten()
-                    .is_some(),
-            tty: ui::interactive(),
-        },
-        &retry,
-        &mut std::io::stderr(),
-        read_answer,
-    )
+        labels,
+        server,
+        named: &string_values(leaf, "accept-volume-loss"),
+        typed: leaf.get_one::<String>("confirm").map(String::as_str),
+        retry: &retry_args(root, client.connection_source()),
+    };
+    if !request.check()? {
+        let retry = request.retry();
+        if ui::can_prompt() {
+            ui::note_inline(loss(
+                observed,
+                labels,
+                server,
+                client.connection_source(),
+                volume_effect,
+            ));
+            ui::note("Based on what the connected Server can see; other Servers may hold more.");
+        }
+        ui::confirm_name(server, || refusal(retry), "Cancelled. Nothing was removed.")?;
+    }
+    request.accept()
 }
 
 pub(super) fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Vec<String> {
@@ -79,7 +72,7 @@ pub(super) fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Vec<St
     if leaf.try_get_one::<bool>("no-reset").ok().flatten() == Some(&true) {
         args.push("--no-reset".into());
     }
-    for id in ["connect", "ployz-config", "confirm"] {
+    for id in ["connect", "ployz-config"] {
         if let Some(value) = leaf.try_get_one::<String>(id).ok().flatten() {
             args.extend([format!("--{id}"), value.clone()]);
         }
@@ -90,211 +83,127 @@ pub(super) fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Vec<St
     args
 }
 
-struct ConfirmationOptions<'a> {
-    volume_effect: VolumeEffect,
-    labels: &'a VolumeLabels,
-    yes: bool,
-    tty: bool,
-}
-
-fn confirm_with(
+/// What removing `server` takes, as the tree shown before asking.
+fn loss(
     observed: &ObservedDataLoss,
-    named: &[String],
-    targets: &[String],
-    options: ConfirmationOptions<'_>,
-    retry: &[String],
-    output: &mut dyn Write,
-    mut read: impl FnMut(&str) -> io::Result<Option<String>>,
-) -> Result<Option<DataLossConfirmation>, Error> {
-    let ConfirmationOptions {
-        volume_effect,
-        labels,
-        yes,
-        tty,
-    } = options;
-    let label = |loss| volume_label(labels, loss);
-    writeln!(
-        output,
-        "Based on what the connected machine can see; other machines may have additional resources."
-    )?;
-    match volume_effect {
-        VolumeEffect::Preserve => writeln!(output, "Volumes will be kept.")?,
-        VolumeEffect::LoseAccess => writeln!(
-            output,
-            "Volumes the Cluster loses ({}); only the Server's disk keeps their data:",
-            observed.data_loss.len()
-        )?,
-    }
-    for loss in &observed.data_loss {
-        let DataLoss::DockerVolume { id } = loss;
-        writeln!(output, "  {} (machine ID: {})", label(loss), id.machine_id)?;
-    }
-    let names = observed
-        .data_loss
-        .iter()
-        .map(label)
-        .collect::<BTreeSet<_>>();
-    let supplied = named.iter().map(String::as_str).collect::<BTreeSet<_>>();
-    let unknown = supplied.difference(&names).copied().collect::<Vec<_>>();
-    if !unknown.is_empty() {
-        return Err(Error::usage(format!(
-            "Unknown volume acceptance: {}. Actual affected volumes: {}. No changes made.",
-            unknown.join(", "),
-            names.iter().copied().collect::<Vec<_>>().join(", ")
-        )));
-    }
-    let missing = names.difference(&supplied).copied().collect::<Vec<_>>();
-    if !missing.is_empty() && (!tty || !named.is_empty()) {
-        let mut command = retry.to_vec();
-        for name in &names {
-            command.extend(["--accept-volume-loss".into(), (*name).into()]);
-        }
-        return Err(Error::usage(format!(
-            "Missing volume acceptance: {}. No changes made.",
-            missing.join(", ")
-        ))
-        .hint(Hint::Retry(shell_words::join(command))));
-    }
-    // Past the checks above every observed loss is accepted, by whichever name.
-    let confirmation = || {
-        observed
-            .confirm_names(observed.data_loss.iter().map(DataLoss::name))
-            .map_err(Error::from)
-    };
-    if !named.is_empty() || (names.is_empty() && yes) {
-        return confirmation().map(Some);
-    }
-    if !tty {
-        let mut command = retry.to_vec();
-        command.push("--yes".into());
-        return Err(
-            Error::usage("Confirmation requires a terminal; pass --yes. No changes made.")
-                .hint(Hint::Retry(shell_words::join(command))),
-        );
-    }
-    if prompt(
-        if names.is_empty() { &[] } else { targets },
-        volume_effect,
-        output,
-        &mut read,
-    )? {
-        confirmation().map(Some)
-    } else {
-        Ok(None)
-    }
-}
-
-fn prompt(
-    targets: &[String],
+    labels: &VolumeLabels,
+    server: &str,
+    source: &ConnectionSource,
     volume_effect: VolumeEffect,
-    output: &mut dyn Write,
-    mut read: impl FnMut(&str) -> io::Result<Option<String>>,
-) -> Result<bool, Error> {
-    if !targets.is_empty() {
-        let consequence = match volume_effect {
-            VolumeEffect::LoseAccess => {
-                "lose the listed volumes: only the Server's disk keeps their data"
-            }
-            VolumeEffect::Preserve => "keep the listed volumes",
-        };
-        writeln!(
-            output,
-            "\nThis will remove {} and {consequence}.",
-            targets.join(", ")
-        )?;
-        writeln!(output, "Press Enter without typing to cancel.")?;
-    }
-    loop {
-        let question = if targets.is_empty() {
-            "Continue with removal? Type yes to confirm, or press Enter to cancel: ".to_owned()
-        } else {
-            format!("Type \"{}\" to confirm: ", targets.join(" "))
-        };
-        output.flush()?;
-        let Some(answer) = read(&question)? else {
-            break;
-        };
-        let answer = answer.trim();
-        if answer.is_empty() {
-            break;
+) -> Tree {
+    let context = match source {
+        ConnectionSource::Context(name) => format!("context {name}"),
+        ConnectionSource::Direct => "a direct connection".into(),
+        ConnectionSource::LocalSocket => "the local socket".into(),
+        ConnectionSource::Cloud => "Cloud".into(),
+    };
+    let volumes = match volume_effect {
+        VolumeEffect::Preserve => Tree::leaf("Volumes are kept."),
+        VolumeEffect::LoseAccess if observed.data_loss.is_empty() => {
+            Tree::leaf("No Volumes are lost.")
         }
-        if targets.is_empty() {
-            if matches!(answer, "y" | "Y" | "yes" | "YES") {
-                return Ok(true);
-            }
-            break;
-        }
-        if answer
-            .split_whitespace()
-            .eq(targets.iter().map(String::as_str))
-        {
-            return Ok(true);
-        }
-        writeln!(
-            output,
-            "Names did not match. Type exactly: {}. No changes made.",
-            targets.join(" ")
-        )?;
-    }
-    writeln!(output, "Cancelled. No changes made.")?;
-    Ok(false)
+        VolumeEffect::LoseAccess => Tree::new(
+            "Volumes the Cluster loses; only the Server's disk keeps their data:",
+            observed
+                .data_loss
+                .iter()
+                .map(|loss| {
+                    let DataLoss::DockerVolume { id } = loss;
+                    Tree::leaf(format!(
+                        "{} (machine ID: {})",
+                        volume_label(labels, loss),
+                        id.machine_id
+                    ))
+                })
+                .collect(),
+        ),
+    };
+    Tree::new(
+        format!("Removing Server {server} through {context}:"),
+        vec![volumes],
+    )
 }
 
-#[expect(
-    clippy::wildcard_enum_match_arm,
-    reason = "confirmation ignores non-text terminal keys"
-)]
-fn read_answer(question: &str) -> io::Result<Option<String>> {
-    use crossterm::{
-        event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
-        execute,
-    };
-    let _raw = super::operator::RawTerminal::enable().map_err(io::Error::other)?;
-    let mut output = io::stdout();
-    write!(output, "{question}")?;
-    output.flush()?;
-    let mut answer = String::new();
-    loop {
-        let Event::Key(key) = event::read()? else {
-            continue;
-        };
-        if key.kind == KeyEventKind::Release {
-            continue;
+/// What the flags of one `server rm` say.
+struct Request<'a> {
+    observed: &'a ObservedDataLoss,
+    labels: &'a VolumeLabels,
+    server: &'a str,
+    named: &'a [String],
+    typed: Option<&'a str>,
+    retry: &'a [String],
+}
+
+impl Request<'_> {
+    /// The lost Volumes, by the name a person gives them.
+    fn names(&self) -> BTreeSet<&str> {
+        self.observed
+            .data_loss
+            .iter()
+            .map(|loss| volume_label(self.labels, loss))
+            .collect()
+    }
+
+    /// The command that accepts everything observed now.
+    fn retry(&self) -> String {
+        let mut command = self.retry.to_vec();
+        command.extend(["--confirm".into(), self.server.to_owned()]);
+        for name in self.names() {
+            command.extend(["--accept-volume-loss".into(), name.to_owned()]);
         }
-        match key.code {
-            KeyCode::Char('c' | 'd') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                write!(output, "\r\n")?;
-                return Ok(None);
-            }
-            KeyCode::Enter | KeyCode::Char('j')
-                if key.code == KeyCode::Enter || key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                write!(output, "\r\n")?;
-                return Ok(Some(answer));
-            }
-            KeyCode::Backspace if answer.pop().is_some() => {
-                execute!(
-                    output,
-                    crossterm::cursor::MoveLeft(1),
-                    crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine)
-                )?;
-            }
-            KeyCode::Char(ch)
-                if !ch.is_control() && !key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                answer.push(ch);
-                write!(output, "{ch}")?;
-            }
-            _ => {}
+        shell_words::join(command)
+    }
+
+    /// Whether the flags accept on their own; `false` means the name must be
+    /// typed. Flags that contradict what is observed refuse.
+    fn check(&self) -> Result<bool, Error> {
+        let names = self.names();
+        let supplied = self
+            .named
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let unknown = supplied.difference(&names).copied().collect::<Vec<_>>();
+        if !unknown.is_empty() {
+            return Err(Error::usage(format!(
+                "Unknown volume acceptance: {}. Actual affected volumes: {}. No changes made.",
+                unknown.join(", "),
+                names.iter().copied().collect::<Vec<_>>().join(", ")
+            )));
         }
-        output.flush()?;
+        if let Some(typed) = self.typed
+            && typed != self.server
+        {
+            return Err(Error::usage(format!(
+                "--confirm {} does not match Server {}. No changes made.",
+                typed.escape_debug(),
+                self.server
+            ))
+            .hint(Hint::Retry(self.retry())));
+        }
+        let missing = names.difference(&supplied).copied().collect::<Vec<_>>();
+        if !missing.is_empty() && (self.typed.is_some() || !supplied.is_empty()) {
+            return Err(Error::usage(format!(
+                "Missing volume acceptance: {}. No changes made.",
+                missing.join(", ")
+            ))
+            .hint(Hint::Retry(self.retry())));
+        }
+        Ok(self.typed.is_some())
+    }
+
+    /// Every observed loss, accepted by whichever name it was given.
+    fn accept(&self) -> Result<DataLossConfirmation, Error> {
+        self.observed
+            .confirm_names(self.observed.data_loss.iter().map(DataLoss::name))
+            .map_err(Error::from)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::{DataLoss, DockerVolumeId, DockerVolumeName, MachineId};
+    use ployz_core::{DockerVolumeId, DockerVolumeName, MachineId};
 
     fn loss(machine: char, name: &str) -> DataLoss {
         DataLoss::DockerVolume {
@@ -305,360 +214,197 @@ mod tests {
         }
     }
 
-    #[test]
-    fn machine_reset_confirmation_names_the_loss_without_promising_the_data_is_safe() {
-        let observed = ObservedDataLoss {
-            data_loss: vec![loss('a', "data")],
+    fn request<'a>(
+        observed: &'a ObservedDataLoss,
+        labels: &'a VolumeLabels,
+        named: &'a [String],
+        typed: Option<&'a str>,
+    ) -> Request<'a> {
+        Request {
+            observed,
+            labels,
+            server: "worker",
+            named,
+            typed,
+            retry: &[],
+        }
+    }
+
+    fn retry_of(error: &Error) -> String {
+        let hints = error.hints();
+        let [Hint::Retry(retry)] = hints.as_slice() else {
+            panic!("{hints:?}");
         };
-        let mut output = Vec::new();
-        let confirmation = confirm_with(
-            &observed,
-            &[],
-            &["worker".into()],
-            ConfirmationOptions {
-                volume_effect: VolumeEffect::LoseAccess,
-                labels: &VolumeLabels::new(),
-                yes: false,
-                tty: true,
-            },
-            &[],
-            &mut output,
-            |question| {
-                assert_eq!(question, "Type \"worker\" to confirm: ");
-                Ok(Some("worker".into()))
-            },
-        )
-        .unwrap()
-        .unwrap();
-        assert!(observed.require(&confirmation).is_ok());
-        let output = String::from_utf8(output).unwrap();
-        assert!(
-            output.contains("lose the listed volumes: only the Server's disk keeps their data"),
-            "{output}"
-        );
-        assert!(!output.contains("not be erased"), "{output}");
-        assert!(!output.contains("Permanently delete"), "{output}");
+        retry.clone()
     }
 
     #[test]
-    fn volumes_are_listed_and_accepted_by_their_volume_name() {
+    fn the_loss_names_volumes_without_promising_their_data_is_safe() {
+        let observed = ObservedDataLoss {
+            data_loss: vec![loss('a', "shop-production_vol-1")],
+        };
+        let labels = VolumeLabels::from([("shop-production_vol-1".into(), "pgdata".into())]);
+        let lost = loss_text(&observed, &labels, VolumeEffect::LoseAccess);
+        assert!(
+            lost.contains("Removing Server worker through context prod:"),
+            "{lost}"
+        );
+        assert!(
+            lost.contains("only the Server's disk keeps their data"),
+            "{lost}"
+        );
+        assert!(
+            lost.contains(&format!("pgdata (machine ID: {})", "a".repeat(32))),
+            "{lost}"
+        );
+        assert!(!lost.contains("not be erased"), "{lost}");
+        let kept = loss_text(&observed, &labels, VolumeEffect::Preserve);
+        assert!(kept.contains("Volumes are kept."), "{kept}");
+        assert!(!kept.contains("pgdata"), "{kept}");
+    }
+
+    fn loss_text(
+        observed: &ObservedDataLoss,
+        labels: &VolumeLabels,
+        effect: VolumeEffect,
+    ) -> String {
+        let tree = super::loss(
+            observed,
+            labels,
+            "worker",
+            &ConnectionSource::Context("prod".into()),
+            effect,
+        );
+        anstream::adapter::strip_str(&tree.to_string()).to_string()
+    }
+
+    #[test]
+    fn volumes_are_accepted_by_their_volume_name() {
         let observed = ObservedDataLoss {
             data_loss: vec![loss('a', "shop-production_vol-1"), loss('a', "stray")],
         };
         let labels = VolumeLabels::from([("shop-production_vol-1".into(), "pgdata".into())]);
-        let options = |tty| ConfirmationOptions {
-            volume_effect: VolumeEffect::LoseAccess,
-            labels: &labels,
-            yes: false,
-            tty,
-        };
-        let mut output = Vec::new();
-        let missing = confirm_with(
-            &observed,
-            &[],
-            &["worker".into()],
-            options(false),
-            &["ployz".into()],
-            &mut output,
-            |_| panic!("no tty"),
-        )
-        .unwrap_err();
-        let hints = missing.hints();
-        let [Hint::Retry(missing)] = hints.as_slice() else {
-            panic!("{hints:?}");
-        };
+        let raw = ["shop-production_vol-1".into(), "stray".into()];
+        let error = request(&observed, &labels, &raw, Some("worker"))
+            .check()
+            .unwrap_err()
+            .to_string();
         assert!(
-            missing.contains("--accept-volume-loss pgdata --accept-volume-loss stray"),
-            "{missing}"
+            error.contains("Unknown volume acceptance: shop-production_vol-1"),
+            "{error}"
         );
-        assert!(
-            String::from_utf8(output)
-                .unwrap()
-                .contains("  pgdata (machine ID:")
-        );
-        let raw = confirm_with(
-            &observed,
-            &["shop-production_vol-1".into(), "stray".into()],
-            &["worker".into()],
-            options(false),
-            &[],
-            &mut Vec::new(),
-            |_| panic!("no tty"),
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(
-            raw.contains("Unknown volume acceptance: shop-production_vol-1"),
-            "{raw}"
-        );
-        let confirmed = confirm_with(
-            &observed,
-            &["pgdata".into(), "stray".into()],
-            &["worker".into()],
-            options(false),
-            &[],
-            &mut Vec::new(),
-            |_| panic!("no tty"),
-        )
-        .unwrap()
-        .unwrap();
-        assert!(observed.require(&confirmed).is_ok());
+        let named = ["pgdata".into(), "stray".into()];
+        let accepted = request(&observed, &labels, &named, Some("worker"));
+        assert!(accepted.check().unwrap());
+        assert!(observed.require(&accepted.accept().unwrap()).is_ok());
     }
 
     #[test]
-    fn unknown_names_refuse_even_when_no_volumes_exist() {
-        for observed in [
-            ObservedDataLoss { data_loss: vec![] },
-            ObservedDataLoss {
-                data_loss: vec![loss('a', "data")],
-            },
-        ] {
-            let error = confirm_with(
-                &observed,
-                &["gone".into()],
-                &["app".into()],
-                ConfirmationOptions {
-                    volume_effect: VolumeEffect::LoseAccess,
-                    labels: &VolumeLabels::new(),
-                    yes: true,
-                    tty: true,
-                },
-                &[],
-                &mut Vec::new(),
-                |_| panic!("must not prompt"),
-            )
-            .unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("Unknown volume acceptance: gone")
-            );
-        }
-    }
-
-    #[test]
-    fn non_tty_requires_all_names_even_with_yes_and_never_reads_piped_input() {
+    fn a_typed_name_needs_every_volume_named() {
         let observed = ObservedDataLoss {
             data_loss: vec![loss('a', "data"), loss('b', "data"), loss('a', "logs")],
         };
+        let labels = VolumeLabels::new();
+        let retry = [
+            "ployz".into(),
+            "server".into(),
+            "rm".into(),
+            "worker".into(),
+            "--context".into(),
+            "prod west".into(),
+        ];
         for named in [vec![], vec!["data".into()]] {
-            for yes in [false, true] {
-                let error = confirm_with(
-                    &observed,
-                    &named,
-                    &["app".into()],
-                    ConfirmationOptions {
-                        volume_effect: VolumeEffect::LoseAccess,
-                        labels: &VolumeLabels::new(),
-                        yes,
-                        tty: false,
-                    },
-                    &[
-                        "ployz".into(),
-                        "server".into(),
-                        "rm".into(),
-                        "app".into(),
-                        "--context".into(),
-                        "prod west".into(),
-                    ],
-                    &mut Vec::new(),
-                    |_| panic!("must not read stdin"),
-                )
-                .unwrap_err();
-                let hints = error.hints();
-                let [Hint::Retry(command)] = hints.as_slice() else {
-                    panic!("{hints:?}");
-                };
-                assert!(
-                    command.contains("--accept-volume-loss data --accept-volume-loss logs"),
-                    "{command}"
-                );
-                assert!(
-                    shell_words::split(command)
-                        .unwrap()
-                        .contains(&"prod west".into())
-                );
+            let error = Request {
+                retry: &retry,
+                ..request(&observed, &labels, &named, Some("worker"))
             }
-        }
-        for tty in [false, true] {
-            let confirmed = confirm_with(
-                &observed,
-                &["data".into(), "logs".into(), "data".into()],
-                &["app".into()],
-                ConfirmationOptions {
-                    volume_effect: VolumeEffect::LoseAccess,
-                    labels: &VolumeLabels::new(),
-                    yes: false,
-                    tty,
-                },
-                &[],
-                &mut Vec::new(),
-                |_| panic!("must not prompt"),
-            )
-            .unwrap()
-            .unwrap();
-            assert!(observed.require(&confirmed).is_ok());
-            let changed = ObservedDataLoss {
-                data_loss: vec![loss('c', "data")],
-            };
-            let error = crate::failure::refusal_from_rpc(
-                changed.require(&confirmed).unwrap_err().into_rpc_error(),
-            )
-            .to_string();
-            assert!(error.contains(&"c".repeat(32)) && error.contains("Rerun"));
-        }
-    }
-
-    #[test]
-    fn tty_retries_target_names_and_cancels_without_acceptance() {
-        let observed = ObservedDataLoss {
-            data_loss: vec![loss('a', "data")],
-        };
-        let targets = vec!["app/db".into(), "app/api".into()];
-        let mut input = [Some("db".into()), Some("app/db app/api".into())].into_iter();
-        let mut output = Vec::new();
-        let confirmed = confirm_with(
-            &observed,
-            &[],
-            &targets,
-            ConfirmationOptions {
-                volume_effect: VolumeEffect::LoseAccess,
-                labels: &VolumeLabels::new(),
-                yes: true,
-                tty: true,
-            },
-            &[],
-            &mut output,
-            |question| {
-                assert_eq!(question, "Type \"app/db app/api\" to confirm: ");
-                assert!(!question.contains("[y/N]"));
-                Ok(input.next().unwrap())
-            },
-        )
-        .unwrap()
-        .unwrap();
-        assert!(observed.require(&confirmed).is_ok());
-        let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("This will remove app/db, app/api and lose the listed volumes: only the Server's disk keeps their data."));
-        assert!(output.contains("Press Enter without typing to cancel."));
-        assert!(output.contains("Volumes the Cluster loses (1);"));
-        assert!(output.contains("(machine ID: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"));
-        assert!(output.contains("Names did not match"));
-        assert!(!output.contains("[y/N]"));
-        for answer in [None, Some(String::new())] {
-            let mut output = Vec::new();
+            .check()
+            .unwrap_err();
             assert!(
-                confirm_with(
-                    &observed,
-                    &[],
-                    &targets,
-                    ConfirmationOptions {
-                        volume_effect: VolumeEffect::LoseAccess,
-                        labels: &VolumeLabels::new(),
-                        yes: false,
-                        tty: true
-                    },
-                    &[],
-                    &mut output,
-                    |_| Ok(answer.clone())
-                )
-                .unwrap()
-                .is_none()
+                error.to_string().contains("Missing volume acceptance"),
+                "{error}"
+            );
+            let retry = retry_of(&error);
+            assert!(
+                retry.contains(
+                    "--confirm worker --accept-volume-loss data --accept-volume-loss logs"
+                ),
+                "{retry}"
             );
             assert!(
-                String::from_utf8(output)
+                shell_words::split(&retry)
                     .unwrap()
-                    .contains("Cancelled. No changes made.")
+                    .contains(&"prod west".into())
             );
         }
-        assert!(
-            confirm_with(
-                &observed,
-                &["wrong".into()],
-                &targets,
-                ConfirmationOptions {
-                    volume_effect: VolumeEffect::LoseAccess,
-                    labels: &VolumeLabels::new(),
-                    yes: false,
-                    tty: true
-                },
-                &[],
-                &mut Vec::new(),
-                |_| panic!("invalid flags never fall back to prompt")
-            )
-            .is_err()
-        );
+        let named = ["data".into(), "logs".into(), "data".into()];
+        let confirmed = request(&observed, &labels, &named, Some("worker"));
+        assert!(confirmed.check().unwrap());
+        let confirmed = confirmed.accept().unwrap();
+        assert!(observed.require(&confirmed).is_ok());
+        let changed = ObservedDataLoss {
+            data_loss: vec![loss('c', "data")],
+        };
+        let error = crate::failure::refusal_from_rpc(
+            changed.require(&confirmed).unwrap_err().into_rpc_error(),
+        )
+        .to_string();
+        assert!(error.contains(&"c".repeat(32)) && error.contains("Rerun"));
     }
 
     #[test]
-    fn no_volume_and_preserved_volume_removal_need_ordinary_confirmation() {
-        let observed = ObservedDataLoss { data_loss: vec![] };
-        for (effect, shown) in [
-            (VolumeEffect::Preserve, "Volumes will be kept"),
-            (VolumeEffect::LoseAccess, "Volumes the Cluster loses (0)"),
-        ] {
-            let mut output = Vec::new();
+    fn without_confirm_the_name_is_asked_for_unless_flags_contradict() {
+        let observed = ObservedDataLoss {
+            data_loss: vec![loss('a', "data"), loss('a', "logs")],
+        };
+        let labels = VolumeLabels::new();
+        assert!(!request(&observed, &labels, &[], None).check().unwrap());
+        let all = ["data".into(), "logs".into()];
+        assert!(!request(&observed, &labels, &all, None).check().unwrap());
+        let partial = ["data".into()];
+        let error = request(&observed, &labels, &partial, None)
+            .check()
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Missing volume acceptance: logs"),
+            "{error}"
+        );
+        let error = request(&observed, &labels, &[], Some("wroker"))
+            .check()
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("does not match Server worker"),
+            "{error}"
+        );
+        assert!(retry_of(&error).contains("--confirm worker"));
+        for observed in [ObservedDataLoss { data_loss: vec![] }, observed] {
+            let gone = ["gone".into()];
+            let error = request(&observed, &labels, &gone, Some("worker"))
+                .check()
+                .unwrap_err();
             assert!(
-                confirm_with(
-                    &observed,
-                    &[],
-                    &["app".into()],
-                    ConfirmationOptions {
-                        volume_effect: effect,
-                        labels: &VolumeLabels::new(),
-                        yes: false,
-                        tty: false
-                    },
-                    &[],
-                    &mut output,
-                    |_| panic!("no tty")
-                )
-                .is_err()
-            );
-            assert!(String::from_utf8(output).unwrap().contains(shown));
-            assert!(
-                confirm_with(
-                    &observed,
-                    &[],
-                    &["app".into()],
-                    ConfirmationOptions {
-                        volume_effect: effect,
-                        labels: &VolumeLabels::new(),
-                        yes: true,
-                        tty: false
-                    },
-                    &[],
-                    &mut Vec::new(),
-                    |_| panic!("yes")
-                )
-                .unwrap()
-                .is_some()
-            );
-            assert!(
-                confirm_with(
-                    &observed,
-                    &[],
-                    &["app".into()],
-                    ConfirmationOptions {
-                        volume_effect: effect,
-                        labels: &VolumeLabels::new(),
-                        yes: false,
-                        tty: true
-                    },
-                    &[],
-                    &mut Vec::new(),
-                    |question| {
-                        assert_eq!(
-                            question,
-                            "Continue with removal? Type yes to confirm, or press Enter to cancel: "
-                        );
-                        Ok(Some("y".into()))
-                    }
-                )
-                .unwrap()
-                .is_some()
+                error
+                    .to_string()
+                    .contains("Unknown volume acceptance: gone"),
+                "{error}"
             );
         }
+    }
+
+    #[test]
+    fn no_volumes_lost_still_needs_the_name() {
+        let observed = ObservedDataLoss { data_loss: vec![] };
+        let labels = VolumeLabels::new();
+        assert!(!request(&observed, &labels, &[], None).check().unwrap());
+        assert!(
+            request(&observed, &labels, &[], Some("worker"))
+                .check()
+                .unwrap()
+        );
+        let text = loss_text(&observed, &labels, VolumeEffect::LoseAccess);
+        assert!(text.contains("No Volumes are lost."), "{text}");
     }
 
     #[test]

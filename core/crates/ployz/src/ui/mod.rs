@@ -5,9 +5,11 @@ mod error;
 mod exit;
 mod mode;
 pub(crate) mod progress;
+mod prompt;
 mod result;
 mod table;
 mod tone;
+mod tree;
 
 #[cfg(test)]
 pub(crate) use error::chain_text;
@@ -17,6 +19,7 @@ pub(crate) use error::{retrying, row, rpc_error, warn_cause};
 pub(crate) use exit::plain;
 pub use exit::{PARTIAL_EXIT, exit, exit_code};
 pub use mode::{Mode, Surroundings, mode};
+pub(crate) use prompt::{can_prompt, confirm, confirm_name, select};
 pub use result::json;
 pub(crate) use result::{
     Gaps, captured, done, emit, emit_committed, emit_line, emitted, fields, finish, finish_fanout,
@@ -25,6 +28,7 @@ pub(crate) use result::{
 pub(crate) use table::short_id;
 pub use table::{Cell, Fields, Table};
 pub use tone::{Painted, Tone, clap_styles};
+pub(crate) use tree::Tree;
 
 /// `--color`: when output carries color.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

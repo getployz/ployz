@@ -34,7 +34,7 @@ pub fn json() -> bool {
     super::mode() == Mode::Json
 }
 
-/// Whether the command may prompt: a terminal on both ends and no `--json`.
+/// Whether a person is at both ends, so a browser may open for them.
 #[must_use]
 pub(crate) fn interactive() -> bool {
     !json() && io::stdin().is_terminal() && io::stdout().is_terminal()

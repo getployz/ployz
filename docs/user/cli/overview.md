@@ -112,8 +112,15 @@ Scripts can tell failures apart by exit code:
 | 1 | It failed: something wasn't found, a server couldn't be reached, Ployz refused, or the server or Cloud doesn't support what you asked. |
 | 2 | Fix the command: a bad argument, a flag the command doesn't take, a missing `--confirm`, or a name that matches more than one thing. |
 | 3 | You got a result, but some servers didn't answer, so part of it is missing. Run it again once they're back. |
+| 130 | You cancelled: pressed Ctrl-C, or didn't confirm a prompt. Nothing was removed. |
 
 `ployz exec` exits with your command's own exit code.
+
+A command that deletes something, such as `ployz project rm shop`, shows what goes and asks you
+to type its name. Anything else, or Ctrl-C, cancels. Without a terminal, in CI, or with
+`--json` it never asks: it exits 2 and prints the command to run instead, which passes the name
+with `--confirm`. Commands that would otherwise ask you to choose, such as `ployz ctx use` without
+a name or the storage choice in `ployz server add`, work the same way.
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in
 one. Set `NO_COLOR=1` or pass `--color never` to turn color off, or `--color always` to keep it
