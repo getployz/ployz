@@ -95,7 +95,7 @@ async fn accept_refuses_a_mirror_without_the_handed_over_snapshot() {
     let response = post(
         &socket,
         "/Volume.AcceptHandOff",
-        at(1, 9, 0, 0, json!({"guid":900})),
+        at(1, 9, 0, 0, json!({"guid":"900"})),
     )
     .await;
     assert_eq!(
@@ -118,7 +118,7 @@ async fn accept_marks_the_final_mirror_handed_in_and_replays() {
         let response = post(
             &socket,
             "/Volume.AcceptHandOff",
-            at(1, 9, 0, 0, json!({"guid":900})),
+            at(1, 9, 0, 0, json!({"guid":"900"})),
         )
         .await;
         assert_eq!(
@@ -246,7 +246,7 @@ async fn start_mounts_through_the_grant_while_open_then_closes_and_replays() {
     .await;
     assert_eq!(
         admitted.pointer("/Ok/copy/newest/guid"),
-        Some(&json!(900)),
+        Some(&json!("900")),
         "{admitted}"
     );
     assert_eq!(admitted.pointer("/Ok/lease/cycle"), Some(&json!("open")));
@@ -513,7 +513,7 @@ async fn every_target_verb_finishes_after_a_real_kill_after_record() {
         "Restore",
     ] {
         let (route, request) = match verb {
-            "AcceptHandOff" => ("AcceptHandOff", at(1, 9, 0, 0, json!({"guid":900}))),
+            "AcceptHandOff" => ("AcceptHandOff", at(1, 9, 0, 0, json!({"guid":"900"}))),
             "StartHandedContainer" => ("AdmitHandedStart", at(1, 11, 0, 0, json!({}))),
             _ => (verb, at(1, 10, 0, 0, json!({}))),
         };

@@ -3,16 +3,16 @@ import { describe, expect, it } from "vitest";
 import { type PlanInput, planFromCopies, type Role, roleOf } from "#/modules/volume-run/plan";
 import type { Member } from "#/modules/volume-run/volume-run";
 
-const snapshot = { name: "ployz-1", guid: 11, created_unix_seconds: 1_790_000_000 };
+const snapshot = { name: "ployz-1", guid: "11", created_unix_seconds: 1_790_000_000 };
 const lease = (cycle: LeaseRecord["cycle"]): LeaseRecord => ({ lease: 4, pos: { seq: 4, round: 0, sub: 5 }, cycle });
 
 const COPIES = {
   writer: { kind: "root", writer: { phase: "idle" }, readonly: false, newest: snapshot },
-  switching: { kind: "root", writer: { phase: "frozen", guid: 11 }, readonly: true, newest: snapshot },
-  handed: { kind: "root", writer: { phase: "handed", guid: 11 }, readonly: true, newest: snapshot },
+  switching: { kind: "root", writer: { phase: "frozen", guid: "11" }, readonly: true, newest: snapshot },
+  handed: { kind: "root", writer: { phase: "handed", guid: "11" }, readonly: true, newest: snapshot },
   mirror: { kind: "slot", mirror: { phase: "idle" }, readonly: true, newest: snapshot, resume_token: null },
-  final: { kind: "slot", mirror: { phase: "final", guid: 11 }, readonly: true, newest: snapshot, resume_token: null },
-  stale: { kind: "slot", mirror: { phase: "handed_in", guid: 11 }, readonly: true, newest: snapshot, resume_token: null },
+  final: { kind: "slot", mirror: { phase: "final", guid: "11" }, readonly: true, newest: snapshot, resume_token: null },
+  stale: { kind: "slot", mirror: { phase: "handed_in", guid: "11" }, readonly: true, newest: snapshot, resume_token: null },
   promoting: { kind: "slot", mirror: { phase: "promoting" }, readonly: true, newest: snapshot, resume_token: null },
 } satisfies Record<string, VolumeCopy>;
 

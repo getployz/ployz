@@ -1297,7 +1297,7 @@ async fn a_replayed_handed_start_adopts_the_container_created_under_its_handoff_
         "Volume.AdmitHandedStart",
         json!({"Ok": {"decision":"adopt", "lease":lease, "copy":{
             "kind":"root", "writer":{"phase":"idle"}, "readonly":false,
-            "newest":{"name":"f-1", "guid":900, "created_unix_seconds":1_700_000_000}
+            "newest":{"name":"f-1", "guid":"900", "created_unix_seconds":1_700_000_000}
         }}}),
     );
     plugin.reply(
@@ -1439,7 +1439,7 @@ fn admitted_handed_start(plugin: &crate::storage::test_support::FakePlugin) {
         json!({"Ok": {"decision":"adopt",
             "lease":{"lease":1,"pos":{"seq":11,"round":0,"sub":0},"cycle":"open"},
             "copy":{"kind":"root", "writer":{"phase":"idle"}, "readonly":false,
-                "newest":{"name":"f-1", "guid":900, "created_unix_seconds":1_700_000_000}}
+                "newest":{"name":"f-1", "guid":"900", "created_unix_seconds":1_700_000_000}}
         }}),
     );
     plugin.reply(

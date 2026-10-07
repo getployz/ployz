@@ -43,15 +43,15 @@ type FakeMachine = {
   silent?: boolean;
   copy: VolumeCopy | null;
   lease: LeaseRecord | null;
-  warms?: number[];
-  receiving?: { target: string; guid: number; polls: number; resumable?: boolean };
+  warms?: string[];
+  receiving?: { target: string; guid: string; polls: number; resumable?: boolean };
 };
 
-const snap = (guid: number): Snapshot => ({ name: `ployz-${guid}`, guid, created_unix_seconds: 1_790_000_000 + guid });
-const writerCopy = (guid: number | null): VolumeCopy =>
+const snap = (guid: string): Snapshot => ({ name: `ployz-${guid}`, guid, created_unix_seconds: 1_790_000_000 });
+const writerCopy = (guid: string | null): VolumeCopy =>
   ({ kind: "root", writer: { phase: "idle" }, readonly: false, newest: guid === null ? null : snap(guid) });
-const slotCopy = (guid: number | null, phase: "idle" | "handed_in" = "idle"): VolumeCopy =>
-  ({ kind: "slot", mirror: phase === "idle" ? { phase } : { phase, guid: 1 }, readonly: true, newest: guid === null ? null : snap(guid), resume_token: null });
+const slotCopy = (guid: string | null, phase: "idle" | "handed_in" = "idle"): VolumeCopy =>
+  ({ kind: "slot", mirror: phase === "idle" ? { phase } : { phase, guid: "1" }, readonly: true, newest: guid === null ? null : snap(guid), resume_token: null });
 const idOf = (name: string) => name.padEnd(32, "0") as MachineId;
 const first = <T>(items: readonly T[]): T => {
   const item = items[0];
@@ -75,6 +75,7 @@ describe("volume runs", () => {
   let machines: FakeMachine[];
   let verbs: string[];
   let failNext: Map<string, unknown>;
+  let sent: VolumeSwitchRequest[];
   let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" } }>;
 
   const machine = (target: string) => {
@@ -116,7 +117,7 @@ describe("volume runs", () => {
         return reply();
       }
       case "start_receive": {
-        const guid = Number(request.payload.target.replace("ployz-", ""));
+        const guid = request.payload.target.replace("ployz-", "");
         fake.receiving ??= { target: request.payload.target, guid, polls: 0 };
         return reply();
       }
@@ -134,6 +135,7 @@ describe("volume runs", () => {
     }),
     volumeSwitch: (target: string, request: VolumeSwitchRequest) => Effect.suspend(() => {
       const fake = machine(target);
+      sent.push(request);
       if (fake.silent === true) return Effect.never;
       const payload = request.payload as { switch?: { pos: { seq: number; round: number; sub: number } } };
       const pos = payload.switch?.pos;
@@ -196,9 +198,10 @@ describe("volume runs", () => {
   beforeEach(async () => {
     verbs = [];
     failNext = new Map();
+    sent = [];
     storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 5_000_000 } }];
     machines = [
-      { name: "fsn-1", pool: true, copy: writerCopy(10), lease: null, warms: [21] },
+      { name: "fsn-1", pool: true, copy: writerCopy("10"), lease: null, warms: ["21"] },
       { name: "fsn-2", pool: true, copy: null, lease: null },
     ];
     send.mockReset();
@@ -235,7 +238,7 @@ describe("volume runs", () => {
 
     it("rerun_from_step_refused: a rerun under a new run id stops at its first effect step", async () => {
       const run = await requested({ kind: "sync", args: { full: false } });
-      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(10), lease: null };
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: null };
       await execute(run.id, "run-1");
       const claimed = { kind: "claimed", run: context(run.id) };
       verbs = [];
@@ -350,8 +353,8 @@ describe("volume runs", () => {
   describe("C16", () => {
     it("lease_from_machines: one above the highest lease a Machine holds, adopted by every Machine with a Pool", async () => {
       machines = [
-        { name: "fsn-1", pool: true, copy: writerCopy(10), lease: { lease: 7, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" }, warms: [10] },
-        { name: "fsn-2", pool: true, copy: slotCopy(10), lease: { lease: 3, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" } },
+        { name: "fsn-1", pool: true, copy: writerCopy("10"), lease: { lease: 7, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" }, warms: ["10"] },
+        { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: { lease: 3, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" } },
         { name: "fsn-3", pool: false, copy: null, lease: null },
         { name: "docker-1", pool: false, stateless: true, copy: null, lease: null, silent: true },
       ];
@@ -370,9 +373,9 @@ describe("volume runs", () => {
         `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state, lease, finished_at)
          values ($1, 'env-1', $2, 'data', $3, 'sync', '{"full":false}', 'done', 12, now())`,
         [organizationId, volumeId, dockerVolume]);
-      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(10), lease: null };
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: null };
       first(machines).lease = { lease: 4, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" };
-      first(machines).warms = [10];
+      first(machines).warms = ["10"];
       const run = await requested({ kind: "sync", args: { full: false } });
 
       await execute(run.id);
@@ -384,8 +387,8 @@ describe("volume runs", () => {
     it("a replayed lease step adopts the lease the row already holds", async () => {
       const run = await requested({ kind: "sync", args: { full: false } });
       await harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1', lease = 40 where id = $1`, [run.id]);
-      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(10), lease: null };
-      first(machines).warms = [10];
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: null };
+      first(machines).warms = ["10"];
 
       await execute(run.id, "run-1");
 
@@ -395,7 +398,7 @@ describe("volume runs", () => {
 
   describe("verbs per kind", () => {
     it("mirror: declares the slot, then rounds until Warm makes nothing new", async () => {
-      first(machines).warms = [21, 22, 22];
+      first(machines).warms = ["21", "22", "22"];
       const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
 
       const output = await execute(run.id);
@@ -411,12 +414,24 @@ describe("volume runs", () => {
         "prune_mirror@fsn-2(4,1,4)", "commit_snapshots@fsn-1(4,1,5)",
         "begin_round@fsn-2(4,2,0)", "commit_snapshots@fsn-1(4,2,1)", "warm_snapshot@fsn-1(4,2,2)",
       ]);
-      expect(machines[1]?.copy).toMatchObject({ kind: "slot", newest: { guid: 22 } });
+      expect(machines[1]?.copy).toMatchObject({ kind: "slot", newest: { guid: "22" } });
+    });
+
+    it("mirror: commits a guid above 2^53 exactly as the Machine reported it", async () => {
+      const guid = "5695289101028938467";
+      first(machines).warms = [guid];
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeUndefined();
+      expect(sent.flatMap((request) => request.command === "commit_snapshots" ? [request.payload.mirror_newest] : []))
+        .toEqual([guid, guid]);
     });
 
     it("mirror: a resumable receive starts again from its token at the same position", async () => {
-      first(machines).warms = [21];
-      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(null), lease: null, receiving: { target: "ployz-21", guid: 21, polls: 0, resumable: true } };
+      first(machines).warms = ["21"];
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(null), lease: null, receiving: { target: "ployz-21", guid: "21", polls: 0, resumable: true } };
       const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
 
       await execute(run.id);
@@ -439,8 +454,8 @@ describe("volume runs", () => {
     });
 
     it("sync: rounds onto the existing mirror, committing what it already holds first", async () => {
-      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(10), lease: null };
-      first(machines).warms = [21, 21];
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: null };
+      first(machines).warms = ["21", "21"];
       const run = await requested({ kind: "sync", args: { full: false } });
 
       await execute(run.id);
@@ -454,8 +469,8 @@ describe("volume runs", () => {
     });
 
     it("sync --full: destroys the mirror, forgets the writer's snapshots, declares a fresh slot, then rounds", async () => {
-      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(10), lease: null };
-      first(machines).warms = [21, 21];
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: null };
+      first(machines).warms = ["21", "21"];
       const run = await requested({ kind: "sync", args: { full: true } });
 
       await execute(run.id);
@@ -469,7 +484,7 @@ describe("volume runs", () => {
     });
 
     it("sync: a diverged mirror fails the run with the rebuild hint", async () => {
-      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(10), lease: null };
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: null };
       failNext.set("commit_snapshots@fsn-1", { code: "failed_precondition", message: "diverged", details: { reason: "precondition" } });
       const run = await requested({ kind: "sync", args: { full: false } });
 
@@ -479,12 +494,12 @@ describe("volume runs", () => {
       expect(verbs.at(-1)).toBe("commit_snapshots@fsn-1(4,0,1)");
       expect(await rows()).toMatchObject([{
         state: "failed",
-        message: `data-fsn-2 diverged at ${new Date((1_790_000_000 + 10) * 1000).toISOString()}; volume sync --full to rebuild`,
+        message: `data-fsn-2 diverged at ${new Date(1_790_000_000 * 1000).toISOString()}; volume sync --full to rebuild`,
       }]);
     });
 
     it("delete_mirror: destroys the slot, then forgets on the writer", async () => {
-      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(10), lease: null };
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: null };
       const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null } });
 
       await execute(run.id);
@@ -496,8 +511,8 @@ describe("volume runs", () => {
     it("orphan delete: destroys every slot of the name, forgets nothing", async () => {
       machines = [
         { name: "fsn-1", pool: true, copy: null, lease: null },
-        { name: "fsn-2", pool: true, copy: slotCopy(10), lease: null },
-        { name: "fsn-3", pool: true, copy: slotCopy(9, "handed_in"), lease: null },
+        { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: null },
+        { name: "fsn-3", pool: true, copy: slotCopy("9", "handed_in"), lease: null },
       ];
       const orphan = "gone-production_vol-old";
       const started = await runEffect(startOrphanDeletes(organizationId, () =>

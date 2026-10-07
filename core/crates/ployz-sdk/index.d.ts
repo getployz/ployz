@@ -64,6 +64,7 @@ import type {
   InspectVolumeCopyRequest,
   MirrorRequest,
   ReceiveView,
+  SnapshotGuid,
   SwitchReply,
   Switch,
   VolumeCopyView,
@@ -75,7 +76,7 @@ export type StartReceiveRequest = {
   switch: Switch;
   name: string;
   from: string;
-  base: number | null;
+  base: SnapshotGuid | null;
   target: string;
   resume_token: string | null;
 };

@@ -198,9 +198,9 @@ async fn inspect_reports_a_root_with_its_marker_and_newest_snapshot() {
         json!({"Ok": {
             "copy": {
                 "kind": "root",
-                "writer": {"phase": "frozen", "guid": 42},
+                "writer": {"phase": "frozen", "guid": "42"},
                 "readonly": false,
-                "newest": {"name": "f-2", "guid": 42, "created_unix_seconds": 1_700_000_000},
+                "newest": {"name": "f-2", "guid": "42", "created_unix_seconds": 1_700_000_000},
             },
             "lease": {"lease": 2, "pos": {"seq": 6, "round": 0, "sub": 0}, "cycle": "open"},
         }})
@@ -219,7 +219,7 @@ async fn inspect_reports_a_slot_and_nothing_for_an_unknown_name() {
         response.pointer("/Ok/copy").unwrap(),
         &json!({
             "kind": "slot",
-            "mirror": {"phase": "final", "guid": 9},
+            "mirror": {"phase": "final", "guid": "9"},
             "readonly": true,
             "newest": null,
             "resume_token": null,

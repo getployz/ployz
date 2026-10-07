@@ -3208,7 +3208,7 @@ reason: string, };
 
 export type Snapshot = { name: SnapshotName, guid: SnapshotGuid, created_unix_seconds: number, };
 
-export type SnapshotGuid = number;
+export type SnapshotGuid = string;
 
 export type SnapshotName = string;
 

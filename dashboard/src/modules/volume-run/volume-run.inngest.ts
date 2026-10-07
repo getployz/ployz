@@ -1,4 +1,4 @@
-import type { Snapshot } from "@ployz/sdk";
+import type { Snapshot, SnapshotGuid } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import { inngestRunStatus, type PloyzInngest, type PloyzStepTools } from "#/modules/inngest/client";
@@ -44,7 +44,7 @@ const VolumeRunRequestedData = Schema.Struct({
 });
 
 type Pos = { readonly seq: number; readonly round: number; readonly sub: number };
-type Newest = { readonly name: string; readonly guid: number; readonly created_unix_seconds: number } | null;
+type Newest = { readonly name: string; readonly guid: SnapshotGuid; readonly created_unix_seconds: number } | null;
 
 const newestOf = (snapshot: Snapshot | null | undefined): Newest =>
   snapshot === null || snapshot === undefined
@@ -205,7 +205,7 @@ async function pollReceive(
   round: number,
   prefix: string,
   receive: (id: string, token: string | null) => Promise<{ readonly newest: Newest }>,
-): Promise<{ readonly guid: number; readonly name: string }> {
+): Promise<{ readonly guid: SnapshotGuid; readonly name: string }> {
   for (let poll = 0; poll < MAX_POLLS; poll += 1) {
     await step.sleep(`${prefix}-3-wait-${poll}`, POLL_INTERVAL);
     const status = await step.run(`${prefix}-3-inspect-${poll}`, () =>

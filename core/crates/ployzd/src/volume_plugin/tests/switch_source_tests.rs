@@ -135,7 +135,7 @@ async fn freeze_stops_the_holder_and_keeps_one_final_snapshot_on_replay() {
         );
         assert_eq!(
             response.pointer("/Ok/copy/writer"),
-            Some(&json!({"phase":"frozen","guid":900}))
+            Some(&json!({"phase":"frozen","guid":"900"}))
         );
         assert_eq!(response.pointer("/Ok/copy/readonly"), Some(&json!(true)));
     }
@@ -151,7 +151,7 @@ async fn freeze_creates_the_final_snapshot_after_unmounting() {
     let response = post(&socket, "/Volume.Freeze", source(6)).await;
     assert_eq!(
         response.pointer("/Ok/copy/writer"),
-        Some(&json!({"phase":"frozen","guid":1000})),
+        Some(&json!({"phase":"frozen","guid":"1000"})),
         "{response}"
     );
     assert_eq!(snapshot_names(&test, "tank/ployz/data"), ["f-1"]);
@@ -188,7 +188,7 @@ async fn hand_over_matches_the_final_guid_and_thaw_is_refused_without_changing_r
     let bad = post(
         &socket,
         "/Volume.HandOver",
-        at(1, 8, 0, 0, json!({"guid":901})),
+        at(1, 8, 0, 0, json!({"guid":"901"})),
     )
     .await;
     assert_eq!(
@@ -199,7 +199,7 @@ async fn hand_over_matches_the_final_guid_and_thaw_is_refused_without_changing_r
         let response = post(
             &socket,
             "/Volume.HandOver",
-            at(1, 8, 0, 0, json!({"guid":900})),
+            at(1, 8, 0, 0, json!({"guid":"900"})),
         )
         .await;
         assert_eq!(response.pointer("/Ok/decision"), Some(&json!(decision)));
@@ -371,7 +371,7 @@ async fn every_source_verb_finishes_after_a_real_kill_after_record() {
             "HandOver",
             "frozen:900",
             true,
-            at(1, 8, 0, 0, json!({"guid":900})),
+            at(1, 8, 0, 0, json!({"guid":"900"})),
             "handed",
             "open",
         ),

@@ -34,7 +34,7 @@ fn every_volume_run_verb_is_sent_on_its_own_path() {
         ("begin_round", leased.clone(), "BeginRound"),
         (
             "commit_snapshots",
-            json!({ "switch": switch(), "name": "data", "mirror_newest": 7 }),
+            json!({ "switch": switch(), "name": "data", "mirror_newest": "7" }),
             "CommitSnapshots",
         ),
         ("warm_snapshot", leased.clone(), "WarmSnapshot"),
@@ -61,7 +61,7 @@ fn every_volume_run_verb_is_sent_on_its_own_path() {
 
 #[test]
 fn other_machine_verbs_are_refused_before_anything_is_sent() {
-    let handed = json!({ "switch": switch(), "name": "data", "guid": 7 });
+    let handed = json!({ "switch": switch(), "name": "data", "guid": "7" });
     let source = json!({ "switch": switch(), "name": "data", "container_id": "a".repeat(64) });
     let cases = [
         ("hand_over", handed.clone()),

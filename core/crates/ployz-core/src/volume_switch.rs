@@ -153,8 +153,12 @@ pub enum FenceDecision {
 }
 
 /// ZFS `guid` of a snapshot; stable across send and receive.
+///
+/// A decimal string on the wire: guids span all of u64, and a JSON number above 2^53 loses
+/// digits in JavaScript.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
-#[serde(transparent)]
+#[serde(try_from = "String", into = "String")]
+#[ts(type = "string")]
 pub struct SnapshotGuid(u64);
 
 impl SnapshotGuid {
@@ -172,6 +176,20 @@ impl SnapshotGuid {
 impl fmt::Display for SnapshotGuid {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(formatter)
+    }
+}
+
+impl TryFrom<String> for SnapshotGuid {
+    type Error = std::num::ParseIntError;
+
+    fn try_from(guid: String) -> Result<Self, Self::Error> {
+        guid.parse().map(Self)
+    }
+}
+
+impl From<SnapshotGuid> for String {
+    fn from(guid: SnapshotGuid) -> Self {
+        guid.to_string()
     }
 }
 
@@ -951,6 +969,33 @@ mod tests {
         }
         assert!("final".parse::<MirrorMarker>().is_err());
         assert!("thawing".parse::<MirrorMarker>().is_err());
+    }
+
+    /// What `JSON.parse` then `JSON.stringify` does to a value: every number becomes an f64.
+    fn through_javascript(value: serde_json::Value) -> serde_json::Value {
+        use serde_json::Value;
+        match value {
+            Value::Number(number) => Value::from(number.as_f64().unwrap()),
+            Value::Array(items) => {
+                Value::Array(items.into_iter().map(through_javascript).collect())
+            }
+            Value::Object(fields) => Value::Object(
+                fields
+                    .into_iter()
+                    .map(|(key, value)| (key, through_javascript(value)))
+                    .collect(),
+            ),
+            other @ (Value::Null | Value::Bool(_) | Value::String(_)) => other,
+        }
+    }
+
+    #[test]
+    fn a_guid_above_two_to_the_53_survives_javascript() {
+        let guid = SnapshotGuid(5_695_289_101_028_938_467);
+        let json = serde_json::to_string(&guid).unwrap();
+        let js = through_javascript(serde_json::from_str(&json).unwrap());
+        let back: SnapshotGuid = serde_json::from_value(js).unwrap();
+        assert_eq!(back, guid);
     }
 
     #[test]
