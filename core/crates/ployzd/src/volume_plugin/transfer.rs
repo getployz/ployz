@@ -217,7 +217,12 @@ impl VolumeStorage {
             self.send_port,
             stream.path_and_query()
         );
-        let response = reqwest::Client::new()
+        let client = reqwest::Client::builder()
+            .connect_timeout(self.receive_stall)
+            .read_timeout(self.receive_stall)
+            .build()
+            .map_err(|error| format!("could not build the receive client: {error}"))?;
+        let response = client
             .get(&url)
             .send()
             .await
