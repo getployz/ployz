@@ -511,6 +511,14 @@ impl DeployPreview {
         }
     }
 
+    /// Relevant Servers whose failed observations leave this Deploy incomplete.
+    #[must_use]
+    pub fn has_observation_gaps(&self) -> bool {
+        self.warnings
+            .iter()
+            .any(|warning| warning.observation_gap().is_some())
+    }
+
     /// True when this preview planned no operations.
     #[must_use]
     pub fn noop(&self) -> bool {
@@ -535,6 +543,21 @@ impl Display for ObservationKind {
     }
 }
 
+/// A named observation gap qualified against this Deploy's bound work.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct ObservationGap {
+    pub machine_name: MachineName,
+    pub reason: ObservationGapReason,
+}
+
+/// Evidence for an incomplete observation; it does not claim Machine lifecycle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservationGapReason {
+    Failed,
+    Down,
+}
+
 /// A warning attached to a Deploy Preview. Display matches the CLI warning body.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -551,12 +574,18 @@ pub enum DeployWarning {
 
     /// Listing containers or volumes on `machine_id` returned `message`.
     ObservationFailed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        gap: Option<ObservationGap>,
         kind: ObservationKind,
         machine_id: MachineId,
         message: String,
     },
     /// Listing containers or volumes on `machine_id` produced no terminal response.
     ObservationOmitted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        gap: Option<ObservationGap>,
         kind: ObservationKind,
         machine_id: MachineId,
     },
@@ -576,19 +605,40 @@ pub enum DeployWarning {
     },
 }
 
+impl DeployWarning {
+    /// A relevant, independently evidenced gap. Legacy and generic warnings have none.
+    #[must_use]
+    pub fn observation_gap(&self) -> Option<(MachineId, &ObservationGap)> {
+        match self {
+            Self::ObservationFailed {
+                machine_id, gap, ..
+            }
+            | Self::ObservationOmitted {
+                machine_id, gap, ..
+            } => gap.as_ref().map(|gap| (*machine_id, gap)),
+            Self::StorageHeadroom { .. }
+            | Self::UnbudgetedDiskUsage
+            | Self::StorageObservationUnknown { .. }
+            | Self::IngressHostname { .. }
+            | Self::ObserverRelativeHostnameConflict
+            | Self::SkippedDependencyHealth { .. } => None,
+        }
+    }
+}
+
 impl Display for DeployWarning {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::StorageHeadroom { machine_id, remaining_bytes } => write!(f, "Machine {machine_id} has only {remaining_bytes} bytes of disk headroom after storage preparation and the OS reserve"),
             Self::UnbudgetedDiskUsage => f.write_str("Storage admission covers provisioned Volumes; image pulls and application writes may need additional disk space."),
-            Self::ObservationFailed {
-                kind,
-                machine_id,
-                message,
-            } => write!(f, "{kind} observation failed on {machine_id}: {message}"),
-            Self::ObservationOmitted { kind, machine_id } => {
-                write!(f, "{kind} observation omitted {machine_id}")
-            }
+            Self::ObservationFailed { kind, machine_id, message, gap } => match gap {
+                Some(gap) => write!(f, "Could not fully observe {kind}s on Server {}: {message}", gap.machine_name),
+                None => write!(f, "{kind} observation failed on {machine_id}: {message}"),
+            },
+            Self::ObservationOmitted { kind, machine_id, gap } => match gap {
+                Some(gap) => write!(f, "Server {} was observed Down by this Entry; deployment observations are incomplete.", gap.machine_name),
+                None => write!(f, "{kind} observation omitted {machine_id}"),
+            },
             Self::StorageObservationUnknown { machine_id } => write!(
                 f,
                 "storage could not be checked on Machine {machine_id}; Provisioned Volume placement ignored that Machine"

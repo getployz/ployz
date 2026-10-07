@@ -10,21 +10,21 @@ use tokio::net::UnixStream;
 use tokio_util::codec::LengthDelimitedCodec;
 
 use super::Error;
-use ployz_core::{ManagementAddress, MembershipObservation, RttObservation, rtt_statistics};
+use ployz_core::{ManagementAddress, MembershipEvidence, RttObservation, rtt_statistics};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MembershipState {
     pub address: SocketAddr,
-    pub membership: MembershipObservation,
+    pub evidence: MembershipEvidence,
 }
 
 pub(crate) fn membership_states_by_address(
     states: impl IntoIterator<Item = MembershipState>,
-) -> BTreeMap<ManagementAddress, MembershipObservation> {
+) -> BTreeMap<ManagementAddress, MembershipEvidence> {
     states
         .into_iter()
         .filter_map(|state| match state.address.ip() {
-            std::net::IpAddr::V6(address) => Some((ManagementAddress(address), state.membership)),
+            std::net::IpAddr::V6(address) => Some((ManagementAddress(address), state.evidence)),
             std::net::IpAddr::V4(_) => None,
         })
         .collect()
@@ -130,14 +130,15 @@ fn decode_membership_state(value: Value) -> Result<MembershipState, Error> {
     }
 
     let raw: RawState = serde_json::from_value(value)?;
-    let membership = match raw.state.as_str() {
-        "Alive" => MembershipObservation::Up,
-        "Suspect" => MembershipObservation::Suspect,
-        _ => MembershipObservation::Down,
+    let evidence = match raw.state.as_str() {
+        "Alive" => MembershipEvidence::Up,
+        "Suspect" => MembershipEvidence::Suspect,
+        "Down" => MembershipEvidence::Down,
+        _ => MembershipEvidence::Unrecognized { raw: raw.state },
     };
     Ok(MembershipState {
         address: raw.id.addr,
-        membership,
+        evidence,
     })
 }
 
@@ -195,7 +196,32 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(state.address, address.parse().unwrap());
-        assert_eq!(state.membership, ployz_core::MembershipObservation::Up);
+        assert_eq!(state.evidence, ployz_core::MembershipEvidence::Up);
+    }
+
+    #[test]
+    fn only_pinned_admin_states_produce_recognized_membership_evidence() {
+        use ployz_core::MembershipEvidence;
+        for (raw, expected) in [
+            ("Alive", MembershipEvidence::Up),
+            ("Suspect", MembershipEvidence::Suspect),
+            ("Down", MembershipEvidence::Down),
+        ] {
+            let state =
+                decode_membership_state(json!({"id":{"addr":"[fdcc::1]:8787"},"state":raw}))
+                    .unwrap();
+            assert_eq!(state.evidence, expected);
+        }
+        for raw in ["down", "up", "suspect", "future-state"] {
+            let state =
+                decode_membership_state(json!({"id":{"addr":"[fdcc::1]:8787"},"state":raw}))
+                    .unwrap();
+            assert_eq!(
+                state.evidence,
+                MembershipEvidence::Unrecognized { raw: raw.into() }
+            );
+            assert!(!state.evidence.invites_rpc());
+        }
     }
 
     #[test]

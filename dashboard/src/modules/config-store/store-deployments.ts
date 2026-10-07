@@ -231,10 +231,13 @@ export function focusedService(deployment: DeploymentView, picked: string | unde
 export const canFixOnBranch = (deployment: DeploymentView, node: NodeOutcome, noServers: boolean) =>
   !noServers && deployment.status === "failed" && deployment.outcome?.type === "executed" && !nodeApplied(node.outcome);
 
-/** Why a Deployment ended as it did, when that needs saying: the Store's reason, or what a forgotten removal left. */
+/** Why a Deployment ended: its reason and deepest cause, or what a forgotten removal left. */
 export function outcomeReason(outcome: Outcome | null) {
   if (outcome?.type === "forgotten") return "No server was enrolled any more, so whatever ran on the old ones is still there.";
-  return outcome && "reason" in outcome ? outcome.reason ?? undefined : undefined;
+  if (!outcome || !("reason" in outcome)) return undefined;
+  const reason = outcome.reason ?? undefined;
+  const cause = outcome.cause?.at(-1);
+  return reason && cause ? `${reason}: ${cause}` : reason;
 }
 
 /**

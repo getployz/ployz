@@ -4,6 +4,11 @@
 //! hidden in-process Store this CLI is the Deployment's runner: it claims it,
 //! prepares and confirms it on the Cluster, and records what happened.
 
+#[cfg(test)]
+mod follow_tests;
+mod progress;
+
+use crate::ui::progress::{Disposition, Progress};
 use crate::ui::{self, Cell, Hint, Table, Tone};
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -253,11 +258,16 @@ pub(super) struct Shipped {
     pub(super) ran: Result<(), Error>,
     /// The run found no upload or usable image, so `hint` uploads one.
     pub(super) needs_upload: bool,
+    pub(super) presented: bool,
 }
 
 impl Shipped {
     fn finish(self) -> Result<(), Error> {
-        finish_view(&self.view, Some(self.hint.clone()))?;
+        if self.presented {
+            ui::emit(&Next::new(&self.view, Some(self.hint.clone())))?;
+        } else {
+            finish_view(&self.view, Some(self.hint.clone()))?;
+        }
         if self.needs_upload {
             ui::hint(&Hint::Next(self.hint));
         }
@@ -273,33 +283,112 @@ pub(super) fn execute(
     events: Option<std::io::BufWriter<std::fs::File>>,
 ) -> Result<Shipped, Error> {
     let hint = show_hint(matches, admitted.number);
-    // Only the hidden in-process Store lets this CLI run the Deployment, as Cloud's
-    // runner does; this command follows it either way, unless detached.
-    let runner = match store.local() {
+    let signal = crate::cancellation::interrupted()?;
+    let mut runner = match store.local() {
         Some(_) if matches.get_flag("detach") => {
             return Err(Error::usage(
                 "The hidden local Store runs Deployments in this process, so it can't detach",
             ));
         }
-        Some(local) => Some(run_here(matches, local, admitted, source)?),
+        Some(local) => Some(OwnedRunner {
+            store,
+            id: admitted.id.clone(),
+            handle: Some(run_here(matches, local, admitted, source)?),
+        }),
         None => None,
     };
-    let view = if runner.is_none() && matches.get_flag("detach") {
-        store.read(&ployz_store::DeploymentQuery {
-            id: admitted.id.clone(),
-        })?
+    let detached = runner.is_none() && matches.get_flag("detach");
+    let followed = if detached {
+        store
+            .read(&ployz_store::DeploymentQuery {
+                id: admitted.id.clone(),
+            })
+            .map(|view| Followed {
+                view,
+                progress: None,
+            })
     } else {
-        follow(store, admitted, events, runner.as_ref())?
+        follow(store, admitted, events, runner.as_ref(), &signal)
     };
-    if let Some(runner) = runner {
-        runner
-            .join()
-            .map_err(|_| Error::coded(RpcErrorCode::Internal, "The Deployment runner stopped"))??;
+    let mut followed = match followed {
+        Ok(followed) => followed,
+        Err(error) => {
+            let cleanup = runner
+                .as_mut()
+                .map(|runner| runner.settle(true))
+                .transpose();
+            let error = match cleanup {
+                Ok(_) => error,
+                Err(cleanup) => error.with_diagnostic(ui::progress::Diagnostic {
+                    failures: vec![ui::progress::Detail {
+                        message: cleanup.to_string(),
+                        causes: cleanup.causes(),
+                    }],
+                    ..Default::default()
+                }),
+            };
+            return Err(if signal.is_cancelled() {
+                error.interrupted()
+            } else {
+                error
+            });
+        }
+    };
+    if let Some(runner) = runner.as_mut() {
+        let settled = runner.settle(signal.is_cancelled());
+        let final_view = store.read(&ployz_store::DeploymentQuery {
+            id: admitted.id.clone(),
+        });
+        match final_view {
+            Ok(view) => followed.view = view,
+            Err(_) => {
+                if let Ok(Some(summary)) = &settled {
+                    followed.view.deployment = summary.clone();
+                }
+            }
+        }
+        if let Err(error) = settled {
+            let interrupted = signal.is_cancelled();
+            finish_progress(
+                &mut followed,
+                if interrupted {
+                    Disposition::LocalInterrupted
+                } else {
+                    Disposition::Settled
+                },
+            );
+            ui::emit(&Next::new(&followed.view, Some(hint)))?;
+            return Err(if interrupted {
+                error.interrupted()
+            } else {
+                error
+            });
+        }
     }
-    let ran = if view.deployment.status == DeploymentStatus::Applied || matches.get_flag("detach") {
+    let interrupted = signal.is_cancelled();
+    let disposition = if interrupted {
+        if runner.is_some() {
+            Disposition::LocalInterrupted
+        } else if followed.view.deployment.status.in_flight() {
+            Disposition::CloudContinues
+        } else {
+            Disposition::Settled
+        }
+    } else if progress::noop(&followed.view) {
+        Disposition::UpToDate
+    } else {
+        Disposition::Settled
+    };
+    if !detached {
+        finish_progress(&mut followed, disposition);
+    }
+    let view = followed.view;
+    let ran = if interrupted {
+        Err(Error::cancelled())
+    } else if detached {
         Ok(())
     } else {
-        Err(Error::partial())
+        progress::completion(&view, |args| super::rerun(matches, args))
     };
     // A run that found no upload or usable image for its Services says to upload.
     let needs_upload = matches!(
@@ -316,6 +405,7 @@ pub(super) fn execute(
         hint,
         ran,
         needs_upload,
+        presented: !detached,
     })
 }
 
@@ -371,65 +461,161 @@ fn upload_again(environment: &ployz_store::EnvironmentSummary) -> String {
     ])
 }
 
-/// Follow a Deployment Cloud's runner runs until it ends. Each change of its status
-/// or Node Outcomes goes to stderr, and to `events` as NDJSON. Stopping this stops
-/// following, never the Deployment.
+struct OwnedRunner<'store, 'matches> {
+    store: &'store Store<'matches>,
+    id: DeploymentId,
+    handle: Option<std::thread::JoinHandle<Result<DeploymentSummary, Error>>>,
+}
+
+impl OwnedRunner<'_, '_> {
+    fn finished(&self) -> bool {
+        self.handle
+            .as_ref()
+            .is_none_or(|handle| handle.is_finished())
+    }
+
+    fn settle(&mut self, cancel: bool) -> Result<Option<DeploymentSummary>, Error> {
+        let cancellation = if cancel && !self.finished() {
+            self.store
+                .write(&Cancel {
+                    deployment: self.id.clone(),
+                })
+                .map(|_| ())
+        } else {
+            Ok(())
+        };
+        let ended = self
+            .handle
+            .take()
+            .map(|handle| {
+                handle.join().map_err(|_| {
+                    Error::coded(RpcErrorCode::Internal, "The Deployment runner stopped")
+                })
+            })
+            .transpose()?;
+        let summary = ended.transpose()?;
+        if let Err(error) = cancellation {
+            let view = self.store.read(&ployz_store::DeploymentQuery {
+                id: self.id.clone(),
+            });
+            if !view.is_ok_and(|view| !view.deployment.status.in_flight()) {
+                return Err(error.context("Could not confirm that local Deployment work stopped."));
+            }
+        }
+        Ok(summary)
+    }
+}
+
+impl Drop for OwnedRunner<'_, '_> {
+    fn drop(&mut self) {
+        if self.handle.is_some() {
+            let _ = self.settle(true);
+        }
+    }
+}
+
+struct Followed {
+    view: DeploymentView,
+    progress: Option<Progress>,
+}
+
+fn finish_progress(followed: &mut Followed, disposition: Disposition) {
+    let frame = progress::frame(&followed.view);
+    if let Some(progress) = followed.progress.take() {
+        progress.finish(frame, disposition);
+    } else if matches!(disposition, Disposition::UpToDate) {
+        ui::note("Everything is up to date.");
+    } else {
+        Progress::start(frame.clone()).finish(frame, disposition);
+    }
+}
+
+fn tap(
+    view: &DeploymentView,
+    events: &mut Option<std::io::BufWriter<std::fs::File>>,
+    last: &mut Option<serde_json::Value>,
+) {
+    let event = serde_json::json!({ "type": "deployment", "status": view.deployment.status, "nodes": view.nodes });
+    if last.as_ref() != Some(&event) {
+        if let Some(file) = events.as_mut() {
+            let _ = writeln!(file, "{event}");
+            let _ = file.flush();
+        }
+        *last = Some(event);
+    }
+}
+
 fn follow(
     store: &Store,
     admitted: &DeploymentSummary,
     mut events: Option<std::io::BufWriter<std::fs::File>>,
-    runner: Option<&std::thread::JoinHandle<Result<DeploymentSummary, Error>>>,
-) -> Result<DeploymentView, Error> {
-    if runner.is_none() {
-        ui::note(format_args!(
-            "Following Deployment #{}; stopping this leaves it running.",
-            admitted.number
-        ));
-    }
+    runner: Option<&OwnedRunner<'_, '_>>,
+    signal: &tokio_util::sync::CancellationToken,
+) -> Result<Followed, Error> {
+    let wait_runtime = runtime()?;
     let mut last = None;
+    let mut followed: Option<Followed> = None;
     let mut id = admitted.id.clone();
     loop {
-        let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
-        // A newer Deploy replaced this one before it started; follow that one when it ships these Services too.
-        if view.deployment.status == DeploymentStatus::Superseded
-            && let Some(newer) = replacement(store, &view)?
-        {
-            ui::note(format_args!(
-                "Deployment #{} was replaced by #{}, which ships its changes too; following #{}.",
-                view.deployment.number, newer.number, newer.number
-            ));
-            id = newer.id;
-            continue;
+        if signal.is_cancelled() {
+            return followed.ok_or_else(Error::cancelled);
         }
-        let progress = serde_json::json!({
-            "type": "deployment",
-            "status": view.deployment.status,
-            "nodes": view.nodes,
-        });
-        if last.as_ref() != Some(&progress) {
-            let nodes: Vec<String> = view
-                .nodes
-                .iter()
-                .map(|node| format!("{} {}", node.node.name(), super::store::word(&node.outcome)))
-                .collect();
-            ui::note(format_args!(
-                "{}: {}",
-                super::store::word(&view.deployment.status),
-                nodes.join(", ")
-            ));
-            if let Some(file) = events.as_mut() {
-                // ponytail: a failed event write never stops following; the file is a tap.
-                let _ = writeln!(file, "{progress}");
-                let _ = file.flush();
+        let read = store.read(&ployz_store::DeploymentQuery { id: id.clone() });
+        if signal.is_cancelled() {
+            if let Ok(view) = read {
+                tap(&view, &mut events, &mut last);
+                if let Some(followed) = followed.as_mut() {
+                    followed.view = view;
+                } else {
+                    followed = Some(Followed {
+                        view,
+                        progress: None,
+                    });
+                }
             }
-            last = Some(progress);
+            return followed.ok_or_else(Error::cancelled);
         }
-        // A runner here that ended leaves nothing more to follow.
-        if !view.deployment.status.in_flight() || runner.is_some_and(|runner| runner.is_finished())
+        let view = read?;
+        let frame = progress::frame(&view);
+        if let Some(followed) = followed.as_mut() {
+            if let Some(progress) = followed.progress.as_mut() {
+                progress.update(frame);
+            } else if progress::visible(&view) {
+                followed.progress = Some(Progress::start(frame));
+            }
+            followed.view = view;
+        } else {
+            let progress = progress::visible(&view).then(|| Progress::start(frame));
+            followed = Some(Followed { view, progress });
+        }
+        let current = followed
+            .as_ref()
+            .expect("a successful read installed its view");
+        if runner.is_none() && current.view.deployment.status == DeploymentStatus::Superseded {
+            if signal.is_cancelled() {
+                return followed.ok_or_else(Error::cancelled);
+            }
+            let newer = replacement(store, &current.view);
+            if signal.is_cancelled() {
+                return followed.ok_or_else(Error::cancelled);
+            }
+            if let Some(newer) = newer? {
+                id = newer.id;
+                last = None;
+                continue;
+            }
+        }
+        tap(&current.view, &mut events, &mut last);
+        if !current.view.deployment.status.in_flight() || runner.is_some_and(OwnedRunner::finished)
         {
-            return Ok(view);
+            return followed.ok_or_else(Error::cancelled);
         }
-        std::thread::sleep(FOLLOW_POLL);
+        wait_runtime.block_on(async {
+            tokio::select! {
+                () = signal.cancelled() => {},
+                () = tokio::time::sleep(FOLLOW_POLL) => {},
+            }
+        });
     }
 }
 
@@ -744,14 +930,18 @@ pub(super) fn say_view(view: &DeploymentView) {
         crate::ui::stream(format_args!("  {}", provenance(upload)));
     }
     if let Some(
-        ployz_store::Outcome::NotExecuted { reason, .. }
+        ployz_store::Outcome::NotExecuted { reason, cause, .. }
         | ployz_store::Outcome::Executed {
             reason: Some(reason),
+            cause,
             ..
         },
     ) = &view.deployment.outcome
     {
         crate::ui::stream(format_args!("  {reason}"));
+        if let Some(cause) = cause.last() {
+            crate::ui::stream(format_args!("    cause: {cause}"));
+        }
     }
     if super::teardown::left_on_old_servers(&view.deployment) {
         crate::ui::stream(format_args!(

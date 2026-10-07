@@ -26,7 +26,6 @@ pub(crate) mod project;
 pub(crate) mod review;
 pub(crate) mod server;
 pub(crate) mod service;
-pub(crate) mod setup;
 pub(crate) mod store;
 mod teardown;
 pub(crate) mod up;
@@ -39,11 +38,7 @@ pub type Error = Failure;
 
 pub fn run() -> Result<(), Error> {
     let mut command = crate::cli::command();
-    // Only root help shows the footer, so skip reading the skill otherwise.
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
-    if args.is_empty() || args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        command = command.after_help(setup::help_footer());
-    }
     let before_parse = crate::ui::Mode::resolve(crate::ui::Surroundings::of_process(false));
     crate::ui::Color::requested(&command, &args).apply(before_parse);
     let matches = command.clone().try_get_matches().map_err(usage_failure)?;
@@ -254,11 +249,39 @@ async fn reconnect_client(
     .map_err(Into::into)
 }
 
+fn rerun(matches: &ArgMatches, args: &[&str]) -> String {
+    let config = config_path(matches).expect("the command resolved its config");
+    let config = config.to_string_lossy();
+    let connect = matches.get_one::<String>("connect");
+    let context = matches.try_get_one::<String>("context").ok().flatten();
+    let args = ["ployz", "--ployz-config", config.as_ref()]
+        .into_iter()
+        .chain(
+            connect
+                .map(|connect| ["--connect", connect.as_str()])
+                .into_iter()
+                .flatten(),
+        )
+        .chain(args.iter().copied())
+        .chain(
+            context
+                .map(|context| ["--context", context.as_str()])
+                .into_iter()
+                .flatten(),
+        );
+    shell_words::join(args)
+}
+
 fn recovery_command(matches: &ArgMatches, context: &str, command: &[&str]) -> String {
     let config = config_path(matches).expect("setup already resolved the config path");
     let config = config.to_string_lossy();
+    let connect = matches
+        .get_one::<String>("connect")
+        .into_iter()
+        .flat_map(|connect| ["--connect", connect.as_str()]);
     let args = ["ployz", "--ployz-config", config.as_ref()]
         .into_iter()
+        .chain(connect)
         .chain(command.iter().copied())
         .chain(["--context", context]);
     // A hint that names a removed command is worse than no hint.
@@ -269,6 +292,37 @@ fn recovery_command(matches: &ArgMatches, context: &str, command: &[&str]) -> St
         "recovery hint does not parse: {command:?}"
     );
     shell_words::join(args)
+}
+
+/// Direct ingress diagnostics acquire their command scope before committed output is serialized.
+pub(crate) fn ingress_hints(mut error: Error, command: impl Fn(&[&str]) -> String) -> Error {
+    let Some(diagnostic) = error.diagnostic() else {
+        return error;
+    };
+    let mut hints = diagnostic
+        .logs
+        .iter()
+        .map(|tail| {
+            crate::ui::Hint::Inspect(command(&[
+                "logs",
+                &tail.service.to_string(),
+                "--machine",
+                &tail.machine.to_string(),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    if let Some(machine) = diagnostic.failed_machine {
+        hints.push(crate::ui::Hint::Retry(command(&[
+            "server",
+            "set",
+            &machine.to_string(),
+            "--accepts-ingress=true",
+        ])));
+    }
+    for hint in hints {
+        error = error.hint(hint);
+    }
+    error
 }
 
 fn with_client<F>(root: &ArgMatches, work: F) -> Result<(), Error>
@@ -324,7 +378,6 @@ fn handler_for(path: &str) -> Option<Handler> {
         ("schema", "") => Some(catalog::schema),
         ("server", rest) => server::handler(rest),
         ("service", rest) => service::handler(rest),
-        ("setup", rest) => setup::handler(rest),
         ("set", "") => Some(config::set),
         ("status", "") => Some(link::status),
         ("token", rest) => account::token_handler(rest),
@@ -410,6 +463,93 @@ mod tests {
             .try_get_matches_from(["ployz", "server", "add", "--standalone", "root@host"])
             .unwrap();
         recovery_command(leaf_matches(&matches), "staging", &["no-such", "command"]);
+    }
+
+    #[test]
+    fn direct_recovery_uses_failed_identity_and_actual_scope_before_committed_json() {
+        use crate::ui::progress::{Diagnostic, LogTail};
+        use ployz_core::{MachineId, QualifiedService};
+        let failed = MachineId::random();
+        let original = MachineId::random();
+        let matches = command()
+            .try_get_matches_from([
+                "ployz",
+                "--ployz-config",
+                "/tmp/a config.yaml",
+                "--connect",
+                "ssh://root@entry",
+                "server",
+                "set",
+                original.as_str(),
+                "--accepts-ingress=true",
+                "--context",
+                "staging",
+            ])
+            .unwrap();
+        let error = Error::unavailable("failed to start")
+            .with_diagnostic(Diagnostic {
+                failed_machine: Some(failed),
+                logs: vec![LogTail {
+                    service: QualifiedService::system_ingress(),
+                    machine: failed,
+                    server: "same-name".into(),
+                    lines: Vec::new(),
+                }],
+                ..Default::default()
+            })
+            .interrupted();
+        let error = ingress_hints(error, |args| rerun(leaf_matches(&matches), args))
+            .context("Server updated; the Ingress Proxy did not follow.");
+        assert!(error.is_interrupted());
+        crate::ui::init(true, crate::ui::Color::Never);
+        let (result, captured) = crate::ui::captured(|| {
+            crate::ui::emit_committed(
+                serde_json::json!({"server": {"machine": {"id": original}}}),
+                Err(error),
+            )
+        });
+        crate::ui::init(false, crate::ui::Color::Never);
+        assert!(result.unwrap_err().is_interrupted());
+        let captured = captured.unwrap();
+        assert_eq!(
+            captured.pointer("/server/machine/id").unwrap(),
+            original.as_str()
+        );
+        let json = captured.get("follow_up_error").unwrap();
+        let retry = json.pointer("/details/retry").unwrap().as_str().unwrap();
+        let inspect = json
+            .pointer("/details/inspect/0")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        for hint in [retry, inspect] {
+            let parsed = command()
+                .try_get_matches_from(shell_words::split(hint).unwrap())
+                .unwrap();
+            let leaf = leaf_matches(&parsed);
+            assert_eq!(
+                leaf.get_one::<String>("ployz-config").map(String::as_str),
+                Some("/tmp/a config.yaml")
+            );
+            assert_eq!(
+                leaf.get_one::<String>("connect").map(String::as_str),
+                Some("ssh://root@entry")
+            );
+            assert_eq!(
+                leaf.get_one::<String>("context").map(String::as_str),
+                Some("staging")
+            );
+            assert!(hint.contains(failed.as_str()));
+            assert!(!hint.contains(original.as_str()));
+        }
+        assert!(inspect.contains("ployz-system/ingress"));
+        assert!(
+            json.get("message")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .starts_with("Server updated")
+        );
     }
 
     #[test]

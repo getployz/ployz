@@ -169,26 +169,134 @@ impl CatchUpClient for Client {
     }
 }
 
-pub(crate) fn joined_catch_up_error(error: CatchUpError, server: &Machine) -> Failure {
-    let mut message = String::from(
-        "Server joined, but Global catch-up is incomplete; it remains a Cluster member.",
-    );
-    if !error.unresolved.is_empty() {
-        message.push_str("\nGlobals requiring attention:");
-        for identity in error.unresolved {
-            if identity == QualifiedService::system_ingress() {
-                message.push_str(&format!(
-                    "\n- ployz-system/ingress: run `ployz server set {} --accepts-ingress=true`.",
-                    server.id
-                ));
-            } else {
-                message.push_str(&format!(
-                    "\n- {identity}: redeploy Namespace Service `{identity}`."
-                ));
+pub(crate) fn joined_catch_up_error(
+    error: CatchUpError,
+    server: &Machine,
+    command: impl Fn(&[&str]) -> String,
+) -> Failure {
+    let mut message = if error.cause.is_interrupted() {
+        "Server joined; Global catch-up was interrupted. It remains a Cluster member."
+    } else {
+        "Server joined, but Global catch-up is incomplete; it remains a Cluster member."
+    }
+    .to_owned();
+    for identity in &error.unresolved {
+        if *identity != QualifiedService::system_ingress() {
+            message.push_str(&format!(
+                " To finish, redeploy Namespace Service `{identity}`."
+            ));
+        }
+    }
+    let mut failure = error.cause.context(message);
+    for identity in error.unresolved {
+        let hint = if identity == QualifiedService::system_ingress() {
+            crate::ui::Hint::Retry(command(&[
+                "server",
+                "set",
+                &server.id.to_string(),
+                "--accepts-ingress=true",
+            ]))
+        } else {
+            crate::ui::Hint::Inspect(command(&[
+                "logs",
+                &identity.to_string(),
+                "--machine",
+                &server.id.to_string(),
+            ]))
+        };
+        failure = failure.hint(hint);
+    }
+    failure
+}
+
+/// A factual stage of target-only catch-up, adapted by the owning command.
+pub(crate) enum CatchUpFact {
+    Identified(Vec<QualifiedService>),
+    Creating(QualifiedService),
+    Starting(QualifiedService),
+    Excluded(QualifiedService),
+    Running(QualifiedService),
+    Failed(QualifiedService),
+}
+
+/// Follow target-only catch-up with the shared progress block.
+pub(crate) async fn follow_globals(
+    client: &mut Client,
+    assigned: &Machine,
+) -> Result<(), CatchUpError> {
+    use crate::ui::progress::{Disposition, Frame, Progress, Row, Run, State, Subject, Timing};
+    let signal = crate::cancellation::interrupted()
+        .map_err(|error| CatchUpError::new(error.into(), Vec::new()))?;
+    let mut frame = Frame {
+        run: Run::CatchUp(assigned.id),
+        title: format!("Starting Globals on {}", assigned.name),
+        rows: Vec::new(),
+        notices: Vec::new(),
+    };
+    let mut progress = Progress::start(frame.clone());
+    let result = catch_up_globals(client, assigned, &signal, |fact| {
+        let (identity, state) = match fact {
+            CatchUpFact::Identified(services) => {
+                frame.rows = services
+                    .into_iter()
+                    .map(|service| Row {
+                        subject: Subject::ServiceOnServer {
+                            service,
+                            machine: assigned.id,
+                            server: assigned.name.to_string(),
+                        },
+                        state: State::Pending,
+                        detail: None,
+                        timing: Timing::Unavailable,
+                    })
+                    .collect();
+                progress.update(frame.clone());
+                return;
+            }
+            CatchUpFact::Creating(service) => (
+                service,
+                State::Running(ployz_store::RowPhase::CreatingContainer),
+            ),
+            CatchUpFact::Starting(service) => (
+                service,
+                State::Running(ployz_store::RowPhase::StartingContainer),
+            ),
+            CatchUpFact::Excluded(service) => (service, State::Excluded),
+            CatchUpFact::Running(service) => (service, State::ObservedRunning),
+            CatchUpFact::Failed(service) => (service, State::Failed),
+        };
+        if let Some(row) = frame.rows.iter_mut().find(|row| {
+            matches!(&row.subject, Subject::ServiceOnServer { service, .. } if service == &identity)
+        }) {
+            if matches!(row.timing, Timing::Unavailable) {
+                row.timing = Timing::Started(std::time::SystemTime::now());
+            }
+            if !matches!(state, State::Running(_) | State::Pending)
+                && let Timing::Started(at) = row.timing
+            {
+                row.timing = Timing::Finished(at.elapsed().unwrap_or_default());
+            }
+            row.state = state;
+        }
+        progress.update(frame.clone());
+    })
+    .await;
+    if result.is_err() {
+        for row in &mut frame.rows {
+            if matches!(row.state, State::Pending | State::Running(_)) {
+                row.state = State::NotAttempted;
             }
         }
     }
-    error.cause.context(message)
+    progress.finish(
+        frame,
+        if signal.is_cancelled() {
+            Disposition::LocalInterrupted
+        } else {
+            Disposition::Settled
+        },
+    );
+    result
 }
 
 /// Copy every observed eligible Global onto `this_machine` only.
@@ -200,11 +308,14 @@ pub(crate) fn joined_catch_up_error(error: CatchUpError, server: &Machine) -> Fa
 pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     client: &mut C,
     this_machine: &Machine,
+    cancel: &tokio_util::sync::CancellationToken,
+    mut observe: impl FnMut(CatchUpFact),
 ) -> Result<(), CatchUpError> {
-    let live = client
-        .live_services()
-        .await
-        .map_err(|error| CatchUpError::new(error, Vec::new()))?;
+    let live = tokio::select! {
+        biased;
+        () = cancel.cancelled() => return Err(CatchUpError::new(Failure::cancelled(), Vec::new())),
+        live = client.live_services() => live.map_err(|error| CatchUpError::new(error, Vec::new()))?,
+    };
     if !live.containers.all_targets_succeeded() {
         return Err(CatchUpError::new(
             Failure::unavailable(format!(
@@ -219,13 +330,17 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         .iter()
         .filter_map(ServiceObservation::observed_global_slot)
         .collect::<Vec<_>>();
-    let identities = slots
+    let mut unresolved = slots
         .iter()
         .map(|slot| slot.identity().clone())
         .collect::<Vec<_>>();
+    observe(CatchUpFact::Identified(unresolved.clone()));
     let mut expected = Vec::new();
     let mut failures = Vec::new();
     for slot in slots {
+        if cancel.is_cancelled() {
+            break;
+        }
         let identity = slot.identity().clone();
         let request = CreateContainerRequest {
             deployment_id: None,
@@ -235,37 +350,60 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             registry_auth: None,
             resolved_spec: slot.resolved_spec().clone(),
         };
+        observe(CatchUpFact::Creating(identity.clone()));
         match client.create_slot(&this_machine.id, request).await {
             Ok(Some(created)) => {
                 expected.push(slot);
+                observe(CatchUpFact::Starting(identity.clone()));
                 if let Err(error) = client
                     .start_slot(&this_machine.id, created.container_id)
                     .await
                 {
+                    observe(CatchUpFact::Failed(identity.clone()));
                     failures.push((identity, error.to_string()));
                 }
             }
-            Ok(None) => {}
-            Err(error) => failures.push((identity, crate::ui::row(&error))),
+            Ok(None) => {
+                unresolved.retain(|service| service != &identity);
+                observe(CatchUpFact::Excluded(identity));
+            }
+            Err(error) => {
+                observe(CatchUpFact::Failed(identity.clone()));
+                failures.push((identity, crate::ui::row(&error)));
+            }
         }
     }
     let target_containers = client
         .target_containers(&this_machine.id)
         .await
-        .map_err(|error| CatchUpError::new(error, identities))?;
+        .map_err(|error| {
+            CatchUpError::new(
+                if cancel.is_cancelled() {
+                    error.interrupted()
+                } else {
+                    error
+                },
+                unresolved.clone(),
+            )
+        })?;
     let target_services = service_containers(target_containers);
-    let mut missing = expected
-        .into_iter()
-        .filter_map(|slot| {
-            (!slot.is_running_on(&target_services, this_machine)).then(|| slot.identity().clone())
-        })
-        .collect::<Vec<_>>();
-    for (identity, _) in &failures {
-        if !missing.contains(identity) {
-            missing.push(identity.clone());
+    for slot in &expected {
+        if slot.is_running_on(&target_services, this_machine) {
+            if !failures
+                .iter()
+                .any(|(identity, _)| identity == slot.identity())
+            {
+                unresolved.retain(|identity| identity != slot.identity());
+            }
+            observe(CatchUpFact::Running(slot.identity().clone()));
+        } else {
+            observe(CatchUpFact::Failed(slot.identity().clone()));
         }
     }
-    if !missing.is_empty() {
+    if cancel.is_cancelled() {
+        return Err(CatchUpError::new(Failure::cancelled(), unresolved));
+    }
+    if !unresolved.is_empty() {
         let details = failures
             .iter()
             .map(|(identity, error)| format!("{identity}: {error}"))
@@ -276,7 +414,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         } else {
             Failure::unavailable(format!("Global catch-up incomplete: {details}"))
         };
-        return Err(CatchUpError::new(cause, missing));
+        return Err(CatchUpError::new(cause, unresolved));
     }
     Ok(())
 }

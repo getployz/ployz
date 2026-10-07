@@ -4,6 +4,7 @@
 mod error;
 mod exit;
 mod mode;
+pub(crate) mod progress;
 mod result;
 mod table;
 mod tone;
@@ -19,7 +20,7 @@ pub use mode::{Mode, Surroundings, mode};
 pub use result::json;
 pub(crate) use result::{
     Gaps, captured, done, emit, emit_committed, emit_line, emitted, fields, finish, finish_fanout,
-    hint, interactive, list, note, note_inline, rows, show, stream, warn,
+    hint, interactive, list, note, note_inline, record_warning, rows, show, stream, warn,
 };
 pub(crate) use table::short_id;
 pub use table::{Cell, Fields, Table};

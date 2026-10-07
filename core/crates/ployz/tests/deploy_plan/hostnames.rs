@@ -167,7 +167,14 @@ fn incomplete_snapshot_without_a_visible_publisher_warns_that_detection_is_obser
         let plan = plan_ingress([&spec], &snapshot).unwrap();
         assert_eq!(
             plan.warnings,
-            vec![DeployWarning::ObserverRelativeHostnameConflict]
+            vec![
+                DeployWarning::ObservationOmitted {
+                    kind: ployz_core::ObservationKind::Volume,
+                    machine_id: machine_id('1'),
+                    gap: None,
+                },
+                DeployWarning::ObserverRelativeHostnameConflict,
+            ]
         );
         assert!(
             plan.operations

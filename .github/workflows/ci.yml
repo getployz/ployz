@@ -62,6 +62,8 @@ jobs:
       - run: bash core/scripts/test-release-packaging.sh
       - run: bash core/scripts/test-daemon-lifecycle.sh
       - run: python3 core/scripts/verify/test_ackprobe.py
+      - run: python3 core/scripts/verify/test_cloud_recovery.py
+      - run: python3 core/scripts/verify/test_volume_fences.py
       - uses: dtolnay/rust-toolchain@1.97.1
         if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-lint')
         with:

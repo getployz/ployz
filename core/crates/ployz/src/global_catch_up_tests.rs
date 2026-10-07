@@ -27,6 +27,7 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
             target_services: None,
             create_result: Ok(Some(created())),
             create_calls: Vec::new(),
+            start_calls: Vec::new(),
             failures: if failed {
                 vec![ployz_core::MachineFailure {
                     machine_id: peer.id,
@@ -42,8 +43,17 @@ async fn partial_observations_reject_catch_up_before_any_placement() {
             },
             omissions: if failed { Vec::new() } else { vec![peer.id] },
         };
-        let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
-        let message = crate::ui::chain_text(&joined_catch_up_error(error, &joiner));
+        let error = catch_up_globals(
+            &mut client,
+            &joiner,
+            &tokio_util::sync::CancellationToken::new(),
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+        let message = crate::ui::chain_text(&joined_catch_up_error(error, &joiner, |args| {
+            shell_words::join(std::iter::once("ployz").chain(args.iter().copied()))
+        }));
         assert!(
             message.contains("partial Service observations"),
             "{message}"
@@ -68,11 +78,19 @@ async fn successful_ensure_is_reobserved_before_success() {
         target_services: None,
         create_result: Ok(Some(created())),
         create_calls: Vec::new(),
+        start_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
 
-    let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
+    let error = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap_err();
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
@@ -92,11 +110,19 @@ async fn initially_eligible_global_absent_from_target_inspection_remains_missing
         target_services: Some(Vec::new()),
         create_result: Ok(Some(created())),
         create_calls: Vec::new(),
+        start_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
 
-    let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
+    let error = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap_err();
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
@@ -130,11 +156,19 @@ async fn initially_eligible_global_with_only_hook_visible_remains_missing() {
         target_services: Some(vec![hook_only]),
         create_result: Ok(Some(created())),
         create_calls: Vec::new(),
+        start_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
 
-    let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
+    let error = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap_err();
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
@@ -161,11 +195,19 @@ async fn initially_eligible_generation_absent_from_target_inspection_remains_mis
         target_services: Some(vec![stale]),
         create_result: Ok(Some(created())),
         create_calls: Vec::new(),
+        start_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
 
-    let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
+    let error = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap_err();
     assert_eq!(error.unresolved, [qualified("app", "api")]);
 }
 
@@ -191,12 +233,89 @@ async fn another_namespaces_matching_shape_does_not_satisfy_catch_up() {
         target_services: Some(vec![shop]),
         create_result: Ok(Some(created())),
         create_calls: Vec::new(),
+        start_calls: Vec::new(),
         failures: Vec::new(),
         omissions: Vec::new(),
     };
 
-    let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
+    let error = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap_err();
     assert_eq!(error.unresolved, [qualified("prod", "api")]);
+}
+
+#[tokio::test]
+async fn interruption_settles_started_work_and_only_reports_unresolved_globals() {
+    for excluded in [false, true] {
+        let joiner = machine('1', "joiner");
+        let founder = machine('f', "founder");
+        let first = qualified("app", "api");
+        let second = qualified("app", "worker");
+        let mut client = FakeCatchUpClient {
+            machine_id: joiner.id,
+            services: vec![
+                global_service(
+                    first.clone(),
+                    'a',
+                    Placement::default(),
+                    running_on(&founder, 'a'),
+                ),
+                global_service(
+                    second.clone(),
+                    'b',
+                    Placement::default(),
+                    running_on(&founder, 'b'),
+                ),
+            ],
+            target_services: Some(vec![global_service(
+                first.clone(),
+                'a',
+                Placement::default(),
+                running_on(&joiner, 'a'),
+            )]),
+            create_calls: Vec::new(),
+            start_calls: Vec::new(),
+            create_result: Ok((!excluded).then(created)),
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        };
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut running = Vec::new();
+        let error = catch_up_globals(&mut client, &joiner, &cancel, |fact| match fact {
+            CatchUpFact::Starting(_) | CatchUpFact::Excluded(_) => cancel.cancel(),
+            CatchUpFact::Running(identity) => running.push(identity),
+            CatchUpFact::Identified(_) | CatchUpFact::Creating(_) | CatchUpFact::Failed(_) => {}
+        })
+        .await
+        .unwrap_err();
+        assert!(error.cause.is_interrupted());
+        assert_eq!(error.unresolved, [second]);
+        assert_eq!(
+            client.create_calls.len(),
+            1,
+            "interruption stops before the next Global"
+        );
+        if excluded {
+            assert!(client.start_calls.is_empty());
+            assert!(running.is_empty());
+        } else {
+            assert_eq!(
+                client.start_calls,
+                [created().container_id],
+                "an admitted start settles despite interruption"
+            );
+            assert_eq!(
+                running,
+                [first],
+                "final target observation preserves completed work"
+            );
+        }
+    }
 }
 
 struct FakeCatchUpClient {
@@ -204,6 +323,7 @@ struct FakeCatchUpClient {
     services: Vec<ServiceObservation>,
     target_services: Option<Vec<ServiceObservation>>,
     create_calls: Vec<CreateContainerRequest>,
+    start_calls: Vec<ContainerId>,
     create_result: Result<Option<ployz_core::ContainerCreated>, RpcError>,
     failures: Vec<ployz_core::MachineFailure<RpcError>>,
     omissions: Vec<MachineId>,
@@ -237,18 +357,21 @@ impl CatchUpClient for FakeCatchUpClient {
 
     async fn create_slot(
         &mut self,
-        _machine_id: &MachineId,
+        machine_id: &MachineId,
         request: CreateContainerRequest,
     ) -> Result<Option<ployz_core::ContainerCreated>, RpcError> {
+        assert_eq!(machine_id, &self.machine_id);
         self.create_calls.push(request);
         self.create_result.clone()
     }
 
     async fn start_slot(
         &mut self,
-        _machine_id: &MachineId,
-        _container_id: ContainerId,
+        machine_id: &MachineId,
+        container_id: ContainerId,
     ) -> Result<(), RpcError> {
+        assert_eq!(machine_id, &self.machine_id);
+        self.start_calls.push(container_id);
         Ok(())
     }
 
@@ -320,6 +443,7 @@ async fn failed_placement_is_reported_even_if_final_observation_is_running() {
         )]),
 
         create_calls: Vec::new(),
+        start_calls: Vec::new(),
         create_result: Err(RpcError {
             code: ployz_core::RpcErrorCode::Conflict,
             message: "creation key conflict".into(),
@@ -329,10 +453,19 @@ async fn failed_placement_is_reported_even_if_final_observation_is_running() {
         failures: Vec::new(),
         omissions: Vec::new(),
     };
-    let error = catch_up_globals(&mut client, &joiner).await.unwrap_err();
+    let error = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .unwrap_err();
     assert!(
-        crate::ui::chain_text(&joined_catch_up_error(error, &joiner))
-            .contains("creation key conflict")
+        crate::ui::chain_text(&joined_catch_up_error(error, &joiner, |args| {
+            shell_words::join(std::iter::once("ployz").chain(args.iter().copied()))
+        }))
+        .contains("creation key conflict")
     );
 }
 

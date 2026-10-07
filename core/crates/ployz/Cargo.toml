@@ -11,12 +11,14 @@ anstyle = "1.0.14"
 chrono = { version = "0.4.41", default-features = false, features = ["clock"] }
 clap = { version = "4.6.6", features = ["env"] }
 clap_complete = { version = "4.6.9", features = ["unstable-dynamic"] }
+console = { version = "0.16.6", default-features = false, features = ["std"] }
 crossterm = "0.29.0"
 flate2 = "1.1.9"
 futures-util = "0.3.32"
 hex = "0.4.3"
 http = "1.4.0"
 hyper-util = { version = "0.1.20", features = ["tokio"] }
+indicatif = { version = "0.18.6", default-features = false, features = ["unicode-width"] }
 ipnet = "2.12.1"
 iroh = { version = "1.2", default-features = false, features = ["tls-ring"] }
 oci-client = "0.17.0"
@@ -32,6 +34,7 @@ serde_norway = "0.9.42"
 sha2 = "0.11.0"
 shell-words = "1.1.1"
 rustix = { version = "1.1.4", features = ["fs", "process", "termios"] }
+signal-hook = "0.3.18"
 sigpipe = "0.1.3"
 tar = "0.4.46"
 thiserror = "2.0.20"
@@ -50,6 +53,7 @@ uuid = { version = "1.24.0", features = ["v4"] }
 verify-faults = []
 
 [dev-dependencies]
+indicatif = { version = "0.18.6", default-features = false, features = ["in_memory", "unicode-width"] }
 base64 = "0.22.1"
 ployz-testkit.workspace = true
 syn = { version = "2.0.119", features = ["full", "visit"] }
