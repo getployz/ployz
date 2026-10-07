@@ -52,11 +52,6 @@ pub(crate) struct Installation {
     wireguard_mtu: Option<u32>,
 }
 
-pub(crate) enum JoinPlan {
-    AlreadyAccepted,
-    Install(Installation),
-}
-
 impl PreparedReset {
     pub(crate) fn commit(self, store: &mut LocalMachineStore) -> Result<(), StoreError> {
         let mut current = store.record.clone();
@@ -284,27 +279,27 @@ impl LocalMachineStore {
         target_versions: BTreeMap<String, i64>,
         wireguard_mtu: Option<u32>,
     ) -> Result<bool, StoreError> {
-        match self.plan_join(
+        let Some(installation) = self.plan_join(
             assigned_machine,
             visible_peers,
             target_versions,
             wireguard_mtu,
-        )? {
-            JoinPlan::AlreadyAccepted => Ok(true),
-            JoinPlan::Install(installation) => {
-                self.install(installation)?;
-                Ok(false)
-            }
-        }
+        )?
+        else {
+            return Ok(true);
+        };
+        self.install(installation)?;
+        Ok(false)
     }
 
+    /// `None` when this assignment was already durably accepted.
     pub(crate) fn plan_join(
         &self,
         mut assigned_machine: Machine,
         visible_peers: Vec<Machine>,
         target_versions: BTreeMap<String, i64>,
         wireguard_mtu: Option<u32>,
-    ) -> Result<JoinPlan, StoreError> {
+    ) -> Result<Option<Installation>, StoreError> {
         if self.record.id() != assigned_machine.id {
             return Err(StoreError::IdentityMismatch);
         }
@@ -324,14 +319,14 @@ impl LocalMachineStore {
                 machine,
                 origin: ParticipationOrigin::Join { .. },
             } if machine == &assigned_machine && self.record.wireguard_mtu == wireguard_mtu => {
-                return Ok(JoinPlan::AlreadyAccepted);
+                return Ok(None);
             }
             LocalMachineBody::Uninitialized { .. } => {}
             LocalMachineBody::Joining { .. }
             | LocalMachineBody::Participating { .. }
             | LocalMachineBody::Resetting { .. } => return Err(StoreError::AlreadyInitialized),
         }
-        Ok(JoinPlan::Install(Installation {
+        Ok(Some(Installation {
             body: LocalMachineBody::Joining {
                 machine: assigned_machine,
                 bootstrap: visible_peers,

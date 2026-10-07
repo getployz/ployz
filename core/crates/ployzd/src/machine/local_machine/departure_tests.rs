@@ -301,7 +301,11 @@ async fn a_resumed_join_does_not_depart_again() {
 #[tokio::test]
 async fn a_refused_initialize_does_not_depart() {
     let test = harness(true).await;
-    let error = test.local.initialize(initialize_request()).await.unwrap_err();
+    let error = test
+        .local
+        .initialize(initialize_request())
+        .await
+        .unwrap_err();
     assert!(
         matches!(error, Error::Store(StoreError::AlreadyInitialized)),
         "{error}"
@@ -328,6 +332,9 @@ async fn a_join_whose_departure_fails_stays_uninitialized_and_retries() {
     test.plugin.reply("Storage.Demote", json!({"Ok": ["data"]}));
     let joined = test.local.join(request).await.unwrap();
     assert!(!joined.already_accepted);
-    assert_eq!(test.plugin.routes_called(), ["Storage.Demote", "Storage.Demote"]);
+    assert_eq!(
+        test.plugin.routes_called(),
+        ["Storage.Demote", "Storage.Demote"]
+    );
     assert_eq!(test.local.record().phase(), LocalMachinePhase::Joining);
 }

@@ -20,8 +20,7 @@ use thiserror::Error;
 
 use super::{
     LocalMachineRecord, LocalMachineStore, RecordOwner, RecordOwnerStopped, StoreError,
-    local_runtime,
-    store::{Installation, JoinPlan},
+    local_runtime, store::Installation,
 };
 
 use crate::{
@@ -518,7 +517,7 @@ impl LocalMachine {
     /// Returns [`Error::RecordOwner`] when the record owner has stopped
     /// and [`Error::Store`] when join is not legal in the current phase.
     async fn join_admitted(&self, request: JoinRequest) -> Result<JoinAccepted, Error> {
-        let plan = self
+        let installation = self
             .owner
             .mutate(move |store| {
                 store.plan_join(
@@ -529,13 +528,10 @@ impl LocalMachine {
                 )
             })
             .await??;
-        let already_accepted = match plan {
-            JoinPlan::AlreadyAccepted => true,
-            JoinPlan::Install(installation) => {
-                self.install(installation).await?;
-                false
-            }
-        };
+        let already_accepted = installation.is_none();
+        if let Some(installation) = installation {
+            self.install(installation).await?;
+        }
         let record = self.record();
         let machine = record
             .machine()
