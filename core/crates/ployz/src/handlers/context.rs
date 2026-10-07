@@ -72,6 +72,19 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
     ui::list(&json!({ "contexts": contexts }), &table)
 }
 
+/// `ployz ctx use CONTEXT`, keeping a config file named on the command line;
+/// one from the environment is still set when the retry runs.
+fn retry_use(leaf: &ArgMatches) -> String {
+    let mut args = vec!["ployz", "ctx", "use"];
+    if leaf.value_source("ployz-config") == Some(clap::parser::ValueSource::CommandLine)
+        && let Some(path) = leaf.get_one::<String>("ployz-config")
+    {
+        args.extend(["--ployz-config", path]);
+    }
+    args.push("CONTEXT");
+    shell_words::join(args)
+}
+
 pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(matches);
     let mut config = config(matches)?;
@@ -115,7 +128,7 @@ pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
                 current.unwrap_or(0),
                 || {
                     Error::usage("Choosing a context needs a terminal; name one instead.")
-                        .hint(Hint::Retry("ployz ctx use CONTEXT".into()))
+                        .hint(Hint::Retry(retry_use(leaf)))
                         .hint(Hint::valid(names.iter().map(|name| name.as_str())))
                 },
                 "Cancelled. The current context is unchanged.",
