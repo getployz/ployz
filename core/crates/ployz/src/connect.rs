@@ -881,10 +881,12 @@ impl From<tonic::Status> for TransportError {
             cause,
             code: status.code(),
             message: status.message().to_owned(),
-            details: if status.details().is_empty() || sent.is_some() {
+            details: if status.details().is_empty() {
                 Value::Null
             } else {
-                json!({ "grpc_details": String::from_utf8_lossy(status.details()) })
+                ployz_core::rpc::status_details(status.details()).unwrap_or_else(
+                    || json!({ "grpc_details": String::from_utf8_lossy(status.details()) }),
+                )
             },
         }
     }

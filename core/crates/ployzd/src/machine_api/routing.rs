@@ -68,12 +68,14 @@ pub fn resolve_route(
 }
 
 fn route_status(error: &TargetResolutionError, visible: &[Machine]) -> Status {
-    let code = if matches!(error, TargetResolutionError::NotFound(_)) && !visible.is_empty() {
-        tonic::Code::NotFound
-    } else {
-        tonic::Code::InvalidArgument
-    };
-    ployz_core::rpc::caused_status(code, error)
+    if matches!(error, TargetResolutionError::NotFound(_)) && !visible.is_empty() {
+        return ployz_core::rpc::hinted_status(
+            tonic::Code::NotFound,
+            error,
+            serde_json::json!({ "inspect": ["ployz server ls"] }),
+        );
+    }
+    ployz_core::rpc::caused_status(tonic::Code::InvalidArgument, error)
 }
 
 #[derive(Clone)]
