@@ -72,7 +72,7 @@ fn a_follow_read_error_cannot_detach_owned_work_even_when_cancel_is_refused() {
             id: admitted.id.clone(),
             handle: Some(handle),
         };
-        let signal = CtrlC::subscribe().unwrap();
+        let signal = tokio_util::sync::CancellationToken::new();
         assert!(follow(&store, &admitted, None, Some(&owned), &signal).is_err());
     }
     assert!(

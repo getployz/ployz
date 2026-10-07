@@ -8,7 +8,6 @@
 mod follow_tests;
 mod progress;
 
-use crate::cancellation::CtrlC;
 use crate::ui::progress::{Disposition, Progress};
 use crate::ui::{self, Cell, Hint, Table, Tone};
 use std::collections::BTreeMap;
@@ -284,7 +283,7 @@ pub(super) fn execute(
     events: Option<std::io::BufWriter<std::fs::File>>,
 ) -> Result<Shipped, Error> {
     let hint = show_hint(matches, admitted.number);
-    let signal = CtrlC::subscribe()?;
+    let signal = crate::cancellation::interrupted()?;
     let mut runner = match store.local() {
         Some(_) if matches.get_flag("detach") => {
             return Err(Error::usage(
@@ -328,7 +327,7 @@ pub(super) fn execute(
                     ..Default::default()
                 }),
             };
-            return Err(if signal.token().is_cancelled() {
+            return Err(if signal.is_cancelled() {
                 error.interrupted()
             } else {
                 error
@@ -336,7 +335,7 @@ pub(super) fn execute(
         }
     };
     if let Some(runner) = runner.as_mut() {
-        let settled = runner.settle(signal.token().is_cancelled());
+        let settled = runner.settle(signal.is_cancelled());
         let final_view = store.read(&ployz_store::DeploymentQuery {
             id: admitted.id.clone(),
         });
@@ -349,7 +348,7 @@ pub(super) fn execute(
             }
         }
         if let Err(error) = settled {
-            let interrupted = signal.token().is_cancelled();
+            let interrupted = signal.is_cancelled();
             finish_progress(
                 &mut followed,
                 if interrupted {
@@ -366,7 +365,7 @@ pub(super) fn execute(
             });
         }
     }
-    let interrupted = signal.token().is_cancelled();
+    let interrupted = signal.is_cancelled();
     let disposition = if interrupted {
         if runner.is_some() {
             Disposition::LocalInterrupted
@@ -551,18 +550,18 @@ fn follow(
     admitted: &DeploymentSummary,
     mut events: Option<std::io::BufWriter<std::fs::File>>,
     runner: Option<&OwnedRunner<'_, '_>>,
-    signal: &CtrlC,
+    signal: &tokio_util::sync::CancellationToken,
 ) -> Result<Followed, Error> {
     let wait_runtime = runtime()?;
     let mut last = None;
     let mut followed: Option<Followed> = None;
     let mut id = admitted.id.clone();
     loop {
-        if signal.token().is_cancelled() {
+        if signal.is_cancelled() {
             return followed.ok_or_else(Error::cancelled);
         }
         let read = store.read(&ployz_store::DeploymentQuery { id: id.clone() });
-        if signal.token().is_cancelled() {
+        if signal.is_cancelled() {
             if let Ok(view) = read {
                 tap(&view, &mut events, &mut last);
                 if let Some(followed) = followed.as_mut() {
@@ -593,11 +592,11 @@ fn follow(
             .as_ref()
             .expect("a successful read installed its view");
         if runner.is_none() && current.view.deployment.status == DeploymentStatus::Superseded {
-            if signal.token().is_cancelled() {
+            if signal.is_cancelled() {
                 return followed.ok_or_else(Error::cancelled);
             }
             let newer = replacement(store, &current.view);
-            if signal.token().is_cancelled() {
+            if signal.is_cancelled() {
                 return followed.ok_or_else(Error::cancelled);
             }
             if let Some(newer) = newer? {
@@ -613,7 +612,7 @@ fn follow(
         }
         wait_runtime.block_on(async {
             tokio::select! {
-                () = signal.token().cancelled() => {},
+                () = signal.cancelled() => {},
                 () = tokio::time::sleep(FOLLOW_POLL) => {},
             }
         });

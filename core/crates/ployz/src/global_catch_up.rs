@@ -225,7 +225,7 @@ pub(crate) async fn follow_globals(
     assigned: &Machine,
 ) -> Result<(), CatchUpError> {
     use crate::ui::progress::{Disposition, Frame, Progress, Row, Run, State, Subject, Timing};
-    let signal = crate::cancellation::CtrlC::subscribe()
+    let signal = crate::cancellation::interrupted()
         .map_err(|error| CatchUpError::new(error.into(), Vec::new()))?;
     let mut frame = Frame {
         run: Run::CatchUp(assigned.id),
@@ -234,7 +234,7 @@ pub(crate) async fn follow_globals(
         notices: Vec::new(),
     };
     let mut progress = Progress::start(frame.clone());
-    let result = catch_up_globals(client, assigned, signal.token(), |fact| {
+    let result = catch_up_globals(client, assigned, &signal, |fact| {
         let (identity, state) = match fact {
             CatchUpFact::Identified(services) => {
                 frame.rows = services
@@ -290,7 +290,7 @@ pub(crate) async fn follow_globals(
     }
     progress.finish(
         frame,
-        if signal.token().is_cancelled() {
+        if signal.is_cancelled() {
             Disposition::LocalInterrupted
         } else {
             Disposition::Settled

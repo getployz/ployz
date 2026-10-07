@@ -2,7 +2,6 @@
 
 use super::{DeployError, pipeline::plan_options, render, report};
 use crate::{
-    cancellation::CtrlC,
     connect::Client,
     failure::Failure,
     ui::{
@@ -22,7 +21,7 @@ pub(crate) async fn apply_requested(
     skip_health_monitor: bool,
     context: &str,
 ) -> Result<Outcome, ApplyError> {
-    let signal = CtrlC::subscribe().map_err(Failure::from)?;
+    let signal = crate::cancellation::interrupted().map_err(Failure::from)?;
     let prepare = crate::setup_retry::run(
         client,
         "Preparing service deployment",
@@ -40,10 +39,10 @@ pub(crate) async fn apply_requested(
     );
     let preview = tokio::select! {
         biased;
-        () = signal.token().cancelled() => return Err(Failure::cancelled().into()),
+        () = signal.cancelled() => return Err(Failure::cancelled().into()),
         result = prepare => result.map_err(Failure::from)?,
     };
-    if signal.token().is_cancelled() {
+    if signal.is_cancelled() {
         return Err(Failure::cancelled().into());
     }
     if preview.noop() && !preview.has_observation_gaps() {
@@ -64,7 +63,7 @@ pub(crate) async fn apply_requested(
     );
     let mut progress = Progress::start(evidence.frame());
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let confirm = client.confirm(&preview, signal.token(), Some(tx));
+    let confirm = client.confirm(&preview, &signal, Some(tx));
     tokio::pin!(confirm);
     let outcome = loop {
         tokio::select! {
@@ -83,7 +82,7 @@ pub(crate) async fn apply_requested(
     let tails = evidence.tails(client).await;
     progress.finish(
         evidence.frame(),
-        if signal.token().is_cancelled() {
+        if signal.is_cancelled() {
             Disposition::LocalInterrupted
         } else {
             Disposition::Settled
@@ -92,7 +91,7 @@ pub(crate) async fn apply_requested(
     match outcome {
         DeployOutcome::Success { ref completed } => {
             ui::note_inline(format_args!("{}", render::endpoints_footer(completed)));
-            if signal.token().is_cancelled() {
+            if signal.is_cancelled() {
                 Err(Failure::cancelled().into())
             } else if preview.has_observation_gaps() {
                 Err(Failure::from(ployz_core::RpcError {
@@ -107,7 +106,7 @@ pub(crate) async fn apply_requested(
         }
         DeployOutcome::Failed { .. } => {
             let mut failure = report::failure(&outcome, tails);
-            if signal.token().is_cancelled() {
+            if signal.is_cancelled() {
                 failure = failure.interrupted();
             }
             Err(failure.into())
