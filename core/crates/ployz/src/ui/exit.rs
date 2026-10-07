@@ -17,6 +17,8 @@ const FAILED_EXIT: u8 = 1;
 /// The command line is wrong.
 const USAGE_EXIT: u8 = 2;
 
+const CANCELLED_EXIT: u8 = 130;
+
 /// The exit code for an error code: 2 when the command line is wrong, else 1.
 #[must_use]
 pub fn exit_code(code: &RpcErrorCode) -> u8 {
@@ -60,7 +62,11 @@ fn render(
     stderr: &mut dyn io::Write,
 ) -> u8 {
     if let Some(code) = failure.printed_exit() {
-        return code;
+        return if failure.is_interrupted() {
+            CANCELLED_EXIT
+        } else {
+            code
+        };
     }
     let report = failure.report();
     // Nothing is left to report a failed write to.
@@ -72,10 +78,18 @@ fn render(
             stderr,
             &report.message,
             causes.last().map(String::as_str),
-            &failure.hints(),
+            &[],
         );
+        if let Some(diagnostic) = failure.diagnostic() {
+            let _ = diagnostic.write(stderr);
+        }
+        for hint in failure.hints() {
+            let _ = hint.write(stderr);
+        }
     }
-    if emitted {
+    if failure.is_interrupted() {
+        CANCELLED_EXIT
+    } else if emitted {
         PARTIAL_EXIT
     } else {
         exit_code(&report.code)
@@ -99,6 +113,38 @@ mod tests {
 
     use super::*;
     use crate::ui::Hint;
+
+    #[test]
+    fn cancellation_survives_context_hints_and_committed_json() {
+        let failure = Failure::cancelled()
+            .context("Server initialized; ingress deployment incomplete.")
+            .hint(Hint::Retry(
+                "ployz server set alpha --accepts-ingress=true".into(),
+            ));
+        let mut stdout = Vec::new();
+        let mut stderr = anstream::StripStream::new(Vec::new());
+        assert_eq!(
+            render(&failure, Mode::Json, true, &mut stdout, &mut stderr),
+            130
+        );
+        assert!(stdout.is_empty());
+        let text = String::from_utf8(stderr.into_inner()).unwrap();
+        assert!(text.contains("Server initialized; ingress deployment incomplete."));
+        assert!(text.contains("retry: ployz server set alpha --accepts-ingress=true"));
+        assert_eq!(
+            failure.report().cause.last().map(String::as_str),
+            Some("Cancelled.")
+        );
+        assert_eq!(
+            render(&failure, Mode::Json, false, &mut stdout, &mut Vec::new()),
+            130
+        );
+        let value: Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(
+            value.pointer("/error/message").unwrap(),
+            "Server initialized; ingress deployment incomplete."
+        );
+    }
 
     struct Ended {
         code: u8,

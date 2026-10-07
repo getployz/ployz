@@ -108,6 +108,15 @@ pub(crate) struct Store<'m> {
 }
 
 impl<'m> Store<'m> {
+    #[cfg(test)]
+    pub(super) fn for_test(backend: Backend, matches: &'m ArgMatches) -> Self {
+        Self {
+            backend,
+            matches,
+            words: vec!["deploy".into()],
+        }
+    }
+
     /// Name the arguments this command's retry repeats.
     pub(crate) fn args<'a>(mut self, args: impl IntoIterator<Item = &'a str>) -> Self {
         self.words.extend(args.into_iter().map(str::to_owned));

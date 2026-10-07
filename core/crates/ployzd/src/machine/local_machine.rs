@@ -11,7 +11,7 @@ use ployz_core::{
     InitializeRequest, Initialized, InspectRequest, JoinAccepted, JoinRequest, LocalMachinePhase,
     LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineIdentity, MachineList,
     MachineObservation, MachineRemoved, MachineToken, MachineTokenRequest, MachineUpdated,
-    ManagementAddress, MembershipObservation, PublicIpDiscovery, RegisterRequest, Registered,
+    ManagementAddress, MembershipEvidence, PublicIpDiscovery, RegisterRequest, Registered,
     RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, RttObservation, RttStatistics,
     SelectedEndpoint, UpdateMachineRequest, WireGuardInspected, associate_wireguard_peers,
     synthesize_membership,
@@ -55,7 +55,7 @@ struct ClusterContext {
 /// Missing telemetry is not a delete of the replicated Machine.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct RuntimeWatchTelemetry {
-    pub states: BTreeMap<ManagementAddress, MembershipObservation>,
+    pub states: BTreeMap<ManagementAddress, MembershipEvidence>,
     pub selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
     pub rtts: Vec<RttObservation>,
 }
@@ -812,14 +812,14 @@ fn rtts_by_machine(
 fn isolation_lock(
     me: &MachineId,
     machines: &[Machine],
-    states: &BTreeMap<ManagementAddress, MembershipObservation>,
+    states: &BTreeMap<ManagementAddress, MembershipEvidence>,
 ) -> bool {
     machines.len() > 3
         && machines.iter().all(|machine| {
             machine.id == *me
                 || !states
                     .get(&machine.management_address())
-                    .is_some_and(MembershipObservation::invites_rpc)
+                    .is_some_and(MembershipEvidence::invites_rpc)
         })
 }
 
@@ -858,8 +858,8 @@ mod tests {
     use crate::corrosion::AdminClient;
     use ployz_core::{
         AdvertisedEndpoint, CORROSION_GOSSIP_PORT, Machine, MachineId, MachineIdentity,
-        MachineName, MachineRuntime, MembershipObservation, RttObservation, RttStatistics,
-        SelectedEndpoint, WireGuardPublicKey,
+        MachineName, MachineRuntime, MembershipEvidence, MembershipObservation, RttObservation,
+        RttStatistics, SelectedEndpoint, WireGuardPublicKey,
     };
     const ENTRY_ID: &str = "0123456789abcdef0123456789abcdef";
     const PEER_ID: &str = "fedcba9876543210fedcba9876543210";
@@ -924,7 +924,7 @@ mod tests {
             population_stddev_ns: 250_000,
         };
         let observations = RuntimeWatchTelemetry {
-            states: BTreeMap::from([(peer.management_address(), MembershipObservation::Suspect)]),
+            states: BTreeMap::from([(peer.management_address(), MembershipEvidence::Suspect)]),
             selected_endpoints: BTreeMap::from([(entry.id, endpoint)]),
             rtts: vec![RttObservation {
                 peer_id: "peer".into(),
@@ -983,8 +983,8 @@ mod tests {
     fn isolation_lock_does_not_fire_when_a_peer_invites_rpc() {
         let [me, peer, third, fourth] = four_machines();
         let machines = [me.clone(), peer.clone(), third, fourth];
-        let up = BTreeMap::from([(peer.management_address(), MembershipObservation::Up)]);
-        let suspect = BTreeMap::from([(peer.management_address(), MembershipObservation::Suspect)]);
+        let up = BTreeMap::from([(peer.management_address(), MembershipEvidence::Up)]);
+        let suspect = BTreeMap::from([(peer.management_address(), MembershipEvidence::Suspect)]);
         assert!(!isolation_lock(&me.id, &machines, &up));
         assert!(!isolation_lock(&me.id, &machines, &suspect));
     }
