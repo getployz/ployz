@@ -1,9 +1,9 @@
 //! Fault injection for verify-cluster.
 
 #[cfg(feature = "verify-faults")]
-pub use enabled::kill_inside;
-#[cfg(feature = "verify-faults")]
 pub(crate) use enabled::{apply, check_env};
+#[cfg(feature = "verify-faults")]
+pub use enabled::{kill_after_record, kill_inside};
 
 /// Verbs whose effect outlives the RPC; `kill-daemon` fires inside them, from [`kill_inside`].
 #[cfg_attr(not(feature = "verify-faults"), allow(dead_code))]
@@ -14,6 +14,9 @@ pub(crate) async fn apply(_verb: &'static str) {}
 
 #[cfg(not(feature = "verify-faults"))]
 pub fn kill_inside(_verb: &'static str) {}
+
+#[cfg(not(feature = "verify-faults"))]
+pub fn kill_after_record(_verb: &'static str) {}
 
 #[cfg(not(feature = "verify-faults"))]
 pub(crate) fn check_env() -> std::io::Result<()> {
@@ -28,14 +31,23 @@ mod enabled {
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub(crate) enum FaultPoint {
-        DelayRpc { verb: String, secs: u64 },
-        KillDaemon { verb: String },
+        DelayRpc {
+            verb: String,
+            secs: u64,
+        },
+        KillDaemon {
+            verb: String,
+        },
+        /// Aborts the Volume plugin once `verb` recorded its position, before its effect.
+        KillAfterRecord {
+            verb: String,
+        },
         Unanswered,
     }
 
     #[derive(Debug, thiserror::Error)]
     #[error(
-        "{ENV}={0:?} is not a fault point (delay-rpc:<verb>:<secs>, kill-daemon:<verb>, unanswered)"
+        "{ENV}={0:?} is not a fault point (delay-rpc:<verb>:<secs>, kill-daemon:<verb>, kill-after-record:<verb>, unanswered)"
     )]
     pub(crate) struct FaultParseError(String);
 
@@ -54,6 +66,11 @@ mod enabled {
                 }
                 (Some("kill-daemon"), Some(verb), None, None) if !verb.is_empty() => {
                     FaultPoint::KillDaemon {
+                        verb: verb.to_owned(),
+                    }
+                }
+                (Some("kill-after-record"), Some(verb), None, None) if !verb.is_empty() => {
+                    FaultPoint::KillAfterRecord {
                         verb: verb.to_owned(),
                     }
                 }
@@ -97,7 +114,9 @@ mod enabled {
                 tracing::warn!(verb, "fault: leaving switch verb unanswered");
                 std::future::pending::<()>().await;
             }
-            FaultPoint::DelayRpc { .. } | FaultPoint::KillDaemon { .. } => {}
+            FaultPoint::DelayRpc { .. }
+            | FaultPoint::KillDaemon { .. }
+            | FaultPoint::KillAfterRecord { .. } => {}
         }
     }
 
@@ -107,6 +126,19 @@ mod enabled {
             && wanted == verb
         {
             tracing::warn!(verb, "fault: killing daemon inside the effect");
+            std::process::abort();
+        }
+    }
+
+    /// Aborts the Volume plugin when `kill-after-record:<verb>` names `verb`.
+    pub fn kill_after_record(verb: &'static str) {
+        if let Ok(Some(FaultPoint::KillAfterRecord { verb: wanted })) = FaultPoint::from_env()
+            && wanted == verb
+        {
+            tracing::warn!(
+                verb,
+                "fault: killing the plugin after the record, before the effect"
+            );
             std::process::abort();
         }
     }
@@ -131,6 +163,12 @@ mod enabled {
                         verb: "InspectVolumeCopy".into(),
                     },
                 ),
+                (
+                    "kill-after-record:WarmSnapshot",
+                    FaultPoint::KillAfterRecord {
+                        verb: "WarmSnapshot".into(),
+                    },
+                ),
                 ("unanswered", FaultPoint::Unanswered),
             ] {
                 assert_eq!(value.parse::<FaultPoint>().unwrap(), fault, "{value}");
@@ -143,6 +181,7 @@ mod enabled {
                 "delay-rpc::3",
                 "kill-daemon",
                 "kill-daemon:AdoptLease:extra",
+                "kill-after-record",
                 "busy-mount:data",
                 "unanswered:AdoptLease",
                 "explode",

@@ -165,6 +165,7 @@ impl VolumeStorage {
         };
         self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
             .await?;
+        ployzd::faults::kill_after_record("StartReceive");
         self.zfs(&["set", &format!("{RECEIVE_PROPERTY}={record}"), &slot])
             .await
             .map_err(internal)?;

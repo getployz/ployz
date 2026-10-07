@@ -251,6 +251,7 @@ impl VolumeStorage {
         if !captured {
             self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
                 .await?;
+            ployzd::faults::kill_after_record("WarmSnapshot");
             self.zfs(&["snapshot", &format!("{root}@{target}")])
                 .await
                 .map_err(internal)?;
