@@ -578,6 +578,19 @@ describe("volume runs", () => {
       expect(failure).not.toBeInstanceOf(NonRetriableError);
       expect(await rows()).toMatchObject([{ state: "running", message: null }]);
     });
+
+    it("a failure with no switch reason keeps the Machine's message", async () => {
+      const run = await requested({ kind: "sync", args: { full: false } });
+      await harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1`, [run.id]);
+      failNext.set("forget_snapshots@fsn-1", { code: "internal", message: "dataset is busy", details: null });
+
+      const failure = await runEffect(sendSwitch(context(run.id), "run-1", { id: idOf("fsn-1"), name: "fsn-1" }, () =>
+        ({ command: "forget_snapshots", payload: { switch: { lease: 1, pos: { seq: 4, round: 0, sub: 0 }, not_after_unix_seconds: 1 }, name: dockerVolume } })))
+        .then(() => null, (error: Error) => error);
+
+      expect(failure).not.toBeInstanceOf(NonRetriableError);
+      expect(failure?.message).toBe("forget_snapshots on fsn-1: internal: dataset is busy");
+    });
   });
 
   describe("orphan detection", () => {

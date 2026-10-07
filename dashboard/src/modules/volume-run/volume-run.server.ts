@@ -10,7 +10,7 @@ import { createVolumeRunRequestedEvent } from "#/modules/inngest/events";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { observeVolumeCopies, type PloyzSdkError } from "#/modules/runtime/ployz.server";
+import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import type { Refusal } from "#/modules/volume-run/plan";
 import { volumeRun } from "#/modules/volume-run/tables";
 import {
@@ -298,7 +298,7 @@ export const sendSwitch = <R extends VolumeSwitchRequest>(
         const reason = switchErrorOf(error);
         const message = reason === null ? undefined : switchFailureMessage(reason, ctx, machine, overrides);
         if (message !== undefined) return failRun(ctx, inngestRunId, message);
-        return Effect.fail(new Error(`${request.command} on ${machine.name}: ${error.message}`));
+        return Effect.fail(new Error(`${request.command} on ${machine.name}: ${sdkFailureMessage(error)}`));
       }),
     );
   }).pipe(Effect.scoped) as Effect.Effect<VolumeSwitchReply<R["command"]>, Error, Database | OrganizationRuntime>;

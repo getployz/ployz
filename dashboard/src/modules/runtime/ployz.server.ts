@@ -28,6 +28,7 @@ import type {
 import type * as PloyzSdk from "@ployz/sdk";
 import { Context, Data, Effect, Layer, Option, Schema, type Scope } from "effect";
 import type { JsonValue } from "#/db/tables";
+import { describeFailureCause } from "#/lib/error-message";
 import { projectJsonValue } from "#/lib/json";
 import { MissingDataLossIdentities } from "#/modules/runtime/data-loss-confirm";
 import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
@@ -165,6 +166,13 @@ function asSdkFailure(operation: string, cause: unknown): PloyzSdkError {
 export function rpcErrorCode(error: PloyzSdkError) {
   const rpc = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String }))("cause" in error ? error.cause : undefined);
   return Option.isSome(rpc) ? rpc.value.code : undefined;
+}
+
+/** What a failure said: the runtime's RPC error as "code: message", or the underlying error's message. */
+export function sdkFailureMessage(error: PloyzSdkError) {
+  const cause = "cause" in error ? error.cause : error;
+  const rpc = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String, message: Schema.String }))(cause);
+  return Option.isSome(rpc) ? `${rpc.value.code}: ${rpc.value.message}` : describeFailureCause(cause);
 }
 
 function sdkPromise<A>(operation: string, run: (signal: AbortSignal) => Promise<A>) {
