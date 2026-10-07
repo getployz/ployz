@@ -7,7 +7,6 @@
 //! token behind and fails like an interrupted stream. The `readonly-lost` marker stands for
 //! a ZFS that does not keep `readonly=on` on the received copy, however it is set. Like ZFS,
 //! a command naming a dataset no marker stands for fails with `dataset does not exist`.
-//! The `rename-fails` and `inherit-fails` markers make those commands fail while they exist.
 
 use std::{
     fs,

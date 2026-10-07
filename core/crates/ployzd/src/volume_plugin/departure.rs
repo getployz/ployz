@@ -18,19 +18,12 @@ use super::{
 /// Prefix of the snapshot a departure takes on each root before demoting it.
 pub(super) const DEPARTURE_SNAPSHOT_PREFIX: &str = "dep-";
 
-/// Where one Volume's departure stands, read from ZFS on every call so a retry finishes
-/// whatever step an interrupted departure reached.
 enum Departure<'datasets> {
-    /// A root and no slot: nothing has moved yet.
     Root(&'datasets Dataset),
-    /// A root beside an empty slot parent: a departure stopped before moving the root in.
     RootBesideEmptySlot(&'datasets Dataset),
-    /// A root beside a slot that holds a copy. No departure leaves this, so it refuses.
     RootBesideMirror,
-    /// A slot fs still writable or marked writer: a departure stopped after the move.
     UnsealedSlot(&'datasets Dataset),
-    /// A read-only slot with no writer marker, or no fs yet.
-    Slot,
+    Departed,
 }
 
 impl VolumeStorage {
@@ -55,7 +48,7 @@ impl VolumeStorage {
             let name = name.parse::<DockerVolumeName>()?;
             match self.departure(&pool, &datasets, &name).await? {
                 Departure::Root(root) => {
-                    self.snapshot_root(root, &name, now_unix_seconds).await?;
+                    self.freeze_root(root, &name, now_unix_seconds).await?;
                     self.ensure_mirror_root(&pool, &datasets).await?;
                     self.create_slot_parent(&slot_parent(&pool, &name), root.refquota)
                         .await?;
@@ -63,7 +56,7 @@ impl VolumeStorage {
                     demoted.push(name.to_string());
                 }
                 Departure::RootBesideEmptySlot(root) => {
-                    self.snapshot_root(root, &name, now_unix_seconds).await?;
+                    self.freeze_root(root, &name, now_unix_seconds).await?;
                     self.move_into_slot(&pool, root, &name).await?;
                     demoted.push(name.to_string());
                 }
@@ -77,7 +70,7 @@ impl VolumeStorage {
                     self.seal(&fs.name).await?;
                     demoted.push(name.to_string());
                 }
-                Departure::Slot => {}
+                Departure::Departed => {}
             }
             if let Some(slot) = Self::slot(&datasets, &pool, &name) {
                 self.zfs(&[
@@ -100,7 +93,8 @@ impl VolumeStorage {
     ) -> super::Result<Departure<'datasets>> {
         let root = Self::dataset(datasets, pool, name)?;
         let slot = Self::slot(datasets, pool, name);
-        Ok(match (root, slot, Self::slot_fs(datasets, pool, name)) {
+        let fs = Self::slot_fs(datasets, pool, name);
+        Ok(match (root, slot, fs) {
             (Some(_), _, Some(_)) => Departure::RootBesideMirror,
             (Some(root), Some(_), None) => Departure::RootBesideEmptySlot(root),
             (Some(root), None, None) => Departure::Root(root),
@@ -109,12 +103,11 @@ impl VolumeStorage {
             {
                 Departure::UnsealedSlot(fs)
             }
-            (None, _, _) => Departure::Slot,
+            (None, _, _) => Departure::Departed,
         })
     }
 
-    /// Unmounts the root and replaces its departure snapshot with one taken now.
-    async fn snapshot_root(
+    async fn freeze_root(
         &self,
         root: &Dataset,
         name: &DockerVolumeName,
@@ -154,7 +147,6 @@ impl VolumeStorage {
         self.seal(&fs).await
     }
 
-    /// A slot fs is read-only and names no writer.
     async fn seal(&self, fs: &str) -> super::Result<()> {
         self.zfs(&["set", "readonly=on", fs]).await?;
         self.zfs(&["inherit", WRITER_PROPERTY, fs]).await?;

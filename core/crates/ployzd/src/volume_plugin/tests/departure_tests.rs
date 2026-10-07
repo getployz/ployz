@@ -91,8 +91,6 @@ async fn departure_idles_a_slot_marker_and_keeps_its_data() {
     server.abort();
 }
 
-/// The read-only slot `data` departs into, with no writer marker and the departure
-/// snapshot kept, as Storage.Inspect reports it.
 async fn assert_departed_into_a_slot(test: &TestDir, socket: &Path) {
     assert!(!test.0.join("volume").exists(), "the root is still there");
     assert!(test.0.join("mirror-fs").exists(), "the slot holds no fs");
