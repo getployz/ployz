@@ -46,6 +46,8 @@ impl<'name> Place<'name> {
 pub(super) struct VolumeStorage {
     pub(super) pool: PoolStorage,
     pub(super) zfs: PathBuf,
+    pub(super) docker: PathBuf,
+    pub(super) mount_grant: Arc<std::sync::Mutex<Option<super::switch_source::MountGrant>>>,
     pub(super) mutation: Arc<Mutex<()>>,
     pub(super) installation: ployzd::mutation::MutationGate,
     pub(super) receives: super::transfer::Receives,
@@ -76,6 +78,8 @@ impl VolumeStorage {
         Self {
             pool: PoolStorage::new("zpool"),
             zfs: "zfs".into(),
+            docker: "docker".into(),
+            mount_grant: Arc::default(),
             mutation: Arc::new(Mutex::new(())),
             installation: ployzd::mutation::MutationGate::new(run_dir, data_dir),
             receives: super::transfer::Receives::default(),
@@ -95,6 +99,8 @@ impl VolumeStorage {
         Self {
             pool: PoolStorage::new(zpool).with_backing(backing),
             zfs: zfs.into(),
+            docker: fixture.join("docker"),
+            mount_grant: Arc::default(),
             mutation: Arc::new(Mutex::new(())),
             installation: ployzd::mutation::MutationGate::new(
                 fixture.join("admission-run"),
@@ -187,6 +193,9 @@ impl VolumeStorage {
     }
 
     pub(super) async fn mountpoint(&self, name: &DockerVolumeName) -> Result<String> {
+        if let Some(granted) = self.granted_mountpoint(name).await? {
+            return Ok(granted);
+        }
         let _guard = self.admit_mutation().await?;
         let pool = self.one_pool().await?;
         let datasets = self.datasets(&pool).await?;

@@ -26,6 +26,7 @@ mod mirror;
 mod pool;
 mod removal;
 mod storage;
+mod switch_source;
 mod transfer;
 
 use storage::{
@@ -169,6 +170,15 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route("/Storage.Demote", post(departure::demote))
         .route("/Volume.Inspect", post(lease::inspect))
         .route("/Volume.AdoptLease", post(lease::adopt_lease))
+        .route("/Volume.Withdraw", post(switch_source::withdraw))
+        .route(
+            "/Volume.MarkContainerStopping",
+            post(switch_source::mark_stopping),
+        )
+        .route("/Volume.Freeze", post(switch_source::freeze))
+        .route("/Volume.HandOver", post(switch_source::hand_over))
+        .route("/Volume.Thaw", post(switch_source::thaw))
+        .route("/Volume.Close", post(switch_source::close))
         .route("/Volume.DeclareMirror", post(mirror::declare))
         .route("/Volume.BeginRound", post(mirror::begin_round))
         .route("/Volume.CommitSnapshots", post(mirror::commit))
@@ -357,6 +367,9 @@ mod tests {
 
     #[path = "departure_tests.rs"]
     mod departure_tests;
+
+    #[path = "switch_source_tests.rs"]
+    mod switch_source_tests;
 
     #[path = "mirror_tests.rs"]
     mod mirror_tests;

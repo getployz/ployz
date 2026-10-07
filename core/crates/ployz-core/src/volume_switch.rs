@@ -423,6 +423,22 @@ pub struct MirrorRequest {
     pub name: DockerVolumeName,
 }
 
+/// A source switch that stops or restarts the Container holding this Volume.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct SourceContainerRequest {
+    pub switch: Switch,
+    pub name: DockerVolumeName,
+    pub container_id: crate::ContainerId,
+}
+
+/// Irreversibly hand the frozen source snapshot to the target.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct HandOverRequest {
+    pub switch: Switch,
+    pub name: DockerVolumeName,
+    pub guid: SnapshotGuid,
+}
+
 /// Commit on the writer: drop run snapshots older than the mirror's newest.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct CommitRequest {

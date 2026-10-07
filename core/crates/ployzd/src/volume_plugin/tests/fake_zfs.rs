@@ -148,6 +148,14 @@ case "$*" in
     require tank/ployz-mirror/data/fs
     [ -e '{readonly_lost}' ] || {{ mkdir -p '{props}/tank/ployz-mirror/data/fs'; echo on > '{props}/tank/ployz-mirror/data/fs/readonly'; }}
     ;;
+  'set readonly=on tank/ployz/data')
+    require "$3"
+    touch '{readonly_volume}'
+    mkdir -p '{props}/tank/ployz/data'; echo on > '{props}/tank/ployz/data/readonly' ;;
+  'set readonly=off tank/ployz/data')
+    require "$3"
+    rm -f '{readonly_volume}'
+    mkdir -p '{props}/tank/ployz/data'; echo off > '{props}/tank/ployz/data/readonly' ;;
   'set '*)
     require "$3"
     check_property "${{2%%=*}}"
@@ -180,7 +188,9 @@ case "$*" in
     printf '%s\n' "${{7#refquota=}}" > '{props}/tank/ployz-mirror/data/refquota'
     ;;
   'mount tank/ployz/data') touch '{mounted}' ;;
-  'unmount tank/ployz/data') rm -f '{mounted}' ;;
+  'unmount tank/ployz/data')
+    if [ -e '{props}/busy-mount' ]; then echo 'filesystem is busy' >&2; exit 1; fi
+    rm -f '{mounted}' ;;
   'rename tank/ployz/data tank/ployz-mirror/data/fs')
     if [ -e '{rename_fails}' ]; then echo 'rename interrupted' >&2; exit 1; fi
     require tank/ployz/data

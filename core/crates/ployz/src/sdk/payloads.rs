@@ -65,6 +65,8 @@ pub fn typescript_declarations() -> String {
         by_name: BTreeMap::new(),
     };
     declarations.add::<ployz_core::BuildGrantEnded>();
+    declarations.add::<ployz_core::SourceContainerRequest>();
+    declarations.add::<ployz_core::HandOverRequest>();
     declarations.add::<ployz_core::BuildGrantMinted>();
     declarations.add::<ClusterTeardown>();
     declarations.add::<ployz_core::EndBuildGrantRequest>();

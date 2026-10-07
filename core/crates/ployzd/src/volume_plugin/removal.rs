@@ -15,7 +15,15 @@ use super::{
 
 impl VolumeStorage {
     async fn remove(&self, name: &DockerVolumeName) -> Result<()> {
-        let _guard = self.admit_mutation().await?;
+        let _guard = self.mutation.try_lock().map_err(|_| {
+            super::VolumeError::from(format!(
+                "VolumeSwitching: Volume {name} has an active storage mutation"
+            ))
+        })?;
+        let _installation = self
+            .installation
+            .try_mutation()
+            .map_err(|error| super::VolumeError::from(ployz_core::error_chain::inline(&error)))?;
         let Some(pool) = self.pool.one_usable().await? else {
             return Ok(());
         };
@@ -40,7 +48,6 @@ impl VolumeStorage {
     }
 
     async fn inspect(&self, name: &DockerVolumeName) -> Result<Option<PluginVolume>> {
-        let _guard = self.mutation.lock().await;
         let pool = self.one_pool().await?;
         let datasets = self.datasets(&pool).await?;
         let Some(dataset) = Self::dataset(&datasets, &pool, name)? else {

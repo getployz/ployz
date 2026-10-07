@@ -79,6 +79,11 @@ Volume shop-production_data has no writer; it is held as web-2 (copy). Make one 
 Run the `ployz volume restore` line it prints to make that copy the writer again, then deploy.
 A volume whose server is mid-move refuses the same way until the move finishes.
 
+During a move, the source server stops the service before it hands the volume to
+the target. Before handover, the source can restart the service and keep its final
+snapshot. After handover, recovery must finish the move on the target. The old
+server keeps a read-only copy so a later move back can send only the changes.
+
 ## When your servers show Docker only
 
 A volume needs a server that shows **Managed volumes available** on the **Servers** page. A

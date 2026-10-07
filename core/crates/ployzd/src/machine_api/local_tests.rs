@@ -829,6 +829,7 @@ async fn marking_an_unknown_container_stopping_is_not_found() {
         .mark_container_stopping(Request::new(
             op::MarkContainerStopping::into_request(ployz_core::MarkContainerStoppingRequest {
                 container_id: ployz_core::ContainerId::parse("a".repeat(64)).unwrap(),
+                volume: None,
             })
             .encode()
             .unwrap(),
@@ -843,6 +844,406 @@ async fn marking_an_unknown_container_stopping_is_not_found() {
     };
     assert_eq!(error.code, RpcErrorCode::NotFound);
     let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn thaw_waits_for_withdraw_to_publish_stopping_then_restores_ingress() {
+    use axum::{Json, Router, routing::post};
+    use ployz_core::{CreateContainerRequest, InspectContainerRequest, SourceContainerRequest};
+    use serde_json::json;
+    use std::time::Duration;
+
+    let (data_dir, _store, service, fake) = fake_docker_service("ployzd-source-order").await;
+    let created = service
+        .create_container(Request::new(
+            op::CreateContainer::into_request(CreateContainerRequest {
+                deployment_id: None,
+                creation_key: None,
+                kind: ContainerKind::ServiceContainer,
+                namespace: Namespace::parse("app").unwrap(),
+                registry_auth: None,
+                resolved_spec: container_observation('a').resolved_spec.clone(),
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::CreateContainer>()
+        .unwrap();
+    for container in fake
+        .named_containers
+        .as_ref()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .values_mut()
+    {
+        container["State"] = json!({"Status":"running", "Running":true});
+    }
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let thaw_entered = Arc::new(tokio::sync::Notify::new());
+    let reply = json!({"Ok": {
+        "decision":"adopt", "lease":{"lease":1,"pos":{"seq":13,"round":0,"sub":0},"cycle":"closed"},
+        "copy":{"kind":"root","writer":{"phase":"idle"},"readonly":false,"newest":null}
+    }});
+    let thawed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let router = Router::new()
+        .route(
+            "/Volume.Withdraw",
+            post({
+                let entered = entered.clone();
+                let release = release.clone();
+                let reply = reply.clone();
+                move || {
+                    let entered = entered.clone();
+                    let release = release.clone();
+                    let reply = reply.clone();
+                    async move {
+                        entered.notify_one();
+                        release.notified().await;
+                        Json(reply)
+                    }
+                }
+            }),
+        )
+        .route(
+            "/Volume.Thaw",
+            post({
+                let thaw_entered = thaw_entered.clone();
+                move || {
+                    let thaw_entered = thaw_entered.clone();
+                    let mut reply = reply.clone();
+                    let thawed = thawed.clone();
+                    async move {
+                        thaw_entered.notify_one();
+                        if thawed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                            *reply.pointer_mut("/Ok/decision").unwrap() = json!("replay");
+                        }
+                        Json(reply)
+                    }
+                }
+            }),
+        );
+    let socket = data_dir.join("source-plugin.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let service = service.with_volume_plugin(crate::storage::Plugin::at(socket));
+    let request: SourceContainerRequest = serde_json::from_value(json!({
+        "name":"data", "container_id":created.container_id,
+        "switch":{"lease":1,"pos":{"seq":5,"round":0,"sub":0},"not_after_unix_seconds":i64::MAX}
+    }))
+    .unwrap();
+    let withdraw = tokio::spawn({
+        let service = service.clone();
+        let request = request.clone();
+        async move {
+            service
+                .withdraw(Request::new(
+                    op::Withdraw::into_request(request).encode().unwrap(),
+                ))
+                .await
+                .unwrap()
+        }
+    });
+    entered.notified().await;
+    let thaw = tokio::spawn({
+        let service = service.clone();
+        let mut request = request;
+        request.switch.pos = ployz_core::Pos::step(13);
+        async move {
+            service
+                .thaw(Request::new(
+                    op::Thaw::into_request(request).encode().unwrap(),
+                ))
+                .await
+                .unwrap()
+        }
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), thaw_entered.notified())
+            .await
+            .is_err(),
+        "Thaw must wait until Withdraw publishes the stopping observation"
+    );
+    release.notify_one();
+    withdraw
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::Withdraw>()
+        .unwrap();
+    thaw.await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::Thaw>()
+        .unwrap();
+    let details = service
+        .inspect_container(Request::new(
+            op::InspectContainer::into_request(InspectContainerRequest {
+                container_id: created.container_id,
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::InspectContainer>()
+        .unwrap();
+    assert!(
+        matches!(&details.container.runtime, ContainerRuntimeObservation::Running { health } if *health != HealthObservation::Stopping),
+        "successful Thaw must restore ingress eligibility"
+    );
+    service
+        .mark_container_stopping(Request::new(
+            op::MarkContainerStopping::into_request(ployz_core::MarkContainerStoppingRequest {
+                container_id: created.container_id,
+                volume: None,
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::MarkContainerStopping>()
+        .unwrap();
+    let replay = service.thaw(Request::new(op::Thaw::into_request(
+        serde_json::from_value(json!({
+            "name":"data", "container_id":created.container_id,
+            "switch":{"lease":1,"pos":{"seq":13,"round":0,"sub":0},"not_after_unix_seconds":i64::MAX}
+        })).unwrap()
+    ).encode().unwrap())).await.unwrap().into_inner().decode_response().unwrap().decode::<op::Thaw>().unwrap();
+    assert_eq!(replay.decision, ployz_core::FenceDecision::Replay);
+    let details = service
+        .inspect_container(Request::new(
+            op::InspectContainer::into_request(InspectContainerRequest {
+                container_id: created.container_id,
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::InspectContainer>()
+        .unwrap();
+    assert!(
+        matches!(&details.container.runtime, ContainerRuntimeObservation::Running { health } if *health == HealthObservation::Stopping),
+        "a completed Thaw replay must preserve a later ordinary stop's withdrawal"
+    );
+    server.abort();
+    std::fs::remove_dir_all(data_dir).unwrap();
+}
+
+#[tokio::test]
+async fn recovery_thaw_restores_ingress_after_adopting_a_newer_lease() {
+    use axum::{Json, Router, routing::post};
+    use ployz_core::{
+        AdoptLeaseRequest, CreateContainerRequest, InspectContainerRequest, SourceContainerRequest,
+    };
+    use serde_json::json;
+
+    let (data_dir, _store, service, fake) = fake_docker_service("ployzd-source-recovery").await;
+    let created = service
+        .create_container(Request::new(
+            op::CreateContainer::into_request(CreateContainerRequest {
+                deployment_id: None,
+                creation_key: None,
+                kind: ContainerKind::ServiceContainer,
+                namespace: Namespace::parse("app").unwrap(),
+                registry_auth: None,
+                resolved_spec: container_observation('a').resolved_spec.clone(),
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::CreateContainer>()
+        .unwrap();
+    for container in fake
+        .named_containers
+        .as_ref()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .values_mut()
+    {
+        container["State"] = json!({"Status":"running", "Running":true});
+        container["NetworkSettings"] = json!({"Networks":{"ployz":{"IPAddress":"10.210.1.2"}}});
+    }
+    let router = Router::new()
+        .route("/Volume.Withdraw", post(|Json(request): Json<SourceContainerRequest>| async move {
+            Json(json!({"Ok": {
+                "decision":"adopt",
+                "lease":{"lease":request.switch.lease,"pos":request.switch.pos,"cycle":"open"},
+                "copy":{"kind":"root","writer":{"phase":"idle"},"readonly":false,"newest":null}
+            }}))
+        }))
+        .route("/Volume.AdoptLease", post(|Json(request): Json<AdoptLeaseRequest>| async move {
+            Json(json!({"Ok": {
+                "decision":"adopt",
+                "lease":{"lease":request.lease,"pos":{"seq":2,"round":0,"sub":0},"cycle":"open"},
+                "copy":{"kind":"root","writer":{"phase":"idle"},"readonly":false,"newest":null}
+            }}))
+        }))
+        .route("/Volume.Thaw", post({
+            let thawed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            move |Json(request): Json<SourceContainerRequest>| {
+                let thawed = Arc::clone(&thawed);
+                async move {
+                    let decision = if thawed.swap(true, std::sync::atomic::Ordering::SeqCst) { "replay" } else { "adopt" };
+                    Json(json!({"Ok": {
+                        "decision":decision,
+                        "lease":{"lease":request.switch.lease,"pos":request.switch.pos,"cycle":"closed"},
+                        "copy":{"kind":"root","writer":{"phase":"idle"},"readonly":false,"newest":null}
+                    }}))
+                }
+            }
+        }));
+    let socket = data_dir.join("source-plugin.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let service = service.with_volume_plugin(crate::storage::Plugin::at(socket));
+    let inspect = || async {
+        let details = service
+            .inspect_container(Request::new(
+                op::InspectContainer::into_request(InspectContainerRequest {
+                    container_id: created.container_id,
+                })
+                .encode()
+                .unwrap(),
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+            .decode::<op::InspectContainer>()
+            .unwrap();
+        let containers = ployz_core::service_containers([details.container]);
+        ployz_core::serving_containers(&containers)
+            .iter()
+            .map(|container| container.as_observation().container_id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(inspect().await, vec![created.container_id]);
+    let withdraw: SourceContainerRequest = serde_json::from_value(json!({
+        "name":"data", "container_id":created.container_id,
+        "switch":{"lease":1,"pos":{"seq":5,"round":0,"sub":0},"not_after_unix_seconds":i64::MAX}
+    }))
+    .unwrap();
+    service
+        .withdraw(Request::new(
+            op::Withdraw::into_request(withdraw.clone())
+                .encode()
+                .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::Withdraw>()
+        .unwrap();
+    assert!(
+        inspect().await.is_empty(),
+        "Withdraw must remove the source from ingress"
+    );
+    service
+        .adopt_lease(Request::new(
+            op::AdoptLease::into_request(AdoptLeaseRequest {
+                lease: ployz_core::Lease::new(2),
+                not_after_unix_seconds: i64::MAX,
+                name: withdraw.name.clone(),
+            })
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::AdoptLease>()
+        .unwrap();
+    assert!(
+        inspect().await.is_empty(),
+        "AdoptLease alone must not restore ingress"
+    );
+    let mut thaw = withdraw.clone();
+    thaw.switch.lease = ployz_core::Lease::new(2);
+    thaw.switch.pos = ployz_core::Pos::step(13);
+    for decision in [
+        ployz_core::FenceDecision::Adopt,
+        ployz_core::FenceDecision::Replay,
+    ] {
+        let reply = service
+            .thaw(Request::new(
+                op::Thaw::into_request(thaw.clone()).encode().unwrap(),
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+            .decode::<op::Thaw>()
+            .unwrap();
+        assert_eq!(reply.decision, decision);
+        assert_eq!(
+            inspect().await,
+            vec![created.container_id],
+            "successful recovery Thaw must restore the earlier source to ingress"
+        );
+    }
+    let mut newer = withdraw;
+    newer.switch.lease = ployz_core::Lease::new(3);
+    service
+        .withdraw(Request::new(
+            op::Withdraw::into_request(newer).encode().unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::Withdraw>()
+        .unwrap();
+    let reply = service
+        .thaw(Request::new(op::Thaw::into_request(thaw).encode().unwrap()))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::Thaw>()
+        .unwrap();
+    assert_eq!(reply.decision, ployz_core::FenceDecision::Replay);
+    assert!(
+        inspect().await.is_empty(),
+        "Thaw must preserve a newer source withdrawal even when the plugin reports success"
+    );
+    server.abort();
+    std::fs::remove_dir_all(data_dir).unwrap();
 }
 
 /// A Machine service on an initialized store, backed by a fake Docker that keeps named Containers.
