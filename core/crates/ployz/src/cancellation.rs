@@ -1,6 +1,16 @@
 //! Process-lifetime signal ownership for commands spanning synchronous and async work.
 
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
+
 use tokio_util::sync::CancellationToken;
+
+/// Whether SIGINT still ends the process the default way; cleared while a
+/// prompt reads keys, and for good once a command listens for Ctrl-C itself.
+static DIES: OnceLock<Arc<AtomicBool>> = OnceLock::new();
+static GRACEFUL: AtomicBool = AtomicBool::new(false);
 
 /// Subscribe to Ctrl-C for async-only commands already running on Tokio.
 pub(crate) fn on_ctrl_c() -> CancellationToken {
@@ -28,6 +38,10 @@ pub(crate) fn interrupted() -> std::io::Result<CancellationToken> {
     if let Some(token) = token.as_ref() {
         return Ok(token.clone());
     }
+    GRACEFUL.store(true, Ordering::SeqCst);
+    if let Some(dies) = DIES.get() {
+        dies.store(false, Ordering::SeqCst);
+    }
     let mut signals = signal_hook::iterator::Signals::new([signal_hook::consts::SIGINT])?;
     let cancelled = CancellationToken::new();
     let cancel = cancelled.clone();
@@ -39,4 +53,26 @@ pub(crate) fn interrupted() -> std::io::Result<CancellationToken> {
             }
         })?;
     Ok(token.insert(cancelled).clone())
+}
+
+/// Run a prompt with Ctrl-C reaching it as a keypress. The prompt's terminal
+/// library raises SIGINT for ^C; while `ask` runs that raise returns, so the
+/// prompt can hand back `Interrupted` and put the cursor back. Outside a
+/// prompt SIGINT keeps its default action.
+pub(crate) fn while_prompting<T>(ask: impl FnOnce() -> T) -> std::io::Result<T> {
+    let dies = match DIES.get() {
+        Some(dies) => dies,
+        None => {
+            let dies = Arc::new(AtomicBool::new(!GRACEFUL.load(Ordering::SeqCst)));
+            signal_hook::flag::register_conditional_default(
+                signal_hook::consts::SIGINT,
+                Arc::clone(&dies),
+            )?;
+            DIES.get_or_init(|| dies)
+        }
+    };
+    dies.store(false, Ordering::SeqCst);
+    let answer = ask();
+    dies.store(!GRACEFUL.load(Ordering::SeqCst), Ordering::SeqCst);
+    Ok(answer)
 }

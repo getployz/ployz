@@ -1,5 +1,5 @@
-use crate::ui::{self, Cell, Table, Tone};
-use std::{io, path::Path};
+use crate::ui::{self, Cell, Hint, Table, Tone};
+use std::path::Path;
 
 use clap::{ArgMatches, Command};
 
@@ -95,12 +95,30 @@ pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
         }
         None => {
             let names = config.contexts.keys().collect::<Vec<_>>();
-            let index = prompt(
+            let current = names
+                .iter()
+                .position(|name| Some(name.as_str()) == config.current_context());
+            let choices = names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| {
+                    if Some(index) == current {
+                        format!("{name} (current)")
+                    } else {
+                        name.to_string()
+                    }
+                })
+                .collect::<Vec<_>>();
+            let index = ui::select(
                 "Select a context",
-                names.iter().map(|name| name.as_str()),
-                names
-                    .iter()
-                    .position(|name| Some(name.as_str()) == config.current_context()),
+                &choices,
+                current.unwrap_or(0),
+                || {
+                    Error::usage("Choosing a context needs a terminal; name one instead.")
+                        .hint(Hint::Retry("ployz ctx use CONTEXT".into()))
+                        .hint(Hint::valid(names.iter().map(|name| name.as_str())))
+                },
+                "Cancelled. The current context is unchanged.",
             )?;
             names
                 .get(index)
@@ -194,43 +212,6 @@ fn connection_index(
             "connection label is ambiguous; select its 1-based index",
         ));
     }
-    Ok(index)
-}
-
-fn prompt<'a>(
-    title: &str,
-    choices: impl Iterator<Item = &'a str>,
-    default: Option<usize>,
-) -> Result<usize, Error> {
-    if !ui::interactive() {
-        return Err(Error::usage(format!(
-            "cannot {title} interactively without a terminal; pass the context name: ployz ctx use <context-name>"
-        )));
-    }
-    let choices = choices.collect::<Vec<_>>();
-    ui::note(format_args!("{title}:"));
-    for (index, choice) in choices.iter().enumerate() {
-        let marker = if Some(index) == default {
-            " (current)"
-        } else {
-            ""
-        };
-        ui::note(format_args!("  {}. {choice}{marker}", index + 1));
-    }
-    crate::ui::note_inline(format_args!("> "));
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let index = if input.trim().is_empty() {
-        default.ok_or_else(|| Error::usage("a selection is required"))?
-    } else {
-        input
-            .trim()
-            .parse::<usize>()
-            .ok()
-            .and_then(|number| number.checked_sub(1))
-            .filter(|index| *index < choices.len())
-            .ok_or_else(|| Error::usage("invalid selection"))?
-    };
     Ok(index)
 }
 
