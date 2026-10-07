@@ -1118,8 +1118,8 @@ bound_bytes: number,
  */
 used_bytes: number,
 /**
- * What this copy is to the run model. Absent from a daemon that predates copies;
- * readers treat that as a writer.
+ * The copy's role; unset when the plugin did not report one, which readers treat
+ * as a writer.
  */
 role: CopyRole | null, };
 

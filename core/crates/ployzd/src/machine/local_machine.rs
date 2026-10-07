@@ -140,7 +140,6 @@ impl LocalMachine {
         }
     }
 
-    /// Reach the volume plugin at another socket; tests serve a fake there.
     #[must_use]
     pub(crate) fn with_plugin(mut self, plugin: crate::storage::Plugin) -> Self {
         self.plugin = plugin;
@@ -756,10 +755,8 @@ impl LocalMachine {
 }
 
 impl LocalMachine {
-    /// Departure: every root this Machine holds becomes a slot and every lease record
-    /// moves on, so nothing left here can be taken for the writer by the next identity
-    /// or by a restore elsewhere. Docker forgets each demoted name. A Machine without
-    /// Docker has no volume driver, so it has nothing to depart.
+    /// Demote every root through the plugin, then make Docker forget each demoted name.
+    /// A Machine without Docker has no volume driver and nothing to depart.
     ///
     /// # Errors
     ///

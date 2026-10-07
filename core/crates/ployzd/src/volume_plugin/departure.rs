@@ -1,7 +1,6 @@
 //! Departure: when a Machine leaves its cluster or is installed afresh, every root it
-//! holds becomes a slot and every lease record moves on. Nothing left behind can then
-//! be mistaken for the writer, and a later restore starts from a copy the run model
-//! already understands.
+//! holds becomes a slot and every lease record moves on, so nothing left behind is taken
+//! for the writer and a later restore starts from an ordinary slot.
 
 use axum::{Json, extract::State};
 use ployz_core::{Cycle, Lease, LeaseRecord, MirrorMarker, Pos, RpcError};
