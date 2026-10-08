@@ -34,7 +34,7 @@ pub(super) fn confirm_removal(
     volume_effect: VolumeEffect,
     labels: &VolumeLabels,
     refusal: impl FnOnce(String) -> Error,
-) -> Result<DataLossConfirmation, Error> {
+) -> Result<(DataLossConfirmation, Vec<String>), Error> {
     let leaf = leaf_matches(root);
     let request = Request {
         observed,
@@ -58,7 +58,7 @@ pub(super) fn confirm_removal(
         }
         ui::confirm_name(server, || refusal(retry), "Cancelled. Nothing was removed.")?;
     }
-    request.accept()
+    Ok((request.accept()?, request.accepting()))
 }
 
 pub(super) fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Vec<String> {
@@ -149,13 +149,17 @@ impl Request<'_> {
     }
 
     /// The command that accepts everything observed now.
-    fn retry(&self) -> String {
+    fn accepting(&self) -> Vec<String> {
         let mut command = self.retry.to_vec();
         command.extend(["--confirm".into(), self.server.to_owned()]);
         for name in self.names() {
             command.extend(["--accept-volume-loss".into(), name.to_owned()]);
         }
-        shell_words::join(command)
+        command
+    }
+
+    fn retry(&self) -> String {
+        shell_words::join(self.accepting())
     }
 
     /// Whether the flags accept on their own; `false` means the name must be

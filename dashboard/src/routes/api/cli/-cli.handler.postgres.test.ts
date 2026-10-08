@@ -1,7 +1,8 @@
 import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
+import { vi } from "vitest";
 import { createHash } from "node:crypto";
-import type { Client } from "@ployz/sdk";
+import type { Client, DockerVolumeName, MachineId, RuntimeWatchView } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
 import { Inngest } from "inngest";
@@ -14,7 +15,9 @@ import { asTestDouble } from "#/lib/test-double";
 import { retireServerAccess, serverAccessLabel } from "#/modules/machines/server-access.server";
 import { organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { makePloyzLayer, Ployz } from "#/modules/runtime/ployz.server";
-import { OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
+import type { PloyzSession } from "#/modules/runtime/ployz.server";
+import { DEFAULT_SERVER_UPGRADE_SETTINGS } from "#/modules/server-upgrade/server-upgrade";
 import { operationApprovals } from "#/modules/approvals/tables";
 import { callStore } from "#/modules/config-store/config-store.server";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
@@ -89,7 +92,10 @@ const enroll = Effect.fn(function* (organizationId: string, machineId: string, f
   });
 });
 
-const cliLayer = Effect.fn(function* (ployz: Layer.Layer<Ployz> = fakeServers().layer) {
+const cliLayer = Effect.fn(function* (
+  ployz: Layer.Layer<Ployz> = fakeServers().layer,
+  overrides: { readonly runtime?: Layer.Layer<OrganizationRuntime>; readonly inngest?: Inngest } = {},
+) {
   const testDatabase = yield* postgresTestDatabase;
   const provider = ConfigProvider.fromEnv({
     env: { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: testDatabase.url.href },
@@ -100,13 +106,14 @@ const cliLayer = Effect.fn(function* (ployz: Layer.Layer<Ployz> = fakeServers().
     configLayer,
     databaseLayer,
     Layer.succeed(Polar, { mode: "self_hosted" }),
-    Layer.succeed(InngestClient, new Inngest({ id: "cli-test" })),
+    Layer.succeed(InngestClient, overrides.inngest ?? new Inngest({ id: "cli-test" })),
     Layer.succeed(SecretEncryption, encryption),
     Layer.succeed(GithubApi, github.service),
     ployz,
   );
   const store = CloudStoreLive.pipe(Layer.provide(Layer.merge(configLayer, databaseLayer)));
-  return Layer.mergeAll(AuthLive.pipe(Layer.provide(services)), OrganizationRuntimeLive.pipe(Layer.provide(services)), services, store);
+  const runtime = overrides.runtime ?? OrganizationRuntimeLive.pipe(Layer.provide(services));
+  return Layer.mergeAll(AuthLive.pipe(Layer.provide(services)), runtime, services, store);
 });
 
 /** The fields these tests read from `/api/cli` replies. */
@@ -132,11 +139,24 @@ type Reply = {
   readonly uninstall_url?: string;
   readonly organization?: string;
   readonly approval?: { readonly id: string; readonly status: string; readonly digest: string };
-  readonly error?: { readonly code: string; readonly message: string; readonly details: { readonly next?: string } };
+  readonly error?: {
+    readonly code: string;
+    readonly message: string;
+    readonly details: {
+      readonly next?: string;
+      readonly approval?: string;
+      readonly approval_id?: string;
+      readonly channel?: string;
+      readonly effects?: ReadonlyArray<{ readonly kind: string; readonly name: string }>;
+      readonly operation?: { readonly verb: string; readonly name: string };
+    };
+  };
+  readonly id?: string;
+  readonly state?: string;
   readonly revoking?: ReadonlyArray<{ readonly id: string; readonly kind: string; readonly unconfirmed: ReadonlyArray<string> }>;
 };
 
-type As = { readonly cookie?: string; readonly bearer?: string };
+type As = { readonly cookie?: string; readonly bearer?: string; readonly approval?: string };
 
 type CliBody = Readonly<Record<string, string | number | boolean | Readonly<Record<string, string>>>>;
 
@@ -144,6 +164,7 @@ const cli = Effect.fn(function* (method: string, path: string, as: As, body?: Cl
   const headers = new Headers();
   if (as.cookie !== undefined) headers.set("cookie", as.cookie);
   if (as.bearer !== undefined) headers.set("authorization", `Bearer ${as.bearer}`);
+  if (as.approval !== undefined) headers.set("x-ployz-approval", as.approval);
   const init: RequestInit = { method, headers };
   if (body !== undefined) init.body = JSON.stringify(body);
   const exit = yield* Effect.exit(handleCliRequest(new Request(`${origin}/api/cli/${path}`, init)));
@@ -586,7 +607,7 @@ it.live(
         const bob = yield* signUp("bob");
         // Asked about Environment `production` of a Project the Store has no more: its plan moved on.
         const [row] = yield* drizzle.insert(operationApprovals).values({
-          organizationId: alice.organization.id, environmentId: "00000000-0000-4000-8000-000000001301",
+          organizationId: alice.organization.id, subject: "00000000-0000-4000-8000-000000001301",
           credentialKind: "session", credentialId: "device", command: "publish", digest: "7:abc",
           review: asTestDouble<typeof operationApprovals.$inferInsert.review>()({
             effects: [], diff: { version: "7", environment: { id: "00000000-0000-4000-8000-000000001301", project: "gone", name: "production" } },
@@ -605,6 +626,111 @@ it.live(
         const approved = yield* cli("POST", `approvals/${id}`, alice, { approve: { digest: "7:abc" } });
         assert.strictEqual(approved.status, 409);
         assert.strictEqual(approved.json.error?.code, "conflict");
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+const fra1 = "f".repeat(32);
+const leftBehind = { kind: "docker_volume" as const, id: { machine_id: fra1 as MachineId, name: "left-behind_data" as DockerVolumeName } };
+
+const leftBehindCluster = Layer.succeed(OrganizationRuntime, {
+  cancel: () => Effect.void,
+  open: () => Effect.succeed({
+    status: "connected" as const,
+    connected: asTestDouble<PloyzSession>()({
+      watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
+        machines: [{ machine: { id: fra1, name: "fra-1" } }],
+        services: [{
+          identity: "left-behind/web",
+          service_id: "web",
+          containers: [{
+            kind: "service_container", machine_id: fra1, runtime: { state: "running" }, created_at_unix_nanos: 1,
+            resolved_spec: { mode: { mode: "replicated" }, volumes: [] },
+          }],
+        }],
+      })),
+      dataLossIfNamespaceDestroyed: () => Effect.succeed({ data_loss: [leftBehind] }),
+    }),
+  }),
+});
+
+it.live(
+  "the CLI's clean, drain and remove ask a human before they destroy anything, and an approved retry starts one run",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "cli-operations-test" });
+      const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const layer = yield* cliLayer(fakeServers().layer, { runtime: leftBehindCluster, inngest });
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const alice = yield* signUp("alice");
+
+        const asked = yield* cli("POST", "namespaces/left-behind/clean", alice);
+        assert.strictEqual(asked.status, 409);
+        assert.strictEqual(asked.json.error?.code, "approval_required");
+        const details = asked.json.error?.details ?? assert.fail("no details");
+        assert.deepStrictEqual(details.operation, { verb: "clean", name: "left-behind" });
+        assert.deepStrictEqual(details.effects?.map(({ kind, name }) => [kind, name]), [
+          ["removes_service", "left-behind/web"],
+          ["deletes_volume", "left-behind_data"],
+        ]);
+        const approvalId = details.approval_id ?? assert.fail("no approval id");
+        assert.lengthOf(sent.mock.calls, 0);
+
+        const pending = yield* cli("POST", "namespaces/left-behind/clean", { ...alice, approval: approvalId });
+        assert.strictEqual(pending.status, 409);
+        assert.strictEqual(pending.json.error?.details.approval_id, approvalId);
+
+        const approved = yield* cli("POST", `approvals/${approvalId}`, alice, { approve: { digest: details.approval ?? "" } });
+        assert.strictEqual(approved.status, 200);
+        assert.strictEqual(approved.json.approval?.status, "approved");
+
+        const started = yield* cli("POST", "namespaces/left-behind/clean", { ...alice, approval: approvalId });
+        assert.strictEqual(started.status, 202);
+        const cleanupId = started.json.id ?? assert.fail("no clean id");
+        assert.deepStrictEqual((yield* cli("GET", `namespace-cleanups/${cleanupId}`, alice)).json, { state: "pending" });
+        const again = yield* cli("POST", "namespaces/left-behind/clean", { ...alice, approval: approvalId });
+        assert.strictEqual(again.json.id, cleanupId);
+        assert.deepStrictEqual(sent.mock.calls.map(([event]) => (event as { id?: string }).id), [
+          `namespace-cleanup-${cleanupId}`, `namespace-cleanup-${cleanupId}`,
+        ]);
+        assert.strictEqual((yield* cli("GET", "namespace-cleanups/not-a-uuid", alice)).json.error?.code, "not_found");
+
+        const removal = yield* cli("DELETE", `servers/${fra1}`, alice, { no_reset: true });
+        assert.strictEqual(removal.status, 409);
+        assert.deepStrictEqual(removal.json.error?.details.operation, { verb: "remove", name: "fra-1" });
+
+        const drain = yield* cli("POST", `servers/${fra1}/drain`, alice);
+        assert.strictEqual(drain.status, 202);
+        const drainId = drain.json.id ?? assert.fail("no drain id");
+        assert.deepStrictEqual((yield* cli("GET", `server-drains/${drainId}`, alice)).json, { state: "pending" });
+        assert.strictEqual((yield* cli("GET", "server-drains/not-a-uuid", alice)).json.error?.code, "not_found");
+        assert.strictEqual((yield* cli("POST", "servers/not-a-machine/drain", alice)).status, 404);
+
+        const approvals = yield* drizzle.select({ subject: operationApprovals.subject, status: operationApprovals.status })
+          .from(operationApprovals).orderBy(operationApprovals.subject);
+        assert.deepStrictEqual(approvals.map(({ subject, status }) => [subject, status]), [
+          ["namespace:left-behind", "approved"],
+          [`server:${fra1}`, "pending"],
+        ]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "the CLI's Upgrade refuses a Release Channel other than the Organization's, naming the one it follows",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer(fakeServers().layer, { runtime: leftBehindCluster });
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const refused = yield* cli("POST", `servers/${fra1}/upgrade`, alice, { channel: "no-such-channel" });
+        assert.strictEqual(refused.status, 409);
+        assert.strictEqual(refused.json.error?.code, "channel_mismatch");
+        assert.deepStrictEqual(refused.json.error?.details, { channel: DEFAULT_SERVER_UPGRADE_SETTINGS.channel });
+        assert.strictEqual((yield* cli("GET", "server-upgrades/not-an-attempt", alice)).json.error?.code, "not_found");
       }).pipe(Effect.provide(layer));
     }),
   60_000,

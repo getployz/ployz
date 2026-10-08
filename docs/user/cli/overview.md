@@ -65,7 +65,7 @@ app to check with you before every call, even when you've told it to skip permis
 `server rm`, `service stop`, and `token new` ask this way; `deploy` and `publish` don't. Claude
 Code honors this.
 
-When a `publish` or `deploy` needs your approval (see
+When a `publish`, `deploy` or server command needs your approval (see
 [Ask before destructive actions](../account/organizations.md#ask-before-destructive-actions)),
 the agent's app shows you what it would remove and asks you to approve or deny it. Approve and
 the command runs. Leave Approve unticked and Ployz denies the approval; any reason you type goes

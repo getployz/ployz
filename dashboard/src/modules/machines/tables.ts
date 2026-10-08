@@ -1,10 +1,16 @@
-import type { DrainReport, EnrollmentAssignment } from "@ployz/sdk";
+import type { DrainReport, EnrollmentAssignment, QualifiedService } from "@ployz/sdk";
 import { createdAt, type EncryptedSecretValue, type MachineId, sqlStringLiterals, updatedAt } from "#/db/tables";
 
 import { user } from "#/modules/identity/tables";
 
 import { MACHINE_REMOVE_ATTEMPT_STATES, type MachineRemoveAttemptState, type MachineRemoveResult } from "#/modules/machines/machine-removal";
 
+import {
+  CLEANUP_END_CODES,
+  CLEANUP_STATES,
+  type CleanupEndCode,
+  type CleanupState,
+} from "#/modules/machines/namespace-cleanup";
 import { DRAIN_END_CODES, DRAIN_STATES, type DrainEndCode, type DrainState } from "#/modules/machines/server-drain";
 
 import { organization } from "#/modules/organization/tables";
@@ -149,6 +155,10 @@ export const serverDrainAttempt = pgTable(
     endCode: text("end_code").$type<DrainEndCode | null>(),
     /** The Engine's words when it refused: set exactly when `end_code` is `refused`. */
     refusalMessage: text("refusal_message"),
+    /** The services the CLI previewed; it drains exactly these. Null drains every owned Namespace (the dashboard). */
+    targets: jsonb("targets").$type<QualifiedService[] | null>(),
+    /** The approval this drain consumed: a retry with it answers this row instead of draining again. */
+    approvalId: uuid("approval_id"),
     requestedAt: timestamp("requested_at", { mode: "date", withTimezone: true }).defaultNow().notNull(),
     startedAt: timestamp("started_at", { mode: "date", withTimezone: true }),
     endedAt: timestamp("ended_at", { mode: "date", withTimezone: true }),
@@ -162,6 +172,8 @@ export const serverDrainAttempt = pgTable(
       .on(table.inngestRunId)
       .where(sql`${table.inngestRunId} is not null`),
     index("server_drain_attempt_latest_idx").on(table.organizationId, table.machineId, table.requestedAt),
+    uniqueIndex("server_drain_attempt_approval_uidx").on(table.approvalId).where(sql`${table.approvalId} is not null`),
+    check("server_drain_attempt_targets_check", sql`${table.targets} is null or jsonb_typeof(${table.targets}) = 'array'`),
     check("server_drain_attempt_machine_id_check", sql`${table.machineId} ~ '^[0-9a-f]{32}$'`),
     check("server_drain_attempt_state_check", sql`${table.state} in (${sqlStringLiterals(DRAIN_STATES)})`),
     // Each end code ends in exactly its state.
@@ -187,6 +199,76 @@ export const serverDrainAttempt = pgTable(
           and ${table.endedAt} is not null and ${table.report} is null and ${table.endCode} is not null)
         or (${table.state} = 'unknown' and ${table.inngestRunId} is not null
           and ${table.startedAt} is not null and ${table.endedAt} is not null and ${table.report} is null
+          and ${table.endCode} is not null)
+      )`,
+    ),
+  ],
+);
+
+const cleanupEndPairs = sql.join(
+  Object.entries(CLEANUP_END_CODES).map(([code, state]) => sql`(${sqlStringLiterals([code, state])})`),
+  sql`,`,
+);
+
+/**
+ * One clean of a Namespace no Environment owns, asked for from the CLI. The request writes it `pending` with the Volumes
+ * the caller confirmed; the run claims it `running` right before it asks the Engine, and ends it `finished` with the
+ * Volumes removed, or under an end code whose state `CLEANUP_END_CODES` names.
+ */
+export const namespaceCleanup = pgTable(
+  "namespace_cleanup",
+  {
+    id: uuid("id").primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    namespace: text("namespace").notNull(),
+    requestedByUserId: uuid("requested_by_user_id").references(() => user.id, { onDelete: "set null" }),
+    /** The approval this clean consumed: a retry with it answers this row instead of cleaning again. */
+    approvalId: uuid("approval_id"),
+    /** The Volumes the caller confirmed losing. */
+    confirmDataLoss: jsonb("confirm_data_loss").notNull().$type<DataLossIdentity[]>(),
+    state: text("state").default("pending").notNull().$type<CleanupState>(),
+    inngestRunId: text("inngest_run_id"),
+    /** The Docker Volume names removed; only `finished` has them. */
+    volumes: jsonb("volumes").$type<string[] | null>(),
+    endCode: text("end_code").$type<CleanupEndCode | null>(),
+    /** The Engine's words: set exactly when `end_code` is `refused` or `incomplete`. */
+    endMessage: text("end_message"),
+    requestedAt: timestamp("requested_at", { mode: "date", withTimezone: true }).defaultNow().notNull(),
+    startedAt: timestamp("started_at", { mode: "date", withTimezone: true }),
+    endedAt: timestamp("ended_at", { mode: "date", withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("namespace_cleanup_one_active_idx")
+      .on(table.organizationId, table.namespace)
+      .where(sql`${table.state} in ('pending', 'running')`),
+    uniqueIndex("namespace_cleanup_run_uidx").on(table.inngestRunId).where(sql`${table.inngestRunId} is not null`),
+    uniqueIndex("namespace_cleanup_approval_uidx").on(table.approvalId).where(sql`${table.approvalId} is not null`),
+    check("namespace_cleanup_namespace_check", sql`length(${table.namespace}) between 1 and 255 and ${table.namespace} !~ '[[:cntrl:]]'`),
+    check("namespace_cleanup_confirm_data_loss_check", sql`jsonb_typeof(${table.confirmDataLoss}) = 'array'`),
+    check("namespace_cleanup_state_check", sql`${table.state} in (${sqlStringLiterals(CLEANUP_STATES)})`),
+    check("namespace_cleanup_end_code_check", sql`${table.endCode} is null or (${table.endCode}, ${table.state}) in (${cleanupEndPairs})`),
+    check(
+      "namespace_cleanup_end_message_check",
+      sql`(${table.endCode} is not distinct from 'refused' or ${table.endCode} is not distinct from 'incomplete') = (${table.endMessage} is not null)
+        and (${table.endMessage} is null or length(${table.endMessage}) between 1 and 1024)`,
+    ),
+    check("namespace_cleanup_run_check", sql`${table.inngestRunId} is null or length(${table.inngestRunId}) between 1 and 255`),
+    check(
+      "namespace_cleanup_state_shape_check",
+      sql`(
+        (${table.state} = 'pending'
+          and ${table.startedAt} is null and ${table.endedAt} is null and ${table.volumes} is null and ${table.endCode} is null)
+        or (${table.state} = 'running' and ${table.inngestRunId} is not null
+          and ${table.startedAt} is not null and ${table.endedAt} is null and ${table.volumes} is null and ${table.endCode} is null)
+        or (${table.state} = 'finished' and ${table.inngestRunId} is not null
+          and ${table.startedAt} is not null and ${table.endedAt} is not null
+          and jsonb_typeof(${table.volumes}) = 'array' and ${table.endCode} is null)
+        or (${table.state} in ('failed', 'cancelled')
+          and ${table.endedAt} is not null and ${table.volumes} is null and ${table.endCode} is not null)
+        or (${table.state} = 'unknown' and ${table.inngestRunId} is not null
+          and ${table.startedAt} is not null and ${table.endedAt} is not null and ${table.volumes} is null
           and ${table.endCode} is not null)
       )`,
     ),

@@ -218,7 +218,9 @@ async fn last_cloud_managed_server_asks_for_cloud_before_any_confirmation() {
 /// Cloud's `/api/cli`: a Server removal it's asked for (recorded with its body) settles
 /// at once as `settled`; anything else (the Store's Volume names) isn't offered.
 type Asked = std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>;
-fn fake_cloud(settled: &'static str) -> (String, Asked) {
+
+const ASKED: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this first: this removal takes Server two out","details":{"approval_id":"apr_9","approval":"remove:abc","effects":[{"kind":"removes_server","name":"two","node":"b","path":"servers/b"}],"operation":{"verb":"remove","name":"two"}}}}"#;
+fn fake_cloud(settled: &'static str, gated: bool) -> (String, Asked) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let cloud = format!("http://{}", listener.local_addr().unwrap());
     let asked = std::sync::Arc::new(std::sync::Mutex::new(
@@ -232,23 +234,29 @@ fn fake_cloud(settled: &'static str) -> (String, Asked) {
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut line = String::new();
             reader.read_line(&mut line).unwrap();
-            let mut length = 0;
+            let (mut length, mut approved) = (0, false);
             loop {
                 let mut header = String::new();
                 reader.read_line(&mut header).unwrap();
                 if header.trim().is_empty() {
                     break;
                 }
-                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                let header = header.to_ascii_lowercase();
+                if let Some(value) = header.strip_prefix("content-length:") {
                     length = value.trim().parse().unwrap();
                 }
+                approved |= header.starts_with("x-ployz-approval:");
             }
             let mut body = vec![0; length];
             reader.read_exact(&mut body).unwrap();
             let (status, reply) = if line.starts_with("DELETE /api/cli/servers/") {
                 let body = serde_json::from_slice(&body).unwrap();
                 seen.lock().unwrap().push((line.trim().to_owned(), body));
-                ("200 OK", r#"{"id":"r1"}"#)
+                if gated && !approved {
+                    ("409 Conflict", ASKED)
+                } else {
+                    ("200 OK", r#"{"id":"r1"}"#)
+                }
             } else if line.starts_with("GET /api/cli/server-removals/r1 ") {
                 ("200 OK", settled)
             } else {
@@ -268,8 +276,10 @@ fn fake_cloud(settled: &'static str) -> (String, Asked) {
 
 #[tokio::test]
 async fn cloud_removes_its_last_server_for_the_cli() {
-    let (cloud, asked) =
-        fake_cloud(r#"{"state":"succeeded","reset_warning":null,"release":{"kind":"released"}}"#);
+    let (cloud, asked) = fake_cloud(
+        r#"{"state":"succeeded","reset_warning":null,"release":{"kind":"released"}}"#,
+        false,
+    );
     let (output, service) = remove_last_cloud_server(
         &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
         &["--confirm", "one", "--accept-volume-loss", "data"],
@@ -316,6 +326,7 @@ async fn cloud_removes_its_last_server_for_the_cli() {
 async fn a_server_cloud_manages_leaves_through_cloud_even_without_a_reset() {
     let (cloud, asked) = fake_cloud(
         r#"{"state":"succeeded","reset_warning":null,"release":{"kind":"others_remain"}}"#,
+        false,
     );
     let mut service = DiscoveryService::new(test_description());
     service.machines.push(machine('b', "two"));
@@ -345,4 +356,42 @@ async fn a_server_cloud_manages_leaves_through_cloud_even_without_a_reset() {
         "{result}"
     );
     assert_eq!(result.get("next"), Some(&json!(null)), "{result}");
+}
+
+#[tokio::test]
+async fn an_agent_gets_the_approval_a_cloud_removal_needs() {
+    let (cloud, asked) = fake_cloud(
+        r#"{"state":"succeeded","reset_warning":null,"release":{"kind":"others_remain"}}"#,
+        true,
+    );
+    let mut service = DiscoveryService::new(test_description());
+    service.machines.push(machine('b', "two"));
+    let (output, service) = remove_cloud_server(
+        service,
+        "two",
+        &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
+        &["--no-reset", "--confirm", "two"],
+    )
+    .await;
+    let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        error.pointer("/error/code"),
+        Some(&json!("approval_required")),
+        "{error}"
+    );
+    let retry = error
+        .pointer("/error/details/retry")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        retry.starts_with("ployz server rm two --no-reset --connect tcp://")
+            && retry.ends_with(" --confirm two --approval apr_9"),
+        "{retry}"
+    );
+    assert_eq!(
+        asked.lock().unwrap().len(),
+        1,
+        "one removal asked, none retried"
+    );
+    assert!(service.removed_machines.lock().unwrap().is_empty());
 }

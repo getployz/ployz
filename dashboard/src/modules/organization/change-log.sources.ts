@@ -48,6 +48,7 @@ export const changeSources = {
   organization_machine: { key: ["machine_id"] },
   server_upgrade_attempt: { key: ["id"] },
   server_drain_attempt: { key: ["id"] },
+  namespace_cleanup: { key: ["id"] },
   organization_server_upgrades: { key: ["organization_id"] },
   organization_settings: { key: ["organization_id"] },
   operation_approvals: { key: ["id"] },

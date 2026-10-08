@@ -1,5 +1,6 @@
 import { Inngest } from "inngest";
 import { describe, expect, it } from "vitest";
+import { createNamespaceCleanupFunctions } from "#/modules/machines/namespace-cleanup.inngest";
 import { createServerDrainFunctions } from "#/modules/machines/server-drain.inngest";
 import { createServerUpgradeFunctions } from "#/modules/server-upgrade/server-upgrade.inngest";
 import { createVolumeRunFunctions } from "#/modules/volume-run/volume-run.inngest";
@@ -7,6 +8,7 @@ import { createVolumeRunFunctions } from "#/modules/volume-run/volume-run.innges
 describe("attemptLifecycle", () => {
   it.each([
     ["drain-server", createServerDrainFunctions, "server/drain.requested", "cancel-server-drain", "close-stale-server-drains"],
+    ["clean-namespace", createNamespaceCleanupFunctions, "namespace/cleanup.requested", "cancel-namespace-cleanup", "close-stale-namespace-cleanups"],
     ["roll-out-server-upgrade", createServerUpgradeFunctions, "server/upgrade.requested", "cancel-server-upgrade", "schedule-server-upgrades"],
     ["run-volume", createVolumeRunFunctions, "volume/run.requested", "cancel-volume-run", "close-stale-volume-runs"],
   ])("registers %s with its failure handler, its cancel handler and its hourly sweep", (id, create, event, cancelId, sweepId) => {

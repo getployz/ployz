@@ -255,6 +255,9 @@ fn serve(
                 "uninstall_url": "https://github.com/organizations/acme/settings/installations/7",
             }),
         ),
+        (Some(_), route) if let Some(route) = route.strip_prefix("/api/cli/") => {
+            approvals.run(&method, route, &body, approval.as_deref())
+        }
         (Some(_), _) => (404, json!({ "code": "NOT_FOUND" })),
     };
     let reply = reply.to_string();
@@ -305,6 +308,7 @@ struct Approvals {
     deletes_volume: Option<&'static str>,
     asking: std::sync::Mutex<usize>,
     calls: std::sync::Mutex<Vec<(String, String, Value)>>,
+    runs: std::sync::Mutex<Vec<String>>,
 }
 
 impl Approvals {
@@ -363,6 +367,75 @@ impl Approvals {
             _ => {}
         }
         Some((409, json!({ "error": asked(self.rows[*asking].0) })))
+    }
+
+    fn runs(&self) -> Vec<String> {
+        self.runs.lock().unwrap().clone()
+    }
+
+    fn run(&self, method: &str, route: &str, body: &[u8], approval: Option<&str>) -> (u16, Value) {
+        let carried = approval
+            .map(|id| format!(" approved by {id}"))
+            .unwrap_or_default();
+        self.runs
+            .lock()
+            .unwrap()
+            .push(format!("{method} {route}{carried}"));
+        let body: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+        let segments: Vec<&str> = route.split('/').collect();
+        match (method, segments.as_slice()) {
+            ("POST", ["servers", _, "drain"]) => (202, json!({ "id": "drn_1" })),
+            ("GET", ["server-drains", "drn_1"]) => {
+                let report = json!({
+                    "server": cloud_server(),
+                    "services_role": "turned_off",
+                    "services": [],
+                    "stopped": null,
+                    "remaining": { "kind": "observed", "services": [], "unchosen": [] },
+                });
+                (200, json!({ "state": "finished", "report": report }))
+            }
+            ("POST", ["servers", _, "upgrade"]) if body["channel"] != "stable" => {
+                let message = "This Organization upgrades along stable";
+                let details = json!({ "channel": "stable" });
+                let error =
+                    json!({ "code": "channel_mismatch", "message": message, "details": details });
+                (409, json!({ "error": error }))
+            }
+            ("POST", ["servers", _, "upgrade"]) => (202, json!({ "id": "upg_1" })),
+            ("GET", ["server-upgrades", "upg_1"]) => (
+                200,
+                json!({
+                    "state": "finished",
+                    "outcome": "succeeded",
+                    "from_version": "0.2.0",
+                    "target_version": "0.3.0",
+                    "message": null,
+                }),
+            ),
+            ("POST", ["namespaces", namespace, "clean"]) => {
+                let approved = approval.is_some_and(|id| self.status(id) == "approved");
+                if self.rows.is_empty() || approved {
+                    return (202, json!({ "id": "cln_1" }));
+                }
+                let id = self.rows[0].0;
+                let error = json!({
+                    "code": "approval_required",
+                    "message": format!("A human must approve this first: this cleanup removes Namespace {namespace}"),
+                    "details": {
+                        "approval_id": id,
+                        "approval": "clean:abc",
+                        "effects": [{ "kind": "deletes_volume", "name": "data", "node": "a/data", "path": "volumes/a/data" }],
+                        "operation": { "verb": "clean", "name": namespace },
+                    },
+                });
+                (409, json!({ "error": error }))
+            }
+            ("GET", ["namespace-cleanups", "cln_1"]) => {
+                (200, json!({ "state": "finished", "volumes": ["data"] }))
+            }
+            _ => (404, json!({ "code": "NOT_FOUND" })),
+        }
     }
 
     fn answer(&self, method: &str, id: &str, body: &[u8]) -> (u16, Value) {
@@ -441,6 +514,34 @@ fn approve_in_cloud(target: &Target, id: &str) {
     let mut reply = String::new();
     stream.read_to_string(&mut reply).unwrap();
     assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+}
+
+const CLOUD_SERVER: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+fn cloud_server() -> ployz_core::Machine {
+    ployz_core::Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: false,
+        accepts_ingress: true,
+        id: ployz_core::MachineId::parse(CLOUD_SERVER).unwrap(),
+        name: ployz_core::MachineName::parse("web-1").unwrap(),
+        subnet: "10.210.1.0/24".parse().unwrap(),
+        public_key: ployz_core::WireGuardPublicKey([1; 32]),
+        public_ip: None,
+        advertised_endpoints: Vec::new(),
+        runtime: Default::default(),
+        build_concurrency: None,
+    }
+}
+
+fn running(rows: &[(&'static str, &'static str)]) -> (Target, std::sync::Arc<Approvals>) {
+    let approvals = std::sync::Arc::new(Approvals::of(rows));
+    let target = Target::Cloud {
+        url: cloud(dispatch, std::sync::Arc::clone(&approvals)),
+        token: "ployz_alice",
+    };
+    (target, approvals)
 }
 
 fn person(target: &Target, home: &std::path::Path, args: &[&str]) -> (Option<i32>, String) {
@@ -3479,4 +3580,123 @@ fn at_a_terminal_the_environment_name_approves_and_publishes() {
         [("POST".to_owned(), "apr_1".to_owned(), approve)]
     );
     assert_eq!(ok(&target, &["diff"])["published"], json!(true));
+}
+
+#[test]
+fn signed_in_a_drain_runs_in_cloud() {
+    let (target, approvals) = running(&[]);
+    let drained = ok(&target, &["server", "drain", CLOUD_SERVER]);
+    assert_eq!(drained["services_role"], json!("turned_off"), "{drained}");
+    assert_eq!(drained["server"]["name"], json!("web-1"), "{drained}");
+    assert_eq!(
+        approvals.runs(),
+        [
+            format!("POST servers/{CLOUD_SERVER}/drain"),
+            "GET server-drains/drn_1".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn signed_in_an_upgrade_runs_in_cloud_along_the_release_channel() {
+    let (target, approvals) = running(&[]);
+    let upgraded = ok(&target, &["server", "upgrade", "stable", CLOUD_SERVER]);
+    assert_eq!(
+        upgraded["attempts"][0]["outcome"],
+        json!("succeeded"),
+        "{upgraded}"
+    );
+    assert_eq!(upgraded["attempts"][0]["target_version"], json!("0.3.0"));
+    assert_eq!(upgraded["unattempted"], json!([]));
+    assert_eq!(
+        approvals.runs(),
+        [
+            format!("POST servers/{CLOUD_SERVER}/upgrade"),
+            "GET server-upgrades/upg_1".to_owned(),
+        ]
+    );
+
+    let mismatch = error(&target, &["server", "upgrade", "beta", CLOUD_SERVER]);
+    assert_eq!(mismatch["code"], json!("channel_mismatch"), "{mismatch}");
+    assert_eq!(mismatch["details"]["channel"], json!("stable"));
+
+    let exact = error(&target, &["server", "upgrade", "0.3.1", CLOUD_SERVER]);
+    assert_eq!(exact["code"], json!("invalid_argument"), "{exact}");
+    assert_eq!(
+        approvals.runs().len(),
+        3,
+        "an exact version never reaches Cloud"
+    );
+}
+
+#[test]
+fn an_agent_gets_the_approval_a_cleanup_needs() {
+    let (target, approvals) = running(&[("apr_1", "approved")]);
+    let refused = error(&target, &["server", "clean", "--namespace", "stray"]);
+    assert_eq!(refused["code"], json!("approval_required"), "{refused}");
+    assert_eq!(
+        refused["details"]["operation"],
+        json!({ "verb": "clean", "name": "stray" })
+    );
+    assert_eq!(
+        refused["details"]["retry"],
+        json!("ployz server clean --namespace stray --approval apr_1"),
+        "{refused}"
+    );
+    assert_eq!(approvals.runs(), ["POST namespaces/stray/clean"]);
+    assert!(approvals.calls().is_empty(), "--json never waits");
+}
+
+#[test]
+fn without_a_terminal_a_cleanup_waits_for_approval_then_retries_with_it() {
+    let (target, approvals) = running(&[("apr_1", "approved")]);
+    let home = tempfile::tempdir().unwrap();
+    let (code, stderr) = person(
+        &target,
+        home.path(),
+        &["server", "clean", "--namespace", "stray"],
+    );
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stderr.contains("Waiting for approval in Ployz Cloud"),
+        "{stderr}"
+    );
+    let polls: Vec<_> = approvals.calls().into_iter().map(|call| call.0).collect();
+    assert_eq!(polls, ["GET", "GET"], "pending, then approved");
+    assert_eq!(
+        approvals.runs(),
+        [
+            "POST namespaces/stray/clean",
+            "POST namespaces/stray/clean approved by apr_1",
+            "GET namespace-cleanups/cln_1",
+        ]
+    );
+}
+
+#[test]
+fn with_a_context_a_signed_in_command_dials_directly() {
+    let (target, approvals) = running(&[("apr_1", "approved")]);
+    for args in [
+        &["server", "drain", CLOUD_SERVER, "--context", "lab"][..],
+        &[
+            "server",
+            "upgrade",
+            "stable",
+            CLOUD_SERVER,
+            "--context",
+            "lab",
+        ],
+        &[
+            "server",
+            "clean",
+            "--namespace",
+            "stray",
+            "--context",
+            "lab",
+        ],
+    ] {
+        let (code, json) = ployz(Some(&target), args);
+        assert_ne!(code, Some(0), "{args:?}: no context lab to dial: {json}");
+    }
+    assert!(approvals.runs().is_empty(), "{:?}", approvals.runs());
 }

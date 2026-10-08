@@ -1268,7 +1268,7 @@ node: string,
  */
 path: string, };
 
-export type DestructiveKind = "removes_service" | "deletes_volume" | "detaches_volume" | "removes_domain";
+export type DestructiveKind = "removes_service" | "deletes_volume" | "detaches_volume" | "removes_domain" | "removes_server";
 
 export type DetachConfig = {
 /**
@@ -1484,7 +1484,7 @@ remaining: Remaining,
  */
 complete: boolean, };
 
-export type DrainScope = { "scope": "every_namespace" } | { "scope": "owned", namespaces: Array<Namespace>, };
+export type DrainScope = { "scope": "every_namespace" } | { "scope": "owned", namespaces: Array<Namespace>, } | { "scope": "services", services: Array<QualifiedService>, };
 
 export type DrainStop = { "kind": "cancelled" } | { "kind": "entry_unreachable", detail: string, };
 
@@ -2804,7 +2804,7 @@ export type Remaining = { "kind": "observed",
  */
 services: Array<QualifiedService>,
 /**
- * Those of `services` in a user Namespace the Drain's scope left alone.
+ * The user Services of `services` that the Drain's scope left alone.
  */
 unchosen: Array<QualifiedService>, } | { "kind": "unobserved", error: string, };
 

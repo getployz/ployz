@@ -5,6 +5,7 @@ use ployz_core::{
 
 use super::super::runtime;
 use super::{ConnectionOptions, target};
+use crate::approval::{self, Verb};
 use crate::cloud_account::{self, Credential, Release};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::cluster::{CloudHold, refuse_last_managed};
@@ -87,7 +88,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     }
     // The Store reads block on their own runtime, so they run between the two.
     let labels = volume_labels(root, &observed);
-    let confirmation = super::super::data_loss::confirm_removal(
+    let (confirmation, accepting) = super::super::data_loss::confirm_removal(
         root,
         &client,
         &observed,
@@ -115,14 +116,33 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         },
     )?;
     let selected_target = MachineTarget::from(&selected.id);
+    let removal = match &cloud {
+        Some(credential) => {
+            let reset = (!no_reset).then_some(&confirmation);
+            Some(approval::approved(
+                &runtime,
+                credential,
+                Verb::Remove,
+                matches.get_one::<String>("approval").cloned(),
+                |id| {
+                    let mut command = accepting.clone();
+                    command.extend(["--approval".into(), id.to_owned()]);
+                    shell_words::join(command)
+                },
+                async |approval| {
+                    cloud_account::start_removal(credential, &selected.id, reset, approval).await
+                },
+            )?)
+        }
+        None => None,
+    };
     runtime.block_on(async {
         let mut reset_failure = None;
         let mut cloud_released = None;
 
         // TODO: do not reroute away from the current entry before removal.
-        if let Some(credential) = &cloud {
-            let reset = (!no_reset).then_some(&confirmation);
-            let removed = cloud_account::remove_server(credential, &selected.id, reset).await?;
+        if let (Some(credential), Some(id)) = (&cloud, &removal) {
+            let removed = cloud_account::follow_removal(credential, &selected.id, id).await?;
             reset_failure = removed.reset_warning;
             if let Release::Kept { reason } = &removed.release {
                 crate::ui::warn(format!("Cloud keeps its hold on the Cluster: {reason}"));

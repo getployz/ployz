@@ -9,7 +9,9 @@ import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { createCancelServerDrain, createCloseStaleServerDrains, createDrainServer } from "#/modules/machines/server-drain.inngest";
 import { DRAIN_RUNNING_LIMIT_MS } from "#/modules/machines/server-drain";
-import { executeDrainOnce, latestDrainOf, listLatestServerDrains, requestServerDrain } from "#/modules/machines/server-drain.server";
+import {
+  executeDrainOnce, latestDrainOf, listLatestServerDrains, requestCliServerDrain, requestServerDrain,
+} from "#/modules/machines/server-drain.server";
 import { applyServerPolicyChangeActivity, requestServerPolicyChange } from "#/modules/machines/server-policy.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/modules/runtime/ployz.server";
@@ -188,6 +190,40 @@ describe("drain-server", () => {
     });
 
     expect((await drain(requestId, machineId, "run-duplicate")).result).toEqual({ attemptId: requestId, state: "finished" });
+    expect(drainCalls).toHaveLength(1);
+  });
+
+  it("drains only the services a CLI request previewed, not every owned Namespace", async () => {
+    const attemptId = await runEffect(requestCliServerDrain({ organizationId, userId }, {
+      machineId,
+      targets: ["shop-production/api", "shop-production/db"],
+      approvalId: null,
+    }));
+    await drain(attemptId);
+
+    expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api", "shop-production/db"] }]]);
+  });
+
+  it("a dashboard Drain never asks: it records no approval and drains every owned Namespace", async () => {
+    await request();
+    await drain();
+
+    expect((await harness.pool.query(`select count(*)::int as n from operation_approvals`)).rows).toEqual([{ n: 0 }]);
+    expect((await harness.pool.query(`select targets, approval_id from server_drain_attempt`)).rows)
+      .toEqual([{ targets: null, approval_id: null }]);
+    expect(drainCalls).toEqual([[machineId, { scope: "owned", namespaces: ["shop-production"] }]]);
+  });
+
+  it("answers a CLI retry carrying the approval a Drain consumed with that Drain, not a second one", async () => {
+    const approvalId = "00000000-0000-4000-8000-0000000000b1";
+    const cli = () => runEffect(requestCliServerDrain({ organizationId, userId }, {
+      machineId, targets: ["shop-production/api"], approvalId,
+    }));
+    const attemptId = await cli();
+    await drain(attemptId);
+
+    expect(await cli()).toBe(attemptId);
+    expect((await rows()).map(({ id }) => id)).toEqual([attemptId]);
     expect(drainCalls).toHaveLength(1);
   });
 

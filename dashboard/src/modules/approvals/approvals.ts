@@ -1,11 +1,22 @@
-import type { ConfigCommand, DestructiveEffect, DiffView } from "@ployz/sdk";
+import type { ConfigCommand, DestructiveEffect, DiffView, JsonValue } from "@ployz/sdk";
 import { Schema } from "effect";
 
 export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
-/** What a human approves: the plan's Destructive Effects and the Review they come from, as the Store refused it. */
-export type ApprovalReview = { effects: DestructiveEffect[]; diff: DiffView };
+/** The Server and Namespace operations the CLI runs through Cloud that may wait for a human. Upgrade never does. */
+export type OperationVerb = "drain" | "clean" | "remove";
+
+/** An operation as a human approves it: its verb, what it acts on by name, and the preview its digest covers. */
+export type OperationReview = { verb: OperationVerb; name: string; preview: JsonValue };
+
+/**
+ * What a human approves: the Destructive Effects, and either the Review they come from as the Store refused it, or the
+ * operation's preview.
+ */
+export type ApprovalReview =
+  | { effects: DestructiveEffect[]; diff: DiffView }
+  | { effects: DestructiveEffect[]; operation: OperationReview };
 
 /** The Organization's settings row as the Org Store reads it. No row reads as the defaults. */
 export type OrganizationSettingsRow = { id: string; askBeforeDestructive: boolean };

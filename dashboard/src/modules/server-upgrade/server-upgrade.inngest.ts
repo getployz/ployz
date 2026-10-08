@@ -1,3 +1,4 @@
+import type { MachineUpgradeAttemptId } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { PloyzStepTools } from "#/modules/inngest/client";
@@ -25,11 +26,16 @@ type EffectRunner = typeof runInngestEffect;
 
 const POLL_INTERVAL_MS = 15_000;
 
+const AttemptIdType = Schema.declare<MachineUpgradeAttemptId>(
+  (value): value is MachineUpgradeAttemptId => typeof value === "string",
+);
+
 const ServerUpgradeRequestedData = Schema.Struct({
   organizationId: Schema.String.check(Schema.isNonEmpty()),
   machineId: Schema.NullOr(machineIdStringSchema),
   trigger: Schema.Literals(UPGRADE_TRIGGERS),
   userId: Schema.NullOr(Schema.String),
+  attemptId: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/)).pipe(Schema.decodeTo(AttemptIdType))),
 });
 type Request = Omit<typeof ServerUpgradeRequestedData.Type, "machineId"> & { readonly channel: ReleaseChannel };
 /** One Server's part of a Rollout: skipped with nothing recorded, or attempted to an outcome. */
@@ -76,11 +82,11 @@ async function upgradeServer(
   { request, machineId, step, runId }: { request: Request; machineId: string; step: StepTools; runId: string },
   runEffect: EffectRunner,
 ): Promise<ServerResult> {
-  const { organizationId, channel, ...event } = request;
+  const { organizationId, channel, attemptId: requested, ...event } = request;
   const observed = await step.run(`observe-server-${machineId}`, async () => {
     const fromVersion = await runEffect(observeUpgradeableServer(organizationId, machineId));
     // Minted here so every retry of a later step reuses it.
-    return fromVersion === null ? null : { fromVersion, attemptId: mintAttemptId() };
+    return fromVersion === null ? null : { fromVersion, attemptId: requested ?? mintAttemptId() };
   });
   if (observed === null) return { kind: "skipped", reason: "not-online" };
   const { fromVersion, attemptId } = observed;

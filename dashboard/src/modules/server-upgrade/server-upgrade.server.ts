@@ -30,7 +30,9 @@ import {
   type UpgradeTrigger,
 } from "#/modules/server-upgrade/server-upgrade";
 import { organizationServerUpgrades, serverUpgradeAttempt } from "#/modules/server-upgrade/tables";
+import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { Database } from "#/server/database.server";
+import { Conflict } from "#/server/public-error";
 
 /** The daemon reads its Release Channel pointers here (core `CHANNEL_URL`). */
 const CHANNEL_URL = "https://ployz.sh";
@@ -408,3 +410,61 @@ export const setServerUpgradeSettings = Effect.fn("ServerUpgrade.setSettings")(f
 export const mintAttemptId = () =>
   // SAFETY: a UUID without its dashes is 32 lowercase hex digits, the daemon's attempt ID form.
   randomUUID().replaceAll("-", "") as MachineUpgradeAttemptId;
+
+/**
+ * `server upgrade` from the signed-in CLI: one Server, along the Organization's Release Channel. A `channel` other than
+ * the Organization's refuses `channel_mismatch` naming it. The attempt ID the CLI polls is minted here and carried by
+ * the event, so the run records its attempt under it.
+ */
+export const requestCliServerUpgrade = Effect.fn("ServerUpgrade.requestCli")(function* (
+  caller: { readonly organizationId: string; readonly userId: string },
+  input: { readonly machineId: string; readonly channel: string | undefined },
+) {
+  const channel = yield* organizationReleaseChannel(caller.organizationId);
+  if (input.channel !== undefined && input.channel !== channel) {
+    return {
+      ok: false,
+      refusal: {
+        code: "channel_mismatch",
+        message: `This Organization upgrades its Servers along ${channel}, not ${input.channel}.`,
+        details: { channel },
+      },
+    } as const satisfies { ok: false; refusal: StoreRefusal };
+  }
+  const version = yield* observeUpgradeableServer(caller.organizationId, input.machineId).pipe(
+    Effect.catch(() => Effect.fail(new Conflict({ userFacing: true, message: "Your servers aren't answering. Try again once they are." }))),
+  );
+  if (version === null) {
+    return yield* new Conflict({ userFacing: true, message: "This Server isn't online and idle, so it can't take an Upgrade now." });
+  }
+  const attemptId = mintAttemptId();
+  yield* sendInngestEvent(createServerUpgradeRequestedEvent({
+    organizationId: caller.organizationId,
+    machineId: input.machineId,
+    trigger: "manual",
+    userId: caller.userId,
+    attemptId,
+  }));
+  return { ok: true, id: attemptId } as const;
+});
+
+/** One Upgrade attempt as the CLI polls it. Until its run records the attempt, it reads pending. */
+export const readCliServerUpgrade = Effect.fn("ServerUpgrade.readCli")(function* (organizationId: string, attemptId: string) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({
+    outcome: serverUpgradeAttempt.outcome,
+    fromVersion: serverUpgradeAttempt.fromVersion,
+    targetVersion: serverUpgradeAttempt.targetVersion,
+    stage: serverUpgradeAttempt.stage,
+    error: serverUpgradeAttempt.error,
+  }).from(serverUpgradeAttempt).where(attemptWhere(organizationId, attemptId));
+  if (row === undefined) return { state: "pending" } as const;
+  if (row.outcome === "running") return { state: "running" } as const;
+  return {
+    state: "finished",
+    outcome: row.outcome,
+    from_version: row.fromVersion,
+    target_version: row.targetVersion,
+    message: row.error ?? row.stage,
+  } as const;
+});

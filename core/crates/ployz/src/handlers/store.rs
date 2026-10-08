@@ -180,8 +180,8 @@ impl<'m> Store<'m> {
                 .get("command")
                 .and_then(serde_json::Value::as_str)
             {
-                Some("publish") => "publish",
-                _ => "deploy",
+                Some("publish") => approval::Verb::Publish,
+                _ => approval::Verb::Deploy,
             };
             let retry = self.approving(&asked.id);
             approval = Some(approval::settle(runtime, credential, verb, &asked, retry)?);

@@ -4,18 +4,27 @@ use std::{collections::BTreeSet, time::Duration};
 
 use clap::ArgMatches;
 use ployz_core::{
-    InspectMachineUpgradeRequest, Machine, MachineRelease, MachineTarget, MachineUpgradeAttempt,
-    MachineUpgradeAttemptId, MachineUpgradeOutcome, RequestMachineUpgradeRequest, RpcErrorCode, op,
+    InspectMachineUpgradeRequest, Machine, MachineId, MachineRelease, MachineTarget,
+    MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome,
+    RequestMachineUpgradeRequest, RpcErrorCode, op,
 };
+use reqwest::Method;
+use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 
 use crate::{
-    cluster::Client, connect::ConnectError, deploy::Outcome, ingress::IngressImage, ui::Hint,
+    cloud_account::{self, Credential, Settled, StoreCallError},
+    cluster::Client,
+    connect::ConnectError,
+    deploy::Outcome,
+    ingress::IngressImage,
+    ui::Hint,
 };
 
 use serde_json::json;
 
-use super::super::{Error, leaf_matches, string_values, with_client};
+use super::super::{Error, leaf_matches, runtime, string_values, with_client};
+use super::ConnectionOptions;
 
 const OBSERVATION_TIMEOUT: Duration = Duration::from_secs(16 * 60);
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -97,6 +106,20 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
             .flat_map(|image| ["--ingress-image", image.as_str()]),
     );
     let rerun = super::super::rerun(matches, &args);
+    let runtime = runtime()?;
+    if let Some(credential) = super::cloud_runs(&runtime, matches)? {
+        let direct = direct(root, &args)?;
+        return through_cloud(
+            &runtime,
+            matches,
+            &credential,
+            &release,
+            image.is_some(),
+            &selectors,
+            direct,
+        );
+    }
+    drop(runtime);
     let ingress = IngressImage::given_or(image.cloned(), IngressImage::Latest);
     let recovery_matches = matches.clone();
     with_client(root, |client| {
@@ -114,6 +137,183 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
             }
         })
     })
+}
+
+#[derive(Deserialize, Serialize)]
+struct CloudUpgrade {
+    outcome: String,
+    from_version: Option<String>,
+    target_version: Option<String>,
+    message: Option<String>,
+}
+
+fn direct(root: &ArgMatches, args: &[&str]) -> Result<Option<Hint>, Error> {
+    let config = ConnectionOptions::from_matches(root)?.load_or_empty_config()?;
+    Ok(config.current_context().map(|context| {
+        let mut args = args.to_vec();
+        args.extend(["--context", context]);
+        Hint::Retry(super::super::rerun(leaf_matches(root), &args))
+    }))
+}
+
+fn through_cloud(
+    runtime: &tokio::runtime::Runtime,
+    matches: &ArgMatches,
+    credential: &Credential,
+    release: &MachineRelease,
+    pinned_ingress: bool,
+    selectors: &[String],
+    direct: Option<Hint>,
+) -> Result<(), Error> {
+    let only_direct = |message: String| {
+        let error = Error::usage(message);
+        match direct.clone() {
+            Some(hint) => error.hint(hint),
+            None => error,
+        }
+    };
+    let channel = match release {
+        MachineRelease::Stable | MachineRelease::Beta => release.to_string(),
+        MachineRelease::Exact(version) => {
+            return Err(only_direct(format!(
+                "Cloud upgrades along your Organization's Release Channel, not to {version}; \
+                 pass --context to upgrade to an exact version. No changes made."
+            )));
+        }
+    };
+    if pinned_ingress {
+        return Err(only_direct(
+            "Cloud does not pin the Ingress Proxy image; pass --context for --ingress-image. \
+             No changes made."
+                .into(),
+        ));
+    }
+    let servers = cloud_servers(runtime, matches, selectors)?;
+    let mut attempts = Vec::new();
+    for (index, (id, name)) in servers.iter().enumerate() {
+        let started = runtime.block_on(cloud_account::start_run(
+            credential,
+            Method::POST,
+            &format!("servers/{id}/upgrade"),
+            &json!({ "channel": channel }),
+            None,
+        ));
+        let run = match started {
+            Ok(run) => run,
+            Err(StoreCallError::Refused(refused))
+                if refused.code.as_str() == "channel_mismatch" =>
+            {
+                return Err(match direct.clone() {
+                    Some(hint) => Error::from(refused).hint(hint),
+                    None => refused.into(),
+                });
+            }
+            Err(error) => return Err(error.into()),
+        };
+        crate::ui::stream(format_args!("Upgrading Server {name}."));
+        let deadline = Instant::now() + UPGRADE_WAIT;
+        let settled = runtime.block_on(cloud_account::follow_run::<Settled<CloudUpgrade>>(
+            credential,
+            &format!("server-upgrades/{run}"),
+            Some(deadline),
+        ))?;
+        let Some(settled) = settled else {
+            return Err(StoreCallError::Refused(ployz_core::RpcError {
+                code: ployz_core::RpcErrorCode::Unavailable,
+                message: format!(
+                    "Cloud has not finished the Upgrade of Server {name} (upgrade {run}). \
+                     The dashboard's Servers page shows whether it ran."
+                ),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            })
+            .into());
+        };
+        let upgrade = settled.finished()?;
+        let stopped = stopped(name, &upgrade);
+        attempts.push(json!({
+            "server": id,
+            "id": run,
+            "outcome": upgrade.outcome,
+            "from_version": upgrade.from_version,
+            "target_version": upgrade.target_version,
+            "message": upgrade.message,
+        }));
+        let Some(stopped) = stopped else {
+            continue;
+        };
+        let unattempted = servers.get(index + 1..).unwrap_or_default();
+        let unattempted_names = unattempted.iter().map(|(_, name)| name.clone());
+        if let Some(warning) = unattempted_warning(unattempted_names, name) {
+            crate::ui::warn(warning);
+        }
+        let result = json!({
+            "attempts": attempts,
+            "unattempted": unattempted.iter().map(|(id, _)| id).collect::<Vec<_>>(),
+        });
+        return crate::ui::emit_committed(result, Err(stopped));
+    }
+    crate::ui::emit(&json!({ "attempts": attempts, "unattempted": [] }))
+}
+
+// A run that skips a Server it found busy or offline records no attempt, so its poll never settles.
+const UPGRADE_WAIT: Duration = Duration::from_secs(1800);
+
+fn cloud_servers(
+    runtime: &tokio::runtime::Runtime,
+    matches: &ArgMatches,
+    selectors: &[String],
+) -> Result<Vec<(MachineId, String)>, Error> {
+    let ids = selectors
+        .iter()
+        .map(|selector| {
+            MachineId::parse(selector)
+                .ok()
+                .map(|id| (id, selector.clone()))
+        })
+        .collect::<Option<Vec<_>>>();
+    let servers = match ids {
+        Some(ids) => ids,
+        None => runtime
+            .block_on(async {
+                let mut client = super::connect(matches, None).await?;
+                selected_machines(&mut client, selectors).await
+            })?
+            .into_iter()
+            .map(|machine| (machine.id, machine.name.to_string()))
+            .collect(),
+    };
+    let mut seen = BTreeSet::new();
+    if let Some((_, name)) = servers.iter().find(|(id, _)| !seen.insert(*id)) {
+        return Err(Error::usage(format!(
+            "Server {name} was selected more than once"
+        )));
+    }
+    Ok(servers)
+}
+
+fn stopped(server: &str, upgrade: &CloudUpgrade) -> Option<Error> {
+    let target = upgrade
+        .target_version
+        .as_deref()
+        .unwrap_or("its target version");
+    let reason = upgrade
+        .message
+        .as_deref()
+        .map(|message| format!(": {message}"))
+        .unwrap_or_default();
+    let message = match upgrade.outcome.as_str() {
+        "succeeded" => {
+            crate::ui::stream(format_args!("Upgraded Server {server} to {target}."));
+            return None;
+        }
+        "failed" => format!("Server {server} failed to upgrade to {target}{reason}"),
+        "interrupted" => {
+            format!("The upgrade of Server {server} to {target} was interrupted{reason}")
+        }
+        _ => format!("Cloud cannot tell whether Server {server} upgraded to {target}{reason}"),
+    };
+    Some(Error::coded(RpcErrorCode::Internal, message))
 }
 
 /// Upgrade each Server's daemon in order, stopping at the first failure; once all succeed,
@@ -179,7 +379,7 @@ async fn run_all(
             }
         };
         let unattempted = machines.get(index + 1..).unwrap_or_default();
-        if let Some(warning) = unattempted_warning(unattempted, machine) {
+        if let Some(warning) = unattempted_warning(names(unattempted), machine.name.as_str()) {
             crate::ui::warn(warning);
         }
         // A recorded attempt is a result: print it, then exit partial.
@@ -302,23 +502,21 @@ fn print_attempt(machine: &Machine, attempt: &MachineUpgradeAttempt) {
     }
 }
 
-fn unattempted_warning(machines: &[Machine], after: &Machine) -> Option<String> {
-    let names = machines
-        .iter()
-        .map(|machine| machine.name.to_string())
-        .collect::<Vec<_>>();
-    match names.as_slice() {
+fn unattempted_warning(names: impl IntoIterator<Item = String>, after: &str) -> Option<String> {
+    match names.into_iter().collect::<Vec<_>>().as_slice() {
         [] => None,
         [one] => Some(format!(
-            "Did not upgrade Server {one}: Server {} stopped the run.",
-            after.name
+            "Did not upgrade Server {one}: Server {after} stopped the run."
         )),
         many => Some(format!(
-            "Did not upgrade Servers {}: Server {} stopped the run.",
-            many.join(", "),
-            after.name
+            "Did not upgrade Servers {}: Server {after} stopped the run.",
+            many.join(", ")
         )),
     }
+}
+
+fn names(machines: &[Machine]) -> impl Iterator<Item = String> {
+    machines.iter().map(|machine| machine.name.to_string())
 }
 
 /// The unit that ran the upgrade, read on the Server itself.
@@ -724,14 +922,14 @@ mod tests {
         ];
 
         assert_eq!(
-            unattempted_warning(&machines[1..], &machines[0]).as_deref(),
+            unattempted_warning(names(&machines[1..]), "a").as_deref(),
             Some("Did not upgrade Servers b, c, d: Server a stopped the run.")
         );
         assert_eq!(
-            unattempted_warning(&machines[3..], &machines[2]).as_deref(),
+            unattempted_warning(names(&machines[3..]), "c").as_deref(),
             Some("Did not upgrade Server d: Server c stopped the run.")
         );
-        assert_eq!(unattempted_warning(&[], &machines[3]), None);
+        assert_eq!(unattempted_warning(names(&[]), "d"), None);
     }
 
     fn machine(id: char, subnet: u8) -> Machine {

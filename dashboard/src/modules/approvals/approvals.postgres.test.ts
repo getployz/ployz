@@ -7,7 +7,11 @@ import { expect, vi } from "vitest";
 import {
   askBeforeDestructive,
   decideApproval,
+  gateOperation,
   getApproval,
+  type OperationAsked,
+  type OperationDigest,
+  operationDigest,
   requestApproval,
   setOrganizationSettings,
   trustedApproval,
@@ -354,3 +358,112 @@ for (const { state, leave, reachesStore, answers } of recorded) {
       }));
   }
 }
+
+const MACHINE = "a".repeat(32);
+const drainOf = (moves: string[]): OperationAsked => ({
+  subject: `server:${MACHINE}`,
+  verb: "drain",
+  name: "fra-1",
+  preview: { server: MACHINE, moves, stays: [], retires: ["shop.edge"] },
+  effects: [{ kind: "removes_service", name: "shop.edge", node: "edge", path: "services/shop.edge" }],
+});
+const answers = (digest: string | null): OperationDigest<never> => () => Effect.succeed(digest);
+
+const operationCloud = Effect.fn(function* () {
+  const cloud = yield* storeTestCloud();
+  const services = yield* Layer.build(Layer.merge(AuthLive.pipe(Layer.provide(cloud)), cloud));
+  const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
+  const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
+  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "token", id: "token-1" } };
+  const rows = provided(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    return yield* drizzle.select({ id: operationApprovals.id, status: operationApprovals.status, subject: operationApprovals.subject })
+      .from(operationApprovals);
+  }));
+  const gate = (asked: OperationAsked, approvalId: string | null = null) => provided(gateOperation(caller, approvalId, asked));
+  return { provided, caller, userId, rows, gate };
+});
+
+const refusedWith = (gated: { ok: true } | { ok: false; refusal: { code: string; details: unknown } }) => {
+  if (gated.ok) return expect.fail("the operation ran without asking");
+  expect(gated.refusal.code).toBe("approval_required");
+  return gated.refusal.details as Asked & { operation: { verb: string; name: string } };
+};
+
+it("an operation digest ignores key order and changes with the preview", () => {
+  expect(operationDigest("drain", { b: [1, 2], a: { y: 1, x: 2 } })).toBe(operationDigest("drain", { a: { x: 2, y: 1 }, b: [1, 2] }));
+  expect(operationDigest("drain", { b: [2, 1] })).not.toBe(operationDigest("drain", { b: [1, 2] }));
+  expect(operationDigest("clean", { b: [1, 2] })).not.toBe(operationDigest("drain", { b: [1, 2] }));
+  expect(operationDigest("drain", {})).toMatch(/^drain:[0-9a-f]{64}$/);
+});
+
+it.live("an operation that destroys nothing runs without asking", () =>
+  Effect.gen(function* () {
+    const { gate, rows } = yield* operationCloud();
+    expect(yield* gate({ ...drainOf(["shop.web"]), effects: [] })).toEqual({ ok: true, approvalId: null });
+    expect(yield* rows).toEqual([]);
+  }));
+
+it.live("an Organization that doesn't ask runs a destructive operation without recording an approval", () =>
+  Effect.gen(function* () {
+    const { provided, userId, gate, rows } = yield* operationCloud();
+    yield* provided(setOrganizationSettings({ userId }, { organizationSlug: "shop", askBeforeDestructive: false }));
+    expect(yield* gate(drainOf(["shop.web"]))).toEqual({ ok: true, approvalId: null });
+    expect(yield* rows).toEqual([]);
+  }));
+
+it.live("a destructive operation waits on one approval of exactly its preview, and its retry runs once approved", () =>
+  Effect.gen(function* () {
+    const { provided, caller, gate, rows } = yield* operationCloud();
+    const asked = drainOf(["shop.web"]);
+    const first = refusedWith(yield* gate(asked));
+    expect(first).toEqual({
+      effects: asked.effects,
+      approval: operationDigest("drain", asked.preview),
+      approval_id: expect.any(String),
+      operation: { verb: "drain", name: "fra-1" },
+    });
+    expect(refusedWith(yield* gate(asked)).approval_id).toBe(first.approval_id);
+    expect(refusedWith(yield* gate(asked, first.approval_id)).approval_id).toBe(first.approval_id);
+    expect(yield* rows).toEqual([{ id: first.approval_id, status: "pending", subject: `server:${MACHINE}` }]);
+
+    const unchanged = answers(first.approval);
+    expect(yield* provided(decideApproval(caller, first.approval_id, { approve: { digest: first.approval } }, unchanged)))
+      .toMatchObject({ ok: true, approval: { status: "approved" } });
+    expect(yield* gate(asked, first.approval_id)).toEqual({ ok: true, approvalId: first.approval_id });
+
+    const moved = refusedWith(yield* gate(drainOf(["shop.api", "shop.web"]), first.approval_id));
+    expect(moved.approval_id).not.toBe(first.approval_id);
+  }));
+
+it.live("asking about a Server's new preview supersedes its pending approval of the old one", () =>
+  Effect.gen(function* () {
+    const { provided, gate } = yield* operationCloud();
+    const old = refusedWith(yield* gate(drainOf(["shop.web"])));
+    const current = refusedWith(yield* gate(drainOf(["shop.api", "shop.web"])));
+    const other = refusedWith(yield* gate({ ...drainOf(["shop.web"]), subject: "server:other" }));
+
+    expect((yield* provided(getApproval(ORGANIZATION, old.approval_id))).status).toBe("superseded");
+    expect((yield* provided(getApproval(ORGANIZATION, current.approval_id))).status).toBe("pending");
+    expect((yield* provided(getApproval(ORGANIZATION, other.approval_id))).status).toBe("pending");
+  }));
+
+it.live("a pending operation approval reads superseded once its fresh preview differs, and can't be approved", () =>
+  Effect.gen(function* () {
+    const { provided, caller, gate } = yield* operationCloud();
+    const waiting = refusedWith(yield* gate(drainOf(["shop.web"])));
+
+    expect((yield* provided(getApproval(ORGANIZATION, waiting.approval_id))).status).toBe("pending");
+    expect((yield* provided(getApproval(ORGANIZATION, waiting.approval_id, answers(waiting.approval)))).status).toBe("pending");
+    const changed = answers(operationDigest("drain", drainOf(["shop.api"]).preview));
+    expect((yield* provided(getApproval(ORGANIZATION, waiting.approval_id, changed))).status).toBe("superseded");
+    expect(yield* provided(decideApproval(caller, waiting.approval_id, { approve: { digest: waiting.approval } }, changed)))
+      .toMatchObject({ ok: false, refusal: { code: "conflict" } });
+  }));
+
+it.live("a pending operation approval whose Server is gone reads superseded", () =>
+  Effect.gen(function* () {
+    const { provided, gate } = yield* operationCloud();
+    const waiting = refusedWith(yield* gate(drainOf(["shop.web"])));
+    expect((yield* provided(getApproval(ORGANIZATION, waiting.approval_id, answers(null)))).status).toBe("superseded");
+  }));

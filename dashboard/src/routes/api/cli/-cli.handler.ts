@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { ApprovalDecision } from "#/modules/approvals/approvals";
-import { decideApproval, getApproval } from "#/modules/approvals/approvals.server";
+import { decideApproval, gateOperation, getApproval } from "#/modules/approvals/approvals.server";
 import { disconnectGithub, githubBranches, githubConnection } from "#/modules/github/github-cli.server";
 import type { Caller } from "#/modules/identity/actor";
 import { callerOrganizations, resolveCaller } from "#/modules/identity/caller.server";
@@ -22,6 +22,10 @@ import { checkForgetServers, forgetServers } from "#/modules/machines/forget-ser
 import { startMachineRemove } from "#/modules/machines/machine-removal.server";
 import { loadAuthorizedMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import type { MachineRemoveAttemptView } from "#/modules/machines/machine-removal";
+import { readCliNamespaceCleanup, requestNamespaceCleanup } from "#/modules/machines/namespace-cleanup.server";
+import { readCliServerDrain, requestCliServerDrain } from "#/modules/machines/server-drain.server";
+import { freshOperationDigest, planClean, planDrain, planRemove } from "#/modules/machines/server-operations.server";
+import { readCliServerUpgrade, requestCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
 import { NotFound, Validation } from "#/server/public-error";
@@ -38,6 +42,10 @@ const RemoveServer = Schema.Union([
   Schema.Struct({ confirm_data_loss: Schema.Struct({ confirmed: Schema.Array(dataLossIdentitySchema) }) }),
   Schema.Struct({ no_reset: Schema.Literal(true) }),
 ]);
+
+const UpgradeServer = Schema.Struct({ channel: Schema.optional(Schema.String) });
+
+const isUpgradeAttemptId = (id: string | undefined): id is string => id !== undefined && /^[0-9a-f]{32}$/.test(id);
 
 /** `server forget`: the Organization's slug, as the user typed it. */
 const ForgetServers = Schema.Struct({ organization: Schema.String });
@@ -76,6 +84,15 @@ const missingRefusal = (message: string) => refusal({ code: "not_found", message
 
 const forgetter = (caller: Caller) => ({ userId: caller.userId, organizationId: caller.organization.id });
 
+const approvalHeader = (request: Request) => request.headers.get("x-ployz-approval");
+
+const accepted = (id: string) => Response.json({ id }, { status: 202 });
+
+const serverIdOf = (id: string | undefined) => {
+  const machineId = decodeURIComponent(id ?? "");
+  return Schema.is(rustMachineIdSchema)(machineId) ? machineId : null;
+};
+
 const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, request: Request, message: string) =>
   Effect.tryPromise({ try: () => request.json(), catch: () => new Validation({ message, userFacing: true }) }).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(schema)),
@@ -84,7 +101,7 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
 
 /**
  * `/api/cli/*`: the `ployz` CLI's account surface (Organizations and their removal, Organization Tokens and signed-in devices,
- * GitHub connections), and removing a Server Cloud manages, through the dashboard's durable removal, or forgetting deleted ones (Forget Servers), and reading or deciding an approval a destructive write waits on. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
+ * GitHub connections), and removing, draining, upgrading or cleaning up after a Server Cloud manages through durable runs, or forgetting deleted ones (Forget Servers), and reading or deciding an approval a destructive write waits on. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
  */
 export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Request) {
   const caller = yield* resolveCaller(request.headers);
@@ -123,9 +140,12 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       return { signed_out: { id: caller.credential.id }, servers: yield* retireServerAccess(caller.credential.id) };
     }
     case "DELETE servers/:id": {
-      const machineId = decodeURIComponent(id ?? "");
-      if (!Schema.is(rustMachineIdSchema)(machineId)) return yield* new NotFound({ message: "No such Server." });
+      const machineId = serverIdOf(id);
+      if (machineId === null) return yield* new NotFound({ message: "No such Server." });
       const input = yield* decodeBody(RemoveServer, request, "Removing a Server takes the Data Loss it confirms.");
+      const plan = yield* planRemove(caller.organization.id, machineId, "no_reset" in input ? [] : input.confirm_data_loss.confirmed);
+      const gated = yield* gateOperation(caller, approvalHeader(request), plan);
+      if (!gated.ok) return refusal(gated.refusal);
       const started = yield* startMachineRemove({
         organizationId: caller.organization.id,
         requestedByUserId: caller.userId,
@@ -142,6 +162,43 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
         : null;
       if (attempt === null) return yield* new NotFound({ message: "No such Server removal." });
       return serverRemoval(attempt);
+    }
+    case "POST servers/:id/drain": {
+      const machineId = serverIdOf(id);
+      if (machineId === null) return yield* new NotFound({ message: "No such Server." });
+      const plan = yield* planDrain(caller.organization.id, machineId);
+      const gated = yield* gateOperation(caller, approvalHeader(request), plan);
+      if (!gated.ok) return refusal(gated.refusal);
+      return accepted(yield* requestCliServerDrain(forgetter(caller), { machineId, targets: plan.targets, approvalId: gated.approvalId }));
+    }
+    case "GET server-drains/:id": {
+      const drain = Schema.is(Uuid)(id) ? yield* readCliServerDrain(caller.organization.id, id) : null;
+      return drain ?? missingRefusal("No such drain.");
+    }
+    case "POST servers/:id/upgrade": {
+      const machineId = serverIdOf(id);
+      if (machineId === null) return yield* new NotFound({ message: "No such Server." });
+      const input = yield* decodeBody(UpgradeServer, request, "An upgrade takes at most the Release Channel it names.");
+      const requested = yield* requestCliServerUpgrade(forgetter(caller), { machineId, channel: input.channel });
+      return requested.ok ? accepted(requested.id) : refusal(requested.refusal);
+    }
+    case "GET server-upgrades/:id":
+      if (!isUpgradeAttemptId(id)) return missingRefusal("No such upgrade.");
+      return yield* readCliServerUpgrade(caller.organization.id, id);
+    case "POST namespaces/:id/clean": {
+      const namespace = decodeURIComponent(id ?? "");
+      const plan = yield* planClean(caller.organization.id, namespace);
+      const gated = yield* gateOperation(caller, approvalHeader(request), plan);
+      if (!gated.ok) return refusal(gated.refusal);
+      return accepted(yield* requestNamespaceCleanup(forgetter(caller), {
+        namespace,
+        confirmDataLoss: plan.confirmDataLoss,
+        approvalId: gated.approvalId,
+      }));
+    }
+    case "GET namespace-cleanups/:id": {
+      const cleanup = Schema.is(Uuid)(id) ? yield* readCliNamespaceCleanup(caller.organization.id, id) : null;
+      return cleanup ?? missingRefusal("No such namespace clean.");
     }
     case "GET forget-servers": {
       const checked = yield* checkForgetServers(forgetter(caller));
@@ -195,13 +252,13 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
         Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))),
       );
     case "GET approvals/:id":
-      return yield* getApproval(caller.organization.id, id ?? "").pipe(
+      return yield* getApproval(caller.organization.id, id ?? "", freshOperationDigest).pipe(
         Effect.map((approval) => ({ approval })),
         Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))),
       );
     case "POST approvals/:id": {
       const decision = yield* decodeBody(ApprovalDecision, request, "An approval takes `approve` with the digest you reviewed, or `reject`.");
-      return yield* decideApproval(caller, id ?? "", decision).pipe(
+      return yield* decideApproval(caller, id ?? "", decision, freshOperationDigest).pipe(
         Effect.map((decided) => decided.ok ? { approval: decided.approval } : refusal(decided.refusal)),
         Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))),
       );

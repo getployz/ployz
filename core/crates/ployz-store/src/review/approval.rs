@@ -43,6 +43,8 @@ pub enum DestructiveKind {
     DetachesVolume,
     /// A deployed Service stops serving a domain.
     RemovesDomain,
+    /// A Server leaves the cluster.
+    RemovesServer,
 }
 
 impl DestructiveEffect {
@@ -56,6 +58,7 @@ impl DestructiveEffect {
                 None => format!("detach Volume {name}"),
             },
             DestructiveKind::RemovesDomain => format!("remove domain {name}"),
+            DestructiveKind::RemovesServer => format!("remove Server {name}"),
         }
     }
 }

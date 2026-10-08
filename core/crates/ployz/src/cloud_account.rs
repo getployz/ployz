@@ -328,15 +328,97 @@ pub(crate) async fn config_store<T: DeserializeOwned>(
 ) -> Result<T, StoreCallError> {
     let body = serde_json::to_value(body).map_err(|error| LoginError::Reply(error.to_string()))?;
     let url = format!("{}/api/config/{operation}", credential.cloud());
-    let mut request = request(credential, Method::POST, &url, Some(&body))?;
+    let response = send_approved(credential, Method::POST, &url, &body, approval).await?;
+    store_answer(credential, response).await
+}
+
+async fn send_approved(
+    credential: &Credential,
+    method: Method,
+    url: &str,
+    body: &serde_json::Value,
+    approval: Option<&str>,
+) -> Result<reqwest::Response, LoginError> {
+    let mut request = request(credential, method, url, Some(body))?;
     if let Some(approval) = approval {
         request = request.header("x-ployz-approval", approval);
     }
-    let response = request
+    request
         .send()
         .await
-        .map_err(|error| cloud_login::unreachable(credential.cloud(), error))?;
-    store_answer(credential, response).await
+        .map_err(|error| cloud_login::unreachable(credential.cloud(), error))
+}
+
+/// Start a durable Cloud run at `/api/cli/<path>`, carrying `approval` when Cloud asked
+/// for one, and return the run's id.
+///
+/// # Errors
+///
+/// Returns Cloud's refusal, `approval_required` among them, or a Cloud failure.
+pub(crate) async fn start_run(
+    credential: &Credential,
+    method: Method,
+    path: &str,
+    body: &serde_json::Value,
+    approval: Option<&str>,
+) -> Result<String, StoreCallError> {
+    #[derive(Deserialize)]
+    struct Queued {
+        id: String,
+    }
+    let url = format!("{}/api/cli/{path}", credential.cloud());
+    let response = send_approved(credential, method, &url, body, approval).await?;
+    let queued: Queued = store_answer(credential, response).await?;
+    Ok(queued.id)
+}
+
+/// Read the Cloud run at `/api/cli/<path>` every second until its `state` is neither
+/// `pending` nor `running`, and decode it then. `None` once `deadline` passes first.
+///
+/// # Errors
+///
+/// Returns Cloud's refusal, a settled run this can't decode, or a Cloud failure.
+pub(crate) async fn follow_run<T: DeserializeOwned>(
+    credential: &Credential,
+    path: &str,
+    deadline: Option<tokio::time::Instant>,
+) -> Result<Option<T>, StoreCallError> {
+    loop {
+        let read: serde_json::Value = refusable(credential, Method::GET, path, None).await?;
+        let state = read.get("state").and_then(serde_json::Value::as_str);
+        if !matches!(state, Some("pending" | "running")) {
+            return serde_json::from_value(read)
+                .map(Some)
+                .map_err(|error| LoginError::Reply(error.to_string()).into());
+        }
+        if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+            return Ok(None);
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+
+/// How a Cloud run of an operation settled: its result, or why it ended without one.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub(crate) enum Settled<T> {
+    Finished(T),
+    Ended { code: String, message: String },
+}
+
+impl<T> Settled<T> {
+    pub(crate) fn finished(self) -> Result<T, crate::failure::Failure> {
+        match self {
+            Self::Finished(result) => Ok(result),
+            Self::Ended { code, message } => {
+                let code = match code.as_str() {
+                    "refused" => ployz_core::RpcErrorCode::Conflict,
+                    _ => ployz_core::RpcErrorCode::Unavailable,
+                };
+                Err(crate::failure::Failure::coded(code, message))
+            }
+        }
+    }
 }
 
 /// The Store's answer, its refusal verbatim, or why Cloud failed first.
@@ -484,12 +566,9 @@ pub(crate) enum Release {
     Kept { reason: String },
 }
 
-/// Where Cloud's removal of a Server is.
 #[derive(Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
-enum Progress {
-    Pending,
-    Running,
+enum RemovalRun {
     Succeeded(CloudRemoval),
 }
 
@@ -499,58 +578,57 @@ const REMOVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 /// Have Cloud remove Server `machine` of the credential's Organization: resetting it
 /// and accepting exactly `reset`'s Data Loss, or with none, only taking it out of the
 /// Cluster. It is the same durable removal the dashboard starts, which Cloud runs under
-/// its own connection; this waits for it to settle. Cloud drops its row for the Server,
-/// and when it saw the last one reset, lets go of the Cluster.
+/// its own connection; [`follow_removal`] waits for it. `approval` is the id of the
+/// human's approval, when Cloud asked for one.
 ///
 /// # Errors
 ///
 /// Returns Cloud's refusal (`not_found` for a Server it doesn't reach, `invalid_argument`
-/// when the confirmation misses fresh Data Loss, `unavailable` when the removal failed),
-/// `unavailable` when it hasn't settled within [`REMOVAL_WAIT`], or a Cloud failure.
-pub(crate) async fn remove_server(
+/// when the confirmation misses fresh Data Loss, `approval_required`), or a Cloud failure.
+pub(crate) async fn start_removal(
     credential: &Credential,
     machine: &MachineId,
     reset: Option<&ployz_core::DataLossConfirmation>,
-) -> Result<CloudRemoval, StoreCallError> {
-    #[derive(Deserialize)]
-    struct Queued {
-        id: String,
-    }
-    let url = format!("{}/api/cli/servers/{machine}", credential.cloud());
+    approval: Option<&str>,
+) -> Result<String, StoreCallError> {
     let body = match reset {
         Some(confirmation) => serde_json::json!({ "confirm_data_loss": confirmation }),
         None => serde_json::json!({ "no_reset": true }),
     };
-    let queued: Queued = store_answer(
+    start_run(
         credential,
-        send(credential, Method::DELETE, &url, Some(&body)).await?,
+        Method::DELETE,
+        &format!("servers/{machine}"),
+        &body,
+        approval,
     )
-    .await?;
-    let url = format!(
-        "{}/api/cli/server-removals/{}",
-        credential.cloud(),
-        queued.id
-    );
+    .await
+}
+
+/// Wait for Cloud's removal `id` of Server `machine` to settle. Cloud drops its row for
+/// the Server, and when it saw the last one reset, lets go of the Cluster.
+///
+/// # Errors
+///
+/// Returns Cloud's refusal (`unavailable` when the removal failed), `unavailable` when it
+/// hasn't settled within [`REMOVAL_WAIT`], or a Cloud failure.
+pub(crate) async fn follow_removal(
+    credential: &Credential,
+    machine: &MachineId,
+    id: &str,
+) -> Result<CloudRemoval, StoreCallError> {
     let deadline = tokio::time::Instant::now() + REMOVAL_WAIT;
-    loop {
-        match store_answer(credential, send(credential, Method::GET, &url, None).await?).await? {
-            Progress::Succeeded(removal) => return Ok(removal),
-            Progress::Pending | Progress::Running if tokio::time::Instant::now() < deadline => {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-            Progress::Pending | Progress::Running => {
-                return Err(StoreCallError::Refused(RpcError {
-                    code: ployz_core::RpcErrorCode::Unavailable,
-                    message: format!(
-                        "Cloud is still removing Server {machine} (removal {}); it finishes on its own. \
-                         The dashboard's Servers page shows when it's done.",
-                        queued.id
-                    ),
-                    details: serde_json::Value::Null,
-                    cause: Vec::new(),
-                }));
-            }
-        }
+    match follow_run(credential, &format!("server-removals/{id}"), Some(deadline)).await? {
+        Some(RemovalRun::Succeeded(removal)) => Ok(removal),
+        None => Err(StoreCallError::Refused(RpcError {
+            code: ployz_core::RpcErrorCode::Unavailable,
+            message: format!(
+                "Cloud is still removing Server {machine} (removal {id}); it finishes on its own. \
+                 The dashboard's Servers page shows when it's done."
+            ),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        })),
     }
 }
 
