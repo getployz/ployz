@@ -113,6 +113,10 @@ pub(crate) fn confirmation_required(message: impl Into<String>, details: Value) 
     error(RpcErrorCode::ConfirmationRequired, message, details)
 }
 
+pub(crate) fn approval_required(message: impl Into<String>, details: Value) -> RpcError {
+    error(RpcErrorCode::from("approval_required"), message, details)
+}
+
 /// Evidence a write needs is missing or incomplete, so it refuses rather than guess.
 pub(crate) fn unobserved(message: impl Into<String>, details: Value) -> RpcError {
     error(RpcErrorCode::Unavailable, message, details)
