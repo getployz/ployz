@@ -49,6 +49,10 @@ a request mode that selects verification, may refuse fields it does not
 recognize and fail closed. There are no version gates and no store migrations;
 a change that cannot be expressed additively waits for `PROTOCOL_MAJOR` 2.
 
+The Log Store is outside the promise. It is disposable Machine-local state: a
+daemon that finds a format version it does not know deletes it and starts
+again, so it needs no migrations.
+
 A breaking release protects older Clusters from its own side. Daemons follow
 their own line's channel pointer (`ployz.sh/v0/stable`), so a new line never
 reaches them unasked. The breaking release's CLI refuses to init or add a
@@ -119,6 +123,10 @@ it ends done, failed, cancelled or lost, and never runs again on its own. A retr
 reads every copy live and continues from what the disks show. A Cluster without
 Cloud keeps its Volumes where they are.
 
+The Log Store runs continuously, and it only observes the Machine it runs on.
+It never places, moves, restarts, or removes a container, and no Deploy waits
+on it.
+
 **Red flags:** controllers, persisted desired state, durable workflows other than a
 requested Volume Run, cluster-wide reconcilers, any behavior that continues after
 its command returns.
@@ -184,6 +192,10 @@ Different computers, independent stores, and direct CLI and Cloud operators can
 still select overlapping subnets from incomplete observations. No cross-store
 synchronization or subnet repair system is provided.
 
+A container's output is Machine-local too. It lives on the Machine that ran the
+container, outlives the container, and ages out under that Machine's cap. Cloud
+reads it through the daemon and never copies it (bet 7).
+
 **Red flags:** a resource identity meaningful without its Machine, a required
 round trip to an allocator, refusing to operate because an allocator is
 unreachable.
@@ -248,6 +260,11 @@ proxy retries to cover traffic sent to a Container that is already gone.
 **Why.** Every primitive we own is a primitive we patch, secure, and debug
 forever. The maintenance budget belongs to the coordination semantics above, which
 nobody else will build.
+
+The Log Store reads the files Docker's `local` log driver writes, a format
+Docker does not document. The installer does not pin a Docker release, so CI runs
+the reader's test against the latest one. A frame the reader cannot parse is
+skipped and recorded as corrupt; the reader never stops at it.
 
 **Red flags:** hand-rolled consensus, custom overlay networking, bespoke TLS,
 reimplementing behavior a shipped, proven component already provides.
