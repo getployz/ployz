@@ -55,8 +55,9 @@ pub enum Event<'a> {
 
 /// Walks the frames of one file's bytes.
 ///
-/// An incomplete frame at the end is the file Docker is still writing, not
-/// corruption; [`Frames::unread_tail`] says how many bytes it held.
+/// An incomplete frame with no valid frame after it is the file Docker is
+/// still writing, not corruption; [`Frames::unread_tail`] says how many bytes
+/// it held.
 pub struct Frames<'a> {
     buf: &'a [u8],
     pos: usize,
@@ -112,15 +113,14 @@ impl<'a> Iterator for Frames<'a> {
             self.pos = next;
             return Some(Event::Entry(entry));
         }
-        if self.incomplete_at(self.pos) {
-            self.tail = self.buf.len() - self.pos;
+        let offset = self.pos;
+        let resumed = (offset + 1..self.buf.len()).find(|&at| self.frame_at(at).is_some());
+        if resumed.is_none() && self.incomplete_at(offset) {
+            self.tail = self.buf.len() - offset;
             self.pos = self.buf.len();
             return None;
         }
-        let offset = self.pos;
-        let resumed = (offset + 1..self.buf.len())
-            .find(|&at| self.frame_at(at).is_some())
-            .unwrap_or(self.buf.len());
+        let resumed = resumed.unwrap_or(self.buf.len());
         self.pos = resumed;
         Some(Event::Corrupt {
             offset,
@@ -759,6 +759,44 @@ pub(crate) mod tests {
             found.extend(scan(&mut growing, file.get(..len).unwrap(), false));
         }
         assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn a_torn_large_frame_does_not_hide_the_short_frames_after_it() {
+        let mut file = Vec::new();
+        let torn_after = frames_from(T0, 2000, &mut file) - 1;
+        let torn_at = file.len();
+        let torn = frame(T0 + 9999, Stream::Stdout, &[b'x'; 16 * 1024], Piece::Whole);
+        file.extend_from_slice(torn.get(..100).unwrap());
+        let resumed = torn_after + 1;
+        let end = frames_from(resumed, file.len() + 3000, &mut file);
+
+        let events = entries(&file);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, Event::Corrupt { .. }))
+                .collect::<Vec<_>>(),
+            [&Event::Corrupt {
+                offset: torn_at,
+                skipped: 100
+            }]
+        );
+        let decoded: Vec<i64> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Entry(entry) => Some(entry.ts),
+                Event::Corrupt { .. } => None,
+            })
+            .collect();
+        assert_eq!(decoded, (T0..=torn_after).chain(resumed..end).collect::<Vec<_>>());
+
+        let expected = [Damage {
+            after: Some(torn_after),
+            before: resumed,
+        }];
+        assert_eq!(scan(&mut DamageScan::default(), &file, false), expected);
+        assert_eq!(scan(&mut DamageScan::default(), &file, true), expected);
     }
 
     #[test]
