@@ -68,8 +68,7 @@ pub(super) fn committed_bytes(dataset: &Dataset, pool: &str) -> u64 {
     }
 }
 
-/// Docker holds a per-Volume lock across a plugin Remove, so Remove refuses rather than
-/// wait behind a holder that may need that lock; it waits behind any other holder.
+/// A lock whose waiters can refuse instead of queueing while the holder calls Docker.
 #[derive(Clone)]
 pub(super) struct MutationLock {
     lock: Arc<Mutex<()>>,
@@ -181,6 +180,28 @@ impl VolumeStorage {
         Ok((local, installation))
     }
 
+    /// Docker holds its per-Volume lock across a plugin Mount or Remove, so those refuse
+    /// rather than wait behind a holder that is calling Docker for the same Volume.
+    pub(super) async fn admit_docker_request(
+        &self,
+        name: &DockerVolumeName,
+    ) -> Result<(HeldMutation, ployzd::mutation::MutationGuard)> {
+        let local = self
+            .mutation
+            .lock_unless_docker_bound()
+            .await
+            .ok_or_else(|| {
+                VolumeError::from(format!(
+                    "VolumeSwitching: Volume {name} has an active storage mutation"
+                ))
+            })?;
+        let installation = self
+            .installation
+            .try_mutation()
+            .map_err(|error| VolumeError::from(ployz_core::error_chain::inline(&error)))?;
+        Ok((local, installation))
+    }
+
     pub(super) async fn create_volume(
         &self,
         pool: &MachinePool,
@@ -260,7 +281,7 @@ impl VolumeStorage {
         if let Some(granted) = self.granted_mountpoint(name).await? {
             return Ok(granted);
         }
-        let _guard = self.admit_mutation().await?;
+        let _guard = self.admit_docker_request(name).await?;
         let pool = self.one_pool().await?;
         let datasets = self.datasets(&pool).await?;
         let dataset = Self::dataset(&datasets, &pool, name)?
