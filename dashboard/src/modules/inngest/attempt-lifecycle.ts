@@ -54,8 +54,9 @@ export function attemptLifecycle<Result, More extends object, Triggering = never
       async ({ event, step, runId }) => run.handler({ event, step, runId }, runEffect),
     );
 
-  const createCancel = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) =>
-    inngest.createFunction(
+  const createCancel = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) => {
+    const runFunctionId = createRun(inngest).id(inngest.id);
+    return inngest.createFunction(
       {
         id: workflow.cancelId,
         retries: 3,
@@ -65,13 +66,14 @@ export function attemptLifecycle<Result, More extends object, Triggering = never
       async ({ event, step }) => {
         const cancelled = await step.run("decode-cancellation", () =>
           decodeInngestEnvelope(inngestFunctionCancelledEnvelopeSchema)(event));
-        if (cancelled.data.function_id !== run.id) return { skipped: true };
+        if (cancelled.data.function_id !== runFunctionId) return { skipped: true };
         const { run_id: runId, event: triggering } = cancelled.data;
         return {
           closed: await step.run("close-run", () => runEffect(closeRun(runId, "cancellation", decodeTriggering(triggering)))),
         };
       },
     );
+  };
 
   const createSweep = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) =>
     inngest.createFunction(
