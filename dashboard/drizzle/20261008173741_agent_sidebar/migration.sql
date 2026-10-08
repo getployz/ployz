@@ -7,6 +7,8 @@ CREATE TABLE "agent_interrupts" (
 	"status" text NOT NULL,
 	"requested_at" bigint NOT NULL,
 	"record" jsonb NOT NULL,
+	"claimed_by_run_id" text,
+	"claimed_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );

@@ -146,3 +146,38 @@ export const threadAvailable = Effect.fn("Agent.threadAvailable")(function* (sco
     .from(agentThreads).where(eq(agentThreads.threadId, threadId));
   return row === undefined || (row.organizationId === scope.organizationId && row.userId === scope.userId);
 });
+
+/** How long a resuming run holds its interrupts before another client may take them over: a run that died mid-turn. */
+const CLAIM_LEASE_MS = 5 * 60 * 1000;
+
+/**
+ * Whether `runId` may answer `interruptIds`: `claimed` once it holds every pending one, `busy` while another run holds
+ * one, `settled` once another run answered them all, and `unchecked` when one is missing so the chat rejects the resume.
+ */
+export const claimResume = Effect.fn("Agent.claimResume")(function* (scope: AgentScope, runId: string, interruptIds: ReadonlyArray<string>) {
+  const database = yield* Database;
+  const { drizzle } = database;
+  const owned = and(eq(agentInterrupts.organizationId, scope.organizationId), eq(agentInterrupts.userId, scope.userId));
+  return yield* database.transaction(Effect.gen(function* () {
+    const ids = [...new Set(interruptIds)];
+    const rows = yield* drizzle.select({ status: agentInterrupts.status, claimedByRunId: agentInterrupts.claimedByRunId, claimedAt: agentInterrupts.claimedAt })
+      .from(agentInterrupts).where(and(owned, inArray(agentInterrupts.interruptId, ids))).for("update");
+    if (rows.length < ids.length) return "unchecked" as const;
+    const leased = new Date(Date.now() - CLAIM_LEASE_MS);
+    if (rows.some((row) => row.claimedByRunId !== null && row.claimedByRunId !== runId && row.claimedAt !== null && row.claimedAt > leased)) return "busy" as const;
+    if (rows.every((row) => row.status !== "pending")) return "settled" as const;
+    yield* drizzle.update(agentInterrupts).set({ claimedByRunId: runId, claimedAt: new Date() })
+      .where(and(owned, inArray(agentInterrupts.interruptId, ids), eq(agentInterrupts.status, "pending")));
+    return "claimed" as const;
+  }));
+});
+
+/** Ends `runId`'s hold on the interrupts it resumed, answered or not. */
+export const releaseResume = Effect.fn("Agent.releaseResume")(function* (scope: AgentScope, runId: string) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(agentInterrupts).set({ claimedByRunId: null, claimedAt: null }).where(and(
+    eq(agentInterrupts.organizationId, scope.organizationId),
+    eq(agentInterrupts.userId, scope.userId),
+    eq(agentInterrupts.claimedByRunId, runId),
+  ));
+});

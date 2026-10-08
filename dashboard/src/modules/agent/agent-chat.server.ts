@@ -1,12 +1,25 @@
 import "@tanstack/react-start/server-only";
+import { createHash } from "node:crypto";
 import type { ConfigCommand } from "@ployz/sdk";
-import { type AnyTextAdapter, chat, type chatParamsFromRequest, defineChatMiddleware, type ModelMessage, toolDefinition } from "@tanstack/ai";
+import {
+  type AnyTextAdapter,
+  chat,
+  type chatParamsFromRequest,
+  defineChatMiddleware,
+  EventType,
+  type Interrupt,
+  type ModelMessage,
+  modelMessagesToUIMessages,
+  type StreamChunk,
+  toolDefinition,
+  uiMessagesToWire,
+} from "@tanstack/ai";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { withPersistence } from "@tanstack/ai-persistence";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { approvalInterrupt, type ToolOutcome } from "#/modules/agent/agent";
 import { AGENT_COMMANDS, type AgentBinding, inputSchema, toolName } from "#/modules/agent/agent-tools";
-import { agentPersistence } from "#/modules/agent/persistence.server";
+import { type AgentScope, agentPersistence, claimResume, releaseResume } from "#/modules/agent/persistence.server";
 import { notSetUpScript, ScriptedAdapter, stubScript } from "#/modules/agent/scripted-adapter.server";
 import { requestApproval, trustedApproval } from "#/modules/approvals/approvals.server";
 import { callStore } from "#/modules/config-store/config-store.server";
@@ -38,26 +51,45 @@ const denialForAgent = (command: ConfigCommand, refusal: StoreRefusal): StoreRef
   return { code: refusal.code, message: `A human denied this ${verb}${reason === null ? "." : `: ${reason}`}`, details: { approval: { reason } } };
 };
 
+/** A UUID that only `approvalId` produces, so a second Deploy under one approval replays the first instead of running. */
+const approvalUuid = (approvalId: string) => {
+  const hex = createHash("sha256").update(`ployz.agent.deploy:${approvalId}`).digest("hex");
+  const variant = ((Number.parseInt(hex[16] ?? "0", 16) & 0x3) | 0x8).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+};
+
+/**
+ * `command` pinned to what one approval allows exactly once: a Deploy keyed by the approval, and a Publish of exactly the
+ * approved version, which the Store refuses as stale once that Publish committed.
+ */
+const onceFor = (command: ConfigCommand, approvalId: string, digest: string): ConfigCommand => {
+  if (command.command === "admit") return { ...command, id: approvalUuid(approvalId) };
+  if (command.command === "publish") return { ...command, version: digest.slice(0, digest.indexOf(":")) };
+  return command;
+};
+
 /**
  * One Publish or Deploy as `caller`, retried with `approvalId` once a human answered. When the plan destroys something and
  * the Organization asks first, it records the pending approval and answers with it instead of an outcome.
  */
-const runGated = Effect.fn("Agent.runGated")(function* (caller: Caller, command: ConfigCommand, approvalId: string | null) {
+const runGated = Effect.fn("Agent.runGated")(function* (caller: Caller, asked: ConfigCommand, approvalId: string | null) {
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
-  if (!trusted.ok) return { outcome: { ok: false, refusal: denialForAgent(command, trusted.refusal) } } satisfies Gated;
+  if (!trusted.ok) return { outcome: { ok: false, refusal: denialForAgent(asked, trusted.refusal) } } satisfies Gated;
+  const command = typeof trusted.approval === "object" && approvalId !== null ? onceFor(asked, approvalId, trusted.approval.approved) : asked;
   const result = yield* callStore(caller.organization.id, caller.userId, { operation: "write", command }, AGENT, trusted.approval);
   if (result.ok && trusted.approval === "required") return { outcome: { ...result, nothing_destroyed: true } } satisfies Gated;
   if (result.ok || result.refusal.code !== "approval_required") return { outcome: result } satisfies Gated;
-  const asked: StoreRefusal = yield* requestApproval(caller, command, result.refusal);
-  const recorded = Schema.decodeUnknownOption(ApprovalAsked)(asked.details);
+  const request: StoreRefusal = yield* requestApproval(caller, command, result.refusal);
+  const recorded = Schema.decodeUnknownOption(ApprovalAsked)(request.details);
   return (Option.isNone(recorded)
-    ? { outcome: { ok: false, refusal: asked } }
-    : { asking: { approvalId: recorded.value.approval_id, message: asked.message } }) satisfies Gated;
+    ? { outcome: { ok: false, refusal: request } }
+    : { asking: { approvalId: recorded.value.approval_id, message: request.message } }) satisfies Gated;
 });
 
 type AgentServices =
   | Effect.Services<ReturnType<typeof runGated>>
-  | Effect.Services<ReturnType<typeof agentPersistence>>;
+  | Effect.Services<ReturnType<typeof agentPersistence>>
+  | Effect.Services<ReturnType<typeof claimResume>>;
 
 const decodeArguments = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const toolInput = (args: string) => projectJsonValue(Option.getOrElse(decodeArguments(args.trim() === "" ? "{}" : args), () => null));
@@ -166,10 +198,56 @@ const added = (request: ChatRequest) => {
   return request.resume === undefined && last?.role === "user" ? [last] : [];
 };
 
+type Persistence = Effect.Success<ReturnType<typeof agentPersistence>>;
+
+/**
+ * The turn another run already took for this answer, replayed instead of run again: the thread as it now stands, and
+ * the approvals that turn left waiting.
+ */
+async function* answered(persistence: Persistence, request: ChatRequest): AsyncGenerator<StreamChunk> {
+  const { threadId, runId } = request;
+  yield { type: EventType.RUN_STARTED, threadId, runId, timestamp: Date.now() };
+  const stored = await persistence.stores.messages.loadThread(threadId);
+  const withIds = stored.map((message, index) => ({ ...message, id: message.id || `snapshot_${runId}_${index}` }));
+  yield {
+    type: EventType.MESSAGES_SNAPSHOT,
+    timestamp: Date.now(),
+    messages: uiMessagesToWire(modelMessagesToUIMessages(withIds), { includeSnapshotStructuredOutput: true, includeActivity: true }),
+  };
+  const waiting = await persistence.stores.interrupts.listPending(threadId);
+  yield waiting.length === 0
+    ? { type: EventType.RUN_FINISHED, threadId, runId, finishReason: "stop", timestamp: Date.now() }
+    // SAFETY: the interrupt store keeps each interrupt exactly as the run that raised it published it.
+    : { type: EventType.RUN_FINISHED, threadId, runId, outcome: { type: "interrupt", interrupts: waiting.map((record) => record.payload as Interrupt) }, timestamp: Date.now() };
+}
+
+const CLAIM_POLL_MS = 250;
+
+/**
+ * One answer runs at most once however many tabs or clients send it: the run that claims the interrupts resumes the
+ * turn, and every other one waits for that turn to end and replays it.
+ */
+async function* resumeOnce(run: Run, persistence: Persistence, scope: AgentScope, request: ChatRequest & { resume: ReadonlyArray<{ interruptId: string }> }, resumed: () => AsyncIterable<StreamChunk>): AsyncGenerator<StreamChunk> {
+  const ids = request.resume.map((entry) => entry.interruptId);
+  for (;;) {
+    const claim = await run(claimResume(scope, request.runId, ids));
+    if (claim === "settled") return yield* answered(persistence, request);
+    if (claim !== "busy") break;
+    if (request.abortController?.signal.aborted === true) return;
+    await new Promise((resolve) => setTimeout(resolve, CLAIM_POLL_MS));
+  }
+  try {
+    yield* resumed();
+  } finally {
+    await run(releaseResume(scope, request.runId));
+  }
+}
+
 /** One sidebar turn, or the resumption of one, as `caller` in their thread: the event stream the client renders. */
 export const agentChat = Effect.fn("Agent.chat")(function* (caller: Caller, request: ChatRequest) {
   const run: Run = Effect.runPromiseWith(yield* Effect.context<AgentServices>());
-  const persistence = yield* agentPersistence({ organizationId: caller.organization.id, userId: caller.userId });
+  const scope: AgentScope = { organizationId: caller.organization.id, userId: caller.userId };
+  const persistence = yield* agentPersistence(scope);
   const base = {
     adapter: yield* agentAdapter,
     messages: added(request),
@@ -181,7 +259,9 @@ export const agentChat = Effect.fn("Agent.chat")(function* (caller: Caller, requ
     interrupts: [approvalInterrupt],
   };
   const options: typeof base & { resume?: ChatRequest["resume"]; abortController?: AbortController } = base;
-  if (request.resume !== undefined) options.resume = request.resume;
   if (request.abortController !== undefined) options.abortController = request.abortController;
-  return chat(options);
+  const { resume } = request;
+  if (resume === undefined) return chat(options);
+  options.resume = resume;
+  return resumeOnce(run, persistence, scope, { ...request, resume }, () => chat(options));
 });
