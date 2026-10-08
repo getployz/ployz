@@ -59,6 +59,7 @@ const NewVolumeRun = Schema.Union([
   }),
   Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("move"), to: Schema.String.check(Schema.isNonEmpty()) }),
   Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("release") }),
+  Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("restore"), from: Schema.String.check(Schema.isNonEmpty()) }),
 ]);
 
 function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
@@ -73,6 +74,8 @@ function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
       return { kind: "move", args: { to: body.to } };
     case "release":
       return { kind: "release", args: {} };
+    case "restore":
+      return { kind: "restore", args: { from: body.from } };
   }
 }
 

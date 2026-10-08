@@ -8,7 +8,7 @@ import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { type InngestRunStatus, sendInngestEvent } from "#/modules/inngest/client";
 import { createVolumeRunRequestedEvent } from "#/modules/inngest/events";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
-import { organizationMachine } from "#/modules/machines/tables";
+import { machineRemoveAttempt, organizationMachine } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import type { Refusal } from "#/modules/volume-run/plan";
@@ -339,6 +339,66 @@ export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunC
   return { ok: true, holder: { containerId: holder.container_id, namespace: holder.namespace, redactedSpec: holder.resolved_spec } } as const;
 }, Effect.scoped);
 
+export type ServiceSpec = Omit<Holder, "containerId">;
+
+/** Restore registers the Volume with the spec of the newest Service container that mounts it, stopped ones included. */
+export const findSpec = Effect.fn("VolumeRun.findSpec")(function* (ctx: RunContext, inngestRunId: string) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  const session = yield* openSession(ctx.organizationId);
+  const frame = yield* session.watchFirstFrame(5_000);
+  const newest = frame.containers
+    .filter((container) =>
+      container.kind === "service_container"
+      && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === ctx.dockerVolume))
+    .reduce<(typeof frame.containers)[number] | undefined>(
+      (found, container) => found === undefined || container.created_at_unix_nanos > found.created_at_unix_nanos ? container : found,
+      undefined,
+    );
+  if (newest === undefined) {
+    return { ok: false, refusal: { code: "invalid", message: `no Service container mounts ${ctx.volumeName}; Restore takes its spec from one` } } as const;
+  }
+  const spec: ServiceSpec = { namespace: newest.namespace, redactedSpec: newest.resolved_spec };
+  return { ok: true, spec } as const;
+}, Effect.scoped);
+
+/** A removed Server's last answer came before its removal; past that plus the grace and the Machine task budget, its Promote or Start can no longer run. */
+export const DEPARTED_GRACE_MS = 60_000;
+export const MACHINE_TASK_BUDGET_MS = 10 * 60_000;
+
+/**
+ * Cloud can't see the copies of a Server it no longer reaches, so Restore waits out every `--no-reset` removal in the
+ * Organization: the deadline is the latest one's end plus the grace and the task budget, or null once it has passed.
+ */
+export const departedDeadline = Effect.fn("VolumeRun.departedDeadline")(function* (ctx: RunContext, inngestRunId: string) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  const { drizzle } = yield* Database;
+  const [latest] = yield* drizzle.select({ at: max(machineRemoveAttempt.terminalAt) }).from(machineRemoveAttempt)
+    .where(and(
+      eq(machineRemoveAttempt.organizationId, ctx.organizationId),
+      eq(machineRemoveAttempt.noReset, true),
+      eq(machineRemoveAttempt.state, "succeeded"),
+    ));
+  if (latest?.at === null || latest?.at === undefined) return null;
+  const deadline = latest.at.getTime() + DEPARTED_GRACE_MS + MACHINE_TASK_BUDGET_MS;
+  return deadline > Date.now() ? new Date(deadline).toISOString() : null;
+});
+
+/** Why `server rm` must wait: an open run names this Machine. Null when none does. */
+export const openRunNaming = Effect.fn("VolumeRun.openRunNaming")(function* (organizationId: string, machineId: MachineId) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ volumeName: volumeRun.volumeName, kind: volumeRun.kind }).from(volumeRun)
+    .where(and(
+      eq(volumeRun.organizationId, organizationId),
+      inArray(volumeRun.state, [...ACTIVE_VOLUME_RUN_STATES]),
+      sql`${volumeRun.machineIds} @> array[${machineId}]::text[]`,
+    ))
+    .limit(1);
+  if (row === undefined) return null;
+  const label = row.kind === "delete_mirror" ? "mirror removal" : row.kind;
+  const release = row.kind === "move" ? `, or volume release ${row.volumeName}` : "";
+  return `${row.volumeName}'s ${label} uses this Server; wait for it to end${release}`;
+});
+
 export const copyImage = Effect.fn("VolumeRun.copyImage")(function* (ctx: RunContext, inngestRunId: string, from: MachineRef, holder: Holder, to: MachineRef) {
   yield* requireOwner(ctx.id, inngestRunId);
   const session = yield* openSession(ctx.organizationId);
@@ -404,6 +464,7 @@ export const takeLease = Effect.fn("VolumeRun.lease")(function* (
   ctx: RunContext,
   inngestRunId: string,
   members: readonly Member[],
+  participants: readonly MachineId[],
 ) {
   yield* requireOwner(ctx.id, inngestRunId);
   const { drizzle } = yield* Database;
@@ -413,7 +474,7 @@ export const takeLease = Effect.fn("VolumeRun.lease")(function* (
   const [recorded] = yield* drizzle.select({ lease: max(volumeRun.lease) }).from(volumeRun)
     .where(and(eq(volumeRun.volumeId, ctx.volumeId), sql`${volumeRun.id} <> ${ctx.id}`));
   yield* drizzle.update(volumeRun)
-    .set({ lease: Math.max(held, recorded?.lease ?? 0) + 1, updatedAt: new Date() })
+    .set({ lease: Math.max(held, recorded?.lease ?? 0) + 1, machineIds: [...participants], updatedAt: new Date() })
     .where(and(eq(volumeRun.id, ctx.id), isNull(volumeRun.lease)));
   const row = yield* readRow(ctx.id);
   const lease = row?.lease;

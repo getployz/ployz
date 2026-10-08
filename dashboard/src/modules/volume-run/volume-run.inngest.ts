@@ -9,7 +9,7 @@ import {
   inngestFunctionFinishedEventType,
   volumeRunRequestedEventType,
 } from "#/modules/inngest/events";
-import { type Planned, planFromCopies } from "#/modules/volume-run/plan";
+import { participantsOf, type PlanInput, type Planned, planFromCopies, type Refusal } from "#/modules/volume-run/plan";
 import { copyName, type Member } from "#/modules/volume-run/volume-run";
 import {
   claimVolumeRun,
@@ -17,9 +17,11 @@ import {
   closeStaleVolumeRuns,
   closeVolumeRun,
   copyImage,
+  departedDeadline,
   endRun,
   failRun,
   findHolder,
+  findSpec,
   type Holder,
   type MachineRef,
   observeMembers,
@@ -35,7 +37,7 @@ import {
 import { runInngestEffect } from "#/server/run.server";
 import type { AppServices } from "#/server/runtime.server";
 
-type StepTools = Pick<PloyzStepTools, "run" | "sleep">;
+type StepTools = Pick<PloyzStepTools, "run" | "sleep" | "sleepUntil">;
 type EffectRunner = typeof runInngestEffect;
 
 export const RUN_VOLUME_FUNCTION_ID = "run-volume";
@@ -95,12 +97,14 @@ export async function runVolume(
   // SAFETY: step output is the JSON of the Member list, and a Member holds only JSON values.
   const members = (await step.run("01-observe", () => runEffect(observeMembers(run, runId)))) as Member[];
   // SAFETY: the row's kind and args were written together from one VolumeRunInput.
-  const plan = planFromCopies({ kind: run.kind, args: run.args, volumeName: run.volumeName, orphan: run.orphan } as Parameters<typeof planFromCopies>[0], members);
+  const input = { kind: run.kind, args: run.args, volumeName: run.volumeName, orphan: run.orphan } as PlanInput;
+  const plan = planFromCopies(input, members);
   if (!plan.ok) {
     await step.run("02-refuse", () => runEffect(refuseRun(run, runId, plan.refusal)));
     return { runId: run.id, refused: plan.refusal };
   }
   const { phase } = plan;
+  if (phase.kind === "restore") return restoreVolume({ step, runEffect, run, runId, input }, members, phase);
   const source = phase.kind === "move" ? (phase.start === "close" ? null : phase.writer) : phase.kind === "release" && phase.thaw ? phase.source : null;
   let holder: Holder | null = null;
   if (source !== null) {
@@ -111,7 +115,7 @@ export async function runVolume(
     }
     holder = found.holder;
   }
-  const { lease } = await step.run("02-lease", () => runEffect(takeLease(run, runId, members)));
+  const { lease } = await step.run("02-lease", () => runEffect(takeLease(run, runId, members, participantsOf(phase, members))));
   const at = (pos: Pos) => (notAfter: number) => ({ lease, pos, not_after_unix_seconds: notAfter });
   const mirrorRequest = (pos: Pos) => (notAfter: number) => ({ switch: at(pos)(notAfter), name: run.dockerVolume });
   const verb = (id: string, effect: ReturnType<typeof sendSwitch>) => step.run(id, () => runEffect(effect.pipe(Effect.asVoid)));
@@ -179,6 +183,47 @@ export async function runVolume(
   const rounds = await runRounds(steps, { A, B, writerAddress: writer.address });
   await step.run("05-finish", () => runEffect(endRun(run, runId, "done", null)));
   return { runId: run.id, rounds };
+}
+
+type RestoreSteps = Pick<RunSteps, "step" | "runEffect" | "run" | "runId"> & { readonly input: PlanInput };
+
+/** Restore makes the one copy left the writer; it starts no Container, so the next Deploy runs the Service on it. */
+async function restoreVolume({ step, runEffect, run, runId, input }: RestoreSteps, observed: Member[], planned: PhaseOf<"restore">) {
+  const refused = async (refusal: Refusal) => {
+    await step.run("02-refuse", () => runEffect(refuseRun(run, runId, refusal)));
+    return { runId: run.id, refused: refusal };
+  };
+  let members = observed;
+  let phase = planned;
+  const deadline = await step.run("02-departed", () => runEffect(departedDeadline(run, runId)));
+  if (deadline !== null) {
+    await step.sleepUntil("02-departed-wait", deadline);
+    members = await step.run("02-reobserve", () => runEffect(observeMembers(run, runId)));
+    const replanned = planFromCopies(input, members);
+    if (!replanned.ok) return refused(replanned.refusal);
+    if (replanned.phase.kind !== "restore") throw new NonRetriableError(`a restore planned a ${replanned.phase.kind}`);
+    phase = replanned.phase;
+  }
+  const found = await step.run("02-spec", () => runEffect(findSpec(run, runId)));
+  if (!found.ok) return refused(found.refusal);
+  const { spec } = found;
+  const from = phase.from.machine;
+  const { lease } = await step.run("02-lease", () => runEffect(takeLease(run, runId, members, participantsOf(phase, members))));
+  await step.run("03-restore", () => runEffect(sendSwitch(run, runId, from, (notAfter) => ({
+    command: "restore",
+    payload: {
+      switch: { lease, pos: { seq: 3, round: 0, sub: 0 }, not_after_unix_seconds: notAfter },
+      name: run.dockerVolume,
+      namespace: spec.namespace,
+      resolved_spec: spec.redactedSpec,
+    },
+  })).pipe(Effect.asVoid)));
+  const lostAfter = phase.lostAfter;
+  const message = lostAfter === null
+    ? `data restored on ${from.name}`
+    : `data restored on ${from.name} from ${new Date(lostAfter.created_unix_seconds * 1000).toISOString()}; writes after that time are lost`;
+  await step.run("04-finish", () => runEffect(endRun(run, runId, "done", message)));
+  return { runId: run.id, restored: from.name };
 }
 
 const sourceRequest = ({ at, run }: RunSteps, holder: Holder, pos: Pos) => (notAfter: number) =>
