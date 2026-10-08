@@ -192,8 +192,11 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
   yield* requestChecks(organizationId, written.checks);
 });
 
-/** Where a member's Store write came from, for product analytics: the dashboard, or the CLI and the coding agent it detected. */
-export type StoreSource = { readonly source: "dashboard" } | { readonly source: "cli"; readonly agent: string | null };
+/** Where a member's Store write came from, for product analytics: the dashboard, the CLI and the coding agent it detected, or the dashboard's own agent. */
+export type StoreSource =
+  | { readonly source: "dashboard" }
+  | { readonly source: "cli"; readonly agent: string | null }
+  | { readonly source: "agent" };
 
 /**
  * One Store read or write by user `userId` (null: Cloud itself) as `organizationId`: the answer, or the Store's refusal verbatim. It first

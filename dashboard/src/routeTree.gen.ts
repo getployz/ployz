@@ -32,6 +32,7 @@ import { Route as ApiRuntimeEventsRouteImport } from './routes/api/runtime/event
 import { Route as ApiRuntimeLogsRouteImport } from './routes/api/runtime/logs'
 import { Route as ProtectedCloudOrganizationSlugOrgRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/route'
 import { Route as ProtectedCloudOrganizationSlugProjectRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/route'
+import { Route as ApiAgentOrganizationSlugChatRouteImport } from './routes/api/agent/$organizationSlug/chat'
 import { Route as ApiBuildsBuildCheckInRouteImport } from './routes/api/builds/$build/check-in'
 import { Route as ApiBuildsBuildStepsRouteImport } from './routes/api/builds/$build/steps'
 import { Route as ApiCliCloudResetRouteImport } from './routes/api/cli/cloud/reset'
@@ -173,6 +174,12 @@ const ProtectedCloudOrganizationSlugProjectRouteRoute =
   ProtectedCloudOrganizationSlugProjectRouteRouteImport.update({
     id: '/_project',
     getParentRoute: () => ProtectedCloudOrganizationSlugRouteRoute,
+  } as any)
+const ApiAgentOrganizationSlugChatRoute =
+  ApiAgentOrganizationSlugChatRouteImport.update({
+    id: '/api/agent/$organizationSlug/chat',
+    path: '/api/agent/$organizationSlug/chat',
+    getParentRoute: () => rootRouteImport,
   } as any)
 const ApiBuildsBuildCheckInRoute = ApiBuildsBuildCheckInRouteImport.update({
   id: '/api/builds/$build/check-in',
@@ -386,6 +393,7 @@ export interface FileRoutesByFullPath {
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/cloud/': typeof ProtectedCloudIndexRoute
+  '/api/agent/$organizationSlug/chat': typeof ApiAgentOrganizationSlugChatRoute
   '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
   '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
   '/api/cli/cloud/reset': typeof ApiCliCloudResetRoute
@@ -432,6 +440,7 @@ export interface FileRoutesByTo {
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/cloud': typeof ProtectedCloudIndexRoute
+  '/api/agent/$organizationSlug/chat': typeof ApiAgentOrganizationSlugChatRoute
   '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
   '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
   '/api/cli/cloud/reset': typeof ApiCliCloudResetRoute
@@ -482,6 +491,7 @@ export interface FileRoutesById {
   '/_protected/cloud/': typeof ProtectedCloudIndexRoute
   '/_protected/cloud/$organizationSlug/_org': typeof ProtectedCloudOrganizationSlugOrgRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_project': typeof ProtectedCloudOrganizationSlugProjectRouteRouteWithChildren
+  '/api/agent/$organizationSlug/chat': typeof ApiAgentOrganizationSlugChatRoute
   '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
   '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
   '/api/cli/cloud/reset': typeof ApiCliCloudResetRoute
@@ -532,6 +542,7 @@ export interface FileRouteTypes {
     | '/api/runtime/events'
     | '/api/runtime/logs'
     | '/cloud/'
+    | '/api/agent/$organizationSlug/chat'
     | '/api/builds/$build/check-in'
     | '/api/builds/$build/steps'
     | '/api/cli/cloud/reset'
@@ -578,6 +589,7 @@ export interface FileRouteTypes {
     | '/api/runtime/events'
     | '/api/runtime/logs'
     | '/cloud'
+    | '/api/agent/$organizationSlug/chat'
     | '/api/builds/$build/check-in'
     | '/api/builds/$build/steps'
     | '/api/cli/cloud/reset'
@@ -627,6 +639,7 @@ export interface FileRouteTypes {
     | '/_protected/cloud/'
     | '/_protected/cloud/$organizationSlug/_org'
     | '/_protected/cloud/$organizationSlug/_project'
+    | '/api/agent/$organizationSlug/chat'
     | '/api/builds/$build/check-in'
     | '/api/builds/$build/steps'
     | '/api/cli/cloud/reset'
@@ -673,6 +686,7 @@ export interface RootRouteChildren {
   ApiOrgChangesRoute: typeof ApiOrgChangesRoute
   ApiRuntimeEventsRoute: typeof ApiRuntimeEventsRoute
   ApiRuntimeLogsRoute: typeof ApiRuntimeLogsRoute
+  ApiAgentOrganizationSlugChatRoute: typeof ApiAgentOrganizationSlugChatRoute
   ApiBuildsBuildCheckInRoute: typeof ApiBuildsBuildCheckInRoute
   ApiBuildsBuildStepsRoute: typeof ApiBuildsBuildStepsRoute
   ApiCliCloudResetRoute: typeof ApiCliCloudResetRoute
@@ -842,6 +856,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/cloud/$organizationSlug'
       preLoaderRoute: typeof ProtectedCloudOrganizationSlugProjectRouteRouteImport
       parentRoute: typeof ProtectedCloudOrganizationSlugRouteRoute
+    }
+    '/api/agent/$organizationSlug/chat': {
+      id: '/api/agent/$organizationSlug/chat'
+      path: '/api/agent/$organizationSlug/chat'
+      fullPath: '/api/agent/$organizationSlug/chat'
+      preLoaderRoute: typeof ApiAgentOrganizationSlugChatRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/builds/$build/check-in': {
       id: '/api/builds/$build/check-in'
@@ -1244,6 +1265,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiOrgChangesRoute: ApiOrgChangesRoute,
   ApiRuntimeEventsRoute: ApiRuntimeEventsRoute,
   ApiRuntimeLogsRoute: ApiRuntimeLogsRoute,
+  ApiAgentOrganizationSlugChatRoute: ApiAgentOrganizationSlugChatRoute,
   ApiBuildsBuildCheckInRoute: ApiBuildsBuildCheckInRoute,
   ApiBuildsBuildStepsRoute: ApiBuildsBuildStepsRoute,
   ApiCliCloudResetRoute: ApiCliCloudResetRoute,

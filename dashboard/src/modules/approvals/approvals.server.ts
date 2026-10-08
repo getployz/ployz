@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
 import type { Approval, ConfigCommand, DestructiveEffect, JsonValue } from "@ployz/sdk";
-import { and, eq, ne, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, ne, type SQL, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import {
@@ -300,6 +300,16 @@ export const getApproval = <R = never>(organizationId: string, id: string, opera
     if (row === undefined) return yield* new NotFound({ message: "No such approval." });
     return approvalView(yield* freshen(row, operationDigest));
   }).pipe(Effect.withSpan("Approvals.get"));
+
+/** Every approval still waiting on a human in the Organization, newest first. Each is freshened before it counts. */
+export const pendingApprovals = Effect.fn("Approvals.pending")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select().from(operationApprovals)
+    .where(and(eq(operationApprovals.organizationId, organizationId), eq(operationApprovals.status, "pending")))
+    .orderBy(desc(operationApprovals.createdAt), desc(operationApprovals.id));
+  const fresh = yield* Effect.forEach(rows, (row) => freshen<never>(row));
+  return fresh.filter((row) => row.status === "pending").map(approvalView);
+});
 
 type Decided = { ok: true; approval: ApprovalView } | { ok: false; refusal: StoreRefusal };
 

@@ -12,6 +12,7 @@ import {
   type OperationAsked,
   type OperationDigest,
   operationDigest,
+  pendingApprovals,
   requestApproval,
   setOrganizationSettings,
   trustedApproval,
@@ -227,6 +228,20 @@ it.live("renaming the Project keeps a waiting approval, which still follows its 
 
     yield* write(addService(1));
     expect((yield* provided(getApproval(ORGANIZATION, waiting.approval_id))).status).toBe("superseded");
+  }));
+
+it.live("the pending list drops an approval the plan moved past and shows the one asked about now", () =>
+  Effect.gen(function* () {
+    const { provided, write, refusal, caller } = yield* shopRemovingWeb();
+    const stale = asked(yield* provided(requestApproval(caller, publish, yield* refusal)));
+    expect(yield* provided(pendingApprovals(ORGANIZATION))).toMatchObject([{ id: stale.approval_id, status: "pending", digest: stale.approval }]);
+
+    yield* write(addService(1));
+    expect(yield* provided(pendingApprovals(ORGANIZATION))).toEqual([]);
+    expect((yield* provided(getApproval(ORGANIZATION, stale.approval_id))).status).toBe("superseded");
+
+    const fresh = asked(yield* provided(requestApproval(caller, publish, yield* refusal)));
+    expect((yield* provided(pendingApprovals(ORGANIZATION))).map((approval) => approval.id)).toEqual([fresh.approval_id]);
   }));
 
 it.live("a Store that can't answer leaves a waiting approval pending", () =>
