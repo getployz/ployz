@@ -30,12 +30,12 @@ describe("machine remove Inngest boundary", () => {
 
   it("ignores cancellation events owned by another function", async () => {
     const output = await new InngestTestEngine({
-      function: createCancelMachineRemove(new Inngest({ id: "test" })),
+      function: createCancelMachineRemove(new Inngest({ id: "ployz-cloud" })),
       events: [
         {
           name: "inngest/function.cancelled",
           data: {
-            function_id: "process-environment-deployment",
+            function_id: "ployz-cloud-process-environment-deployment",
             run_id: "run-1",
           },
         },
@@ -47,6 +47,21 @@ describe("machine remove Inngest boundary", () => {
       "decode-machine-remove-cancellation-event",
       expect.any(Function),
     );
+  });
+
+  it("cancels the attempt when Inngest cancels the app's process-machine-remove", async () => {
+    const output = await new InngestTestEngine({
+      function: createCancelMachineRemove(new Inngest({ id: "ployz-cloud" })),
+      events: [
+        {
+          name: "inngest/function.cancelled",
+          data: { function_id: "ployz-cloud-process-machine-remove", run_id: "run-1" },
+        },
+      ],
+      steps: [{ id: "cancel-machine-remove", handler: () => ({ cancelled: true }) }],
+    }).execute();
+
+    expect(output.result).toEqual({ cancelled: true });
   });
 
   it("rejects malformed cancellation envelopes in the owned step", async () => {
