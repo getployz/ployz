@@ -89,6 +89,19 @@ fn each_volume_run_command_parses_to_its_own_handler() {
     assert_eq!(path(&sync), "volume sync");
     assert!(leaf_matches(&sync).get_flag("full"));
 
+    let moved = parsed(&["ployz", "volume", "move", "data", "--to", "web-2"]).unwrap();
+    assert_eq!(path(&moved), "volume move");
+    assert_eq!(
+        leaf_matches(&moved)
+            .get_one::<String>("to")
+            .map(String::as_str),
+        Some("web-2")
+    );
+
+    let released = parsed(&["ployz", "volume", "release", "data", "--wait"]).unwrap();
+    assert_eq!(path(&released), "volume release");
+    assert!(leaf_matches(&released).get_flag("wait"));
+
     let runs = parsed(&["ployz", "volume", "runs", "data", RUN]).unwrap();
     assert_eq!(path(&runs), "volume runs");
     assert_eq!(
@@ -98,7 +111,7 @@ fn each_volume_run_command_parses_to_its_own_handler() {
         Some(RUN)
     );
 
-    for words in ["mirror", "mirror rm", "sync", "runs"] {
+    for words in ["mirror", "mirror rm", "sync", "move", "release", "runs"] {
         assert!(super::super::handler(words).is_some(), "volume {words}");
     }
 }
@@ -110,6 +123,9 @@ fn a_mirror_names_its_server_and_a_removal_names_its_mirror() {
     let error = parsed(&["ployz", "volume", "mirror", "rm"]).unwrap_err();
     assert!(error.to_string().contains("VOLUME-SERVER"), "{error}");
     assert!(parsed(&["ployz", "volume", "sync", "data", "--to", "web-2"]).is_err());
+    let error = parsed(&["ployz", "volume", "move", "data"]).unwrap_err();
+    assert!(error.to_string().contains("--to"), "{error}");
+    assert!(parsed(&["ployz", "volume", "release", "data", "--to", "web-2"]).is_err());
     assert!(VolumeRunId::parse("not-a-run").is_err());
 }
 
@@ -193,6 +209,30 @@ async fn each_kind_posts_only_its_own_fields() {
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "delete_mirror", "slot": "web-2", "confirm": "data" }),
             json!({ "slot": "web-2", "confirmed_name": "data" }),
+        ),
+        (
+            RunRequest {
+                environment: named(),
+                kind: VolumeRunKind::Move,
+                to: Some(MachineName::parse("web-2").unwrap()),
+                full: None,
+                slot: None,
+                confirm: None,
+            },
+            json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "move", "to": "web-2" }),
+            json!({ "to": "web-2" }),
+        ),
+        (
+            RunRequest {
+                environment: named(),
+                kind: VolumeRunKind::Release,
+                to: None,
+                full: None,
+                slot: None,
+                confirm: None,
+            },
+            json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "release" }),
+            json!({}),
         ),
     ];
     for (request, body, args) in cases {

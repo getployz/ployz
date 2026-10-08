@@ -1,5 +1,5 @@
-//! Volume runs: a Mirror, Sync or Mirror removal of one Volume, which Ployz Cloud
-//! runs across its Servers. The CLI starts one, reads them back, and with `--wait`
+//! Volume runs: a Mirror, Sync, Mirror removal, Move or Release of one Volume,
+//! which Ployz Cloud runs across its Servers. The CLI starts one, reads them back, and with `--wait`
 //! follows one until it ends. Without Cloud there are none: Volumes stay put.
 
 use std::time::Duration;
@@ -55,6 +55,8 @@ pub(crate) enum VolumeRunKind {
     Mirror,
     Sync,
     DeleteMirror,
+    Move,
+    Release,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -86,7 +88,7 @@ impl VolumeRunState {
 /// What a run was asked for; each kind sets only its own fields.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct VolumeRunArgs {
-    /// Mirror: the Server that gets the Mirror.
+    /// Mirror and Move: the Server that gets the Mirror, or the Volume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) to: Option<MachineName>,
     /// Sync: whether it copies everything again.
@@ -263,13 +265,34 @@ pub(super) fn sync_command() -> Command {
     .arg(wait_flag())
 }
 
-pub(super) fn runs_command() -> Command {
+pub(super) fn move_command() -> Command {
     store::scoped(
-        Command::new("runs")
-            .about("List a Volume's Mirror and Sync runs, or show one (Ployz Cloud)"),
+        Command::new("move")
+            .about("Move a Volume and its Service onto another Server (Ployz Cloud); the Service stops for the last copy"),
     )
     .arg(positional("volume", true))
-    .arg(positional("run", false).help("A run ID, to show that run"))
+    .arg(
+        value("to", None)
+            .value_name("SERVER")
+            .required(true)
+            .help("The Server the Volume moves to; a Move that stopped continues when asked again"),
+    )
+    .arg(wait_flag())
+}
+
+pub(super) fn release_command() -> Command {
+    store::scoped(
+        Command::new("release")
+            .about("Start a Volume's Service again where it was, ending a Move that stopped before the handover (Ployz Cloud)"),
+    )
+    .arg(positional("volume", true))
+    .arg(wait_flag())
+}
+
+pub(super) fn runs_command() -> Command {
+    store::scoped(Command::new("runs").about("List a Volume's runs, or show one (Ployz Cloud)"))
+        .arg(positional("volume", true))
+        .arg(positional("run", false).help("A run ID, to show that run"))
 }
 
 fn cloud(backend: &Backend) -> Result<(&tokio::runtime::Runtime, &Credential), Error> {
@@ -323,6 +346,35 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
         kind: VolumeRunKind::Sync,
         to: None,
         full: Some(full),
+        slot: None,
+        confirm: None,
+    })
+}
+
+pub(super) fn move_volume(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let volume = store::volume_name(matches, "volume")?;
+    let to = server_name(matches, "to")?;
+    let started = format!("Move of Volume {volume} onto {to}");
+    request(root, &volume, started, |environment| RunRequest {
+        environment,
+        kind: VolumeRunKind::Move,
+        to: Some(to.clone()),
+        full: None,
+        slot: None,
+        confirm: None,
+    })
+}
+
+pub(super) fn release(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let volume = store::volume_name(matches, "volume")?;
+    let started = format!("Release of Volume {volume}");
+    request(root, &volume, started, |environment| RunRequest {
+        environment,
+        kind: VolumeRunKind::Release,
+        to: None,
+        full: None,
         slot: None,
         confirm: None,
     })
