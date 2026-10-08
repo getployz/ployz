@@ -81,6 +81,22 @@ it("shows Cloud's refusal and keeps the card when the answer doesn't land", asyn
   expect(onSettled).not.toHaveBeenCalled();
 });
 
+it("names a Server operation by its verb and Server, with nothing folded", () => {
+  const removal = asTestDouble<ApprovalView>()({
+    ...approval,
+    command: "remove",
+    review: {
+      effects: [{ kind: "removes_server" as const, name: "fra-1", node: "m1", path: "servers/m1" }],
+      operation: { verb: "remove" as const, name: "fra-1", preview: { machine: "m1" } },
+    },
+  });
+  show(removal);
+  const card = within(screen.getByLabelText("Remove fra-1 needs approval"));
+  expect(card.getByText("Remove fra-1")).toBeTruthy();
+  expect(card.getByRole("list", { name: "Destroys" }).textContent).toBe("Removes server fra-1");
+  expect(card.queryByText(/other change/)).toBeNull();
+});
+
 it("says the plan changed when the approval was superseded, and settles", () => {
   const { onSettled } = show({ ...approval, status: "superseded" });
   expect(screen.getByText("The plan changed since this was asked. Ask again to review the new one.")).toBeTruthy();

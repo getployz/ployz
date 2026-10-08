@@ -10,13 +10,10 @@ import { Marker, MarkerContent } from "#/components/ui/marker";
 import { Textarea } from "#/components/ui/textarea";
 import type { ApprovalDecision } from "#/modules/approvals/approvals";
 import { approvalOptions, decideApproval, landDecision, refetchApprovals, type ApprovalView } from "./approvals.queries";
-import { destroyedLine, otherChanges } from "./approval-review";
-
-/** Only a Publish or a Deploy (an `admit`) ever asks. */
-const commandTitle = (command: string) => command === "publish" ? "Publish" : "Deploy";
+import { approvalSubject, destroyedLine, otherChanges } from "./approval-review";
 
 /**
- * One destructive Publish or Deploy waiting on a human, drawn from its Cloud row and reread while it waits, so a
+ * One destructive Publish, Deploy or Server operation waiting on a human, drawn from its Cloud row and reread while it waits, so a
  * reload, another tab or the CLI's own answer all show the same card. `onSettled` runs once the row stops waiting.
  */
 export function ApprovalCard({ organizationSlug, id, seed, autoFocus, onSettled }: {
@@ -35,7 +32,7 @@ export function ApprovalCard({ organizationSlug, id, seed, autoFocus, onSettled 
   if (approval === undefined) return null;
   switch (approval.status) {
     case "pending": return <PendingCard organizationSlug={organizationSlug} approval={approval} autoFocus={autoFocus} />;
-    case "approved": return <Marker><MarkerContent>Approved. {commandTitle(approval.command)} goes ahead.</MarkerContent></Marker>;
+    case "approved": return <Marker><MarkerContent>Approved. {approvalSubject(approval.command, approval.review).verb} goes ahead.</MarkerContent></Marker>;
     case "denied": return <Marker><MarkerContent>Denied{approval.reason ? `: ${approval.reason}` : "."}</MarkerContent></Marker>;
     case "superseded": return <Marker><MarkerContent>The plan changed since this was asked. Ask again to review the new one.</MarkerContent></Marker>;
   }
@@ -46,7 +43,8 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
   const [reason, setReason] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [refused, setRefused] = useState<string | null>(null);
-  const { effects, diff } = approval.review;
+  const { effects } = approval.review;
+  const subject = approvalSubject(approval.command, approval.review);
   const others = otherChanges(approval.review);
 
   const decide = async (decision: ApprovalDecision) => {
@@ -73,10 +71,10 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
 
   return (
     <Card state="destructive" size="sm" tabIndex={0} autoFocus={autoFocus} onKeyDown={onKeyDown}
-      aria-label={`${commandTitle(approval.command)} ${diff.environment.name} needs approval`}
+      aria-label={`${subject.verb} ${subject.name} needs approval`}
       className="outline-none focus-visible:ring-2">
       <CardHeader className="flex items-center justify-between gap-2">
-        <CardTitle>{commandTitle(approval.command)} {diff.environment.name}</CardTitle>
+        <CardTitle>{subject.verb} {subject.name}</CardTitle>
         <Badge variant="destructive">Destroys {effects.length} {effects.length === 1 ? "thing" : "things"}</Badge>
       </CardHeader>
       <CardContent className="flex flex-col gap-2">
