@@ -76,7 +76,7 @@ describe("volume runs", () => {
   let verbs: string[];
   let failNext: Map<string, unknown>;
   let sent: VolumeSwitchRequest[];
-  let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" } }>;
+  let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete" }>;
 
   const machine = (target: string) => {
     const found = machines.find((entry) => idOf(entry.name) === target);
@@ -630,6 +630,15 @@ describe("volume runs", () => {
         id: `volume-run-${first[0]}`,
         data: expect.objectContaining({ organizationId, volumeId: "a", runId: first[0] }),
       }));
+    });
+
+    it("keeps the slot of a Volume whose removal is staged but not yet deployed", async () => {
+      storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 5_000_000 }, change: "delete" }];
+
+      const started = await runEffect(startOrphanDeletes(organizationId, () => Effect.succeed(copies(["fsn-2", dockerVolume, "slot"]))).pipe(Effect.orDie));
+
+      expect(started).toEqual([]);
+      expect(await rows()).toEqual([]);
     });
   });
   describe("orphan hooks", () => {
