@@ -148,8 +148,12 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
 }
 
 /// How long the caller waits for a Machine to answer the Volume switch verb in `body`.
-fn volume_switch_deadline(_body: &RpcRequestBody) -> std::time::Duration {
-    crate::connect::TARGET_RPC_TIMEOUT
+fn volume_switch_deadline(body: &RpcRequestBody) -> std::time::Duration {
+    if matches!(body, RpcRequestBody::StartHandedContainer(_)) {
+        crate::connect::START_HANDED_RPC_TIMEOUT
+    } else {
+        crate::connect::TARGET_RPC_TIMEOUT
+    }
 }
 
 struct SessionInner {
