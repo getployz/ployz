@@ -119,7 +119,7 @@ The unresolved Container ID, display name, or ID prefix used to select one Conta
 _Avoid_: Container name as identity, replica identity
 
 **Log Store**:
-The Machine-local copy of the output of every container Ployz runs, kept after the container is removed, capped by size and age. It holds what one Machine saw and nothing more.
+The Machine-local copy of the output of every container Ployz runs, kept after the container is removed, capped by size and age. It holds only the output of containers that ran on its own Machine.
 _Avoid_: log database, log cache
 
 **Container Runtime Observation**:
