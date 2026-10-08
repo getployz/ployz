@@ -54,13 +54,6 @@ pub(crate) const TARGET_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 /// what keeps a starting daemon from hanging the CLI.
 pub(crate) const CONNECT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The deadline of a StartHandedContainer RPC. The Machine creates the Container and
-/// then has its volume plugin mount the Volume and start it, bounding that call at
-/// [`ployz_core::VOLUME_PLUGIN_CALL_TIMEOUT`]; the caller waits that bound plus the usual
-/// RPC time, so a slow start finishes rather than looks failed while the Machine still runs it.
-pub(crate) const START_HANDED_RPC_TIMEOUT: Duration =
-    TARGET_RPC_TIMEOUT.saturating_add(ployz_core::VOLUME_PLUGIN_CALL_TIMEOUT);
-
 /// The deadline of a stop RPC that waits behind `queued - 1` other stops on its
 /// Machine: a Machine stops its containers one at a time, each taking up to its grace.
 pub(crate) fn stop_rpc_timeout(grace_period_seconds: Option<i32>, queued: u32) -> Option<Duration> {
