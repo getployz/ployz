@@ -148,13 +148,22 @@ type ChatRequest = Pick<Awaited<ReturnType<typeof chatParamsFromRequest>>, "mess
   readonly abortController?: AbortController;
 };
 
+/**
+ * What a request adds to the stored thread: the member's new message, or nothing on a resumption. The client posts its
+ * whole transcript, and its tool results carry no ids the store could match, so taking more would append them again.
+ */
+const added = (request: ChatRequest) => {
+  const last = request.messages.at(-1);
+  return request.resume === undefined && last?.role === "user" ? [last] : [];
+};
+
 /** One sidebar turn, or the resumption of one, as `caller` in their thread: the event stream the client renders. */
 export const agentChat = Effect.fn("Agent.chat")(function* (caller: Caller, request: ChatRequest) {
   const run: Run = Effect.runPromiseWith(yield* Effect.context<AgentServices>());
   const persistence = yield* agentPersistence({ organizationId: caller.organization.id, userId: caller.userId });
   const base = {
     adapter: yield* agentAdapter,
-    messages: request.messages,
+    messages: added(request),
     threadId: request.threadId,
     runId: request.runId,
     tools: agentTools(caller, run),

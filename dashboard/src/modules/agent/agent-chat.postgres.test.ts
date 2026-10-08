@@ -103,6 +103,20 @@ it.live("a read tool answers straight from the Store", () =>
     expect(answered.said).toBe("Services: web.");
   }));
 
+it.live("a turn that posts the client's whole transcript back stores each tool result once", () =>
+  Effect.gen(function* () {
+    const { provided, caller, userId, say } = yield* sidebar({ removeWeb: false });
+    yield* say("list services");
+    const persistence = yield* provided(agentPersistence({ organizationId: ORGANIZATION, userId }));
+    const stored = yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD));
+    const posted = stored.map((message) => message.role === "tool" ? { ...message, id: `tool-${message.toolCallId}` } : message);
+    yield* provided(agentChat(caller, { messages: [...posted, { id: "message-2", role: "user", content: "list services" }], threadId: THREAD, runId: "run-replay" }))
+      .pipe(Effect.flatMap(drain));
+    const saved = yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD));
+    const roles = saved.map((message) => message.role);
+    expect(roles).toEqual(["user", "assistant", "tool", "assistant", "user", "assistant", "tool", "assistant"]);
+  }));
+
 it.live("a Deploy that destroys web waits on a human, and runs exactly once after they approve", () =>
   Effect.gen(function* () {
     const { provided, caller, say, resume, watchWrites, pending } = yield* sidebar({ removeWeb: true });
