@@ -183,7 +183,7 @@ impl<'m> Store<'m> {
                 Some("publish") => "publish",
                 _ => "deploy",
             };
-            let retry = self.again(&["--approval", &asked.id]);
+            let retry = self.approving(&asked.id);
             approval = Some(approval::settle(runtime, credential, verb, &asked, retry)?);
         }
     }
@@ -284,7 +284,7 @@ impl<'m> Store<'m> {
         if let (None, StoreCallError::Refused(refused)) = (&hint, &error)
             && let Some(asked) = Asked::of(refused)
         {
-            hint = Some(Hint::Retry(self.again(&["--approval", &asked.id])));
+            hint = Some(Hint::Retry(self.approving(&asked.id)));
         }
         Error::from(error).hint(hint)
     }
@@ -307,20 +307,21 @@ impl<'m> Store<'m> {
                 ..
             } if error.code == RpcErrorCode::ConfirmationRequired => {
                 let text = |value: &serde_json::Value| value.as_str().map(str::to_owned);
-                let mut extra = Vec::new();
+                let carried = self.carried();
                 let accept = error
                     .details
                     .get("accept")
                     .and_then(serde_json::Value::as_array)
                     .into_iter()
-                    .flatten();
-                for name in accept.filter_map(text) {
-                    extra.extend(["--accept-volume-loss".to_owned(), name]);
-                }
-                if let Some(version) = error.details.get("version").and_then(text) {
-                    extra.extend(["--expect-version".to_owned(), version]);
-                }
-                let retry = self.again(&extra.iter().map(String::as_str).collect::<Vec<_>>());
+                    .flatten()
+                    .filter_map(text)
+                    .collect();
+                let version = error.details.get("version").and_then(text);
+                let retry = self.retry(Carried {
+                    accept,
+                    version: version.or(carried.version),
+                    ..carried
+                });
                 Refusal {
                     error: StoreCallError::Refused(error),
                     hint: Some(Hint::Retry(retry)),
@@ -330,6 +331,48 @@ impl<'m> Store<'m> {
         };
         self.fail(refusal)
     }
+
+    fn approving(&self, id: &str) -> String {
+        self.retry(Carried {
+            approval: Some(id.to_owned()),
+            ..self.carried()
+        })
+    }
+
+    fn carried(&self) -> Carried {
+        let one = |id| {
+            self.matches
+                .try_get_one::<String>(id)
+                .ok()
+                .flatten()
+                .cloned()
+        };
+        Carried {
+            accept: super::string_values(self.matches, "accept-volume-loss"),
+            version: one("expect-version"),
+            approval: one("approval"),
+        }
+    }
+
+    fn retry(&self, carried: Carried) -> String {
+        let mut extra = Vec::new();
+        for name in &carried.accept {
+            extra.extend(["--accept-volume-loss", name.as_str()]);
+        }
+        if let Some(version) = &carried.version {
+            extra.extend(["--expect-version", version.as_str()]);
+        }
+        if let Some(approval) = &carried.approval {
+            extra.extend(["--approval", approval.as_str()]);
+        }
+        self.again(&extra)
+    }
+}
+
+struct Carried {
+    accept: Vec<String>,
+    version: Option<String>,
+    approval: Option<String>,
 }
 
 /// The Config Store `root`'s command reads and writes.
@@ -565,9 +608,9 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_volume_loss_names_the_exact_retry() {
+    fn a_refused_volume_loss_names_the_exact_retry_keeping_the_approval() {
         let root = crate::cli::command()
-            .try_get_matches_from(["ployz", "deploy", "--env", "staging"])
+            .try_get_matches_from(["ployz", "deploy", "--env", "staging", "--approval", "apr_1"])
             .unwrap();
         let key = SealingKey::new(&[7; 32]).unwrap();
         let local = ConfigStore::open("sqlite::memory:", key).unwrap();
@@ -586,7 +629,7 @@ mod tests {
             cause: Vec::new(),
         };
         let error = store.accepting(StoreCallError::Refused(refused));
-        let retry = "ployz deploy --accept-volume-loss data --expect-version 3:1:0.1 --env staging";
+        let retry = "ployz deploy --accept-volume-loss data --expect-version 3:1:0.1 --approval apr_1 --env staging";
         assert_eq!(error.hints(), [Hint::Retry(retry.into())]);
         let error = error.report();
         assert_eq!(error.details.get("retry"), Some(&json!(retry)));

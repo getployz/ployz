@@ -59,9 +59,11 @@ claude mcp add -s user ployz -- ployz mcp
 
 For Codex, run `codex mcp add ployz -- ployz mcp`. Each tool runs one `ployz` command with
 `--json`, signed in as you, and returns its one result. Tools that can remove something live,
-such as `deploy` and `server rm`, are marked destructive. `server rm` and `project rm` also ask
-the agent's app to check with you before every call, even when you've told it to skip
-permission prompts. Claude Code honors this.
+such as `deploy` and `server rm`, are marked destructive. Of those, every tool that acts the
+moment it runs, rather than through a plan Ployz reviews first, also asks the agent's app to
+check with you before every call, even when you've told it to skip permission prompts.
+`server rm` and `service stop` are two of them; `deploy` and `publish` are not. Claude Code
+honors this.
 
 When a `publish` or `deploy` needs your approval (see
 [Ask before destructive actions](../account/organizations.md#ask-before-destructive-actions)),

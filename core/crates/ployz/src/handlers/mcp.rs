@@ -1135,6 +1135,7 @@ mod tests {
         assert_eq!(flooded.find('\n'), Some(OUTPUT_LIMIT));
     }
 
+    #[cfg(target_os = "linux")]
     async fn call_pids(dir: &std::path::Path) -> Vec<String> {
         let path = dir.join("pids");
         for _ in 0..500 {
@@ -1148,16 +1149,19 @@ mod tests {
         panic!("the child never started");
     }
 
+    #[cfg(target_os = "linux")]
     async fn assert_killed(pids: &[String]) {
         for pid in pids {
             assert_gone(pid).await;
         }
     }
 
+    #[cfg(target_os = "linux")]
     async fn assert_gone(pid: &str) {
         for _ in 0..500 {
             match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-                Err(_) => return,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                Err(error) => panic!("reading process {pid}: {error}"),
                 Ok(stat)
                     if stat
                         .rsplit(") ")
@@ -1172,6 +1176,7 @@ mod tests {
         panic!("process {pid} is still running");
     }
 
+    #[cfg(target_os = "linux")]
     fn deployment_start() -> Value {
         request(
             2,
@@ -1180,6 +1185,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "linux")]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     #[tokio::test]
     async fn a_call_past_the_deadline_is_killed_with_its_children_and_names_where_to_check() {
@@ -1199,6 +1205,7 @@ mod tests {
         assert_killed(&call_pids(dir.path()).await).await;
     }
 
+    #[cfg(target_os = "linux")]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     #[tokio::test]
     async fn a_cancelled_call_kills_its_children_and_the_server_keeps_serving() {
@@ -1228,6 +1235,7 @@ mod tests {
         request(2, "tools/call", json!({ "name": name, "arguments": {} }))
     }
 
+    #[cfg(target_os = "linux")]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     #[tokio::test]
     async fn what_a_failed_call_left_running_is_killed() {
@@ -1282,6 +1290,7 @@ mod tests {
         let done = &replies[1]["result"];
         assert_eq!(done["isError"], false, "{done}");
         assert_eq!(done["content"][0]["text"], "left one running\n");
+        #[cfg(target_os = "linux")]
         assert_killed(&call_pids(dir.path()).await).await;
     }
 

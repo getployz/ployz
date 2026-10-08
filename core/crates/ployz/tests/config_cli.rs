@@ -202,7 +202,7 @@ fn serve(
             &evidence(),
         )),
         (Some(_), "/api/config/write")
-            if let Some(refused) = approvals.gate(&body, approval.as_deref()) =>
+            if let Some(refused) = approvals.gate(&mut body, approval.as_deref()) =>
         {
             refused
         }
@@ -297,16 +297,17 @@ fn github() -> Trusted {
 #[derive(Default)]
 struct Approvals {
     rows: Vec<(&'static str, &'static str)>,
+    deletes_volume: Option<&'static str>,
     asking: std::sync::Mutex<usize>,
     calls: std::sync::Mutex<Vec<(String, String, Value)>>,
 }
 
 impl Approvals {
-    fn of(rows: &[(&'static str, &'static str)]) -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self {
+    fn of(rows: &[(&'static str, &'static str)]) -> Self {
+        Self {
             rows: rows.to_vec(),
             ..Self::default()
-        })
+        }
     }
 
     fn calls(&self) -> Vec<(String, String, Value)> {
@@ -328,10 +329,22 @@ impl Approvals {
         posted.unwrap_or(if polled { decided } else { "pending" })
     }
 
-    fn gate(&self, body: &[u8], approval: Option<&str>) -> Option<(u16, Value)> {
+    fn gate(&self, body: &mut Vec<u8>, approval: Option<&str>) -> Option<(u16, Value)> {
         let command: Value = serde_json::from_slice(body).unwrap();
-        if self.rows.is_empty() || command["command"] != "publish" {
+        let deploy = command["command"] == "admit" && command["admit"] == "deploy";
+        if self.rows.is_empty() || !(deploy || command["command"] == "publish") {
             return None;
+        }
+        if let (Some(volume), true) = (self.deletes_volume, deploy) {
+            if command["accept_volume_loss"] != json!([volume]) || command["version"] != REVIEWED {
+                let error = json!({
+                    "code": "confirmation_required",
+                    "message": format!("This Deploy permanently deletes the data of {volume}"),
+                    "details": { "accept": [volume], "version": REVIEWED },
+                });
+                return Some((409, json!({ "error": error })));
+            }
+            *body = without_accepted_loss(command);
         }
         let mut asking = self.asking.lock().unwrap();
         match approval.map(|id| (id, self.status(id))) {
@@ -383,8 +396,22 @@ fn asked(id: &str) -> Value {
     })
 }
 
+const REVIEWED: &str = "3:1:0.1";
+
+/// `command` as the real Store must see it: the fake Cloud already confirmed the
+/// loss, and the Store has no Applied State that deletes a Volume.
+fn without_accepted_loss(mut command: Value) -> Vec<u8> {
+    command["accept_volume_loss"] = json!([]);
+    command["version"] = Value::Null;
+    serde_json::to_vec(&command).unwrap()
+}
+
 fn approving(rows: &[(&'static str, &'static str)]) -> (Target, std::sync::Arc<Approvals>) {
-    let approvals = Approvals::of(rows);
+    serving(Approvals::of(rows))
+}
+
+fn serving(approvals: Approvals) -> (Target, std::sync::Arc<Approvals>) {
+    let approvals = std::sync::Arc::new(approvals);
     let target = Target::Cloud {
         url: cloud(dispatch, std::sync::Arc::clone(&approvals)),
         token: "ployz_alice",
@@ -392,6 +419,23 @@ fn approving(rows: &[(&'static str, &'static str)]) -> (Target, std::sync::Arc<A
     ok(&target, &["project", "new", "shop"]);
     ok(&target, &["service", "add", "web", "--image", "nginx:1"]);
     (target, approvals)
+}
+
+fn approve_in_cloud(target: &Target, id: &str) {
+    let Target::Cloud { url, token } = target else {
+        unreachable!("approvals live in Cloud")
+    };
+    let body = json!({ "approve": { "digest": "3:abc" } }).to_string();
+    let mut stream = TcpStream::connect(url.trim_start_matches("http://")).unwrap();
+    write!(
+        stream,
+        "POST /api/cli/approvals/{id} HTTP/1.1\r\nauthorization: Bearer {token}\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply).unwrap();
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
 }
 
 fn person(target: &Target, home: &std::path::Path, args: &[&str]) -> (Option<i32>, String) {
@@ -3290,12 +3334,58 @@ fn without_a_terminal_a_superseded_approval_waits_on_the_new_one() {
     assert_eq!(polled, ["apr_1", "apr_1", "apr_2", "apr_2"]);
 }
 
-#[cfg(target_os = "linux")]
 #[test]
-fn at_a_terminal_a_wrong_name_leaves_the_approval_pending() {
-    let (target, approvals) = approving(&[("apr_1", "approved")]);
+fn an_agent_following_each_retry_deploys_what_deletes_a_volume() {
+    let (target, approvals) = serving(Approvals {
+        deletes_volume: Some("data"),
+        ..Approvals::of(&[("apr_1", "pending")])
+    });
+    let mut args = vec!["deploy".to_owned(), "--detach".to_owned()];
+    let mut refused = Vec::new();
+    let deployed = loop {
+        let words: Vec<&str> = args.iter().map(String::as_str).collect();
+        let (code, json) = ployz(Some(&target), &words);
+        if code == Some(0) {
+            break json;
+        }
+        let error = &json["error"];
+        refused.push(error["code"].as_str().unwrap().to_owned());
+        assert!(refused.len() <= 2, "{refused:?}, then {json}");
+        if let Some(id) = error["details"]["approval_id"].as_str() {
+            approve_in_cloud(&target, id);
+        }
+        let retry = shell_words::split(error["details"]["retry"].as_str().unwrap()).unwrap();
+        args = retry[1..].to_vec();
+    };
+    assert_eq!(refused, ["confirmation_required", "approval_required"]);
+    assert_eq!(
+        args,
+        [
+            "deploy",
+            "--detach",
+            "--accept-volume-loss",
+            "data",
+            "--expect-version",
+            REVIEWED,
+            "--approval",
+            "apr_1"
+        ]
+    );
+    assert_eq!(deployed["number"], json!(1), "admitted: {deployed}");
+    let decided: Vec<_> = approvals.calls().into_iter().map(|call| call.0).collect();
+    assert_eq!(decided, ["POST"], "only the human decided");
+}
+
+/// Undo what makes ployz skip its prompts: CI, or a terminal that can't show them.
+#[cfg(target_os = "linux")]
+fn as_a_person(command: &mut Command) {
+    command.env("TERM", "xterm").env_remove("CI");
+}
+
+#[cfg(target_os = "linux")]
+fn at_a_terminal(target: &Target, args: &str, typed: &str) -> (Option<i32>, String) {
     let home = tempfile::tempdir().unwrap();
-    let ployz = format!("{} publish", env!("CARGO_BIN_EXE_ployz"));
+    let ployz = format!("{} {args}", env!("CARGO_BIN_EXE_ployz"));
     let mut script = Command::new("script");
     for (key, value) in target.command(home.path()).get_envs() {
         match value {
@@ -3303,6 +3393,7 @@ fn at_a_terminal_a_wrong_name_leaves_the_approval_pending() {
             None => script.env_remove(key),
         };
     }
+    as_a_person(&mut script);
     let mut child = script
         .args(["--quiet", "--return", "--command", &ployz, "/dev/null"])
         .stdin(std::process::Stdio::piped())
@@ -3313,15 +3404,38 @@ fn at_a_terminal_a_wrong_name_leaves_the_approval_pending() {
         .stdin
         .as_mut()
         .unwrap()
-        .write_all(b"staging\n")
+        .write_all(typed.as_bytes())
         .unwrap();
     let output = child.wait_with_output().unwrap();
-    let screen = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output.status.code(), Some(130), "{screen}");
+    let screen = String::from_utf8_lossy(&output.stdout).into_owned();
+    (output.status.code(), screen)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn at_a_terminal_a_wrong_name_leaves_the_approval_pending() {
+    let (target, approvals) = approving(&[("apr_1", "approved")]);
+    let (code, screen) = at_a_terminal(&target, "publish", "staging\n");
+    assert_eq!(code, Some(130), "{screen}");
     assert!(screen.contains("Type production to continue"), "{screen}");
     assert!(
         screen.contains("Nothing published; approval apr_1 stays pending."),
         "{screen}"
     );
     assert!(approvals.calls().is_empty(), "nothing was decided in Cloud");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn at_a_terminal_the_environment_name_approves_and_publishes() {
+    let (target, approvals) = approving(&[("apr_1", "pending")]);
+    let (code, screen) = at_a_terminal(&target, "publish", "production\n");
+    assert_eq!(code, Some(0), "{screen}");
+    assert!(screen.contains("Type production to continue"), "{screen}");
+    let approve = json!({ "approve": { "digest": "3:abc" } });
+    assert_eq!(
+        approvals.calls(),
+        [("POST".to_owned(), "apr_1".to_owned(), approve)]
+    );
+    assert_eq!(ok(&target, &["diff"])["published"], json!(true));
 }
