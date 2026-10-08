@@ -1,18 +1,11 @@
 use ployz_core::{RpcErrorCode, RpcRequestBody};
 use serde_json::{Value, json};
 
-use super::volume_switch_route;
+use super::{volume_switch_deadline, volume_switch_path};
 
 fn body(command: &str, payload: Value) -> RpcRequestBody {
     serde_json::from_value(json!({ "command": command, "payload": payload }))
         .unwrap_or_else(|error| panic!("{command} parses: {error}"))
-}
-
-fn deadline(body: RpcRequestBody) -> std::time::Duration {
-    let command = body.command();
-    volume_switch_route(&body)
-        .unwrap_or_else(|error| panic!("{command} is a Volume run verb: {error:?}"))
-        .1
 }
 
 fn resolved_spec() -> Value {
@@ -92,7 +85,7 @@ fn every_volume_run_verb_is_sent_on_its_own_path() {
         ("clear_final", leased, "ClearFinal"),
     ];
     for (command, payload, route) in cases {
-        let (path, _) = volume_switch_route(&body(command, payload))
+        let path = volume_switch_path(&body(command, payload))
             .unwrap_or_else(|error| panic!("{command} is a Volume run verb: {error:?}"));
         assert!(path.ends_with(&format!("/{route}")), "{command} -> {path}");
     }
@@ -101,7 +94,7 @@ fn every_volume_run_verb_is_sent_on_its_own_path() {
 #[test]
 fn start_handed_container_is_awaited_as_long_as_the_machine_works_on_it() {
     let service = json!({ "switch": switch(), "name": "data", "namespace": "app-prod", "resolved_spec": resolved_spec() });
-    let start = deadline(body("start_handed_container", service));
+    let start = volume_switch_deadline(&body("start_handed_container", service));
     assert!(
         start > ployz_core::VOLUME_PLUGIN_CALL_TIMEOUT,
         "Start's deadline {start:?} ends before the Machine's own bound on mounting and starting"
@@ -109,7 +102,7 @@ fn start_handed_container_is_awaited_as_long_as_the_machine_works_on_it() {
     let leased = json!({ "switch": switch(), "name": "data" });
     for command in ["begin_round", "close", "clear_final"] {
         assert_eq!(
-            deadline(body(command, leased.clone())),
+            volume_switch_deadline(&body(command, leased.clone())),
             crate::connect::TARGET_RPC_TIMEOUT,
             "{command}"
         );
@@ -127,7 +120,7 @@ fn other_machine_verbs_are_refused_before_anything_is_sent() {
         ("inspect_storage", json!({})),
     ];
     for (command, payload) in cases {
-        let error = volume_switch_route(&body(command, payload))
+        let error = volume_switch_path(&body(command, payload))
             .expect_err(&format!("{command} is not a Volume run verb"));
         assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{command}");
         assert!(error.message.contains(command), "{}", error.message);

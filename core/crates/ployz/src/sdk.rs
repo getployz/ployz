@@ -106,8 +106,7 @@ pub struct ObservedCopy {
     pub role: ployz_core::CopyRole,
 }
 
-/// The gRPC path of `body`, and how long the caller waits for the Machine's answer, when
-/// `body` is one of the Volume switch verbs a Volume run sends.
+/// The gRPC path of `body` when it is one of the Volume switch verbs a Volume run sends.
 ///
 /// # Errors
 /// Returns `invalid_argument` for every other command.
@@ -115,11 +114,9 @@ pub struct ObservedCopy {
     clippy::wildcard_enum_match_arm,
     reason = "an allowlist: every command not named is refused"
 )]
-fn volume_switch_route(
-    body: &RpcRequestBody,
-) -> Result<(&'static str, std::time::Duration), RpcError> {
+fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
     use RpcRequestBody as Body;
-    let deadline = match body {
+    match body {
         Body::InspectVolumeCopy(_)
         | Body::AdoptLease(_)
         | Body::DeclareMirror(_)
@@ -139,19 +136,24 @@ fn volume_switch_route(
         | Body::Close(_)
         | Body::AcceptHandOff(_)
         | Body::Promote(_)
-        | Body::ClearFinal(_) => crate::connect::TARGET_RPC_TIMEOUT,
-        Body::StartHandedContainer(_) => crate::connect::START_HANDED_RPC_TIMEOUT,
-        _ => {
-            return Err(invalid_argument(format!(
-                "{} is not a Volume switch command",
-                body.command()
-            )));
-        }
-    };
-    let path = body
-        .unary_path()
-        .ok_or_else(|| invalid_argument(format!("{} is not a unary RPC", body.command())))?;
-    Ok((path, deadline))
+        | Body::StartHandedContainer(_)
+        | Body::ClearFinal(_) => body
+            .unary_path()
+            .ok_or_else(|| invalid_argument(format!("{} is not a unary RPC", body.command()))),
+        _ => Err(invalid_argument(format!(
+            "{} is not a Volume switch command",
+            body.command()
+        ))),
+    }
+}
+
+/// How long the caller waits for a Machine to answer the Volume switch verb in `body`.
+fn volume_switch_deadline(body: &RpcRequestBody) -> std::time::Duration {
+    if matches!(body, RpcRequestBody::StartHandedContainer(_)) {
+        crate::connect::START_HANDED_RPC_TIMEOUT
+    } else {
+        crate::connect::TARGET_RPC_TIMEOUT
+    }
 }
 
 struct SessionInner {
@@ -673,7 +675,8 @@ impl Session {
             MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
         let body: RpcRequestBody =
             serde_json::from_value(request).map_err(|error| invalid_argument(error.to_string()))?;
-        let (path, deadline) = volume_switch_route(&body)?;
+        let path = volume_switch_path(&body)?;
+        let deadline = volume_switch_deadline(&body);
         let request = ployz_core::RpcRequest::from(body);
         let client = self.client()?;
         let response = self
