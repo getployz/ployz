@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 
+use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
@@ -14,17 +15,34 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt};
 use serde_json::{Map, Value, json};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
-use super::Error;
-use super::catalog::{self, Approval, ArgEntry, ArgType, CommandEntry, Surface};
+use super::catalog::{self, Approval, ArgEntry, ArgType, CommandEntry, Stdin, Surface};
+use super::{Error, leaf_matches};
 use crate::failure::Failure;
 
 pub(crate) fn command() -> Command {
     Command::new("mcp").about("Serve the Cloud commands to a coding agent as MCP tools over stdio")
 }
 
-pub(super) fn serve(_root: &ArgMatches) -> Result<(), Error> {
-    let server = Server::new(std::env::current_exe()?);
+const OUTPUT_LIMIT: usize = 1 << 20;
+
+const CONNECTION_FLAGS: [&str; 3] = ["connect", "ssh-timeout", "ployz-config"];
+
+pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let globals = CONNECTION_FLAGS
+        .into_iter()
+        .filter(|id| matches.value_source(id) == Some(ValueSource::CommandLine))
+        .flat_map(|id| {
+            matches
+                .get_raw(id)
+                .into_iter()
+                .flatten()
+                .map(move |value| format!("--{id}={}", value.to_string_lossy()))
+        })
+        .collect();
+    let server = Server::new(std::env::current_exe()?, globals);
     super::runtime()?.block_on(async {
         server
             .serve(rmcp::transport::stdio())
@@ -39,19 +57,21 @@ pub(super) fn serve(_root: &ArgMatches) -> Result<(), Error> {
 
 struct Server {
     exe: PathBuf,
+    globals: Vec<String>,
     commands: Vec<CommandEntry>,
     tools: Vec<Tool>,
 }
 
 impl Server {
-    fn new(exe: PathBuf) -> Self {
+    fn new(exe: PathBuf, globals: Vec<String>) -> Self {
         let commands: Vec<CommandEntry> = catalog::commands()
             .into_iter()
-            .filter(|entry| exposed(entry.surface) && entry.json)
+            .filter(|entry| exposed(entry.surface) && entry.json && !entry.keeps_running)
             .collect();
         let tools = commands.iter().map(tool).collect();
         Self {
             exe,
+            globals,
             commands,
             tools,
         }
@@ -94,8 +114,8 @@ impl ServerHandler for Server {
         let entry = self.entry(&request.name).ok_or_else(|| {
             McpError::invalid_params(format!("no tool named {}", request.name), None)
         })?;
-        let argv = argv(entry, request.arguments.unwrap_or_default())?;
-        let child = tokio::process::Command::new(&self.exe)
+        let argv = argv(entry, &self.globals, request.arguments.unwrap_or_default())?;
+        let mut child = tokio::process::Command::new(&self.exe)
             .args(&argv)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -103,26 +123,49 @@ impl ServerHandler for Server {
             .kill_on_drop(true)
             .spawn()
             .map_err(|error| McpError::internal_error(error.to_string(), None))?;
-        let output = tokio::select! {
-            output = child.wait_with_output() => output
-                .map_err(|error| McpError::internal_error(error.to_string(), None))?,
+        let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+        let finished = async { tokio::join!(child.wait(), capture(stdout), capture(stderr)) };
+        let (status, stdout, stderr) = tokio::select! {
+            (status, stdout, stderr) = finished => (
+                status.map_err(|error| McpError::internal_error(error.to_string(), None))?,
+                stdout,
+                stderr,
+            ),
             () = context.ct.cancelled() => {
                 return Err(McpError::internal_error("the call was cancelled", None));
             }
         };
-        let text = if output.stdout.is_empty() {
-            output.stderr
-        } else {
-            output.stdout
-        };
-        let content = vec![ContentBlock::text(String::from_utf8_lossy(&text))];
-        Ok(if output.status.success() {
+        let text = if stdout.is_empty() { stderr } else { stdout };
+        let content = vec![ContentBlock::text(text)];
+        Ok(if status.success() {
             CallToolResult::success(content)
         } else {
             CallToolResult::error(content)
         }
         .into())
     }
+}
+
+async fn capture(stream: Option<impl AsyncRead + Unpin>) -> String {
+    let Some(mut stream) = stream else {
+        return String::new();
+    };
+    let mut kept = Vec::new();
+    let mut dropped = 0usize;
+    let mut buffer = [0u8; 8192];
+    while let Ok(read @ 1..) = stream.read(&mut buffer).await {
+        let chunk = buffer.get(..read).unwrap_or_default();
+        let room = OUTPUT_LIMIT.saturating_sub(kept.len()).min(read);
+        kept.extend_from_slice(chunk.get(..room).unwrap_or_default());
+        dropped += read - room;
+    }
+    let mut text = String::from_utf8_lossy(&kept).into_owned();
+    if dropped > 0 {
+        text.push_str(&format!(
+            "\n[ployz mcp: output truncated; {dropped} more bytes after the first {OUTPUT_LIMIT}]"
+        ));
+    }
+    text
 }
 
 fn exposed(surface: Surface) -> bool {
@@ -139,6 +182,10 @@ fn destructive(approval: Approval) -> bool {
     }
 }
 
+fn offered(arg: &ArgEntry) -> bool {
+    !arg.keeps_running && arg.stdin != Some(Stdin::Only)
+}
+
 fn tool_name(command: &str) -> String {
     command.replace(' ', "_")
 }
@@ -153,7 +200,7 @@ fn property(arg: &ArgEntry) -> String {
 fn tool(entry: &CommandEntry) -> Tool {
     let mut properties = Map::new();
     let mut required = Vec::new();
-    for arg in &entry.args {
+    for arg in entry.args.iter().filter(|arg| offered(arg)) {
         let key = property(arg);
         if arg.required {
             required.push(Value::String(key.clone()));
@@ -196,6 +243,9 @@ fn arg_schema(arg: &ArgEntry) -> Value {
         .iter()
         .map(|help| help.trim_end_matches('.').to_owned())
         .collect();
+    if arg.stdin == Some(Stdin::OnDash) {
+        sentences.push("Give it inline or as a file path; `-` for stdin is refused".to_owned());
+    }
     if !arg.conflicts.is_empty() {
         let others: Vec<String> = arg
             .conflicts
@@ -226,14 +276,19 @@ fn arg_schema(arg: &ArgEntry) -> Value {
 }
 
 /// `ployz <command> --flag=value… --json -- POSITIONAL…`, checked against the tool's schema.
-fn argv(entry: &CommandEntry, arguments: JsonObject) -> Result<Vec<String>, McpError> {
+fn argv(
+    entry: &CommandEntry,
+    globals: &[String],
+    arguments: JsonObject,
+) -> Result<Vec<String>, McpError> {
     let mut argv: Vec<String> = entry.command.split(' ').map(str::to_owned).collect();
+    argv.extend_from_slice(globals);
     let mut positionals: Vec<(usize, Vec<String>)> = Vec::new();
     for (key, value) in arguments {
         let arg = entry
             .args
             .iter()
-            .find(|arg| property(arg) == key)
+            .find(|arg| offered(arg) && property(arg) == key)
             .ok_or_else(|| {
                 McpError::invalid_params(
                     format!("`{}` takes no argument `{key}`", tool_name(&entry.command)),
@@ -243,6 +298,12 @@ fn argv(entry: &CommandEntry, arguments: JsonObject) -> Result<Vec<String>, McpE
         let values = words(arg, &key, value)?;
         if values.is_empty() {
             continue;
+        }
+        if arg.stdin == Some(Stdin::OnDash) && values.iter().any(|word| word == "-") {
+            return Err(McpError::invalid_params(
+                format!("`{key}` cannot read stdin here; give its value inline or as a file path"),
+                None,
+            ));
         }
         match arg.index {
             Some(index) => positionals.push((index, values)),
@@ -311,6 +372,16 @@ fn words(arg: &ArgEntry, key: &str, value: Value) -> Result<Vec<String>, McpErro
             ArgType::String => value.as_str().map(str::to_owned),
         }
         .ok_or_else(wrong)
+        .and_then(|word| {
+            if word.contains('\0') {
+                Err(McpError::invalid_params(
+                    format!("`{key}` cannot hold a NUL byte"),
+                    None,
+                ))
+            } else {
+                Ok(word)
+            }
+        })
     };
     if value.is_null() {
         return Ok(Vec::new());
@@ -330,9 +401,17 @@ mod tests {
     use super::*;
 
     async fn exchange(frames: &[Value]) -> Vec<Value> {
+        exchange_with(
+            Server::new(PathBuf::from("/nonexistent/ployz"), Vec::new()),
+            frames,
+        )
+        .await
+    }
+
+    async fn exchange_with(server: Server, frames: &[Value]) -> Vec<Value> {
         let (server_io, client_io) = tokio::io::duplex(1 << 20);
         let server = tokio::spawn(async move {
-            Server::new(PathBuf::from("/nonexistent/ployz"))
+            server
                 .serve(tokio::io::split(server_io))
                 .await
                 .expect("the handshake completes")
@@ -402,12 +481,33 @@ mod tests {
             "exec",
             "build",
             "mcp",
+            "service_port-forward",
         ] {
             assert!(
                 tools.iter().all(|tool| tool["name"] != absent),
-                "{absent} is not a Cloud tool"
+                "{absent} is not a tool"
             );
         }
+        for (name, absent) in [
+            ("logs", "follow"),
+            ("server_logs", "follow"),
+            ("github_connect", "wait"),
+            ("server_add", "wait"),
+            ("set", "secret"),
+            ("env_sync", "value"),
+        ] {
+            let properties = &tool(name)["inputSchema"]["properties"];
+            assert!(properties.get(absent).is_none(), "{name} offers {absent}");
+        }
+        assert!(
+            tool("set")["inputSchema"]["properties"]["patch"]["description"]
+                .as_str()
+                .unwrap()
+                .contains(
+                    "- reads stdin. Give it inline or as a file path; `-` for stdin is refused. "
+                ),
+        );
+        assert!(tool("volume_sync")["inputSchema"]["properties"]["wait"].is_object());
         let no_reset = &tool("server_rm")["inputSchema"]["properties"]["no-reset"];
         assert_eq!(no_reset["type"], "boolean");
         assert!(
@@ -451,13 +551,114 @@ mod tests {
     }
 
     #[test]
+    fn exec_is_a_cloud_command_but_no_tool_because_it_refuses_json() {
+        let exec = catalog::commands()
+            .into_iter()
+            .find(|entry| entry.command == "exec")
+            .unwrap();
+        assert_eq!(exec.surface, Surface::Cloud);
+        assert!(!exec.json);
+        let server = Server::new(PathBuf::from("/nonexistent/ployz"), Vec::new());
+        assert!(server.entry("exec").is_none());
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn arguments_that_read_stdin_or_keep_running_are_refused() {
+        let mut frames = handshake();
+        let calls = [
+            json!({ "name": "set", "arguments": { "assignment": ["web.env.KEY"], "secret": true } }),
+            json!({ "name": "logs", "arguments": { "follow": true } }),
+            json!({ "name": "set", "arguments": { "assignment": ["web"], "patch": "-" } }),
+            json!({ "name": "set", "arguments": { "assignment": ["web"], "from-env-file": "-" } }),
+            json!({ "name": "service_port-forward", "arguments": {} }),
+            json!({ "name": "server_rm", "arguments": { "server": "a\0b" } }),
+        ];
+        for (id, call) in (2..).zip(calls) {
+            frames.push(request(id, "tools/call", call));
+        }
+        let replies = exchange(&frames).await;
+        for reply in &replies[1..] {
+            assert_eq!(reply["error"]["code"], -32602, "{reply}");
+        }
+        assert_eq!(
+            replies[3]["error"]["message"],
+            "`patch` cannot read stdin here; give its value inline or as a file path"
+        );
+        assert_eq!(
+            replies[6]["error"]["message"],
+            "`server` cannot hold a NUL byte"
+        );
+    }
+
+    fn fake_ployz(dir: &std::path::Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("ployz");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\n\
+             case \"$1\" in\n\
+             server) echo \"no such server\" >&2; exit 3 ;;\n\
+             logs) head -c 3000000 /dev/zero | tr '\\0' a; exit 0 ;;\n\
+             esac\n\
+             echo \"$*\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_call_runs_the_command_and_a_failure_is_a_tool_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = Server::new(fake_ployz(dir.path()), vec!["--connect=ssh://a".to_owned()]);
+        let mut frames = handshake();
+        frames.push(request(
+            2,
+            "tools/call",
+            json!({ "name": "project_ls", "arguments": {} }),
+        ));
+        frames.push(request(
+            3,
+            "tools/call",
+            json!({ "name": "server_rm", "arguments": { "server": "web-1" } }),
+        ));
+        frames.push(request(
+            4,
+            "tools/call",
+            json!({ "name": "logs", "arguments": {} }),
+        ));
+        let replies = exchange_with(server, &frames).await;
+        let ok = &replies[1]["result"];
+        assert_eq!(ok["isError"], false, "{ok}");
+        assert_eq!(
+            ok["content"][0]["text"],
+            "project ls --connect=ssh://a --json\n"
+        );
+        let failed = &replies[2]["result"];
+        assert_eq!(failed["isError"], true, "{failed}");
+        assert_eq!(failed["content"][0]["text"], "no such server\n");
+        let flooded = replies[3]["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            flooded.ends_with(&format!(
+                "\n[ployz mcp: output truncated; {} more bytes after the first {OUTPUT_LIMIT}]",
+                3_000_000 - OUTPUT_LIMIT
+            )),
+            "{}",
+            flooded.get(flooded.len() - 120..).unwrap_or_default()
+        );
+        assert_eq!(flooded.find('\n'), Some(OUTPUT_LIMIT));
+    }
+
+    #[test]
     fn a_call_becomes_flags_then_json_then_positionals() {
         let entry = catalog::commands()
             .into_iter()
             .find(|entry| entry.command == "server rm")
             .unwrap();
         let arguments = json!({ "server": "web-1", "no-reset": true, "confirm": null });
-        let argv = argv(&entry, arguments.as_object().cloned().unwrap()).unwrap();
+        let argv = argv(&entry, &[], arguments.as_object().cloned().unwrap()).unwrap();
         assert_eq!(
             argv,
             ["server", "rm", "--no-reset", "--json", "--", "web-1"]
