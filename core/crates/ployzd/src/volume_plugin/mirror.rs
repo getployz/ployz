@@ -23,13 +23,17 @@ pub(super) const MIRROR_MOUNT_ROOT: &str = "/var/lib/ployz-mirror";
 
 /// A leased verb's admitted scope: the lock, the Pool and the datasets it read under it.
 pub(super) struct Leased {
-    _guard: (HeldMutation, ployzd::mutation::MutationGuard),
+    guard: (HeldMutation, ployzd::mutation::MutationGuard),
     pub(super) pool: MachinePool,
     pub(super) datasets: Vec<Dataset>,
     pub(super) admitted: Admitted,
 }
 
 impl Leased {
+    pub(super) fn held(&self) -> &HeldMutation {
+        &self.guard.0
+    }
+
     pub(super) fn replayed(&self) -> bool {
         self.admitted.decision == FenceDecision::Replay
     }
@@ -79,7 +83,7 @@ impl VolumeStorage {
         let datasets = self.datasets(&pool).await.map_err(internal)?;
         let admitted = self.admit(&pool, &datasets, name, switch).await?;
         Ok(Leased {
-            _guard: guard,
+            guard,
             pool,
             datasets,
             admitted,
@@ -335,9 +339,8 @@ impl VolumeStorage {
         let name = name(&request.name)?;
         let scope = self.leased(&name, &request.switch).await?;
         if scope.slot(&name).is_some() || scope.require_root(&name).is_ok() {
-            return Err(SwitchError::Precondition.rpc_error(format!(
-                "this Machine still holds a copy of Volume {name}"
-            )));
+            return Err(SwitchError::Precondition
+                .rpc_error(format!("this Machine still holds a copy of Volume {name}")));
         }
         if scope.admitted.recorded.is_some() {
             self.clear_lease_record(&scope.pool, &name)

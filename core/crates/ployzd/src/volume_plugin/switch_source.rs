@@ -12,6 +12,7 @@ use super::{
     Dataset, DockerVolumeName, VolumeStorage, checked_command,
     lease::{MIRROR_PROPERTY, WRITER_PROPERTY, internal, slot_parent},
     mirror::{Leased, name},
+    storage::HeldMutation,
 };
 
 pub(super) const HOLDER_PROPERTY: &str = "ployz:source-container";
@@ -53,21 +54,27 @@ impl VolumeStorage {
         Ok(())
     }
 
-    pub(super) async fn docker(&self, arguments: &[&str]) -> super::Result<String> {
+    /// Calls Docker under `held`; a Mount or Remove queued for the lock now refuses.
+    pub(super) async fn docker(
+        &self,
+        _held: &HeldMutation,
+        arguments: &[&str],
+    ) -> super::Result<String> {
         self.mutation.raise_docker_bound();
         checked_command(&self.docker, arguments).await
     }
 
+    async fn docker_ps(&self, filters: &[&str]) -> super::Result<String> {
+        let mut arguments = vec!["ps", "--all", "--quiet", "--no-trunc"];
+        for filter in filters {
+            arguments.extend(["--filter", filter]);
+        }
+        checked_command(&self.docker, &arguments).await
+    }
+
     pub(super) async fn holders(&self, name: &DockerVolumeName) -> super::Result<Vec<String>> {
         Ok(self
-            .docker(&[
-                "ps",
-                "--all",
-                "--quiet",
-                "--no-trunc",
-                "--filter",
-                &format!("volume={name}"),
-            ])
+            .docker_ps(&[&format!("volume={name}")])
             .await?
             .lines()
             .map(str::to_owned)
@@ -86,16 +93,7 @@ impl VolumeStorage {
             )));
         }
         let managed = self
-            .docker(&[
-                "ps",
-                "--all",
-                "--quiet",
-                "--no-trunc",
-                "--filter",
-                &format!("id={container}"),
-                "--filter",
-                "label=ployz.managed",
-            ])
+            .docker_ps(&[&format!("id={container}"), "label=ployz.managed"])
             .await
             .map_err(internal)?;
         if managed.trim() != container.as_str() {
@@ -194,7 +192,7 @@ impl VolumeStorage {
         self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
             .await?;
         ployzd::faults::kill_after_record("Freeze");
-        self.docker(&["stop", request.container_id.as_str()])
+        self.docker(scope.held(), &["stop", request.container_id.as_str()])
             .await
             .map_err(internal)?;
         self.zfs(&["set", "readonly=on", &root_name])
@@ -320,12 +318,15 @@ impl VolumeStorage {
         if !root.mounted {
             self.zfs(&["mount", &root_name]).await.map_err(internal)?;
         }
-        self.start_granted(MountGrant {
-            name: name.to_string(),
-            record: scope.admitted.lease,
-            container: request.container_id,
-            mountpoint: name.mountpoint(),
-        })
+        self.start_granted(
+            scope.held(),
+            MountGrant {
+                name: name.to_string(),
+                record: scope.admitted.lease,
+                container: request.container_id,
+                mountpoint: name.mountpoint(),
+            },
+        )
         .await?;
         self.set_writer(&root_name, WriterMarker::Idle).await?;
         self.zfs(&["inherit", HOLDER_PROPERTY, &root_name])
@@ -336,14 +337,18 @@ impl VolumeStorage {
     }
 
     /// Starts the grant's Container while its Mount may use the root the open record holds.
-    pub(super) async fn start_granted(&self, grant: MountGrant) -> Result<(), RpcError> {
+    pub(super) async fn start_granted(
+        &self,
+        held: &HeldMutation,
+        grant: MountGrant,
+    ) -> Result<(), RpcError> {
         let container = grant.container;
         *self
             .mount_grant
             .lock()
             .expect("mount grant is never poisoned") = Some(grant);
         let granted = Granted(Arc::clone(&self.mount_grant));
-        self.docker(&["start", container.as_str()])
+        self.docker(held, &["start", container.as_str()])
             .await
             .map_err(internal)?;
         drop(granted);
@@ -407,7 +412,9 @@ impl VolumeStorage {
             .await?;
         ployzd::faults::kill_after_record("Close");
         for holder in self.holders(&name).await.map_err(internal)? {
-            self.docker(&["rm", &holder]).await.map_err(internal)?;
+            self.docker(scope.held(), &["rm", &holder])
+                .await
+                .map_err(internal)?;
         }
         let parent = slot_parent(&scope.pool, &name);
         let fs = format!("{parent}/fs");
@@ -438,7 +445,7 @@ impl VolumeStorage {
             .await
             .map_err(internal)?;
         ployzd::faults::kill_inside("Close");
-        self.docker(&["volume", "rm", "--force", &name.0])
+        self.docker(scope.held(), &["volume", "rm", "--force", &name.0])
             .await
             .map_err(internal)?;
         scope.admitted.lease.cycle = Cycle::Closed;
