@@ -594,3 +594,12 @@ it.live("a pending approval named with asking off still waits on the human", () 
     expect(yield* gate(drainOf(["shop.web"]))).toEqual({ ok: true, approvalId: null });
     expect(yield* rows).toEqual([{ id: waiting.approval_id, status: "pending", subject: `server:${MACHINE}` }]);
   }));
+
+it.live("the pending list drops an operation approval whose Server is gone", () =>
+  Effect.gen(function* () {
+    const { provided, gate } = yield* operationCloud();
+    const waiting = refusedWith(yield* gate(drainOf(["shop.web"])));
+    expect((yield* provided(pendingApprovals(ORGANIZATION, answers(waiting.approval)))).map(({ id }) => id)).toEqual([waiting.approval_id]);
+    expect(yield* provided(pendingApprovals(ORGANIZATION, answers(null)))).toEqual([]);
+    expect((yield* provided(getApproval(ORGANIZATION, waiting.approval_id))).status).toBe("superseded");
+  }));

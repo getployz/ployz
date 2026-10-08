@@ -302,14 +302,15 @@ export const getApproval = <R = never>(organizationId: string, id: string, opera
   }).pipe(Effect.withSpan("Approvals.get"));
 
 /** Every approval still waiting on a human in the Organization, newest first. Each is freshened before it counts. */
-export const pendingApprovals = Effect.fn("Approvals.pending")(function* (organizationId: string) {
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle.select().from(operationApprovals)
-    .where(and(eq(operationApprovals.organizationId, organizationId), eq(operationApprovals.status, "pending")))
-    .orderBy(desc(operationApprovals.createdAt), desc(operationApprovals.id));
-  const fresh = yield* Effect.forEach(rows, (row) => freshen<never>(row));
-  return fresh.filter((row) => row.status === "pending").map(approvalView);
-});
+export const pendingApprovals = <R = never>(organizationId: string, operationDigest?: OperationDigest<R>) =>
+  Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const rows = yield* drizzle.select().from(operationApprovals)
+      .where(and(eq(operationApprovals.organizationId, organizationId), eq(operationApprovals.status, "pending")))
+      .orderBy(desc(operationApprovals.createdAt), desc(operationApprovals.id));
+    const fresh = yield* Effect.forEach(rows, (row) => freshen(row, operationDigest));
+    return fresh.filter((row) => row.status === "pending").map(approvalView);
+  }).pipe(Effect.withSpan("Approvals.pending"));
 
 type Decided = { ok: true; approval: ApprovalView } | { ok: false; refusal: StoreRefusal };
 
