@@ -34,6 +34,10 @@ const OUTPUT_LIMIT: usize = 1 << 20;
 /// limit. A Deployment or Volume run goes on in Cloud after the call's child is killed.
 const CALL_DEADLINE: Duration = Duration::from_secs(30 * 60);
 
+/// Adding a Server installs Ployz over SSH or on this computer. A tool call cannot own that
+/// SSH session or answer its prompts, so it is run from a terminal.
+const TERMINAL_ONLY: [&str; 1] = ["server add"];
+
 const CONNECTION_FLAGS: [&str; 3] = ["connect", "ssh-timeout", "ployz-config"];
 
 pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
@@ -90,7 +94,12 @@ impl Server {
     fn new(exe: PathBuf, globals: Vec<String>) -> Self {
         let commands: Vec<CommandEntry> = catalog::commands()
             .into_iter()
-            .filter(|entry| exposed(entry.surface) && entry.json && !entry.keeps_running)
+            .filter(|entry| {
+                exposed(entry.surface)
+                    && entry.json
+                    && !entry.keeps_running
+                    && !TERMINAL_ONLY.contains(&entry.command.as_str())
+            })
             .collect();
         let tools = commands.iter().map(tool).collect();
         Self {
@@ -589,6 +598,7 @@ mod tests {
             "build",
             "mcp",
             "service_port-forward",
+            "server_add",
         ] {
             assert!(
                 tools.iter().all(|tool| tool["name"] != absent),
@@ -599,7 +609,6 @@ mod tests {
             ("logs", "follow"),
             ("server_logs", "follow"),
             ("github_connect", "wait"),
-            ("server_add", "wait"),
             ("set", "secret"),
             ("set", "at-merge"),
             ("env_sync", "value"),
@@ -683,6 +692,7 @@ mod tests {
             json!({ "name": "set", "arguments": { "assignment": ["web"], "from-env-file": "-" } }),
             json!({ "name": "service_port-forward", "arguments": {} }),
             json!({ "name": "server_rm", "arguments": { "server": "a\0b" } }),
+            json!({ "name": "server_add", "arguments": { "command": true } }),
         ];
         for (id, call) in (2..).zip(calls) {
             frames.push(request(id, "tools/call", call));
@@ -699,6 +709,7 @@ mod tests {
             replies[6]["error"]["message"],
             "`server` cannot hold a NUL byte"
         );
+        assert_eq!(replies[7]["error"]["message"], "no tool named server_add");
     }
 
     fn fake_ployz(dir: &std::path::Path) -> PathBuf {
@@ -855,11 +866,11 @@ mod tests {
     fn the_deadline_error_reads_in_minutes() {
         let entry = catalog::commands()
             .into_iter()
-            .find(|entry| entry.command == "server add")
+            .find(|entry| entry.command == "server drain")
             .unwrap();
         assert_eq!(
             overdue(&entry, CALL_DEADLINE),
-            "ployz mcp stopped `ployz server add` after 30 minutes. What it started may still \
+            "ployz mcp stopped `ployz server drain` after 30 minutes. What it started may still \
              be running; check with the `server_ls` tool (`ployz server ls`)."
         );
     }
