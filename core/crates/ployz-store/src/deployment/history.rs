@@ -112,6 +112,42 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
     })
 }
 
+/// The Cluster Domain each node's generated domains run under, by node ID: that of
+/// the Deployment that applied it, else of the Deployment in flight that targets it.
+pub(crate) fn cluster_domains(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<BTreeMap<String, Hostname>, RpcError> {
+    let mut domains = BTreeMap::new();
+    for row in &tx.query(
+        "SELECT a.node_id, d.cluster_domain FROM config_applied a \
+         JOIN config_deployment d ON d.id = a.deployment_id \
+         WHERE a.environment_id = ?1 AND d.cluster_domain IS NOT NULL",
+        &[environment.as_str().into()],
+    )? {
+        domains.insert(row.text(0)?.to_owned(), row.parse(1, "Cluster Domain")?);
+    }
+    let in_flight = tx.query(
+        &format!(
+            "SELECT cluster_domain, nodes FROM config_deployment \
+             WHERE environment_id = ?1 AND {} ORDER BY number DESC LIMIT 1",
+            in_flight_sql()
+        ),
+        &[environment.as_str().into()],
+    )?;
+    if let Some(row) = in_flight.first()
+        && let Some(cluster) = row.parse_optional::<Hostname>(0, "Cluster Domain")?
+    {
+        let nodes: Vec<TargetNode> = row.json(1, "Deployment")?;
+        for node in nodes {
+            domains
+                .entry(node.id().to_owned())
+                .or_insert_with(|| cluster.clone());
+        }
+    }
+    Ok(domains)
+}
+
 /// `environment`'s Deployment that may still run, if any: queued, or claimed by a
 /// runner whose lease holds.
 pub(crate) fn in_flight(

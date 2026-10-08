@@ -59,7 +59,8 @@ pub struct DiffView {
     /// changes, or that it discarded: take one to stage it.
     #[serde(default)]
     pub follow_hints: Vec<crate::FollowHint>,
-    /// What deploying Working State destroys of Applied State, sorted; empty when nothing.
+    /// What deploying Working State destroys of Applied State and of what the Deployment
+    /// in flight puts in place, sorted; empty when nothing.
     #[serde(default)]
     #[ts(as = "Option<Vec<DestructiveEffect>>", optional)]
     pub effects: BTreeSet<DestructiveEffect>,
@@ -283,13 +284,13 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             .collect::<Result<_, RpcError>>()?,
     };
     renames(&mut view, &environment.working, &head.intent);
-    let cluster_domain = if crate::domain::has_generated(&head.applied) {
-        crate::deployment::cluster_domain(tx, id)?
+    let deployed = approval::deployed(&head);
+    let cluster_domains = if crate::domain::has_generated(&deployed) {
+        crate::deployment::cluster_domains(tx, id)?
     } else {
-        None
+        std::collections::BTreeMap::new()
     };
-    view.effects =
-        approval::destructive_effects(&head.applied, &environment.working, cluster_domain.as_ref());
+    view.effects = approval::destructive_effects(&deployed, &environment.working, &cluster_domains);
     Ok(Review { view, saved, head })
 }
 

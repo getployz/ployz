@@ -374,6 +374,43 @@ fn changing_a_deployed_generated_prefix_removes_the_old_hostname() {
 }
 
 #[test]
+fn a_removed_generated_domain_is_named_under_the_cluster_domain_it_runs_under() {
+    let (store, who) = deployed_generated_domain();
+    let mut other = cloud();
+    other.domains.cluster_domain = Some(ClusterDomain {
+        name: host("other.ployz.app"),
+        status: ClusterDomainStatus::Ready,
+    });
+    admit(&store, &who, 2, &other).unwrap();
+    store
+        .write(
+            &who,
+            &Cancel {
+                deployment: deployment(2),
+            },
+        )
+        .unwrap();
+    store
+        .write_trusted(
+            &who,
+            &RemoveDomain {
+                environment: EnvironmentRef::default(),
+                domain: "web".into(),
+            },
+            &cloud(),
+        )
+        .unwrap();
+    assert_eq!(
+        effects(&store, &who),
+        [(
+            DestructiveKind::RemovesDomain,
+            "web.acme.ployz.app".to_owned(),
+            "web.managedHostnames".to_owned()
+        )]
+    );
+}
+
+#[test]
 fn a_check_sees_fixed_dns_before_the_certificate_retries() {
     let (store, who) = shop();
     let staged = rows(&store, &who, &cloud());
