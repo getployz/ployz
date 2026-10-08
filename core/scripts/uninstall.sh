@@ -62,6 +62,8 @@ main() {
     # Catch an accepted worker launched during the first stop, now blocked on our lock.
     stop_loaded_units 'ployz-upgrade-*.service'
     stop_loaded_units ployz-dns.service
+    # Stop the Log Store before removing containers so it does not hold their last files.
+    systemctl stop ployz-observe.service 2>/dev/null || true
     if command -v docker >/dev/null 2>&1; then
         readarray -t containers < <(docker ps -aq --filter label=ployz.managed)
         if [ "${#containers[@]}" -gt 0 ]; then
@@ -74,6 +76,11 @@ main() {
         readarray -t network < <(docker network ls -q --filter name=^ployz$)
         if [ "${#network[@]}" -gt 0 ]; then
             docker network rm "${network[@]}"
+        fi
+        local docker_root
+        docker_root=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)
+        if [ -n "$docker_root" ] && [ -d "$docker_root/ployz-observe" ] && [ ! -L "$docker_root/ployz-observe" ]; then
+            rm -rf -- "$docker_root/ployz-observe"
         fi
     fi
 
@@ -91,9 +98,10 @@ main() {
     fi
 
     systemctl stop ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
-    systemctl disable ployz.service ployz.socket ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
+    systemctl disable ployz.service ployz.socket ployz-volume-plugin.socket ployz-volume-plugin.service ployz-observe.service 2>/dev/null || true
     rm -f "$INSTALL_SYSTEMD_DIR/ployz.service" \
         "$INSTALL_SYSTEMD_DIR/ployz.socket" \
+        "$INSTALL_SYSTEMD_DIR/ployz-observe.service" \
         "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.socket" \
         "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.service" \
         "$RUNTIME_SYSTEMD_DIR/ployz-dns.service"

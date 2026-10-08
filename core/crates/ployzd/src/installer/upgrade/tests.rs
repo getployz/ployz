@@ -23,7 +23,7 @@ const WORKER_CASE: &str = "PLOYZ_UPGRADE_WORKER_CASE";
 /// systemd for one fake daemon. `restart` starts whatever `bin/ployzd` is installed as a new
 /// main process, whose `/proc` entry links that executable as the kernel's would. A version
 /// with a `broken-<version>` marker never becomes active; one with `crashing-<version>` runs
-/// under a new main PID whenever asked. A volume plugin unit is active only while an
+/// under a new main PID whenever asked. A volume plugin or Log Store unit is active only while an
 /// `active-<unit>` marker exists.
 const SYSTEMCTL: &str = r#"root="$PLOYZ_INSTALLER_CONTRACT_ROOT"
 echo "$*" >> "$root/systemctl.log"
@@ -42,7 +42,7 @@ case "$1" in
   restart) start ;;
   is-active)
     case "$3" in
-      ployz-volume-plugin.*) [ -e "$root/active-$3" ] || exit 3 ;;
+      ployz-volume-plugin.*|ployz-observe.*) [ -e "$root/active-$3" ] || exit 3 ;;
       *) if [ -e "$root/broken-$version" ]; then exit 3; fi ;;
     esac ;;
   show)
@@ -356,6 +356,7 @@ async fn run_worker_case(root: &Path, case: &str) {
             mark("broken-1.2.3");
             mark("active-ployz-volume-plugin.socket");
             mark("active-ployz-volume-plugin.service");
+            mark("active-ployz-observe.service");
         }
         "other-line" => mark("broken-1.2.3"),
         "soak-restored" => mark("crashing-1.2.3"),
@@ -422,10 +423,12 @@ async fn run_worker_case(root: &Path, case: &str) {
     let started = [
         "restart ployz.socket ployz.service",
         "try-restart ployz-volume-plugin.service",
+        "try-restart ployz-observe.service",
     ];
     let restored = [
         "restart ployz.socket ployz.service",
         "try-restart ployz-volume-plugin.service",
+        "try-restart ployz-observe.service",
         "reset-failed ployz.socket ployz.service",
         "restart ployz.socket ployz.service",
     ];
@@ -448,12 +451,15 @@ async fn run_worker_case(root: &Path, case: &str) {
                 [
                     "restart ployz.socket ployz.service",
                     "try-restart ployz-volume-plugin.service",
+                    "try-restart ployz-observe.service",
                     "reset-failed ployz.socket ployz.service",
                     "reset-failed ployz-volume-plugin.socket",
                     "reset-failed ployz-volume-plugin.service",
+                    "reset-failed ployz-observe.service",
                     "restart ployz.socket ployz.service",
                     "restart ployz-volume-plugin.socket",
                     "restart ployz-volume-plugin.service",
+                    "restart ployz-observe.service",
                 ]
             );
         }
