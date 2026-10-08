@@ -259,4 +259,32 @@ mod tests {
         other.container.image = "api:2".into();
         assert_ne!(spec.serving_shape(), other.serving_shape());
     }
+
+    fn web_spec(container: serde_json::Value) -> ResolvedServiceSpec {
+        serde_json::from_value(json!({
+            "service_id": "a".repeat(32),
+            "name": "web",
+            "mode": { "mode": "global" },
+            "container": container,
+            "ports": [{
+                "mode": "host",
+                "bind": { "kind": "address", "address": "0.0.0.0" },
+                "published_port": 8080,
+                "container_port": 80,
+                "transport_protocol": "tcp"
+            }]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn serving_shape_token_matches_trunk_for_a_spec_without_a_log_driver() {
+        let spec = web_spec(json!({
+            "image": "nginx:1.29-alpine",
+            "environment": { "PORT": "80" },
+            "pull_policy": "missing"
+        }));
+        assert_eq!(spec.serving_shape().token(), "1c6e8ff538d68038");
+        assert_eq!(spec.to_requested().serving_shape().token(), "1c6e8ff538d68038");
+    }
 }
