@@ -39,8 +39,9 @@ Paste this into your coding agent, such as Claude Code or Codex:
 Set me up for Ployz: https://ployz.sh/agent.md
 ```
 
-The agent installs the CLI and the Ployz skill, then signs you in: it gives you a link and a
-code, and you click **Approve**. Restart or reload the agent afterwards so it loads the skill.
+The agent installs the CLI and the Ployz skill, signs you in, and registers the Ployz MCP tools.
+To sign in, it gives you a link and a code, and you click **Approve**. Restart or reload the
+agent afterwards so it loads the skill and the tools.
 From then on you can ask it to deploy, add a database or read logs. The skill points the agent
 to `ployz --help` and `ployz schema --json` for every command and setting.
 
@@ -49,16 +50,23 @@ yourself. Run step 2 again to update the skill.
 
 ### Give the agent Ployz tools
 
-`ployz mcp` serves the Cloud commands to your agent as MCP tools. Add it once:
+`ployz mcp` serves the Cloud commands to your agent as MCP tools. The setup prompt above
+registers it. To add it by hand for every project:
 
 ```sh
-claude mcp add ployz -- ployz mcp
+claude mcp add -s user ployz -- ployz mcp
 ```
 
 For Codex, run `codex mcp add ployz -- ployz mcp`. Each tool runs one `ployz` command with
-`--json`, signed in as you. Tools that can remove something live, such as `deploy` and
-`server rm`, are marked destructive, so the agent asks you before it runs them. Local commands
-such as `login` and `ctx use` are not tools.
+`--json`, signed in as you, and returns its one result. Tools that can remove something live,
+such as `deploy` and `server rm`, are marked destructive. Whether the agent asks you before it
+runs one depends on the agent's own permission settings.
+
+Some commands are not tools. Local commands such as `login` and `ctx use` act on this computer.
+`exec` is interactive, and `service port-forward` stays open until you stop it. Run these
+yourself. The tools
+also leave out the arguments that read stdin, such as `set --secret`, and the ones that keep a
+command running, such as `logs --follow`.
 
 ## Deploy a directory
 

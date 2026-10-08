@@ -57,7 +57,7 @@ ployz login --wait
 in:
 
 ```sh
-claude mcp add ployz -- ployz mcp
+claude mcp add -s user ployz -- ployz mcp
 ```
 
 In Codex, run `codex mcp add ployz -- ployz mcp` instead. If the server is already registered,
