@@ -1,6 +1,7 @@
 //! The Log Store: Docker's `local` log files for Ployz containers, kept
 //! after Docker would delete them.
 
+pub mod cleanup;
 pub mod frame;
 pub mod layout;
 
