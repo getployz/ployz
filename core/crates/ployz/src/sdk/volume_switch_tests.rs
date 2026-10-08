@@ -38,13 +38,13 @@ fn switch() -> Value {
     json!({ "lease": 3, "pos": { "seq": 4, "round": 0, "sub": 0 }, "not_after_unix_seconds": 0 })
 }
 
-#[test]
-fn every_volume_run_verb_is_sent_on_its_own_path() {
+/// Every verb a Volume run sends: its command, a payload it parses from, and its gRPC route.
+fn verbs() -> Vec<(&'static str, Value, &'static str)> {
     let leased = json!({ "switch": switch(), "name": "data" });
     let handed = json!({ "switch": switch(), "name": "data", "guid": "7" });
     let source = json!({ "switch": switch(), "name": "data", "container_id": "a".repeat(64) });
     let service = json!({ "switch": switch(), "name": "data", "namespace": "app-prod", "resolved_spec": resolved_spec() });
-    let cases = [
+    vec![
         (
             "inspect_volume_copy",
             json!({ "name": "data" }),
@@ -90,8 +90,12 @@ fn every_volume_run_verb_is_sent_on_its_own_path() {
         ("start_handed_container", service, "StartHandedContainer"),
         ("close", leased.clone(), "Close"),
         ("clear_final", leased, "ClearFinal"),
-    ];
-    for (command, payload, route) in cases {
+    ]
+}
+
+#[test]
+fn every_volume_run_verb_is_sent_on_its_own_path() {
+    for (command, payload, route) in verbs() {
         let (path, _) = volume_switch_route(&body(command, payload))
             .unwrap_or_else(|error| panic!("{command} is a Volume run verb: {error:?}"));
         assert!(path.ends_with(&format!("/{route}")), "{command} -> {path}");
@@ -99,20 +103,18 @@ fn every_volume_run_verb_is_sent_on_its_own_path() {
 }
 
 #[test]
-fn start_handed_container_is_awaited_as_long_as_the_machine_works_on_it() {
-    let service = json!({ "switch": switch(), "name": "data", "namespace": "app-prod", "resolved_spec": resolved_spec() });
-    let start = deadline(body("start_handed_container", service));
-    assert!(
-        start > ployz_core::VOLUME_PLUGIN_CALL_TIMEOUT,
-        "Start's deadline {start:?} ends before the Machine's own bound on mounting and starting"
-    );
-    let leased = json!({ "switch": switch(), "name": "data" });
-    for command in ["begin_round", "close", "clear_final"] {
-        assert_eq!(
-            deadline(body(command, leased.clone())),
-            crate::connect::TARGET_RPC_TIMEOUT,
-            "{command}"
-        );
+fn verbs_that_stop_or_start_a_container_are_awaited_as_long_as_the_machine_works_on_them() {
+    let container_verbs = ["freeze", "thaw", "start_handed_container"];
+    for (command, payload, _) in verbs() {
+        let waited = deadline(body(command, payload));
+        if container_verbs.contains(&command) {
+            assert!(
+                waited > ployz_core::VOLUME_PLUGIN_CALL_TIMEOUT,
+                "{command} waits {waited:?}, ending before the Machine's own bound on stopping or starting its Container"
+            );
+        } else {
+            assert_eq!(waited, crate::connect::TARGET_RPC_TIMEOUT, "{command}");
+        }
     }
 }
 
