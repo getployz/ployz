@@ -31,19 +31,6 @@ export class BillingNotFound extends Data.TaggedError("NotFound")<{
   readonly publicErrorCategory = "not-found" as const;
 }
 
-/** Reads the synced billing row, never Polar, so a Polar outage cannot block callers. */
-export const hasCachedActiveSubscription = Effect.fn(
-  "Billing.hasCachedActiveSubscription",
-)(function* (organizationId: string) {
-  const database = yield* Database;
-  const rows = yield* database.drizzle
-    .select({ active: schemaOrganizationBillingState.hasActiveSubscription })
-    .from(schemaOrganizationBillingState)
-    .where(eq(schemaOrganizationBillingState.organizationId, organizationId))
-    .limit(1);
-  return rows[0]?.active ?? false;
-});
-
 /** Billing exists only on Ployz-hosted Cloud; self-hosted reads as not found. */
 const requireHostedPolar = Effect.fn("Billing.requireHostedPolar")(
   function* () {

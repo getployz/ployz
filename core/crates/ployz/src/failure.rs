@@ -870,8 +870,7 @@ impl From<LoginError> for Failure {
             | LoginError::Status { .. }
             | LoginError::Reply(_)
             | LoginError::Store { .. }
-            | LoginError::TokenBound
-            | LoginError::NoBilling(_) => None,
+            | LoginError::TokenBound => None,
         };
         Self::command(error).hint(next.map(|next| Hint::Next(next.into())))
     }
@@ -880,7 +879,7 @@ impl From<LoginError> for Failure {
 fn login_code(error: &LoginError) -> RpcErrorCode {
     match error {
         LoginError::Unreachable { .. } => RpcErrorCode::Unavailable,
-        LoginError::Unsupported(_) | LoginError::NoBilling(_) => RpcErrorCode::Unsupported,
+        LoginError::Unsupported(_) => RpcErrorCode::Unsupported,
         LoginError::TokenBound => RpcErrorCode::InvalidArgument,
         LoginError::Status { status, .. } => http_status_code(*status),
         LoginError::Reply(_) | LoginError::Store { .. } | LoginError::Corrupt { .. } => {
