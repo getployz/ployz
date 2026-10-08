@@ -1,5 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Option, Schema } from "effect";
+import { asksApproval } from "#/modules/approvals/approvals";
 import { requestApproval, trustedApproval } from "#/modules/approvals/approvals.server";
 import { callStore, refusal } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
@@ -40,8 +41,8 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   if (call === undefined) {
     return refusal({ code: "invalid_argument", message: `Expected a ${operation === "read" ? "query" : "command"}.`, details: null });
   }
-  // A destructive write waits for a human when the Organization asks; the CLI retries naming the approval it got.
-  const approval = call.operation === "write"
+  // A destructive Publish or Deploy waits for a human when the Organization asks; the CLI retries naming the approval.
+  const approval = call.operation === "write" && asksApproval(call.command)
     ? yield* trustedApproval(caller.organization.id, request.headers.get("x-ployz-approval"))
     : { ok: true, approval: "not_required" } as const;
   if (!approval.ok) return refusal(approval.refusal);

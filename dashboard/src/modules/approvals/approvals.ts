@@ -1,4 +1,4 @@
-import type { DestructiveEffect, DiffView } from "@ployz/sdk";
+import type { ConfigCommand, DestructiveEffect, DiffView } from "@ployz/sdk";
 import { Schema } from "effect";
 
 export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"] as const;
@@ -22,9 +22,9 @@ export const SetOrganizationSettingsInput = Schema.Struct({
   askBeforeDestructive: Schema.Boolean,
 });
 
-/** The Working State version an approval digest (`version:hash`) was taken at. */
-export function digestVersion(digest: string) {
-  return digest.slice(0, digest.lastIndexOf(":"));
+/** The writes the Store reviews for destruction: Publish, and a manual Deploy. Nothing else waits for a human. */
+export function asksApproval(command: ConfigCommand) {
+  return command.command === "publish" || (command.command === "admit" && command.admit === "deploy");
 }
 
 /** `POST /api/cli/approvals/:id`: approve exactly the digest the human saw, or deny with a reason the agent gets back. */

@@ -27,16 +27,22 @@ In the sidebar, click **Organization** for its settings:
 
 ## Ask before destructive actions
 
-A coding agent working through the CLI can publish or deploy a change that deletes a running
-service, a volume and its data, or a domain. With **Ask before destructive actions** on, Ployz
-stops that command and waits for you to approve exactly what it would delete. It's on for every
-organization unless you turn it off.
+A coding agent working through the CLI can publish or deploy a change that removes a running
+service, deletes a volume and its data, detaches a volume from a service, or removes a domain.
+With **Ask before destructive actions** on, Ployz refuses that command with `approval_required`,
+naming what it would remove and the approval it opened for you. It's on for every organization
+unless you turn it off.
 
-- Only `ployz publish` and `ployz deploy` ask, and only when the change deletes something that's
+Waiting for your answer and then retrying is coming to the CLI. Until then the command stops
+there.
+
+- Only `ployz publish` and `ployz deploy` ask, and only when the change removes something that's
   running. Rolling out a new image or changing variables never asks.
 - What you do in the dashboard never asks. Neither do settings edits.
 - If the change moves on after Ployz asked, your approval no longer fits it, and the command asks
   again about the new one.
+- An approval covers one publish. A later publish that still carries a removal that hasn't
+  deployed yet asks again.
 
 To turn it off, go to **Organization → General** and switch off **Ask before destructive
 actions**.

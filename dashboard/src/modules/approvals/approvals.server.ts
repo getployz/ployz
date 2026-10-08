@@ -1,17 +1,17 @@
 import "@tanstack/react-start/server-only";
 import type { Approval, ConfigCommand } from "@ployz/sdk";
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import {
   type ApprovalDecision,
   type ApprovalReview,
   DEFAULT_ORGANIZATION_SETTINGS,
-  digestVersion,
   type SetOrganizationSettingsInput,
 } from "#/modules/approvals/approvals";
 import { operationApprovals, organizationSettings } from "#/modules/approvals/tables";
 import { readStore } from "#/modules/config-store/config-store.server";
+import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import type { Actor, Caller } from "#/modules/identity/actor";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
@@ -63,23 +63,48 @@ const readRow = Effect.fn("Approvals.readRow")(function* (organizationId: string
 });
 
 /**
- * A pending approval whose Environment moved on is superseded: the digest names a Working State version, and the same
- * version always reviews the same effects. An Environment the Store no longer finds supersedes it too.
+ * Run `record`, then supersede the Environment's pending approvals whose version the Store's `diff` moved past, or
+ * all of them once the Store finds no such Environment. One transaction under a lock per Environment, so the sweep
+ * sees only rows recorded before it read the Store; a version once past never comes back, so it never sweeps a
+ * current plan. A Store that can't answer sweeps nothing.
  */
+const recordAndSweep = <A, E, R>(
+  organizationId: string,
+  environment: { id: string; project: string; name: string },
+  record: Effect.Effect<A, E, R>,
+) => Effect.gen(function* () {
+  const database = yield* Database;
+  return yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`select pg_advisory_xact_lock(hashtext(${`approvals:${organizationId}:${environment.id}`}))`);
+    const recorded = yield* record;
+    const current = yield* readStore(organizationId, {
+      query: "diff",
+      environment: { project: environment.project, environment: environment.name },
+    }).pipe(
+      Effect.map((diff) => diff.environment.id === environment.id ? diff.version : null),
+      Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(null)),
+      Effect.option,
+    );
+    if (Option.isSome(current)) {
+      yield* drizzle.update(operationApprovals)
+        .set({ status: "superseded", updatedAt: new Date() })
+        .where(and(
+          eq(operationApprovals.organizationId, organizationId),
+          eq(operationApprovals.environmentId, environment.id),
+          eq(operationApprovals.status, "pending"),
+          current.value === null ? undefined : sql`not starts_with(${operationApprovals.digest}, ${`${current.value}:`})`,
+        ));
+    }
+    return recorded;
+  }));
+});
+
+/** The row, superseded first if its Environment moved on. */
 const freshen = Effect.fn("Approvals.freshen")(function* (row: ApprovalRow) {
   if (row.status !== "pending") return row;
-  const { environment } = row.review.diff;
-  const diff = yield* readStore(row.organizationId, {
-    query: "diff",
-    environment: { project: environment.project, environment: environment.name },
-  }).pipe(Effect.option);
-  if (Option.isSome(diff) && diff.value.version === digestVersion(row.digest)) return row;
-  const { drizzle } = yield* Database;
-  const [superseded] = yield* drizzle.update(operationApprovals)
-    .set({ status: "superseded", updatedAt: new Date() })
-    .where(and(eq(operationApprovals.id, row.id), eq(operationApprovals.status, "pending")))
-    .returning();
-  return superseded ?? (yield* readRow(row.organizationId, row.id)) ?? row;
+  yield* recordAndSweep(row.organizationId, row.review.diff.environment, Effect.void);
+  return (yield* readRow(row.organizationId, row.id)) ?? row;
 });
 
 type Trusted = { ok: true; approval: Approval } | { ok: false; refusal: StoreRefusal };
@@ -95,7 +120,12 @@ export const trustedApproval = Effect.fn("Approvals.trusted")(function* (
   if (!(yield* askBeforeDestructive(organizationId).pipe(Effect.orDie))) return { ok: true, approval: "not_required" };
   if (approvalId === null) return { ok: true, approval: "required" };
   const row = yield* readRow(organizationId, approvalId).pipe(Effect.orDie);
-  if (row === undefined) return { ok: false, refusal: { code: "not_found", message: "No such approval.", details: null } };
+  if (row === undefined) {
+    return {
+      ok: false,
+      refusal: { code: "invalid_argument", message: `No approval ${approvalId} in this Organization.`, details: { approval_id: approvalId } },
+    };
+  }
   switch (row.status) {
     case "approved":
       return { ok: true, approval: { approved: row.digest } };
@@ -104,7 +134,7 @@ export const trustedApproval = Effect.fn("Approvals.trusted")(function* (
         ok: false,
         refusal: {
           code: "approval_denied",
-          message: row.reason === null ? "A human denied this." : `A human denied this: ${row.reason}`,
+          message: `A human denied approval ${row.id}${row.reason === null ? "." : `: ${row.reason}`}`,
           details: { approval: approvalView(row) },
         },
       };
@@ -123,9 +153,9 @@ const RefusedReview = Schema.Struct({
 });
 
 /**
- * Record the Store's `approval_required` as one pending approval per digest, superseding the Environment's older
- * pending ones, and answer the refusal with its ID added as `details.approval_id`. Asking again while it is pending
- * answers the same row.
+ * Record the Store's `approval_required` as one pending approval per digest and answer the refusal with its ID added
+ * as `details.approval_id`. Asking again while it is pending answers the same row. Recording sweeps the Environment's
+ * approvals for plans the Store moved past, this one too when it arrives late.
  */
 export const requestApproval = Effect.fn("Approvals.request")(function* (
   caller: Caller,
@@ -141,34 +171,25 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
   // SAFETY: the Store words the refusal's `effects` and `diff` as `DestructiveEffect[]` and `DiffView`.
   const { effects, diff: review } = refused.details as ApprovalReview;
   const organizationId = caller.organization.id;
-  const { drizzle } = yield* Database;
-  const [inserted] = yield* drizzle.insert(operationApprovals).values({
-    organizationId,
-    environmentId: diff.environment.id,
-    requestedByUserId: caller.userId,
-    credentialKind: caller.credential.kind,
-    credentialId: caller.credential.id,
-    command: command.command,
-    review: { effects, diff: review },
-    digest,
-  }).onConflictDoNothing().returning({ id: operationApprovals.id });
-  const [pending] = inserted === undefined
-    ? yield* drizzle.select({ id: operationApprovals.id }).from(operationApprovals).where(and(
-      eq(operationApprovals.organizationId, organizationId),
-      eq(operationApprovals.digest, digest),
-      eq(operationApprovals.status, "pending"),
-    ))
-    : [inserted];
-  yield* drizzle.update(operationApprovals)
-    .set({ status: "superseded", updatedAt: new Date() })
-    .where(and(
-      eq(operationApprovals.organizationId, organizationId),
-      eq(operationApprovals.environmentId, diff.environment.id),
-      eq(operationApprovals.status, "pending"),
-      ne(operationApprovals.digest, digest),
-    ));
-  if (pending === undefined) return refused;
-  return { ...refused, details: { effects, approval: digest, diff: review, approval_id: pending.id } };
+  const recorded = yield* recordAndSweep(organizationId, diff.environment, Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [row] = yield* drizzle.insert(operationApprovals).values({
+      organizationId,
+      environmentId: diff.environment.id,
+      requestedByUserId: caller.userId,
+      credentialKind: caller.credential.kind,
+      credentialId: caller.credential.id,
+      command: command.command,
+      review: { effects, diff: review },
+      digest,
+    }).onConflictDoUpdate({
+      target: [operationApprovals.organizationId, operationApprovals.digest],
+      targetWhere: sql`${operationApprovals.status} = 'pending'`,
+      set: { updatedAt: new Date() },
+    }).returning({ id: operationApprovals.id });
+    return row ?? (yield* Effect.die("an upsert returned no row"));
+  }));
+  return { ...refused, details: { effects, approval: digest, diff: review, approval_id: recorded.id } };
 });
 
 /** One approval in the caller's Organization, superseded first if its Environment moved on. */
