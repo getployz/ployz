@@ -57,13 +57,13 @@ pub(super) use ployz_core::{
     AdvertisedEndpoint, BridgeEndpointCapacity, ContainerId, ContainerKind, ContainerObservation,
     ContainerPath, ContainerResources, ContainerRuntimeObservation, DeviceMapping,
     DeviceReservation, DockerVolume, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, HealthObservation, HostBind, LogDriver, MANAGED_LABEL, Machine,
-    MachineId, MachineName, MachineObservation, MachinePath, MembershipObservation,
-    NAMESPACE_LABEL, Namespace, PidMode, Placement, PlacementConstraint, PortPublication,
-    PreDeployHook, ProvisionedVolumeMaximumBytes, PullPolicy, RequestedServiceSpec,
-    ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
-    ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, SpecChange,
-    TransportProtocol, Ulimit, UpdateConfig, UpdateOrder, WireGuardPublicKey, compare_specs,
+    DockerVolumeStorageObservation, HealthObservation, HostBind, MANAGED_LABEL, Machine, MachineId,
+    MachineName, MachineObservation, MachinePath, MembershipObservation, NAMESPACE_LABEL,
+    Namespace, PidMode, Placement, PlacementConstraint, PortPublication, PreDeployHook,
+    ProvisionedVolumeMaximumBytes, PullPolicy, RequestedServiceSpec, ResolvedUpdateConfig,
+    RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName,
+    ServiceVolume, ServiceVolumeReference, SpecChange, TransportProtocol, Ulimit, UpdateConfig,
+    UpdateOrder, WireGuardPublicKey, compare_specs,
 };
 pub(super) fn spec(name: &str) -> RequestedServiceSpec {
     let mut requested = requested(ServiceMode::Replicated {
@@ -96,7 +96,6 @@ pub(super) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
             open_stdin: false,
             privileged: false,
             pid_mode: None,
-            log_driver: None,
             resources: ContainerResources::default(),
             stop_timeout_secs: None,
             sysctls: Default::default(),

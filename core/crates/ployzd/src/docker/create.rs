@@ -22,6 +22,18 @@ use super::{
 
 pub(super) const TCP_MIGRATE_REQ: &str = "net.ipv4.tcp_migrate_req";
 
+/// Log config for every container Ployz creates. Rotation stays uncompressed so each file keeps its inode.
+pub(crate) fn container_log_config() -> HostConfigLogConfig {
+    HostConfigLogConfig {
+        typ: Some("local".into()),
+        config: Some(HashMap::from([
+            ("max-size".into(), "10m".into()),
+            ("max-file".into(), "3".into()),
+            ("compress".into(), "false".into()),
+        ])),
+    }
+}
+
 /// Caddy binds a fresh `SO_REUSEPORT` listener on every reload and closes the old one.
 /// Without migration the kernel resets connections still queued on the closing listener.
 pub(super) fn migrate_ingress_requests(
@@ -106,19 +118,7 @@ pub(super) fn container_create_body(
         dns_options: Some(vec!["ndots:1".into()]),
         init: container.init,
         network_mode: Some(crate::network::DOCKER_NETWORK_NAME.into()),
-        log_config: container
-            .log_driver
-            .as_ref()
-            .map(|driver| HostConfigLogConfig {
-                typ: Some(driver.name.clone()),
-                config: Some(
-                    driver
-                        .options
-                        .iter()
-                        .map(|(key, value)| (key.clone(), value.clone()))
-                        .collect(),
-                ),
-            }),
+        log_config: Some(container_log_config()),
         port_bindings,
         restart_policy: Some(docker_restart(if hook.is_some() {
             ployz_core::RestartPolicy::No

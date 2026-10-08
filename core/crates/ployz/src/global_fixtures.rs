@@ -65,7 +65,6 @@ pub(crate) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
             open_stdin: false,
             privileged: false,
             pid_mode: None,
-            log_driver: None,
             resources: ContainerResources::default(),
             stop_timeout_secs: None,
             sysctls: Default::default(),

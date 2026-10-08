@@ -12,8 +12,7 @@ use std::{
 use bollard::{
     Docker,
     models::{
-        ContainerCreateBody, HostConfig, HostConfigLogConfig, Mount, MountType, RestartPolicy,
-        RestartPolicyNameEnum,
+        ContainerCreateBody, HostConfig, Mount, MountType, RestartPolicy, RestartPolicyNameEnum,
     },
 };
 use serde::Serialize;
@@ -204,10 +203,7 @@ impl DockerService {
                     name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
                     ..Default::default()
                 }),
-                log_config: Some(HostConfigLogConfig {
-                    typ: Some("local".into()),
-                    ..Default::default()
-                }),
+                log_config: Some(crate::docker::container_log_config()),
                 mounts: Some(mounts),
                 ..Default::default()
             }),

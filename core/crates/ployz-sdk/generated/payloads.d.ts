@@ -1672,8 +1672,6 @@ export type LocalMachineRemoved = { reset_warning: string | null, };
 
 export type LogChannel = "stdout" | "stderr" | "error";
 
-export type LogDriver = { name: string, options: { [key in string]: string }, };
-
 export type LogMetadata = { origin: LogOrigin, machine_id: MachineId, machine_name: MachineName, };
 
 export type LogOrigin = { "origin": "service", service_id: ServiceId, service_name: ServiceName, container_id: ContainerId, hook: string | null, } | { "origin": "machine", service: MachineLogService, };
@@ -2857,7 +2855,7 @@ hostname: ContainerHostname | null,
 /**
  * Container-local Docker `/etc/hosts` entries.
  */
-extra_hosts: Array<ExtraHost>, cap_add: Array<string>, cap_drop: Array<string>, healthcheck: HealthcheckSpec | null, pull_policy: PullPolicy, init: boolean | null, user: string | null, working_directory: ContainerPath | null, tty: boolean, open_stdin: boolean, privileged: boolean, pid_mode: PidMode | null, log_driver: LogDriver | null, resources: ContainerResources, stop_timeout_secs: number | null, sysctls: { [key in string]: string }, restart: RestartPolicy, };
+extra_hosts: Array<ExtraHost>, cap_add: Array<string>, cap_drop: Array<string>, healthcheck: HealthcheckSpec | null, pull_policy: PullPolicy, init: boolean | null, user: string | null, working_directory: ContainerPath | null, tty: boolean, open_stdin: boolean, privileged: boolean, pid_mode: PidMode | null, resources: ContainerResources, stop_timeout_secs: number | null, sysctls: { [key in string]: string }, restart: RestartPolicy, };
 
 export type ServiceDependency = {
 /**
