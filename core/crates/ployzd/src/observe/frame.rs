@@ -6,13 +6,16 @@
 //! never gets one. Docker does not document this format, so a frame that does
 //! not parse is skipped and reported, never trusted and never a stop.
 
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 
 /// The largest frame Docker writes.
 const MAX_FRAME: usize = 1_000_000;
 const PLAUSIBLE_NANOS: std::ops::Range<i64> = 1_500_000_000_000_000_000..4_000_000_000_000_000_000;
 const MAX_LINE: usize = 8 << 20;
 const HEADER: usize = 4;
+/// How much of a file [`DamageScan`] reads at once; it must hold two of the
+/// largest frames.
+const SCAN_CHUNK: usize = 4 << 20;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Stream {
@@ -332,6 +335,109 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
     (year, month, day)
 }
 
+/// Bytes that held no valid frame, bounded by the entries around them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Damage {
+    /// The last entry before the damage, if the scan saw one.
+    pub after: Option<i64>,
+    /// The first entry after it.
+    pub before: i64,
+}
+
+/// Walks a container's files in order, a read at a time, and reports each run
+/// of damage once an entry after it closes it. A torn frame that ends one
+/// file is closed by the next file's first entry.
+#[derive(Debug, Default)]
+pub struct DamageScan {
+    offset: u64,
+    last_ts: Option<i64>,
+    in_damage: bool,
+}
+
+impl DamageScan {
+    /// Starts a scan whose damage, before any entry, follows `last_ts`.
+    #[must_use]
+    pub fn after(last_ts: Option<i64>) -> Self {
+        Self {
+            offset: 0,
+            last_ts,
+            in_damage: false,
+        }
+    }
+
+    /// Moves the scan to the start of the next file.
+    pub fn next_file(&mut self) {
+        self.offset = 0;
+    }
+
+    /// Reads `file` from where the last read stopped and pushes the damage it
+    /// closes. Unless `finished`, Docker may still be writing the file, so an
+    /// unfinished frame at its end, and damage no frame follows yet, wait for
+    /// a later read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file cannot be read.
+    pub fn read(
+        &mut self,
+        file: &mut (impl Read + Seek),
+        finished: bool,
+        found: &mut Vec<Damage>,
+    ) -> io::Result<()> {
+        file.seek(SeekFrom::Start(self.offset))?;
+        let mut buf = Vec::new();
+        loop {
+            let want = SCAN_CHUNK - buf.len();
+            let read = file.by_ref().take(want as u64).read_to_end(&mut buf)?;
+            let at_end = read < want;
+            let consumed = self.walk(&buf, at_end && finished, found);
+            self.offset += consumed as u64;
+            if at_end {
+                return Ok(());
+            }
+            buf.drain(..consumed);
+        }
+    }
+
+    fn walk(&mut self, buf: &[u8], whole: bool, found: &mut Vec<Damage>) -> usize {
+        let settled = if whole {
+            buf.len()
+        } else {
+            buf.len().saturating_sub(MAX_FRAME + 2 * HEADER)
+        };
+        let mut frames = Frames::new(buf);
+        for event in frames.by_ref() {
+            match event {
+                Event::Entry(entry) => {
+                    if self.in_damage {
+                        found.push(Damage {
+                            after: self.last_ts,
+                            before: entry.ts,
+                        });
+                        self.in_damage = false;
+                    }
+                    self.last_ts = Some(entry.ts);
+                }
+                Event::Corrupt { offset, skipped } => {
+                    if offset + skipped < buf.len() || whole {
+                        self.in_damage = true;
+                        continue;
+                    }
+                    if settled > offset {
+                        self.in_damage = true;
+                    }
+                    return settled.max(offset);
+                }
+            }
+        }
+        if whole && frames.tail > 0 {
+            self.in_damage = true;
+            return buf.len();
+        }
+        buf.len() - frames.tail
+    }
+}
+
 /// The first frame's timestamp in `buf`, skipping corruption.
 #[must_use]
 pub fn first_ts(buf: &[u8]) -> Option<i64> {
@@ -368,7 +474,12 @@ pub fn last_ts(buf: &[u8]) -> Option<i64> {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::{Entry, Event, Frames, Line, Piece, Reassembler, Stream, first_ts, last_ts};
+    use std::io::Cursor;
+
+    use super::{
+        Damage, DamageScan, Entry, Event, Frames, Line, Piece, Reassembler, Stream, first_ts,
+        last_ts,
+    };
 
     const T0: i64 = 1_760_000_000_000_000_000;
 
@@ -607,6 +718,89 @@ pub(crate) mod tests {
         assert_eq!(last_ts(&file), Some(T0 + 9));
         assert_eq!(first_ts(&[]), None);
         assert_eq!(last_ts(&[]), None);
+    }
+
+    fn frames_from(first: i64, until_len: usize, file: &mut Vec<u8>) -> i64 {
+        let mut ts = first;
+        while file.len() < until_len {
+            file.extend(frame(ts, Stream::Stdout, b"line", Piece::Whole));
+            ts += 1;
+        }
+        ts
+    }
+
+    fn scan(scan: &mut DamageScan, file: &[u8], finished: bool) -> Vec<Damage> {
+        let mut found = Vec::new();
+        scan.read(&mut Cursor::new(file), finished, &mut found)
+            .unwrap();
+        found
+    }
+
+    #[test]
+    fn damage_is_reported_once_an_entry_closes_it_however_the_file_grows() {
+        let mut file = Vec::new();
+        let torn_after = frames_from(T0, 4000, &mut file) - 1;
+        let torn = frame(T0 + 999, Stream::Stdout, &[b'x'; 200], Piece::Whole);
+        file.extend_from_slice(torn.get(..90).unwrap());
+        let resumed = torn_after + 1;
+        frames_from(resumed, 9000, &mut file);
+        let expected = [Damage {
+            after: Some(torn_after),
+            before: resumed,
+        }];
+
+        let mut whole = DamageScan::default();
+        assert_eq!(scan(&mut whole, &file, false), expected);
+        assert_eq!(scan(&mut whole, &file, false), []);
+
+        let mut growing = DamageScan::default();
+        let mut found = Vec::new();
+        for len in [2000, 4030, 4100, 6000, file.len()] {
+            found.extend(scan(&mut growing, file.get(..len).unwrap(), false));
+        }
+        assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn a_torn_end_of_a_finished_file_is_closed_by_the_next_file() {
+        let mut first = Vec::new();
+        let last = frames_from(T0, 1000, &mut first) - 1;
+        let torn = frame(T0 + 999, Stream::Stdout, b"torn", Piece::Whole);
+        first.extend_from_slice(torn.get(..7).unwrap());
+        let mut second = Vec::new();
+        frames_from(T0 + 500, 100, &mut second);
+
+        let mut damage = DamageScan::default();
+        assert_eq!(scan(&mut damage, &first, false), []);
+        assert_eq!(scan(&mut damage, &first, true), []);
+        damage.next_file();
+        assert_eq!(
+            scan(&mut damage, &second, false),
+            [Damage {
+                after: Some(last),
+                before: T0 + 500
+            }]
+        );
+    }
+
+    #[test]
+    fn damage_across_a_read_boundary_is_one_run() {
+        let mut file = Vec::new();
+        let last = frames_from(T0, super::SCAN_CHUNK - 300, &mut file) - 1;
+        file.extend(std::iter::repeat_n(0xee, 2000));
+        frames_from(
+            last + 1,
+            super::SCAN_CHUNK + 3 * super::MAX_FRAME,
+            &mut file,
+        );
+        let mut damage = DamageScan::after(Some(T0 - 1));
+        assert_eq!(
+            scan(&mut damage, &file, true),
+            [Damage {
+                after: Some(last),
+                before: last + 1
+            }]
+        );
     }
 
     #[test]

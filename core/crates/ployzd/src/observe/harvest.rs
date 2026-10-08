@@ -22,7 +22,8 @@ use tokio::net::UnixListener;
 
 use super::{
     cleanup::{self, Disk, Limits},
-    docker_file_age, frame,
+    docker_file_age,
+    frame::{self, DamageScan},
     layout::{
         ContainerKind, ContainerMeta, GAPS_FILE, Gap, GapReason, LINKING_FILE, LogFileName,
         META_FILE, StoreRoot, create_private_dir,
@@ -66,6 +67,7 @@ pub(super) struct Harvester {
     watches: Watches,
     watched: HashMap<WatchDescriptor, Watched>,
     seen: HashMap<ContainerId, Seen>,
+    damage: HashMap<ContainerId, DamageCursor>,
 }
 
 impl Harvester {
@@ -85,6 +87,7 @@ impl Harvester {
             watches,
             watched: HashMap::new(),
             seen: HashMap::new(),
+            damage: HashMap::new(),
         };
         let mut docker_events = Some(harvester.docker_events());
         let mut reconnect_at = None;
@@ -159,6 +162,7 @@ impl Harvester {
             .filter_map(|entry| container_id(&entry.file_name()))
             .collect();
         self.seen.retain(|id, _| present.contains(id));
+        self.damage.retain(|id, _| present.contains(id));
         for id in present {
             self.discovered(id).await;
         }
@@ -294,7 +298,7 @@ impl Harvester {
         self.sync(id);
     }
 
-    fn sync(&self, id: &ContainerId) {
+    fn sync(&mut self, id: &ContainerId) {
         let Some(Seen::Managed {
             max_files,
             created_nanos,
@@ -318,6 +322,17 @@ impl Harvester {
             }
             Err(error) => {
                 tracing::error!(container = %id, %error, "cannot hold the container's log files")
+            }
+        }
+        let cursor = self.damage.entry(*id).or_default();
+        match record_damage(&store_dir, cursor, created_nanos) {
+            Ok(gaps) => {
+                for gap in gaps {
+                    tracing::warn!(container = %id, from = gap.from, to = gap.to, "skipped log bytes that held no valid frame");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(container = %id, %error, "cannot check the container's log files for damage");
             }
         }
     }
@@ -609,6 +624,79 @@ fn link_exact(source: &Path, store_dir: &Path, name: LogFileName) -> io::Result<
     Ok(Link::Held)
 }
 
+/// Where the damage scan of one container's held files has reached. A fresh
+/// cursor, after a restart, starts at the newest held file: the scan read every
+/// older one before it moved past it.
+#[derive(Default)]
+pub(super) struct DamageCursor(Option<(LogFileName, DamageScan)>);
+
+pub(super) fn record_damage(
+    store_dir: &Path,
+    cursor: &mut DamageCursor,
+    created_nanos: Option<i64>,
+) -> io::Result<Vec<Gap>> {
+    let held = held_files(store_dir)?;
+    let start = match &cursor.0 {
+        Some((file, _)) => held.iter().position(|name| name.seq >= file.seq),
+        None => held.len().checked_sub(1),
+    };
+    let Some((start, &first)) = start.and_then(|start| Some((start, held.get(start)?))) else {
+        return Ok(Vec::new());
+    };
+    let mut scan = match cursor.0.take() {
+        Some((file, scan)) if first == file => scan,
+        Some((_, mut scan)) => {
+            scan.next_file();
+            scan
+        }
+        None => {
+            let previous = start
+                .checked_sub(1)
+                .and_then(|index| held.get(index))
+                .and_then(|name| last_ts_of(&store_dir.join(name.to_string())));
+            DamageScan::after(previous.or(created_nanos))
+        }
+    };
+    let mut found = Vec::new();
+    for (index, name) in held.iter().enumerate().skip(start) {
+        if index > start {
+            scan.next_file();
+        }
+        let finished = index + 1 < held.len();
+        let mut opened = fs::File::open(store_dir.join(name.to_string()))?;
+        scan.read(&mut opened, finished, &mut found)?;
+    }
+    if let Some(newest) = held.last() {
+        cursor.0 = Some((*newest, scan));
+    }
+
+    let mut recorded = Vec::new();
+    for damage in found {
+        let gap = Gap {
+            from: damage.after.unwrap_or(damage.before),
+            to: damage.before,
+            reason: GapReason::Corrupt,
+        };
+        if !gap_recorded(store_dir, &gap)? {
+            append_gap(store_dir, &gap)?;
+            recorded.push(gap);
+        }
+    }
+    Ok(recorded)
+}
+
+fn gap_recorded(store_dir: &Path, gap: &Gap) -> io::Result<bool> {
+    let recorded = match fs::read_to_string(store_dir.join(GAPS_FILE)) {
+        Ok(recorded) => recorded,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    Ok(recorded
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Gap>(line).ok())
+        .any(|line| line == *gap))
+}
+
 fn is_compressed_rotation(name: &str) -> bool {
     name.strip_suffix(".gz")
         .and_then(docker_file_age)
@@ -762,8 +850,8 @@ mod tests {
     use bollard::models::{ContainerInspectResponse, HostConfig, HostConfigLogConfig};
 
     use super::{
-        Link, Synced, close_removed_container, foreign_log_driver, link_exact, sync_container,
-        write_meta,
+        DamageCursor, Link, Synced, close_removed_container, foreign_log_driver, link_exact,
+        record_damage, sync_container, write_meta,
     };
     use crate::{
         observe::{
@@ -982,6 +1070,80 @@ mod tests {
         assert_eq!(gap.from, T0);
         assert!(gap.to > T0);
         assert_eq!(dirs.sync(1), Synced::default());
+    }
+
+    fn lines(first: i64, count: i64) -> Vec<u8> {
+        (first..first + count)
+            .flat_map(|ts| frame(ts, Stream::Stdout, b"line", Piece::Whole))
+            .collect()
+    }
+
+    fn torn(ts: i64) -> Vec<u8> {
+        frame(ts, Stream::Stdout, &[b'x'; 300], Piece::Whole)
+            .get(..120)
+            .unwrap()
+            .to_vec()
+    }
+
+    #[test]
+    fn a_torn_frame_in_the_file_docker_is_writing_is_one_corrupt_gap() {
+        let dirs = dirs();
+        let active = dirs.docker.join("container.log");
+        fs::write(&active, [lines(T0 + 1, 20), torn(T0 + 99)].concat()).unwrap();
+        dirs.sync(3);
+        let mut cursor = DamageCursor::default();
+        assert_eq!(
+            record_damage(&dirs.store, &mut cursor, Some(T0)).unwrap(),
+            []
+        );
+
+        let mut grown = fs::read(&active).unwrap();
+        grown.extend(lines(T0 + 21, 20));
+        fs::write(&active, grown).unwrap();
+        let gap = Gap {
+            from: T0 + 20,
+            to: T0 + 21,
+            reason: GapReason::Corrupt,
+        };
+        assert_eq!(
+            record_damage(&dirs.store, &mut cursor, Some(T0)).unwrap(),
+            [gap]
+        );
+        assert_eq!(
+            record_damage(&dirs.store, &mut cursor, Some(T0)).unwrap(),
+            []
+        );
+
+        let mut restarted = DamageCursor::default();
+        assert_eq!(
+            record_damage(&dirs.store, &mut restarted, Some(T0)).unwrap(),
+            []
+        );
+        assert_eq!(dirs.gaps(), [gap]);
+    }
+
+    #[test]
+    fn a_torn_end_of_a_rotated_file_is_bounded_by_the_next_file() {
+        let dirs = dirs();
+        let active = dirs.docker.join("container.log");
+        fs::write(&active, lines(T0 + 1, 10)).unwrap();
+        dirs.sync(3);
+        let mut cursor = DamageCursor::default();
+        record_damage(&dirs.store, &mut cursor, Some(T0)).unwrap();
+
+        let mut torn_end = fs::read(&active).unwrap();
+        torn_end.extend(torn(T0 + 99));
+        fs::write(&active, torn_end).unwrap();
+        dirs.rotate(3, T0 + 11);
+        dirs.sync(3);
+        assert_eq!(
+            record_damage(&dirs.store, &mut cursor, Some(T0)).unwrap(),
+            [Gap {
+                from: T0 + 10,
+                to: T0 + 11,
+                reason: GapReason::Corrupt,
+            }]
+        );
     }
 
     #[test]
