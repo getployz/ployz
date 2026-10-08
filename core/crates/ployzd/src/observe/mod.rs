@@ -4,6 +4,8 @@
 pub mod cleanup;
 pub mod frame;
 mod harvest;
+#[cfg(test)]
+mod integration_tests;
 pub mod layout;
 
 use std::{
