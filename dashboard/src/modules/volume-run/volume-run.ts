@@ -4,7 +4,7 @@ export const VOLUME_RUN_STATES = ["requested", "running", "done", "failed", "can
 export type VolumeRunState = (typeof VOLUME_RUN_STATES)[number];
 export const ACTIVE_VOLUME_RUN_STATES = ["requested", "running"] as const satisfies readonly VolumeRunState[];
 
-export const VOLUME_RUN_KINDS = ["mirror", "sync", "delete_mirror", "move", "release"] as const;
+export const VOLUME_RUN_KINDS = ["mirror", "sync", "delete_mirror", "move", "release", "restore"] as const;
 export type VolumeRunKind = (typeof VOLUME_RUN_KINDS)[number];
 
 export type VolumeRunArgs = {
@@ -13,6 +13,7 @@ export type VolumeRunArgs = {
   delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null };
   move: { readonly to: MachineName };
   release: Record<string, never>;
+  restore: { readonly from: MachineName };
 };
 export type AnyVolumeRunArgs = VolumeRunArgs[VolumeRunKind];
 

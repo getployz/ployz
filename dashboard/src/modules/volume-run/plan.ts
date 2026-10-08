@@ -1,4 +1,4 @@
-import type { SnapshotGuid } from "@ployz/sdk";
+import type { MachineId, Snapshot, SnapshotGuid } from "@ployz/sdk";
 import { type AnsweredMember, copyName, type Member, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
 export type Role = "writer" | "switching" | "handed" | "mirror" | "stale" | "empty" | "unanswered";
@@ -13,6 +13,8 @@ export type RefusalCode =
   | "invalid"
   | "no_pool"
   | "no_mirror"
+  | "no_copy"
+  | "another_copy"
   | "confirm_required";
 
 /** Where a Move continues from the copies it finds; every step after `handover` is past the point of no return. */
@@ -36,7 +38,17 @@ export type Planned =
       };
     }
   | { readonly ok: true; readonly phase: { readonly kind: "release"; readonly source: AnsweredMember; readonly mirror: AnsweredMember | null; readonly thaw: boolean } }
+  | { readonly ok: true; readonly phase: { readonly kind: "restore"; readonly from: AnsweredMember; readonly lostAfter: Snapshot | null } }
   | { readonly ok: false; readonly refusal: Refusal };
+
+export type Phase = Extract<Planned, { ok: true }>["phase"];
+
+/** Every Server holding a copy, plus the Server a Mirror or Move builds one on: `server rm` waits while an open run names one. */
+export function participantsOf(phase: Phase, members: readonly Member[]): MachineId[] {
+  const target = phase.kind === "mirror" || phase.kind === "move" ? [phase.target.machine.id] : [];
+  const holders = members.filter((member) => member.answered && member.view.copy !== null).map((member) => member.machine.id);
+  return [...new Set([...holders, ...target])];
+}
 
 export type PlanInput = VolumeRunInput & { readonly volumeName: string; readonly orphan: boolean };
 
@@ -126,6 +138,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   }
 
   if (unanswered !== undefined) return refuse("unanswered", `${unanswered.machine.name} did not answer; ${name}'s copies are unknown`);
+  if (input.kind === "restore") return planRestore(name, input.args.from, answered);
   const [source] = switching;
   if (source !== undefined && switching.length === 1) {
     const guid = frozenGuid(source);
@@ -174,4 +187,23 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   const declare = roleOf(target) !== "mirror";
   if (input.kind === "move") return { ok: true, phase: { kind: "move", writer, target, start: "rounds", guid: null, declare } };
   return { ok: true, phase: { kind: "mirror", writer, target, declare } };
+}
+
+/** Restore makes the one copy left the writer, so any copy elsewhere, answering or not, would become a second writer. */
+function planRestore(name: string, from: string, answered: readonly AnsweredMember[]): Planned {
+  const source = answered.find((member) => member.machine.name === from);
+  if (source === undefined) return refuse("invalid", `${from} is not a Server of this cluster`);
+  const copy = source.view.copy;
+  if (copy === null) return refuse("no_copy", `${from} holds no copy of ${name}`);
+  if (roleOf(source) === "writer" && !copy.readonly) return refuse("invalid", `${name}'s writer is already on ${from}`);
+  const others = answered.filter((member) => member !== source && member.view.copy !== null);
+  if (others.length > 0) {
+    const servers = others.map((member) => member.machine.name).join(", ");
+    return refuse(
+      "another_copy",
+      `${name} also has copies on ${servers}; Restore needs ${copyName(name, from)} to be the only copy, so remove the others with server rm or volume mirror rm first`,
+    );
+  }
+  // A slot holds the data as of its newest snapshot; a root holds every write, so restoring it loses none.
+  return { ok: true, phase: { kind: "restore", from: source, lostAfter: copy.kind === "slot" ? copy.newest : null } };
 }
