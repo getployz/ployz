@@ -35,6 +35,8 @@ const LOCK_FILE: &str = "harvester.lock";
 /// Returns an error when Docker cannot be reached, another harvester holds
 /// the store, or the store or socket cannot be created.
 pub async fn run(run_dir: &Path) -> io::Result<()> {
+    crate::faults::check_env()?;
+    crate::faults::leak_memory();
     let docker = Docker::connect_with_defaults().map_err(io::Error::other)?;
     let docker_root = docker
         .info()
