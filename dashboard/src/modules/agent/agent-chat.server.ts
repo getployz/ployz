@@ -28,6 +28,15 @@ const storeCall = (binding: AgentBinding, input: ReturnType<typeof projectJsonVa
 };
 
 const ApprovalAsked = Schema.Struct({ approval_id: Schema.String });
+const DeniedApproval = Schema.Struct({ approval: Schema.Struct({ reason: Schema.NullOr(Schema.String) }) });
+
+/** A denial as the agent hears it: what was denied and the human's reason, without the approval's ID to echo. */
+const denialForAgent = (command: ConfigCommand, refusal: StoreRefusal): StoreRefusal => {
+  if (refusal.code !== "approval_denied") return refusal;
+  const reason = Option.match(Schema.decodeUnknownOption(DeniedApproval)(refusal.details), { onNone: () => null, onSome: ({ approval }) => approval.reason });
+  const verb = command.command === "publish" ? "publish" : "deploy";
+  return { code: refusal.code, message: `A human denied this ${verb}${reason === null ? "." : `: ${reason}`}`, details: { approval: { reason } } };
+};
 
 /**
  * One Publish or Deploy as `caller`, retried with `approvalId` once a human answered. When the plan destroys something and
@@ -35,7 +44,7 @@ const ApprovalAsked = Schema.Struct({ approval_id: Schema.String });
  */
 const runGated = Effect.fn("Agent.runGated")(function* (caller: Caller, command: ConfigCommand, approvalId: string | null) {
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
-  if (!trusted.ok) return { outcome: { ok: false, refusal: trusted.refusal } } satisfies Gated;
+  if (!trusted.ok) return { outcome: { ok: false, refusal: denialForAgent(command, trusted.refusal) } } satisfies Gated;
   const result = yield* callStore(caller.organization.id, caller.userId, { operation: "write", command }, AGENT, trusted.approval);
   if (result.ok && trusted.approval === "required") return { outcome: { ...result, nothing_destroyed: true } } satisfies Gated;
   if (result.ok || result.refusal.code !== "approval_required") return { outcome: result } satisfies Gated;

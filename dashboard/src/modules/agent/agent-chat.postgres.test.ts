@@ -28,15 +28,19 @@ const Outcome = Schema.fromJsonString(Schema.Struct({
   refusal: Schema.optional(Schema.Struct({ code: Schema.String, message: Schema.String })),
 }));
 
-/** One run's stream, read the way the sidebar reads it: tool outcomes, what the model said, and what it waits on. */
+/**
+ * One run's stream, read the way the sidebar reads it: tool outcomes, what the model said, and what it waits on.
+ * `heard` is each tool result's raw JSON, as the model reads it.
+ */
 const drain = (stream: AsyncIterable<StreamChunk>) => Effect.promise(async () => {
   const chunks: StreamChunk[] = [];
   for await (const chunk of stream) chunks.push(chunk);
-  const results = chunks.flatMap((chunk) => chunk.type === EventType.TOOL_CALL_RESULT ? [Schema.decodeUnknownSync(Outcome)(chunk.content)] : []);
+  const heard = chunks.flatMap((chunk) => chunk.type === EventType.TOOL_CALL_RESULT ? [chunk.content] : []);
+  const results = heard.map((content) => Schema.decodeUnknownSync(Outcome)(content));
   const said = chunks.flatMap((chunk) => chunk.type === EventType.TEXT_MESSAGE_CONTENT ? [chunk.delta] : []).join("");
   const interrupts = chunks.flatMap((chunk) =>
     chunk.type === EventType.RUN_FINISHED && chunk.outcome?.type === "interrupt" ? chunk.outcome.interrupts : []);
-  return { results, said, interrupts };
+  return { results, heard, said, interrupts };
 });
 
 /**
@@ -148,7 +152,8 @@ it.live("a denied Deploy never reaches the Store, and the agent quotes the reaso
     expect(writes).not.toHaveBeenCalled();
     expect(resumed.results).toMatchObject([{ ok: false, refusal: { code: "approval_denied" } }]);
     expect(resumed.results[0]?.refusal?.message).toContain("web still serves traffic");
-    expect(resumed.said).toBe(`I won't retry that. A human denied approval ${approval.id}: web still serves traffic`);
+    expect(resumed.heard.join("")).not.toContain(approval.id);
+    expect(resumed.said).toBe("I won't retry that. A human denied this deploy: web still serves traffic");
   }));
 
 it.live("a cancelled approval answers the agent without touching the Store", () =>
