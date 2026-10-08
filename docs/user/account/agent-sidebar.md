@@ -47,6 +47,8 @@ server, like **Remove fra-1**.
 
 ## Good to know
 
+- **Needs an Anthropic API key.** On a [Self-hosted Cloud](../self-hosting.md) without
+  `ANTHROPIC_API_KEY`, the agent answers every message by saying it isn't set up yet.
 - **Only removals ask.** Deploys that roll out a new image, change variables or scale a service
   go ahead without a card. Under such a deploy you'll see **Didn't ask. Nothing destroyed.**
 - **You approve one plan.** If the change moves on before you answer, the card says the plan

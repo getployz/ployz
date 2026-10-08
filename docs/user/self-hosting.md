@@ -80,7 +80,8 @@ their owner approves the new permissions on GitHub.
 2. Fill in `.env`. Every variable that isn't commented out is required: `web` and `worker` stop
    with a `ConfigError` if one is missing. Generate each secret with `openssl rand -hex 32`. Leave
    every `POLAR_*` variable unset; that's what turns billing off. Leave `POSTHOG_*` unset too: a
-   Self-hosted Cloud sends no product analytics.
+   Self-hosted Cloud sends no product analytics. To turn on the
+   [Ployz agent](account/agent-sidebar.md), set `ANTHROPIC_API_KEY`.
 3. Create the database tables, then start everything:
 
    ```sh

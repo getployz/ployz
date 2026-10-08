@@ -27,24 +27,27 @@ const signUp = Effect.fn(function* (name: string) {
   return { cookie, caller };
 });
 
-/** What the sidebar posts for one turn, and the status it gets back once the reply is read. */
-const chat = Effect.fn(function* (slug: string, headers: Readonly<Record<string, string>>, threadId: string) {
+/** What the sidebar posts for one turn, and the status and stream it gets back. */
+const reply = Effect.fn(function* (slug: string, headers: Readonly<Record<string, string>>, threadId: string) {
   const request = new Request(`${origin}/api/agent/${slug}/chat`, {
     method: "POST",
     headers: { ...headers, "content-type": "application/json" },
     body: JSON.stringify({ threadId, runId: crypto.randomUUID(), messages: [{ id: crypto.randomUUID(), role: "user", content: "hello" }], tools: [], context: [] }),
   });
   return yield* handleAgentChat(request, slug).pipe(
-    Effect.flatMap((response) => Effect.promise(() => response.text()).pipe(Effect.as(response.status))),
-    Effect.catch((error) => Effect.succeed(statusForPublicError(encodePublicError(error)))),
+    Effect.flatMap((response) => Effect.promise(() => response.text()).pipe(Effect.map((body) => ({ status: response.status, body })))),
+    Effect.catch((error) => Effect.succeed({ status: statusForPublicError(encodePublicError(error)), body: "" })),
   );
 });
 
-/** `body` against a fresh Cloud whose sidebar talks to the stub model. */
-const inCloud = <A, E, R>(body: Effect.Effect<A, E, R>) => Effect.gen(function* () {
+const chat = (slug: string, headers: Readonly<Record<string, string>>, threadId: string) =>
+  reply(slug, headers, threadId).pipe(Effect.map(({ status }) => status));
+
+/** `body` against a fresh Cloud whose sidebar reads `env`: the stub model unless a test says otherwise. */
+const inCloud = <A, E, R>(body: Effect.Effect<A, E, R>, env: Record<string, string> = { PLOYZ_AGENT_STUB: "1" }) => Effect.gen(function* () {
   const cloud = yield* storeTestCloud();
-  const stub = ConfigProvider.layer(ConfigProvider.fromEnv({ env: { PLOYZ_AGENT_STUB: "1" } }));
-  return yield* body.pipe(Effect.provide(Layer.mergeAll(AuthLive.pipe(Layer.provide(cloud)), cloud, stub)));
+  const config = ConfigProvider.layer(ConfigProvider.fromEnv({ env }));
+  return yield* body.pipe(Effect.provide(Layer.mergeAll(AuthLive.pipe(Layer.provide(cloud)), cloud, config)));
 });
 
 it.live("the sidebar answers a signed-in member in their active Organization", () =>
@@ -81,3 +84,11 @@ it.live("a member cannot post into another member's thread, and that thread stay
     expect(yield* chat(ada.caller.organization.slug, { cookie: ada.cookie }, "thread-bo")).toBe(403);
     expect(yield* Effect.promise(() => persistence.stores.messages.loadThread("thread-bo"))).toEqual(before);
   })));
+
+it.live("a Cloud without an Anthropic key answers that the agent isn't set up", () =>
+  inCloud(Effect.gen(function* () {
+    const ada = yield* signUp("ada");
+    const answered = yield* reply(ada.caller.organization.slug, { cookie: ada.cookie }, "thread-ada");
+    expect(answered.status).toBe(200);
+    expect(answered.body).toContain("The Ployz agent is not set up on this Cloud yet: it needs an Anthropic API key.");
+  }), {}));
