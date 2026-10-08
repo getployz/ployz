@@ -1,6 +1,13 @@
 //! Durable ZFS Volume storage ownership and mutation admission.
 
-use std::{collections::BTreeMap, io, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    io,
+    path::{Path, PathBuf},
+    process::Output,
+    sync::Arc,
+    time::Duration,
+};
 
 use ployzd::machine_pool::MachinePool;
 use tokio::{
@@ -528,26 +535,36 @@ pub(super) fn parse_size(options: &BTreeMap<String, String>) -> Result<u64> {
         .ok_or_else(|| format!("Volume size {value:?} overflows bytes").into())
 }
 
-pub(super) async fn checked_command(program: &PathBuf, args: &[&str]) -> Result<String> {
+pub(super) async fn run_command(program: &PathBuf, args: &[&str]) -> io::Result<Output> {
     let mut attempt = 0;
-    let output = loop {
+    loop {
         match Command::new(program).args(args).output().await {
             // ETXTBSY means exec never started; only that launch error is safe to retry.
             Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy && attempt < 4 => {
                 tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
                 attempt += 1;
             }
-            output => {
-                break output.map_err(|error| {
-                    format!(
-                        "could not run {}: {error}",
-                        program.display(),
-                        error = ployz_core::error_chain::inline(&error),
-                    )
-                })?;
-            }
+            output => return output,
         }
-    };
+    }
+}
+
+pub(super) async fn checked_command(program: &PathBuf, args: &[&str]) -> Result<String> {
+    checked_output(program, args, run_command(program, args).await)
+}
+
+pub(super) fn checked_output(
+    program: &Path,
+    args: &[&str],
+    output: io::Result<Output>,
+) -> Result<String> {
+    let output = output.map_err(|error| {
+        format!(
+            "could not run {}: {error}",
+            program.display(),
+            error = ployz_core::error_chain::inline(&error),
+        )
+    })?;
     if !output.status.success() {
         return Err(format!(
             "{} {} failed: {}",

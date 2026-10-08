@@ -32,7 +32,7 @@ mod transfer;
 
 use storage::{
     CapacityAdmission, DATASET_ROOT, Dataset, MIRROR_ROOT, MOUNT_ROOT, Place, VolumeStorage,
-    checked_command, parse_size,
+    checked_command, checked_output, parse_size, run_command,
 };
 
 type Result<T> = std::result::Result<T, VolumeError>;
