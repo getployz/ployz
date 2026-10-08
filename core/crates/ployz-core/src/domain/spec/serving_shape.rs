@@ -156,7 +156,6 @@ impl ServingShape {
             "open_stdin": open_stdin,
             "privileged": privileged,
             "pid_mode": pid_mode,
-            // Removed field, kept so the token stays stable for existing Global containers.
             "log_driver": null,
             "stop_timeout_secs": stop_timeout_secs,
             "sysctls": sysctls,
