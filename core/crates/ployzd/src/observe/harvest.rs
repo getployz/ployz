@@ -18,7 +18,7 @@ use bollard::{
 use futures_util::{Stream, StreamExt};
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
 use ployz_core::ContainerId;
-use tokio::net::UnixListener;
+use tokio::{net::UnixListener, sync::mpsc};
 
 use super::{
     cleanup::{self, Disk, Limits},
@@ -54,10 +54,22 @@ enum Watched {
 #[derive(Clone, Copy)]
 enum Seen {
     Ignored,
+    /// Held while Docker has not yet answered the inspect that says whether
+    /// Ployz owns the container. `first_seen` keeps what the first sync found
+    /// until `max-file` and the creation time arrive to judge it.
+    Pending {
+        first_seen: Option<FirstSeen>,
+    },
     Managed {
         max_files: usize,
         created_nanos: Option<i64>,
     },
+}
+
+enum Inspected {
+    Found(Box<ContainerInspectResponse>),
+    Gone,
+    Unanswered,
 }
 
 pub(super) struct Harvester {
@@ -68,6 +80,9 @@ pub(super) struct Harvester {
     watched: HashMap<WatchDescriptor, Watched>,
     seen: HashMap<ContainerId, Seen>,
     damage: HashMap<ContainerId, DamageCursor>,
+    /// Inspects in flight; `true` asks for another once this one answers.
+    inspecting: HashMap<ContainerId, bool>,
+    inspected: mpsc::UnboundedSender<(ContainerId, Inspected)>,
 }
 
 impl Harvester {
@@ -80,6 +95,7 @@ impl Harvester {
         let inotify = Inotify::init()?;
         let watches = inotify.watches();
         let mut inotify_events = inotify.into_event_stream([0_u8; 64 * 1024])?;
+        let (inspected, mut inspections) = mpsc::unbounded_channel();
         let mut harvester = Self {
             docker,
             docker_containers: docker_root.join("containers"),
@@ -88,10 +104,12 @@ impl Harvester {
             watched: HashMap::new(),
             seen: HashMap::new(),
             damage: HashMap::new(),
+            inspecting: HashMap::new(),
+            inspected,
         };
         let mut docker_events = Some(harvester.docker_events());
         let mut reconnect_at = None;
-        harvester.rescan().await;
+        harvester.rescan();
         harvester.close_removed_while_down();
         harvester.clean();
 
@@ -103,12 +121,13 @@ impl Harvester {
         loop {
             tokio::select! {
                 event = inotify_events.next() => match event {
-                    Some(Ok(event)) => harvester.on_inotify(event.wd, event.mask, event.name.as_deref()).await,
+                    Some(Ok(event)) => harvester.on_inotify(event.wd, event.mask, event.name.as_deref()),
                     Some(Err(error)) => return Err(error),
                     None => return Err(io::Error::other("inotify stream ended")),
                 },
+                Some((id, inspected)) = inspections.recv() => harvester.on_inspected(id, inspected),
                 event = next_docker_event(&mut docker_events) => match event {
-                    Some(Ok(message)) => harvester.on_docker_event(message).await,
+                    Some(Ok(message)) => harvester.on_docker_event(message),
                     Some(Err(error)) => {
                         tracing::warn!(%error, "Docker events stream failed; reconnecting");
                         docker_events = None;
@@ -122,11 +141,11 @@ impl Harvester {
                 () = tokio::time::sleep_until(reconnect_at.unwrap_or_else(tokio::time::Instant::now)), if reconnect_at.is_some() => {
                     reconnect_at = None;
                     docker_events = Some(harvester.docker_events());
-                    harvester.rescan().await;
-                    harvester.refresh_all_meta().await;
+                    harvester.rescan();
+                    harvester.refresh_all_meta();
                 }
                 _ = maintenance.tick() => {
-                    harvester.rescan().await;
+                    harvester.rescan();
                     harvester.clean();
                 }
                 accepted = listener.accept() => drop(accepted),
@@ -142,7 +161,7 @@ impl Harvester {
         Box::pin(self.docker.events(Some(options)))
     }
 
-    async fn rescan(&mut self) {
+    fn rescan(&mut self) {
         if let Err(error) = self.watch(
             &self.docker_containers.clone(),
             DIR_MASK,
@@ -164,14 +183,14 @@ impl Harvester {
         self.seen.retain(|id, _| present.contains(id));
         self.damage.retain(|id, _| present.contains(id));
         for id in present {
-            self.discovered(id).await;
+            self.discovered(id);
         }
     }
 
-    async fn on_inotify(&mut self, wd: WatchDescriptor, mask: EventMask, name: Option<&OsStr>) {
+    fn on_inotify(&mut self, wd: WatchDescriptor, mask: EventMask, name: Option<&OsStr>) {
         if mask.contains(EventMask::Q_OVERFLOW) {
             tracing::warn!("inotify queue overflowed; rescanning");
-            self.rescan().await;
+            self.rescan();
             return;
         }
         if mask.contains(EventMask::IGNORED) {
@@ -184,13 +203,13 @@ impl Harvester {
         match self.watched.get(&wd) {
             Some(Watched::ContainersRoot) => {
                 if let Some(id) = name.and_then(container_id) {
-                    self.discovered(id).await;
+                    self.discovered(id);
                 }
             }
             Some(Watched::Container(id)) => {
                 if name == Some(OsStr::new(LOCAL_LOGS_DIR)) {
                     let id = *id;
-                    self.consider(&id).await;
+                    self.consider(&id);
                 }
             }
             Some(Watched::LocalLogs(id)) => {
@@ -201,7 +220,7 @@ impl Harvester {
         }
     }
 
-    async fn on_docker_event(&mut self, message: EventMessage) {
+    fn on_docker_event(&mut self, message: EventMessage) {
         let Some(id) = message
             .actor
             .and_then(|actor| actor.id)
@@ -209,8 +228,11 @@ impl Harvester {
         else {
             return;
         };
-        if matches!(self.seen.get(&id), Some(Seen::Managed { .. })) {
-            self.refresh_meta(&id).await;
+        if matches!(
+            self.seen.get(&id),
+            Some(Seen::Pending { .. } | Seen::Managed { .. })
+        ) {
+            self.request_inspect(id);
             self.sync(&id);
         }
     }
@@ -243,7 +265,7 @@ impl Harvester {
         }
     }
 
-    async fn discovered(&mut self, id: ContainerId) {
+    fn discovered(&mut self, id: ContainerId) {
         if matches!(self.seen.get(&id), Some(Seen::Ignored)) {
             return;
         }
@@ -252,44 +274,26 @@ impl Harvester {
             tracing::debug!(container = %id, %error, "cannot watch the container dir");
         }
         if dir.join(LOCAL_LOGS_DIR).is_dir() {
-            self.consider(&id).await;
+            self.consider(&id);
         }
     }
 
-    async fn consider(&mut self, id: &ContainerId) {
-        if !self.seen.contains_key(id) {
-            let Some(inspected) = self.inspect(id).await else {
-                return;
-            };
-            let Some(meta) = container_meta(&inspected) else {
-                self.seen.insert(*id, Seen::Ignored);
-                self.unwatch_container(id);
-                return;
-            };
-            if let Some(driver) = foreign_log_driver(&inspected) {
-                tracing::info!(container = %id, driver, "not holding logs Docker writes with another driver");
-                self.seen.insert(*id, Seen::Ignored);
-                self.unwatch_container(id);
-                return;
+    /// Holds a container's files as soon as its `local-logs` dir exists. The
+    /// inspect that says whether Ployz owns it runs alongside: Docker can
+    /// rotate a busy container's files away before it answers.
+    fn consider(&mut self, id: &ContainerId) {
+        match self.seen.get(id) {
+            Some(Seen::Ignored) => return,
+            Some(Seen::Managed { .. }) => {}
+            Some(Seen::Pending { .. }) => self.request_inspect(*id),
+            None => {
+                if let Err(error) = create_private_dir(&self.store.container(id)) {
+                    tracing::error!(container = %id, %error, "cannot create the container's Log Store dir");
+                    return;
+                }
+                self.seen.insert(*id, Seen::Pending { first_seen: None });
+                self.request_inspect(*id);
             }
-            let dir = self.store.container(id);
-            if let Err(error) = create_private_dir(&dir).and_then(|()| write_meta(&dir, &meta)) {
-                tracing::error!(container = %id, %error, "cannot create the container's Log Store dir");
-                return;
-            }
-            self.seen.insert(
-                *id,
-                Seen::Managed {
-                    max_files: max_files(&inspected),
-                    created_nanos: inspected
-                        .created
-                        .as_ref()
-                        .and_then(|at| rfc3339_nanos(&at.to_string())),
-                },
-            );
-        }
-        if !matches!(self.seen.get(id), Some(Seen::Managed { .. })) {
-            return;
         }
         let local_logs = self.local_logs(id);
         if let Err(error) = self.watch(&local_logs, WatchMask::CREATE, Watched::LocalLogs(*id)) {
@@ -299,12 +303,13 @@ impl Harvester {
     }
 
     fn sync(&mut self, id: &ContainerId) {
-        let Some(Seen::Managed {
-            max_files,
-            created_nanos,
-        }) = self.seen.get(id).copied()
-        else {
-            return;
+        let (max_files, created_nanos) = match self.seen.get(id).copied() {
+            Some(Seen::Managed {
+                max_files,
+                created_nanos,
+            }) => (Some(max_files), created_nanos),
+            Some(Seen::Pending { .. }) => (None, None),
+            Some(Seen::Ignored) | None => return,
         };
         let store_dir = self.store.container(id);
         if let Err(error) = create_private_dir(&store_dir) {
@@ -318,6 +323,11 @@ impl Harvester {
                 }
                 if let Some(gap) = synced.gap {
                     tracing::warn!(container = %id, from = gap.from, to = gap.to, "Docker deleted log files the store never held");
+                }
+                if let Some(found) = synced.first_seen
+                    && let Some(Seen::Pending { first_seen }) = self.seen.get_mut(id)
+                {
+                    first_seen.get_or_insert(found);
                 }
             }
             Err(error) => {
@@ -337,44 +347,95 @@ impl Harvester {
         }
     }
 
-    async fn refresh_all_meta(&mut self) {
-        let managed: Vec<ContainerId> = self
+    fn refresh_all_meta(&mut self) {
+        let held: Vec<ContainerId> = self
             .seen
             .iter()
-            .filter(|(_, seen)| matches!(seen, Seen::Managed { .. }))
+            .filter(|(_, seen)| matches!(seen, Seen::Pending { .. } | Seen::Managed { .. }))
             .map(|(id, _)| *id)
             .collect();
-        for id in managed {
-            self.refresh_meta(&id).await;
+        for id in held {
+            self.request_inspect(id);
         }
     }
 
-    async fn refresh_meta(&mut self, id: &ContainerId) {
-        let Some(inspected) = self.inspect(id).await else {
+    fn request_inspect(&mut self, id: ContainerId) {
+        if let Some(again) = self.inspecting.get_mut(&id) {
+            *again = true;
+            return;
+        }
+        self.inspecting.insert(id, false);
+        let docker = self.docker.clone();
+        let inspected = self.inspected.clone();
+        tokio::spawn(async move {
+            drop(inspected.send((id, inspect(&docker, &id).await)));
+        });
+    }
+
+    fn on_inspected(&mut self, id: ContainerId, inspected: Inspected) {
+        if self.inspecting.remove(&id) == Some(true) {
+            self.request_inspect(id);
+        }
+        let Some(seen) = self.seen.get(&id).copied() else {
             return;
         };
-        if let Some(meta) = container_meta(&inspected)
-            && let Err(error) = write_meta(&self.store.container(id), &meta)
-        {
-            tracing::warn!(container = %id, %error, "cannot update container metadata");
+        let inspected = match (inspected, seen) {
+            (Inspected::Found(inspected), Seen::Pending { .. } | Seen::Managed { .. }) => inspected,
+            (Inspected::Gone, Seen::Pending { .. }) => return self.discard(&id),
+            (Inspected::Found(_) | Inspected::Gone | Inspected::Unanswered, _) => return,
+        };
+        let store_dir = self.store.container(&id);
+        let Seen::Pending { first_seen } = seen else {
+            if let Some(meta) = container_meta(&inspected)
+                && let Err(error) = write_meta(&store_dir, &meta)
+            {
+                tracing::warn!(container = %id, %error, "cannot update container metadata");
+            }
+            return;
+        };
+        let Some(meta) = container_meta(&inspected) else {
+            return self.discard(&id);
+        };
+        if let Some(driver) = foreign_log_driver(&inspected) {
+            tracing::info!(container = %id, driver, "not holding logs Docker writes with another driver");
+            return self.discard(&id);
         }
+        if let Err(error) = write_meta(&store_dir, &meta) {
+            tracing::error!(container = %id, %error, "cannot write container metadata");
+            return;
+        }
+        let max_files = max_files(&inspected);
+        let created_nanos = inspected
+            .created
+            .as_ref()
+            .and_then(|at| rfc3339_nanos(&at.to_string()));
+        self.seen.insert(
+            id,
+            Seen::Managed {
+                max_files,
+                created_nanos,
+            },
+        );
+        if let Some(first_seen) = first_seen {
+            match first_seen_gap(&store_dir, first_seen, max_files, created_nanos) {
+                Ok(Some(gap)) => {
+                    tracing::warn!(container = %id, from = gap.from, to = gap.to, "Docker deleted log files the store never held");
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(container = %id, %error, "cannot record what the store never held");
+                }
+            }
+        }
+        self.sync(&id);
     }
 
-    async fn inspect(&self, id: &ContainerId) -> Option<ContainerInspectResponse> {
-        let inspect = self.docker.inspect_container(id.as_str(), None);
-        match tokio::time::timeout(INSPECT_TIMEOUT, inspect).await {
-            Ok(Ok(inspected)) => Some(inspected),
-            Ok(Err(DockerError::DockerResponseServerError {
-                status_code: 404, ..
-            })) => None,
-            Ok(Err(error)) => {
-                tracing::warn!(container = %id, %error, "cannot inspect container");
-                None
-            }
-            Err(_) => {
-                tracing::warn!(container = %id, "Docker did not answer an inspect in time");
-                None
-            }
+    fn discard(&mut self, id: &ContainerId) {
+        self.seen.insert(*id, Seen::Ignored);
+        self.damage.remove(id);
+        self.unwatch_container(id);
+        if let Err(error) = cleanup::discard(&self.store, id) {
+            tracing::warn!(container = %id, %error, "cannot drop a container the store does not keep");
         }
     }
 
@@ -422,14 +483,35 @@ impl Harvester {
     }
 
     fn unwatch_container(&mut self, id: &ContainerId) {
-        let wd = self
+        let wds: Vec<WatchDescriptor> = self
             .watched
             .iter()
-            .find(|(_, watched)| matches!(watched, Watched::Container(watched) if watched == id))
-            .map(|(wd, _)| wd.clone());
-        if let Some(wd) = wd {
+            .filter(|(_, watched)| {
+                matches!(watched, Watched::Container(watched) | Watched::LocalLogs(watched) if watched == id)
+            })
+            .map(|(wd, _)| wd.clone())
+            .collect();
+        for wd in wds {
             self.watched.remove(&wd);
             drop(self.watches.remove(wd));
+        }
+    }
+}
+
+async fn inspect(docker: &Docker, id: &ContainerId) -> Inspected {
+    let inspect = docker.inspect_container(id.as_str(), None);
+    match tokio::time::timeout(INSPECT_TIMEOUT, inspect).await {
+        Ok(Ok(inspected)) => Inspected::Found(Box::new(inspected)),
+        Ok(Err(DockerError::DockerResponseServerError {
+            status_code: 404, ..
+        })) => Inspected::Gone,
+        Ok(Err(error)) => {
+            tracing::warn!(container = %id, %error, "cannot inspect container");
+            Inspected::Unanswered
+        }
+        Err(_) => {
+            tracing::warn!(container = %id, "Docker did not answer an inspect in time");
+            Inspected::Unanswered
         }
     }
 }
@@ -451,6 +533,17 @@ fn container_id(name: &OsStr) -> Option<ContainerId> {
 pub(super) struct Synced {
     pub linked: usize,
     pub gap: Option<Gap>,
+    /// What a sync without `max-file` found the first time it held files.
+    pub first_seen: Option<FirstSeen>,
+}
+
+/// Docker's set as the store first held it, kept until `max-file` says
+/// whether Docker had already deleted files from it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct FirstSeen {
+    files: usize,
+    compressed: usize,
+    oldest: LogFileName,
 }
 
 struct DockerFile {
@@ -462,7 +555,7 @@ struct DockerFile {
 pub(super) fn sync_container(
     local_logs: &Path,
     store_dir: &Path,
-    max_files: usize,
+    max_files: Option<usize>,
     created_nanos: Option<i64>,
 ) -> io::Result<Synced> {
     let mut synced = Synced::default();
@@ -486,7 +579,7 @@ enum Pass {
 fn sync_pass(
     local_logs: &Path,
     store_dir: &Path,
-    max_files: usize,
+    max_files: Option<usize>,
     created_nanos: Option<i64>,
     synced: &mut Synced,
 ) -> io::Result<Pass> {
@@ -558,19 +651,51 @@ fn sync_pass(
             .and_then(|name| last_ts_of(&store_dir.join(name.to_string())))
             .or(created_nanos)
             .unwrap_or(0);
-        if let Some(to) = first_ts_or_mtime(&store_dir.join(oldest.to_string()))
-            && to > from
-        {
-            let gap = Gap {
-                from,
-                to,
-                reason: GapReason::NotCaptured,
-            };
-            append_gap(store_dir, &gap)?;
-            synced.gap = Some(gap);
-        }
+        synced.gap = record_not_captured(store_dir, from, oldest)?;
+    }
+    if held.is_empty()
+        && max_files.is_none()
+        && let Some(oldest) = oldest_held
+    {
+        synced.first_seen = Some(FirstSeen {
+            files: docker_files.len(),
+            compressed,
+            oldest,
+        });
     }
     pass
+}
+
+/// Judges the set the store first held without `max-file`: a full set means
+/// Docker may already have deleted files the store never saw.
+pub(super) fn first_seen_gap(
+    store_dir: &Path,
+    first_seen: FirstSeen,
+    max_files: usize,
+    created_nanos: Option<i64>,
+) -> io::Result<Option<Gap>> {
+    if !set_filled(first_seen.files, first_seen.compressed, max_files) {
+        return Ok(None);
+    }
+    record_not_captured(store_dir, created_nanos.unwrap_or(0), first_seen.oldest)
+}
+
+fn record_not_captured(
+    store_dir: &Path,
+    from: i64,
+    oldest: LogFileName,
+) -> io::Result<Option<Gap>> {
+    let Some(to) = first_ts_or_mtime(&store_dir.join(oldest.to_string())).filter(|to| *to > from)
+    else {
+        return Ok(None);
+    };
+    let gap = Gap {
+        from,
+        to,
+        reason: GapReason::NotCaptured,
+    };
+    append_gap(store_dir, &gap)?;
+    Ok(Some(gap))
 }
 
 fn may_have_lost_files(
@@ -578,15 +703,19 @@ fn may_have_lost_files(
     held: &[LogFileName],
     docker_files: &[DockerFile],
     compressed: usize,
-    max_files: usize,
+    max_files: Option<usize>,
 ) -> bool {
     if held.iter().any(|name| name.ino == oldest.ino) {
         return false;
     }
     match held.last() {
-        None => compressed > 0 || docker_files.len() + compressed >= max_files,
+        None => max_files.is_some_and(|max| set_filled(docker_files.len(), compressed, max)),
         Some(newest) => !docker_files.iter().any(|file| file.ino == newest.ino),
     }
+}
+
+fn set_filled(files: usize, compressed: usize, max_files: usize) -> bool {
+    compressed > 0 || files + compressed >= max_files
 }
 
 fn held_files(store_dir: &Path) -> io::Result<Vec<LogFileName>> {
@@ -850,8 +979,8 @@ mod tests {
     use bollard::models::{ContainerInspectResponse, HostConfig, HostConfigLogConfig};
 
     use super::{
-        DamageCursor, Link, Synced, close_removed_container, foreign_log_driver, link_exact,
-        record_damage, sync_container, write_meta,
+        DamageCursor, Link, Synced, close_removed_container, first_seen_gap, foreign_log_driver,
+        link_exact, record_damage, sync_container, write_meta,
     };
     use crate::{
         observe::{
@@ -899,7 +1028,7 @@ mod tests {
         }
 
         fn sync(&self, max_files: usize) -> Synced {
-            sync_container(&self.docker, &self.store, max_files, Some(T0)).unwrap()
+            sync_container(&self.docker, &self.store, Some(max_files), Some(T0)).unwrap()
         }
 
         fn stored(&self) -> Vec<String> {
@@ -936,7 +1065,7 @@ mod tests {
             dirs.sync(3),
             Synced {
                 linked: 1,
-                gap: None
+                ..Synced::default()
             }
         );
 
@@ -966,7 +1095,8 @@ mod tests {
             synced,
             Synced {
                 linked: 2,
-                gap: Some(gap)
+                gap: Some(gap),
+                ..Synced::default()
             }
         );
         assert_eq!(dirs.gaps(), [gap]);
@@ -1000,9 +1130,49 @@ mod tests {
             dirs.sync(3),
             Synced {
                 linked: 2,
-                gap: None
+                ..Synced::default()
             }
         );
+    }
+
+    #[test]
+    fn a_container_docker_has_not_described_is_held_and_judged_once_it_is() {
+        let dirs = dirs();
+        for ts in [T0 + 5, T0 + 6, T0 + 7] {
+            dirs.rotate(2, ts);
+        }
+        let pending = sync_container(&dirs.docker, &dirs.store, None, None).unwrap();
+        assert_eq!((pending.linked, pending.gap), (2, None));
+        let first_seen = pending.first_seen.unwrap();
+        assert!(dirs.gaps().is_empty());
+
+        dirs.rotate(2, T0 + 8);
+        let next = sync_container(&dirs.docker, &dirs.store, None, None).unwrap();
+        assert_eq!(next.first_seen, None);
+
+        let gap = Gap {
+            from: T0,
+            to: T0 + 6,
+            reason: GapReason::NotCaptured,
+        };
+        assert_eq!(
+            first_seen_gap(&dirs.store, first_seen, 2, Some(T0)).unwrap(),
+            Some(gap)
+        );
+        assert_eq!(dirs.gaps(), [gap]);
+    }
+
+    #[test]
+    fn a_first_set_docker_had_not_filled_is_judged_no_gap() {
+        let dirs = dirs();
+        dirs.rotate(3, T0 + 5);
+        dirs.rotate(3, T0 + 6);
+        let pending = sync_container(&dirs.docker, &dirs.store, None, None).unwrap();
+        assert_eq!(
+            first_seen_gap(&dirs.store, pending.first_seen.unwrap(), 3, Some(T0)).unwrap(),
+            None
+        );
+        assert!(dirs.gaps().is_empty());
     }
 
     #[test]
@@ -1249,7 +1419,7 @@ mod tests {
             dirs.sync(5),
             Synced {
                 linked: 1,
-                gap: None
+                ..Synced::default()
             }
         );
         assert_eq!(dirs.gaps(), [gap]);
