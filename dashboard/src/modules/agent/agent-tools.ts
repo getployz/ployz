@@ -1,4 +1,4 @@
-import type { ConfigCommand, ConfigQuery, EnvironmentRef, JsonValue } from "@ployz/sdk";
+import type { Change, ConfigCommand, ConfigQuery, EnvironmentRef, JsonValue } from "@ployz/sdk";
 import { Schema } from "effect";
 import commandsJson from "../../../../core/crates/ployz-sdk/generated/commands.json";
 
@@ -56,6 +56,18 @@ const write =
 const stage = write("write");
 const gate = write("gated");
 
+/** `web.replicas=3` as the Change the CLI's `set` sends: split at the first `=`, the value kept as text. */
+const assignments = (given: ReadonlyArray<string>): Change[] => {
+  const changes = given.map((assignment): Change => {
+    const split = assignment.indexOf("=");
+    if (split === -1) throw new Error("Expected PATH=VALUE, for example web.replicas=3");
+    return { op: "set", path: assignment.slice(0, split), value: assignment.slice(split + 1) };
+  });
+  const repeated = changes.find((change, index) => changes.findIndex((other) => other.path === change.path) !== index);
+  if (repeated !== undefined) throw new Error(`${repeated.path} is given twice; set it once`);
+  return changes;
+};
+
 export const BINDINGS = new Map<string, AgentBinding>([
   ["project ls", read(Schema.Struct({}), () => ({ query: "projects" }))],
   ["env ls", read(Schema.Struct({ project: Text }), (input) => ({ query: "environments", project: input.project ?? null }))],
@@ -87,6 +99,25 @@ export const BINDINGS = new Map<string, AgentBinding>([
       environment: environment(input),
       path: input.path ?? null,
       all: input.all ?? false,
+    })),
+  ],
+  [
+    "set",
+    stage(Schema.Struct({ ...Env, assignment: Schema.Array(Schema.String), expect: Text }), (input) => ({
+      command: "edit",
+      environment: environment(input),
+      expect: input.expect === undefined ? null : Number(input.expect),
+      changes: assignments(input.assignment),
+    })),
+  ],
+  [
+    "service add",
+    stage(Schema.Struct({ ...Env, name: Schema.String, image: Text }), (input) => ({
+      command: "create_service",
+      id: crypto.randomUUID(),
+      environment: environment(input),
+      name: input.name,
+      image: input.image ?? null,
     })),
   ],
   [
@@ -172,13 +203,11 @@ export const UNBOUND = new Map<string, string>([
   ["server rm", "removes a Server, which the dashboard confirms by typing its name"],
   ["server set", "not yet bound"],
   ["server upgrade", "runs on Servers through Cloud workflows"],
-  ["service add", "not yet bound"],
   ["service port-forward", "needs a local port"],
   ["service rename", "not yet bound"],
   ["service restart", "acts on running containers"],
   ["service start", "acts on running containers"],
   ["service stop", "acts on running containers"],
-  ["set", "an assignment's parsing lives in the CLI"],
   ["status", "joins Store and Server state the CLI gathers"],
   ["token ls", "Organization Tokens live in the Organization's settings"],
   ["token new", "a token's secret must never pass through a chat"],

@@ -61,8 +61,8 @@ const text = ({ content }: ModelMessage) =>
 
 /**
  * `PLOYZ_AGENT_STUB=1`'s model. It reads the member's latest message and the tool results since: "list services" lists
- * them by name, "list services and deploy" calls both at once, "remove <service>" and "drop <volume>" stage their
- * removal, "publish" publishes, and "deploy" deploys the Environment. After a Deploy refused for losing a Volume's data, "deploy, accepting the volume loss" deploys again
+ * them by name, "list services and deploy" calls both at once, "set <path>=<value>" stages that Setting, "remove <service>"
+ * and "drop <volume>" stage their removal, "publish" publishes, and "deploy" deploys the Environment. After a Deploy refused for losing a Volume's data, "deploy, accepting the volume loss" deploys again
  * accepting exactly what the Store named. A denial is quoted, never retried.
  */
 export function stubScript(messages: ReadonlyArray<ModelMessage>): ScriptedTurn {
@@ -79,6 +79,8 @@ export function stubScript(messages: ReadonlyArray<ModelMessage>): ScriptedTurn 
     return { text: code === "approval_denied" ? `I won't retry that. ${message}` : `The Store refused: ${message}` };
   }
 
+  const assigned = /\bset ([a-z0-9._-]+=\S+)/.exec(said)?.[1];
+  if (assigned !== undefined) return { calls: [{ tool: "set", input: { assignment: [assigned] } }] };
   const removed = /remove ([a-z0-9-]+)/.exec(said)?.[1];
   if (removed !== undefined) return { calls: [{ tool: "service_rm", input: { service: removed } }] };
   const dropped = /drop ([a-z0-9-]+)/.exec(said)?.[1];

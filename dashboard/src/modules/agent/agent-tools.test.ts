@@ -32,7 +32,7 @@ describe("agent tools", () => {
   });
 
   it("parses every input its tool schema advertises", () => {
-    const sample = { string: "x", boolean: true, array: ["x"] } satisfies Record<string, JsonValue>;
+    const sample = { string: "x", boolean: true, array: ["x=y"] } satisfies Record<string, JsonValue>;
     for (const { command, binding } of AGENT_COMMANDS) {
       const input: JsonValue = Object.fromEntries(Object.entries(inputSchema(command, binding).properties).map(([key, { type }]) => [key, sample[type]]));
       expect(() => (binding.kind === "read" ? binding.query(input) : binding.command(input)), command.command).not.toThrow();
@@ -63,5 +63,38 @@ describe("agent tools", () => {
       version: "v7",
       accept_volume_loss: ["pg-data"],
     });
+  });
+
+  it("maps set assignments onto the edit the CLI sends, each value kept as text", () => {
+    const set = BINDINGS.get("set");
+    if (set?.kind !== "write") throw new Error("set stages");
+    expect(set.command({ env: "production", assignment: ["api.image=ghcr.io/acme/api:2.4", "api.env.URL=a=b"], expect: "4" })).toEqual({
+      command: "edit",
+      environment: { project: null, environment: "production" },
+      expect: 4,
+      changes: [
+        { op: "set", path: "api.image", value: "ghcr.io/acme/api:2.4" },
+        { op: "set", path: "api.env.URL", value: "a=b" },
+      ],
+    });
+  });
+
+  it("refuses a set that names no value or one Setting twice, as the CLI does", () => {
+    const set = BINDINGS.get("set");
+    if (set?.kind !== "write") throw new Error("set stages");
+    expect(() => set.command({ assignment: ["api.image"] })).toThrow("Expected PATH=VALUE, for example web.replicas=3");
+    expect(() => set.command({ assignment: ["api.replicas=2", "api.replicas=3"] })).toThrow("api.replicas is given twice; set it once");
+  });
+
+  it("maps service add onto the create the CLI sends", () => {
+    const add = BINDINGS.get("service add");
+    if (add?.kind !== "write") throw new Error("service add stages");
+    expect(add.command({ name: "cache", image: "redis:7" })).toMatchObject({
+      command: "create_service",
+      environment: { project: null, environment: null },
+      name: "cache",
+      image: "redis:7",
+    });
+    expect(add.command({ name: "empty" })).toMatchObject({ image: null });
   });
 });

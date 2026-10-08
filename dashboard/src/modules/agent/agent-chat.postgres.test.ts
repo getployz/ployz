@@ -282,3 +282,17 @@ it.live("a Deploy that destroys nothing runs without an interrupt", () =>
     expect(answered.results).toMatchObject([{ ok: true, value: { written: "deployment" }, nothing_destroyed: true }]);
     expect(yield* pending).toEqual([]);
   }));
+
+it.live("shipping a new image stages it without asking, and its Deploy runs without an interrupt", () =>
+  Effect.gen(function* () {
+    const { write, say, pending, deployments } = yield* sidebar({ removeWeb: false });
+    yield* write({ command: "create_service", id: "00000000-0000-4000-8000-0000000a6103", environment: here, name: "api", image: "ghcr.io/acme/api:2.3" });
+    const staged = yield* say("set api.image=ghcr.io/acme/api:2.4");
+    expect(staged.interrupts).toEqual([]);
+    expect(staged.results).toMatchObject([{ ok: true }]);
+    expect(yield* pending).toEqual([]);
+    const shipped = yield* say("deploy");
+    expect(shipped.interrupts).toEqual([]);
+    expect(shipped.results).toMatchObject([{ ok: true, value: { written: "deployment" }, nothing_destroyed: true }]);
+    expect(yield* deployments).toHaveLength(1);
+  }));
