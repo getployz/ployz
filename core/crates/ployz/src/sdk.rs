@@ -133,14 +133,14 @@ fn volume_switch_route(
         | Body::ForgetSnapshots(_)
         | Body::ForgetLease(_)
         | Body::Withdraw(_)
-        | Body::Freeze(_)
         | Body::HandOver(_)
-        | Body::Thaw(_)
         | Body::Close(_)
         | Body::AcceptHandOff(_)
         | Body::Promote(_)
         | Body::ClearFinal(_) => crate::connect::TARGET_RPC_TIMEOUT,
-        Body::StartHandedContainer(_) => crate::connect::START_HANDED_RPC_TIMEOUT,
+        Body::Freeze(_) | Body::Thaw(_) | Body::StartHandedContainer(_) => {
+            crate::connect::CONTAINER_SWITCH_RPC_TIMEOUT
+        }
         _ => {
             return Err(invalid_argument(format!(
                 "{} is not a Volume switch command",
