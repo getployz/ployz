@@ -141,14 +141,6 @@ jobs:
           EOF
           cargo nextest run --workspace --all-features --locked
           cargo test --doc --workspace --all-features --locked
-      - name: Decode the latest Docker's local log files as docker logs prints them
-        env:
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo -E
-        run: |
-          curl -fsSL https://get.docker.com | sudo sh >/dev/null
-          docker version --format 'Docker {{.Server.Version}}'
-          docker pull --quiet alpine:3.23.3
-          cargo nextest run --package ployzd --all-features --locked --run-ignored only -E 'test(observe::integration_tests::decoding_matches_docker_logs_byte_for_byte)'
       - name: Config Store behaviour suite on Postgres
         env:
           PLOYZ_STORE_TEST_POSTGRES: postgres://postgres:postgres@127.0.0.1:5432
@@ -157,6 +149,15 @@ jobs:
         env:
           PLOYZ_BIN: ${{ github.workspace }}/core/target/debug/ployz
         run: bash scripts/test-missing-ssh-client.sh
+      # Last: installing Docker restarts dockerd, which stops the Postgres service.
+      - name: Decode the latest Docker's local log files as docker logs prints them
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo -E
+        run: |
+          curl -fsSL https://get.docker.com | sudo sh >/dev/null
+          docker version --format 'Docker {{.Server.Version}}'
+          docker pull --quiet alpine:3.23.3
+          cargo nextest run --package ployzd --all-features --locked --run-ignored only -E 'test(observe::integration_tests::decoding_matches_docker_logs_byte_for_byte)'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
