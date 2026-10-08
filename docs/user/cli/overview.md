@@ -73,7 +73,8 @@ values of secrets the service already has, and they stay secret. To add a secret
 `ployz set web.env.KEY --secret` yourself.
 
 A tool call that runs for more than 30 minutes is stopped, along with the processes it started
-on this computer, except a process that detaches into a session of its own. Calls still running
+on this computer, except a process that leaves the call's process group, for example with
+`setsid` or `setpgid`. Calls still running
 when the agent closes `ployz mcp` stop the same way. A deployment or volume run a call started
 keeps going in Cloud, and the tool's error names the command that shows where it stands, such as
 `ployz status`. When `ployz mcp` reaches Servers over SSH, through an SSH context or

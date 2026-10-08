@@ -13,15 +13,17 @@ use rmcp::model::{
     JsonObject, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
     ToolAnnotations,
 };
-use rmcp::service::RequestContext;
+use rmcp::service::{RequestContext, RxJsonRpcMessage, TxJsonRpcMessage};
+use rmcp::transport::Transport;
+use rmcp::transport::async_rw::AsyncRwTransport;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt};
-#[cfg(not(test))]
+#[cfg(not(all(test, target_os = "linux")))]
 use rustix::process::kill_process_group;
 use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, setsid, waitid};
 use serde_json::{Map, Value, json};
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 use tests::kill_process_group;
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, BufReader};
 use tokio::signal::unix::{SignalKind, signal};
 
 use super::catalog::{self, Approval, ArgEntry, ArgType, CommandEntry, Stdin, Surface};
@@ -71,7 +73,7 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
         let mut pipe = signal(SignalKind::pipe())?;
         let serving = async {
             server
-                .serve(rmcp::transport::stdio())
+                .serve(Lines::new(tokio::io::stdin(), tokio::io::stdout()))
                 .await
                 .map_err(Failure::command)?
                 .waiting()
@@ -92,6 +94,79 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
     // reading stdin; exit without waiting for it.
     runtime.shutdown_background();
     served
+}
+
+/// Newline-delimited JSON-RPC over a byte stream. Unlike rmcp's own stdio transport, a
+/// line that is not JSON gets the Parse error JSON-RPC 2.0 requires instead of silence.
+struct Lines<R, W: AsyncWrite> {
+    read: BufReader<R>,
+    line: Vec<u8>,
+    write: AsyncRwTransport<RoleServer, tokio::io::Empty, W>,
+}
+
+impl<R: AsyncRead, W: AsyncWrite + Send + Unpin + 'static> Lines<R, W> {
+    fn new(read: R, write: W) -> Self {
+        Self {
+            read: BufReader::new(read),
+            line: Vec::new(),
+            write: AsyncRwTransport::new(tokio::io::empty(), write),
+        }
+    }
+}
+
+impl<R, W> Transport<RoleServer> for Lines<R, W>
+where
+    R: AsyncRead + Send + Unpin,
+    W: AsyncWrite + Send + Unpin + 'static,
+{
+    type Error = std::io::Error;
+
+    fn send(
+        &mut self,
+        item: TxJsonRpcMessage<RoleServer>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
+        self.write.send(item)
+    }
+
+    async fn receive(&mut self) -> Option<RxJsonRpcMessage<RoleServer>> {
+        loop {
+            // A cancelled read leaves its partial line in `self.line` for the next call.
+            if self.read.read_until(b'\n', &mut self.line).await.ok()? == 0 {
+                return None;
+            }
+            let line = self.line.trim_ascii();
+            let line = line.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(line);
+            if line.is_empty() {
+                self.line.clear();
+                continue;
+            }
+            let parsed = serde_json::from_slice::<Value>(line);
+            self.line.clear();
+            let (error, id) = match parsed {
+                Err(_) => (McpError::parse_error("Parse error", None), None),
+                Ok(value) => {
+                    let notification = value.get("method").is_some() && value.get("id").is_none();
+                    let id = value
+                        .get("id")
+                        .and_then(|id| serde_json::from_value(id.clone()).ok());
+                    match serde_json::from_value(value) {
+                        Ok(message) => return Some(message),
+                        // A notification is never answered, even one this server doesn't know.
+                        Err(_) if notification => continue,
+                        Err(_) => (McpError::invalid_request("Invalid request", None), id),
+                    }
+                }
+            };
+            self.write
+                .send(TxJsonRpcMessage::<RoleServer>::error(error, id))
+                .await
+                .ok()?;
+        }
+    }
+
+    async fn close(&mut self) -> Result<(), Self::Error> {
+        self.write.close().await
+    }
 }
 
 struct Server {
@@ -526,6 +601,7 @@ fn words(arg: &ArgEntry, key: &str, value: Value) -> Result<Vec<String>, McpErro
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
     use std::sync::Mutex;
 
     use serde_json::{Value, json};
@@ -533,8 +609,10 @@ mod tests {
 
     use super::*;
 
+    #[cfg(target_os = "linux")]
     static SIGNALLED: Mutex<Vec<(i32, Option<char>)>> = Mutex::new(Vec::new());
 
+    #[cfg(target_os = "linux")]
     pub(super) fn kill_process_group(group: Pid, signal: Signal) -> rustix::io::Result<()> {
         let leader = std::fs::read_to_string(format!("/proc/{}/stat", group.as_raw_pid()))
             .ok()
@@ -573,8 +651,9 @@ mod tests {
         fn connect(server: Server) -> Self {
             let (server_io, client_io) = tokio::io::duplex(1 << 20);
             let server = tokio::spawn(async move {
+                let (read, write) = tokio::io::split(server_io);
                 server
-                    .serve(tokio::io::split(server_io))
+                    .serve(Lines::new(read, write))
                     .await
                     .expect("the handshake completes")
                     .waiting()
@@ -739,6 +818,31 @@ mod tests {
                 .unwrap()
                 .contains(&json!("from"))
         );
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_line_that_is_not_json_gets_a_parse_error_and_the_server_keeps_serving() {
+        let mut client =
+            Client::connect(Server::new(PathBuf::from("/nonexistent/ployz"), Vec::new()));
+        for frame in handshake() {
+            client.send(&frame).await;
+        }
+        let _ = client.reply().await;
+        client.write.write_all(b"{not json\n").await.unwrap();
+        let parse = client.reply().await;
+        assert_eq!(parse["error"]["code"], -32700, "{parse}");
+        assert_eq!(parse["id"], Value::Null, "{parse}");
+        client.send(&json!(["not", "a", "message"])).await;
+        let invalid = client.reply().await;
+        assert_eq!(invalid["error"]["code"], -32600, "{invalid}");
+        client
+            .send(&json!({ "jsonrpc": "2.0", "method": "notifications/unknown" }))
+            .await;
+        client.send(&request(2, "tools/list", json!({}))).await;
+        let listed = client.reply().await;
+        assert_eq!(listed["id"], 2, "{listed}");
+        assert!(listed["result"]["tools"].is_array(), "{listed}");
     }
 
     #[test]
@@ -957,6 +1061,7 @@ mod tests {
         assert_killed(&call_pids(dir.path()).await).await;
     }
 
+    #[cfg(target_os = "linux")]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     #[tokio::test]
     async fn a_finished_call_signals_its_group_before_it_reaps_the_command() {
