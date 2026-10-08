@@ -865,7 +865,6 @@ impl From<LoginError> for Failure {
             LoginError::TokenRefused => Some("ployz token new"),
             LoginError::UnknownOrganization(_) => Some("ployz org ls"),
             LoginError::UnknownCredential(_) => Some("ployz token ls"),
-            LoginError::AlreadyPro => Some("ployz billing manage"),
             LoginError::Unreachable { .. }
             | LoginError::Unsupported(_)
             | LoginError::Status { .. }
@@ -887,7 +886,7 @@ fn login_code(error: &LoginError) -> RpcErrorCode {
         LoginError::Reply(_) | LoginError::Store { .. } | LoginError::Corrupt { .. } => {
             RpcErrorCode::Internal
         }
-        LoginError::OtherCloud { .. } | LoginError::AlreadyPro => RpcErrorCode::Conflict,
+        LoginError::OtherCloud { .. } => RpcErrorCode::Conflict,
         LoginError::SignedOut
         | LoginError::Expired
         | LoginError::Denied

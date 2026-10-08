@@ -85,11 +85,10 @@ fn add(hostname: Option<&str>, port: Option<u16>) -> AddDomain {
     }
 }
 
-/// Cloud's evidence: whether the Organization has Pro, and a ready Cluster Domain.
-fn cloud(pro: bool) -> Trusted {
+/// Cloud's evidence: a ready Cluster Domain.
+fn cloud() -> Trusted {
     Trusted {
         domains: DomainEvidence {
-            custom_domains: pro,
             cluster_domain: Some(ClusterDomain {
                 name: host("acme.ployz.app"),
                 status: ClusterDomainStatus::Ready,
@@ -114,18 +113,18 @@ fn rows(store: &ConfigStore, who: &Actor, trusted: &Trusted) -> Vec<DomainRow> {
 fn a_generated_domain_is_one_per_service_and_unique_in_the_organization() {
     let (store, who) = shop();
     let added = store
-        .write_trusted(&who, &add(None, None), &cloud(false))
+        .write_trusted(&who, &add(None, None), &cloud())
         .unwrap();
     assert_eq!(added.domain.shown(), "web.acme.ployz.app");
     assert_eq!(added.staged.len(), 1);
     // Adding it again keeps it; a port retargets it.
     let again = store
-        .write_trusted(&who, &add(None, None), &cloud(false))
+        .write_trusted(&who, &add(None, None), &cloud())
         .unwrap();
     assert!(again.staged.is_empty());
     assert_eq!(again.environment.revision, added.environment.revision);
     let retargeted = store
-        .write_trusted(&who, &add(None, Some(8080)), &cloud(false))
+        .write_trusted(&who, &add(None, Some(8080)), &cloud())
         .unwrap();
     assert_eq!(retargeted.domain.port, Some(8080));
 
@@ -148,31 +147,20 @@ fn a_generated_domain_is_one_per_service_and_unique_in_the_organization() {
 }
 
 #[test]
-fn custom_domains_need_the_capability_to_add_or_retarget() {
+fn a_custom_domain_is_added_retargeted_and_held_by_one_service() {
     let (store, who) = shop();
-    let refused = store
-        .write_trusted(&who, &add(Some("app.example.com"), None), &cloud(false))
-        .unwrap_err();
-    assert_eq!(refused.code, RpcErrorCode::Unsupported);
-    assert_eq!(refused.details["next"], "ployz billing upgrade");
-
     let added = store
-        .write_trusted(&who, &add(Some("app.example.com"), None), &cloud(true))
+        .write_trusted(&who, &add(Some("app.example.com"), None), &cloud())
         .unwrap();
     assert_eq!(added.domain.shown(), "app.example.com");
-    // The same domain again needs nothing; a new port is a retarget, which does.
     let same = store
-        .write_trusted(&who, &add(Some("app.example.com"), None), &cloud(false))
+        .write_trusted(&who, &add(Some("app.example.com"), None), &cloud())
         .unwrap();
     assert!(same.staged.is_empty());
     let retarget = store
-        .write_trusted(
-            &who,
-            &add(Some("app.example.com"), Some(3000)),
-            &cloud(false),
-        )
-        .unwrap_err();
-    assert_eq!(retarget.code, RpcErrorCode::Unsupported);
+        .write_trusted(&who, &add(Some("app.example.com"), Some(3000)), &cloud())
+        .unwrap();
+    assert_eq!(retarget.domain.port, Some(3000));
 
     // Another Service, in any Environment, can't take it.
     let taken = store
@@ -182,7 +170,7 @@ fn custom_domains_need_the_capability_to_add_or_retarget() {
                 environment: at(Some("staging")),
                 ..add(Some("app.example.com"), None)
             },
-            &cloud(true),
+            &cloud(),
         )
         .unwrap_err();
     assert_eq!(taken.code, RpcErrorCode::Conflict);
@@ -190,7 +178,7 @@ fn custom_domains_need_the_capability_to_add_or_retarget() {
     // Hostnames under the Cluster Domain are Ployz's to generate, never custom.
     for hostname in ["web.acme.ployz.app", "acme.ployz.app"] {
         let generated = store
-            .write_trusted(&who, &add(Some(hostname), None), &cloud(true))
+            .write_trusted(&who, &add(Some(hostname), None), &cloud())
             .unwrap_err();
         assert_eq!(generated.code, RpcErrorCode::InvalidArgument, "{hostname}");
     }
@@ -200,10 +188,10 @@ fn custom_domains_need_the_capability_to_add_or_retarget() {
 fn a_domain_is_removed_by_hostname_or_prefix() {
     let (store, who) = shop();
     store
-        .write_trusted(&who, &add(None, None), &cloud(true))
+        .write_trusted(&who, &add(None, None), &cloud())
         .unwrap();
     store
-        .write_trusted(&who, &add(Some("app.example.com"), None), &cloud(true))
+        .write_trusted(&who, &add(Some("app.example.com"), None), &cloud())
         .unwrap();
     let remove = |domain: &str, trusted: &Trusted| {
         store.write_trusted(
@@ -215,18 +203,18 @@ fn a_domain_is_removed_by_hostname_or_prefix() {
             trusted,
         )
     };
-    let missing = remove("nope.example.com", &cloud(true)).unwrap_err();
+    let missing = remove("nope.example.com", &cloud()).unwrap_err();
     assert_eq!(missing.code, RpcErrorCode::NotFound);
     assert_eq!(
         missing.details["valid_children"],
         json!(["app.example.com", "web.acme.ployz.app"])
     );
     assert!(!missing.message.contains("nope"));
-    remove("App.Example.com", &cloud(true)).unwrap();
+    remove("App.Example.com", &cloud()).unwrap();
     // Without the Cluster Domain, a generated domain goes by its prefix.
     let removed = remove("web", &Trusted::default()).unwrap();
     assert_eq!(removed.staged.len(), 1);
-    assert!(rows(&store, &who, &cloud(true)).is_empty());
+    assert!(rows(&store, &who, &cloud()).is_empty());
 }
 
 fn deployment(n: u8) -> DeploymentId {
@@ -289,16 +277,16 @@ fn apply(store: &ConfigStore, n: u8) -> ployz_core::DeployIntent {
 fn a_generated_domain_deploys_under_the_cluster_domain_frozen_at_admission() {
     let (store, who) = shop();
     store
-        .write_trusted(&who, &add(None, None), &cloud(false))
+        .write_trusted(&who, &add(None, None), &cloud())
         .unwrap();
     // A plan checks everything but the Cluster Domain, which only Cloud holds.
     store.read(&who, &PlanQuery::default()).unwrap();
     let refused = admit(&store, &who, 1, &Trusted::default()).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::Unsupported);
 
-    admit(&store, &who, 1, &cloud(false)).unwrap();
+    admit(&store, &who, 1, &cloud()).unwrap();
     assert_eq!(
-        rows(&store, &who, &cloud(false))[0].reason.as_deref(),
+        rows(&store, &who, &cloud())[0].reason.as_deref(),
         Some("Deploying")
     );
     let intent = serde_json::to_value(apply(&store, 1)).unwrap();
@@ -306,7 +294,7 @@ fn a_generated_domain_deploys_under_the_cluster_domain_frozen_at_admission() {
         intent.to_string().contains("\"web.acme.ployz.app\""),
         "{intent}"
     );
-    let row = &rows(&store, &who, &cloud(false))[0];
+    let row = &rows(&store, &who, &cloud())[0];
     assert_eq!(
         (row.status, row.action.clone()),
         (DomainStatus::Ready, None)
@@ -316,20 +304,20 @@ fn a_generated_domain_deploys_under_the_cluster_domain_frozen_at_admission() {
 #[test]
 fn a_check_sees_fixed_dns_before_the_certificate_retries() {
     let (store, who) = shop();
-    let staged = rows(&store, &who, &cloud(true));
+    let staged = rows(&store, &who, &cloud());
     assert!(staged.is_empty());
     store
-        .write_trusted(&who, &add(Some("app.example.com"), None), &cloud(true))
+        .write_trusted(&who, &add(Some("app.example.com"), None), &cloud())
         .unwrap();
-    let before = &rows(&store, &who, &cloud(true))[0];
+    let before = &rows(&store, &who, &cloud())[0];
     assert_eq!(
         (before.status, before.action.clone()),
         (DomainStatus::SettingUp, Some(DomainAction::Deploy))
     );
-    admit(&store, &who, 1, &cloud(true)).unwrap();
+    admit(&store, &who, 1, &cloud()).unwrap();
     apply(&store, 1);
 
-    let mut observed = cloud(true);
+    let mut observed = cloud();
     observed.domains.certificates = Some(vec![
         serde_json::from_value(json!({
             "hostname": "app.example.com", "status": "failure",
@@ -371,9 +359,9 @@ fn a_check_sees_fixed_dns_before_the_certificate_retries() {
 fn a_retry_ships_the_cluster_domain_its_source_froze() {
     let (store, who) = shop();
     store
-        .write_trusted(&who, &add(None, None), &cloud(false))
+        .write_trusted(&who, &add(None, None), &cloud())
         .unwrap();
-    admit(&store, &who, 1, &cloud(false)).unwrap();
+    admit(&store, &who, 1, &cloud()).unwrap();
     store
         .write(
             &who,
@@ -409,18 +397,18 @@ fn a_custom_domain_under_the_cluster_domain_is_refused() {
         "a.b.acme.ployz.app",
     ] {
         let refused = store
-            .write_trusted(&who, &add(Some(hostname), None), &cloud(true))
+            .write_trusted(&who, &add(Some(hostname), None), &cloud())
             .unwrap_err();
         assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{hostname}");
     }
     store
-        .write_trusted(&who, &add(Some("notacme.ployz.app"), None), &cloud(true))
+        .write_trusted(&who, &add(Some("notacme.ployz.app"), None), &cloud())
         .unwrap();
 }
 
-/// `cloud(false)` with `hostname` published by `service` in Namespace `namespace`.
+/// `cloud()` with `hostname` published by `service` in Namespace `namespace`.
 fn publishing(hostname: &str, namespace: &str, service: &str) -> Trusted {
-    let mut trusted = cloud(false);
+    let mut trusted = cloud();
     trusted.domains.published.push(PublishedHostname {
         hostname: host(hostname),
         namespace: ployz_core::Namespace::parse(namespace).unwrap(),
@@ -441,7 +429,7 @@ fn set_prefix(environment: Option<&str>, prefix: &str) -> SetGeneratedDomain {
 #[test]
 fn a_generated_prefix_changes_to_a_free_dns_label() {
     let (store, who) = shop();
-    let trusted = cloud(false);
+    let trusted = cloud();
     store
         .write_trusted(&who, &add(None, None), &trusted)
         .unwrap();
@@ -522,7 +510,7 @@ fn a_new_generated_prefix_avoids_published_hostnames() {
 #[test]
 fn a_deploy_refuses_a_hostname_another_namespace_publishes_naming_its_owner() {
     let (store, who) = shop();
-    let trusted = cloud(false);
+    let trusted = cloud();
     store
         .write_trusted(&who, &add(None, None), &trusted)
         .unwrap();

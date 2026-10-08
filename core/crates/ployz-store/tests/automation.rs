@@ -353,13 +353,7 @@ fn wait_for_ci_holds_a_deploy_until_every_suite_passes() {
 #[test]
 fn a_push_deploy_refuses_a_hostname_another_namespace_publishes() {
     let (store, who) = shop();
-    let pro = Trusted {
-        domains: ployz_store::DomainEvidence {
-            custom_domains: true,
-            ..ployz_store::DomainEvidence::default()
-        },
-        ..Trusted::default()
-    };
+    let trusted = Trusted::default();
     let hostname = ployz_store::Hostname::parse("shop.example.com").unwrap();
     store
         .write_trusted(
@@ -370,7 +364,7 @@ fn a_push_deploy_refuses_a_hostname_another_namespace_publishes() {
                 hostname: Some(hostname.clone()),
                 port: None,
             },
-            &pro,
+            &trusted,
         )
         .unwrap();
     publish(&store, &who);

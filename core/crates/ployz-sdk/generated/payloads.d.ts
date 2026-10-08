@@ -431,10 +431,6 @@ checks: Array<PullRequestRef>, } & ({ "written": "project" } & ProjectCreated | 
 
 export type ConfigDomainEvidence = {
 /**
- * Whether the Organization may add custom domains: Pro, or a self-hosted Cloud.
- */
-custom_domains: boolean,
-/**
  * The Organization's Cluster Domain, once reserved.
  */
 cluster_domain: ClusterDomain | null,

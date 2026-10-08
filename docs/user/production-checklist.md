@@ -25,8 +25,8 @@ list. Each item links to the page that does it.
   memory and starve the others. See [Scaling](services/scaling.md#run-more-replicas).
 - **Wait for CI.** A push deploys at once, even when your tests fail. See
   [Wait for CI](deploy/github.md#wait-for-ci).
-- **Use your own domain.** Generated addresses are for getting started. Custom domains need Pro,
-  at $9 a month. See [Add a custom domain](services/domains.md#add-a-custom-domain).
+- **Use your own domain.** Generated addresses are for getting started. See
+  [Add a custom domain](services/domains.md#add-a-custom-domain).
 - **Look after your servers.** Ployz doesn't install OS updates or harden your servers. Log in
   with SSH keys, not passwords, and turn on automatic security updates (`unattended-upgrades` on
   Ubuntu). If you add a firewall, keep [these ports](servers/add-a-server.md#open-the-firewall)

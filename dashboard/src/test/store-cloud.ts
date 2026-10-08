@@ -80,7 +80,7 @@ export const acmeWeb = (access: "installation" | "public" = "installation"): Con
     repository: "acme/web", repository_id: 42, default_branch: "main", branches: [],
     access: access === "public" ? { type: "public" } : { type: "github-installation", installationId: 7 },
   }],
-  domains: { custom_domains: false, cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] },
+  domains: { cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] },
 });
 
 /**

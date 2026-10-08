@@ -285,7 +285,6 @@ mod tests {
 
     fn evidence(certificate: Option<(&str, Option<&str>)>) -> DomainEvidence {
         DomainEvidence {
-            custom_domains: true,
             cluster_domain: Some(ClusterDomain {
                 name: host("acme.ployz.app"),
                 status: ClusterDomainStatus::Ready,

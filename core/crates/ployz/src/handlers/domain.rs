@@ -1,6 +1,6 @@
 //! `ployz domain`: a Service's public domains in the Config Store. A generated one
-//! lives under the Organization's Cluster Domain; a custom one needs Ployz Pro. Both
-//! are staged until a Deploy, and each reads Ready, Setting up or Needs attention
+//! lives under the Organization's Cluster Domain; a custom one is any hostname you own.
+//! Both are staged until a Deploy, and each reads Ready, Setting up or Needs attention
 //! with at most one action.
 
 use clap::{ArgMatches, Command};
@@ -20,7 +20,7 @@ pub(crate) fn command() -> Command {
         .about("Manage public domains")
         .subcommand(
             store::scoped(Command::new("add").about(
-                "Give a Service a domain: HOST for a custom one (Ployz Pro), none for a generated one",
+                "Give a Service a domain: HOST for a custom one, none for a generated one",
             ))
             .arg(positional("service", true))
             .arg(positional("host", false).help("Custom hostname, like app.example.com"))

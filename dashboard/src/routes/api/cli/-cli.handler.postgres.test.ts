@@ -39,7 +39,6 @@ const hostedPolar: PolarService = {
   mode: "hosted",
   productId: "pro",
   listActiveSubscriptions: () => Effect.die("billing reads the cached row"),
-  createCheckout: () => Effect.succeed({ url: "https://polar.test/checkout" }),
   createCustomerPortal: () => Effect.succeed({ customerPortalUrl: "https://polar.test/portal" }),
 };
 
@@ -125,7 +124,7 @@ type Reply = {
   readonly tokens?: ReadonlyArray<{ readonly id: string; readonly current: boolean; readonly expired: boolean }>;
   readonly devices?: ReadonlyArray<{ readonly id: string; readonly current: boolean }>;
   readonly removed?: boolean | { readonly id: string; readonly kind: string };
-  readonly billing?: { readonly self_hosted: boolean; readonly pro: boolean; readonly custom_domains: boolean };
+  readonly billing?: { readonly self_hosted: boolean; readonly pro: boolean };
   readonly url?: string;
   readonly connections?: ReadonlyArray<{ readonly machine_id: string; readonly management: string }>;
   readonly unreachable?: ReadonlyArray<string>;
@@ -324,22 +323,21 @@ it.live(
 );
 
 it.live(
-  "a Self-hosted Cloud grants custom domains and has no Billing Plan",
+  "a Self-hosted Cloud has no Billing Plan",
   () =>
     Effect.gen(function* () {
       const selfHosted = yield* cliLayer({ mode: "self_hosted" });
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         const billing = yield* cli("GET", "billing", alice);
-        assert.deepInclude(billing.json.billing, { self_hosted: true, pro: false, custom_domains: true });
-        assert.strictEqual((yield* cli("POST", "billing/checkout", alice)).status, 404);
+        assert.deepInclude(billing.json.billing, { self_hosted: true, pro: false });
       }).pipe(Effect.provide(selfHosted));
     }),
   60_000,
 );
 
 it.live(
-  "hosted billing reports the plan and the Custom Domain Capability from the cached subscription",
+  "hosted billing reports the plan from the cached subscription and sells no checkout",
   () =>
     Effect.gen(function* () {
       const hosted = yield* cliLayer(hostedPolar);
@@ -347,8 +345,8 @@ it.live(
         const database = yield* Database;
         const alice = yield* signUp("carol");
         const free = yield* cli("GET", "billing", alice);
-        assert.deepInclude(free.json.billing, { self_hosted: false, pro: false, custom_domains: false });
-        assert.strictEqual((yield* cli("POST", "billing/checkout", alice)).json.url, "https://polar.test/checkout");
+        assert.deepInclude(free.json.billing, { self_hosted: false, pro: false });
+        assert.strictEqual((yield* cli("POST", "billing/checkout", alice)).status, 404);
 
         yield* database.drizzle.insert(organizationBillingState).values({
           organizationId: alice.organization.id,
@@ -358,8 +356,7 @@ it.live(
           syncedAt: new Date(),
         });
         const pro = yield* cli("GET", "billing", alice);
-        assert.deepInclude(pro.json.billing, { self_hosted: false, pro: true, custom_domains: true });
-        assert.strictEqual((yield* cli("POST", "billing/checkout", alice)).status, 409);
+        assert.deepInclude(pro.json.billing, { self_hosted: false, pro: true });
         assert.strictEqual((yield* cli("POST", "billing/portal", alice)).json.url, "https://polar.test/portal");
       }).pipe(Effect.provide(hosted));
     }),

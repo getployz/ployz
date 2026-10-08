@@ -2,7 +2,6 @@ import "@tanstack/react-start/server-only";
 import { Resolver } from "node:dns/promises";
 import type { ClusterDomainStatus as StoreClusterDomainStatus, ConfigDomainEvidence, DnsLookup, PublishedHostname, RuntimeWatchView } from "@ployz/sdk";
 import { Clock, Effect, Option, Schema } from "effect";
-import { customDomainsAllowed } from "#/modules/billing/custom-domain-capability";
 import { clusterDomainStatus } from "#/modules/cluster-domain/cluster-domain";
 import { loadClusterDomain, reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import type { OrganizationClusterDomain } from "#/modules/cluster-domain/tables";
@@ -25,7 +24,7 @@ const DomainCall = Schema.Union([
   Schema.Struct({ query: Schema.Literal("domain"), environment: Schema.optional(EnvironmentRef), domain: Schema.String }),
 ]);
 
-const nothing: ConfigDomainEvidence = { custom_domains: false, cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] };
+const nothing: ConfigDomainEvidence = { cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] };
 
 /** The Cluster Domain as the Store reads it: its name and what the last sync found. */
 function clusterDomain(row: OrganizationClusterDomain | null): ConfigDomainEvidence["cluster_domain"] {
@@ -117,8 +116,7 @@ export const lookUpHostname = (hostname: string) => Effect.promise(async (): Pro
   : Effect.void));
 
 /**
- * What Cloud observes of the Organization's public domains, for the Store calls that need it. Adding a domain gets
- * the custom-domain capability; admitting a generated domain reserves the Cluster Domain first; reading domains
+ * What Cloud observes of the Organization's public domains, for the Store calls that need it. Admitting a generated domain reserves the Cluster Domain first; reading domains
  * observes the Cluster (or reuses an observation from the last few seconds); checking one also looks up its DNS now and asks for a Cluster Domain sync. Nothing here comes
  * from the caller.
  */
@@ -134,7 +132,6 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
     if (wanted.command !== "admit") {
       const edit: ConfigDomainEvidence = {
         ...nothing,
-        custom_domains: wanted.command === "add_domain" && (yield* customDomainsAllowed(organizationId)),
         cluster_domain: clusterDomain(yield* loadClusterDomain(organizationId)),
       };
       const published = yield* recentlyPublished(organizationId);
