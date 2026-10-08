@@ -127,7 +127,6 @@ pub(crate) struct ArgEntry {
     pub value: bool,
     #[serde(rename = "type")]
     pub kind: ArgType,
-    /// Whether it takes several values.
     pub multiple: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,

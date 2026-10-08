@@ -47,6 +47,19 @@ to `ployz --help` and `ployz schema --json` for every command and setting.
 To set it up by hand, follow the steps in [ployz.sh/agent.md](https://ployz.sh/agent.md)
 yourself. Run step 2 again to update the skill.
 
+### Give the agent Ployz tools
+
+`ployz mcp` serves the Cloud commands to your agent as MCP tools. Add it once:
+
+```sh
+claude mcp add ployz -- ployz mcp
+```
+
+For Codex, run `codex mcp add ployz -- ployz mcp`. Each tool runs one `ployz` command with
+`--json`, signed in as you. Tools that can remove something live, such as `deploy` and
+`server rm`, are marked destructive, so the agent asks you before it runs them. Local commands
+such as `login` and `ctx use` are not tools.
+
 ## Deploy a directory
 
 > [!WARNING]

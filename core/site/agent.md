@@ -51,12 +51,25 @@ check that the code matches, and click **Approve**. Then wait for the approval:
 ployz login --wait
 ```
 
-## 4. Finish
+## 4. Add the Ployz tools
+
+`ployz mcp` serves the Cloud commands as MCP tools. Register it with the agent you are running
+in:
+
+```sh
+claude mcp add ployz -- ployz mcp
+```
+
+In Codex, run `codex mcp add ployz -- ployz mcp` instead. If the server is already registered,
+leave it as it is.
+
+## 5. Finish
 
 Tell the user:
 
-> Ployz is set up. The CLI is installed, the Ployz skill is in ~/.agents/skills/ployz, and
-> you're signed in. Restart or reload your agent so it picks up the skill.
+> Ployz is set up. The CLI is installed, the Ployz skill is in ~/.agents/skills/ployz, the
+> Ployz tools are registered, and you're signed in. Restart or reload your agent so it picks
+> up the skill and the tools.
 
 Name `~/.claude/skills/ployz` as well if step 2 wrote it, and leave out any step that didn't
 succeed, with what went wrong.

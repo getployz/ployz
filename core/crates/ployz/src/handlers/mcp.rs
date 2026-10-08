@@ -191,19 +191,24 @@ fn arg_schema(arg: &ArgEntry) -> Value {
     } else {
         item
     };
-    let mut description = arg.help.clone().unwrap_or_default();
+    let mut sentences: Vec<String> = arg
+        .help
+        .iter()
+        .map(|help| help.trim_end_matches('.').to_owned())
+        .collect();
     if !arg.conflicts.is_empty() {
         let others: Vec<String> = arg
             .conflicts
             .iter()
             .map(|name| format!("`{name}`"))
             .collect();
-        description = format!("{description} Cannot be used with {}.", others.join(", "))
-            .trim_start()
-            .to_owned();
+        sentences.push(format!("Cannot be used with {}", others.join(", ")));
     }
-    if !description.is_empty() {
-        schema.insert("description".into(), json!(description));
+    if !sentences.is_empty() {
+        schema.insert(
+            "description".into(),
+            json!(format!("{}.", sentences.join(". "))),
+        );
     }
     if let (Some(default), false) = (&arg.default, arg.multiple) {
         let default = match arg.kind {
@@ -236,6 +241,9 @@ fn argv(entry: &CommandEntry, arguments: JsonObject) -> Result<Vec<String>, McpE
                 )
             })?;
         let values = words(arg, &key, value)?;
+        if values.is_empty() {
+            continue;
+        }
         match arg.index {
             Some(index) => positionals.push((index, values)),
             None if !arg.value => {
@@ -246,6 +254,20 @@ fn argv(entry: &CommandEntry, arguments: JsonObject) -> Result<Vec<String>, McpE
             None => argv.extend(values.into_iter().map(|word| format!("--{key}={word}"))),
         }
     }
+    if let Some(missing) = entry
+        .args
+        .iter()
+        .find(|arg| arg.required && !arg_given(arg, &argv, &positionals))
+    {
+        return Err(McpError::invalid_params(
+            format!(
+                "`{}` needs `{}`",
+                tool_name(&entry.command),
+                property(missing)
+            ),
+            None,
+        ));
+    }
     argv.push("--json".to_owned());
     positionals.sort_by_key(|(index, _)| *index);
     if !positionals.is_empty() {
@@ -253,6 +275,17 @@ fn argv(entry: &CommandEntry, arguments: JsonObject) -> Result<Vec<String>, McpE
         argv.extend(positionals.into_iter().flat_map(|(_, words)| words));
     }
     Ok(argv)
+}
+
+fn arg_given(arg: &ArgEntry, argv: &[String], positionals: &[(usize, Vec<String>)]) -> bool {
+    match arg.index {
+        Some(index) => positionals.iter().any(|(given, _)| *given == index),
+        None => {
+            let flag = format!("--{}", property(arg));
+            argv.iter()
+                .any(|word| word == &flag || word.starts_with(&format!("{flag}=")))
+        }
+    }
 }
 
 /// One argument's value as command-line words; null is the same as leaving it out.
@@ -296,7 +329,6 @@ mod tests {
 
     use super::*;
 
-    /// Writes each frame to a server over an in-memory pipe and reads one reply per request.
     async fn exchange(frames: &[Value]) -> Vec<Value> {
         let (server_io, client_io) = tokio::io::duplex(1 << 20);
         let server = tokio::spawn(async move {
@@ -382,7 +414,7 @@ mod tests {
             no_reset["description"]
                 .as_str()
                 .unwrap()
-                .contains("`--accept-volume-loss`"),
+                .ends_with("unreachable. Cannot be used with `--accept-volume-loss`."),
             "{no_reset}"
         );
     }
@@ -401,11 +433,21 @@ mod tests {
             "tools/call",
             json!({ "name": "server_rm", "arguments": { "no-reset": "yes" } }),
         ));
-        frames.push(request(4, "tools/list", json!({})));
+        frames.push(request(
+            4,
+            "tools/call",
+            json!({ "name": "service_add", "arguments": { "name": null } }),
+        ));
+        frames.push(request(5, "tools/list", json!({})));
         let replies = exchange(&frames).await;
         assert_eq!(replies[1]["error"]["code"], -32602, "{}", replies[1]);
         assert_eq!(replies[2]["error"]["code"], -32602, "{}", replies[2]);
-        assert!(replies[3]["result"]["tools"].is_array(), "{}", replies[3]);
+        assert_eq!(
+            replies[3]["error"]["message"], "`service_add` needs `name`",
+            "{}",
+            replies[3]
+        );
+        assert!(replies[4]["result"]["tools"].is_array(), "{}", replies[4]);
     }
 
     #[test]
