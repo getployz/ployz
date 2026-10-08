@@ -411,6 +411,40 @@ fn a_removed_generated_domain_is_named_under_the_cluster_domain_it_runs_under() 
 }
 
 #[test]
+fn a_generated_domain_added_in_flight_is_named_under_its_deployments_cluster_domain() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &cloud()).unwrap();
+    apply(&store, 1);
+    store
+        .write_trusted(&who, &add(None, None), &cloud())
+        .unwrap();
+    let mut other = cloud();
+    other.domains.cluster_domain = Some(ClusterDomain {
+        name: host("other.ployz.app"),
+        status: ClusterDomainStatus::Ready,
+    });
+    admit(&store, &who, 2, &other).unwrap();
+    store
+        .write_trusted(
+            &who,
+            &RemoveDomain {
+                environment: EnvironmentRef::default(),
+                domain: "web".into(),
+            },
+            &cloud(),
+        )
+        .unwrap();
+    assert_eq!(
+        effects(&store, &who),
+        [(
+            DestructiveKind::RemovesDomain,
+            "web.other.ployz.app".to_owned(),
+            "web.managedHostnames".to_owned()
+        )]
+    );
+}
+
+#[test]
 fn a_check_sees_fixed_dns_before_the_certificate_retries() {
     let (store, who) = shop();
     let staged = rows(&store, &who, &cloud());
