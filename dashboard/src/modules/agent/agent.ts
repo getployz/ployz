@@ -30,8 +30,14 @@ export const approvalInterrupt = defineInterrupt({
   responseSchema: portable(Schema.Struct({}), { type: "object", properties: {}, additionalProperties: false }),
 });
 
-/** What every sidebar tool hands the model: the Store's answer or its refusal, as `ployz --json` prints them. */
-export type ToolOutcome<T = unknown> = { ok: true; value: T } | { ok: false; refusal: StoreRefusal } | { ok: false; cancelled: true };
+/**
+ * What every sidebar tool hands the model: the Store's answer or its refusal, as `ployz --json` prints them. A Publish or
+ * Deploy the Store reviewed for an Organization that asks, and let through without asking, says it destroyed nothing.
+ */
+export type ToolOutcome<T = unknown> =
+  | { ok: true; value: T; nothing_destroyed?: true }
+  | { ok: false; refusal: StoreRefusal }
+  | { ok: false; cancelled: true };
 
 export type DeployOutcome = ToolOutcome<Extract<ConfigWritten, { written: "deployment" }>>;
 

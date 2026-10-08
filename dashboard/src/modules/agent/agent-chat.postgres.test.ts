@@ -23,6 +23,7 @@ const THREAD = "thread-1";
 const Outcome = Schema.fromJsonString(Schema.Struct({
   ok: Schema.Boolean,
   value: Schema.optional(Schema.Unknown),
+  nothing_destroyed: Schema.optional(Schema.Literal(true)),
   cancelled: Schema.optional(Schema.Boolean),
   refusal: Schema.optional(Schema.Struct({ code: Schema.String, message: Schema.String })),
 }));
@@ -99,7 +100,7 @@ it.live("a read tool answers straight from the Store", () =>
     const answered = yield* say("list services");
     expect(answered.interrupts).toEqual([]);
     expect(answered.results).toMatchObject([{ ok: true }]);
-    expect(answered.said).toBe("Done.");
+    expect(answered.said).toBe("Services: web.");
   }));
 
 it.live("a Deploy that destroys web waits on a human, and runs exactly once after they approve", () =>
@@ -116,6 +117,7 @@ it.live("a Deploy that destroys web waits on a human, and runs exactly once afte
     const resumed = yield* resume("resolved");
     expect(resumed.interrupts).toEqual([]);
     expect(resumed.results).toMatchObject([{ ok: true, value: { written: "deployment" } }]);
+    expect(resumed.results[0]).not.toHaveProperty("nothing_destroyed");
     expect(writes.mock.calls.map(([, command, trusted]) => [command.command, trusted?.approval]))
       .toEqual([["admit", { approved: approval.digest }]]);
     expect(resumed.said).toBe("Done.");
@@ -167,6 +169,7 @@ it.live("an Organization that doesn't ask deploys the destructive plan without a
     const answered = yield* say("deploy");
     expect(answered.interrupts).toEqual([]);
     expect(answered.results).toMatchObject([{ ok: true, value: { written: "deployment" } }]);
+    expect(answered.results[0]).not.toHaveProperty("nothing_destroyed");
     expect(yield* pending).toEqual([]);
   }));
 
@@ -176,6 +179,6 @@ it.live("a Deploy that destroys nothing runs without an interrupt", () =>
     yield* write({ command: "create_service", id: "00000000-0000-4000-8000-0000000a6102", environment: here, name: "cache", image: "redis:7" });
     const answered = yield* say("deploy");
     expect(answered.interrupts).toEqual([]);
-    expect(answered.results).toMatchObject([{ ok: true, value: { written: "deployment" } }]);
+    expect(answered.results).toMatchObject([{ ok: true, value: { written: "deployment" }, nothing_destroyed: true }]);
     expect(yield* pending).toEqual([]);
   }));

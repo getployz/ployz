@@ -37,6 +37,7 @@ const runGated = Effect.fn("Agent.runGated")(function* (caller: Caller, command:
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
   if (!trusted.ok) return { outcome: { ok: false, refusal: trusted.refusal } } satisfies Gated;
   const result = yield* callStore(caller.organization.id, caller.userId, { operation: "write", command }, AGENT, trusted.approval);
+  if (result.ok && trusted.approval === "required") return { outcome: { ...result, nothing_destroyed: true } } satisfies Gated;
   if (result.ok || result.refusal.code !== "approval_required") return { outcome: result } satisfies Gated;
   const asked: StoreRefusal = yield* requestApproval(caller, command, result.refusal);
   const recorded = Schema.decodeUnknownOption(ApprovalAsked)(asked.details);

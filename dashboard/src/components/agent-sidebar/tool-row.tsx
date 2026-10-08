@@ -28,6 +28,7 @@ const Deployed = Schema.Struct({
     started_at: Schema.NullOr(Schema.Number),
     ended_at: Schema.NullOr(Schema.Number),
   }),
+  nothing_destroyed: Schema.optional(Schema.Literal(true)),
 });
 const Refused = Schema.Struct({
   ok: Schema.Literal(false),
@@ -49,20 +50,16 @@ export function toolOutcome(call: ToolCallPart, result: ToolResultPart | undefin
   return Schema.decodeUnknownOption(Schema.fromJsonString(Outcome))(result.content);
 }
 
-/** The writes that ask a human when their plan destroys something. */
-export const GATED_TOOLS: ReadonlySet<string> = new Set(["deploy", "publish"]);
-
 /**
  * One tool call, compact: a Deployment it started as a Run card, a denial with its reason, a refusal with its message,
- * anything else as its command. `asked` says whether the call waited on a human, so a gated write that didn't says so.
+ * anything else as its command.
  */
-export function ToolRow({ organizationSlug, scope, name, outcome, done, asked }: {
+export function ToolRow({ organizationSlug, scope, name, outcome, done }: {
   organizationSlug: string;
   scope: CollectionScope;
   name: string;
   outcome: Option.Option<Outcome>;
   done: boolean;
-  asked: boolean;
 }) {
   const command = name.replaceAll("_", " ");
   if (Option.isNone(outcome)) {
@@ -78,7 +75,7 @@ export function ToolRow({ organizationSlug, scope, name, outcome, done, asked }:
     return (
       <div className="flex flex-col gap-1">
         <RunCard organizationSlug={organizationSlug} scope={scope} deployment={answer.value} />
-        {GATED_TOOLS.has(name) && !asked && <p className="text-xs text-muted-foreground">Didn't ask. Nothing destroyed.</p>}
+        {answer.nothing_destroyed && <p className="text-xs text-muted-foreground">Didn't ask. Nothing destroyed.</p>}
       </div>
     );
   }

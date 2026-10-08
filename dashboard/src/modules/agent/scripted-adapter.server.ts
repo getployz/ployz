@@ -60,9 +60,8 @@ const text = ({ content }: ModelMessage) =>
 /**
  * `PLOYZ_AGENT_STUB=1`'s model. It reads the member's latest message and the tool results since: "list services" lists
  * them by name, "remove <service>" and "drop <volume>" stage their removal, "publish" publishes, and "deploy" deploys the
- * Environment. After a Deploy refused for losing a
- * Volume's data, "deploy, accepting the volume loss" deploys again accepting exactly what the Store named. A denial is
- * quoted, never retried.
+ * Environment. After a Deploy refused for losing a Volume's data, "deploy, accepting the volume loss" deploys again
+ * accepting exactly what the Store named. A denial is quoted, never retried.
  */
 export function stubScript(messages: ReadonlyArray<ModelMessage>): ScriptedTurn {
   const asked = messages.map((message) => message.role).lastIndexOf("user");

@@ -27,8 +27,8 @@ async function show(row: (client: QueryClient) => ReactNode, seed?: (client: Que
 }
 
 it("draws a Deployment the agent started in the Deployment Page's words, and links it once the Store has it", async () => {
-  const outcome = toolOutcome(call("deploy", { ok: true, value: deployed }), undefined);
-  const row = () => <ToolRow organizationSlug="acme" scope={scope} name="deploy" outcome={outcome} done asked={false} />;
+  const outcome = toolOutcome(call("deploy", { ok: true, value: deployed, nothing_destroyed: true }), undefined);
+  const row = () => <ToolRow organizationSlug="acme" scope={scope} name="deploy" outcome={outcome} done />;
   await show(row);
   expect(screen.getByText("Deploying")).toBeTruthy();
   expect(screen.queryByRole("link")).toBeNull();
@@ -48,26 +48,26 @@ it("draws a Deployment the agent started in the Deployment Page's words, and lin
   expect(screen.getByRole("link", { name: "Deployment #3" }).getAttribute("href")).toBe("/cloud/acme/shop/production/deployments/d3");
 });
 
-it("reads the result part's JSON after a reload, and keeps quiet about asking when the Deploy asked", async () => {
+it("reads the result part's JSON after a reload, and says nothing about destruction the gate did not rule out", async () => {
   const outcome = toolOutcome(call("deploy", undefined), { type: "tool-result", toolCallId: "c1", content: JSON.stringify({ ok: true, value: deployed }), state: "complete" });
-  await show(() => <ToolRow organizationSlug="acme" scope={scope} name="deploy" outcome={outcome} done asked />);
+  await show(() => <ToolRow organizationSlug="acme" scope={scope} name="deploy" outcome={outcome} done />);
   expect(screen.getByText("Deploying")).toBeTruthy();
   expect(screen.queryByText("Didn't ask. Nothing destroyed.")).toBeNull();
 });
 
 it("gives a denial's reason, and a refusal's message", async () => {
   const denied = toolOutcome(call("deploy", { ok: false, refusal: { code: "approval_denied", message: "denied", details: { approval: { reason: "keep the data" } } } }), undefined);
-  await show(() => <ToolRow organizationSlug="acme" scope={scope} name="deploy" outcome={denied} done asked />);
+  await show(() => <ToolRow organizationSlug="acme" scope={scope} name="deploy" outcome={denied} done />);
   expect(screen.getByText("Denied: keep the data")).toBeTruthy();
   cleanup();
 
   const refused = toolOutcome(call("service_rm", { ok: false, refusal: { code: "not_found", message: "No service named api." } }), undefined);
-  await show(() => <ToolRow organizationSlug="acme" scope={scope} name="service_rm" outcome={refused} done asked={false} />);
+  await show(() => <ToolRow organizationSlug="acme" scope={scope} name="service_rm" outcome={refused} done />);
   expect(screen.getByText("No service named api.")).toBeTruthy();
 });
 
 it("names any other call by its command", async () => {
   const outcome = toolOutcome(call("project_ls", [{ name: "shop" }]), undefined);
-  await show(() => <ToolRow organizationSlug="acme" scope={scope} name="project_ls" outcome={outcome} done asked={false} />);
+  await show(() => <ToolRow organizationSlug="acme" scope={scope} name="project_ls" outcome={outcome} done />);
   expect(screen.getByText("ployz project ls")).toBeTruthy();
 });

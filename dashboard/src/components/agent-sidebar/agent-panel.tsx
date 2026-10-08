@@ -134,7 +134,7 @@ function Message({ organizationSlug, scope, message, asked, bound }: {
             {approvalId && <ApprovalCard organizationSlug={organizationSlug} id={approvalId} autoFocus={waitingOn !== undefined} onSettled={settle} />}
             {(!approvalId || Option.isSome(outcome)) && (
               <ToolRow organizationSlug={organizationSlug} scope={scope} name={part.name} outcome={outcome}
-                done={part.state === "complete" || results.has(part.id)} asked={approvalId !== undefined} />
+                done={part.state === "complete" || results.has(part.id)} />
             )}
           </div>
         );
