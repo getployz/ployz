@@ -161,14 +161,16 @@ export async function executeProcessMachineRemoveOnFailure({
 export async function executeCancelMachineRemove({
   event,
   step,
+  processFunctionId,
 }: {
   event: unknown;
   step: StepTools;
+  processFunctionId: string;
 }) {
   const decoded = await step.run("decode-machine-remove-cancellation-event", () =>
     decodeInngestEnvelope(inngestFunctionCancelledEnvelopeSchema)(event),
   );
-  if (decoded.data.function_id !== PROCESS_MACHINE_REMOVE_FUNCTION_ID) {
+  if (decoded.data.function_id !== processFunctionId) {
     return { skipped: true };
   }
   const runId = decoded.data.run_id;
@@ -200,8 +202,9 @@ export const createProcessMachineRemove = (inngest: PloyzInngest) =>
     }),
   );
 
-export const createCancelMachineRemove = (inngest: PloyzInngest) =>
-  inngest.createFunction(
+export const createCancelMachineRemove = (inngest: PloyzInngest) => {
+  const processFunctionId = createProcessMachineRemove(inngest).id(inngest.id);
+  return inngest.createFunction(
   {
     id: "cancel-machine-remove",
     retries: 3,
@@ -209,5 +212,6 @@ export const createCancelMachineRemove = (inngest: PloyzInngest) =>
     concurrency: [{ key: "event.data.run_id", limit: 1 }],
   },
   async ({ event, step }) =>
-    executeCancelMachineRemove({ event, step }),
+    executeCancelMachineRemove({ event, step, processFunctionId }),
   );
+};
