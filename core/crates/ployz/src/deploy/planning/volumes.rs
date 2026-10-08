@@ -28,6 +28,7 @@ use super::placement::PlacementReservations;
 pub(super) struct VolumePlan<'snapshot> {
     snapshot: &'snapshot DeploySnapshot,
     namespace: Namespace,
+    volume_names: &'snapshot BTreeMap<DockerVolumeName, String>,
     assignments: BTreeMap<MachineId, BTreeMap<ServiceName, ServiceStorageSpec>>,
 }
 
@@ -66,6 +67,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
     pub(super) fn new(
         snapshot: &'snapshot DeploySnapshot,
         namespace: &Namespace,
+        volume_names: &'snapshot BTreeMap<DockerVolumeName, String>,
         target: &[RequestedServiceSpec],
         requested: &[RequestedServiceSpec],
     ) -> Result<Self, PlanError> {
@@ -73,6 +75,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
         let plan = Self {
             snapshot,
             namespace: namespace.clone(),
+            volume_names,
             assignments: BTreeMap::new(),
         };
         plan.validate_provisioned_volume_definitions(target)?;
@@ -161,8 +164,12 @@ impl<'snapshot> VolumePlan<'snapshot> {
             if let Some(name) = managed_volume_name(volume) {
                 let copies = self.copies_without_writer(name);
                 if !copies.is_empty() {
+                    let authored = self.volume_names.get(name).map_or_else(
+                        || Namespace::declared_volume_name(name).unwrap_or(name.as_str()),
+                        String::as_str,
+                    );
                     return Err(PlanError::NoWriter {
-                        name: name.clone(),
+                        name: authored.to_owned(),
                         copies,
                     });
                 }

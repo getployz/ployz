@@ -505,8 +505,8 @@ pub enum PlanError {
     /// Every copy of a Managed Volume is a slot or mid-switch; nothing can mount it.
     #[error("{}", ployz_core::no_writer_message(.name, .copies))]
     NoWriter {
-        /// The Docker Volume without a writer.
-        name: DockerVolumeName,
+        /// The Volume without a writer, as its owner named it.
+        name: String,
         /// Each copy and its role, in Machine order.
         copies: Vec<ployz_core::KnownCopy>,
     },

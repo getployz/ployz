@@ -103,6 +103,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
         .collect::<Result<Vec<_>, ConfigError>>()?;
     let dependencies = deployment_dependencies(&snapshots, &input.lineages);
     let mut target: Vec<RequestedServiceSpec> = Vec::new();
+    let mut volume_names = BTreeMap::new();
     for (parsed, snapshot) in snapshots {
         let ServiceConfig {
             settings: config,
@@ -183,7 +184,11 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             let name = format!("vol-{}", mount.volume_resource_id);
             let reference: crate::ServiceVolumeReference =
                 name.clone().try_into().map_err(lowering_error)?;
-            let name = name.try_into().map_err(lowering_error)?;
+            let name = crate::DockerVolumeName::parse(name).map_err(lowering_error)?;
+            volume_names.insert(
+                input.namespace.volume_name(&name),
+                mount.volume_name.clone(),
+            );
             let source = match storage {
                 VolumeKind::Docker {} => RawVolumeSource::Ordinary {
                     name,
@@ -351,7 +356,8 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             selected,
         },
     )
-    .with_dependencies(dependencies))
+    .with_dependencies(dependencies)
+    .with_volume_names(volume_names))
 }
 
 fn command_healthcheck(command: &str, timeout_seconds: u16) -> HealthcheckSpec {
