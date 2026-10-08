@@ -15,8 +15,8 @@ use ployz_core::RpcError;
 use ployz_core::config::{
     At, ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,
     ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId, SavedEnvironmentIntent,
-    ServiceSettingChange, canonicalize_environment_intent, compile_environment_intent,
-    project_environment_changes,
+    SavedServiceIntent, SavedVolumeIntent, ServiceSettingChange, canonicalize_environment_intent,
+    compile_environment_intent, project_environment_changes,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -27,7 +27,7 @@ pub use approval::{DestructiveEffect, DestructiveKind};
 
 use crate::Actor;
 use crate::error;
-use crate::id::{EnvironmentId, Revision};
+use crate::id::{EnvironmentId, Hostname, Revision};
 use crate::scope::{Environment, EnvironmentSummary, revision_param};
 use crate::settings::{ServiceSetting, SettingPath, shown};
 use crate::storage::Tx;
@@ -113,6 +113,16 @@ pub(crate) struct Head {
     pub(crate) token: String,
     pub(crate) intent: SavedEnvironmentIntent,
     pub(crate) applied: SavedEnvironmentIntent,
+    /// Every Deployment in flight, newest first.
+    pub(crate) in_flight: Vec<InFlight>,
+}
+
+/// What a Deployment in flight puts in place: its target nodes as its Saved revision
+/// holds them.
+pub(crate) struct InFlight {
+    pub(crate) cluster_domain: Option<Hostname>,
+    pub(crate) services: Vec<SavedServiceIntent>,
+    pub(crate) volumes: Vec<SavedVolumeIntent>,
 }
 
 /// A review and the bases it was computed on.
@@ -286,7 +296,7 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     renames(&mut view, &environment.working, &head.intent);
     let deployed = approval::deployed(&head);
     let cluster_domains = if crate::domain::has_generated(&deployed) {
-        crate::deployment::cluster_domains(tx, id)?
+        crate::deployment::cluster_domains(tx, id, &head)?
     } else {
         std::collections::BTreeMap::new()
     };

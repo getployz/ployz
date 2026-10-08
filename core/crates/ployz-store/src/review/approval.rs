@@ -60,42 +60,51 @@ impl DestructiveEffect {
     }
 }
 
-/// What runs, or will once the Deployment in flight applies: Applied State plus each
-/// node, route, generated domain and mount `head.intent` puts in place. Applied State
-/// names what both hold.
+/// What runs, or will once the Deployments in flight apply: Applied State plus each
+/// node, route, generated domain and mount one of them puts in place, newest first.
+/// Applied State names what it holds; a Volume no Service mounts comes in only with
+/// Applied State, since a Deploy creates storage only with a mount.
 pub(crate) fn deployed(head: &Head) -> SavedEnvironmentIntent {
     let mut deployed = head.applied.clone();
-    add_missing(&mut deployed.volumes, &head.intent.volumes, |volume| {
-        &volume.resource_id
-    });
-    for service in &head.intent.services {
-        let Some(running) = deployed
-            .services
-            .iter_mut()
-            .find(|running| running.id == service.id)
-        else {
-            deployed.services.push(service.clone());
-            continue;
-        };
-        let (into, from) = (&mut running.config, &service.config);
-        add_missing(&mut into.routes, &from.routes, |route| &route.hostname);
-        add_missing(
-            &mut into.managed_hostnames,
-            &from.managed_hostnames,
-            |managed| &managed.prefix,
-        );
-        add_missing(
-            &mut running.volume_attachments,
-            &service.volume_attachments,
-            |attachment| &attachment.volume_resource_id,
-        );
+    for target in &head.in_flight {
+        let mounted = target.volumes.iter().filter(|volume| {
+            target.services.iter().any(|service| {
+                service
+                    .volume_attachments
+                    .iter()
+                    .any(|mount| mount.volume_resource_id == volume.resource_id)
+            })
+        });
+        add_missing(&mut deployed.volumes, mounted, |volume| &volume.resource_id);
+        for service in &target.services {
+            let Some(running) = deployed
+                .services
+                .iter_mut()
+                .find(|running| running.id == service.id)
+            else {
+                deployed.services.push(service.clone());
+                continue;
+            };
+            let (into, from) = (&mut running.config, &service.config);
+            add_missing(&mut into.routes, &from.routes, |route| &route.hostname);
+            add_missing(
+                &mut into.managed_hostnames,
+                &from.managed_hostnames,
+                |managed| &managed.prefix,
+            );
+            add_missing(
+                &mut running.volume_attachments,
+                &service.volume_attachments,
+                |attachment| &attachment.volume_resource_id,
+            );
+        }
     }
     deployed
 }
 
-fn add_missing<T: Clone, K: PartialEq + ?Sized>(
+fn add_missing<'a, T: Clone + 'a, K: PartialEq + ?Sized>(
     into: &mut Vec<T>,
-    from: &[T],
+    from: impl IntoIterator<Item = &'a T>,
     key: impl Fn(&T) -> &K,
 ) {
     for item in from {
@@ -106,11 +115,11 @@ fn add_missing<T: Clone, K: PartialEq + ?Sized>(
 }
 
 /// What publishing `target` destroys of what is `running`, naming each generated domain
-/// under its node's Cluster Domain in `cluster_domains`.
+/// under its Cluster Domain in `cluster_domains`, by node ID and prefix.
 pub(crate) fn destructive_effects(
     running: &SavedEnvironmentIntent,
     target: &SavedEnvironmentIntent,
-    cluster_domains: &BTreeMap<String, Hostname>,
+    cluster_domains: &BTreeMap<(String, String), Hostname>,
 ) -> BTreeSet<DestructiveEffect> {
     let mut effects = BTreeSet::new();
     for volume in &running.volumes {
@@ -184,7 +193,7 @@ pub(crate) fn destructive_effects(
             {
                 let prefix = &managed.prefix;
                 let hostname = cluster_domains
-                    .get(&deployed.id)
+                    .get(&(deployed.id.clone(), prefix.clone()))
                     .map_or_else(|| prefix.clone(), |cluster| format!("{prefix}.{cluster}"));
                 let path = format!("{slug}.managedHostnames");
                 effects.insert(effect(DestructiveKind::RemovesDomain, &hostname, path));

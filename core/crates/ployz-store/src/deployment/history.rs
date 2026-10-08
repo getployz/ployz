@@ -35,8 +35,8 @@ pub(crate) fn applied_state(
 }
 
 /// What reviews compare Working State against: Applied State, overlaid with the
-/// target nodes of the Deployment in flight, if any. Its token changes whenever a
-/// Deployment is admitted or ends.
+/// target nodes of the newest Deployment in flight, if any. Its token changes
+/// whenever a Deployment is admitted or ends.
 pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, RpcError> {
     let id = &environment.summary.id;
     let applied = applied_state(tx, id, &environment.working)?;
@@ -52,96 +52,118 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
         .first()
         .ok_or_else(|| error::corrupt("Deployment count"))?
         .int(0)?;
-    let in_flight = tx.query(
+    let rows = tx.query(
         &format!(
-            "SELECT number, saved_revision, nodes FROM config_deployment \
-             WHERE environment_id = ?1 AND {in_flight} ORDER BY number DESC LIMIT 1"
+            "SELECT number, saved_revision, nodes, cluster_domain FROM config_deployment \
+             WHERE environment_id = ?1 AND {in_flight} ORDER BY number DESC"
         ),
         &[id.as_str().into()],
     )?;
-    let Some(row) = in_flight.first() else {
-        return Ok(Head {
-            token: format!("0.{ended}"),
-            intent: applied.clone(),
-            applied,
-        });
-    };
-    let saved = saved_at(tx, id, row.number(1, "revision")?)?;
-    let nodes: Vec<TargetNode> = row.json(2, "Deployment")?;
-    let mut intent = applied.clone();
-    for node in nodes {
-        intent.services.retain(|service| service.id != node.id());
-        intent
-            .volumes
-            .retain(|volume| volume.resource_id != node.id());
-        intent
-            .configs
-            .retain(|config| config.resource_id != node.id());
-        match node {
-            TargetNode::Service { .. } => intent.services.extend(
-                saved
-                    .services
-                    .iter()
-                    .filter(|service| service.id == node.id())
-                    .cloned(),
-            ),
-            TargetNode::Config { .. } => intent.configs.extend(
-                saved
-                    .configs
-                    .iter()
-                    .filter(|config| config.resource_id == node.id())
-                    .cloned(),
-            ),
-            // A Volume the Deployment removes isn't in Head.
-            TargetNode::Volume {
-                deletes: Some(_), ..
-            } => {}
-            TargetNode::Volume { deletes: None, .. } => intent.volumes.extend(
-                saved
-                    .volumes
-                    .iter()
-                    .filter(|volume| volume.resource_id == node.id())
-                    .cloned(),
-            ),
-        }
-    }
-    Ok(Head {
-        token: format!("{}.{ended}", row.int(0)?),
-        intent,
+    let mut head = Head {
+        token: format!("0.{ended}"),
+        intent: applied.clone(),
         applied,
-    })
+        in_flight: Vec::new(),
+    };
+    for row in &rows {
+        let saved = saved_at(tx, id, row.number(1, "revision")?)?;
+        let nodes: Vec<TargetNode> = row.json(2, "Deployment")?;
+        let target = InFlight {
+            cluster_domain: row.parse_optional(3, "Cluster Domain")?,
+            services: nodes
+                .iter()
+                .filter_map(|node| match node {
+                    TargetNode::Service { .. } => saved
+                        .services
+                        .iter()
+                        .find(|service| service.id == node.id()),
+                    TargetNode::Volume { .. } | TargetNode::Config { .. } => None,
+                })
+                .cloned()
+                .collect(),
+            // A Volume the Deployment removes isn't in Head.
+            volumes: nodes
+                .iter()
+                .filter_map(|node| match node {
+                    TargetNode::Volume { deletes: None, .. } => saved
+                        .volumes
+                        .iter()
+                        .find(|volume| volume.resource_id == node.id()),
+                    TargetNode::Service { .. }
+                    | TargetNode::Config { .. }
+                    | TargetNode::Volume {
+                        deletes: Some(_), ..
+                    } => None,
+                })
+                .cloned()
+                .collect(),
+        };
+        if head.in_flight.is_empty() {
+            head.token = format!("{}.{ended}", row.int(0)?);
+            let intent = &mut head.intent;
+            intent
+                .services
+                .retain(|service| nodes.iter().all(|node| node.id() != service.id));
+            intent
+                .volumes
+                .retain(|volume| nodes.iter().all(|node| node.id() != volume.resource_id));
+            intent
+                .configs
+                .retain(|config| nodes.iter().all(|node| node.id() != config.resource_id));
+            intent.configs.extend(
+                nodes
+                    .iter()
+                    .filter_map(|node| match node {
+                        TargetNode::Config { .. } => saved
+                            .configs
+                            .iter()
+                            .find(|config| config.resource_id == node.id()),
+                        TargetNode::Service { .. } | TargetNode::Volume { .. } => None,
+                    })
+                    .cloned(),
+            );
+            intent.services.extend(target.services.iter().cloned());
+            intent.volumes.extend(target.volumes.iter().cloned());
+        }
+        head.in_flight.push(target);
+    }
+    Ok(head)
 }
 
-/// The Cluster Domain each node's generated domains run under, by node ID: that of
-/// the Deployment that applied it, else of the Deployment in flight that targets it.
+/// The Cluster Domain each generated domain runs under, by node ID and prefix: that
+/// of the Deployment that applied it, else of the newest Deployment in flight that
+/// puts it in place.
 pub(crate) fn cluster_domains(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
-) -> Result<BTreeMap<String, Hostname>, RpcError> {
-    let mut domains = BTreeMap::new();
+    head: &Head,
+) -> Result<BTreeMap<(String, String), Hostname>, RpcError> {
+    let mut applied = BTreeMap::new();
     for row in &tx.query(
         "SELECT a.node_id, d.cluster_domain FROM config_applied a \
          JOIN config_deployment d ON d.id = a.deployment_id \
          WHERE a.environment_id = ?1 AND d.cluster_domain IS NOT NULL",
         &[environment.as_str().into()],
     )? {
-        domains.insert(row.text(0)?.to_owned(), row.parse(1, "Cluster Domain")?);
+        applied.insert(row.text(0)?.to_owned(), row.parse(1, "Cluster Domain")?);
     }
-    let in_flight = tx.query(
-        &format!(
-            "SELECT cluster_domain, nodes FROM config_deployment \
-             WHERE environment_id = ?1 AND {} ORDER BY number DESC LIMIT 1",
-            in_flight_sql()
-        ),
-        &[environment.as_str().into()],
-    )?;
-    if let Some(row) = in_flight.first()
-        && let Some(cluster) = row.parse_optional::<Hostname>(0, "Cluster Domain")?
-    {
-        let nodes: Vec<TargetNode> = row.json(1, "Deployment")?;
-        for node in nodes {
+    let mut domains = BTreeMap::new();
+    let running = head
+        .applied
+        .services
+        .iter()
+        .filter_map(|service| Some((service, applied.get(&service.id)?)));
+    let in_flight = head.in_flight.iter().flat_map(|target| {
+        let cluster = target.cluster_domain.as_ref();
+        target
+            .services
+            .iter()
+            .filter_map(move |service| Some((service, cluster?)))
+    });
+    for (service, cluster) in running.chain(in_flight) {
+        for managed in &service.config.managed_hostnames {
             domains
-                .entry(node.id().to_owned())
+                .entry((service.id.clone(), managed.prefix.clone()))
                 .or_insert_with(|| cluster.clone());
         }
     }
