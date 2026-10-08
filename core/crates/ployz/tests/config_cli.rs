@@ -1546,6 +1546,26 @@ fn the_catalog_describes_settings_without_a_store() {
             .all(|entry| entry.get("command") != Some(&json!("service"))),
         "groups are not commands"
     );
+    let classified = |command: &str| {
+        let entry = commands
+            .iter()
+            .find(|entry| entry.get("command") == Some(&json!(command)))
+            .unwrap_or_else(|| panic!("{command} is in the catalog"));
+        (
+            entry.get("approval").and_then(Value::as_str).unwrap(),
+            entry.get("surface").and_then(Value::as_str).unwrap(),
+        )
+    };
+    assert_eq!(classified("ctx"), ("never", "local"));
+    assert_eq!(classified("volume mirror"), ("never", "cloud"));
+    assert_eq!(classified("volume mirror rm"), ("always", "cloud"));
+    assert_eq!(classified("deploy"), ("depends", "cloud"));
+    assert_eq!(classified("mcp"), ("never", "local"));
+    assert!(
+        commands
+            .iter()
+            .all(|entry| entry.get("approval").is_some() && entry.get("surface").is_some())
+    );
 
     let (code, one) = ployz(None, &["schema", "web.replicas"]);
     assert_eq!(code, Some(0));

@@ -22,6 +22,7 @@ pub(crate) mod env;
 pub(crate) mod github;
 pub(crate) mod link;
 pub(crate) mod login;
+pub(crate) mod mcp;
 pub(crate) mod operator;
 pub(crate) mod project;
 pub(crate) mod review;
@@ -32,6 +33,10 @@ mod teardown;
 pub(crate) mod up;
 pub(crate) mod volume;
 
+use catalog::{Approval::*, Runnable, cloud, internal, local};
+
+#[doc(hidden)]
+pub use catalog::commands_json;
 #[doc(hidden)]
 pub use cloud::enroll_with_installer as cloud_enroll_with_installer;
 
@@ -91,7 +96,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     let path = command_path(matches);
     // Every leaf has a handler, so a missing one means a group without its
     // subcommand: its help, as a bare `ployz` shows the top level's.
-    let Some(handler) = handler_for(&path) else {
+    let Some(runnable) = handler_for(&path) else {
         if matches.get_flag("json") {
             return Err(Error::usage(format!("ployz {path} requires a subcommand")));
         }
@@ -120,7 +125,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
             format!("ployz {path} doesn't use a context; it takes --project and --env")
         }));
     }
-    handler(matches)
+    (runnable.run)(matches)
 }
 
 /// Whether `--context` was typed before the last subcommand (`ployz -c prod ps`): only the leaf
@@ -374,45 +379,46 @@ pub(crate) type Handler = fn(&ArgMatches) -> Result<(), Error>;
 /// Commands that print no `--json` result: a terminal session, shell code, or the
 /// Cloud runner's own fixed JSON.
 pub(crate) fn json_refused(path: &str) -> bool {
-    matches!(path, "build" | "completion" | "exec")
+    matches!(path, "build" | "completion" | "exec" | "mcp")
 }
 
-/// Each command's handler: each group module declares its own subcommands.
-fn handler_for(path: &str) -> Option<Handler> {
+/// Each command's handler and classification: each group module declares its own subcommands.
+pub(crate) fn handler_for(path: &str) -> Option<Runnable> {
     let (group, rest) = path.split_once(' ').unwrap_or((path, ""));
     match (group, rest) {
-        ("build", "") => Some(build::build),
-        ("completion", "") => Some(completion),
+        ("build", "") => Some(internal(Never, build::build)),
+        ("completion", "") => Some(local(Never, completion)),
         ("cloud", rest) => cloud::handler(rest),
         ("config", rest) => config_item::handler(rest),
         ("ctx", rest) => context::handler(rest),
         ("debug", rest) => debug::handler(rest),
-        ("deploy", "") => Some(deploy::deploy),
+        ("deploy", "") => Some(cloud(Depends, deploy::deploy)),
         ("deployment", rest) => deploy::deployment_handler(rest),
-        ("diff", "") => Some(review::diff),
-        ("discard", "") => Some(review::discard),
+        ("diff", "") => Some(cloud(Never, review::diff)),
+        ("discard", "") => Some(cloud(Never, review::discard)),
         ("domain", rest) => domain::handler(rest),
         ("env", rest) => env::handler(rest),
-        ("exec", "") => Some(operator::exec),
-        ("explain", "") => Some(catalog::explain),
-        ("get", "") => Some(config::get),
-        ("link", "") => Some(link::link),
+        ("exec", "") => Some(cloud(Always, operator::exec)),
+        ("explain", "") => Some(cloud(Never, catalog::explain)),
+        ("get", "") => Some(cloud(Never, config::get)),
+        ("link", "") => Some(local(Never, link::link)),
         ("github", rest) => github::handler(rest),
-        ("login", "") => Some(login::login),
-        ("logout", "") => Some(login::logout),
-        ("logs", "") => Some(operator::logs),
+        ("login", "") => Some(local(Never, login::login)),
+        ("logout", "") => Some(local(Never, login::logout)),
+        ("mcp", "") => Some(local(Never, mcp::serve)),
+        ("logs", "") => Some(cloud(Never, operator::logs)),
         ("org", rest) => account::org_handler(rest),
         ("project", rest) => project::handler(rest),
-        ("ps", "") => Some(service::processes),
-        ("publish", "") => Some(review::publish),
-        ("schema", "") => Some(catalog::schema),
+        ("ps", "") => Some(cloud(Never, service::processes)),
+        ("publish", "") => Some(cloud(Depends, review::publish)),
+        ("schema", "") => Some(cloud(Never, catalog::schema)),
         ("server", rest) => server::handler(rest),
         ("service", rest) => service::handler(rest),
-        ("set", "") => Some(config::set),
-        ("status", "") => Some(link::status),
+        ("set", "") => Some(cloud(Never, config::set)),
+        ("status", "") => Some(cloud(Never, link::status)),
         ("token", rest) => account::token_handler(rest),
-        ("unset", "") => Some(config::unset),
-        ("up", "") => Some(up::up),
+        ("unset", "") => Some(cloud(Never, config::unset)),
+        ("up", "") => Some(cloud(Depends, up::up)),
         ("volume", rest) => volume::handler(rest),
         _ => None,
     }
@@ -894,31 +900,45 @@ mod tests {
     }
 
     #[test]
-    fn every_actionable_clap_command_has_an_explicit_handler() {
+    fn every_leaf_has_a_handler_and_every_visible_handler_is_in_the_catalog() {
         let mut command = command();
         command.build();
-        let mut paths = BTreeSet::new();
-        collect_actionable_paths(&command, "", &mut paths);
-        for path in paths {
-            assert!(handler_for(&path).is_some(), "no handler for {path}");
+        let mut leaves = BTreeSet::new();
+        let mut runnable = BTreeSet::new();
+        collect_paths(&command, "", false, &mut leaves, &mut runnable);
+        for path in &leaves {
+            assert!(handler_for(path).is_some(), "no handler for {path}");
+        }
+        let listed: BTreeSet<String> = catalog::commands()
+            .into_iter()
+            .map(|entry| entry.command)
+            .collect();
+        assert_eq!(listed, runnable);
+        for group in ["ctx", "volume mirror"] {
+            assert!(listed.contains(group), "{group} runs and has children");
         }
     }
 
-    fn collect_actionable_paths(command: &Command, parent: &str, paths: &mut BTreeSet<String>) {
-        let path = if parent.is_empty() {
-            command.get_name().to_owned()
-        } else {
-            format!("{parent} {}", command.get_name())
-        };
-        let children = command
+    fn collect_paths(
+        command: &Command,
+        parent: &str,
+        hidden: bool,
+        leaves: &mut BTreeSet<String>,
+        runnable: &mut BTreeSet<String>,
+    ) {
+        for child in command
             .get_subcommands()
             .filter(|child| child.get_name() != "help")
-            .collect::<Vec<_>>();
-        if path != "ployz" && children.is_empty() {
-            paths.insert(path.trim_start_matches("ployz ").to_owned());
-        }
-        for child in children {
-            collect_actionable_paths(child, &path, paths);
+        {
+            let path = format!("{parent}{}", child.get_name());
+            let hidden = hidden || child.is_hide_set();
+            if !child.has_subcommands() {
+                leaves.insert(path.clone());
+            }
+            if !hidden && handler_for(&path).is_some() {
+                runnable.insert(path.clone());
+            }
+            collect_paths(child, &format!("{path} "), hidden, leaves, runnable);
         }
     }
 }

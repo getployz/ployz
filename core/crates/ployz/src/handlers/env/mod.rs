@@ -9,6 +9,7 @@
 mod branch;
 mod pr;
 
+use super::catalog::{Approval::*, Runnable, cloud};
 use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 use ployz_store::{
@@ -304,20 +305,20 @@ pub(crate) fn command() -> Command {
         )
 }
 
-pub(super) fn handler(path: &str) -> Option<super::Handler> {
+pub(super) fn handler(path: &str) -> Option<Runnable> {
     Some(match path {
-        "new" => new,
-        "ls" => ls,
-        "default" => default,
-        "setup" => setup,
-        "rm" => rm,
-        "branch" => branch::branch,
-        "sync" => branch::sync,
-        "copy" => branch::copy,
-        "keep" => branch::keep,
-        "never-sync" => never_sync,
-        "shutdown" => pr::shutdown,
-        "pr" => pr::pr,
+        "new" => cloud(Never, new),
+        "ls" => cloud(Never, ls),
+        "default" => cloud(Never, default),
+        "setup" => cloud(Never, setup),
+        "rm" => cloud(Always, rm),
+        "branch" => cloud(Never, branch::branch),
+        "sync" => cloud(Depends, branch::sync),
+        "copy" => cloud(Never, branch::copy),
+        "keep" => cloud(Never, branch::keep),
+        "never-sync" => cloud(Never, never_sync),
+        "shutdown" => cloud(Always, pr::shutdown),
+        "pr" => cloud(Depends, pr::pr),
         _ => return None,
     })
 }

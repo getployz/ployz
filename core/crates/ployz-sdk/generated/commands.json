@@ -1,0 +1,4320 @@
+[
+  {
+    "command": "build",
+    "about": "Build one Git Service and push it into a Machine with a Build Grant",
+    "json": false,
+    "approval": "never",
+    "surface": "internal",
+    "args": [
+      {
+        "name": "--grant",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Build Grant naming the receiving Machine; prefer the environment variable"
+      },
+      {
+        "name": "--deployment",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Frozen deployment JSON holding exactly one Git-sourced Service"
+      },
+      {
+        "name": "--commit",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Commit to build"
+      },
+      {
+        "name": "--fingerprint",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Expected build-input fingerprint; the build is refused on mismatch"
+      },
+      {
+        "name": "--source",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "default": ".",
+        "trailing": false,
+        "help": "Repository working tree of the Service"
+      },
+      {
+        "name": "--events",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Also write build progress to this file, one JSON line per event"
+      }
+    ]
+  },
+  {
+    "command": "cloud reset",
+    "about": "Give up your Organization's founding that never finished",
+    "json": true,
+    "approval": "always",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "--yes",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "short": "y",
+        "trailing": false,
+        "help": "Confirm the founding Server is stopped or erased"
+      }
+    ]
+  },
+  {
+    "command": "completion",
+    "about": "Generate shell completion",
+    "json": false,
+    "approval": "never",
+    "surface": "local",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "SHELL",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "values": [
+          "bash",
+          "elvish",
+          "fish",
+          "powershell",
+          "zsh"
+        ]
+      }
+    ]
+  },
+  {
+    "command": "ctx",
+    "about": "Show where commands act, or manage local contexts",
+    "json": true,
+    "approval": "never",
+    "surface": "local",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "ctx ls",
+    "about": "List contexts",
+    "json": true,
+    "approval": "never",
+    "surface": "local",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "ctx rm",
+    "about": "Remove a local context",
+    "json": true,
+    "approval": "never",
+    "surface": "local",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "CONTEXT-NAME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "ctx use",
+    "about": "Select a context and optionally its default connection",
+    "json": true,
+    "approval": "never",
+    "surface": "local",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "CONTEXT-NAME",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--connection",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Connection label or 1-based index in the selected context"
+      }
+    ]
+  },
+  {
+    "command": "deploy",
+    "about": "Publish staged changes if needed, then deploy them and follow the Deployment",
+    "json": true,
+    "approval": "depends",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "SERVICE",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "index": 1,
+        "trailing": false,
+        "help": "Deploy only these Services [default: every Service]"
+      },
+      {
+        "name": "--plan",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Show what would deploy, from authored state alone; run nothing"
+      },
+      {
+        "name": "--expect-version",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Refuse unless this is still the reviewed version; a data-loss refusal names it"
+      },
+      {
+        "name": "--message",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Say what this Deploy ships; shown on the Deployment"
+      },
+      {
+        "name": "--events",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Also write progress to FILE as NDJSON",
+        "conflicts": [
+          "--detach"
+        ]
+      },
+      {
+        "name": "--detach",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Return the queued Deployment at once instead of following it",
+        "conflicts": [
+          "--events"
+        ]
+      },
+      {
+        "name": "--accept-volume-loss",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false,
+        "help": "Accept permanent deletion: repeat once per exact volume name in the full deletion list; --yes cannot bypass this"
+      }
+    ]
+  },
+  {
+    "command": "deployment cancel",
+    "about": "Cancel a Deployment: a queued one never runs, a running one stops",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "ID",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "The Deployment's ID, or its number in the Environment"
+      }
+    ]
+  },
+  {
+    "command": "deployment ls",
+    "about": "List Deployments, newest first",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "--limit",
+        "required": false,
+        "value": true,
+        "type": "integer",
+        "multiple": false,
+        "trailing": false,
+        "help": "At most this many, 1-100 [default: 20]"
+      },
+      {
+        "name": "--cursor",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "The next_cursor of the previous page"
+      }
+    ]
+  },
+  {
+    "command": "deployment retry",
+    "about": "Deploy again exactly what a failed, unknown or cancelled Deployment froze, and follow it",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "--events",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Also write progress to FILE as NDJSON",
+        "conflicts": [
+          "--detach"
+        ]
+      },
+      {
+        "name": "--detach",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Return the queued Deployment at once instead of following it",
+        "conflicts": [
+          "--events"
+        ]
+      },
+      {
+        "name": "ID",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "The Deployment's ID, or its number in the Environment"
+      }
+    ]
+  },
+  {
+    "command": "deployment show",
+    "about": "Show a Deployment with its Deploy Preview and Node Outcomes",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "ID",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "The Deployment's ID, or its number in the Environment"
+      }
+    ]
+  },
+  {
+    "command": "deployment start",
+    "about": "Hand a queued Deployment to a runner now, and follow it",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "--events",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Also write progress to FILE as NDJSON",
+        "conflicts": [
+          "--detach"
+        ]
+      },
+      {
+        "name": "--detach",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Return the queued Deployment at once instead of following it",
+        "conflicts": [
+          "--events"
+        ]
+      },
+      {
+        "name": "ID",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "The Deployment's ID, or its number in the Environment"
+      }
+    ]
+  },
+  {
+    "command": "diff",
+    "about": "Show staged Service and Volume changes",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      }
+    ]
+  },
+  {
+    "command": "discard",
+    "about": "Undo staged Service, Volume or Setting changes",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "PATH",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "SERVICE, SERVICE.SETTING or volumes.VOLUME [default: everything]"
+      },
+      {
+        "name": "--version",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Refuse unless this is still the latest `ployz diff` version"
+      }
+    ]
+  },
+  {
+    "command": "domain add",
+    "about": "Give a Service a domain: HOST for a custom one, none for a generated one",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "SERVICE",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "HOST",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 2,
+        "trailing": false,
+        "help": "Custom hostname, like app.example.com"
+      },
+      {
+        "name": "--port",
+        "required": false,
+        "value": true,
+        "type": "integer",
+        "multiple": false,
+        "trailing": false,
+        "help": "Container port it reaches [default: the container's PORT]"
+      }
+    ]
+  },
+  {
+    "command": "domain check",
+    "about": "Re-check a domain's DNS and certificate now",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "DOMAIN",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "Hostname, or a generated domain's prefix"
+      }
+    ]
+  },
+  {
+    "command": "domain ls",
+    "about": "List domains: Ready, Setting up or Needs attention, and what to do",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "SERVICE",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "Only this Service's domains"
+      }
+    ]
+  },
+  {
+    "command": "domain rm",
+    "about": "Remove a domain; it serves until a Deploy",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "DOMAIN",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "Hostname, or a generated domain's prefix"
+      }
+    ]
+  },
+  {
+    "command": "domain set",
+    "about": "Change a Service's generated domain to PREFIX.CLUSTER-DOMAIN; staged until you deploy",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "SERVICE",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "PREFIX",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 2,
+        "trailing": false,
+        "help": "One DNS label, unique among the Organization's generated domains"
+      },
+      {
+        "name": "--port",
+        "required": false,
+        "value": true,
+        "type": "integer",
+        "multiple": false,
+        "trailing": false,
+        "help": "Container port it reaches [default: the container's PORT]"
+      }
+    ]
+  },
+  {
+    "command": "env branch",
+    "about": "Make a Branch: copies of the nodes picked, the rest used live",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "NAME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "Branch name, unique in the Project"
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--from",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "The Parent to branch from [default: the Project's Default Environment]"
+      },
+      {
+        "name": "--copy",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false,
+        "help": "A Service or Volume to copy; repeatable"
+      },
+      {
+        "name": "--live",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false,
+        "help": "A node the Branch must use live from its Parent; repeatable"
+      },
+      {
+        "name": "--setup",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false,
+        "help": "Run COMMAND in a copied Service before it first deploys"
+      },
+      {
+        "name": "--keep",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Keep it after syncing into its Parent"
+      },
+      {
+        "name": "--fix",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Fix this failed Deployment of the Parent: copies what it failed to apply"
+      }
+    ]
+  },
+  {
+    "command": "env copy",
+    "about": "Make a Live Node the Branch's own copy; a Volume it mounts comes empty",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "NODE",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--expect",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Refuse unless Working State is still at this revision"
+      }
+    ]
+  },
+  {
+    "command": "env default",
+    "about": "Make an Environment the Project's Default Environment",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "NAME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      }
+    ]
+  },
+  {
+    "command": "env keep",
+    "about": "Keep the Branch after syncing into its Parent and when idle",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "--off",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Stop keeping it"
+      }
+    ]
+  },
+  {
+    "command": "env ls",
+    "about": "List the Project's Environments",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      }
+    ]
+  },
+  {
+    "command": "env never-sync",
+    "about": "Mark settings Never sync: Sync never carries them into or out of the Environment",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "PATH",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "index": 1,
+        "trailing": false,
+        "help": "A row as this Environment names it (web.env.KEY), a prefix for every row under it (web.env), or its RowId"
+      },
+      {
+        "name": "--off",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Sync them again"
+      }
+    ]
+  },
+  {
+    "command": "env new",
+    "about": "Create an empty Environment",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "NAME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      }
+    ]
+  },
+  {
+    "command": "env pr",
+    "about": "Show or change PR Environments for a repository",
+    "json": true,
+    "approval": "depends",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "REPOSITORY",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "The repository, like acme/app [default: the Project's only one]"
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--on",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Give its pull requests PR Environments",
+        "conflicts": [
+          "--off"
+        ]
+      },
+      {
+        "name": "--off",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Stop making PR Environments",
+        "conflicts": [
+          "--on"
+        ]
+      },
+      {
+        "name": "--from",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "The Environment each PR Environment is a Branch of"
+      },
+      {
+        "name": "--copy",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false,
+        "help": "Also copy this Service or Volume; repeatable, replaces the list"
+      },
+      {
+        "name": "--setup",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false,
+        "help": "Run COMMAND in a copied Service before it first deploys; repeatable, replaces the list"
+      },
+      {
+        "name": "--remove-on-close",
+        "required": false,
+        "value": true,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Remove a PR Environment when its pull request closes",
+        "values": [
+          "true",
+          "false"
+        ]
+      },
+      {
+        "name": "--bots",
+        "required": false,
+        "value": true,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Make PR Environments for bots' pull requests too",
+        "values": [
+          "true",
+          "false"
+        ]
+      }
+    ]
+  },
+  {
+    "command": "env rm",
+    "about": "Remove an Environment: from the Servers first, then from Ployz",
+    "json": true,
+    "approval": "always",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "NAME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--confirm",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "PROJECT/ENV, typed to confirm the Environment's removal"
+      },
+      {
+        "name": "--accept-volume-loss",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false,
+        "help": "Accept permanent deletion: repeat once per exact volume name in the full deletion list; --yes cannot bypass this"
+      },
+      {
+        "name": "--expect-version",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Refuse unless this is still the reviewed version; a data-loss refusal names it"
+      },
+      {
+        "name": "--events",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Also write progress to FILE as NDJSON",
+        "conflicts": [
+          "--detach"
+        ]
+      },
+      {
+        "name": "--detach",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Return the queued Deployment at once instead of following it",
+        "conflicts": [
+          "--events"
+        ]
+      }
+    ]
+  },
+  {
+    "command": "env setup",
+    "about": "Set the Setup Commands a new Branch of an Environment runs when it names none",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "--setup",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false,
+        "help": "Run COMMAND in the Branch's copy of SERVICE; repeatable",
+        "conflicts": [
+          "--clear"
+        ]
+      },
+      {
+        "name": "--clear",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Run none by default",
+        "conflicts": [
+          "--setup"
+        ]
+      }
+    ]
+  },
+  {
+    "command": "env shutdown",
+    "about": "Take an Environment off the Servers, keeping its configuration",
+    "json": true,
+    "approval": "always",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "NAME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--accept-volume-loss",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false,
+        "help": "Accept permanent deletion: repeat once per exact volume name in the full deletion list; --yes cannot bypass this"
+      },
+      {
+        "name": "--expect-version",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Refuse unless this is still the reviewed version; a data-loss refusal names it"
+      },
+      {
+        "name": "--events",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Also write progress to FILE as NDJSON",
+        "conflicts": [
+          "--detach"
+        ]
+      },
+      {
+        "name": "--detach",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Return the queued Deployment at once instead of following it",
+        "conflicts": [
+          "--events"
+        ]
+      }
+    ]
+  },
+  {
+    "command": "env sync",
+    "about": "Stage one Environment's changes in another of the Project",
+    "json": true,
+    "approval": "depends",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "--to",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Sync into ENV; with no value, the Branch's Parent, or a PR Environment's only Destination",
+        "conflicts": [
+          "--from",
+          "--take"
+        ]
+      },
+      {
+        "name": "--from",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Sync ENV's changes into this Environment",
+        "conflicts": [
+          "--to",
+          "--undo",
+          "--take"
+        ]
+      },
+      {
+        "name": "--only",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false,
+        "help": "Sync only this row (web.image), or every row under a prefix (web, web.env); repeatable",
+        "conflicts": [
+          "--undo"
+        ]
+      },
+      {
+        "name": "--skip",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false,
+        "help": "Leave out this row, or every row under a prefix; repeatable",
+        "conflicts": [
+          "--undo",
+          "--take"
+        ]
+      },
+      {
+        "name": "--value",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false,
+        "help": "Give a secret the receiver lacks its value, read as one line of stdin per --value, in order; repeatable",
+        "conflicts": [
+          "--undo",
+          "--take"
+        ]
+      },
+      {
+        "name": "--version",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Refuse unless this is still the version --plan showed",
+        "conflicts": [
+          "--undo"
+        ]
+      },
+      {
+        "name": "--plan",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "List the changes and the version; sync nothing",
+        "conflicts": [
+          "--close",
+          "--undo",
+          "--take"
+        ]
+      },
+      {
+        "name": "--close",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Close the Branch once its changes landed in its Parent; refused for a kept Branch and for any other --to",
+        "conflicts": [
+          "--plan",
+          "--at-merge",
+          "--undo",
+          "--take"
+        ]
+      },
+      {
+        "name": "--at-merge",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Go live in --to with the pull request's merge; the default from a PR Environment into a Destination",
+        "conflicts": [
+          "--close",
+          "--undo",
+          "--take"
+        ]
+      },
+      {
+        "name": "--undo",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Undo the Sync a sync printed, or withdraw its Conditional Sync",
+        "conflicts": [
+          "--from",
+          "--only",
+          "--skip",
+          "--value",
+          "--plan",
+          "--version",
+          "--close",
+          "--at-merge",
+          "--take"
+        ]
+      },
+      {
+        "name": "--take",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Stage the hints `ployz diff` lists from ID (the Parent, or a Conditional Sync) in --env; --only picks them",
+        "conflicts": [
+          "--to",
+          "--from",
+          "--skip",
+          "--value",
+          "--plan",
+          "--close",
+          "--undo",
+          "--at-merge"
+        ]
+      }
+    ]
+  },
+  {
+    "command": "exec",
+    "about": "Run a command in a Service's container",
+    "json": false,
+    "approval": "always",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "--container",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false
+      },
+      {
+        "name": "--detach",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "short": "d",
+        "trailing": false
+      },
+      {
+        "name": "--no-tty",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "short": "T",
+        "trailing": false
+      },
+      {
+        "name": "SERVICE",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "COMMAND",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "index": 2,
+        "trailing": true
+      }
+    ]
+  },
+  {
+    "command": "explain",
+    "about": "Describe one Setting, with an example",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "PATH",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "SERVICE.SETTING, for example web.replicas"
+      }
+    ]
+  },
+  {
+    "command": "get",
+    "about": "Show Settings: every Service, one Service, or one Setting",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "PATH",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "SERVICE, SERVICE.SETTING or SERVICE.env.KEY"
+      },
+      {
+        "name": "--all",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Include Settings at their default across the Environment"
+      }
+    ]
+  },
+  {
+    "command": "github connect",
+    "about": "Print the GitHub App install link and wait until it is installed",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--wait",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Wait for the install, also with --json"
+      }
+    ]
+  },
+  {
+    "command": "github disconnect",
+    "about": "Forget one of your GitHub installations; uninstall the App on GitHub",
+    "json": true,
+    "approval": "always",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "INSTALLATION",
+        "required": true,
+        "value": true,
+        "type": "integer",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "Installation ID, from ployz github ls"
+      }
+    ]
+  },
+  {
+    "command": "github ls",
+    "about": "List your GitHub installations and repositories, or one repository's branches",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "REPOSITORY",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "OWNER/REPO: list its branches"
+      }
+    ]
+  },
+  {
+    "command": "link",
+    "about": "Link this directory to a Project and Environment",
+    "json": true,
+    "approval": "never",
+    "surface": "local",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      }
+    ]
+  },
+  {
+    "command": "login",
+    "about": "Sign this device in to Ployz Cloud",
+    "json": true,
+    "approval": "never",
+    "surface": "local",
+    "args": [
+      {
+        "name": "--cloud-url",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Cloud to sign in to [default: the pending or signed-in Cloud, else ployz.dev]"
+      },
+      {
+        "name": "--wait",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Wait for approval, also with --json"
+      }
+    ]
+  },
+  {
+    "command": "logout",
+    "about": "End this device's Ployz Cloud sign-in",
+    "json": true,
+    "approval": "never",
+    "surface": "local",
+    "args": []
+  },
+  {
+    "command": "logs",
+    "about": "Show Service logs; every Service of the Environment when none is named",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "--follow",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "short": "f",
+        "trailing": false,
+        "help": "Keep streaming new lines"
+      },
+      {
+        "name": "--machine",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "short": "m",
+        "trailing": false,
+        "help": "Only these Servers"
+      },
+      {
+        "name": "--since",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Lines after this time: 10m, 2h or an RFC 3339 timestamp"
+      },
+      {
+        "name": "--tail",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "default": "100",
+        "short": "n",
+        "trailing": false,
+        "help": "Lines from the end of each Container's log; all for everything"
+      },
+      {
+        "name": "--until",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Lines before this time: 10m, 2h or an RFC 3339 timestamp"
+      },
+      {
+        "name": "--utc",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Show times in UTC"
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "SERVICE-OR-CONTAINER",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--deployment",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Only the running containers this Deployment created, in its Environment"
+      },
+      {
+        "name": "--build",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "The Deployment's build logs instead: its Git Services' builds, or those named"
+      }
+    ]
+  },
+  {
+    "command": "mcp",
+    "about": "Serve the Cloud commands to a coding agent as MCP tools over stdio",
+    "json": false,
+    "approval": "never",
+    "surface": "local",
+    "args": []
+  },
+  {
+    "command": "org build-order",
+    "about": "Show or set which Builders build Git Services, in turn",
+    "json": true,
+    "approval": "depends",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "ORDER",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "values": [
+          "auto",
+          "servers-only",
+          "github-then-servers",
+          "servers-then-github",
+          "github-only"
+        ]
+      }
+    ]
+  },
+  {
+    "command": "org ls",
+    "about": "List the Organizations you can act in",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": []
+  },
+  {
+    "command": "org rm",
+    "about": "Delete the Organization you act in, once it has no Project",
+    "json": true,
+    "approval": "always",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "ORGANIZATION",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "Organization slug"
+      },
+      {
+        "name": "--confirm",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "The Organization's slug, typed to confirm its removal"
+      }
+    ]
+  },
+  {
+    "command": "org use",
+    "about": "Act in another of your Organizations from this device",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "ORGANIZATION",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "Organization slug"
+      }
+    ]
+  },
+  {
+    "command": "project ls",
+    "about": "List the Organization's Projects",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": []
+  },
+  {
+    "command": "project new",
+    "about": "Create a Project with its Default Environment, production",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "NAME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "project rename",
+    "about": "Rename a Project; its running Environments keep their Namespaces",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "PROJECT",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "NAME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 2,
+        "trailing": false,
+        "help": "Its new name, unique in the Organization"
+      }
+    ]
+  },
+  {
+    "command": "project rm",
+    "about": "Remove a Project: every Environment from the Servers first, then from Ployz",
+    "json": true,
+    "approval": "always",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "NAME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--confirm",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "The Project's name, typed to confirm its removal"
+      },
+      {
+        "name": "--accept-volume-loss",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false,
+        "help": "Accept permanent deletion: repeat once per exact volume name in the full deletion list; --yes cannot bypass this"
+      },
+      {
+        "name": "--expect-version",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Refuse unless this is still the reviewed version; a data-loss refusal names it"
+      },
+      {
+        "name": "--events",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Also write progress to FILE as NDJSON",
+        "conflicts": [
+          "--detach"
+        ]
+      },
+      {
+        "name": "--detach",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Return the queued Deployment at once instead of following it",
+        "conflicts": [
+          "--events"
+        ]
+      }
+    ]
+  },
+  {
+    "command": "ps",
+    "about": "List the Environment's containers across Servers",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "--sort",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "default": "service",
+        "trailing": false,
+        "values": [
+          "service",
+          "machine",
+          "health"
+        ]
+      }
+    ]
+  },
+  {
+    "command": "publish",
+    "about": "Put staged changes in Saved State without deploying",
+    "json": true,
+    "approval": "depends",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "--version",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Refuse unless this is still the latest `ployz diff` version"
+      }
+    ]
+  },
+  {
+    "command": "schema",
+    "about": "Print the settings catalog as JSON Schema, with every command at the root: all of it, one Service, or one Setting",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "PATH",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "SERVICE or SERVICE.SETTING"
+      }
+    ]
+  },
+  {
+    "command": "server add",
+    "about": "Add a Server to your Organization's Cluster",
+    "json": true,
+    "approval": "depends",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "--label-add",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false
+      },
+      {
+        "name": "--accepts-builds",
+        "required": false,
+        "value": true,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "values": [
+          "true",
+          "false"
+        ]
+      },
+      {
+        "name": "--accepts-services",
+        "required": false,
+        "value": true,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "values": [
+          "true",
+          "false"
+        ]
+      },
+      {
+        "name": "--accepts-ingress",
+        "required": false,
+        "value": true,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "values": [
+          "true",
+          "false"
+        ]
+      },
+      {
+        "name": "--name",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false
+      },
+      {
+        "name": "--no-install",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false
+      },
+      {
+        "name": "--storage",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "zfs sets up Managed volumes [Cloud default]; none is Docker only (not recommended)"
+      },
+      {
+        "name": "--public-ip",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "default": "auto",
+        "trailing": false
+      },
+      {
+        "name": "--ssh-key",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "default": "~/.ssh/id_ed25519",
+        "short": "i",
+        "trailing": false
+      },
+      {
+        "name": "--version",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "default": "0.2.3",
+        "trailing": false
+      },
+      {
+        "name": "--wg-endpoint",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false
+      },
+      {
+        "name": "--wg-mtu",
+        "required": false,
+        "value": true,
+        "type": "integer",
+        "multiple": false,
+        "trailing": false
+      },
+      {
+        "name": "--yes",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "short": "y",
+        "trailing": false
+      },
+      {
+        "name": "DESTINATION",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "conflicts": [
+          "--command",
+          "--wait"
+        ]
+      },
+      {
+        "name": "--token",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Enrollment token from Cloud; the pasted command passes it",
+        "conflicts": [
+          "--command",
+          "--wait"
+        ]
+      },
+      {
+        "name": "--command",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Print one line to paste on the Server, then wait for it to join",
+        "conflicts": [
+          "DESTINATION",
+          "--wait",
+          "--token"
+        ]
+      },
+      {
+        "name": "--wait",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Wait for the Server that runs a printed command to join",
+        "conflicts": [
+          "DESTINATION",
+          "--token",
+          "--command"
+        ]
+      },
+      {
+        "name": "--cloud-url",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Cloud that issued --token [default: ployz.dev]"
+      },
+      {
+        "name": "--network",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "default": "10.210.0.0/16",
+        "trailing": false,
+        "help": "Cluster network, when this Server founds the Cluster"
+      },
+      {
+        "name": "--ingress-image",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Caddy image to deploy when founding a Cluster"
+      },
+      {
+        "name": "--reset",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Reset an initialized Server before enrollment"
+      }
+    ]
+  },
+  {
+    "command": "server build-cache-clear",
+    "about": "Clear this execution host user's Ployz build cache",
+    "json": true,
+    "approval": "never",
+    "surface": "local",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "server clean",
+    "about": "Remove a Namespace on your Servers that isn't in any Project; lists them without --namespace",
+    "json": true,
+    "approval": "depends",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "--namespace",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false
+      },
+      {
+        "name": "--confirm",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "The Namespace, typed to confirm its removal"
+      }
+    ]
+  },
+  {
+    "command": "server drain",
+    "about": "Stop placing Services on a Server and move its Services' Containers off it",
+    "json": true,
+    "approval": "depends",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "SERVER",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "server forget",
+    "about": "Forget every Server of the Organization, when they were deleted",
+    "json": true,
+    "approval": "always",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--confirm",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "The Organization's slug, typed to confirm forgetting its Servers"
+      }
+    ]
+  },
+  {
+    "command": "server inspect",
+    "about": "Inspect a Server: telemetry, round-trip times, and its latest upgrade attempt",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "SERVER",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "server logs",
+    "about": "Show Server daemon logs",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "--follow",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "short": "f",
+        "trailing": false,
+        "help": "Keep streaming new lines"
+      },
+      {
+        "name": "--machine",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "short": "m",
+        "trailing": false,
+        "help": "Only these Servers"
+      },
+      {
+        "name": "--since",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Lines after this time: 10m, 2h or an RFC 3339 timestamp"
+      },
+      {
+        "name": "--tail",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "default": "100",
+        "short": "n",
+        "trailing": false,
+        "help": "Lines from the end of each Container's log; all for everything"
+      },
+      {
+        "name": "--until",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Lines before this time: 10m, 2h or an RFC 3339 timestamp"
+      },
+      {
+        "name": "--utc",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Show times in UTC"
+      },
+      {
+        "name": "SERVICE",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "index": 1,
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "server ls",
+    "about": "List Servers",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "server rm",
+    "about": "Remove a Server",
+    "json": true,
+    "approval": "always",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "--no-reset",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Remove the Server from the Cluster without resetting it; use when the Server is unreachable",
+        "conflicts": [
+          "--accept-volume-loss"
+        ]
+      },
+      {
+        "name": "--confirm",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "The Server's name, typed to confirm its removal"
+      },
+      {
+        "name": "SERVER",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--accept-volume-loss",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false,
+        "help": "Accept loss of Cluster access: repeat once per exact volume name; reset does not erase volume data on the host",
+        "conflicts": [
+          "--no-reset"
+        ]
+      }
+    ]
+  },
+  {
+    "command": "server set",
+    "about": "Change a Server's name, labels, roles, public IP or build concurrency",
+    "json": true,
+    "approval": "depends",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "--label-add",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false
+      },
+      {
+        "name": "--accepts-builds",
+        "required": false,
+        "value": true,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "values": [
+          "true",
+          "false"
+        ]
+      },
+      {
+        "name": "--accepts-services",
+        "required": false,
+        "value": true,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "values": [
+          "true",
+          "false"
+        ]
+      },
+      {
+        "name": "--accepts-ingress",
+        "required": false,
+        "value": true,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "values": [
+          "true",
+          "false"
+        ]
+      },
+      {
+        "name": "--label-rm",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false
+      },
+      {
+        "name": "--name",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false
+      },
+      {
+        "name": "--public-ip",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false
+      },
+      {
+        "name": "--build-concurrency",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Builds this Server runs at once; auto follows its roles and RAM"
+      },
+      {
+        "name": "--wg-endpoint",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false
+      },
+      {
+        "name": "SERVER",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "server upgrade",
+    "about": "Upgrade the daemon on explicitly selected Servers, one at a time",
+    "json": true,
+    "approval": "depends",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "VERSION",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "SERVER",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "index": 2,
+        "trailing": false,
+        "help": "Server name or ID, in upgrade order"
+      }
+    ]
+  },
+  {
+    "command": "service add",
+    "about": "Add a Service; it is staged until a Deploy",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "NAME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "Service name, also its Private DNS name"
+      },
+      {
+        "name": "--image",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Container image to run [default: none, an empty Service]",
+        "conflicts": [
+          "--repo"
+        ]
+      },
+      {
+        "name": "--repo",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "GitHub repository to build; Ployz checks it and the branch (default: its default branch)",
+        "conflicts": [
+          "--image"
+        ]
+      }
+    ]
+  },
+  {
+    "command": "service inspect",
+    "about": "Show a Service, its Settings and staged changes",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "SERVICE",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "service ls",
+    "about": "List Services and what the next Deploy does to them",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      }
+    ]
+  },
+  {
+    "command": "service port-forward",
+    "about": "Forward a local port to a Service's container until interrupted",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "SERVICE",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "PORT",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 2,
+        "trailing": false,
+        "help": "REMOTE, or LOCAL:REMOTE; LOCAL 0 picks a free port"
+      }
+    ]
+  },
+  {
+    "command": "service rename",
+    "about": "Rename a Service; its Private DNS name and references stay the same",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "SERVICE",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "NAME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 2,
+        "trailing": false,
+        "help": "The new name"
+      }
+    ]
+  },
+  {
+    "command": "service restart",
+    "about": "Stop, then start, a Service's containers; its configuration is unchanged",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "SERVICE",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--signal",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "default": "SIGTERM",
+        "trailing": false
+      },
+      {
+        "name": "--timeout",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "default": "10",
+        "short": "t",
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "service rm",
+    "about": "Remove a Service; it keeps running until a Deploy removes it",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "SERVICE",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "service start",
+    "about": "Start a Service's stopped containers",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "SERVICE",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "index": 1,
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "service stop",
+    "about": "Stop a Service's containers; they stay until started or deployed",
+    "json": true,
+    "approval": "always",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "SERVICE",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--signal",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "default": "SIGTERM",
+        "trailing": false
+      },
+      {
+        "name": "--timeout",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "default": "10",
+        "short": "t",
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "set",
+    "about": "Stage Setting values",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "ASSIGNMENT",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "index": 1,
+        "trailing": false,
+        "help": "For example web.replicas=3 or web.env.LOG_LEVEL=info; the SERVICE a --patch or --from-env-file applies to; web.env.KEY or web.registryCredential for --secret"
+      },
+      {
+        "name": "--patch",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Set a Service's Settings from an object shaped like `get SERVICE --json` values; omitted Settings stay; - reads stdin",
+        "conflicts": [
+          "--secret",
+          "--from-env-file",
+          "--at-merge"
+        ]
+      },
+      {
+        "name": "--secret",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Seal a value read from stdin: set web.env.KEY --secret, or set web.registryCredential --secret for a private image's token. With --from-env-file, seal every value",
+        "conflicts": [
+          "--patch"
+        ]
+      },
+      {
+        "name": "--from-env-file",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Set a Service's variables from a .env file; - reads stdin. Variables that are secret stay secret",
+        "conflicts": [
+          "--patch",
+          "--at-merge"
+        ]
+      },
+      {
+        "name": "--at-merge",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "With --secret: hold the --env Destination's value for a secret pull request PR syncs there by name only; it lands with the merge",
+        "conflicts": [
+          "--patch",
+          "--from-env-file",
+          "--expect"
+        ]
+      },
+      {
+        "name": "--expect",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Refuse unless Working State is still at this revision",
+        "conflicts": [
+          "--at-merge"
+        ]
+      }
+    ]
+  },
+  {
+    "command": "status",
+    "about": "Show who you are, where commands act, and what is staged, deploying or needs attention",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      }
+    ]
+  },
+  {
+    "command": "token ls",
+    "about": "List the Organization's tokens and your signed-in devices",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": []
+  },
+  {
+    "command": "token new",
+    "about": "Make a token for PLOYZ_TOKEN; its secret is shown once",
+    "json": true,
+    "approval": "always",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "NAME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "What the token is for, e.g. ci"
+      },
+      {
+        "name": "--expires-in",
+        "required": false,
+        "value": true,
+        "type": "integer",
+        "multiple": false,
+        "default": "90",
+        "trailing": false,
+        "help": "Days until the token stops working"
+      }
+    ]
+  },
+  {
+    "command": "token rm",
+    "about": "Revoke a token or sign out a device, at once",
+    "json": true,
+    "approval": "always",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "ID",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "unset",
+    "about": "Return Settings to their defaults",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "PATH",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "index": 1,
+        "trailing": false,
+        "help": "SERVICE.SETTING, or SERVICE.env.KEY to delete a variable"
+      },
+      {
+        "name": "--expect",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Refuse unless Working State is still at this revision"
+      }
+    ]
+  },
+  {
+    "command": "up",
+    "about": "Deploy this directory: create and link its Project if needed, upload, build and deploy it",
+    "json": true,
+    "approval": "depends",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "--events",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Also write progress to FILE as NDJSON",
+        "conflicts": [
+          "--detach"
+        ]
+      },
+      {
+        "name": "--detach",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Return the queued Deployment at once instead of following it",
+        "conflicts": [
+          "--events"
+        ]
+      },
+      {
+        "name": "--server",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "First add this Server over SSH, as `ployz server add` does; the first founds the Cluster"
+      },
+      {
+        "name": "--reset",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Reset the --server if it already runs Ployz, before adding it"
+      },
+      {
+        "name": "--accept-volume-loss",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false,
+        "help": "Accept permanent deletion: repeat once per exact volume name in the full deletion list; --yes cannot bypass this"
+      },
+      {
+        "name": "--expect-version",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Refuse unless this is still the reviewed version; a data-loss refusal names it"
+      }
+    ]
+  },
+  {
+    "command": "volume add",
+    "about": "Add a Managed volume (or --docker); staged until you deploy",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "--size",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Managed volume size limit in GB, such as 10GB; new Volumes default to 5GB",
+        "conflicts": [
+          "--docker"
+        ]
+      },
+      {
+        "name": "--docker",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Use a plain Docker volume, with no size limit (not recommended)",
+        "conflicts": [
+          "--size"
+        ]
+      },
+      {
+        "name": "NAME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "Volume name, unique in the Environment"
+      },
+      {
+        "name": "--mount",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false,
+        "help": "Mount it into a Service at an absolute path; repeatable"
+      },
+      {
+        "name": "--shared-writes",
+        "required": false,
+        "value": true,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Let more than one container write it: replicas of one Service, or several Services. =false refuses a second writer",
+        "values": [
+          "true",
+          "false"
+        ]
+      }
+    ]
+  },
+  {
+    "command": "volume inspect",
+    "about": "Show a Volume and where it is mounted",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "VOLUME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "volume ls",
+    "about": "List Volumes and what the next Deploy does to them",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      }
+    ]
+  },
+  {
+    "command": "volume mirror",
+    "about": "Copy a Volume read-only onto another Server (Ployz Cloud); `mirror rm` deletes one",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "VOLUME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--to",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "The Server that gets the Mirror; it shows as VOLUME-SERVER"
+      },
+      {
+        "name": "--wait",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Wait for the run to end; it fails unless the run is done"
+      }
+    ]
+  },
+  {
+    "command": "volume mirror rm",
+    "about": "Delete a Volume's Mirror (Ployz Cloud)",
+    "json": true,
+    "approval": "always",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "MIRROR",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "The Mirror, named by its Volume and Server, like data-web-2"
+      },
+      {
+        "name": "--confirm",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "The Volume's name, to delete a Mirror that is its only copy left"
+      },
+      {
+        "name": "--wait",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Wait for the run to end; it fails unless the run is done"
+      }
+    ]
+  },
+  {
+    "command": "volume rename",
+    "about": "Rename a Volume: staged; its data and mounts stay",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "VOLUME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "NAME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 2,
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "volume rm",
+    "about": "Remove a Volume and detach it; a Deploy of the removal deletes its data",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "VOLUME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "volume runs",
+    "about": "List a Volume's Mirror and Sync runs, or show one (Ployz Cloud)",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "VOLUME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "RUN",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 2,
+        "trailing": false,
+        "help": "A run ID, to show that run"
+      }
+    ]
+  },
+  {
+    "command": "volume set",
+    "about": "Change a Volume's storage before its first deployment, or whether it allows shared writes",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "--size",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Managed volume size limit in GB, such as 10GB; new Volumes default to 5GB",
+        "conflicts": [
+          "--docker"
+        ]
+      },
+      {
+        "name": "--docker",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Use a plain Docker volume, with no size limit (not recommended)",
+        "conflicts": [
+          "--size"
+        ]
+      },
+      {
+        "name": "VOLUME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--shared-writes",
+        "required": false,
+        "value": true,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Let more than one container write it: replicas of one Service, or several Services. =false refuses a second writer",
+        "values": [
+          "true",
+          "false"
+        ]
+      }
+    ]
+  },
+  {
+    "command": "volume sync",
+    "about": "Send what changed since the last sync to a Volume's Mirror (Ployz Cloud)",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "VOLUME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--full",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Copy everything again, for a Mirror that fell behind for good"
+      },
+      {
+        "name": "--wait",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Wait for the run to end; it fails unless the run is done"
+      }
+    ]
+  }
+]

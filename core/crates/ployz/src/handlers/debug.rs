@@ -13,15 +13,16 @@ pub(crate) fn attach(command: Command) -> Command {
 }
 
 #[cfg(feature = "verify-faults")]
-pub(super) fn handler(path: &str) -> Option<super::Handler> {
+pub(super) fn handler(path: &str) -> Option<super::catalog::Runnable> {
+    use super::catalog::{Approval, internal};
     match path {
-        "volume-rpc" => Some(enabled::volume_rpc),
+        "volume-rpc" => Some(internal(Approval::Never, enabled::volume_rpc)),
         _ => None,
     }
 }
 
 #[cfg(not(feature = "verify-faults"))]
-pub(super) fn handler(_path: &str) -> Option<super::Handler> {
+pub(super) fn handler(_path: &str) -> Option<super::catalog::Runnable> {
     None
 }
 
