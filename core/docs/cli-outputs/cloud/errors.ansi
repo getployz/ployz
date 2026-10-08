@@ -19,13 +19,6 @@ next: ployz login
 === not signed in: org ls --json :: $ ployz org ls --json
 {"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
 
-=== not signed in: billing :: $ ployz billing
-not signed in to Cloud
-next: ployz login
-
-=== not signed in: billing --json :: $ ployz billing --json
-{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
-
 === not signed in: github ls :: $ ployz github ls
 not signed in to Cloud
 next: ployz login
@@ -118,13 +111,6 @@ Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left 
 next: ployz token new
 
 === bogus PLOYZ_TOKEN: org ls --json :: $ ployz org ls --json
-{"error":{"code":"unauthenticated","details":{"next":"ployz token new"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"}}
-
-=== bogus PLOYZ_TOKEN: billing :: $ ployz billing
-Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization
-next: ployz token new
-
-=== bogus PLOYZ_TOKEN: billing --json :: $ ployz billing --json
 {"error":{"code":"unauthenticated","details":{"next":"ployz token new"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"}}
 
 === bogus PLOYZ_TOKEN: deployment ls :: $ ployz deployment ls

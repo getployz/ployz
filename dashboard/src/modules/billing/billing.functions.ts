@@ -2,11 +2,8 @@ import { createServerFn } from "@tanstack/react-start";
 import { Schema } from "effect";
 import {
   createCustomerPortal,
-  createEmbeddedCheckout,
   getBillingState,
-  syncBillingAfterCheckout,
 } from "#/modules/billing/billing.server";
-import { getCustomDomainCapability } from "#/modules/billing/custom-domain-capability";
 import { trimmedString } from "#/lib/schema";
 import {
   actorMiddleware,
@@ -27,30 +24,9 @@ export const getBillingStateServerFn = createServerFn({ method: "GET" })
     runActor(context, getBillingState(context.actor, data)),
   );
 
-export const createEmbeddedCheckoutServerFn = createServerFn({ method: "POST" })
-  .middleware(middleware)
-  .validator(strictValidator(BillingStateRequest))
-  .handler(({ context, data }) =>
-    runActor(context, createEmbeddedCheckout(context.actor, data)),
-  );
-
 export const createCustomerPortalServerFn = createServerFn({ method: "POST" })
   .middleware(middleware)
   .validator(strictValidator(BillingStateRequest))
   .handler(({ context, data }) =>
     runActor(context, createCustomerPortal(context.actor, data)),
-  );
-
-export const getCustomDomainCapabilityServerFn = createServerFn({ method: "GET" })
-  .middleware(middleware)
-  .validator(strictValidator(BillingStateRequest))
-  .handler(({ context, data }) =>
-    runActor(context, getCustomDomainCapability(context.actor, data)),
-  );
-
-export const syncBillingAfterCheckoutServerFn = createServerFn({ method: "POST" })
-  .middleware(middleware)
-  .validator(strictValidator(BillingStateRequest))
-  .handler(({ context, data }) =>
-    runActor(context, syncBillingAfterCheckout(context.actor, data)),
   );

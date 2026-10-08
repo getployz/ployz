@@ -84,8 +84,7 @@ a free https address like `web.acme-x7q2.ployz.app`. Leave **Port** blank to sen
 ### Custom Domain
 
 Adds a domain you own, like `app.example.com`, next to the generated one, and a service can have
-as many as you need. It needs Ployz Pro, $9 a month, or a [self-hosted](../self-hosting.md) Ployz
-Cloud, plus a DNS record at your DNS provider. See
+as many as you need. It needs a DNS record at your DNS provider. See
 [Add a custom domain](domains.md#add-a-custom-domain).
 
 ### Private Networking

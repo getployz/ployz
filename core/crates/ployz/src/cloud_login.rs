@@ -73,10 +73,6 @@ pub(crate) enum LoginError {
     UnknownOrganization(String),
     #[error("no token or signed-in device {0} in this Organization")]
     UnknownCredential(String),
-    #[error("Cloud at {0} has no billing: it is self-hosted")]
-    NoBilling(String),
-    #[error("this Organization already holds Pro")]
-    AlreadyPro,
 }
 
 /// A bearer that never prints.

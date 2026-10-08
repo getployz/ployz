@@ -19,7 +19,6 @@ function makeSdk(items: readonly object[]) {
   });
   const sdk = {
     subscriptions: { iterList },
-    checkouts: { create: vi.fn() },
   } as const;
   return { iterList, sdk: asTestDouble<PolarSdk>()(sdk) };
 }

@@ -11,17 +11,21 @@ $ ployz diff
 
 stdout:
 ```
-db (create)
-  db.mounts.pgdata: null -> "/var/lib/postgresql/data"
 web (create)
-  web.healthcheck: null -> {"path":"/healthz","timeoutSeconds":300}
-  web.env.A: null -> "1"
-  web.env.API_KEY: null -> {"secret":true}
-  web.env.API_KEY2: null -> {"secret":true}
-  web.env.B: null -> "two"
-  web.env.DB_URL: null -> "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
-  web.env.LOG_LEVEL: null -> "info"
+  web.healthcheck: null → {"path":"/healthz","timeoutSeconds":300}
+  web.env.A: null → "1"
+  web.env.API_KEY: null → {"secret":true}
+  web.env.API_KEY2: null → {"secret":true}
+  web.env.B: null → "two"
+  web.env.DB_URL: null → "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
+  web.env.LOG_LEVEL: null → "info"
+db (create)
+  db.mounts.pgdata: null → "/var/lib/postgresql/data"
 pgdata (create)
+```
+
+stderr:
+```
 next: ployz deploy --expect-version 21:0:0.0 --project shop
 ```
 
@@ -39,29 +43,10 @@ stdout:
     {
       "comparison": "introduction",
       "data": null,
-      "id": "49f3ad59-318d-4262-b5a4-9fac1564ef0f",
-      "lifecycle": "create",
-      "name": "db",
-      "row": "49f3ad59-318d-4262-b5a4-9fac1564ef0f:node",
-      "settings": [
-        {
-          "after": "/var/lib/postgresql/data",
-          "before": null,
-          "canRestore": true,
-          "kind": "add",
-          "path": "db.mounts.pgdata",
-          "row": "49f3ad59-318d-4262-b5a4-9fac1564ef0f:mounts.3baf0385-d166-4137-8230-49907c992bfb"
-        }
-      ],
-      "type": "service"
-    },
-    {
-      "comparison": "introduction",
-      "data": null,
-      "id": "4dfec997-f0c6-428f-9c6c-476adb6724c1",
+      "id": "87070af3-9604-42c2-b3dc-918e60918fc0",
       "lifecycle": "create",
       "name": "web",
-      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:node",
+      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:node",
       "settings": [
         {
           "after": {
@@ -72,7 +57,7 @@ stdout:
           "canRestore": true,
           "kind": "update",
           "path": "web.healthcheck",
-          "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:healthcheck"
+          "row": "87070af3-9604-42c2-b3dc-918e60918fc0:healthcheck"
         },
         {
           "after": "1",
@@ -80,7 +65,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.A",
-          "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.A"
+          "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.A"
         },
         {
           "after": {
@@ -90,7 +75,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.API_KEY",
-          "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.API_KEY"
+          "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.API_KEY"
         },
         {
           "after": {
@@ -100,7 +85,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.API_KEY2",
-          "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.API_KEY2"
+          "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.API_KEY2"
         },
         {
           "after": "two",
@@ -108,7 +93,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.B",
-          "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.B"
+          "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.B"
         },
         {
           "after": "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app",
@@ -116,7 +101,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.DB_URL",
-          "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.DB_URL"
+          "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.DB_URL"
         },
         {
           "after": "info",
@@ -124,7 +109,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.LOG_LEVEL",
-          "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.LOG_LEVEL"
+          "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.LOG_LEVEL"
         }
       ],
       "type": "service"
@@ -132,16 +117,35 @@ stdout:
     {
       "comparison": "introduction",
       "data": null,
-      "id": "3baf0385-d166-4137-8230-49907c992bfb",
+      "id": "fdf7675e-ccc7-4f64-afa5-ca281d550ace",
+      "lifecycle": "create",
+      "name": "db",
+      "row": "fdf7675e-ccc7-4f64-afa5-ca281d550ace:node",
+      "settings": [
+        {
+          "after": "/var/lib/postgresql/data",
+          "before": null,
+          "canRestore": true,
+          "kind": "add",
+          "path": "db.mounts.pgdata",
+          "row": "fdf7675e-ccc7-4f64-afa5-ca281d550ace:mounts.8d06e20e-a768-4f6e-914d-6bf0f366905e"
+        }
+      ],
+      "type": "service"
+    },
+    {
+      "comparison": "introduction",
+      "data": null,
+      "id": "8d06e20e-a768-4f6e-914d-6bf0f366905e",
       "lifecycle": "create",
       "name": "pgdata",
-      "row": "3baf0385-d166-4137-8230-49907c992bfb:node",
+      "row": "8d06e20e-a768-4f6e-914d-6bf0f366905e:node",
       "settings": [],
       "type": "volume"
     }
   ],
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 21
@@ -169,6 +173,11 @@ stdout:
 Discarded web.healthcheck in shop/production (revision 22).
 ```
 
+stderr:
+```
+inspect: ployz diff --project shop
+```
+
 ### discard --json one Setting
 
 ```console
@@ -179,8 +188,9 @@ $ ployz --json discard web.env.B
 stdout:
 ```
 {
+  "changed": true,
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 23
@@ -199,8 +209,8 @@ $ ployz discard nope
 
 stderr:
 ```
-No Service named nope in Environment production
-valid: db, web
+error: No Service named nope in Environment production
+valid: web, db
 ```
 
 ### publish: stale --version
@@ -212,7 +222,7 @@ $ ployz publish --version 1:0:0.0
 
 stderr:
 ```
-The Environment changed after this review. Review the latest changes and try again
+error: The Environment changed after this review. Review the latest changes and try again
 next: ployz diff --project shop
 ```
 
@@ -228,6 +238,11 @@ stdout:
 Published shop/production as Saved revision 1.
 ```
 
+stderr:
+```
+next: ployz deploy --project shop
+```
+
 ### diff (after publish, not deployed)
 
 ```console
@@ -237,16 +252,20 @@ $ ployz diff
 
 stdout:
 ```
-db (create)
-  db.mounts.pgdata: null -> "/var/lib/postgresql/data"
 web (create)
-  web.env.A: null -> "1"
-  web.env.API_KEY: null -> {"secret":true}
-  web.env.API_KEY2: null -> {"secret":true}
-  web.env.DB_URL: null -> "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
-  web.env.LOG_LEVEL: null -> "info"
+  web.env.A: null → "1"
+  web.env.API_KEY: null → {"secret":true}
+  web.env.API_KEY2: null → {"secret":true}
+  web.env.DB_URL: null → "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
+  web.env.LOG_LEVEL: null → "info"
+db (create)
+  db.mounts.pgdata: null → "/var/lib/postgresql/data"
 pgdata (create)
 Published as Saved revision 1.
+```
+
+stderr:
+```
 next: ployz deploy --expect-version 23:1:0.0 --project shop
 ```
 
@@ -262,6 +281,11 @@ stdout:
 Saved revision 1 already holds shop/production.
 ```
 
+stderr:
+```
+next: ployz deploy --project shop
+```
+
 ### publish --json again
 
 ```console
@@ -274,7 +298,7 @@ stdout:
 {
   "created": false,
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 23
@@ -296,7 +320,7 @@ stdout:
 {
   "created": true,
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 24
@@ -313,7 +337,7 @@ $ ployz diff --project empty
 # exit 0
 ```
 
-stdout:
+stderr:
 ```
 No staged changes in empty/production.
 ```
@@ -330,7 +354,7 @@ stdout:
 {
   "changes": [],
   "environment": {
-    "id": "8e624edd-448d-40d4-8d3a-765dd3821411",
+    "id": "5f668ec5-9628-4ca0-890c-11308678f4de",
     "name": "production",
     "project": "empty",
     "revision": 1
@@ -354,7 +378,7 @@ $ ployz discard --project empty
 
 stdout:
 ```
-Discarded every staged change in empty/production (revision 1).
+Nothing staged in empty/production; nothing to discard.
 ```
 
 ### discard --json (nothing staged)
@@ -367,13 +391,13 @@ $ ployz --json discard --project empty
 stdout:
 ```
 {
+  "changed": false,
   "environment": {
-    "id": "8e624edd-448d-40d4-8d3a-765dd3821411",
+    "id": "5f668ec5-9628-4ca0-890c-11308678f4de",
     "name": "production",
     "project": "empty",
     "revision": 1
   },
-  "next": "ployz diff --project empty",
   "saved": null
 }
 ```
@@ -387,7 +411,7 @@ $ ployz publish --project empty
 
 stdout:
 ```
-Published empty/production as Saved revision 1.
+Nothing staged in empty/production; nothing to publish.
 ```
 
 ### discard everything
@@ -402,6 +426,11 @@ stdout:
 Discarded every staged change in shop/production (revision 26).
 ```
 
+stderr:
+```
+inspect: ployz diff --project shop
+```
+
 ### discard: stale --version
 
 ```console
@@ -411,7 +440,7 @@ $ ployz discard --version 1:0:0.0
 
 stderr:
 ```
-The Environment changed after this review. Review the latest changes and try again
+error: The Environment changed after this review. Review the latest changes and try again
 next: ployz diff --project shop
 ```
 
@@ -422,7 +451,7 @@ $ ployz diff
 # exit 0
 ```
 
-stdout:
+stderr:
 ```
 No staged changes in shop/production.
 ```
@@ -436,14 +465,18 @@ $ ployz diff
 
 stdout:
 ```
-web (create)
-  web.source: {"credentials":false,"image":"nginx:1.27","type":"image"} -> {"credentials":false,"image":"nginx:1.28","type":"image"}
-  web.env.DB_URL: null -> "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
-  web.env.DEBUG: null -> "1"
-  web.env.NEW: null -> "1"
 db (create)
-  db.mounts.pgdata: null -> "/var/lib/postgresql/data"
+  db.mounts.pgdata: null → "/var/lib/postgresql/data"
+web (create)
+  web.source: {"credentials":false,"image":"nginx:1.27","type":"image"} → {"credentials":false,"image":"nginx:1.28","type":"image"}
+  web.env.DB_URL: null → "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
+  web.env.DEBUG: null → "1"
+  web.env.NEW: null → "1"
 pgdata (create)
+```
+
+stderr:
+```
 next: ployz deploy --expect-version 33:4:0.0 --project shop
 ```
 
@@ -461,10 +494,29 @@ stdout:
     {
       "comparison": "introduction",
       "data": null,
-      "id": "2809d5da-9a84-4a30-a38d-c9db6cab60ec",
+      "id": "190a6215-44df-43af-806c-78cdb46c8180",
+      "lifecycle": "create",
+      "name": "db",
+      "row": "190a6215-44df-43af-806c-78cdb46c8180:node",
+      "settings": [
+        {
+          "after": "/var/lib/postgresql/data",
+          "before": null,
+          "canRestore": true,
+          "kind": "add",
+          "path": "db.mounts.pgdata",
+          "row": "190a6215-44df-43af-806c-78cdb46c8180:mounts.7380a67d-8bab-4fef-a5be-bb2464193de4"
+        }
+      ],
+      "type": "service"
+    },
+    {
+      "comparison": "introduction",
+      "data": null,
+      "id": "3fa9959f-5d42-40b9-a746-eecb3062a942",
       "lifecycle": "create",
       "name": "web",
-      "row": "2809d5da-9a84-4a30-a38d-c9db6cab60ec:node",
+      "row": "3fa9959f-5d42-40b9-a746-eecb3062a942:node",
       "settings": [
         {
           "after": {
@@ -480,7 +532,7 @@ stdout:
           "canRestore": true,
           "kind": "update",
           "path": "web.source",
-          "row": "2809d5da-9a84-4a30-a38d-c9db6cab60ec:source"
+          "row": "3fa9959f-5d42-40b9-a746-eecb3062a942:source"
         },
         {
           "after": "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app",
@@ -488,7 +540,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.DB_URL",
-          "row": "2809d5da-9a84-4a30-a38d-c9db6cab60ec:variables.DB_URL"
+          "row": "3fa9959f-5d42-40b9-a746-eecb3062a942:variables.DB_URL"
         },
         {
           "after": "1",
@@ -496,7 +548,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.DEBUG",
-          "row": "2809d5da-9a84-4a30-a38d-c9db6cab60ec:variables.DEBUG"
+          "row": "3fa9959f-5d42-40b9-a746-eecb3062a942:variables.DEBUG"
         },
         {
           "after": "1",
@@ -504,7 +556,7 @@ stdout:
           "canRestore": true,
           "kind": "add",
           "path": "web.env.NEW",
-          "row": "2809d5da-9a84-4a30-a38d-c9db6cab60ec:variables.NEW"
+          "row": "3fa9959f-5d42-40b9-a746-eecb3062a942:variables.NEW"
         }
       ],
       "type": "service"
@@ -512,35 +564,16 @@ stdout:
     {
       "comparison": "introduction",
       "data": null,
-      "id": "5b0d19c5-f986-48c9-97bf-c93691298a5f",
-      "lifecycle": "create",
-      "name": "db",
-      "row": "5b0d19c5-f986-48c9-97bf-c93691298a5f:node",
-      "settings": [
-        {
-          "after": "/var/lib/postgresql/data",
-          "before": null,
-          "canRestore": true,
-          "kind": "add",
-          "path": "db.mounts.pgdata",
-          "row": "5b0d19c5-f986-48c9-97bf-c93691298a5f:mounts.f108911a-f23c-4fa0-9db2-59a3adfaa82b"
-        }
-      ],
-      "type": "service"
-    },
-    {
-      "comparison": "introduction",
-      "data": null,
-      "id": "f108911a-f23c-4fa0-9db2-59a3adfaa82b",
+      "id": "7380a67d-8bab-4fef-a5be-bb2464193de4",
       "lifecycle": "create",
       "name": "pgdata",
-      "row": "f108911a-f23c-4fa0-9db2-59a3adfaa82b:node",
+      "row": "7380a67d-8bab-4fef-a5be-bb2464193de4:node",
       "settings": [],
       "type": "volume"
     }
   ],
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 33

@@ -80,8 +80,8 @@ for https.
 
 ## Pricing
 
-Ployz is free on your own servers. [Ployz Cloud](https://ployz.dev) charges $9 a month if you
-want custom domains. Your hosting provider bills you for the servers.
+Ployz is free on your own servers, custom domains included. Paid [Ployz Cloud](https://ployz.dev)
+plans are coming soon. Your hosting provider bills you for the servers.
 
 ## Self-hosting the dashboard
 

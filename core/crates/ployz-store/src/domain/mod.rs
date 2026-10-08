@@ -12,7 +12,7 @@ use ployz_core::config::{
 };
 use ployz_core::{
     CertificateAvailability, CertificateFailureKind, CertificateObservation, DomainPrefix,
-    IngressHost, Namespace, RpcError, RpcErrorCode, ServiceName,
+    IngressHost, Namespace, RpcError, ServiceName,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -35,9 +35,6 @@ use status::row;
 #[serde(deny_unknown_fields)]
 #[ts(rename = "ConfigDomainEvidence")]
 pub struct DomainEvidence {
-    /// Whether the Organization may add custom domains: Pro, or a self-hosted Cloud.
-    #[serde(default)]
-    pub custom_domains: bool,
     /// The Organization's Cluster Domain, once reserved.
     #[serde(default)]
     pub cluster_domain: Option<ClusterDomain>,
@@ -374,15 +371,6 @@ pub(crate) fn add_domain(
             let changed = existing
                 .as_ref()
                 .is_none_or(|route| route.target_port != add.port);
-            // Only adding or retargeting a custom domain needs the capability.
-            if changed && !trusted.domains.custom_domains {
-                return Err(RpcError {
-                    code: RpcErrorCode::Unsupported,
-                    message: "Custom domains need Ployz Pro".into(),
-                    details: json!({ "next": "ployz billing upgrade" }),
-                    cause: Vec::new(),
-                });
-            }
             match existing {
                 Some(route) => route.target_port = add.port,
                 None => routes.push(ServiceRoute {

@@ -1,15 +1,15 @@
-//! `ployz token`, `ployz org` and `ployz billing`: acting in Cloud as this device's
+//! `ployz token` and `ployz org`: acting in Cloud as this device's
 //! sign-in or `PLOYZ_TOKEN`. None of them needs a Server.
 
 use clap::{ArgMatches, Command};
 use serde::Serialize;
 
 use super::store::Next;
-use super::{Error, Handler, config_path, leaf_matches, login::open_browser, runtime};
+use super::{Error, Handler, config_path, leaf_matches, runtime};
 use crate::cli::{positional, value};
 use ployz_core::RpcErrorCode;
 
-use crate::cloud_account::{self, BillingPage, Credential, ServerClears};
+use crate::cloud_account::{self, Credential, ServerClears};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::ui::{self, Cell, Hint, Table, Tone};
 
@@ -78,13 +78,6 @@ pub(crate) fn org_command() -> Command {
         )
 }
 
-pub(crate) fn billing_command() -> Command {
-    Command::new("billing")
-        .about("Show the Organization's plan")
-        .subcommand(Command::new("upgrade").about("Print the checkout link for Pro"))
-        .subcommand(Command::new("manage").about("Print the billing portal link"))
-}
-
 pub(super) fn token_handler(path: &str) -> Option<Handler> {
     Some(match path {
         "new" => token_new,
@@ -100,15 +93,6 @@ pub(super) fn org_handler(path: &str) -> Option<Handler> {
         "use" => org_use,
         "build-order" => org_build_order,
         "rm" => org_remove,
-        _ => return None,
-    })
-}
-
-pub(super) fn billing_handler(path: &str) -> Option<Handler> {
-    Some(match path {
-        "" => billing,
-        "upgrade" => billing_upgrade,
-        "manage" => billing_manage,
         _ => return None,
     })
 }
@@ -444,55 +428,4 @@ fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         true => Ok(()),
         false => Err(Error::partial()),
     }
-}
-
-#[derive(Serialize)]
-struct BillingReport {
-    billing: cloud_account::Billing,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    next: Option<&'static str>,
-}
-
-fn billing(root: &ArgMatches) -> Result<(), Error> {
-    let billing = in_cloud(root, async |_, credential| {
-        cloud_account::billing(credential).await
-    })?;
-    let next = billing.plan.next();
-    let report = BillingReport { billing, next };
-    crate::ui::finish(&report, || {
-        let billing = &report.billing;
-        let plan = billing.plan.label();
-        let domains = if billing.custom_domains {
-            "allowed"
-        } else {
-            "need Pro"
-        };
-        ui::stream(format_args!(
-            "Organization {}: {plan}; custom domains {domains}.",
-            billing.organization
-        ));
-        if let Some(next) = report.next {
-            ui::hint(&Hint::Next(next.to_owned()));
-        }
-    })
-}
-
-fn billing_upgrade(root: &ArgMatches) -> Result<(), Error> {
-    billing_page(root, BillingPage::Checkout)
-}
-
-fn billing_manage(root: &ArgMatches) -> Result<(), Error> {
-    billing_page(root, BillingPage::Portal)
-}
-
-fn billing_page(root: &ArgMatches, page: BillingPage) -> Result<(), Error> {
-    let url = in_cloud(root, async |_, credential| {
-        cloud_account::billing_url(credential, page).await
-    })?;
-    crate::ui::finish(&serde_json::json!({ "url": url }), || {
-        ui::stream(&url);
-        if ui::interactive() {
-            open_browser(&url);
-        }
-    })
 }
