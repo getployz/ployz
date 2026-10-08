@@ -582,11 +582,11 @@ fn mount_data(store: &ConfigStore, who: &Actor) {
         .unwrap();
 }
 
-fn effects(store: &ConfigStore, who: &Actor) -> Vec<(DestructiveKind, String)> {
+fn effects(store: &ConfigStore, who: &Actor) -> Vec<(DestructiveKind, String, String)> {
     diff(store, who)
         .effects
         .into_iter()
-        .map(|effect| (effect.kind, effect.path))
+        .map(|effect| (effect.kind, effect.name, effect.path))
         .collect()
 }
 
@@ -601,6 +601,7 @@ fn removing_a_deployed_service_is_destructive_and_a_new_one_is_not() {
         Vec::from_iter(diff(&store, &who).effects),
         [DestructiveEffect {
             kind: DestructiveKind::RemovesService,
+            name: "web".into(),
             node: WEB.into(),
             path: "web".into(),
         }]
@@ -623,7 +624,11 @@ fn deleting_a_deployed_volume_is_destructive() {
         .unwrap();
     assert_eq!(
         effects(&store, &who),
-        [(DestructiveKind::DeletesVolume, "volumes.data".to_owned())]
+        [(
+            DestructiveKind::DeletesVolume,
+            "data".to_owned(),
+            "volumes.data".to_owned()
+        )]
     );
 }
 
@@ -649,6 +654,7 @@ fn detaching_a_volume_from_a_deployed_service_is_destructive_and_keeps_its_data(
         effects(&store, &who),
         [(
             DestructiveKind::DetachesVolume,
+            "data".to_owned(),
             "web.mounts.data".to_owned()
         )]
     );
@@ -683,7 +689,26 @@ fn removing_a_deployed_domain_is_destructive() {
     let effects = effects(&store, &who);
     assert_eq!(effects.len(), 1, "{effects:?}");
     assert_eq!(effects[0].0, DestructiveKind::RemovesDomain);
-    assert!(effects[0].1.starts_with("web.routes."), "{effects:?}");
+    assert_eq!(effects[0].1, "app.example.com");
+    assert!(effects[0].2.starts_with("web.routes."), "{effects:?}");
+    let refused = store
+        .write_trusted(
+            &who,
+            &Publish {
+                environment: EnvironmentRef::default(),
+                version: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &Trusted {
+                approval: Approval::Required,
+                ..Trusted::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(
+        refused.message,
+        "A human must approve this first: remove domain app.example.com"
+    );
 }
 
 #[test]
@@ -706,7 +731,7 @@ fn publishing_a_removal_waits_for_a_human_to_approve_exactly_it() {
     assert_eq!(refused.code.as_str(), "approval_required");
     assert_eq!(
         refused.details["effects"],
-        json!([{"kind": "removes_service", "node": WEB, "path": "web"}])
+        json!([{"kind": "removes_service", "name": "web", "node": WEB, "path": "web"}])
     );
     assert!(
         refused.message.contains("remove Service web"),

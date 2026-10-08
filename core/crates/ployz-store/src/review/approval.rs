@@ -9,7 +9,7 @@ use ployz_core::config::{
     ChangeKind, EnvironmentNodeType, ReviewLifecycleKind, SavedEnvironmentIntent,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::error;
@@ -22,6 +22,9 @@ use crate::{Actor, Approval};
 pub struct DestructiveEffect {
     /// What it destroys.
     pub kind: DestructiveKind,
+    /// What a human calls the thing destroyed: the Service, the Volume, or the
+    /// domain's hostname.
+    pub name: String,
     /// The node's ID: a Service's, or a Volume's resource ID.
     pub node: String,
     /// The row it changes, as `diff` shows it.
@@ -44,14 +47,15 @@ pub enum DestructiveKind {
 
 impl DestructiveEffect {
     fn describe(&self) -> String {
+        let name = &self.name;
         match self.kind {
-            DestructiveKind::RemovesService => format!("remove Service {}", self.path),
-            DestructiveKind::DeletesVolume => format!(
-                "delete Volume {}",
-                self.path.strip_prefix("volumes.").unwrap_or(&self.path)
-            ),
-            DestructiveKind::DetachesVolume => format!("detach {}", self.path),
-            DestructiveKind::RemovesDomain => format!("remove domain {}", self.path),
+            DestructiveKind::RemovesService => format!("remove Service {name}"),
+            DestructiveKind::DeletesVolume => format!("delete Volume {name}"),
+            DestructiveKind::DetachesVolume => match self.path.split_once(".mounts.") {
+                Some((service, _)) => format!("detach Volume {name} from {service}"),
+                None => format!("detach Volume {name}"),
+            },
+            DestructiveKind::RemovesDomain => format!("remove domain {name}"),
         }
     }
 }
@@ -63,8 +67,9 @@ pub(crate) fn destructive_effects(
     let mut effects = BTreeSet::new();
     for change in changes {
         let node = &change.node.id;
-        let effect = |kind, path: &str| DestructiveEffect {
+        let effect = |kind, name: &str, path: &str| DestructiveEffect {
             kind,
+            name: name.to_owned(),
             node: node.clone(),
             path: path.to_owned(),
         };
@@ -77,7 +82,7 @@ pub(crate) fn destructive_effects(
                     .any(|volume| volume.resource_id == *node);
                 if deployed && removed {
                     let path = format!("volumes.{}", change.name);
-                    effects.insert(effect(DestructiveKind::DeletesVolume, &path));
+                    effects.insert(effect(DestructiveKind::DeletesVolume, &change.name, &path));
                 }
             }
             EnvironmentNodeType::Service => {
@@ -85,15 +90,26 @@ pub(crate) fn destructive_effects(
                     continue;
                 }
                 if removed {
-                    effects.insert(effect(DestructiveKind::RemovesService, &change.name));
+                    effects.insert(effect(
+                        DestructiveKind::RemovesService,
+                        &change.name,
+                        &change.name,
+                    ));
                     continue;
                 }
                 let routes = format!("{}.routes.", change.name);
                 for row in &change.settings {
-                    if row.path.contains(".mounts.") && row.after.is_null() {
-                        effects.insert(effect(DestructiveKind::DetachesVolume, &row.path));
+                    if let Some((_, volume)) = row.path.split_once(".mounts.")
+                        && row.after.is_null()
+                    {
+                        effects.insert(effect(DestructiveKind::DetachesVolume, volume, &row.path));
                     } else if row.path.starts_with(&routes) && row.kind == ChangeKind::Remove {
-                        effects.insert(effect(DestructiveKind::RemovesDomain, &row.path));
+                        let hostname = row
+                            .before
+                            .get("hostname")
+                            .and_then(Value::as_str)
+                            .unwrap_or(&row.path);
+                        effects.insert(effect(DestructiveKind::RemovesDomain, hostname, &row.path));
                     }
                 }
             }
@@ -104,15 +120,13 @@ pub(crate) fn destructive_effects(
 }
 
 fn drop_detaches_of_deleted_volumes(effects: &mut BTreeSet<DestructiveEffect>) {
-    let deleted: Vec<String> = effects
+    let deleted: BTreeSet<String> = effects
         .iter()
         .filter(|effect| effect.kind == DestructiveKind::DeletesVolume)
-        .filter_map(|effect| effect.path.strip_prefix("volumes."))
-        .map(|name| format!(".mounts.{name}"))
+        .map(|effect| effect.name.clone())
         .collect();
     effects.retain(|effect| {
-        effect.kind != DestructiveKind::DetachesVolume
-            || !deleted.iter().any(|mount| effect.path.ends_with(mount))
+        effect.kind != DestructiveKind::DetachesVolume || !deleted.contains(&effect.name)
     });
 }
 
