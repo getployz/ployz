@@ -1,20 +1,21 @@
 //! `ployz mcp`: the Cloud commands as MCP tools over stdio. Each call runs as a child
 //! `ployz <command> --json`, so stdout carries nothing but JSON-RPC frames.
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
 use rmcp::model::{
     BooleanSchema, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
-    ElicitRequestParams, ElicitationAction, ElicitationSchema, Implementation, JsonObject,
-    ListToolsResult, MetaObject, PaginatedRequestParams, ServerCapabilities, ServerConfig,
-    StringSchema, Tool, ToolAnnotations,
+    ElicitRequest, ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationSchema,
+    Implementation, InputRequest, InputRequiredResult, InputResponses, JsonObject, ListToolsResult,
+    MetaObject, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
 };
-use rmcp::service::{ElicitationMode, Peer, RequestContext, RxJsonRpcMessage, TxJsonRpcMessage};
+use rmcp::service::{RequestContext, RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::Transport;
 use rmcp::transport::async_rw::AsyncRwTransport;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt};
@@ -187,6 +188,7 @@ struct Server {
     deadline: Duration,
     commands: Vec<CommandEntry>,
     tools: Vec<Tool>,
+    waiting: Mutex<HashMap<String, Asked>>,
 }
 
 #[derive(Default)]
@@ -215,6 +217,7 @@ impl Server {
             deadline: CALL_DEADLINE,
             commands,
             tools,
+            waiting: Mutex::default(),
         }
     }
 
@@ -258,8 +261,12 @@ impl ServerHandler for Server {
             McpError::invalid_params(format!("no tool named {}", request.name), None)
         })?;
         let argv = argv(entry, &self.globals, request.arguments.unwrap_or_default())?;
+        let answered = match request.request_state {
+            Some(state) => Some(self.answered(&state, request.input_responses)?),
+            None => None,
+        };
         tokio::select! {
-            result = self.settle(entry, argv, &context.peer) => Ok(result?.into()),
+            result = self.settle(entry, argv, answered, &context) => result,
             () = context.ct.cancelled() => {
                 Err(McpError::internal_error("the call was cancelled", None))
             }
@@ -271,31 +278,110 @@ impl ServerHandler for Server {
     }
 }
 
+const APPROVAL: &str = "approval";
+
 struct Ran {
     result: CallToolResult,
     asked: Option<Asked>,
 }
 
+enum Asking {
+    Unable,
+    InResult,
+    ByRequest,
+}
+
+fn asking(context: &RequestContext<RoleServer>) -> Asking {
+    let form = context
+        .client_capabilities()
+        .and_then(|capabilities| capabilities.elicitation)
+        .is_some_and(|elicitation| elicitation.form.is_some() || elicitation.url.is_none());
+    if !form {
+        Asking::Unable
+    } else if context
+        .protocol_version()
+        .is_some_and(|version| !version.has_initialize())
+    {
+        Asking::InResult
+    } else {
+        Asking::ByRequest
+    }
+}
+
 impl Server {
+    fn answered(
+        &self,
+        state: &str,
+        responses: Option<InputResponses>,
+    ) -> Result<(Asked, ElicitResult), McpError> {
+        let answer = responses
+            .and_then(|mut responses| responses.remove(APPROVAL))
+            .ok_or_else(|| {
+                McpError::invalid_params(
+                    format!("this retry carries no answer to `{APPROVAL}`"),
+                    None,
+                )
+            })?;
+        let answer = serde_json::from_value(answer).map_err(|error| {
+            McpError::invalid_params(format!("the `{APPROVAL}` answer: {error}"), None)
+        })?;
+        let asked = self
+            .waiting
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(state)
+            .ok_or_else(|| {
+                McpError::invalid_params(format!("no approval waits on {state}"), None)
+            })?;
+        Ok((asked, answer))
+    }
+
     async fn settle(
         &self,
         entry: &CommandEntry,
         mut argv: Vec<String>,
-        peer: &Peer<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
+        mut answered: Option<(Asked, ElicitResult)>,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        let verb = match entry.command.as_str() {
+            "publish" => "publish",
+            _ => "deploy",
+        };
         loop {
+            if let Some((asked, answer)) = answered.take() {
+                if let Answer::Refused(refused) = self.decide(verb, &asked, answer).await? {
+                    return Ok(refused.into());
+                }
+                approve_with(&mut argv, &asked.id);
+            }
             let ran = self.run(entry, &argv).await?;
             let Some(asked) = ran.asked else {
-                return Ok(ran.result);
+                return Ok(ran.result.into());
             };
-            let verb = match entry.command.as_str() {
-                "publish" => "publish",
-                _ => "deploy",
-            };
-            if let Answer::Refused(refused) = self.ask(verb, &asked, peer).await? {
-                return Ok(refused);
+            let form = form(verb, &asked);
+            match asking(context) {
+                Asking::Unable => return Ok(cannot_ask(verb, &asked).into()),
+                Asking::InResult => {
+                    let id = asked.id.clone();
+                    let requests = BTreeMap::from([(
+                        APPROVAL.to_owned(),
+                        InputRequest::Elicitation(ElicitRequest::new(form)),
+                    )]);
+                    self.waiting
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(id.clone(), asked);
+                    return Ok(InputRequiredResult::new(Some(requests), Some(id)).into());
+                }
+                Asking::ByRequest => {
+                    let answer = context
+                        .peer
+                        .create_elicitation(form)
+                        .await
+                        .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+                    answered = Some((asked, answer));
+                }
             }
-            approve_with(&mut argv, &asked.id);
         }
     }
 
@@ -343,72 +429,24 @@ impl Server {
         Ok(Ran { result, asked })
     }
 
-    async fn ask(
+    async fn decide(
         &self,
         verb: &str,
         asked: &Asked,
-        peer: &Peer<RoleServer>,
+        answer: ElicitResult,
     ) -> Result<Answer, McpError> {
-        let environment = asked.diff.environment.name.as_str();
-        let review = asked.review(verb).join("\n");
-        let refused = |text: String| {
-            Ok(Answer::Refused(CallToolResult::error(vec![
-                ContentBlock::text(text),
-            ])))
-        };
-        if !peer
-            .supported_elicitation_modes()
-            .contains(&ElicitationMode::Form)
-        {
-            return refused(format!(
-                "A human must approve this {verb} to {environment} first, and this agent \
-                 cannot ask them. Show them what it destroys, then ask them to approve \
-                 approval {id} in the Ployz Cloud sidebar, or to run the command themselves \
-                 in a terminal. Once they approve, call this tool again with `approval` \
-                 set to `{id}`.\n{review}",
-                id = asked.id,
-            ));
-        }
-        let form = ElicitRequestParams::FormElicitationParams {
-            meta: None,
-            message: format!("Approve this {verb} to {environment}?\n{review}"),
-            requested_schema: ElicitationSchema::builder()
-                .required_bool_property("approve", |schema: BooleanSchema| {
-                    schema
-                        .title("Approve")
-                        .description(format!("Go ahead with this {verb}"))
-                })
-                .string_property("reason", |schema: StringSchema| {
-                    schema
-                        .title("Reason")
-                        .description("Why not, if you deny it")
-                })
-                .build_unchecked(),
-        };
-        let answer = peer
-            .create_elicitation(form)
-            .await
-            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
         let content = answer.content.unwrap_or_default();
         let decision = match answer.action {
             ElicitationAction::Accept if content.get("approve") == Some(&Value::Bool(true)) => {
                 json!({ "approve": { "digest": asked.digest } })
             }
-            ElicitationAction::Accept | ElicitationAction::Decline => {
-                let reason = content
-                    .get("reason")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|reason| !reason.is_empty())
-                    .map(|reason| reason.chars().take(1024).collect::<String>());
-                json!({ "reject": { "reason": reason } })
-            }
+            ElicitationAction::Accept | ElicitationAction::Decline => json!({ "reject": {} }),
             ElicitationAction::Cancel | _ => {
-                return refused(format!(
+                return Ok(Answer::Refused(refused(format!(
                     "The human closed the approval without deciding; nothing was {verb}ed. \
                      Approval {} stays pending in Ployz Cloud.",
                     asked.id
-                ));
+                ))));
             }
         };
         let credential = cloud_account::credential(
@@ -419,20 +457,49 @@ impl Server {
         .await
         .map_err(|error| McpError::internal_error(Error::from(error).to_string(), None))?;
         if let Err(error) = approval::decide(&credential, &asked.id, &decision).await {
-            return refused(Error::from(error).to_string());
+            return Ok(Answer::Refused(refused(Error::from(error).to_string())));
         }
         if decision.get("approve").is_some() {
             return Ok(Answer::Approved);
         }
-        let because = decision
-            .pointer("/reject/reason")
-            .and_then(Value::as_str)
-            .map_or_else(String::new, |reason| format!(": {reason}"));
-        refused(format!(
-            "The human denied this {verb}{because}. Nothing was {verb}ed; do not retry it \
-             unless they ask."
-        ))
+        Ok(Answer::Refused(refused(format!(
+            "The human denied this {verb}. Nothing was {verb}ed; do not retry it unless they ask."
+        ))))
     }
+}
+
+fn form(verb: &str, asked: &Asked) -> ElicitRequestParams {
+    ElicitRequestParams::FormElicitationParams {
+        meta: None,
+        message: format!(
+            "Approve this {verb} to {}?\n{}",
+            asked.diff.environment.name,
+            asked.review(verb).join("\n")
+        ),
+        requested_schema: ElicitationSchema::builder()
+            .required_bool_property("approve", |schema: BooleanSchema| {
+                schema
+                    .title("Approve")
+                    .description(format!("Go ahead with this {verb}"))
+            })
+            .build_unchecked(),
+    }
+}
+
+fn cannot_ask(verb: &str, asked: &Asked) -> CallToolResult {
+    refused(format!(
+        "A human must approve this {verb} to {environment} first, and this agent cannot ask \
+         them. Show them what it destroys, then ask them to approve approval {id} in the \
+         Ployz Cloud sidebar, or to run the command themselves in a terminal. Once they \
+         approve, call this tool again with `approval` set to `{id}`.\n{review}",
+        environment = asked.diff.environment.name,
+        id = asked.id,
+        review = asked.review(verb).join("\n"),
+    ))
+}
+
+fn refused(text: String) -> CallToolResult {
+    CallToolResult::error(vec![ContentBlock::text(text)])
 }
 
 enum Answer {
@@ -1362,18 +1429,41 @@ mod tests {
                 let mut body = vec![0; length];
                 reader.read_exact(&mut body).unwrap();
                 let request = request.trim().trim_end_matches(" HTTP/1.1").to_owned();
-                decided
-                    .send((request, bearer, serde_json::from_slice(&body).unwrap()))
-                    .unwrap();
-                stream
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
-                          content-length: 2\r\nconnection: close\r\n\r\n{}",
+                let decision: Value = serde_json::from_slice(&body).unwrap();
+                let (status, reply) = if cloud_takes(&decision) {
+                    decided.send((request, bearer, decision)).unwrap();
+                    ("200 OK", "{}")
+                } else {
+                    (
+                        "422 Unprocessable Entity",
+                        r#"{"error":{"code":"invalid_request","message":"not a decision"}}"#,
                     )
-                    .unwrap();
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .unwrap();
             }
         });
         (url, decisions)
+    }
+
+    /// Cloud's `ApprovalDecision`: an approval names a digest, and a rejection's reason is
+    /// a string or absent.
+    fn cloud_takes(decision: &Value) -> bool {
+        match (decision.get("approve"), decision.get("reject")) {
+            (Some(approve), None) => approve
+                .get("digest")
+                .and_then(Value::as_str)
+                .is_some_and(|digest| !digest.is_empty()),
+            (None, Some(reject)) => reject
+                .as_object()
+                .is_some_and(|reject| reject.get("reason").is_none_or(Value::is_string)),
+            _ => false,
+        }
     }
 
     fn approving(
@@ -1456,7 +1546,7 @@ mod tests {
             schema["properties"]["approve"]["type"], "boolean",
             "{schema}"
         );
-        assert_eq!(schema["properties"]["reason"]["type"], "string", "{schema}");
+        assert!(schema["properties"].get("reason").is_none(), "{schema}");
         assert_eq!(schema["required"], json!(["approve"]), "{schema}");
         client
             .send(&json!({
@@ -1484,7 +1574,7 @@ mod tests {
 
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     #[tokio::test]
-    async fn a_human_who_denies_through_the_host_rejects_it_in_cloud_with_their_reason() {
+    async fn a_human_who_unticks_approve_denies_it_in_cloud() {
         let dir = tempfile::tempdir().unwrap();
         let (server, decisions) = approving(dir.path());
         let mut client = connect_eliciting(server).await;
@@ -1494,22 +1584,136 @@ mod tests {
             .send(&json!({
                 "jsonrpc": "2.0",
                 "id": asking["id"],
-                "result": {
-                    "action": "accept",
-                    "content": { "approve": false, "reason": "the worker still drains" },
-                },
+                "result": { "action": "accept", "content": { "approve": false } },
             }))
             .await;
         let denied = client.reply().await;
         assert_eq!(denied["result"]["isError"], true, "{denied}");
         assert_eq!(
             denied["result"]["content"][0]["text"],
-            "The human denied this deploy: the worker still drains. Nothing was deployed; do \
-             not retry it unless they ask."
+            "The human denied this deploy. Nothing was deployed; do not retry it unless they ask."
+        );
+        assert_eq!(decisions.try_recv().unwrap().2, json!({ "reject": {} }));
+    }
+
+    /// The `_meta` Claude Code 2.1.294 puts on every request: it speaks 2026-07-28, which
+    /// has no `initialize`, so its capabilities arrive per request.
+    fn claude_code() -> Value {
+        json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": { "name": "claude-code", "version": "2.1.294" },
+            "io.modelcontextprotocol/clientCapabilities": {
+                "roots": { "listChanged": true },
+                "elicitation": { "form": {}, "url": {} },
+            },
+        })
+    }
+
+    async fn ask_as_claude_code(client: &mut Client) -> Value {
+        client
+            .send(&request(
+                1,
+                "server/discover",
+                json!({ "_meta": claude_code() }),
+            ))
+            .await;
+        let discovered = client.reply().await;
+        assert!(
+            discovered
+                .pointer("/result/supportedVersions")
+                .and_then(Value::as_array)
+                .unwrap()
+                .contains(&json!("2026-07-28")),
+            "{discovered}"
+        );
+        client
+            .send(&request(
+                2,
+                "tools/call",
+                json!({ "_meta": claude_code(), "name": "deploy", "arguments": {} }),
+            ))
+            .await;
+        client.reply().await
+    }
+
+    async fn answer_as_claude_code(client: &mut Client, asking: &Value, answer: Value) -> Value {
+        client
+            .send(&request(
+                3,
+                "tools/call",
+                json!({
+                    "_meta": claude_code(),
+                    "name": "deploy",
+                    "arguments": {},
+                    "inputResponses": { "approval": answer },
+                    "requestState": asking.pointer("/result/requestState"),
+                }),
+            ))
+            .await;
+        client.reply().await
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_host_without_initialize_gets_the_dialog_in_the_result_and_its_approval_reruns_the_call()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, decisions) = approving(dir.path());
+        let mut client = Client::connect(server);
+        let asking = ask_as_claude_code(&mut client).await;
+        assert_eq!(asking["id"], 2, "{asking}");
+        assert_eq!(asking["result"]["resultType"], "input_required", "{asking}");
+        let dialog = &asking["result"]["inputRequests"]["approval"];
+        assert_eq!(dialog["method"], "elicitation/create", "{asking}");
+        assert_eq!(dialog["params"]["mode"], "form", "{asking}");
+        assert_eq!(
+            dialog["params"]["message"],
+            "Approve this deploy to production?\n\
+             This deploy destroys 1 thing:\n  \u{2715} removes Service worker\n  + 2 other changes"
+        );
+        assert_eq!(
+            dialog["params"]["requestedSchema"]["required"],
+            json!(["approve"])
+        );
+        let done = answer_as_claude_code(
+            &mut client,
+            &asking,
+            json!({ "action": "accept", "content": { "approve": true } }),
+        )
+        .await;
+        assert_eq!(done["id"], 3, "{done}");
+        assert_eq!(done["result"]["isError"], false, "{done}");
+        assert_eq!(
+            done["result"]["content"][0]["text"],
+            "deploy --approval=apr_1 --json\n"
         );
         assert_eq!(
             decisions.try_recv().unwrap().2,
-            json!({ "reject": { "reason": "the worker still drains" } })
+            json!({ "approve": { "digest": "3:abc" } })
+        );
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_declined_dialog_denies_the_approval_in_cloud() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, decisions) = approving(dir.path());
+        let mut client = Client::connect(server);
+        let asking = ask_as_claude_code(&mut client).await;
+        let denied =
+            answer_as_claude_code(&mut client, &asking, json!({ "action": "decline" })).await;
+        assert_eq!(denied["result"]["isError"], true, "{denied}");
+        assert_eq!(
+            denied["result"]["content"][0]["text"],
+            "The human denied this deploy. Nothing was deployed; do not retry it unless they ask."
+        );
+        assert_eq!(
+            decisions.try_recv().unwrap(),
+            (
+                "POST /api/cli/approvals/apr_1".to_owned(),
+                "ployz_acme".to_owned(),
+                json!({ "reject": {} }),
+            )
         );
     }
 

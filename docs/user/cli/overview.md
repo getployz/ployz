@@ -67,12 +67,11 @@ honors this.
 
 When a `publish` or `deploy` needs your approval (see
 [Ask before destructive actions](../account/organizations.md#ask-before-destructive-actions)),
-the agent's app shows you what it would remove and asks you to approve or deny it, with an
-optional reason. Approve and the command runs. Deny and the agent is told your reason and that
-nothing changed. Close the dialog without answering and the approval stays pending in Ployz
-Cloud. An app that can't show this dialog gets an error instead, naming the approval, which you
-can approve in Ployz Cloud or by running the command yourself in a terminal. The 30-minute limit
-below includes the time the dialog waits for you.
+the agent's app shows you what it would remove and asks you to approve or deny it. Approve and
+the command runs. Decline and Ployz denies the approval and tells the agent nothing changed.
+Close the dialog without answering and the approval stays pending in Ployz Cloud. An app that
+can't show this dialog gets an error instead, naming the approval, which you can approve in
+Ployz Cloud or by running the command yourself in a terminal.
 
 Some commands are not tools. Local commands such as `login` and `ctx use` act on this computer.
 Servers are added with `ployz server add` from a terminal, not through MCP, because it installs
