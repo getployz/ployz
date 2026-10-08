@@ -101,8 +101,7 @@ export async function runVolume(
       await step.run("02-refuse", () => runEffect(refuseRun(run, runId, found.refusal)));
       return { runId: run.id, refused: found.refusal };
     }
-    // SAFETY: step output is the JSON of a Holder, and a Holder holds only JSON values.
-    holder = found.holder as Holder;
+    holder = found.holder;
   }
   const { lease } = await step.run("02-lease", () => runEffect(takeLease(run, runId, members)));
   const at = (pos: Pos) => (notAfter: number) => ({ lease, pos, not_after_unix_seconds: notAfter });
@@ -438,7 +437,7 @@ async function pollReceive(
   B: MachineRef,
   round: number,
   prefix: string,
-  receive: (id: string, token: string | null) => Promise<unknown>,
+  receive: (id: string, token: string | null) => Promise<object>,
 ): Promise<Received> {
   const slot = copyName(run.volumeName, B.name);
   for (let poll = 0; poll < MAX_POLLS; poll += 1) {
