@@ -142,6 +142,17 @@ impl VolumeStorage {
         Ok(())
     }
 
+    /// Removes `name`'s record from `<pool>/ployz`, once the Machine holds no copy of it.
+    pub(super) async fn clear_lease_record(
+        &self,
+        pool: &MachinePool,
+        name: &DockerVolumeName,
+    ) -> Result<()> {
+        let root = format!("{}/{DATASET_ROOT}", pool.name());
+        self.zfs(&["inherit", &lease_property(name), &root]).await?;
+        Ok(())
+    }
+
     pub(super) async fn unregistered(&self, dataset: &str) -> Result<bool> {
         Ok(self.property(dataset, PROMOTE_PROPERTY).await?.is_some())
     }

@@ -430,6 +430,56 @@ async fn forget_destroys_every_run_snapshot_and_nothing_else() {
 }
 
 #[tokio::test]
+async fn forget_lease_removes_the_record_once_no_copy_remains() {
+    let test = TestDir::new();
+    set_property(&test, "tank/ployz", "ployz:lease.data", "3:3.0.0:closed");
+    set_property(&test, "tank/ployz", "ployz:lease.other", "2:4.0.0:closed");
+    let (socket, server) = start(&test, USABLE_POOL, &["root"]);
+
+    let response = post(&socket, "/Volume.ForgetLease", at(3, 4, 0, 1, json!({}))).await;
+    assert_eq!(
+        response,
+        json!({"Ok": {
+            "decision": "admit",
+            "lease": {"lease": 3, "pos": {"seq": 4, "round": 0, "sub": 1}, "cycle": "closed"},
+            "copy": null,
+        }})
+    );
+    assert_eq!(property(&test, "tank/ployz", "ployz:lease.data"), None);
+    assert_eq!(
+        property(&test, "tank/ployz", "ployz:lease.other").as_deref(),
+        Some("2:4.0.0:closed")
+    );
+
+    let replay = post(&socket, "/Volume.ForgetLease", at(3, 4, 0, 1, json!({}))).await;
+    assert_eq!(replay.pointer("/Ok/copy").unwrap(), &Value::Null, "{replay}");
+    assert_eq!(property(&test, "tank/ployz", "ployz:lease.data"), None);
+    server.abort();
+}
+
+#[tokio::test]
+async fn forget_lease_refuses_while_a_copy_remains() {
+    for markers in [&["root", "volume"][..], &["root", "mirror", "mirror-fs"][..]] {
+        let test = TestDir::new();
+        set_property(&test, "tank/ployz", "ployz:lease.data", "3:3.0.0:closed");
+        let (socket, server) = start(&test, USABLE_POOL, markers);
+
+        let response = post(&socket, "/Volume.ForgetLease", at(3, 4, 0, 1, json!({}))).await;
+        assert_eq!(
+            response.pointer("/Err/details/reason").unwrap(),
+            "precondition",
+            "{markers:?}: {response}"
+        );
+        assert_eq!(
+            property(&test, "tank/ployz", "ployz:lease.data").as_deref(),
+            Some("3:3.0.0:closed"),
+            "{markers:?}"
+        );
+        server.abort();
+    }
+}
+
+#[tokio::test]
 async fn every_mirror_verb_is_fenced() {
     let test = TestDir::new();
     set_property(&test, "tank/ployz", "ployz:lease.data", "5:2.0.0:closed");
@@ -453,6 +503,7 @@ async fn every_mirror_verb_is_fenced() {
         ("/Volume.PruneMirror", json!({})),
         ("/Volume.DestroyMirror", json!({})),
         ("/Volume.ForgetSnapshots", json!({})),
+        ("/Volume.ForgetLease", json!({})),
     ] {
         let response = post(&socket, route, at(4, 9, 9, 9, fields)).await;
         assert_eq!(

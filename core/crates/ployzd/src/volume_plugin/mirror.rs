@@ -329,6 +329,28 @@ impl VolumeStorage {
         self.reply(&scope.pool, &name, scope.admitted).await
     }
 
+    /// Clears the lease record of a Volume this Machine no longer holds, so a deleted
+    /// Volume leaves nothing behind. The reply carries the record it cleared.
+    async fn forget_lease(&self, request: &MirrorRequest) -> Result<SwitchReply, RpcError> {
+        let name = name(&request.name)?;
+        let scope = self.leased(&name, &request.switch).await?;
+        if scope.slot(&name).is_some() || scope.require_root(&name).is_ok() {
+            return Err(SwitchError::Precondition.rpc_error(format!(
+                "this Machine still holds a copy of Volume {name}"
+            )));
+        }
+        if scope.admitted.recorded.is_some() {
+            self.clear_lease_record(&scope.pool, &name)
+                .await
+                .map_err(internal)?;
+        }
+        Ok(SwitchReply {
+            decision: scope.admitted.decision,
+            lease: scope.admitted.lease,
+            copy: None,
+        })
+    }
+
     async fn destroy_snapshots(
         &self,
         dataset: &str,
@@ -390,4 +412,11 @@ pub(super) async fn forget(
     Json(request): Json<MirrorRequest>,
 ) -> Json<Result<SwitchReply, RpcError>> {
     Json(storage.forget_snapshots(&request).await)
+}
+
+pub(super) async fn forget_lease(
+    State(storage): State<VolumeStorage>,
+    Json(request): Json<MirrorRequest>,
+) -> Json<Result<SwitchReply, RpcError>> {
+    Json(storage.forget_lease(&request).await)
 }

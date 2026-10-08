@@ -3066,6 +3066,8 @@ export type ServiceVolume = { reference: ServiceVolumeReference, source: VolumeS
 
 export type ServiceVolumeReference = string;
 
+export type ServiceVolumeRequest = { switch: Switch, name: DockerVolumeName, namespace: Namespace, resolved_spec: ResolvedServiceSpec, };
+
 export type ServicesQuery = {
 /**
  * The Environment to list.

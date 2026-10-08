@@ -206,6 +206,7 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route("/Volume.PruneMirror", post(mirror::prune))
         .route("/Volume.DestroyMirror", post(mirror::destroy))
         .route("/Volume.ForgetSnapshots", post(mirror::forget))
+        .route("/Volume.ForgetLease", post(mirror::forget_lease))
         .route("/VolumeDriver.Create", post(create))
         .route("/VolumeDriver.Remove", post(removal::remove))
         .route("/VolumeDriver.Get", post(removal::get))

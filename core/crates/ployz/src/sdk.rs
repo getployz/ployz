@@ -127,7 +127,17 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
         | Body::InspectReceive(_)
         | Body::PruneMirror(_)
         | Body::DestroyMirror(_)
-        | Body::ForgetSnapshots(_) => body
+        | Body::ForgetSnapshots(_)
+        | Body::ForgetLease(_)
+        | Body::Withdraw(_)
+        | Body::Freeze(_)
+        | Body::HandOver(_)
+        | Body::Thaw(_)
+        | Body::Close(_)
+        | Body::AcceptHandOff(_)
+        | Body::Promote(_)
+        | Body::StartHandedContainer(_)
+        | Body::ClearFinal(_) => body
             .unary_path()
             .ok_or_else(|| invalid_argument(format!("{} is not a unary RPC", body.command()))),
         _ => Err(invalid_argument(format!(

@@ -460,7 +460,7 @@ pub struct HandOverRequest {
 /// A target verb that leaves Docker holding the Volume as `resolved_spec` declares it:
 /// Promote, Restore, and StartHandedContainer, which also creates the Service Container
 /// under the creation key `handoff-<guid>` and starts it.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceVolumeRequest {
     pub switch: Switch,
     pub name: DockerVolumeName,
