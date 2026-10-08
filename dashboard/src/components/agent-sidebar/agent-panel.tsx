@@ -105,7 +105,8 @@ function Conversation({ organizationSlug, scope, threadId }: { organizationSlug:
 
 type Bound = { key: string; approvalId: string; interrupt: { canResolve: boolean; status: string; resolveInterrupt: (response: Record<string, never>) => void } };
 
-function Message({ organizationSlug, scope, message, asked, bound }: {
+/** One turn of the conversation. A call a human denied says so once, on its approval card. */
+export function Message({ organizationSlug, scope, message, asked, bound }: {
   organizationSlug: string;
   scope: CollectionScope;
   message: UIMessage;
@@ -126,13 +127,15 @@ function Message({ organizationSlug, scope, message, asked, bound }: {
         const waitingOn = bound.find(({ key }) => key === part.id);
         const approvalId = waitingOn?.approvalId ?? asked[part.id];
         const outcome = toolOutcome(part, results.get(part.id));
+        const deniedOnCard = approvalId !== undefined
+          && Option.exists(outcome, (answer) => "refusal" in answer && answer.refusal.code === "approval_denied");
         const settle = waitingOn && (() => {
           if (waitingOn.interrupt.canResolve && waitingOn.interrupt.status === "pending") waitingOn.interrupt.resolveInterrupt({});
         });
         return (
           <div key={part.id} className="flex flex-col gap-2">
             {approvalId && <ApprovalCard organizationSlug={organizationSlug} id={approvalId} autoFocus={waitingOn !== undefined} onSettled={settle} />}
-            {(!approvalId || Option.isSome(outcome)) && (
+            {(!approvalId || Option.isSome(outcome)) && !deniedOnCard && (
               <ToolRow organizationSlug={organizationSlug} scope={scope} name={part.name} outcome={outcome}
                 done={part.state === "complete" || results.has(part.id)} />
             )}
