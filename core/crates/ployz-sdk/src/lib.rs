@@ -484,6 +484,43 @@ impl Client {
             .map_err(rpc_to_napi)
     }
 
+    /// Container `container` on `machine` with its spec's real environment values.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when the target or Container ID is
+    /// invalid, the session is closed, or the Machine does not know the Container.
+    #[napi]
+    pub async fn inspect_container(
+        &self,
+        machine: String,
+        container: String,
+    ) -> Result<serde_json::Value> {
+        self.inner
+            .inspect_container(&machine, &container)
+            .await
+            .map_err(rpc_to_napi)
+    }
+
+    /// Copy the image Container `container` runs on `source` to `dest`, by its image ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when a target or the Container ID is
+    /// invalid, the session is closed, or the copy fails.
+    #[napi]
+    pub async fn copy_container_image(
+        &self,
+        source: String,
+        container: String,
+        dest: String,
+    ) -> Result<()> {
+        self.inner
+            .copy_container_image(&source, &container, &dest)
+            .await
+            .map_err(rpc_to_napi)
+    }
+
     /// Apply one Machine policy edit (Machine Roles and build concurrency) to `machine`.
     ///
     /// `update` is a partial MachineUpdate; omitted fields keep their values.

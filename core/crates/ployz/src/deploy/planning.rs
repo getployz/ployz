@@ -370,7 +370,13 @@ fn assemble_plan(
     for spec in &requested {
         placement::validate_host_ports(spec)?;
     }
-    let mut volume_plan = VolumePlan::new(snapshot, &intent.namespace, &target, &requested)?;
+    let mut volume_plan = VolumePlan::new(
+        snapshot,
+        &intent.namespace,
+        &intent.volume_names,
+        &target,
+        &requested,
+    )?;
     let name_errors_with_service = requested.len() > 1;
     let mut reservations = PlacementReservations::new(snapshot);
     volume_plan.reserve_shared(&requested, &services, &mut reservations, &intent.options)?;

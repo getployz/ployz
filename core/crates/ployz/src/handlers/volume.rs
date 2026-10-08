@@ -77,6 +77,8 @@ pub(crate) fn command() -> Command {
         )
         .subcommand(run::mirror_command())
         .subcommand(run::sync_command())
+        .subcommand(run::move_command())
+        .subcommand(run::release_command())
         .subcommand(run::runs_command())
 }
 
@@ -91,6 +93,8 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
         "mirror" => run::mirror,
         "mirror rm" => run::remove_mirror,
         "sync" => run::sync,
+        "move" => run::move_volume,
+        "release" => run::release,
         "runs" => run::runs,
         _ => return None,
     })

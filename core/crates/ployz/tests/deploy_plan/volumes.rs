@@ -652,13 +652,22 @@ fn provisioned_row(machine: char) -> DockerVolume {
 
 /// Two ready Machines whose storage reports `copies` of `app_data`, and Docker `rows`.
 fn copies_snapshot(copies: &[(char, CopyRole)], rows: Vec<DockerVolume>) -> DeploySnapshot {
+    copies_snapshot_of(&app_volume("data"), copies, rows)
+}
+
+/// Two ready Machines whose storage reports `copies` of `volume`, and Docker `rows`.
+fn copies_snapshot_of(
+    volume: &DockerVolumeName,
+    copies: &[(char, CopyRole)],
+    rows: Vec<DockerVolume>,
+) -> DeploySnapshot {
     let mut snapshot = storage_snapshot();
     for (machine, role) in copies {
         let Some(Ok(capacity)) = snapshot.storage_capacity.get_mut(&machine_id(*machine)) else {
             panic!("fixture capacity for {machine}")
         };
         capacity.copies.insert(
-            app_volume("data"),
+            volume.clone(),
             ployz_core::ProvisionedCopy {
                 role: *role,
                 maximum_bytes: maximum_bytes(1_073_741_824),
@@ -712,7 +721,7 @@ fn a_provisioned_volume_without_a_writer_refuses_and_names_the_restore_line() {
             "a slot alone",
             vec![('2', CopyRole::Slot)],
             vec![],
-            "ployz volume restore app_data --from second",
+            "Volume data has no writer; it is held as second (copy). Make one the writer: ployz volume restore data --from second",
         ),
         (
             "a switching root",
@@ -737,6 +746,39 @@ fn a_provisioned_volume_without_a_writer_refuses_and_names_the_restore_line() {
         assert_eq!(rpc.code, RpcErrorCode::Conflict, "{case}");
         assert_eq!(rpc.details.get("reason").unwrap(), "no_writer", "{case}");
     }
+}
+
+#[test]
+fn a_cloud_volume_without_a_writer_is_named_as_authored() {
+    let volume = "3f2a6c1e-8d4b-4e7a-9c15-2b6d8e0f4a71";
+    let intent = ployz_core::config::lower_deployment(
+        serde_json::from_value(serde_json::json!({
+            "namespace": "app",
+            "snapshots": [{
+                "serviceId": "web",
+                "config": {"version": 2, "privateDns": "web", "healthcheck": {"type": "none"},
+                    "restartPolicy": "on-failure",
+                    "source": {"type": "image", "version": 1, "image": "nginx:latest", "credentials": {"type": "none"}},
+                    "mounts": [{"volumeResourceId": volume, "volumeName": "echo", "mountPath": "/data"}]}
+            }],
+            "volumes": [{"volumeResourceId": volume, "storage": {"kind": "provisioned", "maximumBytes": 1_073_741_824}}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let physical = app_volume(&format!("vol-{volume}"));
+
+    let error = preview_deploy(
+        &intent,
+        &copies_snapshot_of(&physical, &[('1', CopyRole::Switching)], vec![]),
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, PlanError::NoWriter { .. }), "{error}");
+    assert_eq!(
+        error.to_string(),
+        "Volume echo has no writer; it is held as first (switching). Make one the writer: ployz volume restore echo --from first"
+    );
 }
 
 #[test]

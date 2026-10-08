@@ -59,7 +59,7 @@ pub(super) fn fence(
     }
 }
 
-fn refusal(
+pub(super) fn refusal(
     decision: FenceDecision,
     request: &Switch,
     recorded: Option<LeaseRecord>,
@@ -139,6 +139,17 @@ impl VolumeStorage {
         }
         self.zfs(&["set", &format!("{}={record}", lease_property(name)), &root])
             .await?;
+        Ok(())
+    }
+
+    /// Removes `name`'s record from `<pool>/ployz`, once the Machine holds no copy of it.
+    pub(super) async fn clear_lease_record(
+        &self,
+        pool: &MachinePool,
+        name: &DockerVolumeName,
+    ) -> Result<()> {
+        let root = format!("{}/{DATASET_ROOT}", pool.name());
+        self.zfs(&["inherit", &lease_property(name), &root]).await?;
         Ok(())
     }
 

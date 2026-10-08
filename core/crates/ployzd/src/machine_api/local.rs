@@ -972,6 +972,15 @@ impl MachineRpc for MachineService {
         .await
     }
 
+    async fn forget_lease(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::ForgetLease>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>("ForgetLease", "Volume.ForgetLease", &request)
+            .await
+    }
+
     async fn build(
         &self,
         request: Request<tonic::Streaming<OpaquePayload>>,

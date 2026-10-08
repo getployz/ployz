@@ -751,7 +751,12 @@ options: PlanOptions, dependencies: { [key in ServiceName]: Array<ServiceDepende
  * Credentials each Service's private image is pulled with. They reach only the
  * Machine creating that Service's containers, never a Deploy Preview.
  */
-registry_auth?: { [key in ServiceName]: RegistryAuth }, };
+registry_auth?: { [key in ServiceName]: RegistryAuth },
+/**
+ * The authored name of each Volume whose Docker name does not carry it, such as a
+ * Cloud Volume named by its ID. Messages name a Volume by it.
+ */
+volume_names?: { [key in DockerVolumeName]: string }, };
 
 export type DeployOperation = { "type": "prepare_volumes",
 /**
@@ -3061,6 +3066,8 @@ private_dns: ServiceName, };
 export type ServiceVolume = { reference: ServiceVolumeReference, source: VolumeSource, };
 
 export type ServiceVolumeReference = string;
+
+export type ServiceVolumeRequest = { switch: Switch, name: DockerVolumeName, namespace: Namespace, resolved_spec: ResolvedServiceSpec, };
 
 export type ServicesQuery = {
 /**

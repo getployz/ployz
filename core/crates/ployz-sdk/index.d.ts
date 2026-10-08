@@ -3,6 +3,7 @@ import type {
   ConfigQuery,
   ConfigTrusted,
   VolumeObservation,
+  ContainerObservation,
   ConfigView,
   ConfigWritten,
   ConfigCommitted,
@@ -60,11 +61,14 @@ import type {
   CommitRequest,
   CopyObservation,
   DeclareMirrorRequest,
+  HandOverRequest,
   InspectReceiveRequest,
   InspectVolumeCopyRequest,
   MirrorRequest,
   ReceiveView,
+  ServiceVolumeRequest,
   SnapshotGuid,
+  SourceContainerRequest,
   SwitchReply,
   Switch,
   VolumeCopyView,
@@ -93,7 +97,17 @@ export type VolumeSwitchRequest =
   | { command: "inspect_receive"; payload: InspectReceiveRequest }
   | { command: "prune_mirror"; payload: MirrorRequest }
   | { command: "destroy_mirror"; payload: MirrorRequest }
-  | { command: "forget_snapshots"; payload: MirrorRequest };
+  | { command: "forget_snapshots"; payload: MirrorRequest }
+  | { command: "forget_lease"; payload: MirrorRequest }
+  | { command: "withdraw"; payload: SourceContainerRequest }
+  | { command: "freeze"; payload: SourceContainerRequest }
+  | { command: "hand_over"; payload: HandOverRequest }
+  | { command: "thaw"; payload: SourceContainerRequest }
+  | { command: "close"; payload: MirrorRequest }
+  | { command: "accept_hand_off"; payload: HandOverRequest }
+  | { command: "promote"; payload: ServiceVolumeRequest }
+  | { command: "start_handed_container"; payload: ServiceVolumeRequest }
+  | { command: "clear_final"; payload: MirrorRequest };
 
 /** The reply payload of one Volume run verb. */
 export type VolumeSwitchReply<C extends VolumeSwitchRequest["command"]> =
@@ -298,9 +312,16 @@ export declare class Client {
     machine: MachineTarget,
     update: Partial<MachineUpdate>,
   ): Promise<MachineUpdated>;
+  /** Container `container` on `machine` as its daemon holds it, its spec's environment values included. */
+  inspectContainer(machine: MachineTarget, container: string): Promise<{ container: ContainerObservation }>;
   /**
-   * Send one Volume switch request to one Machine and answer its reply payload. Only the eleven
-   * Volume run verbs are accepted; any other command rejects `invalid_argument`. Not retried. A fence
+   * Copy the image Container `container` runs on `source` to `dest`, by its local image ID and
+   * tagged as its spec names it. Never asks a registry; a no-op when `dest` already holds it.
+   */
+  copyContainerImage(source: MachineTarget, container: string, dest: MachineTarget): Promise<void>;
+  /**
+   * Send one Volume switch request to one Machine and answer its reply payload. Only the Volume
+   * run verbs are accepted; any other command rejects `invalid_argument`. Not retried. A fence
    * refusal rejects with an `RpcError` whose `details` is a `SwitchError`.
    */
   volumeSwitch<R extends VolumeSwitchRequest>(

@@ -1,11 +1,15 @@
 //! Lease, position, markers and switch verbs shared by a Volume run and the Machines it drives.
 
-use std::{fmt, str::FromStr};
+use std::{fmt, str::FromStr, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{CopyRole, DockerVolumeName, MachineName, ManagementAddress, RpcError, RpcErrorCode};
+
+/// How long a Machine waits on one call to its volume plugin, such as the call that
+/// mounts a handed-over Volume and starts its Container.
+pub const VOLUME_PLUGIN_CALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Lease number of one Volume run, decided on the Machines (max over their records plus one).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
@@ -460,7 +464,7 @@ pub struct HandOverRequest {
 /// A target verb that leaves Docker holding the Volume as `resolved_spec` declares it:
 /// Promote, Restore, and StartHandedContainer, which also creates the Service Container
 /// under the creation key `handoff-<guid>` and starts it.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceVolumeRequest {
     pub switch: Switch,
     pub name: DockerVolumeName,
@@ -698,11 +702,11 @@ pub fn admit_plain_mount(
     }
 }
 
-/// The refusal a plain Deploy of `name` reads when this Machine cannot mount its writer:
-/// the Machine that holds the writer, or else every copy and the restore that would make
-/// one a writer.
+/// The refusal a plain Deploy of Volume `name` reads when this Machine cannot mount its
+/// writer: the Machine that holds the writer, or else every copy and the restore that would
+/// make one a writer. `name` is the Volume as its owner named it, not its Docker name.
 #[must_use]
-pub fn no_writer_message(name: &DockerVolumeName, copies: &[KnownCopy]) -> String {
+pub fn no_writer_message(name: &str, copies: &[KnownCopy]) -> String {
     if let Some(writer) = copies.iter().find(|copy| copy.role == CopyRole::Writer) {
         return format!(
             "Volume {name}'s writer is on {}, so this Machine cannot mount it",
@@ -836,7 +840,7 @@ mod tests {
 
     #[test]
     fn no_writer_message_names_every_copy_and_the_restore_line() {
-        let volume = DockerVolumeName::parse("data").unwrap();
+        let volume = "data";
         let copies = [
             KnownCopy {
                 machine: name("fsn-2"),
@@ -847,17 +851,17 @@ mod tests {
                 role: CopyRole::Switching,
             },
         ];
-        let message = no_writer_message(&volume, &copies);
+        let message = no_writer_message(volume, &copies);
         assert_eq!(
             message,
             "Volume data has no writer; it is held as fsn-2 (copy), hel-1 (switching). Make one the writer: ployz volume restore data --from fsn-2"
         );
-        assert!(no_writer_message(&volume, &[]).contains("no Machine holds a copy"));
+        assert!(no_writer_message(volume, &[]).contains("no Machine holds a copy"));
     }
 
     #[test]
     fn no_writer_message_names_a_writer_elsewhere_without_a_restore_line() {
-        let volume = DockerVolumeName::parse("data").unwrap();
+        let volume = "data";
         let copies = [
             KnownCopy {
                 machine: name("fsn-2"),
@@ -869,7 +873,7 @@ mod tests {
             },
         ];
         assert_eq!(
-            no_writer_message(&volume, &copies),
+            no_writer_message(volume, &copies),
             "Volume data's writer is on hel-1, so this Machine cannot mount it"
         );
     }

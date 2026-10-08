@@ -291,6 +291,17 @@ tasks behind them (a receive that outlives the request, a Promote, a Start),
 each admitted on this Machine's own record and markers. Cloud sequences the
 verbs; it never performs one.
 
+The Container steps are such tasks too: Freeze's docker stop, and the docker
+start of a Thaw or a handed Start. Docker decides how long they take, and a
+caller's deadline cannot know that, so the step runs in a task keyed by the
+Volume's lease record and the mount grant lives as long as the task. The verb
+answers within a few seconds, with Busy while Docker works. A replay with the
+same record waits on the task, or reads what Docker answered, and Docker runs
+once per record. Like a receive, this is behavior that continues after its
+command returns, which bet 3 flags. It is bounded: the task ends when Docker
+answers, it never retries or starts other work, and the Volume Run that asked
+keeps asking until it does.
+
 **Red flags:** daemon-side policy without one of the three reasons, daemon logic
 a client could compute from the observations it already gathers.
 

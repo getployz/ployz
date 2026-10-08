@@ -123,7 +123,10 @@ impl LocalMachine {
         match ployz_core::admit_plain_mount(&held, &elsewhere) {
             Ok(()) => Ok(()),
             Err(SwitchError::NoWriter) => Err(SwitchError::NoWriter
-                .rpc_error(ployz_core::no_writer_message(name, &elsewhere))
+                .rpc_error(ployz_core::no_writer_message(
+                    ployz_core::Namespace::declared_volume_name(name).unwrap_or(name.as_str()),
+                    &elsewhere,
+                ))
                 .into()),
             Err(reason) => Err(reason
                 .rpc_error(format!(

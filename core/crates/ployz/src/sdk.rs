@@ -127,7 +127,17 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
         | Body::InspectReceive(_)
         | Body::PruneMirror(_)
         | Body::DestroyMirror(_)
-        | Body::ForgetSnapshots(_) => body
+        | Body::ForgetSnapshots(_)
+        | Body::ForgetLease(_)
+        | Body::Withdraw(_)
+        | Body::Freeze(_)
+        | Body::HandOver(_)
+        | Body::Thaw(_)
+        | Body::Close(_)
+        | Body::AcceptHandOff(_)
+        | Body::Promote(_)
+        | Body::StartHandedContainer(_)
+        | Body::ClearFinal(_) => body
             .unary_path()
             .ok_or_else(|| invalid_argument(format!("{} is not a unary RPC", body.command()))),
         _ => Err(invalid_argument(format!(
@@ -787,6 +797,92 @@ impl Session {
         let mut client = self.client()?;
         self.until_closed(client.remove_machine_membership(&target))
             .await
+    }
+
+    /// Container `container` on `machine` as its daemon holds it: the resolved spec with its
+    /// real environment values, which replicated observations redact.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, the Machine Target or
+    /// Container ID is invalid, or the Machine does not know `container`.
+    pub async fn inspect_container(
+        &self,
+        machine: &str,
+        container: &str,
+    ) -> Result<Value, RpcError> {
+        let target =
+            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let container_id = ployz_core::ContainerId::parse(container)
+            .map_err(|error| invalid_argument(error.to_string()))?;
+        let client = self.client()?;
+        let details = self
+            .until_closed(client.invoke::<ployz_core::op::InspectContainer>(
+                ployz_core::InspectContainerRequest { container_id },
+                &target,
+                Some(crate::connect::TARGET_RPC_TIMEOUT),
+            ))
+            .await?;
+        serde_json::to_value(details).map_err(|error| RpcError {
+            code: RpcErrorCode::Internal,
+            message: format!("encoding Container {container}: {error}"),
+            details: Value::Null,
+            cause: Vec::new(),
+        })
+    }
+
+    /// Copy the image Container `container` runs on `source` to `dest`, by its local image
+    /// ID and tagged as its spec names it. Never asks a registry, and does nothing when
+    /// `dest` already holds that image.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, a Machine Target is
+    /// invalid or not visible, `container` is not a Container ID or not on `source`, the
+    /// source daemon reports no image ID, or the copy fails.
+    pub async fn copy_container_image(
+        &self,
+        source: &str,
+        container: &str,
+        dest: &str,
+    ) -> Result<(), RpcError> {
+        let parse = |machine: &str| {
+            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))
+        };
+        let (source, dest) = (parse(source)?, parse(dest)?);
+        let container_id = ployz_core::ContainerId::parse(container)
+            .map_err(|error| invalid_argument(error.to_string()))?;
+        let mut client = self.client()?;
+        self.until_closed(async {
+            let machines = client.machines().await.map_err(RpcError::from)?;
+            let source = crate::cluster::visible_machine(&source, &machines)?
+                .machine
+                .clone();
+            let dest = crate::cluster::visible_machine(&dest, &machines)?
+                .machine
+                .clone();
+            let details = client
+                .invoke::<ployz_core::op::InspectContainer>(
+                    ployz_core::InspectContainerRequest { container_id },
+                    &MachineTarget::from(&source.id),
+                    Some(crate::connect::TARGET_RPC_TIMEOUT),
+                )
+                .await?;
+            let image_id = details.image_id.ok_or_else(|| RpcError {
+                code: RpcErrorCode::Unsupported,
+                message: format!(
+                    "{} does not report the image ID its Containers run",
+                    source.name
+                ),
+                details: Value::Null,
+                cause: Vec::new(),
+            })?;
+            let image = &details.container.resolved_spec.container.image;
+            crate::image::copy_running_image(&client, &source, &dest, image, &image_id)
+                .await
+                .map_err(crate::failure::push_rpc_error)
+        })
+        .await
     }
 
     /// Apply one Machine policy edit (Machine Roles and build concurrency) to `machine` and return its updated record.

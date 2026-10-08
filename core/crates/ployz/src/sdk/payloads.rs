@@ -67,6 +67,7 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_core::BuildGrantEnded>();
     declarations.add::<ployz_core::SourceContainerRequest>();
     declarations.add::<ployz_core::HandOverRequest>();
+    declarations.add::<ployz_core::ServiceVolumeRequest>();
     declarations.add::<ployz_core::BuildGrantMinted>();
     declarations.add::<ClusterTeardown>();
     declarations.add::<ployz_core::EndBuildGrantRequest>();

@@ -59,6 +59,11 @@ pub struct DeployIntent {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[ts(as = "Option<BTreeMap<ServiceName, RegistryAuth>>", optional)]
     pub registry_auth: BTreeMap<ServiceName, RegistryAuth>,
+    /// The authored name of each Volume whose Docker name does not carry it, such as a
+    /// Cloud Volume named by its ID. Messages name a Volume by it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[ts(as = "Option<BTreeMap<DockerVolumeName, String>>", optional)]
+    pub volume_names: BTreeMap<DockerVolumeName, String>,
 }
 
 /// Registry credentials for pulling one private image. Debug never prints them.
@@ -95,6 +100,7 @@ impl DeployIntent {
             options,
             dependencies: BTreeMap::new(),
             registry_auth: BTreeMap::new(),
+            volume_names: BTreeMap::new(),
         }
     }
 
@@ -152,6 +158,13 @@ impl DeployIntent {
         dependencies: BTreeMap<ServiceName, Vec<ServiceDependency>>,
     ) -> Self {
         self.dependencies = dependencies;
+        self
+    }
+
+    /// Authored names for Volumes whose Docker names do not carry them.
+    #[must_use]
+    pub fn with_volume_names(mut self, names: BTreeMap<DockerVolumeName, String>) -> Self {
+        self.volume_names = names;
         self
     }
 

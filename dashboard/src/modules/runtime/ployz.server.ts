@@ -7,6 +7,7 @@ import type {
   EnrollmentSnapshot,
   ConnectOptions,
   Connection,
+  ContainerObservation,
   DataLossConfirmation,
   DeployOutcome,
   DrainReport,
@@ -102,6 +103,15 @@ export interface PloyzSession {
     machine: MachineTarget,
     request: R,
   ) => Effect.Effect<VolumeSwitchReply<R["command"]>, PloyzSdkError>;
+  readonly inspectContainer: (
+    machine: MachineTarget,
+    container: string,
+  ) => Effect.Effect<{ readonly container: ContainerObservation }, PloyzSdkError>;
+  readonly copyContainerImage: (
+    source: MachineTarget,
+    container: string,
+    dest: MachineTarget,
+  ) => Effect.Effect<void, PloyzSdkError>;
   /** What removing Namespace `namespace`, its Volumes included, deletes. */
   readonly dataLossIfNamespaceDestroyed: (namespace: string) => Effect.Effect<ObservedDataLoss, PloyzSdkError>;
   /** Remove Namespace `namespace` from every Server, its Volumes included, accepting exactly `confirmDataLoss`. */
@@ -227,6 +237,10 @@ function wrapClient(client: Client): PloyzSession {
       sdkPromise("drain machine", () => client.drainMachine(machine, scope)),
     volumeSwitch: (machine, request) =>
       sdkPromise("volume switch", () => client.volumeSwitch(machine, request)),
+    inspectContainer: (machine, container) =>
+      sdkPromise("inspect container", () => client.inspectContainer(machine, container)),
+    copyContainerImage: (source, container, dest) =>
+      sdkPromise("copy container image", () => client.copyContainerImage(source, container, dest)),
     requestMachineUpgrade: (machine, attemptId, release) =>
       sdkPromise("request machine upgrade", () => client.requestMachineUpgrade(machine, { attempt_id: attemptId, release })),
     inspectMachineUpgrade: (machine, attemptId) =>

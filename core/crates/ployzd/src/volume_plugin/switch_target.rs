@@ -392,7 +392,7 @@ impl VolumeStorage {
     ) -> Result<SwitchReply, RpcError> {
         let name = name(&request.name)?;
         let lease = request.switch.lease;
-        let _guard = self.admit_mutation().await.map_err(internal)?;
+        let (held, _installation) = self.admit_mutation().await.map_err(internal)?;
         let pool = self.one_pool().await.map_err(internal)?;
         let datasets = self.datasets(&pool).await.map_err(internal)?;
         let root = Self::dataset(&datasets, &pool, &name)
@@ -415,12 +415,15 @@ impl VolumeStorage {
         if !mounted {
             self.zfs(&["mount", &root_name]).await.map_err(internal)?;
         }
-        self.start_granted(MountGrant {
-            name: name.to_string(),
-            record,
-            container: request.container_id,
-            mountpoint: name.mountpoint(),
-        })
+        self.start_granted(
+            &held,
+            MountGrant {
+                name: name.to_string(),
+                record,
+                container: request.container_id,
+                mountpoint: name.mountpoint(),
+            },
+        )
         .await?;
         ployzd::faults::kill_inside("StartHandedContainer.started");
         self.zfs(&["inherit", TASK_PROPERTY, &root_name])
@@ -591,6 +594,11 @@ pub(super) async fn admit_handed_start(
     State(storage): State<VolumeStorage>,
     Json(request): Json<MirrorRequest>,
 ) -> Json<Result<SwitchReply, RpcError>> {
+    if let Err(error) =
+        storage.refuse_while_running(&request.name.to_string(), &request.switch, "starting")
+    {
+        return Json(Err(error));
+    }
     Json(storage.admit_handed_start(&request).await)
 }
 
@@ -598,7 +606,14 @@ pub(super) async fn start_handed_container(
     State(storage): State<VolumeStorage>,
     Json(request): Json<SourceContainerRequest>,
 ) -> Json<Result<SwitchReply, RpcError>> {
-    Json(storage.start_handed_container(&request).await)
+    let (name, switch) = (request.name.to_string(), request.switch);
+    let step = storage.clone();
+    let start = async move { step.start_handed_container(&request).await };
+    Json(
+        storage
+            .container_step(&name, &switch, "starting", start)
+            .await,
+    )
 }
 
 pub(super) async fn restore(

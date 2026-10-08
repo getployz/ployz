@@ -2,7 +2,7 @@
 
 use super::lease_tests::set_property;
 use super::mirror_tests::{at, commands, property, snapshot_names};
-use super::switch_source_tests::{CONTAINER, programs, serve_storage};
+use super::switch_source_tests::{CONTAINER, answered, programs, serve_storage, until};
 use super::*;
 
 const RECORD: (&str, &str) = ("tank/ployz", "ployz:lease.data");
@@ -278,6 +278,81 @@ async fn start_mounts_through_the_grant_while_open_then_closes_and_replays() {
     );
     assert_eq!(replay.pointer("/Ok/lease/cycle"), Some(&json!("closed")));
     assert_eq!(commands(&test).matches("docker start").count(), 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_handed_start_keeps_its_grant_after_its_caller_gives_up_and_starts_once() {
+    let (test, socket, server) = promoted();
+    let admitted = post(
+        &socket,
+        "/Volume.AdmitHandedStart",
+        at(1, 11, 0, 0, json!({})),
+    )
+    .await;
+    assert!(admitted.get("Ok").is_some(), "{admitted}");
+    fs::write(test.0.join("hold-start"), "").unwrap();
+    let start = at(1, 11, 0, 0, json!({"container_id": CONTAINER}));
+    let caller = send(
+        &socket,
+        "/Volume.StartHandedContainer",
+        &serde_json::to_vec(&start).unwrap(),
+    )
+    .await;
+    until(&test, "starting", "Start never ran docker start").await;
+    drop(caller);
+    let admission = answered(
+        &socket,
+        "/Volume.AdmitHandedStart",
+        at(1, 11, 0, 0, json!({})),
+        "a replayed admission must answer while Docker starts the Container",
+    )
+    .await;
+    assert_eq!(reason(&admission), Some(&json!("busy")), "{admission}");
+    let replay = answered(
+        &socket,
+        "/Volume.StartHandedContainer",
+        start.clone(),
+        "a replayed Start must answer while Docker starts the Container",
+    )
+    .await;
+    assert_eq!(reason(&replay), Some(&json!("busy")), "{replay}");
+    fs::remove_file(test.0.join("hold-start")).unwrap();
+    until(
+        &test,
+        "running",
+        "docker start lost its Mount once the caller gave up",
+    )
+    .await;
+    let mount = fs::read_to_string(test.0.join("mount-reply")).unwrap();
+    assert!(mount.contains(r#""Err":"""#), "{mount}");
+    let replay = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let replay = post(
+                &socket,
+                "/Volume.AdmitHandedStart",
+                at(1, 11, 0, 0, json!({})),
+            )
+            .await;
+            if reason(&replay) != Some(&json!("busy")) {
+                return replay;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the Start task never finished");
+    assert_eq!(property(&test, ROOT, "ployz:task"), None, "{replay}");
+    assert_eq!(
+        replay.pointer("/Ok/lease/cycle"),
+        Some(&json!("closed")),
+        "{replay}"
+    );
+    assert_eq!(
+        commands(&test).matches("docker start").count(),
+        1,
+        "a replay started the Container again"
+    );
     server.abort();
 }
 

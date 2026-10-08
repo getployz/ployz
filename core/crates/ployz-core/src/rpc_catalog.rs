@@ -84,6 +84,7 @@ macro_rules! rpc_catalog {
                 PruneMirror: (prune_mirror, "PruneMirror", MirrorRequest, "prune_mirror", SwitchReply, PRUNE_MIRROR_CAPABILITY, "ployz.volume.round.prune.v1", Container),
                 DestroyMirror: (destroy_mirror, "DestroyMirror", MirrorRequest, "destroy_mirror", SwitchReply, DESTROY_MIRROR_CAPABILITY, "ployz.volume.mirror.destroy.v1", Container),
                 ForgetSnapshots: (forget_snapshots, "ForgetSnapshots", MirrorRequest, "forget_snapshots", SwitchReply, FORGET_SNAPSHOTS_CAPABILITY, "ployz.volume.mirror.forget.v1", Container),
+                ForgetLease: (forget_lease, "ForgetLease", MirrorRequest, "forget_lease", SwitchReply, FORGET_LEASE_CAPABILITY, "ployz.volume.lease.forget.v1", Container),
                 ListImages: (list_images, "ListImages", ListImagesRequest, "list_images", MachineImages, LIST_IMAGES_CAPABILITY, "ployz.image.list.v1", Container),
                 RemoveImages: (remove_images, "RemoveImages", RemoveImagesRequest, "remove_images", ImagesRemoved, REMOVE_IMAGES_CAPABILITY, "ployz.image.remove.v1", Container),
                 EnsureImageIngest: (ensure_image_ingest, "EnsureImageIngest", EnsureImageIngestRequest, "ensure_image_ingest", ImageIngestOpened, ENSURE_IMAGE_INGEST_CAPABILITY, "ployz.image.ingest.ensure.v1", Container),

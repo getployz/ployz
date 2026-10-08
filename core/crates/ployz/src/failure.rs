@@ -561,6 +561,16 @@ fn provision_code(error: &ProvisionError) -> RpcErrorCode {
     }
 }
 
+/// A failed image copy as the SDK reports it.
+pub(crate) fn push_rpc_error(error: PushError) -> RpcError {
+    RpcError {
+        code: push_code(&error),
+        message: error.to_string(),
+        details: Value::Null,
+        cause: Vec::new(),
+    }
+}
+
 fn push_code(error: &PushError) -> RpcErrorCode {
     match error {
         PushError::VariantUnavailable { .. } => RpcErrorCode::NotFound,
