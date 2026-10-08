@@ -19,7 +19,8 @@
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsStr,
-    fs, io,
+    fs,
+    io::{self, Read as _, Seek as _},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     pin::Pin,
@@ -41,8 +42,8 @@ use super::{
     cleanup::{self, Disk, Limits},
     docker_file_age, frame,
     layout::{
-        ContainerKind, ContainerMeta, GAPS_FILE, Gap, GapReason, LogFileName, META_FILE, StoreRoot,
-        create_private_dir,
+        ContainerKind, ContainerMeta, GAPS_FILE, Gap, GapReason, LINKING_FILE, LogFileName,
+        META_FILE, StoreRoot, create_private_dir,
     },
 };
 use crate::docker::{LABEL_HOOK, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_NAME};
@@ -55,6 +56,10 @@ const DEFAULT_MAX_FILES: usize = 5;
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(60);
 const EVENTS_RETRY: Duration = Duration::from_secs(2);
 const DIR_MASK: WatchMask = WatchMask::CREATE.union(WatchMask::ONLYDIR);
+/// How often one sync starts over when Docker rotates under it.
+const SYNC_ATTEMPTS: usize = 8;
+/// The most of a file's head or tail a gap bound reads.
+const BOUND_READ: u64 = 1 << 20;
 
 type DockerEvents = Pin<Box<dyn Stream<Item = Result<EventMessage, DockerError>> + Send>>;
 
@@ -102,6 +107,7 @@ impl Harvester {
         };
         let mut docker_events = Some(harvester.docker_events());
         harvester.rescan().await;
+        harvester.close_orphans();
         harvester.clean();
 
         let mut maintenance = tokio::time::interval(MAINTENANCE_INTERVAL);
@@ -146,15 +152,15 @@ impl Harvester {
     }
 
     /// Walks Docker's containers dir and syncs every container in it. This
-    /// repairs anything an event missed.
+    /// repairs anything an event missed, and keeps holding files when
+    /// inotify cannot watch.
     async fn rescan(&mut self) {
         if let Err(error) = self.watch(
             &self.docker_containers.clone(),
             DIR_MASK,
             Watched::ContainersRoot,
         ) {
-            tracing::warn!(%error, "cannot watch Docker's containers dir");
-            return;
+            tracing::warn!(%error, "cannot watch Docker's containers dir; relying on rescans");
         }
         let entries = match fs::read_dir(&self.docker_containers) {
             Ok(entries) => entries,
@@ -216,6 +222,38 @@ impl Harvester {
         };
         if matches!(self.seen.get(&id), Some(Seen::Managed { .. })) {
             self.refresh_meta(&id).await;
+            self.sync(&id);
+        }
+    }
+
+    /// A container Docker removed while the harvester was down may have
+    /// rotated past the store's newest file first. Unless the store saw it
+    /// end, everything after that file's last line is marked not captured.
+    fn close_orphans(&self) {
+        let Ok(entries) = fs::read_dir(self.store.containers()) else {
+            return;
+        };
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()
+            .and_then(|now| i64::try_from(now.as_nanos()).ok())
+            .unwrap_or(i64::MAX);
+        for id in entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| container_id(&entry.file_name()))
+        {
+            if self.docker_containers.join(id.as_str()).exists() {
+                continue;
+            }
+            match close_orphan(&self.store.container(&id), now) {
+                Ok(Some(gap)) => {
+                    tracing::warn!(container = %id, from = gap.from, "Docker removed the container while the harvester was down");
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(container = %id, %error, "cannot check a removed container")
+                }
+            }
         }
     }
 
@@ -227,8 +265,7 @@ impl Harvester {
         }
         let dir = self.docker_containers.join(id.as_str());
         if let Err(error) = self.watch(&dir, DIR_MASK, Watched::Container(id)) {
-            tracing::debug!(container = %id, %error, "container dir went away");
-            return;
+            tracing::debug!(container = %id, %error, "cannot watch the container dir");
         }
         if dir.join(LOCAL_LOGS_DIR).is_dir() {
             self.consider(&id).await;
@@ -266,8 +303,7 @@ impl Harvester {
         }
         let local_logs = self.local_logs(id);
         if let Err(error) = self.watch(&local_logs, WatchMask::CREATE, Watched::LocalLogs(*id)) {
-            tracing::debug!(container = %id, %error, "log dir went away");
-            return;
+            tracing::debug!(container = %id, %error, "cannot watch the log dir");
         }
         self.sync(id);
     }
@@ -403,19 +439,51 @@ struct DockerFile {
 /// oldest first, and records a gap when Docker may have deleted files the
 /// store never held.
 ///
-/// Docker deletes only its oldest file, and only once it has `max_files`.
-/// So when its set is full and its oldest file is new to the store, files
-/// before that one may be lost.
+/// Docker deletes only its oldest file, and only once it has `max_files`,
+/// compressed ones included. So when its set is full and its oldest file is
+/// new to the store, files before that one may be lost.
 pub(super) fn sync_container(
     local_logs: &Path,
     store_dir: &Path,
     max_files: usize,
     created_nanos: Option<i64>,
 ) -> io::Result<Synced> {
+    let mut synced = Synced::default();
+    for _ in 0..SYNC_ATTEMPTS {
+        match sync_pass(local_logs, store_dir, max_files, created_nanos, &mut synced) {
+            Ok(Pass::Done) => return Ok(synced),
+            Ok(Pass::Rotated) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(synced),
+            Err(error) => return Err(error),
+        }
+    }
+    tracing::warn!(dir = %local_logs.display(), "Docker kept rotating through a sync; the next one continues");
+    Ok(synced)
+}
+
+enum Pass {
+    Done,
+    /// Docker rotated mid-pass, so a name stopped naming the file listed.
+    Rotated,
+}
+
+fn sync_pass(
+    local_logs: &Path,
+    store_dir: &Path,
+    max_files: usize,
+    created_nanos: Option<i64>,
+    synced: &mut Synced,
+) -> io::Result<Pass> {
     let mut docker_files = Vec::new();
+    let mut compressed = 0;
     for entry in fs::read_dir(local_logs)? {
         let entry = entry?;
-        let Some(age) = entry.file_name().to_str().and_then(docker_file_age) else {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(age) = docker_file_age(name) else {
+            if is_compressed_rotation(name) {
+                compressed += 1;
+            }
             continue;
         };
         let Ok(metadata) = entry.metadata() else {
@@ -431,33 +499,44 @@ pub(super) fn sync_container(
     }
     docker_files.sort_by_key(|file| std::cmp::Reverse(file.age));
 
-    let mut held = Vec::new();
-    for entry in fs::read_dir(store_dir)? {
-        let entry = entry?;
-        if let Some(name) = LogFileName::parse(entry.file_name().as_encoded_bytes()) {
-            held.push(name);
+    let held = held_files(store_dir)?;
+    let held_inos: HashSet<u64> = held.iter().map(|name| name.ino).collect();
+    let Some(oldest) = docker_files.first() else {
+        return Ok(Pass::Done);
+    };
+    let maybe_lost =
+        docker_files.len() + compressed >= max_files && !held_inos.contains(&oldest.ino);
+    let docker_inos: HashSet<u64> = docker_files.iter().map(|file| file.ino).collect();
+    let before = held
+        .iter()
+        .rev()
+        .find(|name| !docker_inos.contains(&name.ino))
+        .copied();
+
+    let mut pass = Pass::Done;
+    let mut oldest_held = None;
+    let last_seq = held.last().map_or(0, |name| name.seq);
+    let unheld = docker_files
+        .iter()
+        .filter(|file| !held_inos.contains(&file.ino));
+    for (seq, file) in (last_seq + 1..).zip(unheld) {
+        let name = LogFileName { seq, ino: file.ino };
+        if !link_exact(&file.path, store_dir, name)? {
+            pass = Pass::Rotated;
+            break;
+        }
+        synced.linked += 1;
+        if file.ino == oldest.ino {
+            oldest_held = Some(name);
         }
     }
-    held.sort();
-    let held_inos: HashSet<u64> = held.iter().map(|name| name.ino).collect();
 
-    let mut synced = Synced::default();
-    let Some(oldest) = docker_files.first() else {
-        return Ok(synced);
-    };
-    if docker_files.len() >= max_files && !held_inos.contains(&oldest.ino) {
-        let docker_inos: HashSet<u64> = docker_files.iter().map(|file| file.ino).collect();
-        let before = held
-            .iter()
-            .rev()
-            .find(|name| !docker_inos.contains(&name.ino))
-            .and_then(|name| fs::read(store_dir.join(name.to_string())).ok())
-            .and_then(|bytes| frame::last_ts(&bytes))
-            .or(created_nanos);
-        let after = fs::read(&oldest.path)
-            .ok()
-            .and_then(|bytes| frame::first_ts(&bytes));
-        if let (Some(from), Some(to)) = (before, after)
+    if maybe_lost && let Some(oldest) = oldest_held {
+        let from = before
+            .and_then(|name| last_ts_of(&store_dir.join(name.to_string())))
+            .or(created_nanos)
+            .unwrap_or(0);
+        if let Some(to) = first_ts_of(&store_dir.join(oldest.to_string()))
             && to > from
         {
             let gap = Gap {
@@ -469,22 +548,105 @@ pub(super) fn sync_container(
             synced.gap = Some(gap);
         }
     }
+    Ok(pass)
+}
 
-    let last_seq = held.last().map_or(0, |name| name.seq);
-    let unheld = docker_files
-        .iter()
-        .filter(|file| !held_inos.contains(&file.ino));
-    for (seq, file) in (last_seq + 1..).zip(unheld) {
-        let name = LogFileName { seq, ino: file.ino };
-        match fs::hard_link(&file.path, store_dir.join(name.to_string())) {
-            Ok(()) => synced.linked += 1,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                tracing::warn!(file = %file.path.display(), "Docker deleted a log file before the store held it");
-            }
-            Err(error) => return Err(error),
+fn held_files(store_dir: &Path) -> io::Result<Vec<LogFileName>> {
+    let mut held = Vec::new();
+    for entry in fs::read_dir(store_dir)? {
+        if let Some(name) = LogFileName::parse(entry?.file_name().as_encoded_bytes()) {
+            held.push(name);
         }
     }
-    Ok(synced)
+    held.sort();
+    Ok(held)
+}
+
+/// Links `source` as `name` only if it is still the inode `name` records.
+/// Returns false when Docker rotated or deleted it first.
+fn link_exact(source: &Path, store_dir: &Path, name: LogFileName) -> io::Result<bool> {
+    let linking = store_dir.join(LINKING_FILE);
+    match fs::remove_file(&linking) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+        _ => {}
+    }
+    match fs::hard_link(source, &linking) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        result => result?,
+    }
+    if fs::symlink_metadata(&linking)?.ino() != name.ino {
+        fs::remove_file(&linking)?;
+        return Ok(false);
+    }
+    fs::rename(&linking, store_dir.join(name.to_string()))?;
+    Ok(true)
+}
+
+fn is_compressed_rotation(name: &str) -> bool {
+    name.strip_suffix(".gz")
+        .and_then(docker_file_age)
+        .is_some_and(|age| age > 0)
+}
+
+/// The first line's timestamp, from at most [`BOUND_READ`] bytes. A file with
+/// no whole frame yet falls back to its mtime, which no line before it can
+/// postdate.
+fn first_ts_of(path: &Path) -> Option<i64> {
+    let file = fs::File::open(path).ok()?;
+    let mut head = Vec::new();
+    (&file).take(BOUND_READ).read_to_end(&mut head).ok()?;
+    frame::first_ts(&head).or_else(|| {
+        let metadata = file.metadata().ok()?;
+        metadata
+            .mtime()
+            .checked_mul(1_000_000_000)?
+            .checked_add(metadata.mtime_nsec())
+    })
+}
+
+/// The last line's timestamp, from at most the last [`BOUND_READ`] bytes.
+fn last_ts_of(path: &Path) -> Option<i64> {
+    let mut file = fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    file.seek(io::SeekFrom::Start(len.saturating_sub(BOUND_READ)))
+        .ok()?;
+    let mut tail = Vec::new();
+    file.take(BOUND_READ).read_to_end(&mut tail).ok()?;
+    frame::last_ts(&tail)
+}
+
+/// Records, once, that output after the newest held file's last line may be
+/// missing, unless the store saw the container end.
+pub(super) fn close_orphan(store_dir: &Path, now: i64) -> io::Result<Option<Gap>> {
+    let meta: ContainerMeta = match fs::read(store_dir.join(META_FILE)) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(io::Error::other)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if meta.finished_at.is_some() {
+        return Ok(None);
+    }
+    let Some(from) = held_files(store_dir)?
+        .last()
+        .and_then(|newest| last_ts_of(&store_dir.join(newest.to_string())))
+    else {
+        return Ok(None);
+    };
+    let recorded = fs::read_to_string(store_dir.join(GAPS_FILE)).unwrap_or_default();
+    let already = recorded
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Gap>(line).ok())
+        .any(|gap| gap.from == from);
+    if already || now <= from {
+        return Ok(None);
+    }
+    let gap = Gap {
+        from,
+        to: now,
+        reason: GapReason::NotCaptured,
+    };
+    append_gap(store_dir, &gap)?;
+    Ok(Some(gap))
 }
 
 fn append_gap(store_dir: &Path, gap: &Gap) -> io::Result<()> {
@@ -558,13 +720,13 @@ fn rfc3339_nanos(at: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use std::{fs, os::unix::fs::MetadataExt, path::PathBuf};
 
-    use super::{Synced, sync_container};
+    use super::{Synced, close_orphan, link_exact, sync_container, write_meta};
     use crate::{
         observe::{
             frame::{Piece, Stream, tests::frame},
-            layout::{Gap, GapReason},
+            layout::{ContainerKind, ContainerMeta, Gap, GapReason, LINKING_FILE, LogFileName},
         },
         test_dir::TestDir,
     };
@@ -723,5 +885,79 @@ mod tests {
         fs::write(dirs.docker.join("container.log.1.gz"), b"compressed").unwrap();
         fs::write(dirs.docker.join("container.log.tmp"), b"tmp").unwrap();
         assert_eq!(dirs.sync(3).linked, 1);
+    }
+
+    #[test]
+    fn compressed_rotations_fill_the_set() {
+        let dirs = dirs();
+        dirs.rotate(3, T0 + 5);
+        fs::write(dirs.docker.join("container.log.1.gz"), b"gz").unwrap();
+        fs::write(dirs.docker.join("container.log.2.gz"), b"gz").unwrap();
+        let synced = dirs.sync(3);
+        assert_eq!(synced.linked, 1);
+        assert_eq!(
+            synced.gap,
+            Some(Gap {
+                from: T0,
+                to: T0 + 5,
+                reason: GapReason::NotCaptured
+            })
+        );
+    }
+
+    #[test]
+    fn an_oldest_file_with_no_line_yet_bounds_the_gap_by_its_mtime() {
+        let dirs = dirs();
+        fs::write(dirs.docker.join("container.log"), b"").unwrap();
+        let synced = dirs.sync(1);
+        assert_eq!(synced.linked, 1);
+        let gap = synced.gap.unwrap();
+        assert_eq!(gap.from, T0);
+        assert!(gap.to > T0);
+        assert_eq!(dirs.sync(1), Synced::default());
+    }
+
+    #[test]
+    fn a_name_that_no_longer_holds_the_listed_inode_is_not_linked() {
+        let dirs = dirs();
+        dirs.rotate(3, T0 + 1);
+        let source = dirs.docker.join("container.log");
+        let wrong = LogFileName {
+            seq: 1,
+            ino: fs::metadata(&source).unwrap().ino() + 1,
+        };
+        assert!(!link_exact(&source, &dirs.store, wrong).unwrap());
+        assert!(dirs.stored().is_empty());
+        assert!(!dirs.store.join(LINKING_FILE).exists());
+    }
+
+    #[test]
+    fn a_container_removed_unseen_gets_one_gap_after_its_last_held_line() {
+        let dirs = dirs();
+        dirs.rotate(3, T0 + 1);
+        dirs.sync(3);
+        let meta = |finished_at: Option<&str>| ContainerMeta {
+            service: None,
+            namespace: None,
+            deployment: None,
+            replica: "web".to_owned(),
+            kind: ContainerKind::Service,
+            started_at: None,
+            finished_at: finished_at.map(str::to_owned),
+            exit_code: None,
+            oom_killed: false,
+        };
+        write_meta(&dirs.store, &meta(Some("2026-01-01T00:00:00Z"))).unwrap();
+        assert_eq!(close_orphan(&dirs.store, T0 + 9).unwrap(), None);
+
+        write_meta(&dirs.store, &meta(None)).unwrap();
+        let gap = Gap {
+            from: T0 + 1,
+            to: T0 + 9,
+            reason: GapReason::NotCaptured,
+        };
+        assert_eq!(close_orphan(&dirs.store, T0 + 9).unwrap(), Some(gap));
+        assert_eq!(close_orphan(&dirs.store, T0 + 10).unwrap(), None);
+        assert_eq!(dirs.gaps(), [gap]);
     }
 }

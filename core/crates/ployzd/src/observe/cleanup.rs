@@ -26,7 +26,10 @@ use nix::{
 };
 use ployz_core::ContainerId;
 
-use super::layout::{GAPS_FILE, LogFileName, META_FILE, META_TEMP_FILE, StoreRoot};
+use super::layout::{
+    CONTAINERS_DIR, GAPS_FILE, LINKING_FILE, LogFileName, META_FILE, META_TEMP_FILE, StoreRoot,
+    VERSION_DIR,
+};
 
 const GIB: u64 = 1 << 30;
 
@@ -91,6 +94,8 @@ struct Candidate {
     name: CString,
     order: (i64, String, u64),
     size: u64,
+    dev: u64,
+    ino: u64,
 }
 
 struct ContainerDir {
@@ -119,7 +124,7 @@ pub fn run(
     now: SystemTime,
     container_exists: impl Fn(&ContainerId) -> bool,
 ) -> io::Result<Report> {
-    let mut containers = Dir::open(&store.containers(), DIR_FLAGS, Mode::empty())?;
+    let mut containers = open_containers(store)?;
     let containers_fd = containers.as_raw_fd();
     let mut report = Report::default();
     let mut candidates = Vec::new();
@@ -193,6 +198,25 @@ pub fn run(
     Ok(report)
 }
 
+/// Opens the containers dir one component at a time from
+/// `<DockerRootDir>/ployz-observe`, so a symlink anywhere in the store's own
+/// path stops cleanup instead of redirecting it.
+fn open_containers(store: &StoreRoot) -> io::Result<Dir> {
+    let base = Dir::open(store.base(), DIR_FLAGS, Mode::empty())?;
+    let version = Dir::openat(
+        Some(base.as_raw_fd()),
+        VERSION_DIR,
+        DIR_FLAGS,
+        Mode::empty(),
+    )?;
+    Ok(Dir::openat(
+        Some(version.as_raw_fd()),
+        CONTAINERS_DIR,
+        DIR_FLAGS,
+        Mode::empty(),
+    )?)
+}
+
 /// Lists one container dir: removes symlinks with store names, queues files
 /// only the store holds, and returns how many log files remain in it.
 fn scan_container(
@@ -236,12 +260,16 @@ fn scan_container(
                 name: file,
                 order: (stat.st_mtime, id.as_str().to_owned(), parsed.seq),
                 size: u64::try_from(stat.st_size).unwrap_or(0),
+                dev: stat.st_dev,
+                ino: stat.st_ino,
             });
         }
     }
     Ok(log_files)
 }
 
+/// Deletes a candidate once it is still the file scanned and still the
+/// store's alone.
 fn delete_file(containers_fd: RawFd, candidate: &Candidate) -> nix::Result<()> {
     let dir = Dir::openat(
         Some(containers_fd),
@@ -249,6 +277,19 @@ fn delete_file(containers_fd: RawFd, candidate: &Candidate) -> nix::Result<()> {
         DIR_FLAGS,
         Mode::empty(),
     )?;
+    let stat = fstatat(
+        Some(dir.as_raw_fd()),
+        candidate.name.as_c_str(),
+        AtFlags::AT_SYMLINK_NOFOLLOW,
+    )?;
+    let kind = SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT;
+    if kind != SFlag::S_IFREG
+        || stat.st_dev != candidate.dev
+        || stat.st_ino != candidate.ino
+        || stat.st_nlink != 1
+    {
+        return Err(Errno::ESTALE);
+    }
     unlinkat(
         Some(dir.as_raw_fd()),
         candidate.name.as_c_str(),
@@ -265,7 +306,7 @@ fn remove_container_dir(containers_fd: RawFd, name: &CString) -> nix::Result<boo
         DIR_FLAGS,
         Mode::empty(),
     )?;
-    for file in [META_FILE, META_TEMP_FILE, GAPS_FILE] {
+    for file in [META_FILE, META_TEMP_FILE, GAPS_FILE, LINKING_FILE] {
         match unlinkat(Some(dir.as_raw_fd()), file, UnlinkatFlags::NoRemoveDir) {
             Ok(()) | Err(Errno::ENOENT) => {}
             Err(error) => return Err(error),
@@ -453,6 +494,23 @@ mod tests {
         assert_eq!(fs::read(&outside).unwrap(), b"keep");
         assert_eq!(store.names(&cid(1)), ["01-10.log", "notes.txt"]);
         assert_eq!(fs::read(store.docker.join("1-1.log")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn a_symlink_in_the_store_path_stops_cleanup() {
+        let store = store();
+        let file = store.file(&cid(1), "1-10.log", 100, 31 * 86_400);
+        let real = store.root.base().join("real");
+        fs::rename(store.root.path(), &real).unwrap();
+        symlink(&real, store.root.path()).unwrap();
+        let limits = Limits::for_filesystem(u64::MAX);
+        let disk = Disk {
+            total_bytes: u64::MAX,
+            free_bytes: u64::MAX,
+        };
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(T0);
+        assert!(run(&store.root, &limits, disk, now, |_| false).is_err());
+        assert!(fs::exists(&file).unwrap());
     }
 
     #[test]
