@@ -23,7 +23,7 @@ export type Refusal = { readonly code: RefusalCode; readonly message: string };
 export type Planned =
   | { readonly ok: true; readonly phase: { readonly kind: "mirror"; readonly writer: AnsweredMember; readonly target: AnsweredMember; readonly declare: boolean } }
   | { readonly ok: true; readonly phase: { readonly kind: "sync"; readonly writer: AnsweredMember; readonly mirror: AnsweredMember; readonly full: boolean } }
-  | { readonly ok: true; readonly phase: { readonly kind: "delete_mirror"; readonly destroy: readonly AnsweredMember[]; readonly forget: AnsweredMember | null } }
+  | { readonly ok: true; readonly phase: { readonly kind: "delete_mirror"; readonly destroy: readonly AnsweredMember[]; readonly forget: AnsweredMember | null; readonly forgetLease: readonly AnsweredMember[] } }
   | {
       readonly ok: true;
       readonly phase: {
@@ -111,7 +111,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
     if (input.orphan) {
       if (roots.length > 0) return refuse("invalid", `${name} still has a writer on ${roots.map(named).join(", ")}`);
       if (slots.length === 0) return refuse("no_mirror", `${name} has no mirror`);
-      return { ok: true, phase: { kind: "delete_mirror", destroy: slots, forget: null } };
+      return { ok: true, phase: { kind: "delete_mirror", destroy: slots, forget: null, forgetLease: answered.filter((member) => member.pool) } };
     }
     if (unanswered !== undefined) return refuse("unanswered", `${unanswered.machine.name} did not answer; ${name}'s copies are unknown`);
     if (switching.length > 0 || writer?.view.lease?.cycle === "open") return midRun();
@@ -122,7 +122,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
       const only = destroy.map(named).join(", ");
       return refuse("confirm_required", `${only} is ${name}'s only copy; volume mirror rm ${only} --confirm ${name}`);
     }
-    return { ok: true, phase: { kind: "delete_mirror", destroy, forget: writer ?? null } };
+    return { ok: true, phase: { kind: "delete_mirror", destroy, forget: writer ?? null, forgetLease: destroy } };
   }
 
   if (unanswered !== undefined) return refuse("unanswered", `${unanswered.machine.name} did not answer; ${name}'s copies are unknown`);

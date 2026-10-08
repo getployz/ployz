@@ -47,7 +47,7 @@ function outcome(input: PlanInput, members: Member[]) {
     case "sync":
       return `sync ${phase.writer.machine.name}->${phase.mirror.machine.name}${phase.full ? " full" : ""}`;
     case "delete_mirror":
-      return `delete ${phase.destroy.map((slot) => slot.machine.name).join(",")} forget ${phase.forget?.machine.name ?? "none"}`;
+      return `delete ${phase.destroy.map((slot) => slot.machine.name).join(",")} forget ${phase.forget?.machine.name ?? "none"} lease ${phase.forgetLease.map((slot) => slot.machine.name).join(",")}`;
     case "move":
       return `move ${phase.writer.machine.name}->${phase.target.machine.name} at ${phase.start}${phase.guid === null ? "" : ` ${phase.guid}`}${phase.declare ? " declare" : ""}`;
     case "release":
@@ -96,19 +96,19 @@ describe("plan_from_copies_table", () => {
     ["sync with a stale slot", sync(), [member("a", "writer"), member("b", "stale")], "refuse stale_slot"],
     ["sync with no writer", sync(), [member("b", "mirror")], "refuse no_writer"],
     ["sync with a Server unanswered", sync(), [member("a", "writer"), member("b", "mirror"), member("c", "unanswered")], "refuse unanswered"],
-    ["delete one mirror forgets on the writer", remove("b"), [member("a", "writer"), member("b", "mirror")], "delete b forget a"],
-    ["delete a stale slot", remove("b"), [member("a", "writer"), member("b", "stale")], "delete b forget a"],
-    ["delete every slot", remove(null), [member("a", "writer"), member("b", "mirror"), member("c", "stale")], "delete b,c forget a"],
+    ["delete one mirror forgets on the writer", remove("b"), [member("a", "writer"), member("b", "mirror")], "delete b forget a lease b"],
+    ["delete a stale slot", remove("b"), [member("a", "writer"), member("b", "stale")], "delete b forget a lease b"],
+    ["delete every slot", remove(null), [member("a", "writer"), member("b", "mirror"), member("c", "stale")], "delete b,c forget a lease b,c"],
     ["delete a Server with no slot", remove("c"), [member("a", "writer"), member("b", "mirror"), member("c", "empty")], "refuse no_mirror"],
     ["delete the only copy unconfirmed", remove("b"), [member("a", "empty"), member("b", "mirror")], "refuse confirm_required"],
-    ["delete the only copy confirmed", remove("b", "data"), [member("a", "empty"), member("b", "mirror")], "delete b forget none"],
+    ["delete the only copy confirmed", remove("b", "data"), [member("a", "empty"), member("b", "mirror")], "delete b forget none lease b"],
     ["delete the only copy confirmed wrongly", remove("b", "other"), [member("b", "mirror")], "refuse confirm_required"],
     ["delete while the writer switches", remove("b"), [member("a", "switching"), member("b", "mirror")], "refuse volume_switching"],
     ["delete while the writer's lease cycle is open", remove("b"), [member("a", "writer", { cycle: "open" }), member("b", "mirror")], "refuse volume_switching"],
-    ["delete after a closed cycle", remove("b"), [member("a", "writer", { cycle: "closed" }), member("b", "mirror")], "delete b forget a"],
+    ["delete after a closed cycle", remove("b"), [member("a", "writer", { cycle: "closed" }), member("b", "mirror")], "delete b forget a lease b"],
     ["delete with a Server unanswered", remove("b"), [member("a", "writer"), member("b", "mirror"), member("c", "unanswered")], "refuse unanswered"],
-    ["orphan delete destroys every slot, forgets nothing", orphan, [member("b", "mirror"), member("c", "stale"), member("d", "empty")], "delete b,c forget none"],
-    ["orphan delete ignores an unanswered Server", orphan, [member("b", "mirror"), member("c", "unanswered")], "delete b forget none"],
+    ["orphan delete destroys every slot and forgets every lease record", orphan, [member("b", "mirror"), member("c", "stale"), member("d", "empty", { pool: true }), member("e", "empty")], "delete b,c forget none lease b,c,d"],
+    ["orphan delete ignores an unanswered Server", orphan, [member("b", "mirror"), member("c", "unanswered")], "delete b forget none lease b"],
     ["orphan delete of a name with a writer", orphan, [member("a", "writer"), member("b", "mirror")], "refuse invalid"],
     ["orphan delete with no slot left", orphan, [member("b", "empty")], "refuse no_mirror"],
     ["move onto an empty Server declares it", move("b"), [member("a", "writer"), member("b", "empty", { pool: true })], "move a->b at rounds declare"],

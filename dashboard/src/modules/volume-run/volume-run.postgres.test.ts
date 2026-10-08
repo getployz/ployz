@@ -111,6 +111,11 @@ describe("volume runs", () => {
       case "destroy_mirror":
         fake.copy = null;
         return reply();
+      case "forget_lease": {
+        const admitted = reply();
+        if (fake.copy === null) fake.lease = null;
+        return admitted;
+      }
       case "warm_snapshot": {
         const next = fake.warms?.length === 1 ? fake.warms[0] : fake.warms?.shift();
         if (next !== undefined) fake.copy = writerCopy(next);
@@ -498,17 +503,18 @@ describe("volume runs", () => {
       }]);
     });
 
-    it("delete_mirror: destroys the slot, then forgets on the writer", async () => {
+    it("delete_mirror: destroys the slot, forgets on the writer, then clears the slot's lease record", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: null };
       const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null } });
 
       await execute(run.id);
 
-      expect(ordered(verbs)).toEqual(["adopt_lease@fsn-1", "adopt_lease@fsn-2", "destroy_mirror@fsn-2(3,0,0)", "forget_snapshots@fsn-1(4,0,0)"]);
+      expect(ordered(verbs)).toEqual(["adopt_lease@fsn-1", "adopt_lease@fsn-2", "destroy_mirror@fsn-2(3,0,0)", "forget_snapshots@fsn-1(4,0,0)", "forget_lease@fsn-2(4,0,1)"]);
+      expect(machines.map((fake) => fake.lease?.lease ?? null)).toEqual([1, null]);
       expect(await rows()).toMatchObject([{ state: "done" }]);
     });
 
-    it("orphan delete: destroys every slot of the name, forgets nothing", async () => {
+    it("orphan delete: destroys every slot of the name and leaves no lease record behind", async () => {
       machines = [
         { name: "fsn-1", pool: true, copy: null, lease: null },
         { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: null },
@@ -526,7 +532,9 @@ describe("volume runs", () => {
       expect(output.error).toBeUndefined();
       expect(ordered(verbs)).toEqual([
         "adopt_lease@fsn-1", "adopt_lease@fsn-2", "adopt_lease@fsn-3", "destroy_mirror@fsn-2(3,0,0)", "destroy_mirror@fsn-3(3,0,0)",
+        "forget_lease@fsn-1(4,0,1)", "forget_lease@fsn-2(4,0,1)", "forget_lease@fsn-3(4,0,1)",
       ]);
+      expect(machines.map((fake) => fake.lease)).toEqual([null, null, null]);
       expect(await rows()).toMatchObject([{ state: "done" }]);
     });
   });

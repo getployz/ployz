@@ -92,6 +92,12 @@ export async function runVolume(
         payload: mirrorRequest({ seq: 4, round: 0, sub: 0 })(notAfter),
       })));
     }
+    for (const member of phase.forgetLease) {
+      await verb(`04-forget-lease-${member.machine.name}`, sendSwitch(run, runId, member.machine, (notAfter) => ({
+        command: "forget_lease",
+        payload: mirrorRequest({ seq: 4, round: 0, sub: 1 })(notAfter),
+      })));
+    }
     await step.run("05-finish", () => runEffect(endRun(run, runId, "done", null)));
     return { runId: run.id, destroyed: phase.destroy.map((slot) => slot.machine.name) };
   }
