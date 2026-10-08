@@ -4,8 +4,8 @@ import { BaseTextAdapter, type StructuredOutputResult } from "@tanstack/ai/adapt
 import { Option, Schema } from "effect";
 import type { JsonObject } from "#/db/tables";
 
-/** One model turn: words for the member, or one tool call. */
-export type ScriptedTurn = { text: string } | { tool: string; input: JsonObject };
+/** One model turn: words for the member, or the tool calls it makes at once. */
+export type ScriptedTurn = { text: string } | { calls: ReadonlyArray<{ tool: string; input: JsonObject }> };
 
 /** A model that answers from the conversation by rule, for tests and for an unconfigured Cloud. */
 export class ScriptedAdapter extends BaseTextAdapter<"scripted", Record<string, never>, readonly ["text"], DefaultMessageMetadataByModality> {
@@ -29,12 +29,14 @@ export class ScriptedAdapter extends BaseTextAdapter<"scripted", Record<string, 
       yield { type: EventType.RUN_FINISHED, runId, threadId, model, timestamp, finishReason: "stop" };
       return;
     }
-    const toolCallId = `call_${crypto.randomUUID()}`;
-    const args = JSON.stringify(turn.input);
-    const named = { toolCallId, toolCallName: turn.tool, toolName: turn.tool, model, timestamp };
-    yield { type: EventType.TOOL_CALL_START, ...named, index: 0 };
-    yield { type: EventType.TOOL_CALL_ARGS, toolCallId, model, timestamp, delta: args, args };
-    yield { type: EventType.TOOL_CALL_END, ...named, input: turn.input };
+    for (const [index, call] of turn.calls.entries()) {
+      const toolCallId = `call_${crypto.randomUUID()}`;
+      const args = JSON.stringify(call.input);
+      const named = { toolCallId, toolCallName: call.tool, toolName: call.tool, model, timestamp };
+      yield { type: EventType.TOOL_CALL_START, ...named, index };
+      yield { type: EventType.TOOL_CALL_ARGS, toolCallId, model, timestamp, delta: args, args };
+      yield { type: EventType.TOOL_CALL_END, ...named, input: call.input };
+    }
     yield { type: EventType.RUN_FINISHED, runId, threadId, model, timestamp, finishReason: "tool_calls" };
   }
 
@@ -59,8 +61,8 @@ const text = ({ content }: ModelMessage) =>
 
 /**
  * `PLOYZ_AGENT_STUB=1`'s model. It reads the member's latest message and the tool results since: "list services" lists
- * them by name, "remove <service>" and "drop <volume>" stage their removal, "publish" publishes, and "deploy" deploys the
- * Environment. After a Deploy refused for losing a Volume's data, "deploy, accepting the volume loss" deploys again
+ * them by name, "list services and deploy" calls both at once, "remove <service>" and "drop <volume>" stage their
+ * removal, "publish" publishes, and "deploy" deploys the Environment. After a Deploy refused for losing a Volume's data, "deploy, accepting the volume loss" deploys again
  * accepting exactly what the Store named. A denial is quoted, never retried.
  */
 export function stubScript(messages: ReadonlyArray<ModelMessage>): ScriptedTurn {
@@ -78,11 +80,12 @@ export function stubScript(messages: ReadonlyArray<ModelMessage>): ScriptedTurn 
   }
 
   const removed = /remove ([a-z0-9-]+)/.exec(said)?.[1];
-  if (removed !== undefined) return { tool: "service_rm", input: { service: removed } };
+  if (removed !== undefined) return { calls: [{ tool: "service_rm", input: { service: removed } }] };
   const dropped = /drop ([a-z0-9-]+)/.exec(said)?.[1];
-  if (dropped !== undefined) return { tool: "volume_rm", input: { volume: dropped } };
-  if (said.includes("list services")) return { tool: "service_ls", input: {} };
-  if (said.includes("publish")) return { tool: "publish", input: {} };
+  if (dropped !== undefined) return { calls: [{ tool: "volume_rm", input: { volume: dropped } }] };
+  if (said.includes("list services and deploy")) return { calls: [{ tool: "service_ls", input: {} }, { tool: "deploy", input: {} }] };
+  if (said.includes("list services")) return { calls: [{ tool: "service_ls", input: {} }] };
+  if (said.includes("publish")) return { calls: [{ tool: "publish", input: {} }] };
   if (said.includes("accepting the volume loss")) {
     const losses = messages.slice(0, asked).flatMap((message) => message.role === "tool" ? [text(message)] : [])
       .flatMap((result) => Option.toArray(Schema.decodeUnknownOption(Refused)(result)))
@@ -90,10 +93,10 @@ export function stubScript(messages: ReadonlyArray<ModelMessage>): ScriptedTurn 
     const loss = losses.at(-1);
     const accepted = loss === undefined ? Option.none() : Schema.decodeUnknownOption(VolumeLoss)(loss.refusal.details);
     if (Option.isSome(accepted)) {
-      return { tool: "deploy", input: { accept_volume_loss: [...accepted.value.accept], expect_version: accepted.value.version } };
+      return { calls: [{ tool: "deploy", input: { accept_volume_loss: [...accepted.value.accept], expect_version: accepted.value.version } }] };
     }
   }
-  if (said.includes("deploy")) return { tool: "deploy", input: {} };
+  if (said.includes("deploy")) return { calls: [{ tool: "deploy", input: {} }] };
   return { text: "I can list services, remove one, or deploy." };
 }
 

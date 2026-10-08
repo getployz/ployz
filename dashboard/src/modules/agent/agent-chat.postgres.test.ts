@@ -208,6 +208,20 @@ it.live("a turn that died after its Deploy committed deploys nothing more when r
     expect(yield* deployments).toEqual([deployed]);
   }), 15_000);
 
+it.live("a Deploy called alongside another tool is refused without reaching the Store or a human", () =>
+  Effect.gen(function* () {
+    const { say, watchWrites, pending } = yield* sidebar({ removeWeb: true });
+    const writes = watchWrites();
+    const answered = yield* say("list services and deploy");
+    expect(answered.interrupts).toEqual([]);
+    expect(answered.results).toMatchObject([
+      { ok: true },
+      { ok: false, refusal: { code: "invalid_argument", message: "Call deploy alone, in its own turn, so a human can review exactly that plan." } },
+    ]);
+    expect(admits(writes)).toEqual([]);
+    expect(yield* pending).toEqual([]);
+  }));
+
 it.live("a denied Deploy never reaches the Store, and the agent quotes the reason instead of retrying", () =>
   Effect.gen(function* () {
     const { provided, caller, say, resume, watchWrites, pending } = yield* sidebar({ removeWeb: true });
