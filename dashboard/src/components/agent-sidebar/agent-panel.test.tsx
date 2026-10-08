@@ -1,17 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { UIMessage } from "@tanstack/ai-react";
 import { afterEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import AgentPanel, { Message } from "./agent-panel";
 import { approvalOptions, type ApprovalView } from "./approvals.queries";
-
-const { connect, useChat } = vi.hoisted(() => ({
-  connect: vi.fn((url: string) => ({ url })),
-  useChat: vi.fn((_options: { threadId: string }) => ({ interrupts: [], messages: [], isHydrating: true, isLoading: false, sendMessage: () => {} })),
-}));
-vi.mock("@tanstack/ai-react", () => ({ fetchServerSentEvents: connect, useChat }));
 
 afterEach(() => { cleanup(); localStorage.clear(); vi.unstubAllGlobals(); });
 
@@ -35,8 +29,10 @@ it("says a denied call was denied once, on its approval card", () => {
   expect(screen.getAllByText(/denied/i).map((line) => line.textContent)).toEqual(["Denied: keep the data"]);
 });
 
-it("switching Organization with the panel open talks to the new Organization's thread", () => {
+it("switching Organization with the panel open talks to the new Organization's thread", async () => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  const fetched = vi.fn((_url: string) => Promise.resolve(Response.json({ messages: [] })));
+  vi.stubGlobal("fetch", fetched);
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
   localStorage.setItem("ployz.agent.thread.acme", "thread-acme");
   localStorage.setItem("ployz.agent.thread.other", "thread-other");
@@ -46,8 +42,7 @@ it("switching Organization with the panel open talks to the new Organization's t
     </QueryClientProvider>
   );
   const shown = render(panel("acme"));
-  expect(connect).toHaveBeenLastCalledWith("/api/agent/acme/chat");
+  await waitFor(() => expect(fetched.mock.lastCall?.[0]).toMatch(/^\/api\/agent\/acme\/chat\?.*threadId=thread-acme/));
   shown.rerender(panel("other"));
-  expect(connect).toHaveBeenLastCalledWith("/api/agent/other/chat");
-  expect(useChat.mock.lastCall?.[0].threadId).toBe("thread-other");
+  await waitFor(() => expect(fetched.mock.lastCall?.[0]).toMatch(/^\/api\/agent\/other\/chat\?.*threadId=thread-other/));
 });

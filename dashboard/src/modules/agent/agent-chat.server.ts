@@ -75,7 +75,8 @@ const onceFor = (command: ConfigCommand, approvalId: string, digest: string): Co
 const runGated = Effect.fn("Agent.runGated")(function* (caller: Caller, asked: ConfigCommand, approvalId: string | null) {
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
   if (!trusted.ok) return { outcome: { ok: false, refusal: denialForAgent(asked, trusted.refusal) } } satisfies Gated;
-  const command = typeof trusted.approval === "object" && approvalId !== null ? onceFor(asked, approvalId, trusted.approval.approved) : asked;
+  const approved = trusted.approval === "required" || trusted.approval === "not_required" ? null : trusted.approval.approved;
+  const command = approved === null || approvalId === null ? asked : onceFor(asked, approvalId, approved);
   const result = yield* callStore(caller.organization.id, caller.userId, { operation: "write", command }, AGENT, trusted.approval);
   if (result.ok && trusted.approval === "required") return { outcome: { ...result, nothing_destroyed: true } } satisfies Gated;
   if (result.ok || result.refusal.code !== "approval_required") return { outcome: result } satisfies Gated;
@@ -88,8 +89,7 @@ const runGated = Effect.fn("Agent.runGated")(function* (caller: Caller, asked: C
 
 type AgentServices =
   | Effect.Services<ReturnType<typeof runGated>>
-  | Effect.Services<ReturnType<typeof agentPersistence>>
-  | Effect.Services<ReturnType<typeof claimResume>>;
+  | Effect.Services<ReturnType<typeof agentPersistence>>;
 
 const decodeArguments = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const toolInput = (args: string) => projectJsonValue(Option.getOrElse(decodeArguments(args.trim() === "" ? "{}" : args), () => null));
@@ -215,10 +215,11 @@ async function* answered(persistence: Persistence, request: ChatRequest): AsyncG
     messages: uiMessagesToWire(modelMessagesToUIMessages(withIds), { includeSnapshotStructuredOutput: true, includeActivity: true }),
   };
   const waiting = await persistence.stores.interrupts.listPending(threadId);
-  yield waiting.length === 0
+  // SAFETY: the interrupt store keeps each interrupt exactly as the run that raised it published it.
+  const interrupts = waiting.map((record) => record.payload as Interrupt);
+  yield interrupts.length === 0
     ? { type: EventType.RUN_FINISHED, threadId, runId, finishReason: "stop", timestamp: Date.now() }
-    // SAFETY: the interrupt store keeps each interrupt exactly as the run that raised it published it.
-    : { type: EventType.RUN_FINISHED, threadId, runId, outcome: { type: "interrupt", interrupts: waiting.map((record) => record.payload as Interrupt) }, timestamp: Date.now() };
+    : { type: EventType.RUN_FINISHED, threadId, runId, outcome: { type: "interrupt", interrupts }, timestamp: Date.now() };
 }
 
 const CLAIM_POLL_MS = 250;
