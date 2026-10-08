@@ -15,8 +15,12 @@ use rmcp::model::{
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt};
-use rustix::process::{Pid, Signal, kill_process_group, setsid};
+#[cfg(not(test))]
+use rustix::process::kill_process_group;
+use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, setsid, waitid};
 use serde_json::{Map, Value, json};
+#[cfg(test)]
+use tests::kill_process_group;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -170,14 +174,12 @@ impl ServerHandler for Server {
                 .spawn()
                 .map_err(|error| McpError::internal_error(error.to_string(), None))?,
         );
-        let group = child.0.id();
         let (stdout, stderr) = (child.0.stdout.take(), child.0.stderr.take());
         let exited = async {
-            let status = child.0.wait().await;
-            // What the command left running in its group would outlive the call, and could hold
-            // its output open. While any of it lives, the group's id cannot be reused.
-            kill_group(group);
-            status
+            if wait_unreaped(&child.0).await {
+                kill_group(&child.0);
+            }
+            child.0.wait().await
         };
         let finished = async { tokio::join!(exited, capture(stdout), capture(stderr)) };
         let (status, stdout, stderr) = tokio::select! {
@@ -194,7 +196,15 @@ impl ServerHandler for Server {
                 return Ok(CallToolResult::error(content).into());
             }
         };
-        let text = if stdout.is_empty() { stderr } else { stdout };
+        let text = [stdout, stderr]
+            .into_iter()
+            .find(|text| !text.is_empty())
+            .unwrap_or_else(|| {
+                format!(
+                    "`ployz {}` printed nothing and ended with {status}",
+                    entry.command
+                )
+            });
         let content = vec![ContentBlock::text(text)];
         Ok(if status.success() {
             CallToolResult::success(content)
@@ -209,16 +219,33 @@ struct KillGroupOnDrop(tokio::process::Child);
 
 impl Drop for KillGroupOnDrop {
     fn drop(&mut self) {
-        kill_group(self.0.id());
+        kill_group(&self.0);
     }
 }
 
-/// The child leads its own group, so the group's id is the child's pid.
-fn kill_group(leader: Option<u32>) {
-    if let Some(group) = leader
+fn unreaped_leader(child: &tokio::process::Child) -> Option<Pid> {
+    child
+        .id()
         .and_then(|pid| i32::try_from(pid).ok())
         .and_then(Pid::from_raw)
-    {
+}
+
+/// Until the child is reaped its pid stays taken, so the id of the group it leads cannot name
+/// another group.
+async fn wait_unreaped(child: &tokio::process::Child) -> bool {
+    let Some(pid) = unreaped_leader(child) else {
+        return false;
+    };
+    let options = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT;
+    tokio::task::spawn_blocking(move || {
+        rustix::io::retry_on_intr(|| waitid(WaitId::Pid(pid), options))
+    })
+    .await
+    .is_ok_and(|waited| waited.is_ok())
+}
+
+fn kill_group(child: &tokio::process::Child) {
+    if let Some(group) = unreaped_leader(child) {
         let _ = kill_process_group(group, Signal::KILL);
     }
 }
@@ -501,10 +528,22 @@ fn words(arg: &ArgEntry, key: &str, value: Value) -> Result<Vec<String>, McpErro
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use serde_json::{Value, json};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     use super::*;
+
+    static SIGNALLED: Mutex<Vec<(i32, Option<char>)>> = Mutex::new(Vec::new());
+
+    pub(super) fn kill_process_group(group: Pid, signal: Signal) -> rustix::io::Result<()> {
+        let leader = std::fs::read_to_string(format!("/proc/{}/stat", group.as_raw_pid()))
+            .ok()
+            .and_then(|stat| stat.rsplit(") ").next()?.chars().next());
+        SIGNALLED.lock().unwrap().push((group.as_raw_pid(), leader));
+        rustix::process::kill_process_group(group, signal)
+    }
 
     async fn exchange(frames: &[Value]) -> Vec<Value> {
         exchange_with(
@@ -738,6 +777,7 @@ mod tests {
             &path,
             "#!/bin/sh\n\
              case \"$1\" in\n\
+             project) echo $$ > \"$(dirname \"$0\")/pids\" ;;\n\
              server) echo \"no such server\" >&2; exit 3 ;;\n\
              logs) head -c 3000000 /dev/zero | tr '\\0' a; exit 0 ;;\n\
              deployment) sleep 60 & echo $$ $! > \"$(dirname \"$0\")/pids\"; wait ;;\n\
@@ -894,8 +934,35 @@ mod tests {
         let mut frames = handshake();
         frames.push(tool_call("service_ls"));
         let replies = exchange_with(Server::new(fake_ployz(dir.path()), Vec::new()), &frames).await;
-        assert_eq!(replies[1]["result"]["isError"], true, "{}", replies[1]);
+        let failed = &replies[1]["result"];
+        assert_eq!(failed["isError"], true, "{failed}");
+        assert_eq!(
+            failed["content"][0]["text"],
+            "`ployz service ls` printed nothing and ended with signal: 9 (SIGKILL)"
+        );
         assert_killed(&call_pids(dir.path()).await).await;
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_finished_call_signals_its_group_before_it_reaps_the_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut frames = handshake();
+        frames.push(tool_call("project_ls"));
+        let replies = exchange_with(Server::new(fake_ployz(dir.path()), Vec::new()), &frames).await;
+        assert_eq!(replies[1]["result"]["isError"], false, "{}", replies[1]);
+        let leader: i32 = call_pids(dir.path()).await[0].parse().unwrap();
+        let signalled: Vec<Option<char>> = SIGNALLED
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(group, _)| *group == leader)
+            .map(|(_, state)| *state)
+            .collect();
+        assert!(
+            !signalled.is_empty() && signalled.iter().all(|state| *state == Some('Z')),
+            "every signal reaches the group while its exited leader is unreaped: {signalled:?}"
+        );
     }
 
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
