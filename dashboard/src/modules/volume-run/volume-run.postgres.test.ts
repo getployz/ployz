@@ -51,7 +51,15 @@ const snap = (guid: string): Snapshot => ({ name: `ployz-${guid}`, guid, created
 const writerCopy = (guid: string | null): VolumeCopy =>
   ({ kind: "root", writer: { phase: "idle" }, readonly: false, newest: guid === null ? null : snap(guid) });
 const slotCopy = (guid: string | null, phase: "idle" | "handed_in" = "idle"): VolumeCopy =>
-  ({ kind: "slot", mirror: phase === "idle" ? { phase } : { phase, guid: "1" }, readonly: true, newest: guid === null ? null : snap(guid), resume_token: null });
+  ({ kind: "slot", mirror: phase === "idle" ? { phase } : { phase, guid: guid ?? "1" }, readonly: true, newest: guid === null ? null : snap(guid), resume_token: null });
+const sourceCopy = (phase: "stopping" | "frozen" | "handed", guid = "30"): VolumeCopy => ({
+  kind: "root",
+  writer: phase === "stopping" ? { phase } : { phase, guid },
+  readonly: phase !== "stopping",
+  newest: { name: "f-1", guid, created_unix_seconds: 1_790_000_000 },
+});
+const busy = { code: "unavailable", message: "busy", details: { reason: "busy", skew_seconds: 0 } };
+const refused = { code: "failed_precondition", message: "precondition", details: { reason: "precondition" } };
 const idOf = (name: string) => name.padEnd(32, "0") as MachineId;
 const first = <T>(items: readonly T[]): T => {
   const item = items[0];
@@ -76,6 +84,7 @@ describe("volume runs", () => {
   let verbs: string[];
   let failNext: Map<string, unknown>;
   let sent: VolumeSwitchRequest[];
+  let holders: string[];
   let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete" }>;
 
   const machine = (target: string) => {
@@ -121,8 +130,33 @@ describe("volume runs", () => {
         if (next !== undefined) fake.copy = writerCopy(next);
         return reply();
       }
+      case "withdraw":
+        fake.copy = sourceCopy("stopping");
+        return reply();
+      case "freeze":
+        fake.copy = sourceCopy("frozen");
+        return reply();
+      case "hand_over":
+        fake.copy = sourceCopy("handed", request.payload.guid);
+        return reply();
+      case "thaw":
+        fake.copy = writerCopy(fake.copy?.newest?.guid ?? null);
+        return reply();
+      case "accept_hand_off":
+        fake.copy = slotCopy(request.payload.guid, "handed_in");
+        return reply();
+      case "promote":
+        fake.copy = writerCopy(fake.copy?.newest?.guid ?? null);
+        fake.lease = { lease: request.payload.switch.lease, pos: request.payload.switch.pos, cycle: "open" };
+        return reply();
+      case "close":
+        fake.copy = slotCopy(fake.copy?.newest?.guid ?? null);
+        return reply();
       case "start_receive": {
-        const guid = request.payload.target.replace("ployz-", "");
+        const frozen = machines.map((entry) => entry.copy).find((copy) => copy?.kind === "root" && copy.writer.phase === "frozen");
+        const guid = request.payload.target.startsWith("f-") && frozen?.kind === "root" && frozen.writer.phase === "frozen"
+          ? frozen.writer.guid
+          : request.payload.target.replace("ployz-", "");
         fake.receiving ??= { target: request.payload.target, guid, polls: 0 };
         return reply();
       }
@@ -137,6 +171,16 @@ describe("volume runs", () => {
         machine: { id: idOf(fake.name), name: fake.name, public_key: Array.from({ length: 32 }, (_, index) => index) },
         storage: fake.stateless === true ? { state: "stateless" } : fake.pool ? { state: "pool", size_bytes: 1, used_bytes: 0, free_bytes: 1 } : { state: "ready" },
       })),
+      containers: holders.map((name) => ({
+        machine_id: idOf(name),
+        kind: "service_container",
+        container_id: `web-${name}`,
+        namespace: "shop-production",
+        resolved_spec: { name: "web", container: { pull_policy: "always" }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
+      })),
+    }),
+    copyContainerImage: (from: string, container: string, to: string) => Effect.sync(() => {
+      verbs.push(`copy_image@${machine(from).name}->${machine(to).name}(${container})`);
     }),
     volumeSwitch: (target: string, request: VolumeSwitchRequest) => Effect.suspend(() => {
       const fake = machine(target);
@@ -183,8 +227,12 @@ describe("volume runs", () => {
     function: createRunVolume(new Inngest({ id: "test" }), runEffect),
     events: [{ name: "volume/run.requested", data: { organizationId, environment: "env-1", volumeId: volume, runId: runRowId } }],
     transformCtx: (ctx) => ({ ...mockCtx(ctx), runId }),
-    steps: [...(steps ?? []), ...[0, 1, 2].flatMap((round) =>
-      Array.from({ length: 6 }, (_, poll) => ({ id: `04-r${round}-3-wait-${poll}`, handler: () => undefined })))],
+    steps: [
+      ...(steps ?? []),
+      ...["04-r0", "04-r1", "04-r2", "07-final"].flatMap((prefix) =>
+        Array.from({ length: 6 }, (_, poll) => ({ id: `${prefix}-3-wait-${poll}`, handler: () => undefined }))),
+      ...Array.from({ length: 6 }, (_, check) => ({ id: `10-promote-wait-${check}`, handler: () => undefined })),
+    ],
   }).execute();
   const rows = async () => (await harness.pool.query(
     `select id, kind, state, lease, inngest_run_id, message, orphan, volume_id, docker_volume, refquota_bytes, finished_at
@@ -204,6 +252,7 @@ describe("volume runs", () => {
     verbs = [];
     failNext = new Map();
     sent = [];
+    holders = ["fsn-1"];
     storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 5_000_000 } }];
     machines = [
       { name: "fsn-1", pool: true, copy: writerCopy("10"), lease: null, warms: ["21"] },
@@ -535,6 +584,182 @@ describe("volume runs", () => {
         "forget_lease@fsn-1(4,0,1)", "forget_lease@fsn-2(4,0,1)", "forget_lease@fsn-3(4,0,1)",
       ]);
       expect(machines.map((fake) => fake.lease)).toEqual([null, null, null]);
+      expect(await rows()).toMatchObject([{ state: "done" }]);
+    });
+  });
+
+  describe("move and release", () => {
+    const afterRounds = (all: readonly string[]) => all.slice(all.findIndex((verb) => verb.startsWith("copy_image")));
+    const forward = "volume move data --to fsn-2 again continues from there";
+
+    it("move: rounds, freezes, sends the final, hands over, then promotes and starts on the target", async () => {
+      failNext.set("promote@fsn-2", busy);
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeUndefined();
+      expect(output.result).toEqual({ runId: run.id, moved: "fsn-2" });
+      expect(verbs.slice(2, 4)).toEqual(["declare_mirror@fsn-2(3,0,0)", "begin_round@fsn-2(4,0,0)"]);
+      expect(afterRounds(verbs)).toEqual([
+        "copy_image@fsn-1->fsn-2(web-fsn-1)",
+        "withdraw@fsn-1(5,0,0)", "freeze@fsn-1(6,0,0)",
+        "begin_round@fsn-2(7,0,0)", "start_receive@fsn-2(7,0,3)", "prune_mirror@fsn-2(7,0,4)",
+        "hand_over@fsn-1(8,0,0)", "accept_hand_off@fsn-2(9,0,0)",
+        "promote@fsn-2(10,0,0)", "promote@fsn-2(10,0,0)", "start_handed_container@fsn-2(11,0,0)", "close@fsn-1(12,0,0)",
+      ]);
+      const final = sent.find((request) => request.command === "start_receive" && request.payload.switch.pos.seq === 7);
+      expect(final?.payload).toMatchObject({ target: "f-1", base: "21", resume_token: null });
+      expect(sent.find((request) => request.command === "hand_over")?.payload).toMatchObject({ guid: "30" });
+      expect(sent.find((request) => request.command === "start_handed_container")?.payload)
+        .toMatchObject({ namespace: "shop-production", resolved_spec: { container: { pull_policy: "never" } } });
+      expect(machines.map((fake) => [fake.copy?.kind, fake.copy?.readonly, fake.copy?.newest?.guid])).toEqual([["slot", true, "30"], ["root", false, "30"]]);
+      expect(await rows()).toMatchObject([{ state: "done", message: null }]);
+    });
+
+    it("a refusal sent with onRefusal throw fails only the step, so the run can still undo", async () => {
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+      await harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1`, [run.id]);
+      failNext.set("hand_over@fsn-1", refused);
+
+      const failure = await runEffect(sendSwitch(context(run.id), "run-1", { id: idOf("fsn-1"), name: "fsn-1" }, () =>
+        ({ command: "hand_over", payload: { switch: { lease: 1, pos: { seq: 8, round: 0, sub: 0 }, not_after_unix_seconds: 1 }, name: dockerVolume, guid: "30" } }),
+      { onRefusal: "throw" })).then(() => null, (error: Error) => error);
+
+      expect(failure).toBeInstanceOf(NonRetriableError);
+      expect(failure?.message).toBe("data's copy on fsn-1 changed under this run");
+      expect(await rows()).toMatchObject([{ state: "running", message: null }]);
+    });
+
+    it("move: a refused HandOver thaws the source and clears the target's final", async () => {
+      failNext.set("hand_over@fsn-1", refused);
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeDefined();
+      expect(afterRounds(verbs).slice(-3)).toEqual(["hand_over@fsn-1(8,0,0)", "thaw@fsn-1(13,0,0)", "clear_final@fsn-2(14,0,0)"]);
+      expect(machines[0]?.copy).toMatchObject({ kind: "root", writer: { phase: "idle" }, readonly: false });
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data's copy on fsn-1 changed under this run" }]);
+    });
+
+    it("move: a refused Freeze undoes too, and a source already handed names the way forward", async () => {
+      failNext.set("freeze@fsn-1", refused);
+      failNext.set("thaw@fsn-1", refused);
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      await execute(run.id);
+
+      expect(afterRounds(verbs).slice(-2)).toEqual(["freeze@fsn-1(6,0,0)", "thaw@fsn-1(13,0,0)"]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: `data is handed to fsn-2; ${forward}` }]);
+    });
+
+    it("move: a newer lease during the freeze ends the run with no thaw", async () => {
+      failNext.set("freeze@fsn-1", { code: "failed_precondition", message: "stale", details: { reason: "stale_lease" } });
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      await execute(run.id);
+
+      expect(afterRounds(verbs).slice(-2)).toEqual(["withdraw@fsn-1(5,0,0)", "freeze@fsn-1(6,0,0)"]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "a newer run took data's lease; this run stopped" }]);
+    });
+
+    it("move: past HandOver a refusal never thaws, and names the way forward", async () => {
+      failNext.set("accept_hand_off@fsn-2", refused);
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      await execute(run.id);
+
+      expect(afterRounds(verbs).slice(-2)).toEqual(["hand_over@fsn-1(8,0,0)", "accept_hand_off@fsn-2(9,0,0)"]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: `data's copy on fsn-2 changed under this run; ${forward}` }]);
+    });
+
+    it("move: a refused Promote is past HandOver too", async () => {
+      failNext.set("promote@fsn-2", refused);
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      await execute(run.id);
+
+      expect(verbs.at(-1)).toBe("promote@fsn-2(10,0,0)");
+      expect(await rows()).toMatchObject([{ state: "failed", message: `data's copy on fsn-2 changed under this run; ${forward}` }]);
+    });
+
+    it("move again after Accept continues at Promote and never accepts on the target twice", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: sourceCopy("handed"), lease: null },
+        { name: "fsn-2", pool: true, copy: slotCopy("30", "handed_in"), lease: null },
+      ];
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeUndefined();
+      expect(ordered(verbs)).toEqual([
+        "adopt_lease@fsn-1", "adopt_lease@fsn-2", "copy_image@fsn-1->fsn-2(web-fsn-1)",
+        "promote@fsn-2(10,0,0)", "start_handed_container@fsn-2(11,0,0)", "close@fsn-1(12,0,0)",
+      ]);
+      expect(await rows()).toMatchObject([{ state: "done" }]);
+    });
+
+    it("move again on a frozen source whose final reached the mirror continues at HandOver", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: sourceCopy("frozen"), lease: null },
+        { name: "fsn-2", pool: true, copy: slotCopy("30"), lease: null },
+      ];
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      await execute(run.id);
+
+      expect(ordered(verbs)).toEqual([
+        "adopt_lease@fsn-1", "adopt_lease@fsn-2", "copy_image@fsn-1->fsn-2(web-fsn-1)", "hand_over@fsn-1(8,0,0)",
+        "accept_hand_off@fsn-2(9,0,0)", "promote@fsn-2(10,0,0)", "start_handed_container@fsn-2(11,0,0)", "close@fsn-1(12,0,0)",
+      ]);
+    });
+
+    it("move again on a stopping source undoes the earlier move and fails", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: sourceCopy("stopping"), lease: null },
+        { name: "fsn-2", pool: true, copy: slotCopy("21"), lease: null },
+      ];
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      await execute(run.id);
+
+      expect(ordered(verbs)).toEqual(["adopt_lease@fsn-1", "adopt_lease@fsn-2", "thaw@fsn-1(13,0,0)", "clear_final@fsn-2(14,0,0)"]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data's earlier move was undone; volume move data --to fsn-2 to move it" }]);
+    });
+
+    it("move needs exactly one Service container on the writer", async () => {
+      holders = [];
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      await execute(run.id);
+
+      expect(verbs).toEqual([]);
+      expect(await rows()).toMatchObject([{ state: "failed", lease: null, message: "data has no Service container on fsn-1; a move needs exactly one" }]);
+    });
+
+    it("release: thaws a frozen source and clears the final on its mirror", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: sourceCopy("frozen"), lease: null },
+        { name: "fsn-2", pool: true, copy: slotCopy("30"), lease: null },
+      ];
+      const run = await requested({ kind: "release", args: {} });
+
+      const output = await execute(run.id);
+
+      expect(output.result).toEqual({ runId: run.id, released: "fsn-1" });
+      expect(ordered(verbs)).toEqual(["adopt_lease@fsn-1", "adopt_lease@fsn-2", "thaw@fsn-1(13,0,0)", "clear_final@fsn-2(14,0,0)"]);
+      expect(machines[0]?.copy).toMatchObject({ writer: { phase: "idle" }, readonly: false });
+      expect(await rows()).toMatchObject([{ state: "done" }]);
+    });
+
+    it("release of an idle writer only takes the lease", async () => {
+      const run = await requested({ kind: "release", args: {} });
+
+      await execute(run.id);
+
+      expect(ordered(verbs)).toEqual(["adopt_lease@fsn-1", "adopt_lease@fsn-2"]);
       expect(await rows()).toMatchObject([{ state: "done" }]);
     });
   });
