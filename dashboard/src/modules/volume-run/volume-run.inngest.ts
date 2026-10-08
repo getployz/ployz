@@ -118,7 +118,12 @@ export async function runVolume(
   const spec = holder === null
     ? await step.run("02-spec", () => runEffect(findSpec(run, runId).pipe(Effect.map((found) => found.ok ? found.spec : null))))
     : { namespace: holder.namespace, redactedSpec: holder.redactedSpec };
-  const { lease } = await step.run("02-lease", () => runEffect(takeLease(run, runId, members, participantsOf(phase, members), spec)));
+  const taken = await step.run("02-lease", () => runEffect(takeLease(run, runId, members, participantsOf(phase, members), spec)));
+  if (!taken.ok) {
+    await step.run("02-refuse", () => runEffect(refuseRun(run, runId, taken.refusal)));
+    return { runId: run.id, refused: taken.refusal };
+  }
+  const { lease } = taken;
   const at = (pos: Pos) => (notAfter: number) => ({ lease, pos, not_after_unix_seconds: notAfter });
   const mirrorRequest = (pos: Pos) => (notAfter: number) => ({ switch: at(pos)(notAfter), name: run.dockerVolume });
   const verb = (id: string, effect: ReturnType<typeof sendSwitch>) => step.run(id, () => runEffect(effect.pipe(Effect.asVoid)));
@@ -211,7 +216,9 @@ async function restoreVolume({ step, runEffect, run, runId, input }: RestoreStep
   if (!found.ok) return refused(found.refusal);
   const { spec } = found;
   const from = phase.from.machine;
-  const { lease } = await step.run("02-lease", () => runEffect(takeLease(run, runId, members, participantsOf(phase, members), spec)));
+  const taken = await step.run("02-lease", () => runEffect(takeLease(run, runId, members, participantsOf(phase, members), spec)));
+  if (!taken.ok) return refused(taken.refusal);
+  const { lease } = taken;
   await step.run("03-restore", () => runEffect(sendSwitch(run, runId, from, (notAfter) => ({
     command: "restore",
     payload: {

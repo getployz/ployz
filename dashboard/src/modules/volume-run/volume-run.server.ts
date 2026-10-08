@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { ContainerId, CopyObservation, EnvironmentRef, MachineId, MachineName, SwitchError, VolumeSwitchReply, VolumeSwitchRequest } from "@ployz/sdk";
-import { and, desc, eq, inArray, isNotNull, isNull, lt, max, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, max, notExists, or, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import { readStore } from "#/modules/config-store/config-store.server";
@@ -478,19 +478,34 @@ export const takeLease = Effect.fn("VolumeRun.lease")(function* (
   const held = Math.max(0, ...answered.map((member) => member.view.lease?.lease ?? 0));
   const [recorded] = yield* drizzle.select({ lease: max(volumeRun.lease) }).from(volumeRun)
     .where(and(eq(volumeRun.volumeId, ctx.volumeId), sql`${volumeRun.id} <> ${ctx.id}`));
+  // A removal reads machine_ids, which a run only names from here; one that began or ended since the request beats the run.
+  const removing = (since: Date | typeof volumeRun.createdAt) => drizzle.select({ machineId: machineRemoveAttempt.machineId })
+    .from(machineRemoveAttempt).where(and(
+      eq(machineRemoveAttempt.organizationId, ctx.organizationId),
+      inArray(machineRemoveAttempt.machineId, [...participants]),
+      or(
+        inArray(machineRemoveAttempt.state, ["pending", "running"]),
+        and(eq(machineRemoveAttempt.state, "succeeded"), gte(machineRemoveAttempt.terminalAt, since)),
+      ),
+    ));
   yield* drizzle.update(volumeRun)
     .set({ lease: Math.max(held, recorded?.lease ?? 0) + 1, machineIds: [...participants], serviceSpec: spec ?? undefined, updatedAt: new Date() })
-    .where(and(eq(volumeRun.id, ctx.id), isNull(volumeRun.lease)));
+    .where(and(eq(volumeRun.id, ctx.id), isNull(volumeRun.lease), notExists(removing(volumeRun.createdAt))));
   const row = yield* readRow(ctx.id);
   const lease = row?.lease;
-  if (lease === null || lease === undefined) return yield* Effect.fail(new Error(`Volume run ${ctx.id} has no lease.`));
+  if (row === undefined || lease === null || lease === undefined) {
+    const [gone] = row === undefined ? [] : yield* removing(row.createdAt);
+    if (gone === undefined) return yield* Effect.fail(new Error(`Volume run ${ctx.id} has no lease.`));
+    const name = members.find((member) => member.machine.id === gone.machineId)?.machine.name ?? gone.machineId;
+    return { ok: false, refusal: { code: "server_removing", message: `${name} is being removed from the Cluster; run this again once the removal ends` } } as const;
+  }
   yield* Effect.forEach(pooled, (member) =>
     sendSwitch(ctx, inngestRunId, member.machine, (notAfter) => ({
       command: "adopt_lease",
       payload: { lease, not_after_unix_seconds: notAfter, name: ctx.dockerVolume },
     })), { concurrency: "unbounded", discard: true });
   const skipped = answered.filter((member) => !member.pool).map((member) => member.machine.name);
-  return { lease, skipped };
+  return { ok: true, lease, skipped } as const;
 });
 
 const CLOSED_BY = {

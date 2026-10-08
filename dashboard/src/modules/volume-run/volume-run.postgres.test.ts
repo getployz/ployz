@@ -628,6 +628,50 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "done", message: null }]);
     });
 
+    it("a Move whose target is being removed is refused before it takes a lease", async () => {
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+      await harness.pool.query(
+        `insert into machine_remove_attempt (organization_id, requested_by_user_id, machine_id, no_reset, confirm_data_loss, state)
+         values ($1, $2, $3, true, '[]', 'pending')`,
+        [organizationId, userId, idOf("fsn-2")],
+      );
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeUndefined();
+      expect(output.result).toMatchObject({ runId: run.id, refused: { code: "server_removing" } });
+      expect(verbs).toEqual([]);
+      expect(await rows()).toMatchObject([{ state: "failed", lease: null, message: "fsn-2 is being removed from the Cluster; run this again once the removal ends" }]);
+    });
+
+    it("a Move whose target was removed after the request is refused before it takes a lease", async () => {
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+      await harness.pool.query(
+        `insert into machine_remove_attempt (organization_id, requested_by_user_id, machine_id, no_reset, confirm_data_loss, state, inngest_run_id, started_at, terminal_at)
+         values ($1, $2, $3, true, '[]', 'succeeded', 'remove-1', now(), now())`,
+        [organizationId, userId, idOf("fsn-2")],
+      );
+
+      const output = await execute(run.id);
+
+      expect(output.result).toMatchObject({ runId: run.id, refused: { code: "server_removing" } });
+      expect(verbs).toEqual([]);
+      expect(await rows()).toMatchObject([{ state: "failed", lease: null }]);
+    });
+
+    it("a removal that ended before the request does not block the Move", async () => {
+      await harness.pool.query(
+        `insert into machine_remove_attempt (organization_id, requested_by_user_id, machine_id, no_reset, confirm_data_loss, state, inngest_run_id, started_at, terminal_at)
+         values ($1, $2, $3, true, '[]', 'succeeded', 'remove-1', now() - interval '1 hour', now() - interval '1 hour')`,
+        [organizationId, userId, idOf("fsn-2")],
+      );
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.result).toEqual({ runId: run.id, moved: "fsn-2" });
+    });
+
     it("move: a Container step the Machine still works on is asked again, and the run ends done", async () => {
       failNext.set("freeze@fsn-1", busy);
       failNext.set("start_handed_container@fsn-2", busy);

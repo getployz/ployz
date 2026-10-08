@@ -15,7 +15,8 @@ export type RefusalCode =
   | "no_mirror"
   | "no_copy"
   | "another_copy"
-  | "confirm_required";
+  | "confirm_required"
+  | "server_removing";
 
 /** Where a Move continues from the copies it finds; every step after `handover` is past the point of no return. */
 export type MoveStart = "rounds" | "handover" | "accept" | "promote" | "start" | "close" | "undo";
