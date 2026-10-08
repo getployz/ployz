@@ -714,26 +714,26 @@ fn only_a_writer_copy_pins_a_provisioned_volume() {
 }
 
 #[test]
-fn a_provisioned_volume_without_a_writer_refuses_and_names_the_restore_line() {
+fn a_provisioned_volume_without_a_writer_refuses_and_names_the_way_back() {
     let intent = automatic_provisioned_intent();
     for (case, copies, rows, needle) in [
         (
             "a slot alone",
             vec![('2', CopyRole::Slot)],
             vec![],
-            "Volume data has no writer; it is held as second (copy). Make one the writer: ployz volume restore data --from second",
+            "Volume data has no writer; second holds its only copy. Make it the writer: ployz volume restore data --from second",
         ),
         (
             "a switching root",
             vec![('1', CopyRole::Switching)],
             vec![provisioned_row('1')],
-            "first (switching)",
+            "Volume data is mid-Move; it is held as first (switching). Wait for the Move to finish, or run ployz volume release data",
         ),
         (
             "slots on both",
             vec![('1', CopyRole::Slot), ('2', CopyRole::Slot)],
             vec![],
-            "first (copy), second (copy)",
+            "Restore needs a single copy: remove the others with ployz volume mirror rm data-second first, then run ployz volume restore data --from first",
         ),
     ] {
         let error = preview_deploy(&intent, &copies_snapshot(&copies, rows)).unwrap_err();
@@ -777,7 +777,7 @@ fn a_cloud_volume_without_a_writer_is_named_as_authored() {
     assert!(matches!(error, PlanError::NoWriter { .. }), "{error}");
     assert_eq!(
         error.to_string(),
-        "Volume echo has no writer; it is held as first (switching). Make one the writer: ployz volume restore echo --from first"
+        "Volume echo is mid-Move; it is held as first (switching). Wait for the Move to finish, or run ployz volume release echo"
     );
 }
 
