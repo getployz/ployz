@@ -157,4 +157,5 @@ export type MachineRemoveCompletion =
 
 export type RemoveMachineOutcome =
   | { kind: "removed"; resetWarning: string | null }
+  | { kind: "volume_run_open"; message: string }
   | { kind: "missing_identities"; identities: DataLossIdentity[] };

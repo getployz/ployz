@@ -19,7 +19,13 @@ import {
   dispatchMachineRemoveRequested,
   failOwnedMachineRemoveAttemptActivity,
   prepareMachineRemoveAttemptActivity,
+  removeMachineActivity,
+  startMachineRemove,
 } from "#/modules/machines/machine-removal.server";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { openRunNaming } from "#/modules/volume-run/volume-run.server";
+import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
+import type { MachineId } from "@ployz/sdk";
 import { requestMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import { Conflict } from "#/server/public-error";
 import type { Inngest } from "inngest";
@@ -231,5 +237,61 @@ describe("machine removal durable ownership", () => {
         inngest_run_id: "run-cancel",
       },
     ]);
+  });
+
+  describe("the removal barrier", () => {
+    const named = "dddddddddddddddddddddddddddddddd";
+    const openRun = (state: string, machineIds: string[]) => harness.pool.query(
+      `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state, machine_ids)
+       values ($1, 'env-1', 'vol1', 'data', 'shop_vol-vol1', 'move', '{"to":"fsn-2"}', $2, $3)`,
+      [organizationId, state, machineIds],
+    );
+    const waiting = "data's move uses this Server; wait for it to end, or volume release data";
+    const unreachable = asTestDouble<Inngest>()({
+      send: async () => {
+        throw new Error("a refused removal sends no event");
+      },
+    });
+
+    it("server rm is refused while an open run names the Server, and records no attempt", async () => {
+      await openRun("running", ["eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", named]);
+
+      const exit = await runEffect(startMachineRemove({ organizationId, requestedByUserId: userId, machineId: named, confirmDataLoss: [] }).pipe(
+        Effect.provideService(InngestClient, unreachable),
+        Effect.exit,
+      ));
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        const failure = Cause.findErrorOption(exit.cause);
+        expect(Option.isSome(failure) && failure.value instanceof Conflict && failure.value.message).toBe(waiting);
+      }
+      expect((await harness.pool.query("select id from machine_remove_attempt")).rowCount).toBe(0);
+    });
+
+    it("the removal re-checks before it acts, so a run that took the Server after the request still holds it", async () => {
+      await openRun("requested", [named]);
+
+      const outcome = await runEffect(removeMachineActivity({ organizationId, machineId: named, confirmDataLoss: [], noReset: true }).pipe(
+        Effect.provideService(OrganizationRuntime, asTestDouble<typeof OrganizationRuntime.Service>()({
+          open: () => Effect.die("a refused removal opens no session"),
+        })),
+        Effect.provideService(SecretEncryption, makeSecretEncryption("test-app-encryption-secret-1234567890")),
+        Effect.scoped,
+      ));
+
+      expect(outcome).toEqual({ kind: "volume_run_open", message: waiting });
+    });
+
+    it("an ended run, a run on other Servers, and another Organization's run leave the Server free", async () => {
+      await openRun("done", [named]);
+      await openRun("running", ["eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"]);
+
+      const free = await runEffect(openRunNaming(organizationId, named as MachineId));
+      const elsewhere = await runEffect(openRunNaming("00000000-0000-4000-8000-000000000599", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" as MachineId));
+
+      expect(free).toBeNull();
+      expect(elsewhere).toBeNull();
+    });
   });
 });
