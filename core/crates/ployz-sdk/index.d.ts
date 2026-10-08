@@ -107,7 +107,8 @@ export type VolumeSwitchRequest =
   | { command: "accept_hand_off"; payload: HandOverRequest }
   | { command: "promote"; payload: ServiceVolumeRequest }
   | { command: "start_handed_container"; payload: ServiceVolumeRequest }
-  | { command: "clear_final"; payload: MirrorRequest };
+  | { command: "clear_final"; payload: MirrorRequest }
+  | { command: "restore"; payload: ServiceVolumeRequest };
 
 /** The reply payload of one Volume run verb. */
 export type VolumeSwitchReply<C extends VolumeSwitchRequest["command"]> =
