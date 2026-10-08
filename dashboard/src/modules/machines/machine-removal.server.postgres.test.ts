@@ -27,7 +27,7 @@ import { openRunNaming } from "#/modules/volume-run/volume-run.server";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import type { MachineId } from "@ployz/sdk";
 import { requestMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
-import { Conflict } from "#/server/public-error";
+import { Conflict, encodePublicError } from "#/server/public-error";
 import type { Inngest } from "inngest";
 
 const organizationId = "00000000-0000-4000-8000-000000000501";
@@ -265,6 +265,7 @@ describe("machine removal durable ownership", () => {
       if (Exit.isFailure(exit)) {
         const failure = Cause.findErrorOption(exit.cause);
         expect(Option.isSome(failure) && failure.value instanceof Conflict && failure.value.message).toBe(waiting);
+        expect(Option.isSome(failure) && encodePublicError(failure.value)).toMatchObject({ code: "CONFLICT", message: waiting });
       }
       expect((await harness.pool.query("select id from machine_remove_attempt")).rowCount).toBe(0);
     });

@@ -275,7 +275,7 @@ export const enqueueMachineRemove = Effect.fn("MachineRemoval.enqueue")(
 export const startMachineRemove = Effect.fn("MachineRemoval.start")(
   function* (input: Parameters<typeof requestMachineRemoveAttempt>[0]) {
     const open = yield* openRunNaming(input.organizationId, asMachineId(input.machineId));
-    if (open !== null) return yield* new Conflict({ message: open });
+    if (open !== null) return yield* new Conflict({ message: open, userFacing: true });
     const requested = yield* requestMachineRemoveAttempt(input);
     yield* dispatchMachineRemoveRequested(requested.id);
     return requested;
