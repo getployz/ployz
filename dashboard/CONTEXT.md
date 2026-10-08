@@ -220,6 +220,10 @@ _Avoid_: Build log line, vertex, build stage (a Cloud Deployment Stage is not a 
 A built-in shortcut that creates an ordinary image Service, its Volume, and its variables for a common database (PostgreSQL, Redis, MongoDB, MySQL), mirroring Railway's templates. Nothing records the preset afterwards; the result is edited, deployed, and removed like any other Service.
 _Avoid_: Database (as a resource kind), template, add-on
 
+**Approval**:
+A human's yes or no to one destructive Publish or Deploy from the CLI, recorded by Cloud while the Organization's "Ask before destructive actions" setting is on (the default). It names the Store's digest of exactly what the plan destroys; once the Environment's Working State moves on, a pending Approval is superseded and the command asks again. Dashboard writes and Settings edits never ask. It stops a cooperative agent, not a hostile one: whoever holds the credential can approve.
+_Avoid_: Confirmation, permission, approval memory
+
 Git repository identity and access are separate. Cloud can read a public GitHub repository anonymously or use an Organization member's connected GitHub App installation. Public access never falls back to installation credentials. Both paths pin a commit per Deployment and materialize it through the same source acquisition module. Automatic Git deployment and CI gating require installation access; public sources deploy manually.
 
 Cloud infers deployment ordering from bound Service variable references in the frozen Attempt Target. A Config's references count as references of every Service that mounts it. Dependencies complete normal startup monitoring before dependent hooks and containers; explicitly configured HTTP health checks also gate unchanged dependencies. Edges within reference cycles are ignored, while dependencies entering or leaving those cycles remain. Literal text, self references, and references to empty Services do not impose ordering.

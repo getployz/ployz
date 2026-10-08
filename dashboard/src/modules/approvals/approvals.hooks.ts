@@ -3,8 +3,8 @@ import { useLoaderData } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { getOrganizationSettingsCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { organizationSettings } from "./approvals";
-import { setOrganizationSettingsServerFn } from "./approvals.functions";
+import { organizationSettings } from "#/modules/approvals/approvals";
+import { setOrganizationSettingsServerFn } from "#/modules/approvals/approvals.functions";
 
 /** "Ask before destructive actions": a change shows at once, saves in the background, and rolls back with a toast. */
 export function useAskBeforeDestructive(organizationSlug: string) {

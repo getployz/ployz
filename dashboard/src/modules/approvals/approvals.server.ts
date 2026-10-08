@@ -139,7 +139,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
   }
   const { approval: digest, diff } = decoded.value;
   // SAFETY: the Store words the refusal's `effects` and `diff` as `DestructiveEffect[]` and `DiffView`.
-  const { effects, diff: review } = refused.details as unknown as ApprovalReview;
+  const { effects, diff: review } = refused.details as ApprovalReview;
   const organizationId = caller.organization.id;
   const { drizzle } = yield* Database;
   const [inserted] = yield* drizzle.insert(operationApprovals).values({
@@ -168,7 +168,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
       ne(operationApprovals.digest, digest),
     ));
   if (pending === undefined) return refused;
-  return { ...refused, details: { effects, approval: digest, diff: review, approval_id: pending.id } } as StoreRefusal;
+  return { ...refused, details: { effects, approval: digest, diff: review, approval_id: pending.id } };
 });
 
 /** One approval in the caller's Organization, superseded first if its Environment moved on. */

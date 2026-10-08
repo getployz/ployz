@@ -236,6 +236,7 @@ describe("every Org Store collection reads its changes from the Organization cha
     await sql("insert into organization_cluster_domain (organization_id, endpoint, name, encrypted_token, reserved_at, lease_renewed_at) values ($1, 'https://dns.example.test/', 'acme.ployz.test', '{}', now(), now())",
       [organizationId]);
     await sql("insert into organization_server_upgrades (organization_id, automatic) values ($1, false)", [organizationId]);
+    await sql("insert into organization_settings (organization_id, ask_before_destructive) values ($1, false)", [organizationId]);
   }, 60_000);
 
   afterAll(async () => {
