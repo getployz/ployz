@@ -72,6 +72,8 @@ const ON_DEMAND_READS = {
   githubBranchesQueryOptions: "depends on the repository the user just picked",
   githubBuildRepositoriesQueryOptions: "calls GitHub per repository; Organization Settings › Builds fills it in after hydration",
   strayNamespacesQueryOptions: "asks about the Namespaces the Servers report live, known only once the Runtime Watch answers",
+  pendingApprovalsOptions: "polled by the agent sidebar, which every Organization page mounts; no page owns it",
+  approvalOptions: "named by an agent conversation's interrupt, known only once the chat hydrates",
 };
 
 /** Hook files outside data files that await the server without making UI wait on it. */

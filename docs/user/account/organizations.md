@@ -47,6 +47,8 @@ How you answer depends on where the command runs:
   is the same command with `--approval ID`. Run that once the approval is approved.
 - In an agent that uses `ployz mcp`, the agent's app asks you. See
   [Give the agent Ployz tools](../cli/overview.md#give-the-agent-ployz-tools).
+- In the [Ployz agent](agent-sidebar.md) in the dashboard, you approve or deny right in its
+  panel, and the agent waits for you.
 
 - `ployz publish` and `ployz deploy` ask only when the change removes something that's running.
   Rolling out a new image or changing variables never asks.

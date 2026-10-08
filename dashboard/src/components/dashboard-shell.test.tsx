@@ -223,3 +223,11 @@ it("resets its persistent scroll surface when navigating to a different environm
   expect(container.querySelector(scrollSelector)).toBe(surface);
   await waitFor(() => expect(surface.scrollTop).toBe(0));
 });
+
+it("keeps the agent collapsed to a tab beside the canvas, outside the page", async () => {
+  await show({ path: "/cloud/acme/store/production" });
+  expect(await screen.findByText("Canvas nodes")).toBeTruthy();
+  const tab = screen.getByRole("button", { name: "Open agent" });
+  expect(screen.getByRole("main").contains(tab)).toBe(false);
+  expect(screen.queryByRole("region", { name: "Ployz agent" })).toBeNull();
+});

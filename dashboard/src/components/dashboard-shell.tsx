@@ -3,6 +3,7 @@ import { useQueryErrorResetBoundary } from "@tanstack/react-query";
 import { CatchBoundary, Link, type ErrorComponentProps } from "@tanstack/react-router";
 import { useOrgStoreGate } from "#/collections/org-store";
 import { useCollectionScope } from "#/collections/use-collection-scope";
+import { AgentSidebar } from "./agent-sidebar/agent-sidebar";
 import { getDashboardDestination, getDashboardSectionLabel, type DashboardScope } from "./dashboard-navigation-model";
 import { HomeLink, PhoneSections, PhoneTabBar, Rail } from "./dashboard-rail";
 import { Crumbs, EnvironmentCrumbs } from "./environment-breadcrumbs";
@@ -28,7 +29,7 @@ export function DashboardShell({
   // The top bar names the place, so Billing, a section of Organization, reads Organization like its siblings.
   const placeLabel = places.find((place) => place.current)?.label ?? getDashboardSectionLabel(section);
   return (
-    <div className="flex h-dvh min-h-0 overflow-hidden">
+    <div className="relative flex h-dvh min-h-0 overflow-hidden">
       <Rail organizationSlug={scope.organizationSlug} places={places} organization={organization} narrow={canvas}
         account={<DashboardAccountMenu scope={scope} side="right" variant={canvas ? "avatar" : "row"} />} />
       <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
@@ -69,6 +70,7 @@ export function DashboardShell({
         </div>
         <PhoneTabBar places={places} />
       </main>
+      <AgentSidebar scope={scope} collectionScope={collectionScope} canvas={canvas} />
     </div>
   );
 }
