@@ -2,7 +2,7 @@
 //! refuses until a human approved exactly that set. Cloud says whether a human must
 //! approve; the Store never takes the caller's word for it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::RpcError;
 use ployz_core::config::SavedEnvironmentIntent;
@@ -12,7 +12,7 @@ use ts_rs::TS;
 
 use crate::error;
 use crate::id::{ApprovalDigest, EnvironmentId, Hostname};
-use crate::review::Review;
+use crate::review::{Head, Review};
 use crate::{Actor, Approval};
 
 /// One thing a publication destroys, by the node it changes and the row.
@@ -60,13 +60,60 @@ impl DestructiveEffect {
     }
 }
 
+/// What runs, or will once the Deployment in flight applies: Applied State plus each
+/// node, route, generated domain and mount `head.intent` puts in place. Applied State
+/// names what both hold.
+pub(crate) fn deployed(head: &Head) -> SavedEnvironmentIntent {
+    let mut deployed = head.applied.clone();
+    add_missing(&mut deployed.volumes, &head.intent.volumes, |volume| {
+        &volume.resource_id
+    });
+    for service in &head.intent.services {
+        let Some(running) = deployed
+            .services
+            .iter_mut()
+            .find(|running| running.id == service.id)
+        else {
+            deployed.services.push(service.clone());
+            continue;
+        };
+        let (into, from) = (&mut running.config, &service.config);
+        add_missing(&mut into.routes, &from.routes, |route| &route.hostname);
+        add_missing(
+            &mut into.managed_hostnames,
+            &from.managed_hostnames,
+            |managed| &managed.prefix,
+        );
+        add_missing(
+            &mut running.volume_attachments,
+            &service.volume_attachments,
+            |attachment| &attachment.volume_resource_id,
+        );
+    }
+    deployed
+}
+
+fn add_missing<T: Clone, K: PartialEq + ?Sized>(
+    into: &mut Vec<T>,
+    from: &[T],
+    key: impl Fn(&T) -> &K,
+) {
+    for item in from {
+        if into.iter().all(|held| key(held) != key(item)) {
+            into.push(item.clone());
+        }
+    }
+}
+
+/// What publishing `target` destroys of what is `running`, naming each generated domain
+/// under its node's Cluster Domain in `cluster_domains`.
 pub(crate) fn destructive_effects(
-    applied: &SavedEnvironmentIntent,
+    running: &SavedEnvironmentIntent,
     target: &SavedEnvironmentIntent,
-    cluster_domain: Option<&Hostname>,
+    cluster_domains: &BTreeMap<String, Hostname>,
 ) -> BTreeSet<DestructiveEffect> {
     let mut effects = BTreeSet::new();
-    for volume in &applied.volumes {
+    for volume in &running.volumes {
         if target
             .volumes
             .iter()
@@ -80,7 +127,7 @@ pub(crate) fn destructive_effects(
             });
         }
     }
-    for deployed in &applied.services {
+    for deployed in &running.services {
         let effect = |kind, name: &str, path: String| DestructiveEffect {
             kind,
             name: name.to_owned(),
@@ -136,7 +183,8 @@ pub(crate) fn destructive_effects(
                 .all(|kept| kept.prefix != managed.prefix)
             {
                 let prefix = &managed.prefix;
-                let hostname = cluster_domain
+                let hostname = cluster_domains
+                    .get(&deployed.id)
                     .map_or_else(|| prefix.clone(), |cluster| format!("{prefix}.{cluster}"));
                 let path = format!("{slug}.managedHostnames");
                 effects.insert(effect(DestructiveKind::RemovesDomain, &hostname, path));

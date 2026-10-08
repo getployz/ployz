@@ -16,7 +16,7 @@ use ployz_store::{
     DeleteConfig, Deploy, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery,
     DetachConfig, DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentRef,
     NamespaceQuery, NodeStatus, OrganizationId, PlanQuery, Principal, ProjectId, ProjectName,
-    PutConfigFile, Query, RemoveService, RenameConfig, RenameService, Retry, Revision, RowPhase,
+    Publish, PutConfigFile, Query, RemoveService, RenameConfig, RenameService, Retry, Revision, RowPhase,
     RowState, RowTracker, RunEvidence, RunnerId, ServerRow, ServiceLineageId, ServiceQuery,
     ServicesQuery, SettingPath, Start, Trusted, UploadBase, UploadedSource, View, Written,
 };
@@ -3057,4 +3057,42 @@ fn deploying_or_retrying_saved_state_asks_nothing_again() {
             },
         )
         .unwrap();
+}
+
+#[test]
+fn removing_a_service_the_deployment_in_flight_creates_asks() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    remove_web(&store, &who);
+    let publish = Publish {
+        environment: EnvironmentRef::default(),
+        version: None,
+        accept_volume_loss: Vec::new(),
+    };
+    let asking = Trusted {
+        approval: Approval::Required,
+        ..Trusted::default()
+    };
+    let refused = store.write_trusted(&who, &publish, &asking).unwrap_err();
+    let asked: Vec<_> = refused.details["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|effect| (effect["kind"].clone(), effect["name"].clone()))
+        .collect();
+    assert_eq!(asked, [(json!("removes_service"), json!("web"))]);
+    let approving = Trusted {
+        approval: approved(&refused),
+        ..Trusted::default()
+    };
+    store.write_trusted(&who, &publish, &approving).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    deploy_as(&store, &who, 2, Approval::Required).unwrap();
 }
