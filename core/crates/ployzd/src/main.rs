@@ -61,6 +61,11 @@ enum Command {
     DialStdio,
     /// Serve the Docker Volume plugin on its systemd socket.
     VolumePlugin,
+    /// Hold the log files of Ployz containers in the Log Store.
+    Observe {
+        #[command(subcommand)]
+        command: Option<ObserveCommand>,
+    },
     /// Execute one accepted Machine upgrade from its transient systemd service.
     #[command(hide = true)]
     UpgradeWorker {
@@ -84,6 +89,16 @@ enum Command {
         /// Add this existing operator to the Ployz service group during host preparation.
         #[arg(long, value_name = "USER")]
         group_user: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ObserveCommand {
+    /// Print Log Store or Docker `local` log files as `docker logs -t` does.
+    #[command(hide = true)]
+    Decode {
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
     },
 }
 
@@ -125,6 +140,12 @@ async fn run(args: Args) -> Result<(), Error> {
     if matches!(args.command, Some(Command::Version)) {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
+    }
+    if let Some(Command::Observe {
+        command: Some(ObserveCommand::Decode { paths }),
+    }) = &args.command
+    {
+        return ployzd::observe::decode(paths).map_err(Error::from);
     }
     if matches!(args.command, Some(Command::DialStdio)) {
         return dial_stdio(&args.socket).await.map_err(Error::from);
@@ -168,6 +189,9 @@ async fn run(args: Args) -> Result<(), Error> {
     }
     diag::init(args.log_level.as_deref())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    if matches!(args.command, Some(Command::Observe { command: None })) {
+        return ployzd::observe::run(&run_dir).await.map_err(Error::from);
+    }
     if matches!(args.command, Some(Command::VolumePlugin)) {
         let listener = volume_plugin::inherited_listener()?;
         return volume_plugin::run(listener, &args.data_dir, &run_dir)
