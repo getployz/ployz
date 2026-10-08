@@ -3,6 +3,7 @@ import { bigint, boolean, check, index, jsonb, pgTable, text, timestamp, uniqueI
 import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
+import type { ServiceSpec } from "#/modules/volume-run/volume-run";
 import {
   type AnyVolumeRunArgs,
   VOLUME_RUN_KINDS,
@@ -31,6 +32,8 @@ export const volumeRun = pgTable(
     lease: bigint("lease", { mode: "number" }),
     /** The Machines the run acts on, set with its lease; `server rm` waits while an open run names one. */
     machineIds: text("machine_ids").array().default(sql`'{}'::text[]`).notNull(),
+    /** The Service spec seen when the run took its lease; Restore reads it once that Service's Server is gone. */
+    serviceSpec: jsonb("service_spec").$type<ServiceSpec>(),
     inngestRunId: text("inngest_run_id"),
     requestedByUserId: uuid("requested_by_user_id").references(() => user.id, { onDelete: "set null" }),
     message: text("message"),

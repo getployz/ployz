@@ -1,4 +1,4 @@
-import type { MachineId, MachineName, VolumeCopyView } from "@ployz/sdk";
+import type { MachineId, MachineName, Namespace, ResolvedServiceSpec, VolumeCopyView } from "@ployz/sdk";
 
 export const VOLUME_RUN_STATES = ["requested", "running", "done", "failed", "cancelled", "lost", "not_started"] as const;
 export type VolumeRunState = (typeof VOLUME_RUN_STATES)[number];
@@ -71,3 +71,6 @@ export function parseDockerVolumeName(name: string): { namespace: string; volume
   const volumeId = name.slice(at + "_vol-".length);
   return volumeId.length === 0 ? null : { namespace: name.slice(0, at), volumeId };
 }
+
+/** A Service that mounts the Volume, as a Service container reports it with its secrets redacted. */
+export type ServiceSpec = { readonly namespace: Namespace; readonly redactedSpec: ResolvedServiceSpec };

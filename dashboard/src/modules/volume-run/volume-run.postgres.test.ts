@@ -883,6 +883,24 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "failed" }]);
     });
 
+    it("a Restore after the Service's Server is gone takes the spec the Mirror saw", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: writerCopy("11"), lease: null },
+        { name: "fsn-2", pool: true, copy: null, lease: null },
+      ];
+      const mirror = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+      expect((await execute(mirror.id, "run-mirror")).error).toBeUndefined();
+      holders = [];
+      machines = [{ name: "fsn-2", pool: true, copy: slotCopy("11"), lease: null }];
+      const run = await requested({ kind: "restore", args: { from: "fsn-2" } });
+
+      const output = await execute(run.id, "run-restore");
+
+      expect(output.error).toBeUndefined();
+      expect(restoreSent()?.payload).toMatchObject({ name: dockerVolume, namespace: "shop-production", resolved_spec: { name: "web" } });
+      expect(await rows()).toMatchObject([{ kind: "mirror", state: "done" }, { kind: "restore", state: "done" }]);
+    });
+
     it("a Restore with no Service container mounting the Volume is refused before the lease", async () => {
       holders = [];
       const run = await requested({ kind: "restore", args: { from: "fsn-2" } });

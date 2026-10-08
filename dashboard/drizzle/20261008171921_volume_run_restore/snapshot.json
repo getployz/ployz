@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "1f1f68ca-ed6d-4132-be05-29d15241bfae",
+  "id": "3adbfa31-a2ab-43d0-a603-e1701dc11657",
   "prevIds": [
     "ff9436c3-c43d-4abe-a540-30c3a87f9015"
   ],
@@ -3254,6 +3254,19 @@
       "generated": null,
       "identity": null,
       "name": "machine_ids",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "volume_run"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "service_spec",
       "entityType": "columns",
       "schema": "public",
       "table": "volume_run"
