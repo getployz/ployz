@@ -236,7 +236,7 @@ async fn a_plain_deploy_mounts_only_on_the_writer() {
             "slot elsewhere",
             nothing.clone(),
             Some(("slot", true)),
-            Some("ployz volume restore app_data --from fsn-2"),
+            Some("ployz volume restore data --from fsn-2"),
         ),
         (
             "slot on a Machine the Cluster no longer lists",
@@ -248,7 +248,7 @@ async fn a_plain_deploy_mounts_only_on_the_writer() {
             "writer elsewhere",
             nothing,
             Some(("writer", true)),
-            Some("Volume app_data's writer is on fsn-2, so this Machine cannot mount it"),
+            Some("Volume data's writer is on fsn-2, so this Machine cannot mount it"),
         ),
         ("slot held", slot, None, Some("no writer")),
         ("open record", root("idle", "open"), None, Some("mid-run")),
