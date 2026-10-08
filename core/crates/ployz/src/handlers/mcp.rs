@@ -15,8 +15,10 @@ use rmcp::model::{
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt};
+use rustix::process::{Pid, Signal, kill_process_group, setsid};
 use serde_json::{Map, Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::signal::unix::{SignalKind, signal};
 
 use super::catalog::{self, Approval, ArgEntry, ArgType, CommandEntry, Stdin, Surface};
 use super::{Error, leaf_matches};
@@ -48,16 +50,32 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
         })
         .collect();
     let server = Server::new(std::env::current_exe()?, globals);
-    super::runtime()?.block_on(async {
-        server
+    // With no controlling terminal, SSH that wants a password fails at once instead of
+    // prompting on the user's terminal. A server that already leads a process group keeps its
+    // terminal, and its calls still run in background groups that cannot read it.
+    let _ = setsid();
+    let runtime = super::runtime()?;
+    let served = runtime.block_on(async {
+        let mut terminate = signal(SignalKind::terminate())?;
+        let mut interrupt = signal(SignalKind::interrupt())?;
+        let mut hangup = signal(SignalKind::hangup())?;
+        let running = server
             .serve(rmcp::transport::stdio())
             .await
-            .map_err(Failure::command)?
-            .waiting()
-            .await
             .map_err(Failure::command)?;
+        tokio::select! {
+            quit = running.waiting() => {
+                quit.map_err(Failure::command)?;
+            }
+            _ = terminate.recv() => {}
+            _ = interrupt.recv() => {}
+            _ = hangup.recv() => {}
+        }
         Ok(())
-    })
+    });
+    // After a signal, a thread is still blocked reading stdin; exit without waiting for it.
+    runtime.shutdown_background();
+    served
 }
 
 struct Server {
@@ -98,8 +116,8 @@ impl ServerHandler for Server {
             .with_instructions(format!(
                 "Each tool runs one `ployz` command with --json and returns its JSON result. \
                  Tools marked destructive can remove live things. A call still running after \
-                 {} minutes is stopped; its error names the tool that shows what it left running.",
-                self.deadline.as_secs() / 60
+                 {} is stopped; its error names the tool that shows what it left running.",
+                span(self.deadline)
             ))
     }
 
@@ -124,16 +142,19 @@ impl ServerHandler for Server {
             McpError::invalid_params(format!("no tool named {}", request.name), None)
         })?;
         let argv = argv(entry, &self.globals, request.arguments.unwrap_or_default())?;
-        let mut child = tokio::process::Command::new(&self.exe)
-            .args(&argv)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
-        let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
-        let finished = async { tokio::join!(child.wait(), capture(stdout), capture(stderr)) };
+        let mut child = KillGroupOnDrop(
+            tokio::process::Command::new(&self.exe)
+                .args(&argv)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .process_group(0)
+                .kill_on_drop(true)
+                .spawn()
+                .map_err(|error| McpError::internal_error(error.to_string(), None))?,
+        );
+        let (stdout, stderr) = (child.0.stdout.take(), child.0.stderr.take());
+        let finished = async { tokio::join!(child.0.wait(), capture(stdout), capture(stderr)) };
         let (status, stdout, stderr) = tokio::select! {
             (status, stdout, stderr) = finished => (
                 status.map_err(|error| McpError::internal_error(error.to_string(), None))?,
@@ -156,6 +177,21 @@ impl ServerHandler for Server {
             CallToolResult::error(content)
         }
         .into())
+    }
+}
+
+struct KillGroupOnDrop(tokio::process::Child);
+
+impl Drop for KillGroupOnDrop {
+    fn drop(&mut self) {
+        if let Some(group) = self
+            .0
+            .id()
+            .and_then(|pid| i32::try_from(pid).ok())
+            .and_then(Pid::from_raw)
+        {
+            let _ = kill_process_group(group, Signal::KILL);
+        }
     }
 }
 
@@ -188,11 +224,19 @@ fn overdue(entry: &CommandEntry, deadline: Duration) -> String {
         _ => "status",
     };
     format!(
-        "ployz mcp stopped `ployz {}` after {deadline:?}. What it started may still be running; \
+        "ployz mcp stopped `ployz {}` after {}. What it started may still be running; \
          check with the `{}` tool (`ployz {status}`).",
         entry.command,
+        span(deadline),
         tool_name(status),
     )
+}
+
+fn span(deadline: Duration) -> String {
+    match deadline.as_secs() {
+        secs if secs % 60 == 0 => format!("{} minutes", secs / 60),
+        secs => format!("{secs} seconds"),
+    }
 }
 
 fn exposed(surface: Surface) -> bool {
@@ -666,7 +710,7 @@ mod tests {
              case \"$1\" in\n\
              server) echo \"no such server\" >&2; exit 3 ;;\n\
              logs) head -c 3000000 /dev/zero | tr '\\0' a; exit 0 ;;\n\
-             deployment) echo $$ > \"$(dirname \"$0\")/pid\"; exec sleep 60 ;;\n\
+             deployment) sleep 60 & echo $$ $! > \"$(dirname \"$0\")/pids\"; wait ;;\n\
              esac\n\
              echo \"$*\"\n",
         )
@@ -718,21 +762,26 @@ mod tests {
         assert_eq!(flooded.find('\n'), Some(OUTPUT_LIMIT));
     }
 
-    async fn child_pid(dir: &std::path::Path) -> String {
-        let path = dir.join("pid");
+    async fn call_pids(dir: &std::path::Path) -> Vec<String> {
+        let path = dir.join("pids");
         for _ in 0..500 {
-            if let Ok(pid) = std::fs::read_to_string(&path)
-                && pid.ends_with('\n')
+            if let Ok(pids) = std::fs::read_to_string(&path)
+                && pids.ends_with('\n')
             {
-                return pid.trim().to_owned();
+                return pids.split_whitespace().map(str::to_owned).collect();
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("the child never started");
     }
 
-    /// Gone, or a zombie waiting to be reaped: either way it runs no more.
-    async fn assert_killed(pid: &str) {
+    async fn assert_killed(pids: &[String]) {
+        for pid in pids {
+            assert_gone(pid).await;
+        }
+    }
+
+    async fn assert_gone(pid: &str) {
         for _ in 0..500 {
             match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
                 Err(_) => return,
@@ -747,7 +796,7 @@ mod tests {
                 Ok(_) => tokio::time::sleep(Duration::from_millis(10)).await,
             }
         }
-        panic!("child {pid} is still running");
+        panic!("process {pid} is still running");
     }
 
     fn deployment_start() -> Value {
@@ -760,7 +809,7 @@ mod tests {
 
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     #[tokio::test]
-    async fn a_call_past_the_deadline_is_killed_and_names_where_to_check() {
+    async fn a_call_past_the_deadline_is_killed_with_its_children_and_names_where_to_check() {
         let dir = tempfile::tempdir().unwrap();
         let mut server = Server::new(fake_ployz(dir.path()), Vec::new());
         server.deadline = Duration::from_secs(2);
@@ -771,15 +820,15 @@ mod tests {
         assert_eq!(overdue["isError"], true, "{overdue}");
         assert_eq!(
             overdue["content"][0]["text"],
-            "ployz mcp stopped `ployz deployment start` after 2s. What it started may still \
+            "ployz mcp stopped `ployz deployment start` after 2 seconds. What it started may still \
              be running; check with the `status` tool (`ployz status`)."
         );
-        assert_killed(&child_pid(dir.path()).await).await;
+        assert_killed(&call_pids(dir.path()).await).await;
     }
 
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     #[tokio::test]
-    async fn a_cancelled_call_kills_its_child_and_the_server_keeps_serving() {
+    async fn a_cancelled_call_kills_its_children_and_the_server_keeps_serving() {
         let dir = tempfile::tempdir().unwrap();
         let mut client = Client::connect(Server::new(fake_ployz(dir.path()), Vec::new()));
         for frame in handshake() {
@@ -787,7 +836,7 @@ mod tests {
         }
         client.reply().await;
         client.send(&deployment_start()).await;
-        let pid = child_pid(dir.path()).await;
+        let pids = call_pids(dir.path()).await;
         client
             .send(&json!({
                 "jsonrpc": "2.0",
@@ -795,11 +844,24 @@ mod tests {
                 "params": { "requestId": 2 },
             }))
             .await;
-        assert_killed(&pid).await;
+        assert_killed(&pids).await;
         client.send(&request(3, "tools/list", json!({}))).await;
         let listed = client.reply().await;
         assert_eq!(listed["id"], 3, "{listed}");
         assert!(listed["result"]["tools"].is_array(), "{listed}");
+    }
+
+    #[test]
+    fn the_deadline_error_reads_in_minutes() {
+        let entry = catalog::commands()
+            .into_iter()
+            .find(|entry| entry.command == "server add")
+            .unwrap();
+        assert_eq!(
+            overdue(&entry, CALL_DEADLINE),
+            "ployz mcp stopped `ployz server add` after 30 minutes. What it started may still \
+             be running; check with the `server_ls` tool (`ployz server ls`)."
+        );
     }
 
     #[test]

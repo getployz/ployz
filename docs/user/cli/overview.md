@@ -67,11 +67,15 @@ Some commands are not tools. Local commands such as `login` and `ctx use` act on
 yourself. The tools also leave out the arguments that read stdin and the ones that keep a
 command waiting, such as `logs --follow` and `volume sync --wait`.
 
-Secrets can't be set through MCP. Run `ployz set web.env.KEY --secret` yourself.
+New secrets can't be added through MCP. `set SERVICE --from-env-file PATH` does replace the
+values of secrets the service already has, and they stay secret. To add a secret, run
+`ployz set web.env.KEY --secret` yourself.
 
-A tool call that runs for more than 30 minutes is stopped. A deployment or volume run it
-started keeps going in Cloud, and the tool's error names the command that shows where it
-stands, such as `ployz status`.
+A tool call that runs for more than 30 minutes is stopped, along with the SSH and other
+processes it started on this computer. A deployment or volume run it started keeps going in
+Cloud, and the tool's error names the command that shows where it stands, such as
+`ployz status`. A tool can't ask for an SSH password, so `server add` through MCP needs a key
+SSH can use without one.
 
 ## Deploy a directory
 
