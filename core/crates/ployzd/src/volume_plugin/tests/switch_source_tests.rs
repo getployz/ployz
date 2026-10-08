@@ -21,12 +21,15 @@ printf 'docker %s\n' "$*" >> "$fixture/commands"
 case "$1 $2" in
   'ps --all') cat "$fixture/holders" ;;
   'stop '*)
+    touch "$fixture/stopping"
+    while [ -e "$fixture/hold-stop" ]; do sleep 0.01; done
     curl --max-time 5 -sS --unix-socket "$fixture/plugin.sock" -H 'Content-Type: application/json' -d '{{"Name":"data"}}' http://localhost/VolumeDriver.Get > "$fixture/stop-get"
     curl --max-time 5 -sS --unix-socket "$fixture/plugin.sock" -H 'Content-Type: application/json' -d '{{"Name":"data","ID":"opaque-mount"}}' http://localhost/VolumeDriver.Unmount > /dev/null
     rm -f "$fixture/running" ;;
   'start '*)
     touch "$fixture/starting"
     while [ -e "$fixture/hold-start" ]; do sleep 0.01; done
+    if [ -e "$fixture/fail-start" ]; then echo 'Error response from daemon: the Container exited' >&2; exit 1; fi
     response=$(curl --max-time 5 -sS --unix-socket "$fixture/plugin.sock" -H 'Content-Type: application/json' -d '{{"Name":"data"}}' http://localhost/VolumeDriver.Get)
     printf '%s' "$response" | python3 -c 'import json,sys; sys.exit(bool(json.load(sys.stdin)["Err"]))'
     response=$(curl --max-time 5 -sS --unix-socket "$fixture/plugin.sock" -H 'Content-Type: application/json' -d '{{"Name":"data","ID":"opaque-mount"}}' http://localhost/VolumeDriver.Mount)
@@ -309,6 +312,192 @@ async fn a_foreign_holder_cannot_mount_during_the_thaw_grant() {
     fs::write(test.0.join("holders"), format!("{CONTAINER}\n")).unwrap();
     fs::remove_file(test.0.join("hold-start")).unwrap();
     assert!(thaw.await.unwrap().get("Ok").is_some());
+    server.abort();
+}
+
+/// Waits for the fake Docker to leave `marker` in the fixture.
+pub(super) async fn until(test: &TestDir, marker: &str, why: &str) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !test.0.join(marker).exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect(why);
+}
+
+/// Posts a request that must answer before a 6 s caller would give up.
+pub(super) async fn answered(socket: &Path, route: &str, body: Value, why: &str) -> Value {
+    tokio::time::timeout(Duration::from_secs(6), post(socket, route, body))
+        .await
+        .expect(why)
+}
+
+pub(super) async fn until_property(test: &TestDir, dataset: &str, name: &str, value: &str) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while property(test, dataset, name).as_deref() != Some(value) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "{dataset} {name} stayed {:?}, not {value}",
+            property(test, dataset, name)
+        )
+    });
+}
+
+#[tokio::test]
+async fn a_thaw_keeps_starting_under_its_grant_after_its_caller_gives_up() {
+    let (test, socket, server) = setup("frozen:900", true);
+    fs::write(test.0.join("hold-start"), "").unwrap();
+    let caller = send(
+        &socket,
+        "/Volume.Thaw",
+        &serde_json::to_vec(&source(13)).unwrap(),
+    )
+    .await;
+    until(&test, "starting", "Thaw never ran docker start").await;
+    drop(caller);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    fs::remove_file(test.0.join("hold-start")).unwrap();
+    until(
+        &test,
+        "running",
+        "docker start lost its Mount once the caller gave up",
+    )
+    .await;
+    let mount = fs::read_to_string(test.0.join("mount-reply")).unwrap();
+    assert!(mount.contains(r#""Err":"""#), "{mount}");
+    until_property(&test, "tank/ployz/data", "ployz:writer", "idle").await;
+    until_property(&test, "tank/ployz", "ployz:lease.data", "1:13.0.0:closed").await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_freeze_keeps_going_after_its_caller_gives_up_mid_stop() {
+    let (test, socket, server) = setup("stopping", false);
+    fs::write(test.0.join("hold-stop"), "").unwrap();
+    let caller = send(
+        &socket,
+        "/Volume.Freeze",
+        &serde_json::to_vec(&source(6)).unwrap(),
+    )
+    .await;
+    until(&test, "stopping", "Freeze never ran docker stop").await;
+    drop(caller);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    fs::remove_file(test.0.join("hold-stop")).unwrap();
+    until_property(&test, "tank/ployz/data", "ployz:writer", "frozen:900").await;
+    assert_eq!(
+        property(&test, "tank/ployz/data", "readonly").as_deref(),
+        Some("on")
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_replayed_thaw_waits_on_the_running_start_and_docker_starts_once() {
+    let (test, socket, server) = setup("frozen:900", true);
+    fs::write(test.0.join("hold-start"), "").unwrap();
+    let caller = send(
+        &socket,
+        "/Volume.Thaw",
+        &serde_json::to_vec(&source(13)).unwrap(),
+    )
+    .await;
+    until(&test, "starting", "Thaw never ran docker start").await;
+    drop(caller);
+    let replay = answered(
+        &socket,
+        "/Volume.Thaw",
+        source(13),
+        "a replay must answer while Docker is still starting the Container",
+    )
+    .await;
+    assert_eq!(
+        replay.pointer("/Err/details/reason"),
+        Some(&json!("busy")),
+        "{replay}"
+    );
+    fs::remove_file(test.0.join("hold-start")).unwrap();
+    let done = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let response = post(&socket, "/Volume.Thaw", source(13)).await;
+            if response.get("Ok").is_some() {
+                return response;
+            }
+            assert_eq!(
+                response.pointer("/Err/details/reason"),
+                Some(&json!("busy")),
+                "{response}"
+            );
+        }
+    })
+    .await
+    .expect("the replay never saw the Thaw finish");
+    assert_eq!(
+        done.pointer("/Ok/lease/cycle"),
+        Some(&json!("closed")),
+        "{done}"
+    );
+    assert_eq!(
+        commands(&test).matches("docker start").count(),
+        1,
+        "a replay started the Container again"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_failed_start_is_answered_from_its_record_without_starting_again() {
+    let (test, socket, server) = setup("frozen:900", true);
+    fs::write(test.0.join("fail-start"), "").unwrap();
+    let first = post(&socket, "/Volume.Thaw", source(13)).await;
+    assert!(
+        first
+            .pointer("/Err/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("the Container exited")),
+        "{first}"
+    );
+    let replay = post(&socket, "/Volume.Thaw", source(13)).await;
+    assert_eq!(replay.get("Err"), first.get("Err"), "{replay}");
+    assert_eq!(
+        commands(&test).matches("docker start").count(),
+        1,
+        "a replay under the same record started the Container again"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_stale_thaw_is_refused_while_a_start_runs() {
+    let (test, socket, server) = setup("frozen:900", true);
+    fs::write(test.0.join("hold-start"), "").unwrap();
+    let caller = send(
+        &socket,
+        "/Volume.Thaw",
+        &serde_json::to_vec(&source(13)).unwrap(),
+    )
+    .await;
+    until(&test, "starting", "Thaw never ran docker start").await;
+    let stale = answered(
+        &socket,
+        "/Volume.Thaw",
+        source(12),
+        "a stale step must be refused while Docker starts the Container",
+    )
+    .await;
+    assert_eq!(
+        stale.pointer("/Err/details/reason"),
+        Some(&json!("stale_step")),
+        "{stale}"
+    );
+    fs::remove_file(test.0.join("hold-start")).unwrap();
+    drop(caller);
+    until(&test, "running", "the Thaw never finished").await;
     server.abort();
 }
 
