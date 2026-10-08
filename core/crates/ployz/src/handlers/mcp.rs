@@ -238,10 +238,10 @@ async fn wait_unreaped(child: &tokio::process::Child) -> bool {
     };
     let options = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT;
     tokio::task::spawn_blocking(move || {
-        rustix::io::retry_on_intr(|| waitid(WaitId::Pid(pid), options))
+        rustix::io::retry_on_intr(|| waitid(WaitId::Pid(pid), options)).is_ok()
     })
     .await
-    .is_ok_and(|waited| waited.is_ok())
+    .unwrap_or(false)
 }
 
 fn kill_group(child: &tokio::process::Child) {
