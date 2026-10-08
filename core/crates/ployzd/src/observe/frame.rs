@@ -10,10 +10,7 @@ use std::io::{self, Write};
 
 /// The largest frame Docker writes.
 const MAX_FRAME: usize = 1_000_000;
-/// Timestamps outside 2017..2096 mark a frame found by chance during resync.
 const PLAUSIBLE_NANOS: std::ops::Range<i64> = 1_500_000_000_000_000_000..4_000_000_000_000_000_000;
-/// A reassembled line longer than this is cut, so one endless line cannot
-/// exhaust the reader's memory.
 const MAX_LINE: usize = 8 << 20;
 const HEADER: usize = 4;
 
@@ -389,7 +386,6 @@ pub(crate) mod tests {
         out.extend_from_slice(bytes);
     }
 
-    /// Encodes one frame the way moby's `local` driver does.
     pub(crate) fn frame(ts: i64, stream: Stream, chunk: &[u8], piece: Piece) -> Vec<u8> {
         let mut body = Vec::new();
         let source: &[u8] = match stream {

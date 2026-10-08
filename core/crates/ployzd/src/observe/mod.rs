@@ -53,8 +53,6 @@ pub async fn run(run_dir: &Path) -> io::Result<()> {
     harvest::Harvester::run(docker, &docker_root, store, listener).await
 }
 
-/// Locks before `prepare`, so a second harvester cannot delete version dirs
-/// the first one is using.
 fn lock_store(store: &StoreRoot) -> io::Result<File> {
     layout::create_store_dir(store.base())?;
     let lock = File::create(store.base().join(LOCK_FILE))?;
@@ -151,8 +149,6 @@ fn files_oldest_first(path: &Path) -> io::Result<Vec<PathBuf>> {
         .collect())
 }
 
-/// How many rotations ago Docker wrote a `local-logs` file: 0 for
-/// `container.log`, N for `container.log.N`.
 pub(crate) fn docker_file_age(name: &str) -> Option<u64> {
     let rest = name.strip_prefix(DOCKER_LOG_FILE)?;
     if rest.is_empty() {

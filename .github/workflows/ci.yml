@@ -141,11 +141,9 @@ jobs:
           EOF
           cargo nextest run --workspace --all-features --locked
           cargo test --doc --workspace --all-features --locked
-      - name: Decode Docker's local log files as docker logs prints them
+      - name: Decode the latest Docker's local log files as docker logs prints them
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo -E
-        # The installer takes the latest Docker from get.docker.com, so the decoder is proven
-        # against that, not the runner's preinstalled one.
         run: |
           curl -fsSL https://get.docker.com | sudo sh >/dev/null
           docker version --format 'Docker {{.Server.Version}}'

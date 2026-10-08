@@ -1,7 +1,3 @@
-//! Run as root, since Docker's log files are root-only:
-//! `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='sudo -E' cargo nextest run
-//! -p ployzd --run-ignored only -E 'test(observe::integration_tests)'`.
-
 use std::{
     collections::HashMap,
     fs,
@@ -20,8 +16,6 @@ use super::{
 use crate::test_dir::TestDir;
 
 const IMAGE: &str = "alpine:3.23.3";
-/// The log config OBS-1 gives every Ployz container, set here explicitly so
-/// these tests do not depend on it.
 const LOG_CONFIG: [&str; 8] = [
     "--log-driver",
     "local",
@@ -67,8 +61,6 @@ impl Drop for Removed {
     }
 }
 
-/// Decodes files the way `docker logs --timestamps` prints them, one buffer
-/// per stream.
 fn decode(files: &[PathBuf]) -> (Vec<u8>, Vec<u8>) {
     let mut out = Vec::new();
     let mut err = Vec::new();
