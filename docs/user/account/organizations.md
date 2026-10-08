@@ -33,8 +33,18 @@ With **Ask before destructive actions** on, Ployz refuses that command with `app
 naming what it would remove and the approval it opened for you. It's on for every organization
 unless you turn it off.
 
-Waiting for your answer and then retrying is coming to the CLI. Until then the command stops
-there.
+How you answer depends on where the command runs:
+
+- In a terminal, it lists what it would remove and asks you to type the environment's name. Type
+  it and the command carries on. Anything else, or Ctrl-C, leaves the approval pending and
+  changes nothing.
+- Without a terminal, such as in a script, it prints the same list and waits until someone
+  approves or denies it in Ployz Cloud. It then carries on, or fails with the reason given.
+  Ctrl-C stops waiting and leaves the approval pending.
+- With `--json`, it never asks or waits. It exits with `approval_required`, and `details.retry`
+  is the same command with `--approval ID`. Run that once the approval is approved.
+- In an agent that uses `ployz mcp`, the agent's app asks you. See
+  [Give the agent Ployz tools](../cli/overview.md#give-the-agent-ployz-tools).
 
 - Only `ployz publish` and `ployz deploy` ask, and only when the change removes something that's
   running. Rolling out a new image or changing variables never asks.

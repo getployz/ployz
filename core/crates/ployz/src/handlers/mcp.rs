@@ -9,11 +9,12 @@ use std::time::Duration;
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    JsonObject, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
-    ToolAnnotations,
+    BooleanSchema, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
+    ElicitRequestParams, ElicitationAction, ElicitationSchema, Implementation, JsonObject,
+    ListToolsResult, MetaObject, PaginatedRequestParams, ServerCapabilities, ServerConfig,
+    StringSchema, Tool, ToolAnnotations,
 };
-use rmcp::service::{RequestContext, RxJsonRpcMessage, TxJsonRpcMessage};
+use rmcp::service::{ElicitationMode, Peer, RequestContext, RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::Transport;
 use rmcp::transport::async_rw::AsyncRwTransport;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt};
@@ -28,6 +29,9 @@ use tokio::signal::unix::{SignalKind, signal};
 
 use super::catalog::{self, Approval, ArgEntry, ArgType, CommandEntry, Stdin, Surface};
 use super::{Error, leaf_matches};
+use crate::approval::{self, Asked};
+use crate::cloud_account;
+use crate::cloud_login::CredentialStore;
 use crate::failure::Failure;
 
 pub(crate) fn command() -> Command {
@@ -59,7 +63,14 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
                 .map(move |value| format!("--{id}={}", value.to_string_lossy()))
         })
         .collect();
-    let server = Server::new(std::env::current_exe()?, globals);
+    let server = Server {
+        account: Account {
+            config: super::config_path(matches)?,
+            token: std::env::var(crate::cli::env::TOKEN).ok(),
+            cloud: std::env::var(crate::cli::env::CLOUD_URL).ok(),
+        },
+        ..Server::new(std::env::current_exe()?, globals)
+    };
     // With no controlling terminal, SSH that wants a password fails at once instead of
     // prompting on the user's terminal. A server that already leads a process group keeps its
     // terminal, and its calls still run in background groups that cannot read it.
@@ -172,9 +183,17 @@ where
 struct Server {
     exe: PathBuf,
     globals: Vec<String>,
+    account: Account,
     deadline: Duration,
     commands: Vec<CommandEntry>,
     tools: Vec<Tool>,
+}
+
+#[derive(Default)]
+struct Account {
+    config: PathBuf,
+    token: Option<String>,
+    cloud: Option<String>,
 }
 
 impl Server {
@@ -192,6 +211,7 @@ impl Server {
         Self {
             exe,
             globals,
+            account: Account::default(),
             deadline: CALL_DEADLINE,
             commands,
             tools,
@@ -238,9 +258,51 @@ impl ServerHandler for Server {
             McpError::invalid_params(format!("no tool named {}", request.name), None)
         })?;
         let argv = argv(entry, &self.globals, request.arguments.unwrap_or_default())?;
+        tokio::select! {
+            result = self.settle(entry, argv, &context.peer) => Ok(result?.into()),
+            () = context.ct.cancelled() => {
+                Err(McpError::internal_error("the call was cancelled", None))
+            }
+            () = tokio::time::sleep(self.deadline) => {
+                let content = vec![ContentBlock::text(overdue(entry, self.deadline))];
+                Ok(CallToolResult::error(content).into())
+            }
+        }
+    }
+}
+
+struct Ran {
+    result: CallToolResult,
+    asked: Option<Asked>,
+}
+
+impl Server {
+    async fn settle(
+        &self,
+        entry: &CommandEntry,
+        mut argv: Vec<String>,
+        peer: &Peer<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        loop {
+            let ran = self.run(entry, &argv).await?;
+            let Some(asked) = ran.asked else {
+                return Ok(ran.result);
+            };
+            let verb = match entry.command.as_str() {
+                "publish" => "publish",
+                _ => "deploy",
+            };
+            if let Answer::Refused(refused) = self.ask(verb, &asked, peer).await? {
+                return Ok(refused);
+            }
+            approve_with(&mut argv, &asked.id);
+        }
+    }
+
+    async fn run(&self, entry: &CommandEntry, argv: &[String]) -> Result<Ran, McpError> {
         let mut child = KillGroupOnDrop(
             tokio::process::Command::new(&self.exe)
-                .args(&argv)
+                .args(argv)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -256,20 +318,12 @@ impl ServerHandler for Server {
             }
             child.0.wait().await
         };
-        let finished = async { tokio::join!(exited, capture(stdout), capture(stderr)) };
-        let (status, stdout, stderr) = tokio::select! {
-            (status, stdout, stderr) = finished => (
-                status.map_err(|error| McpError::internal_error(error.to_string(), None))?,
-                stdout,
-                stderr,
-            ),
-            () = context.ct.cancelled() => {
-                return Err(McpError::internal_error("the call was cancelled", None));
-            }
-            () = tokio::time::sleep(self.deadline) => {
-                let content = vec![ContentBlock::text(overdue(entry, self.deadline))];
-                return Ok(CallToolResult::error(content).into());
-            }
+        let (status, stdout, stderr) = tokio::join!(exited, capture(stdout), capture(stderr));
+        let status = status.map_err(|error| McpError::internal_error(error.to_string(), None))?;
+        let asked = if status.success() {
+            None
+        } else {
+            asked(&stdout)
         };
         let text = [stdout, stderr]
             .into_iter()
@@ -281,13 +335,126 @@ impl ServerHandler for Server {
                 )
             });
         let content = vec![ContentBlock::text(text)];
-        Ok(if status.success() {
+        let result = if status.success() {
             CallToolResult::success(content)
         } else {
             CallToolResult::error(content)
-        }
-        .into())
+        };
+        Ok(Ran { result, asked })
     }
+
+    async fn ask(
+        &self,
+        verb: &str,
+        asked: &Asked,
+        peer: &Peer<RoleServer>,
+    ) -> Result<Answer, McpError> {
+        let environment = asked.diff.environment.name.as_str();
+        let review = asked.review(verb).join("\n");
+        let refused = |text: String| {
+            Ok(Answer::Refused(CallToolResult::error(vec![
+                ContentBlock::text(text),
+            ])))
+        };
+        if !peer
+            .supported_elicitation_modes()
+            .contains(&ElicitationMode::Form)
+        {
+            return refused(format!(
+                "A human must approve this {verb} to {environment} first, and this agent \
+                 cannot ask them. Show them what it destroys, then ask them to approve \
+                 approval {id} in the Ployz Cloud sidebar, or to run the command themselves \
+                 in a terminal. Once they approve, call this tool again with `approval` \
+                 set to `{id}`.\n{review}",
+                id = asked.id,
+            ));
+        }
+        let form = ElicitRequestParams::FormElicitationParams {
+            meta: None,
+            message: format!("Approve this {verb} to {environment}?\n{review}"),
+            requested_schema: ElicitationSchema::builder()
+                .required_bool_property("approve", |schema: BooleanSchema| {
+                    schema
+                        .title("Approve")
+                        .description(format!("Go ahead with this {verb}"))
+                })
+                .string_property("reason", |schema: StringSchema| {
+                    schema
+                        .title("Reason")
+                        .description("Why not, if you deny it")
+                })
+                .build_unchecked(),
+        };
+        let answer = peer
+            .create_elicitation(form)
+            .await
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+        let content = answer.content.unwrap_or_default();
+        let decision = match answer.action {
+            ElicitationAction::Accept if content.get("approve") == Some(&Value::Bool(true)) => {
+                json!({ "approve": { "digest": asked.digest } })
+            }
+            ElicitationAction::Accept | ElicitationAction::Decline => {
+                let reason = content
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|reason| !reason.is_empty())
+                    .map(|reason| reason.chars().take(1024).collect::<String>());
+                json!({ "reject": { "reason": reason } })
+            }
+            ElicitationAction::Cancel | _ => {
+                return refused(format!(
+                    "The human closed the approval without deciding; nothing was {verb}ed. \
+                     Approval {} stays pending in Ployz Cloud.",
+                    asked.id
+                ));
+            }
+        };
+        let credential = cloud_account::credential(
+            &CredentialStore::beside(&self.account.config),
+            self.account.token.clone(),
+            self.account.cloud.clone(),
+        )
+        .await
+        .map_err(|error| McpError::internal_error(Error::from(error).to_string(), None))?;
+        if let Err(error) = approval::decide(&credential, &asked.id, &decision).await {
+            return refused(Error::from(error).to_string());
+        }
+        if decision.get("approve").is_some() {
+            return Ok(Answer::Approved);
+        }
+        let because = decision
+            .pointer("/reject/reason")
+            .and_then(Value::as_str)
+            .map_or_else(String::new, |reason| format!(": {reason}"));
+        refused(format!(
+            "The human denied this {verb}{because}. Nothing was {verb}ed; do not retry it \
+             unless they ask."
+        ))
+    }
+}
+
+enum Answer {
+    Approved,
+    Refused(CallToolResult),
+}
+
+fn asked(stdout: &str) -> Option<Asked> {
+    let reply: Value = serde_json::from_str(stdout).ok()?;
+    let error = serde_json::from_value(reply.get("error")?.clone()).ok()?;
+    Asked::of(&error)
+}
+
+fn approve_with(argv: &mut Vec<String>, id: &str) {
+    let flags = argv
+        .iter()
+        .position(|word| word == "--json")
+        .unwrap_or(argv.len());
+    let rest = argv.split_off(flags);
+    argv.retain(|word| !word.starts_with("--approval="));
+    argv.push(format!("--approval={id}"));
+    argv.extend(rest);
 }
 
 struct KillGroupOnDrop(tokio::process::Child);
@@ -428,12 +595,22 @@ fn tool(entry: &CommandEntry) -> Tool {
     .as_object()
     .cloned()
     .unwrap_or_default();
-    Tool::new(
+    let tool = Tool::new(
         tool_name(&entry.command),
         entry.about.clone(),
         Arc::new(schema),
     )
-    .annotate(ToolAnnotations::new().destructive(destructive(entry.approval)))
+    .annotate(ToolAnnotations::new().destructive(destructive(entry.approval)));
+    if entry.approval != Approval::Always {
+        return tool;
+    }
+    // Hosts that honor it ask the human before every call, since each destroys at once.
+    let mut meta = JsonObject::new();
+    meta.insert(
+        "anthropic/requiresUserInteraction".into(),
+        Value::Bool(true),
+    );
+    tool.with_meta(MetaObject(meta))
 }
 
 fn arg_schema(arg: &ArgEntry, conflicts: &[&str]) -> Value {
@@ -724,6 +901,11 @@ mod tests {
         assert_eq!(tool("server_rm")["annotations"]["destructiveHint"], true);
         assert_eq!(tool("project_ls")["annotations"]["destructiveHint"], false);
         assert_eq!(tool("service_rm")["annotations"]["destructiveHint"], false);
+        assert_eq!(
+            tool("server_rm")["_meta"]["anthropic/requiresUserInteraction"],
+            true
+        );
+        assert!(tool("deploy").get("_meta").is_none(), "{}", tool("deploy"));
         for absent in [
             "ctx",
             "ctx_use",
@@ -899,6 +1081,7 @@ mod tests {
              server) echo \"no such server\" >&2; exit 3 ;;\n\
              logs) head -c 3000000 /dev/zero | tr '\\0' a; exit 0 ;;\n\
              deployment) sleep 60 & echo $$ $! > \"$(dirname \"$0\")/pids\"; wait ;;\n\
+             deploy) case \"$*\" in *--approval=apr_1*) ;; *) cat \"$(dirname \"$0\")/asked.json\"; exit 1 ;; esac ;;\n\
              service) sleep 60 >/dev/null 2>&1 & echo $$ $! > \"$(dirname \"$0\")/pids\"; kill -9 $$ ;;\n\
              volume) sleep 60 & echo $! > \"$(dirname \"$0\")/pids\"; echo left one running; exit 0 ;;\n\
              esac\n\
@@ -1126,6 +1309,249 @@ mod tests {
         assert_eq!(
             argv,
             ["server", "rm", "--no-reset", "--json", "--", "web-1"]
+        );
+    }
+
+    #[test]
+    fn an_approval_replaces_the_one_the_call_named_among_the_flags() {
+        let mut argv: Vec<String> = ["deploy", "--approval=apr_0", "--json", "--", "--approval=x"]
+            .map(str::to_owned)
+            .to_vec();
+        approve_with(&mut argv, "apr_1");
+        assert_eq!(
+            argv,
+            ["deploy", "--approval=apr_1", "--json", "--", "--approval=x"]
+        );
+    }
+
+    fn fake_cloud() -> (String, std::sync::mpsc::Receiver<(String, String, Value)>) {
+        use std::io::{BufRead, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (decided, decisions) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                let (mut length, mut bearer) = (0, String::new());
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).unwrap();
+                    if header.trim().is_empty() {
+                        break;
+                    }
+                    let header = header.to_ascii_lowercase();
+                    if let Some(value) = header.strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap();
+                    }
+                    if let Some(value) = header.strip_prefix("authorization: bearer ") {
+                        value.trim().clone_into(&mut bearer);
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                let request = request.trim().trim_end_matches(" HTTP/1.1").to_owned();
+                decided
+                    .send((request, bearer, serde_json::from_slice(&body).unwrap()))
+                    .unwrap();
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                          content-length: 2\r\nconnection: close\r\n\r\n{}",
+                    )
+                    .unwrap();
+            }
+        });
+        (url, decisions)
+    }
+
+    fn approving(
+        dir: &std::path::Path,
+    ) -> (Server, std::sync::mpsc::Receiver<(String, String, Value)>) {
+        let asked = json!({ "error": {
+            "code": "approval_required",
+            "message": "A human must approve this first: this deploy removes Service worker",
+            "details": {
+                "approval_id": "apr_1",
+                "approval": "3:abc",
+                "effects": [
+                    { "kind": "removes_service", "name": "worker", "node": "svc_1", "path": "worker" },
+                ],
+                "diff": {
+                    "environment": {
+                        "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                        "project": "shop",
+                        "name": "production",
+                        "revision": 3,
+                    },
+                    "version": "3:abc",
+                    "saved": 2,
+                    "published": false,
+                    "changes": [],
+                    "total_count": 3,
+                },
+                "retry": "ployz deploy --approval apr_1",
+            },
+        }});
+        std::fs::write(dir.join("asked.json"), asked.to_string()).unwrap();
+        let (cloud, decisions) = fake_cloud();
+        let server = Server {
+            account: Account {
+                config: dir.join("config.toml"),
+                token: Some("ployz_acme".to_owned()),
+                cloud: Some(cloud),
+            },
+            ..Server::new(fake_ployz(dir), Vec::new())
+        };
+        (server, decisions)
+    }
+
+    async fn connect_eliciting(server: Server) -> Client {
+        let mut client = Client::connect(server);
+        client
+            .send(&request(
+                1,
+                "initialize",
+                json!({
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": { "elicitation": {} },
+                    "clientInfo": { "name": "test", "version": "0" },
+                }),
+            ))
+            .await;
+        client.reply().await;
+        client
+            .send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+            .await;
+        client
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_host_that_elicits_asks_the_human_and_an_approval_reruns_the_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, decisions) = approving(dir.path());
+        let mut client = connect_eliciting(server).await;
+        client.send(&tool_call("deploy")).await;
+        let asking = client.reply().await;
+        assert_eq!(asking["method"], "elicitation/create", "{asking}");
+        assert_eq!(
+            asking["params"]["message"],
+            "Approve this deploy to production?\n\
+             This deploy destroys 1 thing:\n  \u{2715} removes Service worker\n  + 2 other changes"
+        );
+        let schema = &asking["params"]["requestedSchema"];
+        assert_eq!(
+            schema["properties"]["approve"]["type"], "boolean",
+            "{schema}"
+        );
+        assert_eq!(schema["properties"]["reason"]["type"], "string", "{schema}");
+        assert_eq!(schema["required"], json!(["approve"]), "{schema}");
+        client
+            .send(&json!({
+                "jsonrpc": "2.0",
+                "id": asking["id"],
+                "result": { "action": "accept", "content": { "approve": true } },
+            }))
+            .await;
+        let done = client.reply().await;
+        assert_eq!(done["id"], 2, "{done}");
+        assert_eq!(done["result"]["isError"], false, "{done}");
+        assert_eq!(
+            done["result"]["content"][0]["text"],
+            "deploy --approval=apr_1 --json\n"
+        );
+        assert_eq!(
+            decisions.try_recv().unwrap(),
+            (
+                "POST /api/cli/approvals/apr_1".to_owned(),
+                "ployz_acme".to_owned(),
+                json!({ "approve": { "digest": "3:abc" } }),
+            )
+        );
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_human_who_denies_through_the_host_rejects_it_in_cloud_with_their_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, decisions) = approving(dir.path());
+        let mut client = connect_eliciting(server).await;
+        client.send(&tool_call("deploy")).await;
+        let asking = client.reply().await;
+        client
+            .send(&json!({
+                "jsonrpc": "2.0",
+                "id": asking["id"],
+                "result": {
+                    "action": "accept",
+                    "content": { "approve": false, "reason": "the worker still drains" },
+                },
+            }))
+            .await;
+        let denied = client.reply().await;
+        assert_eq!(denied["result"]["isError"], true, "{denied}");
+        assert_eq!(
+            denied["result"]["content"][0]["text"],
+            "The human denied this deploy: the worker still drains. Nothing was deployed; do \
+             not retry it unless they ask."
+        );
+        assert_eq!(
+            decisions.try_recv().unwrap().2,
+            json!({ "reject": { "reason": "the worker still drains" } })
+        );
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_closed_form_leaves_the_approval_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, decisions) = approving(dir.path());
+        let mut client = connect_eliciting(server).await;
+        client.send(&tool_call("deploy")).await;
+        let asking = client.reply().await;
+        client
+            .send(
+                &json!({ "jsonrpc": "2.0", "id": asking["id"], "result": { "action": "cancel" } }),
+            )
+            .await;
+        let closed = client.reply().await;
+        assert_eq!(closed["result"]["isError"], true, "{closed}");
+        assert_eq!(
+            closed["result"]["content"][0]["text"],
+            "The human closed the approval without deciding; nothing was deployed. Approval \
+             apr_1 stays pending in Ployz Cloud."
+        );
+        assert!(
+            decisions.try_recv().is_err(),
+            "nothing was decided in Cloud"
+        );
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_host_without_elicitation_gets_a_tool_error_naming_where_to_approve() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, decisions) = approving(dir.path());
+        let mut frames = handshake();
+        frames.push(tool_call("deploy"));
+        let replies = exchange_with(server, &frames).await;
+        let refused = &replies[1];
+        assert_eq!(refused["id"], 2, "{refused}");
+        assert_eq!(refused["result"]["isError"], true, "{refused}");
+        assert_eq!(
+            refused["result"]["content"][0]["text"],
+            "A human must approve this deploy to production first, and this agent cannot ask \
+             them. Show them what it destroys, then ask them to approve approval apr_1 in the \
+             Ployz Cloud sidebar, or to run the command themselves in a terminal. Once they \
+             approve, call this tool again with `approval` set to `apr_1`.\n\
+             This deploy destroys 1 thing:\n  \u{2715} removes Service worker\n  + 2 other changes"
+        );
+        assert!(
+            decisions.try_recv().is_err(),
+            "nothing was decided in Cloud"
         );
     }
 }

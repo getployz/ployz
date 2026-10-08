@@ -59,8 +59,18 @@ claude mcp add -s user ployz -- ployz mcp
 
 For Codex, run `codex mcp add ployz -- ployz mcp`. Each tool runs one `ployz` command with
 `--json`, signed in as you, and returns its one result. Tools that can remove something live,
-such as `deploy` and `server rm`, are marked destructive. Whether the agent asks you before it
-runs one depends on the agent's own permission settings.
+such as `deploy` and `server rm`, are marked destructive. `server rm` and `project rm` also ask
+the agent's app to check with you before every call, even when you've told it to skip
+permission prompts. Claude Code honors this.
+
+When a `publish` or `deploy` needs your approval (see
+[Ask before destructive actions](../account/organizations.md#ask-before-destructive-actions)),
+the agent's app shows you what it would remove and asks you to approve or deny it, with an
+optional reason. Approve and the command runs. Deny and the agent is told your reason and that
+nothing changed. Close the dialog without answering and the approval stays pending in Ployz
+Cloud. An app that can't show this dialog gets an error instead, naming the approval, which you
+can approve in Ployz Cloud or by running the command yourself in a terminal. The 30-minute limit
+below includes the time the dialog waits for you.
 
 Some commands are not tools. Local commands such as `login` and `ctx use` act on this computer.
 Servers are added with `ployz server add` from a terminal, not through MCP, because it installs
@@ -146,7 +156,7 @@ Scripts can tell failures apart by exit code:
 | 1 | It failed: something wasn't found, a server couldn't be reached, Ployz refused, or the server or Cloud doesn't support what you asked. |
 | 2 | Fix the command: a bad argument, a flag the command doesn't take, a missing `--confirm`, or a name that matches more than one thing. |
 | 3 | You got a result, but some servers didn't answer, so part of it is missing. Run it again once they're back. |
-| 130 | You cancelled: pressed Ctrl-C, or didn't confirm a prompt. Nothing was removed. |
+| 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Nothing was removed. |
 
 `ployz exec` exits with your command's own exit code.
 
@@ -154,7 +164,10 @@ A command that deletes something, such as `ployz project rm shop`, shows what go
 to type its name. Anything else, or Ctrl-C, cancels. Without a terminal, in CI, or with
 `--json` it never asks: it exits 2 and prints the command to run instead, which passes the name
 with `--confirm`. Commands that would otherwise ask you to choose, such as `ployz ctx use` without
-a name or the storage choice in `ployz server add`, work the same way.
+a name or the storage choice in `ployz server add`, work the same way. A `publish` or `deploy`
+that needs an approval asks the same way in a terminal. Without one it waits for the approval in
+Ployz Cloud, and with `--json` it exits 1 with `approval_required`. See
+[Ask before destructive actions](../account/organizations.md#ask-before-destructive-actions).
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in
 one. Set `NO_COLOR=1` or pass `--color never` to turn color off, or `--color always` to keep it

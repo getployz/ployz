@@ -304,6 +304,7 @@ pub(crate) enum StoreCallError {
     Refused(RpcError),
     /// Cloud or the credential failed before the Store answered.
     Cloud(LoginError),
+    Stopped(crate::failure::Failure),
 }
 
 impl From<LoginError> for StoreCallError {
@@ -323,14 +324,19 @@ pub(crate) async fn config_store<T: DeserializeOwned>(
     credential: &Credential,
     operation: &str,
     body: &impl Serialize,
+    approval: Option<&str>,
 ) -> Result<T, StoreCallError> {
     let body = serde_json::to_value(body).map_err(|error| LoginError::Reply(error.to_string()))?;
     let url = format!("{}/api/config/{operation}", credential.cloud());
-    store_answer(
-        credential,
-        send(credential, Method::POST, &url, Some(&body)).await?,
-    )
-    .await
+    let mut request = request(credential, Method::POST, &url, Some(&body))?;
+    if let Some(approval) = approval {
+        request = request.header("x-ployz-approval", approval);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|error| cloud_login::unreachable(credential.cloud(), error))?;
+    store_answer(credential, response).await
 }
 
 /// The Store's answer, its refusal verbatim, or why Cloud failed first.
@@ -611,16 +617,25 @@ async fn send(
     url: &str,
     body: Option<&serde_json::Value>,
 ) -> Result<reqwest::Response, LoginError> {
+    request(credential, method, url, body)?
+        .send()
+        .await
+        .map_err(|error| cloud_login::unreachable(credential.cloud(), error))
+}
+
+fn request(
+    credential: &Credential,
+    method: Method,
+    url: &str,
+    body: Option<&serde_json::Value>,
+) -> Result<reqwest::RequestBuilder, LoginError> {
     let mut request = cloud_login::http()?
         .request(method, url)
         .bearer_auth(credential.bearer());
     if let Some(body) = body {
         request = request.json(body);
     }
-    request
-        .send()
-        .await
-        .map_err(|error| cloud_login::unreachable(credential.cloud(), error))
+    Ok(request)
 }
 
 /// Decode a success; turn a refused credential into the error that names its fix.

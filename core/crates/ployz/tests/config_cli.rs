@@ -119,6 +119,13 @@ fn fake_cloud() -> String {
 }
 
 fn fake_cloud_with_dispatch(worker: fn(&std::sync::Arc<ConfigStore>, &Written)) -> String {
+    cloud(worker, std::sync::Arc::default())
+}
+
+fn cloud(
+    worker: fn(&std::sync::Arc<ConfigStore>, &Written),
+    approvals: std::sync::Arc<Approvals>,
+) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let store = std::sync::Arc::new(
@@ -126,7 +133,7 @@ fn fake_cloud_with_dispatch(worker: fn(&std::sync::Arc<ConfigStore>, &Written)) 
     );
     std::thread::spawn(move || {
         for stream in listener.incoming() {
-            serve(&store, stream.unwrap(), worker).unwrap();
+            serve(&store, &approvals, stream.unwrap(), worker).unwrap();
         }
     });
     url
@@ -154,14 +161,16 @@ fn dispatch(store: &std::sync::Arc<ConfigStore>, written: &Written) {
 
 fn serve(
     store: &std::sync::Arc<ConfigStore>,
+    approvals: &Approvals,
     mut stream: TcpStream,
     worker: fn(&std::sync::Arc<ConfigStore>, &Written),
 ) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request = String::new();
     reader.read_line(&mut request)?;
+    let method = request.split(' ').next().unwrap_or_default().to_owned();
     let path = request.split(' ').nth(1).unwrap_or_default().to_owned();
-    let (mut length, mut organization) = (0, None);
+    let (mut length, mut organization, mut approval) = (0, None, None);
     loop {
         let mut header = String::new();
         reader.read_line(&mut header)?;
@@ -171,6 +180,9 @@ fn serve(
         let header = header.to_ascii_lowercase();
         if let Some(value) = header.strip_prefix("content-length:") {
             length = value.trim().parse().unwrap();
+        }
+        if let Some(value) = header.strip_prefix("x-ployz-approval:") {
+            approval = Some(value.trim().to_owned());
         }
         if let Some(value) = header.strip_prefix("authorization: bearer ployz_") {
             // Cloud names who acts: here, the token's Organization.
@@ -189,6 +201,15 @@ fn serve(
             &serde_json::from_slice::<ployz_store::Query>(&body).unwrap(),
             &evidence(),
         )),
+        (Some(_), "/api/config/write")
+            if let Some(refused) = approvals.gate(&body, approval.as_deref()) =>
+        {
+            refused
+        }
+        (Some(_), decide) if decide.starts_with("/api/cli/approvals/") => {
+            let id = decide.trim_start_matches("/api/cli/approvals/");
+            approvals.answer(&method, id, &body)
+        }
         (Some(who), "/api/config/write") => {
             let command: StoreCommand = serde_json::from_slice(&body).unwrap();
             let written = store.write_trusted(&who, &command, &evidence());
@@ -271,6 +292,119 @@ fn github() -> Trusted {
         }],
         ..Trusted::default()
     }
+}
+
+#[derive(Default)]
+struct Approvals {
+    rows: Vec<(&'static str, &'static str)>,
+    asking: std::sync::Mutex<usize>,
+    calls: std::sync::Mutex<Vec<(String, String, Value)>>,
+}
+
+impl Approvals {
+    fn of(rows: &[(&'static str, &'static str)]) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            rows: rows.to_vec(),
+            ..Self::default()
+        })
+    }
+
+    fn calls(&self) -> Vec<(String, String, Value)> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    fn status(&self, id: &str) -> &'static str {
+        let calls = self.calls.lock().unwrap();
+        let posted = calls.iter().rev().find_map(|(method, call, decision)| {
+            (method == "POST" && call == id).then(|| match decision.get("approve") {
+                Some(_) => "approved",
+                None => "denied",
+            })
+        });
+        let polled = calls
+            .iter()
+            .any(|(method, call, _)| method == "GET" && call == id);
+        let decided = self.rows.iter().find(|row| row.0 == id).unwrap().1;
+        posted.unwrap_or(if polled { decided } else { "pending" })
+    }
+
+    fn gate(&self, body: &[u8], approval: Option<&str>) -> Option<(u16, Value)> {
+        let command: Value = serde_json::from_slice(body).unwrap();
+        if self.rows.is_empty() || command["command"] != "publish" {
+            return None;
+        }
+        let mut asking = self.asking.lock().unwrap();
+        match approval.map(|id| (id, self.status(id))) {
+            Some((_, "approved")) => return None,
+            Some((id, "denied")) => {
+                let message = format!("A human denied approval {id}: the worker still drains");
+                let error = json!({ "code": "approval_denied", "message": message, "details": {} });
+                return Some((403, json!({ "error": error })));
+            }
+            Some((_, "superseded")) => *asking += 1,
+            _ => {}
+        }
+        Some((409, json!({ "error": asked(self.rows[*asking].0) })))
+    }
+
+    fn answer(&self, method: &str, id: &str, body: &[u8]) -> (u16, Value) {
+        let decision = serde_json::from_slice(body).unwrap_or(Value::Null);
+        let status = self.status(id);
+        self.calls
+            .lock()
+            .unwrap()
+            .push((method.to_owned(), id.to_owned(), decision));
+        (200, json!({ "approval": { "id": id, "status": status } }))
+    }
+}
+
+fn asked(id: &str) -> Value {
+    json!({
+        "code": "approval_required",
+        "message": "A human must approve this first: this publish removes Service worker",
+        "details": {
+            "approval_id": id,
+            "approval": "3:abc",
+            "effects": [{ "kind": "removes_service", "name": "worker", "node": "svc_1", "path": "worker" }],
+            "diff": {
+                "environment": {
+                    "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    "project": "shop",
+                    "name": "production",
+                    "revision": 3,
+                },
+                "version": "3:abc",
+                "saved": 2,
+                "published": false,
+                "changes": [],
+                "total_count": 3,
+            },
+        },
+    })
+}
+
+fn approving(rows: &[(&'static str, &'static str)]) -> (Target, std::sync::Arc<Approvals>) {
+    let approvals = Approvals::of(rows);
+    let target = Target::Cloud {
+        url: cloud(dispatch, std::sync::Arc::clone(&approvals)),
+        token: "ployz_alice",
+    };
+    ok(&target, &["project", "new", "shop"]);
+    ok(&target, &["service", "add", "web", "--image", "nginx:1"]);
+    (target, approvals)
+}
+
+fn person(target: &Target, home: &std::path::Path, args: &[&str]) -> (Option<i32>, String) {
+    let output = target
+        .command(home)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    (
+        output.status.code(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
 }
 
 fn answer<T: serde::Serialize>(result: Result<T, RpcError>) -> (u16, Value) {
@@ -3085,4 +3219,109 @@ fn a_config_lists_as_new_until_deployed_and_its_change_names_the_services_it_res
     assert!(human(&["diff"]).contains("\n  restarts web, worker\n"));
     assert!(human(&["deploy", "--plan"]).contains("\n  restarts web, worker\n"));
     assert!(human(&["deploy", "web", "--plan"]).contains("\n  restarts web\n"));
+}
+
+#[test]
+fn an_agent_gets_the_approval_a_publish_needs_and_retries_with_it() {
+    let (target, approvals) = approving(&[("apr_1", "approved")]);
+    let refused = error(&target, &["publish"]);
+    assert_eq!(refused["code"], json!("approval_required"), "{refused}");
+    assert_eq!(refused["details"]["approval_id"], json!("apr_1"));
+    assert_eq!(
+        refused["details"]["retry"],
+        json!("ployz publish --approval apr_1"),
+        "{refused}"
+    );
+    let pending = error(&target, &["publish", "--approval", "apr_1"]);
+    assert_eq!(pending["code"], json!("approval_required"), "{pending}");
+    assert!(
+        approvals.calls().is_empty(),
+        "--json never waits or decides"
+    );
+}
+
+#[test]
+fn without_a_terminal_a_publish_waits_until_a_human_approves_it() {
+    let (target, approvals) = approving(&[("apr_1", "approved")]);
+    let home = tempfile::tempdir().unwrap();
+    let (code, stderr) = person(&target, home.path(), &["publish"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stderr.contains(
+            "This publish destroys 1 thing:\n  \u{2715} removes Service worker\n  + 2 other changes"
+        ),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Waiting for approval in Ployz Cloud"),
+        "{stderr}"
+    );
+    let polls: Vec<_> = approvals.calls().into_iter().map(|call| call.0).collect();
+    assert_eq!(polls, ["GET", "GET"], "pending, then approved");
+}
+
+#[test]
+fn without_a_terminal_a_denied_publish_fails_with_the_reason() {
+    let (target, approvals) = approving(&[("apr_1", "denied")]);
+    let home = tempfile::tempdir().unwrap();
+    let (code, stderr) = person(&target, home.path(), &["publish"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("A human denied approval apr_1: the worker still drains"),
+        "{stderr}"
+    );
+    assert!(approvals.calls().iter().all(|call| call.0 == "GET"));
+    let diff = ok(&target, &["diff"]);
+    assert_eq!(diff["published"], json!(false), "nothing was published");
+}
+
+#[test]
+fn without_a_terminal_a_superseded_approval_waits_on_the_new_one() {
+    let (target, approvals) = approving(&[("apr_1", "superseded"), ("apr_2", "approved")]);
+    let home = tempfile::tempdir().unwrap();
+    let (code, stderr) = person(&target, home.path(), &["publish"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(
+        stderr.matches("This publish destroys 1 thing:").count(),
+        2,
+        "{stderr}"
+    );
+    let polled: Vec<_> = approvals.calls().into_iter().map(|call| call.1).collect();
+    assert_eq!(polled, ["apr_1", "apr_1", "apr_2", "apr_2"]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn at_a_terminal_a_wrong_name_leaves_the_approval_pending() {
+    let (target, approvals) = approving(&[("apr_1", "approved")]);
+    let home = tempfile::tempdir().unwrap();
+    let ployz = format!("{} publish", env!("CARGO_BIN_EXE_ployz"));
+    let mut script = Command::new("script");
+    for (key, value) in target.command(home.path()).get_envs() {
+        match value {
+            Some(value) => script.env(key, value),
+            None => script.env_remove(key),
+        };
+    }
+    let mut child = script
+        .args(["--quiet", "--return", "--command", &ployz, "/dev/null"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"staging\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    let screen = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(130), "{screen}");
+    assert!(screen.contains("Type production to continue"), "{screen}");
+    assert!(
+        screen.contains("Nothing published; approval apr_1 stays pending."),
+        "{screen}"
+    );
+    assert!(approvals.calls().is_empty(), "nothing was decided in Cloud");
 }

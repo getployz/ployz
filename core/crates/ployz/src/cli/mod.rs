@@ -200,6 +200,12 @@ fn review_version(version: &str) -> Result<String, &'static str> {
     }
 }
 
+pub(crate) fn approval() -> Arg {
+    value("approval", None).value_name("ID").help(
+        "Go ahead with the approval a human gave in Ployz Cloud; an approval refusal names it",
+    )
+}
+
 pub(crate) fn volume_acceptance() -> Arg {
     repeated("accept-volume-loss")
         .num_args(1)

@@ -12,6 +12,7 @@ use ployz_store::{
 };
 
 use super::{Error, config_path, leaf_matches, runtime};
+use crate::approval::{self, Asked};
 use crate::cli::{env, value};
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{CredentialStore, LoginError};
@@ -22,6 +23,7 @@ impl From<StoreCallError> for Error {
         match error {
             StoreCallError::Refused(error) => error.into(),
             StoreCallError::Cloud(error) => error.into(),
+            StoreCallError::Stopped(failure) => failure,
         }
     }
 }
@@ -74,14 +76,19 @@ impl Backend {
                     credential,
                     "read",
                     &query.to_query(),
+                    None,
                 ))?;
                 Q::view(view).map_err(StoreCallError::Refused)
             }
         }
     }
 
-    /// `trusted` is the in-process Store's evidence; Cloud gathers its own.
-    fn write<C: Tell>(&self, command: &C, trusted: Trusted) -> Result<C::Written, StoreCallError> {
+    fn write<C: Tell>(
+        &self,
+        command: &C,
+        trusted: Trusted,
+        approval: Option<&str>,
+    ) -> Result<C::Written, StoreCallError> {
         match self {
             Self::Local(store, who) => store
                 .write_trusted(who, command, &trusted)
@@ -91,6 +98,7 @@ impl Backend {
                     credential,
                     "write",
                     &command.to_command(),
+                    approval,
                 ))?;
                 C::written(written).map_err(StoreCallError::Refused)
             }
@@ -140,7 +148,44 @@ impl<'m> Store<'m> {
 
     /// [`Self::write`], leaving the refusal for the caller to add a next step to.
     pub(crate) fn try_write<C: Tell>(&self, command: &C) -> Result<C::Written, StoreCallError> {
-        self.backend.write(command, Trusted::default())
+        self.approved(command, &Trusted::default())
+    }
+
+    fn approved<C: Tell>(
+        &self,
+        command: &C,
+        trusted: &Trusted,
+    ) -> Result<C::Written, StoreCallError> {
+        let mut approval = self
+            .matches
+            .try_get_one::<String>("approval")
+            .ok()
+            .flatten()
+            .cloned();
+        loop {
+            let refused = match self
+                .backend
+                .write(command, trusted.clone(), approval.as_deref())
+            {
+                Err(StoreCallError::Refused(refused)) => refused,
+                written => return written,
+            };
+            let (Backend::Cloud(runtime, credential), Some(asked), false) =
+                (&self.backend, Asked::of(&refused), crate::ui::json())
+            else {
+                return Err(StoreCallError::Refused(refused));
+            };
+            let verb = match command
+                .to_command()
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+            {
+                Some("publish") => "publish",
+                _ => "deploy",
+            };
+            let retry = self.again(&["--approval", &asked.id]);
+            approval = Some(approval::settle(runtime, credential, verb, &asked, retry)?);
+        }
     }
 
     /// Admit a Deployment. The in-process Store reviews Volume loss against the
@@ -155,9 +200,9 @@ impl<'m> Store<'m> {
             }
             _ => None,
         };
-        self.backend.write(
+        self.approved(
             admit,
-            Trusted {
+            &Trusted {
                 volumes,
                 ..Trusted::default()
             },
@@ -229,13 +274,18 @@ impl<'m> Store<'m> {
     /// This command's failure for a Store error: an ambiguous Project is fixed by
     /// linking this directory to one, after which the same command runs as typed.
     pub(crate) fn fail(&self, error: impl Into<Refusal>) -> Error {
-        let Refusal { error, hint } = with_next(
+        let Refusal { error, mut hint } = with_next(
             error,
             |refusal| {
                 refusal.code == RpcErrorCode::Ambiguous && refusal.details.get("projects").is_some()
             },
             || next(self.matches, &["link", "--project", "PROJECT"]),
         );
+        if let (None, StoreCallError::Refused(refused)) = (&hint, &error)
+            && let Some(asked) = Asked::of(refused)
+        {
+            hint = Some(Hint::Retry(self.again(&["--approval", &asked.id])));
+        }
         Error::from(error).hint(hint)
     }
 

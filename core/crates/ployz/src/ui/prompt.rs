@@ -27,7 +27,7 @@ pub(crate) fn confirm_name(
     }
     let answer = ask(|| {
         Input::<String>::new()
-            .with_prompt(format!("Type {name} to confirm"))
+            .with_prompt(format!("Type {name} to continue"))
             .allow_empty(true)
             .interact_text_on(&Term::stderr())
             .map(Some)
