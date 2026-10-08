@@ -222,6 +222,17 @@ store_string!(
     /// A Git branch's name.
     BranchName, "a Git branch name", is_branch
 );
+store_string!(
+    /// `version:digest` binding an Approval to one review: the version pins the
+    /// revisions reviewed, the digest the destructive set a human saw.
+    ApprovalDigest, "an approval as version:digest", is_approval
+);
+
+fn is_approval(value: &str) -> bool {
+    value.rsplit_once(':').is_some_and(|(version, digest)| {
+        !version.is_empty() && digest.len() == 16 && digest.bytes().all(|b| b.is_ascii_hexdigit())
+    })
+}
 
 // A GitHub number: what JavaScript holds exactly, so 1 to 2^53 - 1.
 macro_rules! github_number {

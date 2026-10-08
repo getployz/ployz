@@ -81,7 +81,7 @@ pub use pull_request::{
 };
 pub use query::*;
 pub use removal::{RemovedVolume, VolumeLoss, docker_volume};
-pub use review::{DataEffect, DiffView, NodeChange};
+pub use review::{DataEffect, DestructiveEffect, DestructiveKind, DiffView, NodeChange};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
 pub use settings::{Apply, NodeName, SettingPath};
@@ -90,7 +90,7 @@ pub use teardown::{
     OrganizationRemoved, ProjectListing, ProjectRemoved, ProjectsQuery, ProjectsView,
     RemoveEnvironment, RemoveProject, SetDefaultEnvironment, Teardown,
 };
-pub use trusted::{Trusted, VolumeObservation};
+pub use trusted::{Approval, Trusted, VolumeObservation};
 
 /// Who is asking, and in which Organization. Every read and write is scoped to it.
 #[derive(Clone, Debug, Eq, PartialEq)]

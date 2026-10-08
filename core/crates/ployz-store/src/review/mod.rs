@@ -5,8 +5,11 @@
 //! (what the Change Set compares against). Publish and Discard recompute the review
 //! under the Environment's lock and refuse a version that no longer matches.
 
+pub(crate) mod approval;
 pub(crate) mod diff;
 pub(crate) mod publish;
+
+use std::collections::BTreeSet;
 
 use ployz_core::RpcError;
 use ployz_core::config::{
@@ -18,6 +21,9 @@ use ployz_core::config::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
+
+pub(crate) use approval::approve;
+pub use approval::{DestructiveEffect, DestructiveKind};
 
 use crate::Actor;
 use crate::error;
@@ -53,6 +59,10 @@ pub struct DiffView {
     /// changes, or that it discarded: take one to stage it.
     #[serde(default)]
     pub follow_hints: Vec<crate::FollowHint>,
+    /// What publishing this review destroys, sorted; empty when nothing.
+    #[serde(default)]
+    #[ts(as = "Option<Vec<DestructiveEffect>>", optional)]
+    pub effects: BTreeSet<DestructiveEffect>,
 }
 
 /// What happens to one node, and its changed Settings.
@@ -182,6 +192,7 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
         hints: Vec::new(),
         incoming: Vec::new(),
         follow_hints: Vec::new(),
+        effects: BTreeSet::new(),
         changes: changes
             .groups
             .into_iter()
@@ -272,6 +283,7 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             .collect::<Result<_, RpcError>>()?,
     };
     renames(&mut view, &environment.working, &head.intent);
+    view.effects = approval::destructive_effects(&view.changes, &head.applied);
     Ok(Review { view, saved, head })
 }
 

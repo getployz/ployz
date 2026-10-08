@@ -11,7 +11,7 @@ use ployz_core::{
     RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::{
-    Actor, Admit, AttachConfig, Cancel, Change, Command, ConfigId, ConfigMountAt, ConfigStore,
+    Actor, Admit, Approval, ApprovalDigest, AttachConfig, Cancel, Change, Command, ConfigId, ConfigMountAt, ConfigStore,
     ConfigsQuery, CreateConfig, CreateProject, CreateService, DeleteConfig, Deploy, DeploymentId,
     DeploymentStatus, DeploymentSummary, DeploymentsQuery, DetachConfig, DiffQuery, DiffView,
     Discard, Edit, EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId,
@@ -2954,4 +2954,94 @@ fn discard_config_mount_preserves_same_name_replacement() {
         after.config.mounts, before.config.mounts,
         "Discarding A's deleted mount must preserve B's independently authored replacement mount"
     );
+}
+
+fn deploy_as(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    approval: Approval,
+) -> Result<DeploymentSummary, RpcError> {
+    store.write_trusted(
+        who,
+        &Admit::Deploy(Deploy {
+            id: id(n),
+            environment: EnvironmentRef::default(),
+            services: Vec::new(),
+            version: None,
+            upload: None,
+            accept_volume_loss: Vec::new(),
+            message: None,
+        }),
+        &Trusted {
+            approval,
+            ..Trusted::default()
+        },
+    )
+}
+
+fn apply_both(store: &ConfigStore, who: &Actor, n: u8) {
+    admit(store, who, n, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(n), &a).unwrap();
+    store
+        .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(n), &a, succeeded(&["web", "api"]))
+        .unwrap();
+}
+
+fn remove_web(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &RemoveService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap();
+}
+
+fn approved(refused: &RpcError) -> Approval {
+    assert_eq!(refused.code.as_str(), "approval_required");
+    let approval = refused.details["approval"].as_str().unwrap();
+    Approval::Approved(ApprovalDigest::parse(approval).unwrap())
+}
+
+#[test]
+fn a_deploy_that_removes_a_deployed_service_waits_for_approval() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    remove_web(&store, &who);
+    let refused = deploy_as(&store, &who, 2, Approval::Required).unwrap_err();
+    assert_eq!(changed(&store, &who), ["web"]);
+    deploy_as(&store, &who, 2, approved(&refused)).unwrap();
+    assert!(changed(&store, &who).is_empty());
+}
+
+#[test]
+fn deploying_or_retrying_saved_state_asks_nothing_again() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    remove_web(&store, &who);
+    let refused = deploy_as(&store, &who, 2, Approval::Required).unwrap_err();
+    deploy_as(&store, &who, 2, approved(&refused)).unwrap();
+    cancel(&store, &who, 2).unwrap();
+    deploy_as(&store, &who, 3, Approval::Required).unwrap();
+    cancel(&store, &who, 3).unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Retry(Retry {
+                id: id(4),
+                deployment: id(2),
+            }),
+            &Trusted {
+                approval: Approval::Required,
+                ..Trusted::default()
+            },
+        )
+        .unwrap();
 }
