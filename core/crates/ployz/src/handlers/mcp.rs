@@ -205,7 +205,18 @@ fn tool(entry: &CommandEntry) -> Tool {
         if arg.required {
             required.push(Value::String(key.clone()));
         }
-        properties.insert(key, arg_schema(arg));
+        let conflicts: Vec<&str> = arg
+            .conflicts
+            .iter()
+            .filter(|name| {
+                entry
+                    .args
+                    .iter()
+                    .any(|other| other.name == **name && offered(other))
+            })
+            .map(String::as_str)
+            .collect();
+        properties.insert(key, arg_schema(arg, &conflicts));
     }
     let schema: JsonObject = json!({
         "type": "object",
@@ -224,7 +235,7 @@ fn tool(entry: &CommandEntry) -> Tool {
     .annotate(ToolAnnotations::new().destructive(destructive(entry.approval)))
 }
 
-fn arg_schema(arg: &ArgEntry) -> Value {
+fn arg_schema(arg: &ArgEntry, conflicts: &[&str]) -> Value {
     let mut item = Map::new();
     item.insert("type".into(), json!(arg.kind));
     if arg.kind != ArgType::Boolean && !arg.values.is_empty() {
@@ -246,12 +257,8 @@ fn arg_schema(arg: &ArgEntry) -> Value {
     if arg.stdin == Some(Stdin::OnDash) {
         sentences.push("Give it inline or as a file path; `-` for stdin is refused".to_owned());
     }
-    if !arg.conflicts.is_empty() {
-        let others: Vec<String> = arg
-            .conflicts
-            .iter()
-            .map(|name| format!("`{name}`"))
-            .collect();
+    if !conflicts.is_empty() {
+        let others: Vec<String> = conflicts.iter().map(|name| format!("`{name}`")).collect();
         sentences.push(format!("Cannot be used with {}", others.join(", ")));
     }
     if !sentences.is_empty() {
@@ -503,8 +510,9 @@ mod tests {
             tool("set")["inputSchema"]["properties"]["patch"]["description"]
                 .as_str()
                 .unwrap()
-                .contains(
-                    "- reads stdin. Give it inline or as a file path; `-` for stdin is refused. "
+                .ends_with(
+                    "- reads stdin. Give it inline or as a file path; `-` for stdin is refused. \
+                     Cannot be used with `--from-env-file`, `--at-merge`."
                 ),
         );
         assert!(tool("volume_sync")["inputSchema"]["properties"]["wait"].is_object());
