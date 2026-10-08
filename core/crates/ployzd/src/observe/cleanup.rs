@@ -194,6 +194,43 @@ pub fn run(
     Ok(report)
 }
 
+/// Removes one container's store dir, log files included: the harvester held
+/// it before Docker said Ployz does not own the container.
+///
+/// # Errors
+///
+/// Returns the first error opening, unlinking, or removing.
+pub fn discard(store: &StoreRoot, id: &ContainerId) -> io::Result<()> {
+    let containers = open_containers(store)?;
+    let name = CString::new(id.as_str()).map_err(io::Error::other)?;
+    let mut dir = match Dir::openat(
+        Some(containers.as_raw_fd()),
+        name.as_c_str(),
+        DIR_FLAGS,
+        Mode::empty(),
+    ) {
+        Ok(dir) => dir,
+        Err(Errno::ENOENT) => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let held: Vec<CString> = dir
+        .iter()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_owned())
+        .filter(|file| LogFileName::parse(file.to_bytes()).is_some())
+        .collect();
+    for file in held {
+        unlinkat(
+            Some(dir.as_raw_fd()),
+            file.as_c_str(),
+            UnlinkatFlags::NoRemoveDir,
+        )?;
+    }
+    drop(dir);
+    remove_container_dir(containers.as_raw_fd(), &name)?;
+    Ok(())
+}
+
 /// Opens the containers dir one component at a time from
 /// `<DockerRootDir>/ployz-observe`, so a symlink anywhere in the store's own
 /// path stops cleanup instead of redirecting it.
@@ -345,7 +382,7 @@ mod tests {
 
     use ployz_core::ContainerId;
 
-    use super::{Disk, Limits, Report, run};
+    use super::{Disk, Limits, Report, discard, run};
     use crate::{observe::layout::StoreRoot, test_dir::TestDir};
 
     const T0: u64 = 1_760_000_000;
@@ -557,5 +594,27 @@ mod tests {
             store.names(&cid(1)),
             ["gaps.jsonl", "meta.json", "notes.txt"]
         );
+    }
+
+    #[test]
+    fn a_discarded_container_loses_its_links_but_docker_keeps_its_files() {
+        let store = store();
+        let held = store.file(&cid(1), "1-10.log", 100, 0);
+        store.linked_by_docker(&held);
+        let outside = store.docker.join("precious");
+        fs::write(&outside, b"keep").unwrap();
+        symlink(&outside, store.root.container(&cid(1)).join("2-11.log")).unwrap();
+        store.file(&cid(1), "gaps.jsonl", 10, 0);
+
+        discard(&store.root, &cid(1)).unwrap();
+        assert!(!store.root.container(&cid(1)).exists());
+        assert_eq!(fs::read(store.docker.join("1-10.log")).unwrap().len(), 100);
+        assert_eq!(fs::read(&outside).unwrap(), b"keep");
+
+        store.file(&cid(2), "1-10.log", 10, 0);
+        store.file(&cid(2), "notes.txt", 10, 0);
+        discard(&store.root, &cid(2)).unwrap();
+        assert_eq!(store.names(&cid(2)), ["notes.txt"]);
+        discard(&store.root, &cid(3)).unwrap();
     }
 }
