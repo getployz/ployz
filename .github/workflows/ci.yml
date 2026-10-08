@@ -144,7 +144,10 @@ jobs:
       - name: Decode Docker's local log files as docker logs prints them
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo -E
+        # The installer takes the latest Docker from get.docker.com, so the decoder is proven
+        # against that, not the runner's preinstalled one.
         run: |
+          curl -fsSL https://get.docker.com | sudo sh >/dev/null
           docker version --format 'Docker {{.Server.Version}}'
           docker pull --quiet alpine:3.23.3
           cargo nextest run --package ployzd --all-features --locked --run-ignored only -E 'test(observe::integration_tests::decoding_matches_docker_logs_byte_for_byte)'
