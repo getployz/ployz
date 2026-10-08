@@ -7,6 +7,7 @@ import type {
   EnrollmentSnapshot,
   ConnectOptions,
   Connection,
+  ContainerObservation,
   DataLossConfirmation,
   DeployOutcome,
   DrainReport,
@@ -102,6 +103,11 @@ export interface PloyzSession {
     machine: MachineTarget,
     request: R,
   ) => Effect.Effect<VolumeSwitchReply<R["command"]>, PloyzSdkError>;
+  /** Container `container` as its Machine holds it, with the environment values that replicated observations redact. */
+  readonly inspectContainer: (
+    machine: MachineTarget,
+    container: string,
+  ) => Effect.Effect<{ readonly container: ContainerObservation }, PloyzSdkError>;
   readonly copyContainerImage: (
     source: MachineTarget,
     container: string,
@@ -232,6 +238,8 @@ function wrapClient(client: Client): PloyzSession {
       sdkPromise("drain machine", () => client.drainMachine(machine, scope)),
     volumeSwitch: (machine, request) =>
       sdkPromise("volume switch", () => client.volumeSwitch(machine, request)),
+    inspectContainer: (machine, container) =>
+      sdkPromise("inspect container", () => client.inspectContainer(machine, container)),
     copyContainerImage: (source, container, dest) =>
       sdkPromise("copy container image", () => client.copyContainerImage(source, container, dest)),
     requestMachineUpgrade: (machine, attemptId, release) =>

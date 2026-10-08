@@ -176,9 +176,15 @@ describe("volume runs", () => {
         kind: "service_container",
         container_id: `web-${name}`,
         namespace: "shop-production",
-        resolved_spec: { name: "web", container: { pull_policy: "always" }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
+        resolved_spec: { name: "web", container: { pull_policy: "always", environment: {} }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
       })),
     }),
+    inspectContainer: (target: string, container: string) => Effect.sync(() => ({
+      container: {
+        container_id: container,
+        resolved_spec: { name: "web", container: { pull_policy: "always", environment: { POSTGRES_PASSWORD: `secret-${machine(target).name}` } }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
+      },
+    })),
     copyContainerImage: (from: string, container: string, to: string) => Effect.sync(() => {
       verbs.push(`copy_image@${machine(from).name}->${machine(to).name}(${container})`);
     }),
@@ -612,7 +618,7 @@ describe("volume runs", () => {
       expect(final?.payload).toMatchObject({ target: "f-1", base: "21", resume_token: null });
       expect(sent.find((request) => request.command === "hand_over")?.payload).toMatchObject({ guid: "30" });
       expect(sent.find((request) => request.command === "start_handed_container")?.payload)
-        .toMatchObject({ namespace: "shop-production", resolved_spec: { container: { pull_policy: "never" } } });
+        .toMatchObject({ namespace: "shop-production", resolved_spec: { container: { pull_policy: "never", environment: { POSTGRES_PASSWORD: "secret-fsn-1" } } } });
       expect(machines.map((fake) => [fake.copy?.kind, fake.copy?.readonly, fake.copy?.newest?.guid])).toEqual([["slot", true, "30"], ["root", false, "30"]]);
       expect(await rows()).toMatchObject([{ state: "done", message: null }]);
     });

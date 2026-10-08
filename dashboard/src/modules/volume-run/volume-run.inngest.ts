@@ -27,11 +27,13 @@ import {
   refuseRun,
   type RunContext,
   sendSwitch,
+  startHanded,
   SwitchAttemptError,
   type SwitchOptions,
   takeLease,
 } from "#/modules/volume-run/volume-run.server";
 import { runInngestEffect } from "#/server/run.server";
+import type { AppServices } from "#/server/runtime.server";
 
 type StepTools = Pick<PloyzStepTools, "run" | "sleep">;
 type EffectRunner = typeof runInngestEffect;
@@ -176,13 +178,11 @@ export async function runVolume(
 const sourceRequest = ({ at, run }: RunSteps, holder: Holder, pos: Pos) => (notAfter: number) =>
   ({ switch: at(pos)(notAfter), name: run.dockerVolume, container_id: holder.containerId });
 
-const serviceRequest = ({ at, run }: RunSteps, holder: Holder, pos: Pos, pull: "never" | null) => (notAfter: number) => ({
+const serviceRequest = ({ at, run }: RunSteps, holder: Holder, pos: Pos) => (notAfter: number) => ({
   switch: at(pos)(notAfter),
   name: run.dockerVolume,
   namespace: holder.namespace,
-  resolved_spec: pull === null
-    ? holder.resolvedSpec
-    : { ...holder.resolvedSpec, container: { ...holder.resolvedSpec.container, pull_policy: pull } },
+  resolved_spec: holder.resolvedSpec,
 });
 
 const MOVE_STARTS = ["rounds", "handover", "accept", "promote", "start", "close"] as const;
@@ -203,6 +203,15 @@ async function attempt(
   )));
   if (!result.ok) throw new NonRetriableError(result.message);
   return result.reply;
+}
+
+/** `attempt` for a step whose reply the Move does not use. */
+async function settle({ step, runEffect }: RunSteps, id: string, effect: Effect.Effect<unknown, Error, AppServices>) {
+  const refusal = await step.run(id, () => runEffect(effect.pipe(
+    Effect.as(null),
+    Effect.catchIf((error) => error instanceof NonRetriableError, (error) => Effect.succeed(error.message)),
+  )));
+  if (refusal !== null) throw new NonRetriableError(refusal);
 }
 
 /** Steps 05 to 08 can be undone by thawing the source; from 09 on the target holds the only writable future, so a Move only goes forward. */
@@ -294,10 +303,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, lease: number
     }
     if (from("promote")) await promote(steps, B, required(holder));
     if (from("start")) {
-      await attempt(steps, "11-start", B, (notAfter) => ({
-        command: "start_handed_container",
-        payload: serviceRequest(steps, required(holder), { seq: 11, round: 0, sub: 0 }, "never")(notAfter),
-      }));
+      await settle(steps, "11-start", startHanded(run, runId, A, required(holder), B, at({ seq: 11, round: 0, sub: 0 })));
     }
     await attempt(steps, "12-close", A, (notAfter) => ({ command: "close", payload: mirrorRequest({ seq: 12, round: 0, sub: 0 })(notAfter) }));
   } catch (error) {
@@ -315,7 +321,7 @@ async function promote(steps: RunSteps, B: MachineRef, holder: Holder) {
     const checked = await step.run(`10-promote-${check}`, () => runEffect(
       sendSwitch(run, runId, B, (notAfter) => ({
         command: "promote",
-        payload: serviceRequest(steps, holder, { seq: 10, round: 0, sub: 0 }, null)(notAfter),
+        payload: serviceRequest(steps, holder, { seq: 10, round: 0, sub: 0 })(notAfter),
       }), { onRefusal: "throw" }).pipe(
         Effect.map((reply) => ({ ok: true as const, promoted: reply.copy?.kind === "root" && !reply.copy.readonly })),
         Effect.catchIf((error) => error instanceof SwitchAttemptError && error.reason === "busy", () => Effect.succeed({ ok: true as const, promoted: false })),

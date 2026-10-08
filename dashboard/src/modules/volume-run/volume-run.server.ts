@@ -347,6 +347,37 @@ export const copyImage = Effect.fn("VolumeRun.copyImage")(function* (ctx: RunCon
   );
 }, Effect.scoped);
 
+type StartHanded = Extract<VolumeSwitchRequest, { command: "start_handed_container" }>;
+
+/**
+ * Starts the holder on the target from its spec as the source Machine holds it: the watch frame's copy has its
+ * environment values redacted. The spec never leaves this step, so no step output records them.
+ */
+export const startHanded = Effect.fn("VolumeRun.startHanded")(function* (
+  ctx: RunContext,
+  inngestRunId: string,
+  from: MachineRef,
+  holder: Holder,
+  to: MachineRef,
+  stamp: (notAfter: number) => StartHanded["payload"]["switch"],
+) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  const session = yield* openSession(ctx.organizationId);
+  const { container } = yield* session.inspectContainer(from.id, holder.containerId).pipe(
+    Effect.mapError((error) => new Error(`reading ${holder.resolvedSpec.name}'s spec on ${from.name}: ${sdkFailureMessage(error)}`)),
+  );
+  const spec = container.resolved_spec;
+  return yield* sendSwitch(ctx, inngestRunId, to, (notAfter): StartHanded => ({
+    command: "start_handed_container",
+    payload: {
+      switch: stamp(notAfter),
+      name: ctx.dockerVolume,
+      namespace: holder.namespace,
+      resolved_spec: { ...spec, container: { ...spec.container, pull_policy: "never" } },
+    },
+  }), { onRefusal: "throw" });
+}, Effect.scoped);
+
 export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: RunContext, inngestRunId: string) {
   yield* requireOwner(ctx.id, inngestRunId);
   const session = yield* openSession(ctx.organizationId);
