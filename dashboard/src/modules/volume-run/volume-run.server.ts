@@ -320,7 +320,7 @@ export const sendSwitch = <R extends VolumeSwitchRequest>(
   }).pipe(Effect.scoped) as Effect.Effect<VolumeSwitchReply<R["command"]>, Error, Database | OrganizationRuntime>;
 };
 
-export type Holder = { readonly containerId: ContainerId; readonly namespace: Namespace; readonly resolvedSpec: ResolvedServiceSpec };
+export type Holder = { readonly containerId: ContainerId; readonly namespace: Namespace; readonly redactedSpec: ResolvedServiceSpec };
 
 /** The one Service container on the writer that mounts this Volume: Freeze stops it, Thaw restarts it, and Start rebuilds it on the target. */
 export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunContext, inngestRunId: string, writer: MachineRef) {
@@ -336,23 +336,19 @@ export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunC
     const found = holders.length === 0 ? "no Service container" : `${holders.length} Service containers`;
     return { ok: false, refusal: { code: "invalid", message: `${ctx.volumeName} has ${found} on ${writer.name}; a move needs exactly one` } } as const;
   }
-  return { ok: true, holder: { containerId: holder.container_id, namespace: holder.namespace, resolvedSpec: holder.resolved_spec } } as const;
+  return { ok: true, holder: { containerId: holder.container_id, namespace: holder.namespace, redactedSpec: holder.resolved_spec } } as const;
 }, Effect.scoped);
 
 export const copyImage = Effect.fn("VolumeRun.copyImage")(function* (ctx: RunContext, inngestRunId: string, from: MachineRef, holder: Holder, to: MachineRef) {
   yield* requireOwner(ctx.id, inngestRunId);
   const session = yield* openSession(ctx.organizationId);
   yield* session.copyContainerImage(from.id, holder.containerId, to.id).pipe(
-    Effect.mapError((error) => new Error(`copying ${holder.resolvedSpec.name}'s image to ${to.name}: ${sdkFailureMessage(error)}`)),
+    Effect.mapError((error) => new Error(`copying ${holder.redactedSpec.name}'s image to ${to.name}: ${sdkFailureMessage(error)}`)),
   );
 }, Effect.scoped);
 
 type StartHanded = Extract<VolumeSwitchRequest, { command: "start_handed_container" }>;
 
-/**
- * Starts the holder on the target from its spec as the source Machine holds it: the watch frame's copy has its
- * environment values redacted. The spec never leaves this step, so no step output records them.
- */
 export const startHanded = Effect.fn("VolumeRun.startHanded")(function* (
   ctx: RunContext,
   inngestRunId: string,
@@ -364,10 +360,10 @@ export const startHanded = Effect.fn("VolumeRun.startHanded")(function* (
   yield* requireOwner(ctx.id, inngestRunId);
   const session = yield* openSession(ctx.organizationId);
   const { container } = yield* session.inspectContainer(from.id, holder.containerId).pipe(
-    Effect.mapError((error) => new Error(`reading ${holder.resolvedSpec.name}'s spec on ${from.name}: ${sdkFailureMessage(error)}`)),
+    Effect.mapError((error) => new Error(`reading ${holder.redactedSpec.name}'s spec on ${from.name}: ${sdkFailureMessage(error)}`)),
   );
   const spec = container.resolved_spec;
-  return yield* sendSwitch(ctx, inngestRunId, to, (notAfter): StartHanded => ({
+  yield* sendSwitch(ctx, inngestRunId, to, (notAfter): StartHanded => ({
     command: "start_handed_container",
     payload: {
       switch: stamp(notAfter),

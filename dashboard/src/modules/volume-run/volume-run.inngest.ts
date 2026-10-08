@@ -182,7 +182,7 @@ const serviceRequest = ({ at, run }: RunSteps, holder: Holder, pos: Pos) => (not
   switch: at(pos)(notAfter),
   name: run.dockerVolume,
   namespace: holder.namespace,
-  resolved_spec: holder.resolvedSpec,
+  resolved_spec: holder.redactedSpec,
 });
 
 const MOVE_STARTS = ["rounds", "handover", "accept", "promote", "start", "close"] as const;
@@ -205,8 +205,7 @@ async function attempt(
   return result.reply;
 }
 
-/** `attempt` for a step whose reply the Move does not use. */
-async function settle({ step, runEffect }: RunSteps, id: string, effect: Effect.Effect<unknown, Error, AppServices>) {
+async function settle({ step, runEffect }: RunSteps, id: string, effect: Effect.Effect<void, Error, AppServices>) {
   const refusal = await step.run(id, () => runEffect(effect.pipe(
     Effect.as(null),
     Effect.catchIf((error) => error instanceof NonRetriableError, (error) => Effect.succeed(error.message)),

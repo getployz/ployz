@@ -103,7 +103,6 @@ export interface PloyzSession {
     machine: MachineTarget,
     request: R,
   ) => Effect.Effect<VolumeSwitchReply<R["command"]>, PloyzSdkError>;
-  /** Container `container` as its Machine holds it, with the environment values that replicated observations redact. */
   readonly inspectContainer: (
     machine: MachineTarget,
     container: string,
