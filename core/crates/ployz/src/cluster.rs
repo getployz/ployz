@@ -759,12 +759,15 @@ impl Client {
     ///
     /// Refused before membership mutation when this is the last Machine and any
     /// Management Client holds a key: Cloud lets go of its last Machine only by resetting it.
+    /// Also refused while the Machine answers with a copy of any Volume, which only its
+    /// reset demotes; a Machine that does not answer goes.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the Machine is not visible, when
     /// it is the last Machine and a Management Client holds a key or its holders
-    /// can't be read, or when shared-row removal fails.
+    /// can't be read, when it answers holding a Volume copy, or when shared-row
+    /// removal fails.
     pub async fn remove_machine_membership(
         &mut self,
         machine: &MachineTarget,
@@ -774,6 +777,21 @@ impl Client {
         let selected = observation.machine.id;
         if refuse_last_managed(self, &machines, selected).await? == CloudHold::Last {
             return Err(cloud_holds_last(selected));
+        }
+        let held = self
+            .inspect_storage(std::slice::from_ref(observation))
+            .await
+            .successes
+            .iter()
+            .flat_map(|success| success.value.roles())
+            .map(|(name, _)| {
+                Namespace::declared_volume_name(name)
+                    .unwrap_or(name.as_str())
+                    .to_owned()
+            })
+            .collect::<BTreeSet<_>>();
+        if !held.is_empty() {
+            return Err(copies_left_behind(&observation.machine.name, &held));
         }
         self.call::<op::RemoveMachine>(
             RemoveMachineRequest {
@@ -1129,6 +1147,23 @@ pub enum Remover {
 
 /// The last Machine is Cloud's: anyone else removing it would leave Cloud paired
 /// with a Cluster that no longer exists.
+fn copies_left_behind(machine: &MachineName, volumes: &BTreeSet<String>) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Conflict,
+        message: format!(
+            "Server {machine} answers and holds copies of Volumes {}; removing it without a reset \
+             leaves them behind. No changes made. Drop --no-reset so the reset demotes them.",
+            volumes
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        details: Value::Null,
+        cause: Vec::new(),
+    }
+}
+
 fn cloud_holds_last(machine: MachineId) -> RpcError {
     RpcError {
         code: RpcErrorCode::Conflict,

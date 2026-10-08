@@ -346,3 +346,87 @@ async fn a_server_cloud_manages_leaves_through_cloud_even_without_a_reset() {
     );
     assert_eq!(result.get("next"), Some(&json!(null)), "{result}");
 }
+
+#[tokio::test]
+async fn a_server_that_does_not_answer_leaves_without_a_reset_only_when_dead_is_typed() {
+    let mut service = DiscoveryService::new(test_description());
+    let mut gone = machine('b', "two");
+    gone.membership = MembershipObservation::Down;
+    service.machines.push(gone);
+    service.machines.push(machine('c', "three"));
+    let resets = service.reset_machines.clone();
+    let removals = service.removed_machines.clone();
+    let (address, server) = serve_discovery(service).await;
+    let connect = format!("tcp://{address}");
+    let run = |server: &'static str, extra: &'static [&'static str]| {
+        let connect = connect.clone();
+        async move {
+            tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+                .args(["--json", "--connect", &connect, "server", "rm", server])
+                .args(["--no-reset"])
+                .args(extra)
+                .output()
+                .await
+                .unwrap()
+        }
+    };
+    let error_of = |output: &std::process::Output| -> Value {
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|_| panic!("{output:?}"))
+    };
+
+    let output = run("two", &[]).await;
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let error = error_of(&output);
+    assert_eq!(
+        error.pointer("/error/code").unwrap(),
+        "confirmation_required",
+        "{error}"
+    );
+    assert_eq!(
+        error.pointer("/error/message").unwrap(),
+        "Server two does not answer; removing it without a reset needs dead typed. No changes made.",
+        "{error}"
+    );
+    let retry = error
+        .pointer("/error/details/retry")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(
+        retry.starts_with("ployz server rm two --no-reset --connect"),
+        "{retry}"
+    );
+    assert!(retry.ends_with("--confirm dead"), "{retry}");
+
+    let output = run("two", &["--confirm", "two"]).await;
+    let error = error_of(&output);
+    assert_eq!(
+        error.pointer("/error/code").unwrap(),
+        "invalid_argument",
+        "{error}"
+    );
+    assert!(
+        error
+            .pointer("/error/message")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("is not dead"),
+        "{error}"
+    );
+
+    let output = run("three", &["--confirm", "dead"]).await;
+    let error = error_of(&output);
+    assert_eq!(
+        error.pointer("/error/code").unwrap(),
+        "invalid_argument",
+        "{error}"
+    );
+    assert!(removals.lock().unwrap().is_empty());
+
+    let output = run("two", &["--confirm", "dead"]).await;
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(*removals.lock().unwrap(), [machine_id('b')]);
+    assert!(resets.lock().unwrap().is_empty());
+    server.abort();
+}

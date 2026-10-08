@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, time::Duration};
 use ployz::sdk;
 use ployz_core::{
     ContractDescription, DataLoss, DockerVolumeId, DockerVolumeName, MachineId, MachineObservation,
-    RpcErrorCode, UnconfirmedDataLoss,
+    MembershipObservation, RpcErrorCode, UnconfirmedDataLoss,
 };
 use tokio::time::timeout;
 
@@ -328,6 +328,74 @@ async fn remove_machine_removes_the_final_unpaired_machine() {
         &[entry.machine.id]
     );
     server.abort();
+}
+
+#[tokio::test]
+async fn remove_machine_membership_refuses_a_server_that_answers_holding_copies() {
+    let (_description, peer, service) = cluster_with_a_held_peer(MembershipObservation::Up);
+    let (mut client, server, _) = connected_client(service.clone()).await;
+
+    let error = client
+        .remove_machine_membership(&ployz_core::MachineTarget::from(&peer.machine.id))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        error.message,
+        "Server peer answers and holds copies of Volumes data, logs; removing it without a reset \
+         leaves them behind. No changes made. Drop --no-reset so the reset demotes them."
+    );
+    assert!(service.removed_machines.lock().unwrap().is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn remove_machine_membership_removes_a_server_that_does_not_answer() {
+    let (_description, peer, service) = cluster_with_a_held_peer(MembershipObservation::Down);
+    let (mut client, server, _) = connected_client(service.clone()).await;
+
+    client
+        .remove_machine_membership(&ployz_core::MachineTarget::from(&peer.machine.id))
+        .await
+        .unwrap();
+    assert!(service.reset_machines.lock().unwrap().is_empty());
+    assert_eq!(
+        service.removed_machines.lock().unwrap().as_slice(),
+        &[peer.machine.id]
+    );
+    server.abort();
+}
+
+/// An entry Machine and a peer `membership` reports, whose storage holds Volume `data`'s
+/// writer and a slot of Volume `logs`.
+fn cluster_with_a_held_peer(
+    membership: MembershipObservation,
+) -> (ContractDescription, MachineObservation, DiscoveryService) {
+    let (description, entry, mut service) = last_machine_cluster();
+    let mut peer = machine('b', "peer");
+    peer.membership = membership;
+    service.machines = vec![entry, peer.clone()];
+    let bytes = ployz_core::ProvisionedVolumeMaximumBytes::new(
+        std::num::NonZeroU64::new(ployz_core::STORAGE_GIB).unwrap(),
+    );
+    let docker = |name: &str| DockerVolumeName::parse(name).unwrap();
+    service.storage_capacity = Some(ployz_core::StorageCapacity {
+        backing: ployz_core::StorageBacking::Unallocated {
+            host_total_bytes: 100 * ployz_core::STORAGE_GIB,
+            host_available_bytes: 90 * ployz_core::STORAGE_GIB,
+        },
+        unmanaged_used_bytes: 0,
+        volumes: BTreeMap::from([(docker("app-prod_data"), bytes)]),
+        copies: BTreeMap::from([(
+            docker("app-prod_logs"),
+            ployz_core::ProvisionedCopy {
+                role: ployz_core::CopyRole::Slot,
+                maximum_bytes: bytes,
+                used_bytes: 0,
+            },
+        )]),
+    });
+    (description, peer, service)
 }
 
 fn last_machine_cluster() -> (ContractDescription, MachineObservation, DiscoveryService) {

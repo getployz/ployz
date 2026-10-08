@@ -12,7 +12,7 @@ use crate::connect::Remover;
 use crate::drain::{replicated_services_on, services_on};
 use crate::handlers::{
     Error,
-    data_loss::{VolumeEffect, VolumeLabels, volume_label},
+    data_loss::{Typed, VolumeEffect, VolumeLabels, volume_label},
     leaf_matches, store,
 };
 use ployz_core::{EnvironmentValues, ObservedDataLoss};
@@ -27,11 +27,14 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let selector = target(matches, "server")?.to_owned();
     let no_reset = matches.get_flag("no-reset");
     let runtime = runtime()?;
-    let (mut client, selected, hold, cloud, observed, services, replicated_services) = runtime.block_on(async {
+    let (mut client, selected, answers, hold, cloud, observed, services, replicated_services) = runtime.block_on(async {
         let mut client = super::connect(matches, options.context()).await?;
         let machines = client.machines().await?;
         let selected = select_machine(&machines, &selector)?;
         let selected_target = MachineTarget::from(&selected.id);
+        let answers = machines
+            .iter()
+            .any(|observed| observed.machine.id == selected.id && observed.invites_rpc());
         let current = client
             .call::<op::DescribeContract>(DescribeContractRequest {}, None)
             .await?
@@ -69,7 +72,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         }
         let services = services_on(&selected.id, &live);
         let replicated_services = replicated_services_on(&selected.id, &live);
-        Ok::<_, Error>((client, selected, hold, cloud, observed, services, replicated_services))
+        Ok::<_, Error>((client, selected, answers, hold, cloud, observed, services, replicated_services))
     })?;
     if !services.is_empty() {
         crate::ui::warn(format!(
@@ -87,11 +90,16 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     }
     // The Store reads block on their own runtime, so they run between the two.
     let labels = volume_labels(root, &observed);
+    let dead = no_reset && !answers;
     let confirmation = super::super::data_loss::confirm_removal(
         root,
         &client,
         &observed,
-        selected.name.as_str(),
+        if dead {
+            Typed::dead(selected.name.as_str())
+        } else {
+            Typed::name(selected.name.as_str())
+        },
         if no_reset {
             VolumeEffect::Preserve
         } else {
@@ -101,10 +109,17 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         |retry| {
             Error::detailed(
                 RpcErrorCode::ConfirmationRequired,
-                format!(
-                    "Removing Server {} needs its name typed. No changes made.",
-                    selected.name
-                ),
+                if dead {
+                    format!(
+                        "Server {} does not answer; removing it without a reset needs dead typed. No changes made.",
+                        selected.name
+                    )
+                } else {
+                    format!(
+                        "Removing Server {} needs its name typed. No changes made.",
+                        selected.name
+                    )
+                },
                 json!({
                     "server": { "id": selected.id, "name": selected.name },
                     "services": services,
