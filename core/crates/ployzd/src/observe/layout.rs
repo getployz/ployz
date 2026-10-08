@@ -25,14 +25,18 @@ use ployz_core::ContainerId;
 use serde::{Deserialize, Serialize};
 
 const STORE_DIR: &str = "ployz-observe";
-const VERSION_DIR: &str = "v1";
-const CONTAINERS_DIR: &str = "containers";
+/// The store's version dir under `<DockerRootDir>/ployz-observe`.
+pub const VERSION_DIR: &str = "v1";
+/// The dir of container dirs under the version dir.
+pub const CONTAINERS_DIR: &str = "containers";
 /// A container's metadata file.
 pub const META_FILE: &str = "meta.json";
 /// The name `atomic_write` gives `meta.json` while it writes it.
 pub const META_TEMP_FILE: &str = "meta.tmp";
 /// A container's gap list.
 pub const GAPS_FILE: &str = "gaps.jsonl";
+/// The name a log file takes while the harvester checks which inode it got.
+pub const LINKING_FILE: &str = "linking.tmp";
 const LOG_SUFFIX: &str = ".log";
 
 /// The versioned root of the Log Store, `<DockerRootDir>/ployz-observe/v1`.
@@ -60,6 +64,12 @@ impl StoreRoot {
         self.containers().join(id.as_str())
     }
 
+    /// `<DockerRootDir>/ployz-observe`, which holds the version dirs.
+    #[must_use]
+    pub fn base(&self) -> &Path {
+        self.0.parent().unwrap_or(&self.0)
+    }
+
     /// Creates the store, first deleting any version dir that is not `v1`.
     ///
     /// The store is disposable, so a format this release does not know is
@@ -68,13 +78,12 @@ impl StoreRoot {
     ///
     /// # Errors
     ///
-    /// Returns an error when a foreign version dir cannot be removed or the
-    /// store dirs cannot be created.
+    /// Returns an error when a foreign version dir cannot be removed, the
+    /// store dirs cannot be created, or one of them is a symlink or not a
+    /// dir, since cleanup deletes beneath them.
     pub fn prepare(&self) -> io::Result<()> {
-        let parent = self.0.parent().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "store root has no parent")
-        })?;
-        create_private_dir(parent)?;
+        let parent = self.base();
+        create_store_dir(parent)?;
         for entry in fs::read_dir(parent)? {
             let entry = entry?;
             let name = entry.file_name();
@@ -87,14 +96,26 @@ impl StoreRoot {
                 fs::remove_dir_all(entry.path())?;
             }
         }
-        create_private_dir(&self.0)?;
-        create_private_dir(&self.containers())
+        create_store_dir(&self.0)?;
+        create_store_dir(&self.containers())
     }
 }
 
 fn is_version_name(name: &str) -> bool {
     name.strip_prefix('v')
         .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn create_store_dir(path: &Path) -> io::Result<()> {
+    create_private_dir(path)?;
+    if fs::symlink_metadata(path)?.is_dir() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "{} is not a dir; refusing to keep the Log Store there",
+            path.display()
+        )))
+    }
 }
 
 /// Creates `path` as a 0700 dir when it does not exist.
@@ -237,5 +258,15 @@ mod tests {
         assert!(parent.join("notes").is_dir());
         assert!(parent.join("v1x").is_file());
         assert!(root.containers().is_dir());
+    }
+
+    #[test]
+    fn prepare_refuses_a_symlinked_store_dir() {
+        let docker = TestDir::new("ployzd-observe-layout-symlink");
+        let elsewhere = docker.0.join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("containers")).unwrap();
+        std::fs::create_dir_all(docker.0.join("ployz-observe")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, docker.0.join("ployz-observe/v1")).unwrap();
+        assert!(StoreRoot::under(&docker.0).prepare().is_err());
     }
 }
