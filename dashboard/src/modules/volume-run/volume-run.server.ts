@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { CopyObservation, EnvironmentRef, MachineId, MachineName, SwitchError, VolumeSwitchReply, VolumeSwitchRequest } from "@ployz/sdk";
+import type { ContainerId, CopyObservation, EnvironmentRef, MachineId, MachineName, Namespace, ResolvedServiceSpec, SwitchError, VolumeSwitchReply, VolumeSwitchRequest } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNull, lt, max, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
@@ -281,12 +281,25 @@ export function switchFailureMessage(
   }
 }
 
+/** A failed attempt the step may retry; `reason` is the Machine's SwitchError, if it gave one. */
+export class SwitchAttemptError extends Error {
+  constructor(readonly reason: SwitchError["reason"] | null, message: string) {
+    super(message);
+  }
+}
+
+/**
+ * With `throw` a refusal fails only the step, so a Move can thaw its source or add its next command before it records
+ * the failure. A newer lease or a later step still ends the run, since nothing of this run may follow it.
+ */
+export type SwitchOptions = { readonly messages?: SwitchMessages; readonly onRefusal?: "fail" | "throw" };
+
 export const sendSwitch = <R extends VolumeSwitchRequest>(
   ctx: RunContext,
   inngestRunId: string,
   machine: MachineRef,
   build: (notAfterUnixSeconds: number) => R,
-  overrides?: SwitchMessages,
+  options: SwitchOptions = {},
 ) => {
   // SAFETY: a Machine answers each Volume Switch verb with that verb's reply; the session types the pair loosely.
   return Effect.gen(function* () {
@@ -296,13 +309,43 @@ export const sendSwitch = <R extends VolumeSwitchRequest>(
     return yield* session.volumeSwitch(machine.id, request).pipe(
       Effect.catch((error): Effect.Effect<never, Error, Database> => {
         const reason = switchErrorOf(error);
-        const message = reason === null ? undefined : switchFailureMessage(reason, ctx, machine, overrides);
-        if (message !== undefined) return failRun(ctx, inngestRunId, message);
-        return Effect.fail(new Error(`${request.command} on ${machine.name}: ${sdkFailureMessage(error)}`));
+        const message = reason === null ? undefined : switchFailureMessage(reason, ctx, machine, options.messages);
+        if (message !== undefined) {
+          const thrown = options.onRefusal === "throw" && reason !== "stale_lease" && reason !== "stale_step";
+          return thrown ? Effect.fail(new NonRetriableError(clip(message))) : failRun(ctx, inngestRunId, message);
+        }
+        return Effect.fail(new SwitchAttemptError(reason, `${request.command} on ${machine.name}: ${sdkFailureMessage(error)}`));
       }),
     );
   }).pipe(Effect.scoped) as Effect.Effect<VolumeSwitchReply<R["command"]>, Error, Database | OrganizationRuntime>;
 };
+
+export type Holder = { readonly containerId: ContainerId; readonly namespace: Namespace; readonly resolvedSpec: ResolvedServiceSpec };
+
+/** The one Service container on the writer that mounts this Volume: Freeze stops it, Thaw restarts it, and Start rebuilds it on the target. */
+export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunContext, inngestRunId: string, writer: MachineRef) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  const session = yield* openSession(ctx.organizationId);
+  const frame = yield* session.watchFirstFrame(5_000);
+  const holders = frame.containers.filter((container) =>
+    container.machine_id === writer.id
+    && container.kind === "service_container"
+    && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === ctx.dockerVolume));
+  const [holder] = holders;
+  if (holder === undefined || holders.length > 1) {
+    const found = holders.length === 0 ? "no Service container" : `${holders.length} Service containers`;
+    return { ok: false, refusal: { code: "invalid", message: `${ctx.volumeName} has ${found} on ${writer.name}; a move needs exactly one` } } as const;
+  }
+  return { ok: true, holder: { containerId: holder.container_id, namespace: holder.namespace, resolvedSpec: holder.resolved_spec } } as const;
+}, Effect.scoped);
+
+export const copyImage = Effect.fn("VolumeRun.copyImage")(function* (ctx: RunContext, inngestRunId: string, from: MachineRef, holder: Holder, to: MachineRef) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  const session = yield* openSession(ctx.organizationId);
+  yield* session.copyContainerImage(from.id, holder.containerId, to.id).pipe(
+    Effect.mapError((error) => new Error(`copying ${holder.resolvedSpec.name}'s image to ${to.name}: ${sdkFailureMessage(error)}`)),
+  );
+}, Effect.scoped);
 
 export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: RunContext, inngestRunId: string) {
   yield* requireOwner(ctx.id, inngestRunId);
