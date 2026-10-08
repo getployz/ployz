@@ -1,5 +1,6 @@
 === project ls (empty Store) :: $ ployz project ls
-No Projects yet. Create one: ployz project new NAME
+No Projects yet.
+next: ployz project new NAME
 
 === project ls --json (empty Store) :: $ ployz --json project ls
 {
@@ -7,8 +8,9 @@ No Projects yet. Create one: ployz project new NAME
 }
 
 === project ls :: $ ployz project ls
-blog	production*
-shop	production*
+PROJECT   DEFAULT ENVIRONMENT   ENVIRONMENTS
+blog      production            production
+shop      production            production
 
 === project ls --json :: $ ployz --json project ls
 {
@@ -18,7 +20,7 @@ shop	production*
       "environments": [
         "production"
       ],
-      "id": "5df58a9e-97ce-4e7f-a880-e1cabf93265d",
+      "id": "4ae082eb-8add-4c50-86c5-e3704a7b885d",
       "name": "blog"
     },
     {
@@ -26,7 +28,7 @@ shop	production*
       "environments": [
         "production"
       ],
-      "id": "3ea2c806-0c15-4d5a-9470-6476f06412d2",
+      "id": "06367cee-8aa3-42b0-b526-c1f03ba8ecca",
       "name": "shop"
     }
   ]

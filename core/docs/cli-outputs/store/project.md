@@ -11,7 +11,13 @@ $ ployz project ls
 
 stdout:
 ```
-No Projects yet. Create one: ployz project new NAME
+PROJECT	DEFAULT ENVIRONMENT	ENVIRONMENTS
+```
+
+stderr:
+```
+No Projects yet.
+next: ployz project new NAME
 ```
 
 ### project ls --json (empty Store)
@@ -51,13 +57,13 @@ stdout:
 ```
 {
   "environment": {
-    "id": "e364abbd-290c-4382-9a7c-421be7675355",
+    "id": "b9630f8d-f49f-48a2-83c6-84a89a333e90",
     "name": "production",
     "project": "blog",
     "revision": 1
   },
   "project": {
-    "id": "5df58a9e-97ce-4e7f-a880-e1cabf93265d",
+    "id": "4ae082eb-8add-4c50-86c5-e3704a7b885d",
     "name": "blog"
   }
 }
@@ -72,7 +78,7 @@ $ ployz project new shop
 
 stderr:
 ```
-A Project named shop already exists
+error: A Project named shop already exists
 ```
 
 ### project new --json: name taken
@@ -84,31 +90,31 @@ $ ployz --json project new shop
 
 stdout:
 ```
-{"error":{"code":"conflict","details":{"project":"shop"},"message":"A Project named shop already exists"}}
+{"error":{"cause":[],"code":"conflict","details":{"project":"shop"},"message":"A Project named shop already exists"}}
 ```
 
 ### project new: invalid name
 
 ```console
 $ ployz project new Bad\ Name\!
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-Expected a Project name: up to 63 lowercase letters, digits and -
+error: Expected a Project name: up to 63 lowercase letters, digits and -
 ```
 
 ### project new --json: invalid name
 
 ```console
 $ ployz --json project new Bad\ Name\!
-# exit 1
+# exit 2
 ```
 
 stdout:
 ```
-{"error":{"code":"invalid_argument","details":null,"message":"Expected a Project name: up to 63 lowercase letters, digits and -"}}
+{"error":{"cause":[],"code":"invalid_argument","details":null,"message":"Expected a Project name: up to 63 lowercase letters, digits and -"}}
 ```
 
 ### project ls
@@ -120,8 +126,9 @@ $ ployz project ls
 
 stdout:
 ```
-blog	production*
-shop	production*
+PROJECT	DEFAULT ENVIRONMENT	ENVIRONMENTS
+blog	production	production
+shop	production	production
 ```
 
 ### project ls --json
@@ -140,7 +147,7 @@ stdout:
       "environments": [
         "production"
       ],
-      "id": "5df58a9e-97ce-4e7f-a880-e1cabf93265d",
+      "id": "4ae082eb-8add-4c50-86c5-e3704a7b885d",
       "name": "blog"
     },
     {
@@ -148,7 +155,7 @@ stdout:
       "environments": [
         "production"
       ],
-      "id": "3ea2c806-0c15-4d5a-9470-6476f06412d2",
+      "id": "06367cee-8aa3-42b0-b526-c1f03ba8ecca",
       "name": "shop"
     }
   ]
@@ -179,7 +186,7 @@ stdout:
 {
   "links": 0,
   "project": {
-    "id": "5df58a9e-97ce-4e7f-a880-e1cabf93265d",
+    "id": "4ae082eb-8add-4c50-86c5-e3704a7b885d",
     "name": "blog"
   }
 }
@@ -199,7 +206,7 @@ $ ployz project rename nope other
 
 stderr:
 ```
-No Project named nope
+error: No Project named nope
 ```
 
 ### project rename: name taken
@@ -211,32 +218,32 @@ $ ployz project rename blog shop
 
 stderr:
 ```
-A Project named shop already exists
+error: A Project named shop already exists
 ```
 
 ### project rm without --confirm
 
 ```console
 $ ployz project rm scratch1
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-Removing Project scratch1 deletes every Environment in it (production) with its configuration, history, Services and Volumes; this can't be undone. No changes made.
-Retry: ployz project rm scratch1 --confirm scratch1
+error: Removing Project scratch1 deletes every Environment in it (production) with its configuration, history, Services and Volumes; this can't be undone. No changes made.
+retry: ployz project rm scratch1 --confirm scratch1
 ```
 
 ### project rm --json without --confirm
 
 ```console
 $ ployz --json project rm scratch1
-# exit 1
+# exit 2
 ```
 
 stdout:
 ```
-{"error":{"code":"confirmation_required","details":{"environments":[{"environment":{"id":"48d38cad-f782-4c37-ab14-43999c9d64d1","name":"production","project":"scratch1","revision":1},"services":[],"volumes":[]}],"next":"ployz project rm scratch1 --confirm scratch1","project":"scratch1"},"message":"Removing Project scratch1 deletes every Environment in it (production) with its configuration, history, Services and Volumes; this can't be undone. No changes made.\nRetry: ployz project rm scratch1 --confirm scratch1"}}
+{"error":{"cause":[],"code":"confirmation_required","details":{"environments":[{"environment":{"id":"8fd49816-17ee-43b0-bbe1-2dae6667489c","name":"production","project":"scratch1","revision":1},"services":[],"volumes":[]}],"project":"scratch1","retry":"ployz project rm scratch1 --confirm scratch1"},"message":"Removing Project scratch1 deletes every Environment in it (production) with its configuration, history, Services and Volumes; this can't be undone. No changes made."}}
 ```
 
 ### project rm: --confirm mismatch
@@ -248,7 +255,8 @@ $ ployz project rm scratch1 --confirm scratch
 
 stderr:
 ```
---confirm scratch does not match Project scratch1. No changes made.
+error: --confirm scratch does not match Project scratch1. No changes made.
+retry: ployz project rm scratch1 --confirm scratch1
 ```
 
 ### project rm --confirm
@@ -278,7 +286,7 @@ stdout:
     "production"
   ],
   "project": {
-    "id": "33781919-6847-4bd4-bc56-07cfb64fcb31",
+    "id": "8736ad92-8833-4dbe-9f34-0f16d2892b11",
     "name": "scratch2"
   }
 }
@@ -293,14 +301,16 @@ $ ployz project rm nope --confirm nope
 
 stderr:
 ```
-No Project named nope
+error: No Project named nope
 ```
 
 ### project rm in a terminal, no --confirm (TTY, typed: <Enter>)
 
 ```console
 $ ployz project rm blog
-Removing Project blog deletes every Environment in it (production) with its configuration, history, Services and Volumes; this can't be undone. No changes made.
-Retry: ployz project rm blog --confirm blog
+Removing Project blog deletes, for good:
+└─ production
+Type blog to confirm: [2KType blog to confirm: 
+Cancelled. Nothing was removed.
 ```
 

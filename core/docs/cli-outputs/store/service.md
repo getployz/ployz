@@ -14,6 +14,12 @@ stdout:
 SERVICE	PRIVATE DNS	SOURCE	NEXT DEPLOY
 ```
 
+stderr:
+```
+No Services in production yet.
+next: ployz service add NAME --image REF --project shop
+```
+
 ### service ls --json (no Services)
 
 ```console
@@ -25,7 +31,7 @@ stdout:
 ```
 {
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 1
@@ -46,6 +52,11 @@ stdout:
 Staged new Service web in shop/production (revision 2).
 ```
 
+stderr:
+```
+next: ployz deploy --project shop
+```
+
 ### service add --json --image
 
 ```console
@@ -57,14 +68,14 @@ stdout:
 ```
 {
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 3
   },
-  "next": "ployz diff --project shop",
+  "next": "ployz deploy --project shop",
   "service": {
-    "id": "49f3ad59-318d-4262-b5a4-9fac1564ef0f",
+    "id": "fdf7675e-ccc7-4f64-afa5-ca281d550ace",
     "name": "db",
     "private_dns": "db"
   },
@@ -95,6 +106,11 @@ stdout:
 Staged new Service worker in shop/production (revision 4).
 ```
 
+stderr:
+```
+next: ployz deploy --project shop
+```
+
 ### service add: name taken
 
 ```console
@@ -104,7 +120,7 @@ $ ployz service add web --image nginx:1.27
 
 stderr:
 ```
-Environment production already has a Service named web
+error: Environment production already has a Service named web
 ```
 
 ### service add --json: name taken
@@ -116,7 +132,7 @@ $ ployz --json service add web --image nginx:1.27
 
 stdout:
 ```
-{"error":{"code":"conflict","details":{"service":"web"},"message":"Environment production already has a Service named web"}}
+{"error":{"cause":[],"code":"conflict","details":{"service":"web"},"message":"Environment production already has a Service named web"}}
 ```
 
 ### service add: invalid name
@@ -128,7 +144,7 @@ $ ployz service add Web_1
 
 stderr:
 ```
-Expected a Service name: up to 63 lowercase letters, digits and -, like web
+error: Expected a Service name: up to 63 lowercase letters, digits and -, like web
 ```
 
 ### service add: --image and --repo together
@@ -142,7 +158,7 @@ stderr:
 ```
 error: the argument '--image <REF>' cannot be used with '--repo <OWNER/REPO[@BRANCH]>'
 
-Usage: ployz service add --image <REF> --project <project> --ployz-config <ployz-config> <name>
+Usage: ployz service add --image <REF> --project <project> <name>
 
 For more information, try '--help'.
 ```
@@ -156,7 +172,7 @@ $ ployz service add api --repo acme/api
 
 stderr:
 ```
-No repository by that name that this Organization can read: connect it through GitHub, or name a public one
+error: No repository by that name that this Organization can read: connect it through GitHub, or name a public one
 next: ployz github connect
 ```
 
@@ -186,7 +202,7 @@ stdout:
 ```
 {
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 4
@@ -194,28 +210,28 @@ stdout:
   "services": [
     {
       "change": "create",
-      "id": "49f3ad59-318d-4262-b5a4-9fac1564ef0f",
+      "id": "fdf7675e-ccc7-4f64-afa5-ca281d550ace",
       "name": "db",
       "private_dns": "db",
-      "row": "49f3ad59-318d-4262-b5a4-9fac1564ef0f:node",
+      "row": "fdf7675e-ccc7-4f64-afa5-ca281d550ace:node",
       "source": "image",
       "template": null
     },
     {
       "change": "create",
-      "id": "4dfec997-f0c6-428f-9c6c-476adb6724c1",
+      "id": "87070af3-9604-42c2-b3dc-918e60918fc0",
       "name": "web",
       "private_dns": "web",
-      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:node",
+      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:node",
       "source": "image",
       "template": null
     },
     {
       "change": "create",
-      "id": "9341f07f-a7bb-499e-9b81-8a88de41dd48",
+      "id": "6b56d40b-9c56-4df3-a375-cd13a984d1ca",
       "name": "worker",
       "private_dns": "worker",
-      "row": "9341f07f-a7bb-499e-9b81-8a88de41dd48:node",
+      "row": "6b56d40b-9c56-4df3-a375-cd13a984d1ca:node",
       "source": "empty",
       "template": null
     }
@@ -235,6 +251,11 @@ stdout:
 Staged rename of Service jobs in shop/production (revision 5).
 ```
 
+stderr:
+```
+next: ployz deploy --project shop
+```
+
 ### service rename --json
 
 ```console
@@ -246,14 +267,14 @@ stdout:
 ```
 {
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 6
   },
-  "next": "ployz diff --project shop",
+  "next": "ployz deploy --project shop",
   "service": {
-    "id": "9341f07f-a7bb-499e-9b81-8a88de41dd48",
+    "id": "6b56d40b-9c56-4df3-a375-cd13a984d1ca",
     "name": "worker",
     "private_dns": "worker"
   },
@@ -272,7 +293,7 @@ $ ployz service rename nope other
 
 stderr:
 ```
-No Service named nope in Environment production
+error: No Service named nope in Environment production
 valid: web, db, worker
 ```
 
@@ -288,6 +309,11 @@ stdout:
 Staged removal of Service worker in shop/production (revision 7).
 ```
 
+stderr:
+```
+next: ployz deploy --project shop
+```
+
 ### service rm: unknown Service
 
 ```console
@@ -297,7 +323,7 @@ $ ployz service rm nope
 
 stderr:
 ```
-No Service named nope in Environment production
+error: No Service named nope in Environment production
 valid: web, db
 ```
 
@@ -312,14 +338,14 @@ stdout:
 ```
 {
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 9
   },
-  "next": "ployz diff --project shop",
+  "next": "ployz deploy --project shop",
   "service": {
-    "id": "e2005bb8-4284-449b-a23e-97928bea2881",
+    "id": "2d08aede-4cd5-4baf-930e-561d6aecc2a1",
     "name": "cache",
     "private_dns": "cache"
   },

@@ -1,6 +1,7 @@
 === status (no Project yet) :: $ ployz status
-Organization local (local).
-Needs attention: This Organization has no Project yet
+organization     local
+signed in as     local
+needs attention  This Organization has no Project yet
 next: ployz project new NAME
 
 === status --json (no Project yet) :: $ ployz --json status
@@ -31,9 +32,10 @@ next: ployz project new NAME
 }
 
 === status (staged changes) :: $ ployz status
-Organization local (local).
-Environment shop/production.
-11 staged changes.
+organization  local
+signed in as  local
+environment   shop/production
+staged        11 changes
 next: ployz diff --project shop
 
 === status --json (staged changes) :: $ ployz --json status
@@ -41,7 +43,7 @@ next: ployz diff --project shop
   "attention": [],
   "deploying": [],
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 21
@@ -70,15 +72,17 @@ next: ployz diff --project shop
 }
 
 === status (two Projects, no link) :: $ ployz status
-Organization local (local).
-Needs attention: Name a Project: this Organization has more than one
+organization     local
+signed in as     local
+needs attention  Name a Project: this Organization has more than one
 next: ployz link --project PROJECT
 
 === status (linked, staged changes) :: $ ployz status
-Organization local (local).
-Environment shop/production.
-Linked from /tmp/ployz-cli-outputs-store/work.
-10 staged changes.
+organization  local
+signed in as  local
+environment   shop/production
+linked from   /tmp/ployz-cli-outputs-store/work
+staged        10 changes
 next: ployz diff
 
 === status --json (linked) :: $ ployz --json status
@@ -86,7 +90,7 @@ next: ployz diff
   "attention": [],
   "deploying": [],
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 34
@@ -118,23 +122,25 @@ next: ployz diff
 }
 
 === status with --env override :: $ ployz status --env staging
-Organization local (local).
-Environment shop/staging.
-Linked from /tmp/ployz-cli-outputs-store/work.
-0 staged changes.
+organization  local
+signed in as  local
+environment   shop/staging
+linked from   /tmp/ployz-cli-outputs-store/work
+staged        0 changes
 
 === status with PLOYZ_ENV :: $ env PLOYZ_ENV=fix-web ployz status
-Organization local (local).
-Environment shop/fix-web.
-Linked from /tmp/ployz-cli-outputs-store/work.
-6 staged changes.
+organization  local
+signed in as  local
+environment   shop/fix-web
+linked from   /tmp/ployz-cli-outputs-store/work
+staged        6 changes
 next: ployz diff --env fix-web
 
 === ctx (no contexts) :: $ ployz ctx
-Organization: local
-Project: shop (link)
-Environment: production (link)
-Servers: via local
+organization  local
+project       shop (link)
+environment   production (link)
+servers       via local
 
 === ctx --json (no contexts) :: $ ployz --json ctx
 {
@@ -157,7 +163,7 @@ Servers: via local
 }
 
 === ctx ls (no contexts) :: $ ployz ctx ls
-No contexts found
+No contexts yet.
 
 === ctx ls --json (no contexts) :: $ ployz --json ctx ls
 {
@@ -165,9 +171,9 @@ No contexts found
 }
 
 === ctx ls :: $ ployz ctx ls
-NAME	CURRENT	DEFAULT	CONNECTIONS
-dev		unix:///tmp/dev.sock	1
-prod	*	unix:///tmp/prod.sock	2
+NAME   CURRENT     DEFAULT                 CONNECTIONS
+dev    -           unix:///tmp/dev.sock    1
+prod   ✔ current   unix:///tmp/prod.sock   2
 
 === ctx ls --json :: $ ployz --json ctx ls
 {
@@ -191,10 +197,10 @@ prod	*	unix:///tmp/prod.sock	2
 }
 
 === ctx :: $ ployz ctx
-Organization: local
-Project: shop (link)
-Environment: production (link)
-Servers: via context prod
+organization  local
+project       shop (link)
+environment   production (link)
+servers       via context prod
 
 === ctx --json :: $ ployz --json ctx
 {
@@ -218,12 +224,13 @@ Servers: via context prod
 }
 
 === ctx ls (all removed) :: $ ployz ctx ls
-No contexts found
+No contexts yet.
 
 === status (with a context removed) :: $ ployz status
-Organization local (local).
-Environment shop/production.
-Linked from /tmp/ployz-cli-outputs-store/work.
-10 staged changes.
+organization  local
+signed in as  local
+environment   shop/production
+linked from   /tmp/ployz-cli-outputs-store/work
+staged        10 changes
 next: ployz diff
 
