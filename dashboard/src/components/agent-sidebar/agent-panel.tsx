@@ -28,13 +28,15 @@ function storedThread(organizationSlug: string) {
   return fresh;
 }
 
+type PanelProps = { organizationSlug: string; environment: string | null; scope: CollectionScope; onClose: () => void };
+
+/** The active Organization's agent: switching Organization swaps in that Organization's thread and connection. */
+export default function AgentPanel(props: PanelProps) {
+  return <OrganizationPanel key={props.organizationSlug} {...props} />;
+}
+
 /** The Organization's one agent conversation, kept across reloads; "New chat" starts another. */
-export default function AgentPanel({ organizationSlug, environment, scope, onClose }: {
-  organizationSlug: string;
-  environment: string | null;
-  scope: CollectionScope;
-  onClose: () => void;
-}) {
+function OrganizationPanel({ organizationSlug, environment, scope, onClose }: PanelProps) {
   const [threadId, setThreadId] = useState(() => storedThread(organizationSlug));
   const newChat = () => {
     const fresh = crypto.randomUUID();

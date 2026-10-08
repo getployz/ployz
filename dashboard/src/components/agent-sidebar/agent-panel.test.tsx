@@ -2,12 +2,18 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { UIMessage } from "@tanstack/ai-react";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { Message } from "./agent-panel";
+import AgentPanel, { Message } from "./agent-panel";
 import { approvalOptions, type ApprovalView } from "./approvals.queries";
 
-afterEach(() => { cleanup(); });
+const { connect, useChat } = vi.hoisted(() => ({
+  connect: vi.fn((url: string) => ({ url })),
+  useChat: vi.fn((_options: { threadId: string }) => ({ interrupts: [], messages: [], isHydrating: true, isLoading: false, sendMessage: () => {} })),
+}));
+vi.mock("@tanstack/ai-react", () => ({ fetchServerSentEvents: connect, useChat }));
+
+afterEach(() => { cleanup(); localStorage.clear(); vi.unstubAllGlobals(); });
 
 const scope = { queryClient: new QueryClient(), sessionId: "s", userId: "u" };
 
@@ -27,4 +33,21 @@ it("says a denied call was denied once, on its approval card", () => {
   });
   render(<QueryClientProvider client={client}><Message organizationSlug="acme" scope={scope} message={message} asked={{ c1: "a1" }} bound={[]} /></QueryClientProvider>);
   expect(screen.getAllByText(/denied/i).map((line) => line.textContent)).toEqual(["Denied: keep the data"]);
+});
+
+it("switching Organization with the panel open talks to the new Organization's thread", () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
+  localStorage.setItem("ployz.agent.thread.acme", "thread-acme");
+  localStorage.setItem("ployz.agent.thread.other", "thread-other");
+  const panel = (organizationSlug: string) => (
+    <QueryClientProvider client={client}>
+      <AgentPanel organizationSlug={organizationSlug} environment={null} scope={scope} onClose={() => {}} />
+    </QueryClientProvider>
+  );
+  const shown = render(panel("acme"));
+  expect(connect).toHaveBeenLastCalledWith("/api/agent/acme/chat");
+  shown.rerender(panel("other"));
+  expect(connect).toHaveBeenLastCalledWith("/api/agent/other/chat");
+  expect(useChat.mock.lastCall?.[0].threadId).toBe("thread-other");
 });
