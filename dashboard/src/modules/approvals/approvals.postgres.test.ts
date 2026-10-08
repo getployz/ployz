@@ -21,7 +21,9 @@ import { asTestDouble } from "#/lib/test-double";
 import { operationApprovals } from "#/modules/approvals/tables";
 import { writeStoreAsMember } from "#/modules/config-store/config-store.server";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
-import { cleanPlan, drainPlan, removePlan } from "#/modules/machines/server-operations.server";
+import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
+import { cleanPlan, drainPlan, freshApproval, freshPendingApprovals, removePlan } from "#/modules/machines/server-operations.server";
+import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import type { Caller } from "#/modules/identity/actor";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
 import { organization } from "#/modules/organization/tables";
@@ -546,6 +548,22 @@ it.live("asking about a Server's drain leaves its pending removal waiting", () =
     const drain = refusedWith(yield* gate(drainOf(["shop.web"])));
     expect((yield* provided(getApproval(ORGANIZATION, removal.approval_id))).status).toBe("pending");
     expect((yield* provided(getApproval(ORGANIZATION, drain.approval_id))).status).toBe("pending");
+  }));
+
+it.live("the approvals the sidebar and the CLI read drop a clean of a Namespace an Environment owns by now", () =>
+  Effect.gen(function* () {
+    const { provided, caller } = yield* shopRemovingWeb();
+    const [owned = expect.fail("the Environment owns no Namespace")] = yield* provided(ownedNamespaces(ORGANIZATION));
+    const frame = asTestDouble<RuntimeWatchView>()({
+      services: [{ identity: `${owned}/web`, service_id: "web", containers: [slot(MACHINE, "running")] }],
+    });
+    const waiting = refusedWith(yield* provided(gateOperation(caller, null, cleanPlan(frame, owned, []))));
+    expect((yield* provided(pendingApprovals(ORGANIZATION))).map((approval) => approval.id)).toEqual([waiting.approval_id]);
+
+    const cluster = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      provided(effect.pipe(Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntimeService>()({}))));
+    expect((yield* cluster(freshApproval(ORGANIZATION, waiting.approval_id))).status).toBe("superseded");
+    expect(yield* cluster(freshPendingApprovals(ORGANIZATION))).toEqual([]);
   }));
 
 it("a removal that resets the Server and one that keeps its data are different approvals", () => {

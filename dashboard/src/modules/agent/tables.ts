@@ -40,8 +40,8 @@ export const agentInterrupts = pgTable("agent_interrupts", {
   status: text("status").notNull().$type<InterruptRecord["status"]>(),
   requestedAt: bigint("requested_at", { mode: "number" }).notNull(),
   record: jsonb("record").notNull().$type<InterruptRecord>(),
-  /** The run resuming this interrupt, until it ends: one answer runs once however many clients resume it. */
-  claimedByRunId: text("claimed_by_run_id"),
+  /** The request resuming this interrupt, until it ends: one answer runs once however many clients resume it. */
+  claim: text("claim"),
   claimedAt: timestamp("claimed_at", { withTimezone: true }),
   createdAt,
   updatedAt,

@@ -188,6 +188,12 @@ export const trustedApproval = Effect.fn("Approvals.trusted")(function* (
   }
 });
 
+/** The Environment review a human was asked to approve as `approvalId`, whatever the Organization asks now. */
+export const reviewedDiff = Effect.fn("Approvals.reviewedDiff")(function* (organizationId: string, approvalId: string) {
+  const row = yield* readRow(organizationId, approvalId).pipe(Effect.orDie);
+  return row !== undefined && "diff" in row.review ? row.review.diff : null;
+});
+
 const RefusedReview = Schema.Struct({
   approval: Schema.String,
   diff: Schema.Struct({

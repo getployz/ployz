@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { ApprovalDecision } from "#/modules/approvals/approvals";
-import { decideApproval, gateOperation, getApproval } from "#/modules/approvals/approvals.server";
+import { decideApproval, gateOperation } from "#/modules/approvals/approvals.server";
 import { disconnectGithub, githubBranches, githubConnection } from "#/modules/github/github-cli.server";
 import type { Caller } from "#/modules/identity/actor";
 import { callerOrganizations, resolveCaller } from "#/modules/identity/caller.server";
@@ -24,7 +24,7 @@ import { startMachineRemove } from "#/modules/machines/machine-removal.server";
 import type { MachineRemoveAttemptView } from "#/modules/machines/machine-removal";
 import { readCliNamespaceCleanup, requestNamespaceCleanup } from "#/modules/machines/namespace-cleanup.server";
 import { readCliServerDrain, requestCliServerDrain } from "#/modules/machines/server-drain.server";
-import { freshOperationDigest, planClean, planDrain, planRemove } from "#/modules/machines/server-operations.server";
+import { freshApproval, freshOperationDigest, planClean, planDrain, planRemove } from "#/modules/machines/server-operations.server";
 import { readCliServerUpgrade, requestCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
@@ -267,7 +267,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
         Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))),
       );
     case "GET approvals/:id":
-      return yield* getApproval(caller.organization.id, id ?? "", freshOperationDigest).pipe(
+      return yield* freshApproval(caller.organization.id, id ?? "").pipe(
         Effect.map((approval) => ({ approval })),
         Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))),
       );

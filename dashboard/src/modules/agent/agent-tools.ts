@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Change, ConfigCommand, ConfigQuery, EnvironmentRef, JsonValue } from "@ployz/sdk";
 import { Schema } from "effect";
 import commandsJson from "../../../../core/crates/ployz-sdk/generated/commands.json";
@@ -30,11 +31,12 @@ const Env = { project: Text, env: Text };
 /**
  * How the Agent sidebar runs one command: the Store query or command the CLI sends for it. `input` names the
  * command's arguments by their tool keys. A `gated` write is a Publish or Deploy, which asks a human when its plan
- * destroys something. Each binding parses its own tool input, which the model writes and nothing has checked.
+ * destroys something. Each binding parses its own tool input, which the model writes and nothing has checked. `turn`
+ * names the run calling it, so a create the model retries in one turn keeps its ID and the Store replays it.
  */
 export type AgentBinding =
   | { kind: "read"; input: readonly string[]; query: (input: JsonValue) => ConfigQuery }
-  | { kind: "write" | "gated"; input: readonly string[]; command: (input: JsonValue) => ConfigCommand };
+  | { kind: "write" | "gated"; input: readonly string[]; command: (input: JsonValue, turn: string) => ConfigCommand };
 
 type InputSchema = Schema.ConstraintDecoder<object> & { readonly fields: Schema.Struct.Fields };
 
@@ -49,12 +51,26 @@ const read = <S extends InputSchema>(input: S, query: (input: S["Type"]) => Conf
 };
 const write =
   (kind: "write" | "gated") =>
-  <S extends InputSchema>(input: S, command: (input: S["Type"]) => ConfigCommand): AgentBinding => {
+  <S extends InputSchema>(input: S, command: (input: S["Type"], turn: string) => ConfigCommand): AgentBinding => {
     const decode = Schema.decodeUnknownSync(input);
-    return { kind, input: Object.keys(input.fields), command: (raw) => command(decode(raw)) };
+    return { kind, input: Object.keys(input.fields), command: (raw, turn) => command(decode(raw), turn) };
   };
 const stage = write("write");
 const gate = write("gated");
+
+/** A UUID that `seed` always yields, for a Store ID that must come out the same when its command is sent again. */
+export const uuidFrom = (seed: string) => {
+  const hex = createHash("sha256").update(seed).digest("hex");
+  const variant = ((Number.parseInt(hex[16] ?? "0", 16) & 0x3) | 0x8).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+};
+
+/** `path` as the Store names it: a Service's name is lowercase, so `WEB.replicas` is `web.replicas`. */
+const canonical = (path: string) => {
+  if (path === "volumes" || path.startsWith("volumes.")) return path;
+  const dot = path.indexOf(".");
+  return dot === -1 ? path.toLowerCase() : path.slice(0, dot).toLowerCase() + path.slice(dot);
+};
 
 /** `web.replicas=3` as the Change the CLI's `set` sends: split at the first `=`, the value kept as text. */
 const assignments = (given: ReadonlyArray<string>): Change[] => {
@@ -63,9 +79,16 @@ const assignments = (given: ReadonlyArray<string>): Change[] => {
     if (split === -1) throw new Error("Expected PATH=VALUE, for example web.replicas=3");
     return { op: "set", path: assignment.slice(0, split), value: assignment.slice(split + 1) };
   });
-  const repeated = changes.find((change, index) => changes.findIndex((other) => other.path === change.path) !== index);
-  if (repeated !== undefined) throw new Error(`${repeated.path} is given twice; set it once`);
+  const paths = changes.map((change) => canonical(change.path));
+  const repeated = paths.find((path, index) => paths.indexOf(path) !== index);
+  if (repeated !== undefined) throw new Error(`${repeated} is given twice; set it once`);
   return changes;
+};
+
+/** `--expect 4`: the Working revision an edit must still find, never a guess when the model wrote something else. */
+const revision = (expect: string) => {
+  if (!/^\d+$/.test(expect)) throw new Error("expect is a revision number, for example 4");
+  return Number(expect);
 };
 
 export const BINDINGS = new Map<string, AgentBinding>([
@@ -106,15 +129,15 @@ export const BINDINGS = new Map<string, AgentBinding>([
     stage(Schema.Struct({ ...Env, assignment: Schema.Array(Schema.String), expect: Text }), (input) => ({
       command: "edit",
       environment: environment(input),
-      expect: input.expect === undefined ? null : Number(input.expect),
+      expect: input.expect === undefined ? null : revision(input.expect),
       changes: assignments(input.assignment),
     })),
   ],
   [
     "service add",
-    stage(Schema.Struct({ ...Env, name: Schema.String, image: Text }), (input) => ({
+    stage(Schema.Struct({ ...Env, name: Schema.String, image: Text }), (input, turn) => ({
       command: "create_service",
-      id: crypto.randomUUID(),
+      id: uuidFrom(JSON.stringify(["ployz.agent.service", turn, input.project ?? null, input.env ?? null, input.name, input.image ?? null])),
       environment: environment(input),
       name: input.name,
       image: input.image ?? null,

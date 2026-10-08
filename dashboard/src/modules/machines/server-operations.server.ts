@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { DestructiveEffect, QualifiedService, RuntimeWatchView } from "@ployz/sdk";
 import { Effect } from "effect";
-import { operationDigest, type OperationDigest } from "#/modules/approvals/approvals.server";
+import { getApproval, operationDigest, type OperationDigest, pendingApprovals } from "#/modules/approvals/approvals.server";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
@@ -247,3 +247,9 @@ export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<ty
   });
   return fresh.pipe(Effect.orElseSucceed(() => stored));
 };
+
+/** Every approval still waiting in the Organization, each operation's preview recomputed against the Cluster first. */
+export const freshPendingApprovals = (organizationId: string) => pendingApprovals(organizationId, freshOperationDigest);
+
+/** One approval in the Organization, its operation's preview recomputed against the Cluster first. */
+export const freshApproval = (organizationId: string, id: string) => getApproval(organizationId, id, freshOperationDigest);

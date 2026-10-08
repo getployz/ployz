@@ -1,11 +1,11 @@
 import { it } from "@effect/vitest";
 import type { ConfigCommand, ConfigStore } from "@ployz/sdk";
-import { EventType, type RunAgentResumeItem, type StreamChunk } from "@tanstack/ai";
+import { EventType, type ModelMessage, type RunAgentResumeItem, type StreamChunk } from "@tanstack/ai";
 import { sql } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer, Schema } from "effect";
 import { expect, vi } from "vitest";
 import { agentChat } from "#/modules/agent/agent-chat.server";
-import { agentPersistence } from "#/modules/agent/persistence.server";
+import { agentPersistence, CLAIM_LEASE_MS, claimResume } from "#/modules/agent/persistence.server";
 import { type ApprovalView, decideApproval, getApproval, pendingApprovals, setOrganizationSettings } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
 import { AuthLive } from "#/server/auth.server";
@@ -87,7 +87,19 @@ const sidebar = Effect.fn(function* (options: { removeWeb: boolean }) {
     const rows = yield* drizzle.execute<{ id: string }>(sql`select id from config_deployment where id <> ${DEPLOYMENT}`, "objects");
     return rows.map((row) => row.id);
   }));
-  return { provided, write, caller, userId, persistence, say, waiting, answer, resume, watchWrites, pending, deployments };
+  const rewind = (interruptId: string, thread: ReadonlyArray<ModelMessage>) => Effect.gen(function* () {
+    yield* Effect.promise(() => persistence.stores.messages.saveThread(THREAD, [...thread]));
+    yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.execute(sql`update agent_interrupts set status = 'pending',
+        record = (record - 'resolvedAt' - 'response') || '{"status":"pending"}'::jsonb where interrupt_id = ${interruptId}`);
+    }));
+  });
+  const ageClaim = (interruptId: string) => provided(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`update agent_interrupts set claimed_at = now() - interval '6 minutes' where interrupt_id = ${interruptId}`);
+  }));
+  return { provided, write, store, caller, userId, persistence, say, waiting, answer, resume, watchWrites, pending, deployments, rewind, ageClaim };
 });
 
 /** The one approval waiting in Shop, asserted to be what the interrupt names. */
@@ -187,25 +199,185 @@ it.live("resuming an approval after its turn ended replays that turn instead of 
 
 it.live("a turn that died after its Deploy committed deploys nothing more when resumed again", () =>
   Effect.gen(function* () {
-    const { provided, caller, persistence, say, waiting, answer, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true });
+    const { provided, caller, persistence, say, waiting, answer, watchWrites, pending, deployments, rewind } = yield* sidebar({ removeWeb: true });
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
     yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
     const interruptId = yield* waiting;
     const beforeResume = yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD));
     yield* answer(interruptId, "resolved");
     const [deployed] = yield* deployments;
-    yield* Effect.promise(() => persistence.stores.messages.saveThread(THREAD, beforeResume));
-    yield* provided(Effect.gen(function* () {
-      const { drizzle } = yield* Database;
-      yield* drizzle.execute(sql`update agent_interrupts set status = 'pending',
-        record = (record - 'resolvedAt' - 'response') || '{"status":"pending"}'::jsonb where interrupt_id = ${interruptId}`);
-    }));
+    yield* rewind(interruptId, beforeResume);
     const writes = watchWrites();
 
     const again = yield* answer(interruptId, "resolved");
     expect(admits(writes)).toHaveLength(1);
     expect(again.results).toMatchObject([{ ok: true, value: { written: "deployment" } }]);
     expect(yield* deployments).toEqual([deployed]);
+  }), 15_000);
+
+it.live("a resume after the Deploy committed and its process died deploys nothing more, even once the Organization stops asking", () =>
+  Effect.gen(function* () {
+    const { provided, store, userId, caller, say, waiting, answer, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true });
+    const approval = yield* waitingApproval(yield* say("deploy"), pending);
+    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    const interruptId = yield* waiting;
+    const original = store.write.bind(store);
+    const writes = watchWrites();
+    writes.mockImplementationOnce(async (...args) => {
+      await original(...args);
+      throw new Error("the process died after the Store committed");
+    });
+    expect((yield* answer(interruptId, "resolved").pipe(Effect.exit))._tag).toBe("Failure");
+    const [deployed] = yield* deployments;
+    yield* provided(setOrganizationSettings({ userId }, { organizationSlug: "shop", askBeforeDestructive: false }));
+
+    const again = yield* answer(interruptId, "resolved");
+    expect(again.errors).toEqual([]);
+    expect(again.results).toMatchObject([{ ok: true, value: { written: "deployment" } }]);
+    expect(yield* deployments).toEqual([deployed]);
+    const [first, retried] = admits(writes).map(([, command]) => command);
+    expect(retried).toEqual(first);
+  }), 15_000);
+
+const blockFirstAdmit = ({ store, watchWrites }: Effect.Success<ReturnType<typeof sidebar>>) => {
+  const original = store.write.bind(store);
+  const writes = watchWrites();
+  let enter = () => {};
+  let release = () => {};
+  const entered = new Promise<void>((resolve) => { enter = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let first = true;
+  writes.mockImplementation(async (...args) => {
+    const result = await original(...args);
+    if (args[1].command === "admit" && first) {
+      first = false;
+      enter();
+      await released;
+    }
+    return result;
+  });
+  return { writes, entered, release: () => release() };
+};
+
+it.live("a second request resuming the same run while the first is mid-Deploy waits for it and shows its result", () =>
+  Effect.gen(function* () {
+    const harness = yield* sidebar({ removeWeb: true });
+    const { provided, caller, say, waiting, pending, deployments } = harness;
+    const approval = yield* waitingApproval(yield* say("deploy"), pending);
+    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    const interruptId = yield* waiting;
+    const { writes, ...gate } = blockFirstAdmit(harness);
+    const resumeRun = () => Effect.runPromise(provided(agentChat(caller, {
+      messages: [], threadId: THREAD, runId: "run-resumed", resume: [{ interruptId, status: "resolved", payload: {} }],
+    })).pipe(Effect.flatMap(drain)));
+
+    const first = resumeRun();
+    yield* Effect.promise(() => gate.entered);
+    const second = resumeRun();
+    yield* Effect.sleep("600 millis");
+    gate.release();
+    const both = yield* Effect.promise(() => Promise.all([first, second]));
+
+    expect(admits(writes)).toHaveLength(1);
+    expect(yield* deployments).toHaveLength(1);
+    expect(both.flatMap((tab) => tab.errors)).toEqual([]);
+    expect(both.map((tab) => tab.said)).toEqual(["Done.", ""]);
+    expect(both[1]?.shown).toContain("Done.");
+  }), 15_000);
+
+it.live("a request that takes over a stalled resume deploys once, and the stalled one shows the result instead of committing", () =>
+  Effect.gen(function* () {
+    const harness = yield* sidebar({ removeWeb: true });
+    const { provided, caller, persistence, say, waiting, pending, deployments, ageClaim } = harness;
+    const approval = yield* waitingApproval(yield* say("deploy"), pending);
+    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    const interruptId = yield* waiting;
+    const { writes, ...gate } = blockFirstAdmit(harness);
+    const resumeRun = (runId: string) => provided(agentChat(caller, {
+      messages: [], threadId: THREAD, runId, resume: [{ interruptId, status: "resolved", payload: {} }],
+    })).pipe(Effect.flatMap(drain));
+
+    const stalled = Effect.runPromise(resumeRun("run-retried"));
+    yield* Effect.promise(() => gate.entered);
+    yield* ageClaim(interruptId);
+    const takeover = yield* resumeRun("run-retried");
+    yield* say("thanks");
+    const thread = yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD));
+    gate.release();
+    const late = yield* Effect.promise(() => stalled);
+
+    expect(yield* deployments).toHaveLength(1);
+    const ids = new Set(admits(writes).map(([, command]) => command.command === "admit" ? command.id : null));
+    expect(ids.size).toBe(1);
+    expect([takeover, late].flatMap((tab) => tab.errors)).toEqual([]);
+    expect(takeover.said).toBe("Done.");
+    expect(late.shown.split("Done.")).toHaveLength(2);
+    expect(late.interrupts).toEqual([]);
+    expect(yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD))).toEqual(thread);
+    expect((yield* Effect.promise(() => persistence.stores.runs.get("run-retried")))?.status).toBe("completed");
+  }), 15_000);
+
+it.live("a resumed turn that outlasts the lease keeps its claim, so no other request runs it again", () =>
+  Effect.gen(function* () {
+    const harness = yield* sidebar({ removeWeb: true });
+    const { provided, caller, userId, say, waiting, pending, deployments, ageClaim } = harness;
+    const approval = yield* waitingApproval(yield* say("deploy"), pending);
+    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    const interruptId = yield* waiting;
+    const gate = blockFirstAdmit(harness);
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    yield* Effect.addFinalizer(() => Effect.sync(() => vi.useRealTimers()));
+    const slow = Effect.runPromise(provided(agentChat(caller, {
+      messages: [], threadId: THREAD, runId: "run-slow", resume: [{ interruptId, status: "resolved", payload: {} }],
+    })).pipe(Effect.flatMap(drain)));
+    yield* Effect.promise(() => gate.entered);
+
+    yield* ageClaim(interruptId);
+    vi.advanceTimersByTime(CLAIM_LEASE_MS);
+    yield* Effect.sleep("300 millis");
+    expect(yield* provided(claimResume({ organizationId: ORGANIZATION, userId }, "other", [interruptId]))).toBe("busy");
+
+    gate.release();
+    expect((yield* Effect.promise(() => slow)).said).toBe("Done.");
+    expect(yield* deployments).toHaveLength(1);
+  }), 15_000);
+
+it.live("an answered interrupt whose request died before letting go replays at once instead of waiting out the lease", () =>
+  Effect.gen(function* () {
+    const { provided, userId, caller, say, waiting, answer, pending } = yield* sidebar({ removeWeb: true });
+    const approval = yield* waitingApproval(yield* say("deploy"), pending);
+    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    const interruptId = yield* waiting;
+    yield* answer(interruptId, "resolved");
+    yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.execute(sql`update agent_interrupts set claim = 'crashed', claimed_at = now() where interrupt_id = ${interruptId}`);
+    }));
+    expect(yield* provided(claimResume({ organizationId: ORGANIZATION, userId }, "next", [interruptId]))).toBe("settled");
+  }));
+
+it.live("an approved Publish publishes the reviewed version once, and a replay after its turn died reports that Publish", () =>
+  Effect.gen(function* () {
+    const { provided, caller, persistence, say, waiting, answer, watchWrites, pending, rewind } = yield* sidebar({ removeWeb: true });
+    const approval = yield* waitingApproval(yield* say("publish"), pending);
+    if (!("diff" in approval.review)) return expect.fail("a Publish is reviewed as a diff");
+    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    const interruptId = yield* waiting;
+    const beforeResume = yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD));
+    const writes = watchWrites();
+
+    const published = yield* answer(interruptId, "resolved");
+    expect(published.results).toEqual([{ ok: true, value: expect.objectContaining({ written: "published", created: true }) }]);
+    expect(writes.mock.calls.map(([, command]) => command)).toEqual([expect.objectContaining({ command: "publish", version: approval.review.diff.version })]);
+
+    yield* rewind(interruptId, beforeResume);
+    writes.mockClear();
+    const replayed = yield* answer(interruptId, "resolved");
+    expect(replayed.errors).toEqual([]);
+    expect(replayed.interrupts).toEqual([]);
+    expect(replayed.results).toEqual([{ ok: true, value: expect.objectContaining({ written: "published", created: false }) }]);
+    expect(writes.mock.calls.map(([, command]) => command.command)).toEqual(["publish"]);
+    expect(yield* pending).toEqual([]);
   }), 15_000);
 
 it.live("a Deploy called alongside another tool is refused without reaching the Store or a human", () =>
