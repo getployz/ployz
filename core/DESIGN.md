@@ -49,9 +49,9 @@ a request mode that selects verification, may refuse fields it does not
 recognize and fail closed. There are no version gates and no store migrations;
 a change that cannot be expressed additively waits for `PROTOCOL_MAJOR` 2.
 
-The Log Store is outside the promise. It is disposable Machine-local state: a
+The Log Store is outside the promise. It is disposable Machine-local state. A
 daemon that finds a format version it does not know deletes it and starts
-again, so it needs no migrations.
+again, so the Log Store needs no migrations.
 
 A breaking release protects older Clusters from its own side. Daemons follow
 their own line's channel pointer (`ployz.sh/v0/stable`), so a new line never
@@ -193,8 +193,8 @@ still select overlapping subnets from incomplete observations. No cross-store
 synchronization or subnet repair system is provided.
 
 A container's output is Machine-local too. It lives on the Machine that ran the
-container, outlives the container, and ages out under that Machine's cap. Cloud
-reads it through the daemon and never copies it (bet 7).
+container and outlives it. That Machine deletes it once it passes the size or
+age cap. Cloud reads it through the daemon and never copies it (bet 7).
 
 **Red flags:** a resource identity meaningful without its Machine, a required
 round trip to an allocator, refusing to operate because an allocator is
@@ -263,8 +263,8 @@ nobody else will build.
 
 The Log Store reads the files Docker's `local` log driver writes, a format
 Docker does not document. The installer does not pin a Docker release, so CI runs
-the reader's test against the latest one. A frame the reader cannot parse is
-skipped and recorded as corrupt; the reader never stops at it.
+the reader's test against the latest one. The reader skips a frame it cannot
+parse, records the skipped bytes as corrupt, and keeps reading.
 
 **Red flags:** hand-rolled consensus, custom overlay networking, bespoke TLS,
 reimplementing behavior a shipped, proven component already provides.
