@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { ModelMessage, RunRecord, RunStore } from "@tanstack/ai";
 import type { ChatWithInterruptsPersistence, InterruptRecord, InterruptStore, MessageStore } from "@tanstack/ai-persistence";
-import { and, asc, desc, eq, exists, inArray, type SQL, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, type SQL, sql } from "drizzle-orm";
 import type { PgColumn, PgUpdateSetSource } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import { agentInterrupts, agentRuns, agentThreads } from "#/modules/agent/tables";
@@ -38,6 +38,21 @@ export const agentPersistence = Effect.fn("Agent.persistence")(function* (scope:
   const interruptOwned = and(eq(agentInterrupts.organizationId, scope.organizationId), eq(agentInterrupts.userId, scope.userId));
   const held = claim === undefined ? undefined : eq(agentInterrupts.claim, claim);
 
+  /**
+   * `write` committed only while `claim` still holds the interrupts it resumes. The shared lock on them serializes it
+   * with a takeover, which locks them for update before it moves the claim.
+   */
+  const fenced = async <A, E>(write: Effect.Effect<A, E, Database>) => {
+    if (held === undefined) return run(write);
+    const outcome = await run(database.transaction(Effect.gen(function* () {
+      const holding = yield* drizzle.select({ id: agentInterrupts.interruptId }).from(agentInterrupts)
+        .where(and(interruptOwned, held)).limit(1).for("share");
+      return holding.length === 0 ? { superseded: true } as const : { superseded: false, value: yield* write } as const;
+    })));
+    if (outcome.superseded) throw new Superseded();
+    return outcome.value;
+  };
+
   const messages: MessageStore = {
     loadThread: async (threadId: string) => {
       const [row] = await run(drizzle.select({ messages: agentThreads.messages }).from(agentThreads)
@@ -45,19 +60,10 @@ export const agentPersistence = Effect.fn("Agent.persistence")(function* (scope:
       return row?.messages ?? [];
     },
     saveThread: async (threadId: string, saved: Array<ModelMessage>) => {
-      const outcome = await run(database.transaction(Effect.gen(function* () {
-        if (held !== undefined) {
-          const holding = yield* drizzle.select({ id: agentInterrupts.interruptId }).from(agentInterrupts)
-            .where(and(interruptOwned, held)).limit(1).for("share");
-          if (holding.length === 0) return "superseded" as const;
-        }
-        const [row] = yield* drizzle.insert(agentThreads).values({ threadId, ...scope, messages: saved })
-          .onConflictDoUpdate({ target: agentThreads.threadId, set: { messages: saved, updatedAt: new Date() }, setWhere: threadOwned })
-          .returning({ threadId: agentThreads.threadId });
-        return row === undefined ? "foreign" as const : "saved" as const;
-      })));
-      if (outcome === "superseded") throw new Superseded();
-      if (outcome === "foreign") throw new Error(`Thread ${threadId} belongs to another member.`);
+      const [row] = await fenced(drizzle.insert(agentThreads).values({ threadId, ...scope, messages: saved })
+        .onConflictDoUpdate({ target: agentThreads.threadId, set: { messages: saved, updatedAt: new Date() }, setWhere: threadOwned })
+        .returning({ threadId: agentThreads.threadId }));
+      if (row === undefined) throw new Error(`Thread ${threadId} belongs to another member.`);
     },
   };
 
@@ -81,8 +87,10 @@ export const agentPersistence = Effect.fn("Agent.persistence")(function* (scope:
       if (input.parentRunId !== undefined) record.parentRunId = input.parentRunId;
       if (input.subagentRunId !== undefined) record.subagentRunId = input.subagentRunId;
       if (input.name !== undefined) record.name = input.name;
-      await run(drizzle.insert(agentRuns).values({ ...scope, runId: record.runId, threadId: record.threadId, status: record.status, startedAt: record.startedAt, record })
-        .onConflictDoNothing());
+      const insert = drizzle.insert(agentRuns).values({ ...scope, runId: record.runId, threadId: record.threadId, status: record.status, startedAt: record.startedAt, record, claim });
+      await fenced(claim === undefined
+        ? insert.onConflictDoNothing()
+        : insert.onConflictDoUpdate({ target: agentRuns.runId, set: { claim, updatedAt: new Date() }, setWhere: runOwned }));
       const existing = await getRun(input.runId);
       if (existing === null) throw new Error(`Run ${input.runId} belongs to another member.`);
       return existing;
@@ -90,10 +98,8 @@ export const agentPersistence = Effect.fn("Agent.persistence")(function* (scope:
     update: async (runId, patch) => {
       const set: PgUpdateSetSource<typeof agentRuns> = { record: merged(agentRuns.record, patch), updatedAt: new Date() };
       if (patch.status !== undefined) set.status = patch.status;
-      const holding = held === undefined
-        ? undefined
-        : exists(drizzle.select({ id: agentInterrupts.interruptId }).from(agentInterrupts).where(and(interruptOwned, held)));
-      await run(drizzle.update(agentRuns).set(set).where(and(runOwned, eq(agentRuns.runId, runId), holding)));
+      const driving = claim === undefined ? undefined : eq(agentRuns.claim, claim);
+      await run(drizzle.update(agentRuns).set(set).where(and(runOwned, eq(agentRuns.runId, runId), driving)));
     },
     get: getRun,
     findActiveRun: async (threadId) => {
@@ -123,7 +129,7 @@ export const agentPersistence = Effect.fn("Agent.persistence")(function* (scope:
   const interrupts: InterruptStore = {
     create: async (input) => {
       const record: InterruptRecord = { ...input, status: "pending" };
-      await run(drizzle.insert(agentInterrupts).values({
+      await fenced(drizzle.insert(agentInterrupts).values({
         ...scope,
         interruptId: record.interruptId,
         runId: record.runId,
@@ -134,10 +140,10 @@ export const agentPersistence = Effect.fn("Agent.persistence")(function* (scope:
       }).onConflictDoNothing());
     },
     resolve: async (interruptId, response) => {
-      await run(settle(interruptId, { status: "resolved", resolvedAt: Date.now(), response }));
+      await fenced(settle(interruptId, { status: "resolved", resolvedAt: Date.now(), response }));
     },
     cancel: async (interruptId) => {
-      await run(settle(interruptId, { status: "cancelled", resolvedAt: Date.now() }));
+      await fenced(settle(interruptId, { status: "cancelled", resolvedAt: Date.now() }));
     },
     commitBatch: async (entries) => {
       const outcome = await run(database.transaction(Effect.gen(function* () {

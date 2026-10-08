@@ -27,6 +27,8 @@ export const agentRuns = pgTable("agent_runs", {
   status: text("status").notNull().$type<RunRecord["status"]>(),
   startedAt: bigint("started_at", { mode: "number" }).notNull(),
   record: jsonb("record").notNull().$type<RunRecord>(),
+  /** The resuming request that drives this run, until another takes its interrupts over and resumes the run itself. */
+  claim: text("claim"),
   createdAt,
   updatedAt,
 }, (table) => [index("agent_runs_thread_idx").on(table.organizationId, table.userId, table.threadId)]);

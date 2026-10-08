@@ -250,14 +250,35 @@ async function* replayed(persistence: Persistence, request: ChatRequest): AsyncG
 
 const CLAIM_POLL_MS = 250;
 const CLAIM_RENEW_MS = CLAIM_LEASE_MS / 5;
+/** How often a request waiting on another's turn sends something, so no proxy cuts a stream that has gone quiet. */
+export const KEEPALIVE_MS = 15_000;
 
-const claimWhenFree = async (run: Run, scope: AgentScope, claim: string, ids: ReadonlyArray<string>, signal: AbortSignal | undefined) => {
-  for (;;) {
-    const state = await run(claimResume(scope, claim, ids));
-    if (state !== "busy" || signal?.aborted === true) return state;
-    await new Promise((resolve) => setTimeout(resolve, CLAIM_POLL_MS));
+/** A chunk the client ignores: the sidebar handles no custom event by this name. */
+const keepalive = (): StreamChunk => ({ type: EventType.CUSTOM, name: "ployz.keepalive", value: null, timestamp: Date.now() });
+
+async function* claimWhenFree(
+  run: Run,
+  scope: AgentScope,
+  claim: string,
+  ids: ReadonlyArray<string>,
+  signal: AbortSignal | undefined,
+): AsyncGenerator<StreamChunk, Effect.Success<ReturnType<typeof claimResume>>> {
+  let due = false;
+  const beat = setInterval(() => { due = true; }, KEEPALIVE_MS);
+  try {
+    for (;;) {
+      const state = await run(claimResume(scope, claim, ids));
+      if (state !== "busy" || signal?.aborted === true) return state;
+      if (due) {
+        due = false;
+        yield keepalive();
+      }
+      await new Promise((resolve) => setTimeout(resolve, CLAIM_POLL_MS));
+    }
+  } finally {
+    clearInterval(beat);
   }
-};
+}
 
 /**
  * One answer runs at most once however many tabs or clients send it: the request that claims the interrupts resumes
@@ -274,7 +295,7 @@ async function* resumeOnce(
   const ids = request.resume.map((entry) => entry.interruptId);
   const signal = request.abortController?.signal;
   const claim = randomUUID();
-  const state = await claimWhenFree(run, scope, claim, ids, signal);
+  const state = yield* claimWhenFree(run, scope, claim, ids, signal);
   if (state === "busy") return;
   if (state === "unchecked") return yield* turn(persistence);
   if (state === "settled") {
@@ -293,7 +314,7 @@ async function* resumeOnce(
   } catch (error) {
     if (!(error instanceof Superseded)) throw error;
     const next = randomUUID();
-    if (await claimWhenFree(run, scope, next, ids, signal) === "claimed") await run(releaseResume(scope, next));
+    if ((yield* claimWhenFree(run, scope, next, ids, signal)) === "claimed") await run(releaseResume(scope, next));
     return yield* replayed(persistence, request);
   } finally {
     clearInterval(renewing);
