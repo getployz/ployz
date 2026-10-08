@@ -11,6 +11,7 @@ repository = "https://github.com/getployz/ployz"
 license = "Apache-2.0"
 
 [workspace.dependencies]
+inotify = "0.11.5"
 ployz-build = { path = "crates/ployz-build" }
 ployz-core = { path = "crates/ployz-core" }
 ployz-store = { path = "crates/ployz-store" }
