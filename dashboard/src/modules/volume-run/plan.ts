@@ -1,3 +1,4 @@
+import type { SnapshotGuid } from "@ployz/sdk";
 import { type AnsweredMember, copyName, type Member, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
 export type Role = "writer" | "switching" | "handed" | "mirror" | "stale" | "empty" | "unanswered";
@@ -14,12 +15,27 @@ export type RefusalCode =
   | "no_mirror"
   | "confirm_required";
 
+/** Where a Move continues from the copies it finds; every step after `handover` is past the point of no return. */
+export type MoveStart = "rounds" | "handover" | "accept" | "promote" | "start" | "close" | "undo";
+
 export type Refusal = { readonly code: RefusalCode; readonly message: string };
 
 export type Planned =
   | { readonly ok: true; readonly phase: { readonly kind: "mirror"; readonly writer: AnsweredMember; readonly target: AnsweredMember; readonly declare: boolean } }
   | { readonly ok: true; readonly phase: { readonly kind: "sync"; readonly writer: AnsweredMember; readonly mirror: AnsweredMember; readonly full: boolean } }
   | { readonly ok: true; readonly phase: { readonly kind: "delete_mirror"; readonly destroy: readonly AnsweredMember[]; readonly forget: AnsweredMember | null } }
+  | {
+      readonly ok: true;
+      readonly phase: {
+        readonly kind: "move";
+        readonly writer: AnsweredMember;
+        readonly target: AnsweredMember;
+        readonly start: MoveStart;
+        readonly guid: SnapshotGuid | null;
+        readonly declare: boolean;
+      };
+    }
+  | { readonly ok: true; readonly phase: { readonly kind: "release"; readonly source: AnsweredMember; readonly mirror: AnsweredMember | null; readonly thaw: boolean } }
   | { readonly ok: false; readonly refusal: Refusal };
 
 export type PlanInput = VolumeRunInput & { readonly volumeName: string; readonly orphan: boolean };
@@ -49,6 +65,30 @@ export function roleOf(member: Member): Role {
       return "stale";
   }
 }
+
+/** The snapshot guid a root hands over: the final snapshot it froze or handed. */
+function frozenGuid(member: AnsweredMember): SnapshotGuid | null {
+  const copy = member.view.copy;
+  if (copy?.kind !== "root") return null;
+  return copy.writer.phase === "frozen" || copy.writer.phase === "handed" ? copy.writer.guid : null;
+}
+
+function holds(member: AnsweredMember, guid: SnapshotGuid): boolean {
+  const copy = member.view.copy;
+  if (copy === null) return false;
+  if (copy.kind === "slot" && copy.mirror.phase === "handed_in") return copy.mirror.guid === guid;
+  return copy.newest?.guid === guid;
+}
+
+/** Past `handover` a Move only goes forward, so the target's copy names the next step and Accept never re-runs on it. */
+function handedStart(target: AnsweredMember): MoveStart {
+  const copy = target.view.copy;
+  if (copy?.kind === "slot") return copy.mirror.phase === "idle" || copy.mirror.phase === "final" ? "accept" : "promote";
+  if (copy?.readonly !== false) return "promote";
+  return target.view.lease?.cycle === "open" ? "start" : "close";
+}
+
+const isFinal = (member: AnsweredMember) => member.view.copy?.kind === "slot" && member.view.copy.mirror.phase === "final";
 
 const refuse = (code: RefusalCode, message: string): Planned => ({ ok: false, refusal: { code, message } });
 
@@ -86,6 +126,28 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   }
 
   if (unanswered !== undefined) return refuse("unanswered", `${unanswered.machine.name} did not answer; ${name}'s copies are unknown`);
+  const [source] = switching;
+  if (source !== undefined && switching.length === 1) {
+    const guid = frozenGuid(source);
+    const holder = guid === null ? undefined : answered.find((member) => member !== source && holds(member, guid));
+    const handedTo = (server: string) => `${name} is handed to ${server}; volume move ${name} --to ${server} again continues from there`;
+    if (input.kind === "release") {
+      if (roleOf(source) === "handed") return refuse("volume_switching", holder === undefined ? `${name} is handed off` : handedTo(holder.machine.name));
+      return { ok: true, phase: { kind: "release", source, mirror: holder ?? mirrors.find(isFinal) ?? null, thaw: true } };
+    }
+    if (input.kind === "move") {
+      const { to } = input.args;
+      const target = answered.find((member) => member.machine.name === to);
+      if (target === undefined) return refuse("invalid", `${to} is not a Server of this cluster`);
+      if (roleOf(source) === "handed") {
+        if (holder === undefined) return refuse("invalid", `no Server holds the snapshot ${named(source)} handed over`);
+        if (holder !== target) return refuse("volume_switching", handedTo(holder.machine.name));
+        return { ok: true, phase: { kind: "move", writer: source, target, start: handedStart(target), guid, declare: false } };
+      }
+      const start = holder === target && target.view.copy?.kind === "slot" ? "handover" : "undo";
+      return { ok: true, phase: { kind: "move", writer: source, target, start, guid, declare: false } };
+    }
+  }
   if (roots.length > 1) return refuse("two_writers", `${name} has two writers, ${roots.map(named).join(" and ")}`);
   if (switching.length > 0) return midRun();
   if (writer === undefined) return refuse("no_writer", `${name} has no writer; deploy ${name} before mirroring it`);
@@ -93,6 +155,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   if (firstStale !== undefined) {
     return refuse("stale_slot", `${named(firstStale)} holds a stale copy; volume mirror rm ${named(firstStale)} first`);
   }
+  if (input.kind === "release") return { ok: true, phase: { kind: "release", source: writer, mirror: mirrors.find(isFinal) ?? null, thaw: false } };
 
   if (input.kind === "sync") {
     const [mirror, second] = mirrors;
@@ -108,5 +171,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   const target = answered.find((member) => member.machine.name === to);
   if (target === undefined) return refuse("invalid", `${to} is not a Server of this cluster`);
   if (!target.pool) return refuse("no_pool", `${to} has no managed volume storage yet`);
-  return { ok: true, phase: { kind: "mirror", writer, target, declare: roleOf(target) !== "mirror" } };
+  const declare = roleOf(target) !== "mirror";
+  if (input.kind === "move") return { ok: true, phase: { kind: "move", writer, target, start: "rounds", guid: null, declare } };
+  return { ok: true, phase: { kind: "mirror", writer, target, declare } };
 }

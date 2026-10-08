@@ -57,6 +57,8 @@ const NewVolumeRun = Schema.Union([
     slot: Schema.optional(Schema.String.check(Schema.isNonEmpty())),
     confirm: Schema.optional(Schema.String),
   }),
+  Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("move"), to: Schema.String.check(Schema.isNonEmpty()) }),
+  Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("release") }),
 ]);
 
 function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
@@ -67,6 +69,10 @@ function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
       return { kind: "sync", args: { full: body.full ?? false } };
     case "delete_mirror":
       return { kind: "delete_mirror", args: { slot: body.slot ?? null, confirmed_name: body.confirm ?? null } };
+    case "move":
+      return { kind: "move", args: { to: body.to } };
+    case "release":
+      return { kind: "release", args: {} };
   }
 }
 
