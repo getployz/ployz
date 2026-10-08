@@ -9,12 +9,13 @@
 
 use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, AddDomain, Admit, Cancel, ClusterDomain, ClusterDomainStatus, Command, ConfigStore,
-    CreateEnvironment, CreateProject, CreateService, Deploy, DeploymentId, DnsLookup, DomainAction,
-    DomainEvidence, DomainQuery, DomainRow, DomainStatus, DomainsQuery, EnvironmentId,
-    EnvironmentName, EnvironmentRef, Hostname, OrganizationId, PlanQuery, ProjectId, ProjectName,
-    PublishedHostname, Query, RemoveDomain, RenameProject, Retry, RunEvidence, RunnerId,
-    ServiceLineageId, SetGeneratedDomain, Trusted, View, Written,
+    Actor, AddDomain, Admit, Approval, Cancel, ClusterDomain, ClusterDomainStatus, Command,
+    ConfigStore, CreateEnvironment, CreateProject, CreateService, Deploy, DeploymentId,
+    DestructiveKind, DiffQuery, DiffView, DnsLookup, DomainAction, DomainEvidence, DomainQuery,
+    DomainRow, DomainStatus, DomainsQuery, EnvironmentId, EnvironmentName, EnvironmentRef,
+    Hostname, OrganizationId, PlanQuery, ProjectId, ProjectName, Publish, PublishedHostname, Query,
+    RemoveDomain, RenameProject, Retry, RunEvidence, RunnerId, ServiceLineageId,
+    SetGeneratedDomain, Trusted, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -298,6 +299,77 @@ fn a_generated_domain_deploys_under_the_cluster_domain_frozen_at_admission() {
     assert_eq!(
         (row.status, row.action.clone()),
         (DomainStatus::Ready, None)
+    );
+}
+
+fn deployed_generated_domain() -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &add(None, None), &cloud())
+        .unwrap();
+    admit(&store, &who, 1, &cloud()).unwrap();
+    apply(&store, 1);
+    (store, who)
+}
+
+fn effects(store: &ConfigStore, who: &Actor) -> Vec<(DestructiveKind, String, String)> {
+    let diff: DiffView = store.read(who, &DiffQuery::default()).unwrap();
+    diff.effects
+        .into_iter()
+        .map(|effect| (effect.kind, effect.name, effect.path))
+        .collect()
+}
+
+#[test]
+fn removing_a_deployed_generated_domain_is_destructive() {
+    let (store, who) = deployed_generated_domain();
+    store
+        .write_trusted(
+            &who,
+            &RemoveDomain {
+                environment: EnvironmentRef::default(),
+                domain: "web".into(),
+            },
+            &cloud(),
+        )
+        .unwrap();
+    assert_eq!(
+        effects(&store, &who),
+        [(
+            DestructiveKind::RemovesDomain,
+            "web.acme.ployz.app".to_owned(),
+            "web.managedHostnames".to_owned()
+        )]
+    );
+    let publish = Publish {
+        environment: EnvironmentRef::default(),
+        version: None,
+        accept_volume_loss: Vec::new(),
+    };
+    let asking = Trusted {
+        approval: Approval::Required,
+        ..cloud()
+    };
+    let refused = store.write_trusted(&who, &publish, &asking).unwrap_err();
+    assert_eq!(
+        refused.message,
+        "A human must approve this first: remove domain web.acme.ployz.app"
+    );
+}
+
+#[test]
+fn changing_a_deployed_generated_prefix_removes_the_old_hostname() {
+    let (store, who) = deployed_generated_domain();
+    store
+        .write_trusted(&who, &set_prefix(None, "shop"), &cloud())
+        .unwrap();
+    assert_eq!(
+        effects(&store, &who),
+        [(
+            DestructiveKind::RemovesDomain,
+            "web.acme.ployz.app".to_owned(),
+            "web.managedHostnames".to_owned()
+        )]
     );
 }
 

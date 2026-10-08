@@ -777,6 +777,63 @@ fn an_approval_of_an_older_review_is_refused_with_the_fresh_one() {
 }
 
 #[test]
+fn a_published_removal_not_yet_deployed_asks_again_on_the_next_publication() {
+    let (store, who) = shop();
+    apply_all(&store, &who, &Trusted::default());
+    remove_service(&store, &who, "web");
+    let first = publish_as(&store, &who, None, Approval::Required).unwrap_err();
+    let approved = Approval::Approved(
+        ApprovalDigest::parse(first.details["approval"].as_str().unwrap()).unwrap(),
+    );
+    publish_as(&store, &who, None, approved).unwrap();
+    set(&store, &who, "api.replicas", json!(2));
+    let again = publish_as(&store, &who, None, Approval::Required).unwrap_err();
+    assert_eq!(again.details["effects"], first.details["effects"]);
+    assert_ne!(again.details["approval"], first.details["approval"]);
+}
+
+#[test]
+fn a_new_publication_asks_again_for_a_removal_still_queued() {
+    let (store, who) = shop();
+    apply_all(&store, &who, &Trusted::default());
+    remove_service(&store, &who, "web");
+    let deploy = |approval| {
+        store.write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted {
+                approval,
+                ..Trusted::default()
+            },
+        )
+    };
+    let refused = deploy(Approval::Required).unwrap_err();
+    let digest = refused.details["approval"].as_str().unwrap();
+    deploy(Approval::Approved(ApprovalDigest::parse(digest).unwrap())).unwrap();
+    set(&store, &who, "api.replicas", json!(2));
+    let again = publish_as(&store, &who, None, Approval::Required).unwrap_err();
+    assert_eq!(again.details["effects"], refused.details["effects"]);
+}
+
+#[test]
+fn with_approvals_switched_off_a_removal_publishes_unasked() {
+    let (store, who) = shop();
+    apply_all(&store, &who, &Trusted::default());
+    remove_service(&store, &who, "web");
+    assert!(!diff(&store, &who).effects.is_empty());
+    let published = publish_as(&store, &who, None, Approval::NotRequired).unwrap();
+    assert!(published.created);
+}
+
+#[test]
 #[ignore = "perf"]
 fn publish_review_perf() {
     let store = ConfigStore::open("sqlite::memory:", backend::key()).unwrap();

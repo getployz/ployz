@@ -3022,6 +3022,19 @@ fn a_deploy_that_removes_a_deployed_service_waits_for_approval() {
 }
 
 #[test]
+fn a_new_deploy_asks_again_for_a_removal_still_queued() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    remove_web(&store, &who);
+    let refused = deploy_as(&store, &who, 2, Approval::Required).unwrap_err();
+    deploy_as(&store, &who, 2, approved(&refused)).unwrap();
+    set_replicas(&store, &who, "api", 2);
+    let again = deploy_as(&store, &who, 3, Approval::Required).unwrap_err();
+    assert_eq!(again.details["effects"][0]["name"], "web");
+    assert_ne!(again.details["approval"], refused.details["approval"]);
+}
+
+#[test]
 fn deploying_or_retrying_saved_state_asks_nothing_again() {
     let (store, who) = shop();
     apply_both(&store, &who, 1);
