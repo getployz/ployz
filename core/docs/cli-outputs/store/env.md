@@ -11,8 +11,8 @@ $ ployz env ls
 
 stdout:
 ```
-Environments of Project shop:
-  production (default)
+ENVIRONMENT	DEFAULT	BRANCH OF	REMOVAL	BRANCH SETUP
+production	default	-	-	-
 ```
 
 ### env ls --json
@@ -29,14 +29,14 @@ stdout:
     {
       "branch_setup": [],
       "default": true,
-      "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+      "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
       "name": "production",
       "parent": null,
       "removal": null
     }
   ],
   "project": {
-    "id": "3ea2c806-0c15-4d5a-9470-6476f06412d2",
+    "id": "06367cee-8aa3-42b0-b526-c1f03ba8ecca",
     "name": "shop"
   }
 }
@@ -65,7 +65,7 @@ stdout:
 ```
 {
   "environment": {
-    "id": "5d3b9bf5-5a73-4b33-83fb-59ba8137a840",
+    "id": "c6ad0938-4d6f-4ac6-a8f7-7dba63442845",
     "name": "qa",
     "project": "shop",
     "revision": 1
@@ -82,19 +82,19 @@ $ ployz env new staging
 
 stderr:
 ```
-Project shop already has an Environment named staging
+error: Project shop already has an Environment named staging
 ```
 
 ### env new: invalid name
 
 ```console
 $ ployz env new Not\ Valid
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-Expected an Environment name: up to 63 lowercase letters, digits and -
+error: Expected an Environment name: up to 63 lowercase letters, digits and -
 ```
 
 ### env new: unknown --project
@@ -106,7 +106,7 @@ $ ployz env new x --project nope
 
 stderr:
 ```
-No Project named nope
+error: No Project named nope
 ```
 
 ### env default
@@ -118,10 +118,10 @@ $ ployz env default staging
 
 stdout:
 ```
-Environments of Project shop:
-  production
-  qa
-  staging (default)
+ENVIRONMENT	DEFAULT	BRANCH OF	REMOVAL	BRANCH SETUP
+production	-	-	-	-
+qa	-	-	-	-
+staging	default	-	-	-
 ```
 
 ### env default --json
@@ -138,7 +138,7 @@ stdout:
     {
       "branch_setup": [],
       "default": true,
-      "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+      "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
       "name": "production",
       "parent": null,
       "removal": null
@@ -146,7 +146,7 @@ stdout:
     {
       "branch_setup": [],
       "default": false,
-      "id": "5d3b9bf5-5a73-4b33-83fb-59ba8137a840",
+      "id": "c6ad0938-4d6f-4ac6-a8f7-7dba63442845",
       "name": "qa",
       "parent": null,
       "removal": null
@@ -154,14 +154,14 @@ stdout:
     {
       "branch_setup": [],
       "default": false,
-      "id": "5780f1e6-2978-4c8e-884b-88a2a2e4fd9f",
+      "id": "338315ca-dfd4-4cbf-bcc3-d2d67e5c8d65",
       "name": "staging",
       "parent": null,
       "removal": null
     }
   ],
   "project": {
-    "id": "3ea2c806-0c15-4d5a-9470-6476f06412d2",
+    "id": "06367cee-8aa3-42b0-b526-c1f03ba8ecca",
     "name": "shop"
   }
 }
@@ -176,7 +176,7 @@ $ ployz env default nope
 
 stderr:
 ```
-No Environment named nope in Project shop
+error: No Environment named nope in Project shop
 next: ployz env new nope --project shop
 ```
 
@@ -189,11 +189,10 @@ $ ployz env setup --setup web=bin/migrate
 
 stdout:
 ```
-Environments of Project shop:
-  production (default)
-    new Branches run in web: bin/migrate
-  qa
-  staging
+ENVIRONMENT	DEFAULT	BRANCH OF	REMOVAL	BRANCH SETUP
+production	default	-	-	web: bin/migrate
+qa	-	-	-	-
+staging	-	-	-	-
 ```
 
 ### env setup --json
@@ -219,7 +218,7 @@ stdout:
         }
       ],
       "default": true,
-      "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+      "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
       "name": "production",
       "parent": null,
       "removal": null
@@ -227,7 +226,7 @@ stdout:
     {
       "branch_setup": [],
       "default": false,
-      "id": "5d3b9bf5-5a73-4b33-83fb-59ba8137a840",
+      "id": "c6ad0938-4d6f-4ac6-a8f7-7dba63442845",
       "name": "qa",
       "parent": null,
       "removal": null
@@ -235,14 +234,14 @@ stdout:
     {
       "branch_setup": [],
       "default": false,
-      "id": "5780f1e6-2978-4c8e-884b-88a2a2e4fd9f",
+      "id": "338315ca-dfd4-4cbf-bcc3-d2d67e5c8d65",
       "name": "staging",
       "parent": null,
       "removal": null
     }
   ],
   "project": {
-    "id": "3ea2c806-0c15-4d5a-9470-6476f06412d2",
+    "id": "06367cee-8aa3-42b0-b526-c1f03ba8ecca",
     "name": "shop"
   }
 }
@@ -257,7 +256,7 @@ $ ployz env setup --setup web
 
 stderr:
 ```
-Expected --setup SERVICE=COMMAND, like web='pnpm db:seed'
+error: Expected --setup SERVICE=COMMAND, like web='pnpm db:seed'
 ```
 
 ### env setup: unknown Service
@@ -269,7 +268,7 @@ $ ployz env setup --setup nope=x
 
 stderr:
 ```
-No Service named nope in Environment production to run a Setup Command
+error: No Service named nope in Environment production to run a Setup Command
 valid: web, db
 ```
 
@@ -282,10 +281,10 @@ $ ployz env setup --clear
 
 stdout:
 ```
-Environments of Project shop:
-  production (default)
-  qa
-  staging
+ENVIRONMENT	DEFAULT	BRANCH OF	REMOVAL	BRANCH SETUP
+production	default	-	-	-
+qa	-	-	-	-
+staging	-	-	-	-
 ```
 
 ### env branch --copy
@@ -301,6 +300,11 @@ Made Branch shop/fix-web of production.
 Staged: db, web, volumes.pgdata
 ```
 
+stderr:
+```
+next: ployz deploy --env fix-web --project shop
+```
+
 ### env branch --json --copy
 
 ```console
@@ -314,7 +318,7 @@ stdout:
   "branch": {
     "closes_at": null,
     "environment": {
-      "id": "8a417173-ca91-4985-9ef0-a4bc4fb0c6a1",
+      "id": "8f7c5f37-b9b4-460d-9405-57dfdbaeef76",
       "name": "fix-db",
       "project": "shop",
       "revision": 2
@@ -343,7 +347,7 @@ $ ployz env branch fix-x --copy nope
 
 stderr:
 ```
-No node named nope
+error: No node named nope
 valid: web, db, volumes.pgdata
 ```
 
@@ -356,7 +360,7 @@ $ ployz env branch fix-web --copy web
 
 stderr:
 ```
-fix-web is taken in Project shop
+error: fix-web is taken in Project shop
 ```
 
 ### env branch --keep --setup
@@ -372,6 +376,11 @@ Made Branch shop/long of production.
 Staged: db, web, volumes.pgdata
 ```
 
+stderr:
+```
+next: ployz deploy --env long --project shop
+```
+
 ### env ls (with Branches)
 
 ```console
@@ -381,13 +390,13 @@ $ ployz env ls
 
 stdout:
 ```
-Environments of Project shop:
-  fix-db (branch of production)
-  fix-web (branch of production)
-  long (branch of production)
-  production (default)
-  qa
-  staging
+ENVIRONMENT	DEFAULT	BRANCH OF	REMOVAL	BRANCH SETUP
+fix-db	-	production	-	-
+fix-web	-	production	-	-
+long	-	production	-	-
+production	default	-	-	-
+qa	-	-	-	-
+staging	-	-	-	-
 ```
 
 ### env ls --json (with Branches)
@@ -404,7 +413,7 @@ stdout:
     {
       "branch_setup": [],
       "default": false,
-      "id": "8a417173-ca91-4985-9ef0-a4bc4fb0c6a1",
+      "id": "8f7c5f37-b9b4-460d-9405-57dfdbaeef76",
       "name": "fix-db",
       "parent": "production",
       "removal": null
@@ -412,7 +421,7 @@ stdout:
     {
       "branch_setup": [],
       "default": false,
-      "id": "36e54fd6-cb2d-4ae2-8462-66cba88a5705",
+      "id": "25de9f48-0dba-48b4-93d6-b90d0fa2102f",
       "name": "fix-web",
       "parent": "production",
       "removal": null
@@ -420,7 +429,7 @@ stdout:
     {
       "branch_setup": [],
       "default": false,
-      "id": "05affbb3-363e-45c6-9170-8a2cdcaa8d19",
+      "id": "1e6ec51e-e479-4d4e-af99-d9d75757b86d",
       "name": "long",
       "parent": "production",
       "removal": null
@@ -428,7 +437,7 @@ stdout:
     {
       "branch_setup": [],
       "default": true,
-      "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+      "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
       "name": "production",
       "parent": null,
       "removal": null
@@ -436,7 +445,7 @@ stdout:
     {
       "branch_setup": [],
       "default": false,
-      "id": "5d3b9bf5-5a73-4b33-83fb-59ba8137a840",
+      "id": "c6ad0938-4d6f-4ac6-a8f7-7dba63442845",
       "name": "qa",
       "parent": null,
       "removal": null
@@ -444,14 +453,14 @@ stdout:
     {
       "branch_setup": [],
       "default": false,
-      "id": "5780f1e6-2978-4c8e-884b-88a2a2e4fd9f",
+      "id": "338315ca-dfd4-4cbf-bcc3-d2d67e5c8d65",
       "name": "staging",
       "parent": null,
       "removal": null
     }
   ],
   "project": {
-    "id": "3ea2c806-0c15-4d5a-9470-6476f06412d2",
+    "id": "06367cee-8aa3-42b0-b526-c1f03ba8ecca",
     "name": "shop"
   }
 }
@@ -466,7 +475,7 @@ $ ployz env sync --to --env fix-web
 
 stderr:
 ```
-Nothing to sync into production
+error: Nothing to sync into production
 next: ployz env sync --to --plan --project shop --env fix-web
 ```
 
@@ -479,7 +488,7 @@ $ ployz --json env sync --to --env fix-web
 
 stdout:
 ```
-{"error":{"code":"conflict","details":{"next":"ployz env sync --to --plan --project shop --env fix-web","version":"31:db46c3a9918195c2"},"message":"Nothing to sync into production"}}
+{"error":{"cause":[],"code":"conflict","details":{"next":"ployz env sync --to --plan --project shop --env fix-web","version":"31:6a3fa6492c4d079f"},"message":"Nothing to sync into production"}}
 ```
 
 ### env sync without --to/--from (clap)
@@ -494,7 +503,7 @@ stderr:
 error: the following required arguments were not provided:
   --to [<ENV>]
 
-Usage: ployz env sync --env <env> --project <project> --ployz-config <ployz-config> --to [<ENV>]
+Usage: ployz env sync --env <env> --project <project> --to [<ENV>]
 
 For more information, try '--help'.
 ```
@@ -510,7 +519,7 @@ stderr:
 ```
 error: the argument '--plan' cannot be used with '--close'
 
-Usage: ployz env sync --to [<ENV>] --plan --project <project> --ployz-config <ployz-config>
+Usage: ployz env sync --to [<ENV>] --plan --project <project>
 
 For more information, try '--help'.
 ```
@@ -524,7 +533,7 @@ $ ployz env sync --to --plan --env fix-web
 
 stdout:
 ```
-fix-web → production (version 31:cf4a853b16980e99):
+fix-web → production (version 31:a9e3bd3396e28940):
   web.source: {"credentials":false,"image":"nginx:1.27","type":"image"} → {"credentials":false,"image":"nginx:1.28","type":"image"}
   web.env.DEBUG: null → "1" (new)
   web.env.NEW: null → "1" (new)
@@ -542,19 +551,19 @@ stdout:
 {
   "at_merge": null,
   "from": {
-    "id": "36e54fd6-cb2d-4ae2-8462-66cba88a5705",
+    "id": "25de9f48-0dba-48b4-93d6-b90d0fa2102f",
     "name": "fix-web",
     "project": "shop",
     "revision": 3
   },
   "into": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 31
   },
   "never_synced": [],
-  "next": "ployz env sync --to --version 31:cf4a853b16980e99 --project shop --env fix-web",
+  "next": "ployz env sync --to --version 31:a9e3bd3396e28940 --project shop --env fix-web",
   "rows": [
     {
       "change": "changed",
@@ -572,7 +581,7 @@ stdout:
       "name": "source",
       "node": "web",
       "requires": null,
-      "row": "2809d5da-9a84-4a30-a38d-c9db6cab60ec:source",
+      "row": "3fa9959f-5d42-40b9-a746-eecb3062a942:source",
       "secret": null,
       "ticked": true
     },
@@ -584,7 +593,7 @@ stdout:
       "name": "env.DEBUG",
       "node": "web",
       "requires": null,
-      "row": "2809d5da-9a84-4a30-a38d-c9db6cab60ec:variables.DEBUG",
+      "row": "3fa9959f-5d42-40b9-a746-eecb3062a942:variables.DEBUG",
       "secret": null,
       "ticked": true
     },
@@ -596,12 +605,12 @@ stdout:
       "name": "env.NEW",
       "node": "web",
       "requires": null,
-      "row": "2809d5da-9a84-4a30-a38d-c9db6cab60ec:variables.NEW",
+      "row": "3fa9959f-5d42-40b9-a746-eecb3062a942:variables.NEW",
       "secret": null,
       "ticked": true
     }
   ],
-  "version": "31:cf4a853b16980e99"
+  "version": "31:a9e3bd3396e28940"
 }
 ```
 
@@ -614,7 +623,7 @@ $ ployz env sync --to --env fix-web --version 0:0
 
 stderr:
 ```
-Changed since you reviewed: review the sync again
+error: Changed since you reviewed: review the sync again
 next: ployz env sync --to --plan --project shop --env fix-web
 ```
 
@@ -627,9 +636,9 @@ $ ployz env sync --to --env fix-web --only api
 
 stderr:
 ```
-No row named api here
-valid: web.env.DEBUG, web.env.NEW, web.source
+error: No row named api here
 next: ployz env sync --to --plan --project shop --env fix-web
+valid: web.env.DEBUG, web.env.NEW, web.source
 ```
 
 ### env sync --to --only
@@ -642,8 +651,12 @@ $ ployz env sync --to --env fix-web --only web.env.DEBUG
 stdout:
 ```
 Synced fix-web → shop/production.
-Undo it: ployz env sync --undo 8fe5f75f-1926-4076-a58f-28735c8aae60 --project shop
 Staged: web
+```
+
+stderr:
+```
+undo: ployz env sync --undo 3fb29f8d-10d9-470c-80ba-9bdec39379bd --project shop
 next: ployz deploy --env production --project shop
 ```
 
@@ -658,19 +671,19 @@ stdout:
 ```
 {
   "from": {
-    "id": "36e54fd6-cb2d-4ae2-8462-66cba88a5705",
+    "id": "25de9f48-0dba-48b4-93d6-b90d0fa2102f",
     "name": "fix-web",
     "project": "shop",
     "revision": 3
   },
   "into": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 33
   },
   "next": "ployz deploy --env production --project shop",
-  "sync": "be900a08-7f0d-4873-8382-3729b8ba49fe",
+  "sync": "93635302-e15b-4eb2-b800-f900b37aa201",
   "when": {
     "closing": false,
     "kind": "now",
@@ -690,7 +703,7 @@ $ ployz env sync --undo nope
 
 stderr:
 ```
-Expected --undo SYNC to be the ID a Sync printed
+error: Expected --undo SYNC to be the ID a Sync printed
 ```
 
 ### env keep
@@ -718,7 +731,7 @@ stdout:
   "branch": {
     "closes_at": null,
     "environment": {
-      "id": "36e54fd6-cb2d-4ae2-8462-66cba88a5705",
+      "id": "25de9f48-0dba-48b4-93d6-b90d0fa2102f",
       "name": "fix-web",
       "project": "shop",
       "revision": 3
@@ -738,12 +751,12 @@ stdout:
 
 ```console
 $ ployz env keep --env staging
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-staging is not a Branch
+error: staging is not a Branch
 next: ployz env branch NAME --from staging --project shop
 ```
 
@@ -770,7 +783,7 @@ stdout:
 ```
 {
   "environment": {
-    "id": "36e54fd6-cb2d-4ae2-8462-66cba88a5705",
+    "id": "25de9f48-0dba-48b4-93d6-b90d0fa2102f",
     "name": "fix-web",
     "project": "shop",
     "revision": 3
@@ -788,8 +801,8 @@ $ ployz env never-sync api.env.KEY --env fix-web
 
 stderr:
 ```
-No row named api.env.KEY here
-valid: db, db.branch, db.buildCommand, db.buildMethod, db.cpuLimit, db.dockerfilePath, db.healthcheck, db.managedHostnames, db.maxRetries, db.memLimit, db.mounts.pgdata, db.preDeployCommand, db.privateDns, db.replicas, db.restartPolicy, db.routes, db.source, db.startCommand, volumes.pgdata, volumes.pgdata.name, volumes.pgdata.storage, web, web.branch, web.buildCommand, web.buildMethod, web.cpuLimit, web.dockerfilePath, web.env.DB_URL, web.env.DEBUG, web.env.NEW, web.healthcheck, web.managedHostnames, web.maxRetries, web.memLimit, web.preDeployCommand, web.privateDns, web.replicas, web.restartPolicy, web.routes, web.source, web.startCommand
+error: No row named api.env.KEY here
+valid: db, db.branch, db.buildCommand, db.buildMethod, db.cpuLimit, db.dockerfilePath, db.healthcheck, db.managedHostnames, and 33 more
 ```
 
 ### env never-sync: no row (clap)
@@ -804,7 +817,7 @@ stderr:
 error: the following required arguments were not provided:
   <ROW>...
 
-Usage: ployz env never-sync --env <env> --project <project> --ployz-config <ployz-config> <ROW>...
+Usage: ployz env never-sync --env <env> --project <project> <ROW>...
 
 For more information, try '--help'.
 ```
@@ -818,7 +831,7 @@ $ ployz env copy web --env fix-web
 
 stderr:
 ```
-This Branch already has its own copy of web
+error: This Branch already has its own copy of web
 ```
 
 ### env copy
@@ -830,7 +843,7 @@ $ ployz env copy db --env fix-web
 
 stderr:
 ```
-This Branch already has its own copy of db
+error: This Branch already has its own copy of db
 ```
 
 ### env copy --json
@@ -842,19 +855,19 @@ $ ployz --json env copy db --env long
 
 stdout:
 ```
-{"error":{"code":"conflict","details":{"node":"db"},"message":"This Branch already has its own copy of db"}}
+{"error":{"cause":[],"code":"conflict","details":{"node":"db"},"message":"This Branch already has its own copy of db"}}
 ```
 
 ### env copy: not a Branch
 
 ```console
 $ ployz env copy web --env staging
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-staging is not a Branch
+error: staging is not a Branch
 next: ployz env branch NAME --from staging --project shop
 ```
 
@@ -862,24 +875,24 @@ next: ployz env branch NAME --from staging --project shop
 
 ```console
 $ ployz env branch livex --copy db --live web
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-web can't be used live: nothing the Branch copies uses it
+error: web can't be used live: nothing the Branch copies uses it
 ```
 
 ### env branch --live: Parent never deployed
 
 ```console
 $ ployz env branch livebr --copy web --live db
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-db can't be used live: the Branch copies it: nothing running can lend it
+error: db can't be used live: the Branch copies it, so nothing running can lend it
 ```
 
 A successful `env copy` needs a Live Node, which needs a running Deployment of the Parent (a cluster); not capturable on the local Store.
@@ -893,8 +906,12 @@ $ ployz env pr
 
 stdout:
 ```
-PR Environments of Project shop:
-  No Service deploys from a GitHub repository through the GitHub App.
+REPOSITORY	PR ENVIRONMENTS	FROM	DETAILS
+```
+
+stderr:
+```
+No Service in shop deploys from a GitHub repository through the GitHub App.
 ```
 
 ### env pr --json
@@ -909,7 +926,7 @@ stdout:
 {
   "plans": [],
   "project": {
-    "id": "3ea2c806-0c15-4d5a-9470-6476f06412d2",
+    "id": "06367cee-8aa3-42b0-b526-c1f03ba8ecca",
     "name": "shop"
   }
 }
@@ -924,66 +941,97 @@ $ ployz env pr acme/app --on
 
 stderr:
 ```
-No Service of Project shop deploys from acme/app through the GitHub App
+error: No Service of Project shop deploys from acme/app through the GitHub App
 ```
 
 ### env shutdown (never deployed)
 
 ```console
 $ ployz env shutdown qa
-# exit 1
+# exit 0
 ```
 
 stdout:
 ```
-applied: 
+Deployment #1 of shop/qa: applied
 ```
 
 stderr:
 ```
-This Deployment already ended
+Deploying #1 of shop/qa
 ```
 
 ### env shutdown --json (never deployed)
 
 ```console
 $ ployz --json env shutdown qa
-# exit 1
+# exit 0
 ```
 
 stdout:
 ```
-{"error":{"code":"conflict","details":{"deployment":"a83df37e-ff7c-4a63-b3e0-1c618cd1ad58"},"message":"This Deployment already ended"}}
+{
+  "admitted_at": 1791462271,
+  "admitted_by": null,
+  "builds": [],
+  "ended_at": 1791462271,
+  "environment": {
+    "id": "c6ad0938-4d6f-4ac6-a8f7-7dba63442845",
+    "name": "qa",
+    "project": "shop",
+    "revision": 1
+  },
+  "environment_id": "c6ad0938-4d6f-4ac6-a8f7-7dba63442845",
+  "id": "3c7576bc-067e-44e7-b80b-83b2520c7dee",
+  "in_flight": false,
+  "message": null,
+  "namespace": "shop-qa",
+  "next": "ployz deploy --env qa --project shop",
+  "nodes": [],
+  "number": 2,
+  "outcome": {
+    "type": "never_ran"
+  },
+  "preview": null,
+  "remove": true,
+  "runner": null,
+  "runtime_names": {},
+  "saved": 0,
+  "services": [],
+  "started_at": null,
+  "status": "applied",
+  "upload": null
+}
 ```
 
 stderr:
 ```
-applied: 
+Deploying #2 of shop/qa
 ```
 
 ### env rm without --confirm
 
 ```console
 $ ployz env rm qa
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-Removing Environment qa deletes its configuration, history and every Service and Volume in it; this can't be undone. No changes made.
-Retry: ployz env rm qa --confirm shop/qa --project shop
+error: Removing Environment qa deletes its configuration, history and every Service and Volume in it; this can't be undone. No changes made.
+retry: ployz env rm qa --confirm shop/qa --project shop
 ```
 
 ### env rm --json without --confirm
 
 ```console
 $ ployz --json env rm qa
-# exit 1
+# exit 2
 ```
 
 stdout:
 ```
-{"error":{"code":"confirmation_required","details":{"environment":{"id":"5d3b9bf5-5a73-4b33-83fb-59ba8137a840","name":"qa","project":"shop","revision":1},"next":"ployz env rm qa --confirm shop/qa --project shop","services":[],"volumes":[]},"message":"Removing Environment qa deletes its configuration, history and every Service and Volume in it; this can't be undone. No changes made.\nRetry: ployz env rm qa --confirm shop/qa --project shop"}}
+{"error":{"cause":[],"code":"confirmation_required","details":{"environment":{"id":"c6ad0938-4d6f-4ac6-a8f7-7dba63442845","name":"qa","project":"shop","revision":1},"retry":"ployz env rm qa --confirm shop/qa --project shop","services":[],"volumes":[]},"message":"Removing Environment qa deletes its configuration, history and every Service and Volume in it; this can't be undone. No changes made."}}
 ```
 
 ### env rm: --confirm mismatch
@@ -995,7 +1043,8 @@ $ ployz env rm qa --confirm qa
 
 stderr:
 ```
---confirm qa does not match Environment shop/qa. No changes made.
+error: --confirm qa does not match Environment shop/qa. No changes made.
+retry: ployz env rm qa --confirm shop/qa --project shop
 ```
 
 ### env rm --confirm
@@ -1022,7 +1071,7 @@ stdout:
 {
   "deployment": null,
   "environment": {
-    "id": "8a417173-ca91-4985-9ef0-a4bc4fb0c6a1",
+    "id": "8f7c5f37-b9b4-460d-9405-57dfdbaeef76",
     "name": "fix-db",
     "project": "shop",
     "revision": 2
@@ -1039,7 +1088,7 @@ $ ployz env rm production --confirm shop/production
 
 stderr:
 ```
-production is the Default Environment. Choose another Default Environment first
+error: production is the Default Environment. Choose another Default Environment first
 next: ployz env default ENV --project shop
 ```
 
@@ -1052,7 +1101,7 @@ $ ployz env rm nope --confirm shop/nope
 
 stderr:
 ```
-No Environment named nope in Project shop
+error: No Environment named nope in Project shop
 next: ployz env new nope --project shop
 ```
 

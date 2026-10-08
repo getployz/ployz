@@ -9,9 +9,9 @@ $ ployz get
 # exit 0
 ```
 
-stdout:
+stderr:
 ```
-No Services in shop/production.
+No Services in shop/production yet.
 ```
 
 ### set one value
@@ -26,6 +26,11 @@ stdout:
 Staged web.replicas in shop/production (revision 10).
 ```
 
+stderr:
+```
+next: ployz deploy --project shop
+```
+
 ### set --json one value
 
 ```console
@@ -37,13 +42,13 @@ stdout:
 ```
 {
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 11
   },
   "immediate": [],
-  "next": "ployz diff --project shop",
+  "next": "ployz deploy --project shop",
   "staged": [
     "web.replicas"
   ],
@@ -63,6 +68,11 @@ stdout:
 Staged web.env.LOG_LEVEL, web.env.PORT in shop/production (revision 12).
 ```
 
+stderr:
+```
+next: ployz deploy --project shop
+```
+
 ### set env var with a reference
 
 ```console
@@ -75,28 +85,33 @@ stdout:
 Staged web.env.DB_URL in shop/production (revision 13).
 ```
 
+stderr:
+```
+next: ployz deploy --project shop
+```
+
 ### set --secret (value on stdin)
 
 ```console
 $ ployz set web.env.API_KEY --secret
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-API_KEY: expected {"secret": true} or a new secret
+error: No secret on stdin for web.env.API_KEY; pipe one in: printf %s "$VALUE" | ployz set web.env.API_KEY --secret
 ```
 
 ### set --json --secret (value on stdin)
 
 ```console
 $ ployz --json set web.env.API_KEY2 --secret
-# exit 1
+# exit 2
 ```
 
 stdout:
 ```
-{"error":{"code":"invalid_argument","details":{"example":"postgres://${{ db.USER }}@${{ db.PLOYZ_PRIVATE_DOMAIN }}:5432/app","variable":"API_KEY2"},"message":"API_KEY2: expected {\"secret\": true} or a new secret"}}
+{"error":{"cause":[],"code":"invalid_argument","details":null,"message":"No secret on stdin for web.env.API_KEY2; pipe one in: printf %s \"$VALUE\" | ployz set web.env.API_KEY2 --secret"}}
 ```
 
 Note: cap.sh feeds </dev/null, so the two --secret captures above read an empty stdin; see the piped runs below.
@@ -106,17 +121,18 @@ Note: cap.sh feeds </dev/null, so the two --secret captures above read an empty 
 ```console
 $ printf s3cr3t | ployz set web.env.API_KEY --secret
 Staged web.env.API_KEY in shop/production (revision 14).
+next: ployz deploy --project shop
 # exit 0
 $ printf s3cr3t | ployz --json set web.env.API_KEY2 --secret
 {
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 15
   },
   "immediate": [],
-  "next": "ployz diff --project shop",
+  "next": "ployz deploy --project shop",
   "staged": [
     "web.env.API_KEY2"
   ],
@@ -137,16 +153,21 @@ stdout:
 Staged web.healthcheck in shop/production (revision 16).
 ```
 
+stderr:
+```
+next: ployz deploy --project shop
+```
+
 ### set mount: whole mounts object
 
 ```console
 $ ployz set db.mounts=\{\"pgdata\":\"/var/lib/postgresql/data\"\}
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-Name a Volume: SERVICE.mounts.VOLUME
+error: Name a Volume: SERVICE.mounts.VOLUME
 ```
 
 ### set mount: no such Volume
@@ -158,7 +179,7 @@ $ ployz set db.mounts.pgdata=/var/lib/postgresql/data
 
 stderr:
 ```
-No Volume named pgdata in Environment production
+error: No Volume named pgdata in Environment production
 ```
 
 ### volume add (setup for mounts)
@@ -174,6 +195,11 @@ Staged new Volume pgdata in shop/production (revision 17).
 Storage: Managed volume (5 GB limit)
 ```
 
+stderr:
+```
+next: ployz deploy --project shop
+```
+
 ### set mount (volume)
 
 ```console
@@ -186,16 +212,21 @@ stdout:
 Staged db.mounts.pgdata in shop/production (revision 18).
 ```
 
+stderr:
+```
+next: ployz deploy --project shop
+```
+
 ### set mount: relative path
 
 ```console
 $ ployz set db.mounts.cache=data
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-db.mounts.cache: expected an absolute path without null characters
+error: db.mounts.cache: expected an absolute path without null characters
 ```
 
 ### set --from-env-file
@@ -210,6 +241,11 @@ stdout:
 Staged web.env.A, web.env.B in shop/production (revision 19).
 ```
 
+stderr:
+```
+next: ployz deploy --project shop
+```
+
 ### set: unknown Service
 
 ```console
@@ -219,7 +255,7 @@ $ ployz set nope.replicas=2
 
 stderr:
 ```
-No Service named nope in Environment production
+error: No Service named nope in Environment production
 valid: web, db
 ```
 
@@ -232,56 +268,57 @@ $ ployz --json set nope.replicas=2
 
 stdout:
 ```
-{"error":{"code":"not_found","details":{"did_you_mean":null,"valid_children":["web","db"]},"message":"No Service named nope in Environment production"}}
+{"error":{"cause":[],"code":"not_found","details":{"valid_children":["web","db"]},"message":"No Service named nope in Environment production"}}
 ```
 
 ### set: unknown Setting
 
 ```console
 $ ployz set web.replicaz=2
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-Unknown Service Setting
-valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, replicas, restartPolicy, startCommand, template, repository, branch, rootDir, buildMethod, dockerfilePath, buildCommand, autoDeploy, waitForCi, watchPaths, preferredBuilder, env, mounts
+error: Unknown Service Setting
+valid: did you mean replicas?
+valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 16 more
 ```
 
 ### set --json: unknown Setting
 
 ```console
 $ ployz --json set web.replicaz=2
-# exit 1
+# exit 2
 ```
 
 stdout:
 ```
-{"error":{"code":"invalid_argument","details":{"did_you_mean":"replicas","example":3,"expected":{"maximum":50,"minimum":1,"type":"integer"},"valid_children":["cpuLimit","healthcheck","image","maxRetries","memLimit","preDeployCommand","privateDns","registryCredential","replicas","restartPolicy","startCommand","template","repository","branch","rootDir","buildMethod","dockerfilePath","buildCommand","autoDeploy","waitForCi","watchPaths","preferredBuilder","env","mounts"]},"message":"Unknown Service Setting"}}
+{"error":{"cause":[],"code":"invalid_argument","details":{"did_you_mean":"replicas","example":3,"expected":{"maximum":50,"minimum":1,"type":"integer"},"valid_children":["cpuLimit","healthcheck","image","maxRetries","memLimit","preDeployCommand","privateDns","registryCredential","replicas","restartPolicy","startCommand","template","repository","branch","rootDir","buildMethod","dockerfilePath","buildCommand","autoDeploy","waitForCi","watchPaths","preferredBuilder","env","mounts"]},"message":"Unknown Service Setting"}}
 ```
 
 ### set: bad value type
 
 ```console
 $ ployz set web.replicas=lots
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-replicas: Expected a whole number of replicas from 1–50
+error: replicas: Expected a whole number of replicas from 1–50
 ```
 
 ### set --json: bad value type
 
 ```console
 $ ployz --json set web.replicas=lots
-# exit 1
+# exit 2
 ```
 
 stdout:
 ```
-{"error":{"code":"invalid_argument","details":{"example":3,"expected":{"maximum":50,"minimum":1,"type":"integer"},"setting":"replicas"},"message":"replicas: Expected a whole number of replicas from 1–50"}}
+{"error":{"cause":[],"code":"invalid_argument","details":{"example":3,"expected":{"maximum":50,"minimum":1,"type":"integer"},"setting":"replicas"},"message":"replicas: Expected a whole number of replicas from 1–50"}}
 ```
 
 ### set: missing =
@@ -293,7 +330,7 @@ $ ployz set web.replicas
 
 stderr:
 ```
-Expected PATH=VALUE, for example web.replicas=3
+error: Expected PATH=VALUE, for example web.replicas=3
 ```
 
 ### set: --expect stale revision
@@ -305,7 +342,7 @@ $ ployz set web.replicas=4 --expect 1
 
 stderr:
 ```
-Working State moved from revision 1 to 19
+error: Working State moved from revision 1 to 19
 next: ployz get --project shop
 ```
 
@@ -313,12 +350,12 @@ next: ployz get --project shop
 
 ```console
 $ ployz set web.replicas --secret
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-replicas: Expected a whole number of replicas from 1–50
+error: No secret on stdin for web.replicas; pipe one in: printf %s "$VALUE" | ployz set web.replicas --secret
 ```
 
 ### get (all Services)
@@ -355,7 +392,7 @@ stdout:
 ```
 {
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 19
@@ -398,14 +435,14 @@ stdout:
       "apply": "staged",
       "default": null,
       "path": "web.env.A",
-      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.A",
+      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.A",
       "value": "1"
     },
     {
       "apply": "staged",
       "default": null,
       "path": "web.env.API_KEY",
-      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.API_KEY",
+      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.API_KEY",
       "value": {
         "secret": true
       }
@@ -414,7 +451,7 @@ stdout:
       "apply": "staged",
       "default": null,
       "path": "web.env.API_KEY2",
-      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.API_KEY2",
+      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.API_KEY2",
       "value": {
         "secret": true
       }
@@ -423,28 +460,28 @@ stdout:
       "apply": "staged",
       "default": null,
       "path": "web.env.B",
-      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.B",
+      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.B",
       "value": "two"
     },
     {
       "apply": "staged",
       "default": null,
       "path": "web.env.DB_URL",
-      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.DB_URL",
+      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.DB_URL",
       "value": "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
     },
     {
       "apply": "staged",
       "default": null,
       "path": "web.env.LOG_LEVEL",
-      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.LOG_LEVEL",
+      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.LOG_LEVEL",
       "value": "info"
     },
     {
       "apply": "staged",
       "default": null,
       "path": "web.env.PORT",
-      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.PORT",
+      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.PORT",
       "value": "8080"
     }
   ]
@@ -549,7 +586,7 @@ stdout:
 ```
 {
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 19
@@ -634,7 +671,7 @@ stdout:
       "apply": "staged",
       "default": null,
       "path": "web.env.A",
-      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.A",
+      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.A",
       "value": "1"
     },
     {
@@ -647,7 +684,7 @@ stdout:
       "apply": "staged",
       "default": null,
       "path": "web.env.API_KEY",
-      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.API_KEY",
+      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.API_KEY",
       "value": {
         "secret": true
       }
@@ -662,7 +699,7 @@ stdout:
       "apply": "staged",
       "default": null,
       "path": "web.env.API_KEY2",
-      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.API_KEY2",
+      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.API_KEY2",
       "value": {
         "secret": true
       }
@@ -677,7 +714,7 @@ stdout:
       "apply": "staged",
       "default": null,
       "path": "web.env.B",
-      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.B",
+      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.B",
       "value": "two"
     },
     {
@@ -690,7 +727,7 @@ stdout:
       "apply": "staged",
       "default": null,
       "path": "web.env.DB_URL",
-      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.DB_URL",
+      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.DB_URL",
       "value": "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
     },
     {
@@ -703,7 +740,7 @@ stdout:
       "apply": "staged",
       "default": null,
       "path": "web.env.LOG_LEVEL",
-      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.LOG_LEVEL",
+      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.LOG_LEVEL",
       "value": "info"
     },
     {
@@ -716,7 +753,7 @@ stdout:
       "apply": "staged",
       "default": null,
       "path": "web.env.PORT",
-      "row": "4dfec997-f0c6-428f-9c6c-476adb6724c1:variables.PORT",
+      "row": "87070af3-9604-42c2-b3dc-918e60918fc0:variables.PORT",
       "value": "8080"
     },
     {
@@ -776,7 +813,7 @@ stdout:
 ```
 {
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 19
@@ -825,7 +862,7 @@ $ ployz get nope
 
 stderr:
 ```
-No Service named nope in Environment production
+error: No Service named nope in Environment production
 valid: web, db
 ```
 
@@ -838,20 +875,21 @@ $ ployz --json get nope
 
 stdout:
 ```
-{"error":{"code":"not_found","details":{"did_you_mean":null,"valid_children":["web","db"]},"message":"No Service named nope in Environment production"}}
+{"error":{"cause":[],"code":"not_found","details":{"valid_children":["web","db"]},"message":"No Service named nope in Environment production"}}
 ```
 
 ### get: unknown Setting
 
 ```console
 $ ployz get web.replicaz
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-Unknown Service Setting
-valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, replicas, restartPolicy, startCommand, template, repository, branch, rootDir, buildMethod, dockerfilePath, buildCommand, autoDeploy, waitForCi, watchPaths, preferredBuilder, env, mounts
+error: Unknown Service Setting
+valid: did you mean replicas?
+valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 16 more
 ```
 
 ### get: unset env var
@@ -863,7 +901,7 @@ $ ployz get web.env.MISSING
 
 stderr:
 ```
-web has no variable MISSING
+error: web has no variable MISSING
 valid: LOG_LEVEL, PORT, DB_URL, API_KEY, API_KEY2, A, B
 ```
 
@@ -879,6 +917,11 @@ stdout:
 Staged web.replicas in shop/production (revision 20).
 ```
 
+stderr:
+```
+next: ployz deploy --project shop
+```
+
 ### unset --json env var
 
 ```console
@@ -890,13 +933,13 @@ stdout:
 ```
 {
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 21
   },
   "immediate": [],
-  "next": "ployz diff --project shop",
+  "next": "ployz deploy --project shop",
   "staged": [
     "web.env.PORT"
   ],
@@ -908,13 +951,14 @@ stdout:
 
 ```console
 $ ployz unset web.replicaz
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-Unknown Service Setting
-valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, replicas, restartPolicy, startCommand, template, repository, branch, rootDir, buildMethod, dockerfilePath, buildCommand, autoDeploy, waitForCi, watchPaths, preferredBuilder, env, mounts
+error: Unknown Service Setting
+valid: did you mean replicas?
+valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 16 more
 ```
 
 ### unset: variable not set
@@ -926,7 +970,7 @@ $ ployz unset web.env.MISSING
 
 stdout:
 ```
-No change in shop/production: already set.
+Nothing changed in shop/production; web.env.MISSING is already unset.
 ```
 
 ### explain
@@ -938,13 +982,14 @@ $ ployz explain web.replicas
 
 stdout:
 ```
-web.replicas — Replicas
-How many copies of the Service run.
-Type: integer
-Range: at least 1, at most 50
-Default: 1
-Applies: staged
-Example: ployz set 'web.replicas=3'
+setting = web.replicas
+title = Replicas
+description = How many copies of the Service run.
+type = integer
+range = at least 1, at most 50
+default = 1
+applies = staged
+example = ployz set 'web.replicas=3'
 ```
 
 ### explain --json
@@ -980,50 +1025,51 @@ stdout:
 
 ```console
 $ ployz explain web.env
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-Name a variable: SERVICE.env.KEY
+error: Name a variable: SERVICE.env.KEY
 ```
 
 ### explain: unknown Setting
 
 ```console
 $ ployz explain web.replicaz
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-Unknown Service Setting
-valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, replicas, restartPolicy, startCommand, template, repository, branch, rootDir, buildMethod, dockerfilePath, buildCommand, autoDeploy, waitForCi, watchPaths, preferredBuilder, env, mounts
+error: Unknown Service Setting
+valid: did you mean replicas?
+valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 16 more
 ```
 
 ### explain --json: unknown Setting
 
 ```console
 $ ployz --json explain web.replicaz
-# exit 1
+# exit 2
 ```
 
 stdout:
 ```
-{"error":{"code":"invalid_argument","details":{"did_you_mean":"replicas","example":3,"expected":{"maximum":50,"minimum":1,"type":"integer"},"valid_children":["cpuLimit","healthcheck","image","maxRetries","memLimit","preDeployCommand","privateDns","registryCredential","replicas","restartPolicy","startCommand","template","repository","branch","rootDir","buildMethod","dockerfilePath","buildCommand","autoDeploy","waitForCi","watchPaths","preferredBuilder","env","mounts"]},"message":"Unknown Service Setting"}}
+{"error":{"cause":[],"code":"invalid_argument","details":{"did_you_mean":"replicas","example":3,"expected":{"maximum":50,"minimum":1,"type":"integer"},"valid_children":["cpuLimit","healthcheck","image","maxRetries","memLimit","preDeployCommand","privateDns","registryCredential","replicas","restartPolicy","startCommand","template","repository","branch","rootDir","buildMethod","dockerfilePath","buildCommand","autoDeploy","waitForCi","watchPaths","preferredBuilder","env","mounts"]},"message":"Unknown Service Setting"}}
 ```
 
 ### explain: Service only
 
 ```console
 $ ployz explain web
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-Name a Setting: SERVICE.SETTING
-valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, replicas, restartPolicy, startCommand, template, repository, branch, rootDir, buildMethod, dockerfilePath, buildCommand, autoDeploy, waitForCi, watchPaths, preferredBuilder
+error: Name a Setting: SERVICE.SETTING
+valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 14 more
 ```
 
 ### schema (human)
@@ -1033,7 +1079,7 @@ $ ployz schema
 # exit 0
 ```
 
-stdout (3132 lines, first 40 shown):
+stdout (3229 lines, first 40 shown):
 ```
 {
   "$defs": {
@@ -1085,7 +1131,7 @@ $ ployz --json schema
 # exit 0
 ```
 
-stdout (3132 lines, first 40 shown):
+stdout (3229 lines, first 40 shown):
 ```
 {
   "$defs": {
@@ -1137,7 +1183,7 @@ $ ployz schema web
 # exit 0
 ```
 
-stdout (497 lines, first 40 shown):
+stdout (516 lines, first 40 shown):
 ```
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1240,12 +1286,13 @@ stdout:
 
 ```console
 $ ployz schema web.replicaz
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-Unknown Service Setting. `ployz schema` takes SERVICE or SERVICE.SETTING; `ployz schema web` lists its Settings
-valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, replicas, restartPolicy, startCommand, template, repository, branch, rootDir, buildMethod, dockerfilePath, buildCommand, autoDeploy, waitForCi, watchPaths, preferredBuilder, env, mounts
+error: Unknown Service Setting. `ployz schema` takes SERVICE or SERVICE.SETTING; `ployz schema web` lists its Settings
+valid: did you mean replicas?
+valid: cpuLimit, healthcheck, image, maxRetries, memLimit, preDeployCommand, privateDns, registryCredential, and 16 more
 ```
 
