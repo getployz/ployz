@@ -73,10 +73,10 @@ values of secrets the service already has, and they stay secret. To add a secret
 `ployz set web.env.KEY --secret` yourself.
 
 A tool call that runs for more than 30 minutes is stopped, along with the processes it started
-on this computer. A deployment or volume run a call started keeps going in Cloud, and the tool's
-error names the command that shows where it stands, such as `ployz status`. If your context
-reaches Servers over SSH, the SSH connection can stay open for up to 10 idle minutes so the next
-command reuses it.
+on this computer. Calls still running when the agent closes `ployz mcp` stop the same way. A
+deployment or volume run a call started keeps going in Cloud, and the tool's error names the
+command that shows where it stands, such as `ployz status`. If your context reaches Servers over
+SSH, the SSH connection can stay open for up to 10 idle minutes so the next command reuses it.
 
 ## Deploy a directory
 

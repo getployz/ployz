@@ -63,21 +63,29 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
         let mut terminate = signal(SignalKind::terminate())?;
         let mut interrupt = signal(SignalKind::interrupt())?;
         let mut hangup = signal(SignalKind::hangup())?;
-        let running = server
-            .serve(rmcp::transport::stdio())
-            .await
-            .map_err(Failure::command)?;
+        // Catching SIGPIPE keeps a closed stdout from killing the server before it stops its calls.
+        let mut pipe = signal(SignalKind::pipe())?;
+        let serving = async {
+            server
+                .serve(rmcp::transport::stdio())
+                .await
+                .map_err(Failure::command)?
+                .waiting()
+                .await
+                .map_err(Failure::command)?;
+            Ok::<_, Error>(())
+        };
         tokio::select! {
-            quit = running.waiting() => {
-                quit.map_err(Failure::command)?;
-            }
+            quit = serving => quit?,
             _ = terminate.recv() => {}
             _ = interrupt.recv() => {}
             _ = hangup.recv() => {}
+            _ = pipe.recv() => {}
         }
         Ok(())
     });
-    // After a signal, a thread is still blocked reading stdin; exit without waiting for it.
+    // Dropping the in-flight calls kills their process groups. A thread may still be blocked
+    // reading stdin; exit without waiting for it.
     runtime.shutdown_background();
     served
 }
@@ -162,8 +170,16 @@ impl ServerHandler for Server {
                 .spawn()
                 .map_err(|error| McpError::internal_error(error.to_string(), None))?,
         );
+        let group = child.0.id();
         let (stdout, stderr) = (child.0.stdout.take(), child.0.stderr.take());
-        let finished = async { tokio::join!(child.0.wait(), capture(stdout), capture(stderr)) };
+        let exited = async {
+            let status = child.0.wait().await;
+            // What the command left running in its group would outlive the call, and could hold
+            // its output open. While any of it lives, the group's id cannot be reused.
+            kill_group(group);
+            status
+        };
+        let finished = async { tokio::join!(exited, capture(stdout), capture(stderr)) };
         let (status, stdout, stderr) = tokio::select! {
             (status, stdout, stderr) = finished => (
                 status.map_err(|error| McpError::internal_error(error.to_string(), None))?,
@@ -193,14 +209,17 @@ struct KillGroupOnDrop(tokio::process::Child);
 
 impl Drop for KillGroupOnDrop {
     fn drop(&mut self) {
-        if let Some(group) = self
-            .0
-            .id()
-            .and_then(|pid| i32::try_from(pid).ok())
-            .and_then(Pid::from_raw)
-        {
-            let _ = kill_process_group(group, Signal::KILL);
-        }
+        kill_group(self.0.id());
+    }
+}
+
+/// The child leads its own group, so the group's id is the child's pid.
+fn kill_group(leader: Option<u32>) {
+    if let Some(group) = leader
+        .and_then(|pid| i32::try_from(pid).ok())
+        .and_then(Pid::from_raw)
+    {
+        let _ = kill_process_group(group, Signal::KILL);
     }
 }
 
@@ -722,6 +741,8 @@ mod tests {
              server) echo \"no such server\" >&2; exit 3 ;;\n\
              logs) head -c 3000000 /dev/zero | tr '\\0' a; exit 0 ;;\n\
              deployment) sleep 60 & echo $$ $! > \"$(dirname \"$0\")/pids\"; wait ;;\n\
+             service) sleep 60 >/dev/null 2>&1 & echo $$ $! > \"$(dirname \"$0\")/pids\"; kill -9 $$ ;;\n\
+             volume) sleep 60 & echo $! > \"$(dirname \"$0\")/pids\"; echo left one running; exit 0 ;;\n\
              esac\n\
              echo \"$*\"\n",
         )
@@ -860,6 +881,39 @@ mod tests {
         let listed = client.reply().await;
         assert_eq!(listed["id"], 3, "{listed}");
         assert!(listed["result"]["tools"].is_array(), "{listed}");
+    }
+
+    fn tool_call(name: &str) -> Value {
+        request(2, "tools/call", json!({ "name": name, "arguments": {} }))
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn what_a_failed_call_left_running_is_killed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut frames = handshake();
+        frames.push(tool_call("service_ls"));
+        let replies = exchange_with(Server::new(fake_ployz(dir.path()), Vec::new()), &frames).await;
+        assert_eq!(replies[1]["result"]["isError"], true, "{}", replies[1]);
+        assert_killed(&call_pids(dir.path()).await).await;
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_call_returns_when_its_command_exits_even_if_a_child_holds_its_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut frames = handshake();
+        frames.push(tool_call("volume_ls"));
+        let replies = tokio::time::timeout(
+            Duration::from_secs(20),
+            exchange_with(Server::new(fake_ployz(dir.path()), Vec::new()), &frames),
+        )
+        .await
+        .expect("the call returns before the child it left running exits");
+        let done = &replies[1]["result"];
+        assert_eq!(done["isError"], false, "{done}");
+        assert_eq!(done["content"][0]["text"], "left one running\n");
+        assert_killed(&call_pids(dir.path()).await).await;
     }
 
     #[test]
