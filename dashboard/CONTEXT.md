@@ -224,6 +224,18 @@ _Avoid_: Database (as a resource kind), template, add-on
 A human's yes or no to one destructive Publish, Deploy, Server removal, Drain or Namespace clean from the CLI, recorded by Cloud while the Organization's "Ask before destructive actions" setting is on (the default). It names the Store's digest of exactly what the plan destroys; once the Environment's Working State moves on, a pending Approval is superseded and the command asks again. A retry naming an Approval gets its recorded answer even after the setting is turned off; the setting decides only whether a command naming none asks. Dashboard writes and Settings edits never ask. It stops a cooperative agent, not a hostile one: whoever holds the credential can approve.
 _Avoid_: Confirmation, permission, approval memory
 
+**Agent sidebar**:
+The dashboard's chat with an agent that acts in the Organization through the same commands `ployz mcp` offers, as the signed-in member. Its threads are kept per member and Organization. A Publish or Deploy it starts is a CLI-like write: it asks for an Approval under the same setting, while the dashboard's own buttons never ask.
+_Avoid_: Assistant, copilot, AI panel
+
+**Approval card**:
+The Agent sidebar's view of one pending Approval: what the plan destroys, with Approve and Deny. It is drawn from Cloud's Approval each time it shows, never from the chat's memory, so every device shows the same card and a superseded one says so.
+_Avoid_: Confirmation dialog, prompt
+
+**Run card**:
+The Agent sidebar's view of the Deployment a command started, in the Deployments place's words and statuses.
+_Avoid_: Job card, task card
+
 Git repository identity and access are separate. Cloud can read a public GitHub repository anonymously or use an Organization member's connected GitHub App installation. Public access never falls back to installation credentials. Both paths pin a commit per Deployment and materialize it through the same source acquisition module. Automatic Git deployment and CI gating require installation access; public sources deploy manually.
 
 Cloud infers deployment ordering from bound Service variable references in the frozen Attempt Target. A Config's references count as references of every Service that mounts it. Dependencies complete normal startup monitoring before dependent hooks and containers; explicitly configured HTTP health checks also gate unchanged dependencies. Edges within reference cycles are ignored, while dependencies entering or leaving those cycles remain. Literal text, self references, and references to empty Services do not impose ordering.
