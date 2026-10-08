@@ -91,7 +91,7 @@ describe("drain-server", () => {
     transformCtx: (ctx) => ({ ...mockCtx(ctx), runId }),
   }).execute();
   /** The cancellation Inngest sends for `runId`, naming the event that started it. */
-  const cancel = (runId: string, functionId = "drain-server", attemptId = requestId) => new InngestTestEngine({
+  const cancel = (runId: string, functionId = "test-drain-server", attemptId = requestId) => new InngestTestEngine({
     function: createCancelServerDrain(new Inngest({ id: "test" }), runEffect),
     events: [{
       name: "inngest/function.cancelled",
@@ -293,14 +293,14 @@ describe("drain-server", () => {
     await request();
     await claim(requestId, "run-1");
 
-    expect((await cancel("run-1", "roll-out-server-upgrade")).result).toEqual({ skipped: true });
+    expect((await cancel("run-1", "test-roll-out-server-upgrade")).result).toEqual({ skipped: true });
     expect((await cancel("run-1")).result).toEqual({ closed: 1 });
     expect((await cancel("run-1")).result).toEqual({ closed: 0 });
     expect(await rows()).toMatchObject([{ state: "unknown", end_code: "interrupted", ended_at: expect.any(Date) }]);
 
     await request(secondTab, otherMachineId);
     await harness.pool.query(`update server_drain_attempt set inngest_run_id = 'run-2' where id = $1`, [secondTab]);
-    expect((await cancel("run-2", "drain-server", secondTab)).result).toEqual({ closed: 1 });
+    expect((await cancel("run-2", "test-drain-server", secondTab)).result).toEqual({ closed: 1 });
     expect((await rows())[1]).toMatchObject({ state: "cancelled", end_code: "cancelled" });
   });
 
@@ -311,7 +311,7 @@ describe("drain-server", () => {
 
     await request(secondTab, otherMachineId);
     await harness.pool.query(`update server_drain_attempt set inngest_run_id = 'run-2' where id = $1`, [secondTab]);
-    expect((await cancel("run-other", "drain-server", secondTab)).result).toEqual({ closed: 0 });
+    expect((await cancel("run-other", "test-drain-server", secondTab)).result).toEqual({ closed: 0 });
     expect((await rows())[1]).toMatchObject({ state: "pending", inngest_run_id: "run-2" });
   });
 
