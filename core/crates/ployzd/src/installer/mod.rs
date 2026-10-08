@@ -282,7 +282,8 @@ async fn install_locked(
     })
 }
 
-/// Restart the daemon on whichever release is installed, then the volume plugin it serves.
+/// Restart the daemon on whichever release is installed, then the volume plugin it serves and
+/// the Log Store.
 fn restart_daemon() -> Result<(), Error> {
     // One transaction: a changed socket unit takes effect, and
     // After=ployz.socket starts the socket before the daemon.
@@ -293,6 +294,10 @@ fn restart_daemon() -> Result<(), Error> {
     systemctl(
         "restart volume plugin",
         ["try-restart", "ployz-volume-plugin.service"],
+    )?;
+    systemctl(
+        "restart Log Store",
+        ["try-restart", "ployz-observe.service"],
     )?;
     Ok(())
 }

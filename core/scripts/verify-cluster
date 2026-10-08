@@ -234,7 +234,7 @@ def install(run, backend, node):
         if staged.get(destination) != run["binaries"][name]:
             backend.push(node, artifacts / name, destination)
     backend.exec(node, ["bash", "-ec", """
-systemctl stop ployz.socket ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service
+systemctl stop ployz.socket ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service ployz-observe.service
 install -d -m 750 -o ployz -g ployz /run/ployz
 for binary in "$@"; do
     if cmp -s "/opt/ployz-verify/$binary" "/usr/local/bin/$binary"; then continue; fi
@@ -244,7 +244,7 @@ done
 # The exact installed version retains these binaries and writes their own units.
 ployzd install --version "$(ployzd version)" --install-only
 systemctl daemon-reload
-systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service
+systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service ployz-observe.service
 """, "install", *run["binaries"]])
 
 
@@ -253,7 +253,7 @@ def doctor(run, commands, backend):
     def inspect(node):
         names = [name for name in run["binaries"] if name != "ployzd"]
         result = backend.exec(node, ["bash", "-ec", """
-systemctl is-active --quiet docker ssh ployz ployz.socket ployz-volume-plugin.socket
+systemctl is-active --quiet docker ssh ployz ployz.socket ployz-volume-plugin.socket ployz-observe
 pid=$(systemctl show ployz.service -p MainPID --value)
 sha256sum "/proc/$pid/exe" "$@"
 test -d /sys/module/zfs
@@ -295,7 +295,7 @@ def teardown(run, commands, backend):
     save(run)
     for node in run["machines"]:
         try:
-            backend.exec(node, ["bash", "-c", "journalctl -u ployz -u ployz-volume-plugin -u docker -u ssh -u ssh.socket --no-pager -n 300; zpool status; zfs list; wg show"], check=False, timeout=10)
+            backend.exec(node, ["bash", "-c", "journalctl -u ployz -u ployz-volume-plugin -u ployz-observe -u docker -u ssh -u ssh.socket --no-pager -n 300; zpool status; zfs list; wg show"], check=False, timeout=10)
         except (RuntimeError, subprocess.TimeoutExpired):
             pass
     backend.destroy()
@@ -360,7 +360,7 @@ def up(args):
                     install(run, backend, node)
                 else:
                     # The release and its units are already installed in this image.
-                    backend.exec(node, ["systemctl", "enable", "--now", "ployz.socket", "ployz-volume-plugin.socket", "ployz.service"])
+                    backend.exec(node, ["systemctl", "enable", "--now", "ployz.socket", "ployz-volume-plugin.socket", "ployz.service", "ployz-observe.service"])
                 node["address"] = backend.address(node)
             parallel(start, run["machines"])
             binaries.result()

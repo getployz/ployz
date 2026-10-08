@@ -16,7 +16,11 @@ const SOAK: Duration = Duration::from_secs(30);
 const SOAK: Duration = Duration::from_millis(100);
 
 /// Units besides the daemon that an Upgrade restarts and compensation must bring back.
-const PLUGIN_UNITS: [&str; 2] = ["ployz-volume-plugin.socket", "ployz-volume-plugin.service"];
+const PLUGIN_UNITS: [&str; 3] = [
+    "ployz-volume-plugin.socket",
+    "ployz-volume-plugin.service",
+    "ployz-observe.service",
+];
 
 /// Why an Upgrade failed, and whether the previous release went back into service. Its text is
 /// the attempt's recorded failure.
@@ -112,14 +116,14 @@ async fn restore(
         ["reset-failed", "ployz.socket", "ployz.service"],
     )?;
     for unit in plugins {
-        super::systemctl("clear volume plugin failure", ["reset-failed", unit])?;
+        super::systemctl("clear unit failure", ["reset-failed", unit])?;
     }
     super::systemctl(
         "restart daemon",
         ["restart", "ployz.socket", "ployz.service"],
     )?;
     for unit in plugins {
-        super::systemctl("restart volume plugin", ["restart", unit])?;
+        super::systemctl("restart unit", ["restart", unit])?;
     }
     super::host::verify_running_daemon(paths, previous).await
 }

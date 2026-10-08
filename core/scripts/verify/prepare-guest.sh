@@ -13,8 +13,8 @@ docker pull caddy:2
 caddy_version=$(docker run --rm --entrypoint caddy caddy:2 version)
 caddy_version=${caddy_version%% *}
 docker tag caddy:2 "caddy:${caddy_version#v}"
-systemctl stop ployz.socket ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service
-systemctl disable ployz.socket ployz.service ployz-volume-plugin.socket
+systemctl stop ployz.socket ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service ployz-observe.service
+systemctl disable ployz.socket ployz.service ployz-volume-plugin.socket ployz-observe.service
 systemctl enable ssh docker
 # Clone dependencies and cached images, then create each Machine's identity on first start.
 rm -rf /var/lib/ployz /root/.ployz /root/.ssh /opt/ployz-verify
