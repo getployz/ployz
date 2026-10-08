@@ -106,13 +106,13 @@ describe("machine remove Inngest boundary", () => {
       events: [{ name: "machine/remove.requested", data: { attemptId } }],
       steps: [
         { id: "claim-machine-remove", handler: () => ({ kind: "ready", attempt: { id: attemptId } }) },
-        { id: "remove-machine", handler: () => ({ kind: "volume_run_open", message: "data's move uses this Server; wait for it to end, or volume release data" }) },
-        { id: "complete-volume-run-open", handler: () => undefined },
+        { id: "remove-machine", handler: () => ({ kind: "refused", failureCode: "volume_run_open", message: "data's move uses this Server; wait for it to end, or volume release data" }) },
+        { id: "complete-refused", handler: () => undefined },
       ],
     }).execute();
 
     expect(output.result).toEqual({ attemptId, status: "failed" });
-    expect(output.ctx.step.run).toHaveBeenCalledWith("complete-volume-run-open", expect.any(Function));
+    expect(output.ctx.step.run).toHaveBeenCalledWith("complete-refused", expect.any(Function));
     expect(output.ctx.step.run).not.toHaveBeenCalledWith("release-server", expect.any(Function));
   });
 });

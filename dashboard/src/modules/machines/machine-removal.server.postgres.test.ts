@@ -281,7 +281,7 @@ describe("machine removal durable ownership", () => {
         Effect.scoped,
       ));
 
-      expect(outcome).toEqual({ kind: "volume_run_open", message: waiting });
+      expect(outcome).toEqual({ kind: "refused", failureCode: "volume_run_open", message: waiting });
     });
 
     it("an ended run, a run on other Servers, and another Organization's run leave the Server free", async () => {

@@ -90,13 +90,13 @@ export async function executeProcessMachineRemove({
     runInngestEffect(Effect.scoped(removeMachineActivity(attempt))),
   );
 
-  if (removed.kind === "volume_run_open") {
-    await step.run("complete-volume-run-open", () =>
+  if (removed.kind === "refused") {
+    await step.run("complete-refused", () =>
       runInngestEffect(
         completeMachineRemoveAttemptActivity({
           attemptId,
           inngestRunId: runId,
-          completion: { state: "failed", failureCode: "volume_run_open", failureMessage: removed.message },
+          completion: { state: "failed", failureCode: removed.failureCode, failureMessage: removed.message },
           now: new Date(),
         }),
       ),

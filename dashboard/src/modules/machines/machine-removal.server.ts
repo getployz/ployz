@@ -8,7 +8,7 @@ import type { Actor } from "#/modules/identity/actor";
 import {
   type DataLossList,
 } from "#/modules/runtime/data-loss-confirm";
-import type { PloyzSdkError } from "#/modules/runtime/ployz.server";
+import { type PloyzSdkError, rpcErrorCode, rpcErrorMessage } from "#/modules/runtime/ployz.server";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type {
@@ -56,6 +56,16 @@ export function asRemoveMachineOutcome<R>(
         identities: cause.identities,
       } satisfies RemoveMachineOutcome),
     ),
+    // A refusal changed nothing and says why; retrying it only delays the same answer.
+    Effect.catchIf(
+      (cause) => rpcErrorCode(cause) === "conflict",
+      (cause) =>
+        Effect.succeed({
+          kind: "refused" as const,
+          failureCode: "conflict",
+          message: rpcErrorMessage(cause) ?? "The Server refused its removal.",
+        } satisfies RemoveMachineOutcome),
+    ),
     Effect.mapError(
       (cause) =>
         new MachineRemovalProviderFailure({
@@ -92,7 +102,7 @@ export const completeMachineRemoveAttemptActivity = Effect.fn(
 export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
   function* (attempt: Pick<MachineRemoveAttemptContext, "organizationId" | "machineId" | "confirmDataLoss" | "noReset">) {
     const open = yield* openRunNaming(attempt.organizationId, asMachineId(attempt.machineId));
-    if (open !== null) return { kind: "volume_run_open", message: open } satisfies RemoveMachineOutcome;
+    if (open !== null) return { kind: "refused", failureCode: "volume_run_open", message: open } satisfies RemoveMachineOutcome;
     const access = yield* loadOrganizationConnections(attempt.organizationId);
     const runtime = yield* OrganizationRuntime;
     const session = yield* runtime.open(attempt.organizationId);

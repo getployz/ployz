@@ -778,20 +778,13 @@ impl Client {
         if refuse_last_managed(self, &machines, selected).await? == CloudHold::Last {
             return Err(cloud_holds_last(selected));
         }
-        let held = self
-            .inspect_storage(std::slice::from_ref(observation))
-            .await
-            .successes
-            .iter()
-            .flat_map(|success| success.value.roles())
-            .map(|(name, _)| {
-                Namespace::declared_volume_name(name)
-                    .unwrap_or(name.as_str())
-                    .to_owned()
-            })
-            .collect::<BTreeSet<_>>();
+        let held = self.held_copies(observation).await;
         if !held.is_empty() {
-            return Err(copies_left_behind(&observation.machine.name, &held));
+            return Err(copies_left_behind(
+                &observation.machine.name,
+                held.iter()
+                    .map(|name| Namespace::declared_volume_name(name).unwrap_or(name.as_str())),
+            ));
         }
         self.call::<op::RemoveMachine>(
             RemoveMachineRequest {
@@ -802,6 +795,21 @@ impl Client {
         .await
         .map_err(RpcError::from)?;
         Ok(())
+    }
+
+    /// The Docker Volumes `machine` answers holding a copy of, as writer or any other
+    /// role: a removal without a reset would leave each behind. Empty when it doesn't answer.
+    pub(crate) async fn held_copies(
+        &self,
+        machine: &MachineObservation,
+    ) -> BTreeSet<DockerVolumeName> {
+        self.inspect_storage(std::slice::from_ref(machine))
+            .await
+            .successes
+            .iter()
+            .flat_map(|success| success.value.roles())
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 
     /// List images on each target Machine with independent bounded retries.
@@ -1145,25 +1153,26 @@ pub enum Remover {
     Operator,
 }
 
-/// The last Machine is Cloud's: anyone else removing it would leave Cloud paired
-/// with a Cluster that no longer exists.
-fn copies_left_behind(machine: &MachineName, volumes: &BTreeSet<String>) -> RpcError {
+/// Removing `machine` without a reset leaves its copies of `volumes` behind: only its
+/// reset demotes them.
+pub(crate) fn copies_left_behind<'a>(
+    machine: &MachineName,
+    volumes: impl IntoIterator<Item = &'a str>,
+) -> RpcError {
     RpcError {
         code: RpcErrorCode::Conflict,
         message: format!(
             "Server {machine} answers and holds copies of Volumes {}; removing it without a reset \
              leaves them behind. No changes made. Drop --no-reset so the reset demotes them.",
-            volumes
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join(", ")
+            volumes.into_iter().collect::<Vec<_>>().join(", ")
         ),
         details: Value::Null,
         cause: Vec::new(),
     }
 }
 
+/// The last Machine is Cloud's: anyone else removing it would leave Cloud paired
+/// with a Cluster that no longer exists.
 fn cloud_holds_last(machine: MachineId) -> RpcError {
     RpcError {
         code: RpcErrorCode::Conflict,
