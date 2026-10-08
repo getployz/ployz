@@ -1,10 +1,5 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
-import {
-  createCustomerPortal,
-  hasCachedActiveSubscription,
-} from "#/modules/billing/billing.server";
-import { Polar } from "#/modules/billing/polar-provider.server";
 import { Uuid } from "#/lib/schema";
 import { disconnectGithub, githubBranches, githubConnection } from "#/modules/github/github-cli.server";
 import type { Caller } from "#/modules/identity/actor";
@@ -81,7 +76,7 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
 
 /**
  * `/api/cli/*`: the `ployz` CLI's account surface (Organizations and their removal, Organization Tokens and signed-in devices,
- * GitHub connections, billing), and removing a Server Cloud manages, through the dashboard's durable removal, or forgetting deleted ones (Forget Servers). Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
+ * GitHub connections), and removing a Server Cloud manages, through the dashboard's durable removal, or forgetting deleted ones (Forget Servers). Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
  */
 export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Request) {
   const caller = yield* resolveCaller(request.headers);
@@ -172,14 +167,6 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       }
       return yield* disconnectGithub(caller, installation);
     }
-    case "GET billing":
-      return { billing: yield* billingSummary(caller) };
-    case "POST billing/:id":
-      if (id === "portal") {
-        const portal = yield* createCustomerPortal(caller, { organizationSlug: caller.organization.slug });
-        return { url: portal.customerPortalUrl };
-      }
-      return yield* new NotFound({ message: "Not found." });
     case "POST volumes/:id/runs": {
       const body = yield* decodeBody(NewVolumeRun, request, "A volume run takes its environment and what to run.");
       return yield* requestVolumeRun(forgetter(caller), {
@@ -233,15 +220,4 @@ const pendingRevocation = Effect.fn("Cli.pendingRevocation")(function* (caller: 
   const pending = (yield* pendingServerRevocations(caller.organization.id)).find((entry) => entry.id === id);
   if (pending === undefined) return yield* missing;
   return { id, kind: pending.kind };
-});
-
-/** The Billing Plan, from the cached subscription row. */
-const billingSummary = Effect.fn("Cli.billingSummary")(function* (caller: Caller) {
-  const polar = yield* Polar;
-  const selfHosted = polar.mode === "self_hosted";
-  return {
-    organization: caller.organization.slug,
-    self_hosted: selfHosted,
-    pro: !selfHosted && (yield* hasCachedActiveSubscription(caller.organization.id)),
-  };
 });

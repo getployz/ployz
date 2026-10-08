@@ -380,7 +380,6 @@ pub(crate) fn json_refused(path: &str) -> bool {
 fn handler_for(path: &str) -> Option<Handler> {
     let (group, rest) = path.split_once(' ').unwrap_or((path, ""));
     match (group, rest) {
-        ("billing", rest) => account::billing_handler(rest),
         ("build", "") => Some(build::build),
         ("completion", "") => Some(completion),
         ("cloud", rest) => cloud::handler(rest),

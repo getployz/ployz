@@ -40,7 +40,6 @@ pub fn command() -> Command {
                 .default_value("auto")
                 .help("When to color output; overrides NO_COLOR and CLICOLOR"),
         )
-        .subcommand(handlers::account::billing_command())
         .subcommand(handlers::build::command())
         .subcommand(handlers::cloud::command())
         .subcommand(handlers::context::command())

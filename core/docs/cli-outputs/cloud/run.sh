@@ -56,11 +56,11 @@ note() { printf '%s\n\n' "$2" >>"$CAPTURES/$1.md"; }
 
 up() {
   cloud_started=1 # anything at dashboard/.verify/run from here on is ours
-  (cd "$DASH" || exit 1; BILLING=${1:-0} scripts/verify/up.sh) >"$WORK/up.log" 2>&1 || { cat "$WORK/up.log"; exit 1; }
+  (cd "$DASH" || exit 1; scripts/verify/up.sh) >"$WORK/up.log" 2>&1 || { cat "$WORK/up.log"; exit 1; }
   U=$(sed -n 's/^Ployz Cloud verify: \([^ ]*\).*/\1/p' "$DASH/.verify/run/info")
   cookie=$(jq -r .cookie "$DASH/.verify/run/seed.json")
   export PLOYZ_CLOUD_URL=$U
-  echo "Cloud at $U (billing ${1:-0})"
+  echo "Cloud at $U"
 }
 api() { curl -sf -b "better-auth.session_token=$cookie" -H "Origin: $U" -H 'content-type: application/json' "$@"; }
 approve() {
@@ -74,17 +74,17 @@ signin() {
   "$REAL" login --wait </dev/null >/dev/null
 }
 
-for f in auth token org billing github domain deploy errors; do
+for f in auth token org github domain deploy errors; do
   printf '# Ployz Cloud CLI outputs: %s\n\nCaptured by cloud/run.sh against a seeded local Ployz Cloud (dashboard verify), signed in as ada@example.com unless noted. Cloud URL varies per run.\n\n' "$f" >"$CAPTURES/$f.md"
 done
 
-up 0
+up
 cd "$WORK/app" || exit 1
 
 # ---------- errors: not signed in, bad token, unreachable Cloud ----------
 export HOME=$WORK/home-anon; mkdir -p "$HOME"
 note errors "## Not signed in (fresh HOME, PLOYZ_CLOUD_URL set)"
-for cmd in "status" "token ls" "org ls" "billing" "github ls" "domain ls" "deployment ls" "deploy --plan" "logs" "ps" "cloud reset -y"; do
+for cmd in "status" "token ls" "org ls" "github ls" "domain ls" "deployment ls" "deploy --plan" "logs" "ps" "cloud reset -y"; do
   c errors "not signed in: $cmd" $P $cmd
   c errors "not signed in: $cmd --json" $P $cmd --json
 done
@@ -99,7 +99,7 @@ PLOYZ_CLOUD_URL=http://127.0.0.1:9 PLOYZ_TOKEN=ployz_x c errors "token ls, token
 PLOYZ_CLOUD_URL=https://example.com c errors "login --json, URL that is not a Ployz Cloud" $P login --json
 
 note errors "## Bad PLOYZ_TOKEN"
-for cmd in "status" "token ls" "org ls" "billing" "deployment ls"; do
+for cmd in "status" "token ls" "org ls" "deployment ls"; do
   PLOYZ_TOKEN=ployz_bogus c errors "bogus PLOYZ_TOKEN: $cmd" $P $cmd
   PLOYZ_TOKEN=ployz_bogus c errors "bogus PLOYZ_TOKEN: $cmd --json" $P $cmd --json
 done
@@ -271,13 +271,6 @@ note deploy "## cloud reset (no founding in progress)"
 c deploy "cloud reset (no -y)" $P cloud reset
 m deploy "cloud reset -y" $P cloud reset -y
 m deploy "cloud reset -y --json" $P cloud reset -y --json
-
-# ---------- billing ----------
-note billing "## Billing off (self-hosted verify Cloud)"
-for cmd in "billing" "billing manage"; do
-  c billing "$cmd (billing off)" $P $cmd
-  c billing "$cmd --json (billing off)" $P $cmd --json
-done
 
 # ---------- logout (before the restart wipes the session) ----------
 note auth "## logout"

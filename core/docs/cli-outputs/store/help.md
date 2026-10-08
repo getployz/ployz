@@ -16,7 +16,6 @@ Manage Ployz machines, services, and volumes
 Usage: ployz [OPTIONS] [COMMAND]
 
 Commands:
-  billing     Show the Organization's plan
   build       Build one Git Service and push it into a Machine with a Build Grant
   cloud       Manage Cloud
   ctx         Show where commands act, or manage local contexts
@@ -98,7 +97,6 @@ Manage Ployz machines, services, and volumes
 Usage: ployz [OPTIONS] [COMMAND]
 
 Commands:
-  billing     Show the Organization's plan
   build       Build one Git Service and push it into a Machine with a Build Grant
   cloud       Manage Cloud
   ctx         Show where commands act, or manage local contexts
@@ -159,7 +157,6 @@ Manage Ployz machines, services, and volumes
 Usage: ployz [OPTIONS] [COMMAND]
 
 Commands:
-  billing     Show the Organization's plan
   build       Build one Git Service and push it into a Machine with a Build Grant
   cloud       Manage Cloud
   ctx         Show where commands act, or manage local contexts

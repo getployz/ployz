@@ -5,7 +5,6 @@ import type { Client } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
 import { Inngest } from "inngest";
-import { organizationBillingState } from "#/modules/billing/tables";
 import { Polar, type PolarService } from "#/modules/billing/polar-provider.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { githubInstallation, githubRepositoryCache } from "#/modules/github/tables";
@@ -34,13 +33,6 @@ import { fakeGithubApi } from "#/test/fake-github";
 import { postgresTestDatabase } from "#/test/postgres";
 
 const origin = "http://localhost:3000";
-
-const hostedPolar: PolarService = {
-  mode: "hosted",
-  productId: "pro",
-  listActiveSubscriptions: () => Effect.die("billing reads the cached row"),
-  createCustomerPortal: () => Effect.succeed({ customerPortalUrl: "https://polar.test/portal" }),
-};
 
 /** GitHub: the private acme/web (through installation 7) has branches main and dev. */
 const github = fakeGithubApi({
@@ -124,8 +116,6 @@ type Reply = {
   readonly tokens?: ReadonlyArray<{ readonly id: string; readonly current: boolean; readonly expired: boolean }>;
   readonly devices?: ReadonlyArray<{ readonly id: string; readonly current: boolean }>;
   readonly removed?: boolean | { readonly id: string; readonly kind: string };
-  readonly billing?: { readonly self_hosted: boolean; readonly pro: boolean };
-  readonly url?: string;
   readonly connections?: ReadonlyArray<{ readonly machine_id: string; readonly management: string }>;
   readonly unreachable?: ReadonlyArray<string>;
   readonly servers?: { readonly confirmed: ReadonlyArray<string>; readonly unconfirmed: ReadonlyArray<string> };
@@ -222,24 +212,24 @@ it.live(
         // Expired.
         yield* database.drizzle.update(organizationToken)
           .set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(organizationToken.id, token.id));
-        assert.strictEqual((yield* cli("GET", "billing", { bearer: token.secret })).status, 401);
+        assert.strictEqual((yield* cli("GET", "tokens", { bearer: token.secret })).status, 401);
         assert.isTrue((yield* cli("GET", "tokens", alice)).json.tokens?.[0]?.expired);
 
         // Its maker left the Organization.
         const second = (yield* cli("POST", "tokens", alice, { name: "ci-2", expires_in_days: 1 })).json.token
           ?? assert.fail("no token");
-        assert.strictEqual((yield* cli("GET", "billing", { bearer: second.secret })).status, 200);
+        assert.strictEqual((yield* cli("GET", "tokens", { bearer: second.secret })).status, 200);
         const [membership] = yield* database.drizzle.delete(member)
           .where(eq(member.organizationId, alice.organization.id)).returning();
-        assert.strictEqual((yield* cli("GET", "billing", { bearer: second.secret })).status, 401);
+        assert.strictEqual((yield* cli("GET", "tokens", { bearer: second.secret })).status, 401);
         // A session whose active Organization is no longer the user's is refused too.
-        assert.strictEqual((yield* cli("GET", "billing", alice)).status, 403);
+        assert.strictEqual((yield* cli("GET", "tokens", alice)).status, 403);
         yield* database.drizzle.insert(member).values(membership ?? assert.fail("no membership"));
 
         // Revoked.
         const removed = yield* cli("DELETE", `tokens/${second.id}`, alice);
         assert.deepStrictEqual(removed.json.removed, { id: second.id, kind: "token" });
-        assert.strictEqual((yield* cli("GET", "billing", { bearer: second.secret })).status, 401);
+        assert.strictEqual((yield* cli("GET", "tokens", { bearer: second.secret })).status, 401);
         assert.strictEqual((yield* cli("DELETE", `tokens/${second.id}`, alice)).status, 404);
       }).pipe(Effect.provide(layer));
     }),
@@ -318,47 +308,6 @@ it.live(
         const byId = yield* cli("POST", "volumes/vol-1/runs", alice, { environment: "env-1", kind: "sync" });
         assert.strictEqual(byId.status, 422);
       }).pipe(Effect.provide(layer));
-    }),
-  60_000,
-);
-
-it.live(
-  "a Self-hosted Cloud has no Billing Plan",
-  () =>
-    Effect.gen(function* () {
-      const selfHosted = yield* cliLayer({ mode: "self_hosted" });
-      yield* Effect.gen(function* () {
-        const alice = yield* signUp("alice");
-        const billing = yield* cli("GET", "billing", alice);
-        assert.deepInclude(billing.json.billing, { self_hosted: true, pro: false });
-      }).pipe(Effect.provide(selfHosted));
-    }),
-  60_000,
-);
-
-it.live(
-  "hosted billing reports the plan from the cached subscription and sells no checkout",
-  () =>
-    Effect.gen(function* () {
-      const hosted = yield* cliLayer(hostedPolar);
-      yield* Effect.gen(function* () {
-        const database = yield* Database;
-        const alice = yield* signUp("carol");
-        const free = yield* cli("GET", "billing", alice);
-        assert.deepInclude(free.json.billing, { self_hosted: false, pro: false });
-        assert.strictEqual((yield* cli("POST", "billing/checkout", alice)).status, 404);
-
-        yield* database.drizzle.insert(organizationBillingState).values({
-          organizationId: alice.organization.id,
-          hasActiveSubscription: true,
-          activeSubscriptionId: "sub",
-          currentPeriodEnd: new Date(Date.now() + 86_400_000),
-          syncedAt: new Date(),
-        });
-        const pro = yield* cli("GET", "billing", alice);
-        assert.deepInclude(pro.json.billing, { self_hosted: false, pro: true });
-        assert.strictEqual((yield* cli("POST", "billing/portal", alice)).json.url, "https://polar.test/portal");
-      }).pipe(Effect.provide(hosted));
     }),
   60_000,
 );

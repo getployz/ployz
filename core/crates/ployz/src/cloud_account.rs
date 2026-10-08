@@ -1,6 +1,6 @@
 //! Acting in Cloud from the CLI: Organizations, Organization Tokens and signed-in
-//! devices, and billing, through Cloud's `/api/cli` surface; and the Config Store's
-//! `read` and `write`, through `/api/config`.
+//! devices, through Cloud's `/api/cli` surface; and the Config Store's `read` and
+//! `write`, through `/api/config`.
 //!
 //! Every call carries one credential: `PLOYZ_TOKEN` when set, else this device's
 //! approved sign-in. Either acts in exactly one Organization.
@@ -187,65 +187,6 @@ pub(crate) struct Removed {
     pub(crate) kind: CredentialKind,
 }
 
-/// An Organization's Billing Plan.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(from = "BillingReply")]
-pub(crate) struct Billing {
-    pub(crate) organization: String,
-    pub(crate) plan: BillingPlan,
-}
-
-/// An Organization's Billing Plan.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum BillingPlan {
-    /// A self-hosted Cloud bills nothing.
-    SelfHosted,
-    Pro,
-    Free,
-}
-
-impl BillingPlan {
-    /// The plan as users read it.
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::SelfHosted => "self-hosted, no billing",
-            Self::Pro => "Pro",
-            Self::Free => "Free",
-        }
-    }
-
-    /// The billing command that acts on this plan.
-    pub(crate) const fn next(self) -> Option<&'static str> {
-        match self {
-            Self::SelfHosted => None,
-            Self::Pro => Some("ployz billing manage"),
-            Self::Free => None,
-        }
-    }
-}
-
-/// Billing as Cloud answers it.
-#[derive(Deserialize)]
-struct BillingReply {
-    organization: String,
-    self_hosted: bool,
-    pro: bool,
-}
-
-impl From<BillingReply> for Billing {
-    fn from(reply: BillingReply) -> Self {
-        Self {
-            organization: reply.organization,
-            plan: match (reply.self_hosted, reply.pro) {
-                (true, _) => BillingPlan::SelfHosted,
-                (false, true) => BillingPlan::Pro,
-                (false, false) => BillingPlan::Free,
-            },
-        }
-    }
-}
-
 /// The Organizations this credential may act in.
 ///
 /// # Errors
@@ -354,39 +295,6 @@ pub(crate) async fn remove_token(
 /// Returns a Cloud failure.
 pub(crate) async fn server_access(credential: &Credential) -> Result<ServerAccess, LoginError> {
     call(credential, Method::POST, "server-access", None).await
-}
-
-/// The Organization's Billing Plan.
-///
-/// # Errors
-///
-/// Returns a Cloud failure.
-pub(crate) async fn billing(credential: &Credential) -> Result<Billing, LoginError> {
-    #[derive(Deserialize)]
-    struct Reply {
-        billing: Billing,
-    }
-    let reply: Reply = call(credential, Method::GET, "billing", None).await?;
-    Ok(reply.billing)
-}
-
-/// Where to manage a subscription: Polar's billing portal.
-///
-/// # Errors
-///
-/// Returns [`LoginError::NoBilling`] on a Self-hosted Cloud, or a Cloud failure.
-pub(crate) async fn billing_portal(credential: &Credential) -> Result<String, LoginError> {
-    #[derive(Deserialize)]
-    struct Reply {
-        url: String,
-    }
-    match call::<Reply>(credential, Method::POST, "billing/portal", None).await {
-        Ok(reply) => Ok(reply.url),
-        Err(LoginError::Status { status: 404, .. }) => {
-            Err(LoginError::NoBilling(credential.cloud().to_owned()))
-        }
-        Err(error) => Err(error),
-    }
 }
 
 /// Why a Config Store call over HTTPS failed.
@@ -788,14 +696,14 @@ mod tests {
     #[tokio::test]
     async fn a_refused_credential_names_its_fix() {
         let cloud = fake_cloud(|route, _| match route {
-            "GET /api/cli/billing" => (401, serde_json::json!({ "code": "UNAUTHORIZED" })),
+            "GET /api/cli/tokens" => (401, serde_json::json!({ "code": "UNAUTHORIZED" })),
             _ => (403, serde_json::json!({ "code": "FORBIDDEN" })),
         });
         let (_dir, store) = signed_in_store(&cloud);
         let device = credential(&store, None, None).await.unwrap();
-        assert!(matches!(billing(&device).await, Err(LoginError::Ended)));
+        assert!(matches!(credentials(&device).await, Err(LoginError::Ended)));
         assert!(matches!(
-            billing(&token(&cloud)).await,
+            credentials(&token(&cloud)).await,
             Err(LoginError::TokenRefused)
         ));
         let error = organizations(&device).await.unwrap_err();
@@ -840,8 +748,6 @@ mod tests {
         let credential = token(&cloud);
         let error = remove_token(&credential, "t1").await.unwrap_err();
         assert!(matches!(error, LoginError::UnknownCredential(_)), "{error}");
-        let error = billing_portal(&credential).await.unwrap_err();
-        assert!(matches!(error, LoginError::NoBilling(_)), "{error}");
         // A Cloud without the CLI surface (or with it switched off).
         let error = credentials(&credential).await.unwrap_err();
         assert!(matches!(error, LoginError::Unsupported(_)), "{error}");
