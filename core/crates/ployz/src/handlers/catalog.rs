@@ -115,6 +115,8 @@ pub(crate) struct CommandEntry {
     pub json: bool,
     pub approval: Approval,
     pub surface: Surface,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub keeps_running: bool,
     pub args: Vec<ArgEntry>,
 }
 
@@ -144,7 +146,34 @@ pub(crate) struct ArgEntry {
     /// Arguments it cannot be given with.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub conflicts: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdin: Option<Stdin>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub keeps_running: bool,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Stdin {
+    Only,
+    OnDash,
+}
+
+const STDIN: [(&str, &str, Stdin); 4] = [
+    ("env sync", "--value", Stdin::Only),
+    ("set", "--from-env-file", Stdin::OnDash),
+    ("set", "--patch", Stdin::OnDash),
+    ("set", "--secret", Stdin::Only),
+];
+
+const KEEPS_RUNNING_ARGS: [(&str, &str); 4] = [
+    ("github connect", "--wait"),
+    ("logs", "--follow"),
+    ("server add", "--wait"),
+    ("server logs", "--follow"),
+];
+
+const KEEPS_RUNNING_COMMANDS: [&str; 1] = ["service port-forward"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -172,7 +201,8 @@ pub(crate) fn commands() -> Vec<CommandEntry> {
                         .unwrap_or_default(),
                     approval: runnable.approval,
                     surface: runnable.surface,
-                    args: args(child),
+                    keeps_running: KEEPS_RUNNING_COMMANDS.contains(&path.as_str()),
+                    args: args(&path, child),
                     command: path.clone(),
                 });
             }
@@ -194,7 +224,7 @@ pub fn commands_json() -> String {
     format!("{json}\n")
 }
 
-fn args(command: &Command) -> Vec<ArgEntry> {
+fn args(path: &str, command: &Command) -> Vec<ArgEntry> {
     let visible = |arg: &&Arg| {
         !arg.is_global_set()
             && !arg.is_hide_set()
@@ -214,8 +244,14 @@ fn args(command: &Command) -> Vec<ArgEntry> {
         .filter(visible)
         .map(|arg| {
             let value = arg.get_action().takes_values();
+            let own = name(arg);
             ArgEntry {
-                name: name(arg),
+                stdin: STDIN
+                    .iter()
+                    .find(|(command, arg, _)| *command == path && *arg == own)
+                    .map(|(_, _, stdin)| *stdin),
+                keeps_running: KEEPS_RUNNING_ARGS.contains(&(path, own.as_str())),
+                name: own,
                 required: arg.is_required_set(),
                 value,
                 kind: arg_type(arg),
@@ -442,6 +478,54 @@ mod tests {
             confirming.is_empty(),
             "these ask for confirmation but are classified Never: {confirming:?}"
         );
+    }
+
+    #[test]
+    fn every_argument_that_reads_stdin_is_marked() {
+        let unmarked: Vec<String> = commands()
+            .into_iter()
+            .flat_map(|entry| {
+                entry
+                    .args
+                    .into_iter()
+                    .filter(|arg| {
+                        arg.stdin.is_none()
+                            && arg
+                                .help
+                                .as_deref()
+                                .is_some_and(|help| help.contains("stdin"))
+                    })
+                    .map(move |arg| format!("{} {}", entry.command, arg.name))
+            })
+            .collect();
+        assert!(
+            unmarked.is_empty(),
+            "these read stdin unmarked: {unmarked:?}"
+        );
+    }
+
+    #[test]
+    fn every_marked_argument_and_command_exists() {
+        let entries = commands();
+        let exists = |command: &str, arg: &str| {
+            entries
+                .iter()
+                .any(|entry| entry.command == command && entry.args.iter().any(|a| a.name == arg))
+        };
+        for (command, arg, _) in STDIN {
+            assert!(exists(command, arg), "{command} {arg}");
+        }
+        for (command, arg) in KEEPS_RUNNING_ARGS {
+            assert!(exists(command, arg), "{command} {arg}");
+        }
+        for command in KEEPS_RUNNING_COMMANDS {
+            assert!(
+                entries
+                    .iter()
+                    .any(|entry| entry.command == command && entry.keeps_running),
+                "{command}"
+            );
+        }
     }
 
     #[test]

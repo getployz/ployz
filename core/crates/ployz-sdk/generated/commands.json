@@ -1573,7 +1573,8 @@
         "conflicts": [
           "--undo",
           "--take"
-        ]
+        ],
+        "stdin": "only"
       },
       {
         "name": "--version",
@@ -1830,7 +1831,8 @@
         "type": "boolean",
         "multiple": false,
         "trailing": false,
-        "help": "Wait for the install, also with --json"
+        "help": "Wait for the install, also with --json",
+        "keeps_running": true
       }
     ]
   },
@@ -1958,7 +1960,8 @@
         "multiple": false,
         "short": "f",
         "trailing": false,
-        "help": "Keep streaming new lines"
+        "help": "Keep streaming new lines",
+        "keeps_running": true
       },
       {
         "name": "--machine",
@@ -2570,7 +2573,8 @@
           "DESTINATION",
           "--token",
           "--command"
-        ]
+        ],
+        "keeps_running": true
       },
       {
         "name": "--cloud-url",
@@ -2760,7 +2764,8 @@
         "multiple": false,
         "short": "f",
         "trailing": false,
-        "help": "Keep streaming new lines"
+        "help": "Keep streaming new lines",
+        "keeps_running": true
       },
       {
         "name": "--machine",
@@ -3178,6 +3183,7 @@
     "json": true,
     "approval": "never",
     "surface": "cloud",
+    "keeps_running": true,
     "args": [
       {
         "name": "--context",
@@ -3529,7 +3535,8 @@
           "--secret",
           "--from-env-file",
           "--at-merge"
-        ]
+        ],
+        "stdin": "on-dash"
       },
       {
         "name": "--secret",
@@ -3541,7 +3548,8 @@
         "help": "Seal a value read from stdin: set web.env.KEY --secret, or set web.registryCredential --secret for a private image's token. With --from-env-file, seal every value",
         "conflicts": [
           "--patch"
-        ]
+        ],
+        "stdin": "only"
       },
       {
         "name": "--from-env-file",
@@ -3554,7 +3562,8 @@
         "conflicts": [
           "--patch",
           "--at-merge"
-        ]
+        ],
+        "stdin": "on-dash"
       },
       {
         "name": "--at-merge",
