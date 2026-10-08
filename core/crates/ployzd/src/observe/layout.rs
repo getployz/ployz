@@ -25,17 +25,11 @@ use ployz_core::ContainerId;
 use serde::{Deserialize, Serialize};
 
 const STORE_DIR: &str = "ployz-observe";
-/// The store's version dir under `<DockerRootDir>/ployz-observe`.
 pub const VERSION_DIR: &str = "v1";
-/// The dir of container dirs under the version dir.
 pub const CONTAINERS_DIR: &str = "containers";
-/// A container's metadata file.
 pub const META_FILE: &str = "meta.json";
-/// The name `atomic_write` gives `meta.json` while it writes it.
 pub const META_TEMP_FILE: &str = "meta.tmp";
-/// A container's gap list.
 pub const GAPS_FILE: &str = "gaps.jsonl";
-/// The name a log file takes while the harvester checks which inode it got.
 pub const LINKING_FILE: &str = "linking.tmp";
 const LOG_SUFFIX: &str = ".log";
 
@@ -186,8 +180,6 @@ pub struct ContainerMeta {
     pub service: Option<String>,
     pub namespace: Option<String>,
     pub deployment: Option<String>,
-    /// The container's name. Ployz labels no replica index, and the name is
-    /// what tells two replicas of one service apart.
     pub replica: String,
     pub kind: ContainerKind,
     pub started_at: Option<String>,

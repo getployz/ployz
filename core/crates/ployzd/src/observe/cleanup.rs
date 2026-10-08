@@ -33,7 +33,6 @@ use super::layout::{
 
 const GIB: u64 = 1 << 30;
 
-/// How much the store may keep.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Limits {
     /// Bytes the store may hold alone.
@@ -57,7 +56,6 @@ impl Limits {
     }
 }
 
-/// What the filesystem holding the store looks like.
 #[derive(Clone, Copy, Debug)]
 pub struct Disk {
     pub total_bytes: u64,
@@ -80,7 +78,6 @@ impl Disk {
     }
 }
 
-/// What one pass deleted.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Report {
     pub files_deleted: usize,
@@ -94,8 +91,7 @@ struct Candidate {
     name: CString,
     order: (i64, String, u64),
     size: u64,
-    /// What unlinking it returns to the filesystem, from `st_blocks`.
-    allocated: u64,
+    allocated_bytes: u64,
     dev: u64,
     ino: u64,
 }
@@ -104,7 +100,6 @@ struct ContainerDir {
     name: CString,
     id: ContainerId,
     log_files: usize,
-    /// Entries the store did not write; a dir holding any is never removed.
     foreign: usize,
 }
 
@@ -147,13 +142,8 @@ pub fn run(
         else {
             continue;
         };
-        match scan_container(containers_fd, &name, &id, &mut candidates, &mut report) {
-            Ok((log_files, foreign)) => dirs.push(ContainerDir {
-                name,
-                id,
-                log_files,
-                foreign,
-            }),
+        match scan_container(containers_fd, name, &id, &mut candidates, &mut report) {
+            Ok(dir) => dirs.push(dir),
             Err(error) => tracing::warn!(container = %id, %error, "skipping a Log Store dir"),
         }
     }
@@ -176,7 +166,7 @@ pub fn run(
         match delete_file(containers_fd, candidate) {
             Ok(()) => {
                 held -= candidate.size;
-                released += candidate.allocated;
+                released += candidate.allocated_bytes;
                 report.files_deleted += 1;
                 report.bytes_freed += candidate.size;
                 if let Some(dir) = dirs.iter_mut().find(|dir| dir.name == candidate.container) {
@@ -223,16 +213,13 @@ fn open_containers(store: &StoreRoot) -> io::Result<Dir> {
     )?)
 }
 
-/// Lists one container dir: removes symlinks with store names, queues files
-/// only the store holds, and returns how many log files remain in it and how
-/// many entries the store did not write.
 fn scan_container(
     containers_fd: RawFd,
-    name: &CString,
+    name: CString,
     id: &ContainerId,
     candidates: &mut Vec<Candidate>,
     report: &mut Report,
-) -> nix::Result<(usize, usize)> {
+) -> nix::Result<ContainerDir> {
     let mut dir = Dir::openat(
         Some(containers_fd),
         name.as_c_str(),
@@ -272,7 +259,7 @@ fn scan_container(
                 name: file,
                 order: (stat.st_mtime, id.as_str().to_owned(), parsed.seq),
                 size: u64::try_from(stat.st_size).unwrap_or(0),
-                allocated: u64::try_from(stat.st_blocks)
+                allocated_bytes: u64::try_from(stat.st_blocks)
                     .unwrap_or(0)
                     .saturating_mul(512),
                 dev: stat.st_dev,
@@ -280,7 +267,12 @@ fn scan_container(
             });
         }
     }
-    Ok((log_files, foreign))
+    Ok(ContainerDir {
+        name,
+        id: *id,
+        log_files,
+        foreign,
+    })
 }
 
 const STORE_FILES: [&str; 4] = [META_FILE, META_TEMP_FILE, GAPS_FILE, LINKING_FILE];
@@ -290,8 +282,6 @@ fn is_store_file(name: &CString) -> bool {
     name == b"." || name == b".." || STORE_FILES.iter().any(|file| file.as_bytes() == name)
 }
 
-/// Deletes a candidate once it is still the file scanned and still the
-/// store's alone.
 fn delete_file(containers_fd: RawFd, candidate: &Candidate) -> nix::Result<()> {
     let dir = Dir::openat(
         Some(containers_fd),
@@ -319,8 +309,6 @@ fn delete_file(containers_fd: RawFd, candidate: &Candidate) -> nix::Result<()> {
     )
 }
 
-/// Removes the files the store writes beside log files, then the dir. A
-/// dir that gained a file meanwhile stays.
 fn remove_container_dir(containers_fd: RawFd, name: &CString) -> nix::Result<bool> {
     let dir = Dir::openat(
         Some(containers_fd),
@@ -482,10 +470,10 @@ mod tests {
         let old = store.file(&cid(1), "1-10.log", 100, 31 * 86_400);
         store.file(&cid(1), "2-11.log", 100, 60);
         store.file(&cid(1), "3-12.log", 100, 30);
-        let allocated = fs::metadata(old).unwrap().blocks() * 512;
+        let allocated_bytes = fs::metadata(old).unwrap().blocks() * 512;
         let limits = Limits {
             cap_bytes: u64::MAX,
-            free_floor_bytes: 1_000 + allocated + 1,
+            free_floor_bytes: 1_000 + allocated_bytes + 1,
             max_age: Duration::from_secs(30 * 86_400),
         };
         let disk = Disk {

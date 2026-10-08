@@ -16,7 +16,7 @@ const SOAK: Duration = Duration::from_secs(30);
 const SOAK: Duration = Duration::from_millis(100);
 
 /// Units besides the daemon that an Upgrade restarts and compensation must bring back.
-const PLUGIN_UNITS: [&str; 3] = [
+const HELPER_UNITS: [&str; 3] = [
     "ployz-volume-plugin.socket",
     "ployz-volume-plugin.service",
     "ployz-observe.service",
@@ -59,7 +59,7 @@ pub(super) async fn install_or_compensate(
         .map_err(UpgradeFailure::NotRestored)?;
     // A unit that crashes on the new release is no longer running, so `try-restart` would leave
     // it stopped after the restore.
-    let active_plugins: Vec<&str> = PLUGIN_UNITS
+    let active_plugins: Vec<&str> = HELPER_UNITS
         .into_iter()
         .filter(|unit| super::systemctl("check unit", ["is-active", "--quiet", unit]).is_ok())
         .collect();

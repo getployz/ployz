@@ -60,7 +60,6 @@ main() {
     stop_loaded_units ployz.service
     # Catch an accepted worker launched during the first stop, now blocked on our lock.
     stop_loaded_units 'ployz-upgrade-*.service'
-    # Stop the Log Store before removing containers so it does not hold their last files.
     systemctl stop ployz-observe.service 2>/dev/null || true
     if command -v docker >/dev/null 2>&1; then
         readarray -t containers < <(docker ps -aq --filter label=ployz.managed)

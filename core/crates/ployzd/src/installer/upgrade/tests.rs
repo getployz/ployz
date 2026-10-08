@@ -23,8 +23,7 @@ const WORKER_CASE: &str = "PLOYZ_UPGRADE_WORKER_CASE";
 /// systemd for one fake daemon. `restart` starts whatever `bin/ployzd` is installed as a new
 /// main process, whose `/proc` entry links that executable as the kernel's would. A version
 /// with a `broken-<version>` marker never becomes active; one with `crashing-<version>` runs
-/// under a new main PID whenever asked. A volume plugin or Log Store unit is active only while an
-/// `active-<unit>` marker exists.
+/// under a new main PID whenever asked.
 const SYSTEMCTL: &str = r#"root="$PLOYZ_INSTALLER_CONTRACT_ROOT"
 echo "$*" >> "$root/systemctl.log"
 start() {

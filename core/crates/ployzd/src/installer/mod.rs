@@ -270,7 +270,7 @@ async fn install_locked(
     } else {
         if restart_required {
             progress(MachineUpgradeStage::Restarting)?;
-            restart_daemon()?;
+            restart_units()?;
         }
         progress(MachineUpgradeStage::Readiness)?;
         verify_running_daemon(paths, &target).await?;
@@ -282,9 +282,7 @@ async fn install_locked(
     })
 }
 
-/// Restart the daemon on whichever release is installed, then the volume plugin it serves and
-/// the Log Store.
-fn restart_daemon() -> Result<(), Error> {
+fn restart_units() -> Result<(), Error> {
     // One transaction: a changed socket unit takes effect, and
     // After=ployz.socket starts the socket before the daemon.
     systemctl(
