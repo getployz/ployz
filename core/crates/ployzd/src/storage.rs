@@ -31,7 +31,7 @@ impl Plugin {
         async {
             reqwest::Client::builder()
                 .unix_socket(self.socket.clone())
-                .timeout(std::time::Duration::from_secs(120))
+                .timeout(ployz_core::VOLUME_PLUGIN_CALL_TIMEOUT)
                 .build()?
                 .post(format!("http://localhost/{route}"))
                 .json(request)

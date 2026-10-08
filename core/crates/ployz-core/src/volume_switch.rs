@@ -1,11 +1,15 @@
 //! Lease, position, markers and switch verbs shared by a Volume run and the Machines it drives.
 
-use std::{fmt, str::FromStr};
+use std::{fmt, str::FromStr, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{CopyRole, DockerVolumeName, MachineName, ManagementAddress, RpcError, RpcErrorCode};
+
+/// How long a Machine waits on one call to its volume plugin, such as the call that
+/// mounts a handed-over Volume and starts its Container.
+pub const VOLUME_PLUGIN_CALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Lease number of one Volume run, decided on the Machines (max over their records plus one).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]

@@ -147,6 +147,11 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
     }
 }
 
+/// How long the caller waits for a Machine to answer the Volume switch verb in `body`.
+fn volume_switch_deadline(_body: &RpcRequestBody) -> std::time::Duration {
+    crate::connect::TARGET_RPC_TIMEOUT
+}
+
 struct SessionInner {
     client: std::sync::Mutex<Option<Client>>,
     cancel: CancellationToken,
@@ -667,15 +672,11 @@ impl Session {
         let body: RpcRequestBody =
             serde_json::from_value(request).map_err(|error| invalid_argument(error.to_string()))?;
         let path = volume_switch_path(&body)?;
+        let deadline = volume_switch_deadline(&body);
         let request = ployz_core::RpcRequest::from(body);
         let client = self.client()?;
         let response = self
-            .until_closed(client.invoke_raw(
-                &request,
-                path,
-                &target,
-                Some(crate::connect::TARGET_RPC_TIMEOUT),
-            ))
+            .until_closed(client.invoke_raw(&request, path, &target, Some(deadline)))
             .await?;
         let payload = match response.body {
             RpcResponseBody::SwitchReply(reply) => serde_json::to_value(reply),
