@@ -62,15 +62,28 @@ const readRow = Effect.fn("Approvals.readRow")(function* (organizationId: string
   return row;
 });
 
-/**
- * Run `record`, then supersede the Environment's pending approvals whose version the Store's `diff` moved past, or
- * all of them once the Store finds no such Environment. One transaction under a lock per Environment, so the sweep
- * sees only rows recorded before it read the Store; a version once past never comes back, so it never sweeps a
- * current plan. A Store that can't answer sweeps nothing.
- */
+type EnvironmentAsked = { id: string; project: string; name: string };
+
+const versionById = Effect.fn("Approvals.versionById")(function* (organizationId: string, environment: EnvironmentAsked) {
+  const versionAt = (project: string, name: string) =>
+    readStore(organizationId, { query: "diff", environment: { project, environment: name } }).pipe(
+      Effect.map((diff) => diff.environment.id === environment.id ? diff.version : null),
+      Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(null)),
+    );
+  const named = yield* versionAt(environment.project, environment.name);
+  if (named !== null) return named;
+  const { projects } = yield* readStore(organizationId, { query: "projects" });
+  for (const project of projects) {
+    const { environments } = yield* readStore(organizationId, { query: "environments", project: project.name });
+    const found = environments.find(({ id }) => id === environment.id);
+    if (found !== undefined) return yield* versionAt(project.name, found.name);
+  }
+  return null;
+});
+
 const recordAndSweep = <A, E, R>(
   organizationId: string,
-  environment: { id: string; project: string; name: string },
+  environment: EnvironmentAsked,
   record: Effect.Effect<A, E, R>,
 ) => Effect.gen(function* () {
   const database = yield* Database;
@@ -78,22 +91,15 @@ const recordAndSweep = <A, E, R>(
     const { drizzle } = yield* Database;
     yield* drizzle.execute(sql`select pg_advisory_xact_lock(hashtext(${`approvals:${organizationId}:${environment.id}`}))`);
     const recorded = yield* record;
-    const current = yield* readStore(organizationId, {
-      query: "diff",
-      environment: { project: environment.project, environment: environment.name },
-    }).pipe(
-      Effect.map((diff) => diff.environment.id === environment.id ? diff.version : null),
-      Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(null)),
-      Effect.option,
-    );
-    if (Option.isSome(current)) {
+    const answered = yield* versionById(organizationId, environment).pipe(Effect.option);
+    if (Option.isSome(answered)) {
       yield* drizzle.update(operationApprovals)
         .set({ status: "superseded", updatedAt: new Date() })
         .where(and(
           eq(operationApprovals.organizationId, organizationId),
           eq(operationApprovals.environmentId, environment.id),
           eq(operationApprovals.status, "pending"),
-          current.value === null ? undefined : sql`not starts_with(${operationApprovals.digest}, ${`${current.value}:`})`,
+          answered.value === null ? undefined : sql`not starts_with(${operationApprovals.digest}, ${`${answered.value}:`})`,
         ));
     }
     return recorded;

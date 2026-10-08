@@ -2,7 +2,7 @@ import { it } from "@effect/vitest";
 import type { Approval, ConfigCommand, ConfigStore, RpcError as SdkRpcError } from "@ployz/sdk";
 import { createRequire } from "node:module";
 import { sql } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Deferred, Effect, Fiber, Layer } from "effect";
 import { expect, vi } from "vitest";
 import {
   askBeforeDestructive,
@@ -174,6 +174,43 @@ it.live("concurrent asks about an older and the current plan leave exactly the c
       expect(freshIds.size).toBe(1);
       expect(yield* pending).toEqual([...freshIds]);
     }
+  }));
+
+it.live("an ask whose Store read answers late can't supersede an approval recorded meanwhile", () =>
+  Effect.gen(function* () {
+    const { provided, write, refusal, caller, store, pending } = yield* shopRemovingWeb();
+    const old = yield* refusal;
+    const read = store.read.bind(store);
+    const answered = yield* Deferred.make<void>();
+    const delivered = yield* Deferred.make<void>();
+    vi.spyOn(store, "read").mockImplementationOnce(async (...args) => {
+      const view = await read(...args);
+      await Effect.runPromise(Deferred.succeed(answered, undefined).pipe(Effect.andThen(Deferred.await(delivered))));
+      return view;
+    });
+    const slow = yield* Effect.forkChild(provided(requestApproval(caller, publish, old)));
+    yield* Deferred.await(answered);
+
+    yield* write(addService(1));
+    const current = yield* Effect.forkChild(provided(requestApproval(caller, publish, yield* refusal)));
+    yield* Fiber.join(current).pipe(Effect.timeout("1 second"), Effect.ignore);
+    yield* Deferred.succeed(delivered, undefined);
+    yield* Fiber.join(slow);
+    const live = asked(yield* Fiber.join(current));
+
+    expect(yield* pending).toEqual([live.approval_id]);
+  }));
+
+it.live("renaming the Project keeps a waiting approval, which still follows its Environment's plan", () =>
+  Effect.gen(function* () {
+    const { provided, write, refusal, caller } = yield* shopRemovingWeb();
+    const waiting = asked(yield* provided(requestApproval(caller, publish, yield* refusal)));
+
+    yield* write({ command: "rename_project", project: "shop", name: "store" });
+    expect((yield* provided(getApproval(ORGANIZATION, waiting.approval_id))).status).toBe("pending");
+
+    yield* write(addService(1));
+    expect((yield* provided(getApproval(ORGANIZATION, waiting.approval_id))).status).toBe("superseded");
   }));
 
 it.live("a Store that can't answer leaves a waiting approval pending", () =>
