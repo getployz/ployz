@@ -174,41 +174,12 @@ struct DockerService {
 
 impl DockerService {
     async fn start(&self) -> Result<(), Error> {
-        let mounts = [&self.data_dir, &self.run_dir]
-            .into_iter()
-            .map(|path| Mount {
-                typ: Some(MountType::BIND),
-                source: Some(path.to_string_lossy().into_owned()),
-                target: Some(path.to_string_lossy().into_owned()),
-                ..Default::default()
-            })
-            .collect();
         let owner = fs::metadata(&self.data_dir)?;
-        let config = ContainerCreateBody {
-            image: Some(IMAGE.into()),
-            cmd: Some(vec![
-                "corrosion".into(),
-                "agent".into(),
-                "-c".into(),
-                self.data_dir
-                    .join("config.toml")
-                    .to_string_lossy()
-                    .into_owned(),
-            ]),
-            user: Some(format!("{}:{}", owner.uid(), owner.gid())),
-            labels: Some(HashMap::from([("ployzd.managed".into(), String::new())])),
-            host_config: Some(HostConfig {
-                network_mode: Some("host".into()),
-                restart_policy: Some(RestartPolicy {
-                    name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
-                    ..Default::default()
-                }),
-                log_config: Some(crate::docker::container_log_config()),
-                mounts: Some(mounts),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
+        let config = container_config(
+            &self.data_dir,
+            &self.run_dir,
+            format!("{}:{}", owner.uid(), owner.gid()),
+        );
         self.service
             .ensure_host(config, |container| {
                 container
@@ -227,6 +198,40 @@ impl DockerService {
 
     async fn cleanup(&self) -> Result<(), Error> {
         self.service.remove().await.map_err(Into::into)
+    }
+}
+
+fn container_config(data_dir: &Path, run_dir: &Path, user: String) -> ContainerCreateBody {
+    let mounts = [data_dir, run_dir]
+        .into_iter()
+        .map(|path| Mount {
+            typ: Some(MountType::BIND),
+            source: Some(path.to_string_lossy().into_owned()),
+            target: Some(path.to_string_lossy().into_owned()),
+            ..Default::default()
+        })
+        .collect();
+    ContainerCreateBody {
+        image: Some(IMAGE.into()),
+        cmd: Some(vec![
+            "corrosion".into(),
+            "agent".into(),
+            "-c".into(),
+            data_dir.join("config.toml").to_string_lossy().into_owned(),
+        ]),
+        user: Some(user),
+        labels: Some(HashMap::from([("ployzd.managed".into(), String::new())])),
+        host_config: Some(HostConfig {
+            network_mode: Some("host".into()),
+            restart_policy: Some(RestartPolicy {
+                name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
+                ..Default::default()
+            }),
+            log_config: Some(crate::docker::container_log_config()),
+            mounts: Some(mounts),
+            ..Default::default()
+        }),
+        ..Default::default()
     }
 }
 
@@ -344,6 +349,15 @@ struct AdminConfig {
 mod tests {
     use super::*;
     use tokio::time::Instant;
+
+    #[test]
+    fn corrosion_container_rotates_its_logs() {
+        let config = container_config(Path::new("/data"), Path::new("/run"), "1:1".into());
+        assert_eq!(
+            config.host_config.unwrap().log_config,
+            Some(crate::docker::container_log_config())
+        );
+    }
 
     #[tokio::test(start_paused = true)]
     async fn corrosion_readiness_wait_keeps_polling_after_fifteen_seconds() {
