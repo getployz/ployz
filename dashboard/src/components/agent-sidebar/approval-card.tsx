@@ -84,7 +84,7 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
             return (
               <li key={`${effect.kind}:${effect.path}`} className="flex gap-2">
                 <XIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-destructive" />
-                <span>{line.verb} <b>{line.name}</b>{line.after}</span>
+                <span>{line.verb}{line.name !== null && <> <b>{line.name}</b></>}{line.after}</span>
               </li>
             );
           })}

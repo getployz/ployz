@@ -3,18 +3,19 @@ import type { ApprovalReview } from "#/modules/approvals/approvals";
 import { changeGroups } from "#/modules/config-store/store-deployments";
 
 const destroys = {
-  removes_service: { verb: "Removes service", after: "" },
-  deletes_volume: { verb: "Deletes volume", after: ". Not recoverable." },
-  detaches_volume: { verb: "Detaches volume", after: "" },
-  removes_domain: { verb: "Removes domain", after: "" },
-  removes_server: { verb: "Removes server", after: "" },
-} satisfies Record<DestructiveKind, { verb: string; after: string }>;
+  removes_service: { verb: "Removes", noun: "service", after: "" },
+  deletes_volume: { verb: "Deletes", noun: "volume", after: ". Not recoverable." },
+  detaches_volume: { verb: "Detaches", noun: "volume", after: "" },
+  removes_domain: { verb: "Removes", noun: "domain", after: "" },
+  removes_server: { verb: "Removes", noun: "server", after: "" },
+} satisfies Record<DestructiveKind, { verb: string; noun: string; after: string }>;
 
-/** One thing the plan destroys, worded as the card leads with it. */
+/** One thing the plan destroys, worded as the card leads with it: by name, or as "a volume" when it has none. */
 export function destroyedLine(effect: DestructiveEffect) {
-  const { verb, after } = destroys[effect.kind];
+  const { verb, noun, after } = destroys[effect.kind];
   const mount = effect.kind === "detaches_volume" ? effect.path.split(".mounts.") : [];
-  return { verb, name: effect.name ?? effect.node, after: mount.length === 2 ? ` from ${mount[0]}${after}` : after };
+  const tail = mount.length === 2 ? ` from ${mount[0]}${after}` : after;
+  return effect.name === undefined ? { verb: `${verb} a ${noun}`, name: null, after: tail } : { verb: `${verb} ${noun}`, name: effect.name, after: tail };
 }
 
 const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`;

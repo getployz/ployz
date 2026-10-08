@@ -97,6 +97,12 @@ it("names a Server operation by its verb and Server, with nothing folded", () =>
   expect(card.queryByText(/other change/)).toBeNull();
 });
 
+it("words a destroyed thing without a name as its kind, never by its id", () => {
+  const review = { ...approval.review, effects: [{ kind: "removes_service" as const, node: "0b9c5d1e-svc", path: "services.0b9c5d1e-svc" }] };
+  show(asTestDouble<ApprovalView>()({ ...approval, review }));
+  expect(within(screen.getByLabelText("Deploy production needs approval")).getByRole("list", { name: "Destroys" }).textContent).toBe("Removes a service");
+});
+
 it("says the plan changed when the approval was superseded, and settles", () => {
   const { onSettled } = show({ ...approval, status: "superseded" });
   expect(screen.getByText("The plan changed since this was asked. Ask again to review the new one.")).toBeTruthy();
