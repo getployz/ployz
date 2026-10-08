@@ -452,14 +452,21 @@ async fn forget_lease_removes_the_record_once_no_copy_remains() {
     );
 
     let replay = post(&socket, "/Volume.ForgetLease", at(3, 4, 0, 1, json!({}))).await;
-    assert_eq!(replay.pointer("/Ok/copy").unwrap(), &Value::Null, "{replay}");
+    assert_eq!(
+        replay.pointer("/Ok/copy").unwrap(),
+        &Value::Null,
+        "{replay}"
+    );
     assert_eq!(property(&test, "tank/ployz", "ployz:lease.data"), None);
     server.abort();
 }
 
 #[tokio::test]
 async fn forget_lease_refuses_while_a_copy_remains() {
-    for markers in [&["root", "volume"][..], &["root", "mirror", "mirror-fs"][..]] {
+    for markers in [
+        &["root", "volume"][..],
+        &["root", "mirror", "mirror-fs"][..],
+    ] {
         let test = TestDir::new();
         set_property(&test, "tank/ployz", "ployz:lease.data", "3:3.0.0:closed");
         let (socket, server) = start(&test, USABLE_POOL, markers);

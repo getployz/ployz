@@ -94,7 +94,10 @@ fn every_volume_run_verb_is_sent_on_its_own_path() {
 #[test]
 fn other_machine_verbs_are_refused_before_anything_is_sent() {
     let cases = [
-        ("restore", json!({ "switch": switch(), "name": "data", "namespace": "app-prod", "resolved_spec": resolved_spec() })),
+        (
+            "restore",
+            json!({ "switch": switch(), "name": "data", "namespace": "app-prod", "resolved_spec": resolved_spec() }),
+        ),
         ("list_volumes", json!({})),
         ("inspect_storage", json!({})),
     ];
