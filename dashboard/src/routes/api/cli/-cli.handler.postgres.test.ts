@@ -5,7 +5,7 @@ import type { Client } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
 import { Inngest } from "inngest";
-import { Polar, type PolarService } from "#/modules/billing/polar-provider.server";
+import { Polar } from "#/modules/billing/polar-provider.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { githubInstallation, githubRepositoryCache } from "#/modules/github/tables";
 import { InngestClient } from "#/modules/inngest/client";
@@ -88,7 +88,7 @@ const enroll = Effect.fn(function* (organizationId: string, machineId: string, f
   });
 });
 
-const cliLayer = Effect.fn(function* (polar: PolarService, ployz: Layer.Layer<Ployz> = fakeServers().layer) {
+const cliLayer = Effect.fn(function* (ployz: Layer.Layer<Ployz> = fakeServers().layer) {
   const testDatabase = yield* postgresTestDatabase;
   const provider = ConfigProvider.fromEnv({
     env: { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: testDatabase.url.href },
@@ -98,7 +98,7 @@ const cliLayer = Effect.fn(function* (polar: PolarService, ployz: Layer.Layer<Pl
   const services = Layer.mergeAll(
     configLayer,
     databaseLayer,
-    Layer.succeed(Polar, polar),
+    Layer.succeed(Polar, { mode: "self_hosted" }),
     Layer.succeed(InngestClient, new Inngest({ id: "cli-test" })),
     Layer.succeed(SecretEncryption, encryption),
     Layer.succeed(GithubApi, github.service),
@@ -177,7 +177,7 @@ it.live(
   "an Organization Token acts in its own Organization until it expires, is revoked, or its maker leaves",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cliLayer({ mode: "self_hosted" });
+      const layer = yield* cliLayer();
       yield* Effect.gen(function* () {
         const database = yield* Database;
         const alice = yield* signUp("alice");
@@ -240,7 +240,7 @@ it.live(
   "token rm signs out one of the caller's own devices",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cliLayer({ mode: "self_hosted" });
+      const layer = yield* cliLayer();
       yield* Effect.gen(function* () {
         const database = yield* Database;
         const alice = yield* signUp("alice");
@@ -261,7 +261,7 @@ it.live(
   "a volume run the caller cannot see answers as a not_found refusal, not a bare 404",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cliLayer({ mode: "self_hosted" });
+      const layer = yield* cliLayer();
       yield* Effect.gen(function* () {
         const database = yield* Database;
         const alice = yield* signUp("alice");
@@ -298,7 +298,7 @@ it.live(
   "Cloud decodes every volume run body the CLI sends, and refuses an Environment named by id",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cliLayer({ mode: "self_hosted" });
+      const layer = yield* cliLayer();
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         for (const body of cliVolumeRunBodies) {
@@ -316,7 +316,7 @@ it.live(
   "org use moves a session between its own Organizations only",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cliLayer({ mode: "self_hosted" });
+      const layer = yield* cliLayer();
       yield* Effect.gen(function* () {
         const auth = yield* Auth;
         const database = yield* Database;
@@ -350,7 +350,7 @@ it.live(
   () =>
     Effect.gen(function* () {
       const fake = fakeServers();
-      const layer = yield* cliLayer({ mode: "self_hosted" }, fake.layer);
+      const layer = yield* cliLayer(fake.layer);
       yield* Effect.gen(function* () {
         const database = yield* Database;
         const first = "00000000000000000000000000001239";
@@ -447,7 +447,7 @@ it.live(
   "github lists the caller's installations and a readable repository's branches, and disconnects one",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cliLayer({ mode: "self_hosted" });
+      const layer = yield* cliLayer();
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         const empty = yield* cli("GET", "github", alice);
@@ -488,7 +488,7 @@ it.live(
   () =>
     Effect.gen(function* () {
       const fake = fakeServers();
-      const layer = yield* cliLayer({ mode: "self_hosted" }, fake.layer);
+      const layer = yield* cliLayer(fake.layer);
       yield* Effect.gen(function* () {
         const database = yield* Database;
         const machine = "00000000000000000000000000001260";
@@ -546,7 +546,7 @@ it.live(
   "enrollment takes a signed-in device or an Organization Token, the token only in its own Organization",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cliLayer({ mode: "self_hosted" });
+      const layer = yield* cliLayer();
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         const bob = yield* signUp("bob");
