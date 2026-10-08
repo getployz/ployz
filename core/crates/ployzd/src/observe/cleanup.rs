@@ -220,11 +220,14 @@ pub fn discard(store: &StoreRoot, id: &ContainerId) -> io::Result<()> {
         .filter(|file| LogFileName::parse(file.to_bytes()).is_some())
         .collect();
     for file in held {
-        unlinkat(
+        match unlinkat(
             Some(dir.as_raw_fd()),
             file.as_c_str(),
             UnlinkatFlags::NoRemoveDir,
-        )?;
+        ) {
+            Ok(()) | Err(Errno::EISDIR) => {}
+            Err(error) => return Err(error.into()),
+        }
     }
     drop(dir);
     remove_container_dir(containers.as_raw_fd(), &name)?;
@@ -616,5 +619,14 @@ mod tests {
         discard(&store.root, &cid(2)).unwrap();
         assert_eq!(store.names(&cid(2)), ["notes.txt"]);
         discard(&store.root, &cid(3)).unwrap();
+    }
+
+    #[test]
+    fn a_dir_with_a_log_file_name_does_not_stop_a_discard() {
+        let store = store();
+        store.file(&cid(1), "2-11.log", 10, 0);
+        fs::create_dir(store.root.container(&cid(1)).join("1-10.log")).unwrap();
+        discard(&store.root, &cid(1)).unwrap();
+        assert_eq!(store.names(&cid(1)), ["1-10.log"]);
     }
 }
