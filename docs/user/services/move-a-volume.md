@@ -58,6 +58,26 @@ ployz volume release data
 Release starts the service again on the old server. It's refused once the volume has been
 handed over, and names the move to run instead.
 
+After the handover, finishing the move still needs the old server to answer. If the old server
+dies, your service stays down until it comes back or you restore the volume.
+
+## Restore a volume
+
+When the server that wrote a volume is gone, make a copy on another server the writer:
+
+```
+ployz volume restore data --from web-2
+```
+
+Restore needs `web-2` to hold the only copy of the volume. If other servers hold copies, it is
+refused and names them; remove them with `ployz volume mirror rm` first. A mirror holds the data as of
+its last sync, so restoring one loses the writes after it, and the run says when that was:
+`data restored on web-2 from <time>; writes after that time are lost`. Restore doesn't start your service.
+Deploy it next.
+
+If you removed the old server with `--no-reset`, Restore waits until 11 minutes after the removal
+before it acts. See [Remove a server](../servers/manage-servers.md#remove-a-server).
+
 ## Good to know
 
 - **A server must answer for its volume to move.** If the volume's server is down, neither a

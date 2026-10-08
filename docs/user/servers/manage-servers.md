@@ -171,11 +171,20 @@ servers, except for services whose volume was on it (see
 server stops everything; your projects and settings stay, and the bottom bar shows **Add a server**
 until you [add one](add-a-server.md).
 
-If the server is unreachable, remove it without resetting it. This is CLI-only for now:
+If the server is unreachable, remove it without resetting it. This is CLI-only for now. Type
+`dead` instead of the server's name to confirm it is gone:
 
 ```sh
-ployz server rm web-2 --no-reset --confirm web-2
+ployz server rm web-2 --no-reset --confirm dead
 ```
+
+`--no-reset` is refused while the server answers and holds a copy of any volume: drop
+`--no-reset`, and the reset makes its copies read-only. Removing a server is also refused while a
+volume move, mirror or other volume run uses it; wait for the run to end, or release the move.
+
+A server removed this way may still be running somewhere you can't reach. Before
+`ployz volume restore` makes another copy the writer, it waits until 11 minutes after the removal,
+long enough for that server to give up anything it was doing.
 
 Ployz stays installed on a removed server, so you can add it again later. To remove Ployz itself,
 run `sudo ployz-uninstall` on the server after you remove it. Docker, your images and your volume
