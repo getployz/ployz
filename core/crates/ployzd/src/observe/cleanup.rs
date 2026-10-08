@@ -94,6 +94,8 @@ struct Candidate {
     name: CString,
     order: (i64, String, u64),
     size: u64,
+    /// What unlinking it returns to the filesystem, from `st_blocks`.
+    allocated: u64,
     dev: u64,
     ino: u64,
 }
@@ -102,6 +104,8 @@ struct ContainerDir {
     name: CString,
     id: ContainerId,
     log_files: usize,
+    /// Entries the store did not write; a dir holding any is never removed.
+    foreign: usize,
 }
 
 const DIR_FLAGS: OFlag = OFlag::O_RDONLY
@@ -144,10 +148,11 @@ pub fn run(
             continue;
         };
         match scan_container(containers_fd, &name, &id, &mut candidates, &mut report) {
-            Ok(log_files) => dirs.push(ContainerDir {
+            Ok((log_files, foreign)) => dirs.push(ContainerDir {
                 name,
                 id,
                 log_files,
+                foreign,
             }),
             Err(error) => tracing::warn!(container = %id, %error, "skipping a Log Store dir"),
         }
@@ -160,17 +165,18 @@ pub fn run(
         .unwrap_or(i64::MIN);
     candidates.sort_by(|left, right| left.order.cmp(&right.order));
     let mut held: u64 = candidates.iter().map(|candidate| candidate.size).sum();
+    let mut released: u64 = 0;
     for candidate in &candidates {
         let too_old = candidate.order.0 < age_limit;
         let over_cap = held > limits.cap_bytes;
-        let under_floor =
-            disk.free_bytes.saturating_add(report.bytes_freed) < limits.free_floor_bytes;
+        let under_floor = disk.free_bytes.saturating_add(released) < limits.free_floor_bytes;
         if !(too_old || over_cap || under_floor) {
             continue;
         }
         match delete_file(containers_fd, candidate) {
             Ok(()) => {
                 held -= candidate.size;
+                released += candidate.allocated;
                 report.files_deleted += 1;
                 report.bytes_freed += candidate.size;
                 if let Some(dir) = dirs.iter_mut().find(|dir| dir.name == candidate.container) {
@@ -185,7 +191,7 @@ pub fn run(
 
     for dir in dirs
         .iter()
-        .filter(|dir| dir.log_files == 0 && !container_exists(&dir.id))
+        .filter(|dir| dir.log_files == 0 && dir.foreign == 0 && !container_exists(&dir.id))
     {
         match remove_container_dir(containers_fd, &dir.name) {
             Ok(true) => report.containers_removed += 1,
@@ -218,14 +224,15 @@ fn open_containers(store: &StoreRoot) -> io::Result<Dir> {
 }
 
 /// Lists one container dir: removes symlinks with store names, queues files
-/// only the store holds, and returns how many log files remain in it.
+/// only the store holds, and returns how many log files remain in it and how
+/// many entries the store did not write.
 fn scan_container(
     containers_fd: RawFd,
     name: &CString,
     id: &ContainerId,
     candidates: &mut Vec<Candidate>,
     report: &mut Report,
-) -> nix::Result<usize> {
+) -> nix::Result<(usize, usize)> {
     let mut dir = Dir::openat(
         Some(containers_fd),
         name.as_c_str(),
@@ -234,6 +241,7 @@ fn scan_container(
     )?;
     let dir_fd = dir.as_raw_fd();
     let mut log_files = 0;
+    let mut foreign = 0;
     let entries: Vec<CString> = dir
         .iter()
         .filter_map(Result::ok)
@@ -241,6 +249,9 @@ fn scan_container(
         .collect();
     for file in entries {
         let Some(parsed) = LogFileName::parse(file.to_bytes()) else {
+            if !is_store_file(&file) {
+                foreign += 1;
+            }
             continue;
         };
         let stat = fstatat(Some(dir_fd), file.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW)?;
@@ -251,6 +262,7 @@ fn scan_container(
             continue;
         }
         if kind != SFlag::S_IFREG {
+            foreign += 1;
             continue;
         }
         log_files += 1;
@@ -260,12 +272,22 @@ fn scan_container(
                 name: file,
                 order: (stat.st_mtime, id.as_str().to_owned(), parsed.seq),
                 size: u64::try_from(stat.st_size).unwrap_or(0),
+                allocated: u64::try_from(stat.st_blocks)
+                    .unwrap_or(0)
+                    .saturating_mul(512),
                 dev: stat.st_dev,
                 ino: stat.st_ino,
             });
         }
     }
-    Ok(log_files)
+    Ok((log_files, foreign))
+}
+
+const STORE_FILES: [&str; 4] = [META_FILE, META_TEMP_FILE, GAPS_FILE, LINKING_FILE];
+
+fn is_store_file(name: &CString) -> bool {
+    let name = name.to_bytes();
+    name == b"." || name == b".." || STORE_FILES.iter().any(|file| file.as_bytes() == name)
 }
 
 /// Deletes a candidate once it is still the file scanned and still the
@@ -306,7 +328,7 @@ fn remove_container_dir(containers_fd: RawFd, name: &CString) -> nix::Result<boo
         DIR_FLAGS,
         Mode::empty(),
     )?;
-    for file in [META_FILE, META_TEMP_FILE, GAPS_FILE, LINKING_FILE] {
+    for file in STORE_FILES {
         match unlinkat(Some(dir.as_raw_fd()), file, UnlinkatFlags::NoRemoveDir) {
             Ok(()) | Err(Errno::ENOENT) => {}
             Err(error) => return Err(error),
@@ -328,7 +350,7 @@ fn remove_container_dir(containers_fd: RawFd, name: &CString) -> nix::Result<boo
 mod tests {
     use std::{
         fs,
-        os::unix::fs::symlink,
+        os::unix::fs::{MetadataExt as _, symlink},
         path::PathBuf,
         time::{Duration, SystemTime},
     };
@@ -457,12 +479,13 @@ mod tests {
     #[test]
     fn files_past_the_age_limit_go_and_the_free_floor_takes_more() {
         let store = store();
-        store.file(&cid(1), "1-10.log", 100, 31 * 86_400);
+        let old = store.file(&cid(1), "1-10.log", 100, 31 * 86_400);
         store.file(&cid(1), "2-11.log", 100, 60);
         store.file(&cid(1), "3-12.log", 100, 30);
+        let allocated = fs::metadata(old).unwrap().blocks() * 512;
         let limits = Limits {
             cap_bytes: u64::MAX,
-            free_floor_bytes: 1_150,
+            free_floor_bytes: 1_000 + allocated + 1,
             max_age: Duration::from_secs(30 * 86_400),
         };
         let disk = Disk {
@@ -531,5 +554,20 @@ mod tests {
         let report = store.clean(0, u64::MAX, &[cid(1), cid(3)]);
         assert_eq!((report.files_deleted, report.containers_removed), (1, 1));
         assert!(!store.root.container(&cid(3)).exists());
+    }
+
+    #[test]
+    fn a_dir_holding_anything_the_store_did_not_write_keeps_its_metadata() {
+        let store = store();
+        store.file(&cid(1), "meta.json", 10, 0);
+        store.file(&cid(1), "gaps.jsonl", 10, 0);
+        store.file(&cid(1), "notes.txt", 10, 0);
+
+        let report = store.clean(u64::MAX, u64::MAX, &[cid(1)]);
+        assert_eq!(report.containers_removed, 0);
+        assert_eq!(
+            store.names(&cid(1)),
+            ["gaps.jsonl", "meta.json", "notes.txt"]
+        );
     }
 }

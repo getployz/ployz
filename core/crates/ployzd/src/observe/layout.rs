@@ -106,7 +106,7 @@ fn is_version_name(name: &str) -> bool {
         .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
 }
 
-fn create_store_dir(path: &Path) -> io::Result<()> {
+pub(super) fn create_store_dir(path: &Path) -> io::Result<()> {
     create_private_dir(path)?;
     if fs::symlink_metadata(path)?.is_dir() {
         Ok(())

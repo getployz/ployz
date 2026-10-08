@@ -55,6 +55,8 @@ const LOCAL_LOGS_DIR: &str = "local-logs";
 const DEFAULT_MAX_FILES: usize = 5;
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(60);
 const EVENTS_RETRY: Duration = Duration::from_secs(2);
+/// Bounds one inspect so a stuck Docker cannot stall inotify handling.
+const INSPECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DIR_MASK: WatchMask = WatchMask::CREATE.union(WatchMask::ONLYDIR);
 /// How often one sync starts over when Docker rotates under it.
 const SYNC_ATTEMPTS: usize = 8;
@@ -106,6 +108,7 @@ impl Harvester {
             seen: HashMap::new(),
         };
         let mut docker_events = Some(harvester.docker_events());
+        let mut reconnect_at = None;
         harvester.rescan().await;
         harvester.close_orphans();
         harvester.clean();
@@ -127,12 +130,18 @@ impl Harvester {
                     Some(Err(error)) => {
                         tracing::warn!(%error, "Docker events stream failed; reconnecting");
                         docker_events = None;
+                        reconnect_at = Some(tokio::time::Instant::now() + EVENTS_RETRY);
                     }
-                    None => docker_events = None,
+                    None => {
+                        docker_events = None;
+                        reconnect_at = Some(tokio::time::Instant::now() + EVENTS_RETRY);
+                    }
                 },
-                () = tokio::time::sleep(EVENTS_RETRY), if docker_events.is_none() => {
+                () = tokio::time::sleep_until(reconnect_at.unwrap_or_else(tokio::time::Instant::now)), if reconnect_at.is_some() => {
+                    reconnect_at = None;
                     docker_events = Some(harvester.docker_events());
                     harvester.rescan().await;
+                    harvester.refresh_all_meta().await;
                 }
                 _ = maintenance.tick() => {
                     harvester.rescan().await;
@@ -242,7 +251,7 @@ impl Harvester {
             .filter_map(Result::ok)
             .filter_map(|entry| container_id(&entry.file_name()))
         {
-            if self.docker_containers.join(id.as_str()).exists() {
+            if !self.docker_dir_gone(&id) {
                 continue;
             }
             match close_orphan(&self.store.container(&id), now) {
@@ -282,6 +291,12 @@ impl Harvester {
                 self.unwatch_container(id);
                 return;
             };
+            if let Some(driver) = foreign_log_driver(&inspected) {
+                tracing::info!(container = %id, driver, "not holding logs Docker writes with another driver");
+                self.seen.insert(*id, Seen::Ignored);
+                self.unwatch_container(id);
+                return;
+            }
             let dir = self.store.container(id);
             if let Err(error) = create_private_dir(&dir).and_then(|()| write_meta(&dir, &meta)) {
                 tracing::error!(container = %id, %error, "cannot create the container's Log Store dir");
@@ -316,12 +331,12 @@ impl Harvester {
         else {
             return;
         };
-        match sync_container(
-            &self.local_logs(id),
-            &self.store.container(id),
-            max_files,
-            created_nanos,
-        ) {
+        let store_dir = self.store.container(id);
+        if let Err(error) = create_private_dir(&store_dir) {
+            tracing::error!(container = %id, %error, "cannot recreate the container's Log Store dir");
+            return;
+        }
+        match sync_container(&self.local_logs(id), &store_dir, max_files, created_nanos) {
             Ok(synced) => {
                 if synced.linked > 0 {
                     tracing::debug!(container = %id, linked = synced.linked, "held new log files");
@@ -336,6 +351,19 @@ impl Harvester {
         }
     }
 
+    /// Catches up on the starts and deaths a lost events stream missed.
+    async fn refresh_all_meta(&mut self) {
+        let managed: Vec<ContainerId> = self
+            .seen
+            .iter()
+            .filter(|(_, seen)| matches!(seen, Seen::Managed { .. }))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in managed {
+            self.refresh_meta(&id).await;
+        }
+    }
+
     async fn refresh_meta(&mut self, id: &ContainerId) {
         let Some(inspected) = self.inspect(id).await else {
             return;
@@ -347,17 +375,32 @@ impl Harvester {
         }
     }
 
+    /// None leaves the container unseen, so the next rescan asks again.
     async fn inspect(&self, id: &ContainerId) -> Option<ContainerInspectResponse> {
-        match self.docker.inspect_container(id.as_str(), None).await {
-            Ok(inspected) => Some(inspected),
-            Err(DockerError::DockerResponseServerError {
+        let inspect = self.docker.inspect_container(id.as_str(), None);
+        match tokio::time::timeout(INSPECT_TIMEOUT, inspect).await {
+            Ok(Ok(inspected)) => Some(inspected),
+            Ok(Err(DockerError::DockerResponseServerError {
                 status_code: 404, ..
-            }) => None,
-            Err(error) => {
+            })) => None,
+            Ok(Err(error)) => {
                 tracing::warn!(container = %id, %error, "cannot inspect container");
                 None
             }
+            Err(_) => {
+                tracing::warn!(container = %id, "Docker did not answer an inspect in time");
+                None
+            }
         }
+    }
+
+    /// Only a dir Docker no longer has counts as gone; an unreadable one
+    /// does not.
+    fn docker_dir_gone(&self, id: &ContainerId) -> bool {
+        matches!(
+            fs::symlink_metadata(self.docker_containers.join(id.as_str())),
+            Err(error) if error.kind() == io::ErrorKind::NotFound
+        )
     }
 
     fn clean(&self) {
@@ -369,7 +412,7 @@ impl Harvester {
             }
         };
         let limits = Limits::for_filesystem(disk.total_bytes);
-        let exists = |id: &ContainerId| self.docker_containers.join(id.as_str()).exists();
+        let exists = |id: &ContainerId| !self.docker_dir_gone(id);
         match cleanup::run(&self.store, &limits, disk, SystemTime::now(), exists) {
             Ok(report) if report.files_deleted > 0 || report.containers_removed > 0 => {
                 tracing::info!(
@@ -439,9 +482,9 @@ struct DockerFile {
 /// oldest first, and records a gap when Docker may have deleted files the
 /// store never held.
 ///
-/// Docker deletes only its oldest file, and only once it has `max_files`,
-/// compressed ones included. So when its set is full and its oldest file is
-/// new to the store, files before that one may be lost.
+/// Files before Docker's oldest may be lost when that oldest file is new to
+/// the store and either the store's newest file has left Docker's set, or,
+/// on first sight, Docker has already filled or compressed its set.
 pub(super) fn sync_container(
     local_logs: &Path,
     store_dir: &Path,
@@ -504,16 +547,19 @@ fn sync_pass(
     let Some(oldest) = docker_files.first() else {
         return Ok(Pass::Done);
     };
-    let maybe_lost =
-        docker_files.len() + compressed >= max_files && !held_inos.contains(&oldest.ino);
     let docker_inos: HashSet<u64> = docker_files.iter().map(|file| file.ino).collect();
+    let maybe_lost = !held_inos.contains(&oldest.ino)
+        && match held.last() {
+            None => docker_files.len() + compressed >= max_files || compressed > 0,
+            Some(newest) => !docker_inos.contains(&newest.ino),
+        };
     let before = held
         .iter()
         .rev()
         .find(|name| !docker_inos.contains(&name.ino))
         .copied();
 
-    let mut pass = Pass::Done;
+    let mut pass = Ok(Pass::Done);
     let mut oldest_held = None;
     let last_seq = held.last().map_or(0, |name| name.seq);
     let unheld = docker_files
@@ -521,9 +567,16 @@ fn sync_pass(
         .filter(|file| !held_inos.contains(&file.ino));
     for (seq, file) in (last_seq + 1..).zip(unheld) {
         let name = LogFileName { seq, ino: file.ino };
-        if !link_exact(&file.path, store_dir, name)? {
-            pass = Pass::Rotated;
-            break;
+        match link_exact(&file.path, store_dir, name) {
+            Ok(true) => {}
+            Ok(false) => {
+                pass = Ok(Pass::Rotated);
+                break;
+            }
+            Err(error) => {
+                pass = Err(error);
+                break;
+            }
         }
         synced.linked += 1;
         if file.ino == oldest.ino {
@@ -548,7 +601,7 @@ fn sync_pass(
             synced.gap = Some(gap);
         }
     }
-    Ok(pass)
+    pass
 }
 
 fn held_files(store_dir: &Path) -> io::Result<Vec<LogFileName>> {
@@ -701,6 +754,18 @@ fn container_meta(inspected: &ContainerInspectResponse) -> Option<ContainerMeta>
     })
 }
 
+/// The driver of a container that does not log through `local`, which
+/// containers created before Ployz chose `local` may still use.
+fn foreign_log_driver(inspected: &ContainerInspectResponse) -> Option<&str> {
+    let driver = inspected
+        .host_config
+        .as_ref()
+        .and_then(|host| host.log_config.as_ref())
+        .and_then(|log| log.typ.as_deref())
+        .unwrap_or("");
+    (driver != "local").then_some(driver)
+}
+
 fn max_files(inspected: &ContainerInspectResponse) -> usize {
     inspected
         .host_config
@@ -722,7 +787,9 @@ fn rfc3339_nanos(at: &str) -> Option<i64> {
 mod tests {
     use std::{fs, os::unix::fs::MetadataExt, path::PathBuf};
 
-    use super::{Synced, close_orphan, link_exact, sync_container, write_meta};
+    use bollard::models::{ContainerInspectResponse, HostConfig, HostConfigLogConfig};
+
+    use super::{Synced, close_orphan, foreign_log_driver, link_exact, sync_container, write_meta};
     use crate::{
         observe::{
             frame::{Piece, Stream, tests::frame},
@@ -906,6 +973,34 @@ mod tests {
     }
 
     #[test]
+    fn a_held_file_compressed_away_before_a_set_fills_still_bounds_a_gap() {
+        let dirs = dirs();
+        dirs.rotate(5, T0 + 1);
+        dirs.sync(5);
+        for ts in [T0 + 2, T0 + 3] {
+            let raw = dirs.docker.join("container.log.1");
+            if raw.exists() {
+                fs::remove_file(raw).unwrap();
+            }
+            dirs.rotate(5, ts);
+        }
+        fs::remove_file(dirs.docker.join("container.log.1")).unwrap();
+        fs::write(dirs.docker.join("container.log.1.gz"), b"gz").unwrap();
+        fs::write(dirs.docker.join("container.log.2.gz"), b"gz").unwrap();
+
+        let synced = dirs.sync(5);
+        assert_eq!(synced.linked, 1);
+        assert_eq!(
+            synced.gap,
+            Some(Gap {
+                from: T0 + 1,
+                to: T0 + 3,
+                reason: GapReason::NotCaptured
+            })
+        );
+    }
+
+    #[test]
     fn an_oldest_file_with_no_line_yet_bounds_the_gap_by_its_mtime() {
         let dirs = dirs();
         fs::write(dirs.docker.join("container.log"), b"").unwrap();
@@ -958,6 +1053,65 @@ mod tests {
         };
         assert_eq!(close_orphan(&dirs.store, T0 + 9).unwrap(), Some(gap));
         assert_eq!(close_orphan(&dirs.store, T0 + 10).unwrap(), None);
+        assert_eq!(dirs.gaps(), [gap]);
+    }
+
+    fn logging_with(driver: Option<&str>) -> ContainerInspectResponse {
+        ContainerInspectResponse {
+            host_config: Some(HostConfig {
+                log_config: Some(HostConfigLogConfig {
+                    typ: driver.map(str::to_owned),
+                    config: None,
+                }),
+                ..HostConfig::default()
+            }),
+            ..ContainerInspectResponse::default()
+        }
+    }
+
+    #[test]
+    fn containers_still_on_another_driver_are_skipped() {
+        assert_eq!(foreign_log_driver(&logging_with(Some("local"))), None);
+        assert_eq!(
+            foreign_log_driver(&logging_with(Some("json-file"))),
+            Some("json-file")
+        );
+        assert_eq!(foreign_log_driver(&logging_with(None)), Some(""));
+    }
+
+    #[test]
+    fn a_compressed_local_set_holds_raw_files_and_marks_the_gz_history_not_captured() {
+        let dirs = dirs();
+        dirs.rotate(5, T0 + 3);
+        fs::write(
+            dirs.docker.join("container.log.1.gz"),
+            b"\x1f\x8bnot a frame",
+        )
+        .unwrap();
+        fs::write(
+            dirs.docker.join("container.log.2.gz"),
+            b"\x1f\x8bnot a frame",
+        )
+        .unwrap();
+
+        let synced = dirs.sync(5);
+        assert_eq!(synced.linked, 1);
+        assert_eq!(dirs.stored().len(), 1);
+        let gap = Gap {
+            from: T0,
+            to: T0 + 3,
+            reason: GapReason::NotCaptured,
+        };
+        assert_eq!(synced.gap, Some(gap));
+
+        dirs.rotate(5, T0 + 4);
+        assert_eq!(
+            dirs.sync(5),
+            Synced {
+                linked: 1,
+                gap: None
+            }
+        );
         assert_eq!(dirs.gaps(), [gap]);
     }
 }

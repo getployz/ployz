@@ -42,19 +42,18 @@ pub async fn run(run_dir: &Path) -> io::Result<()> {
         .map(PathBuf::from)
         .ok_or_else(|| io::Error::other("Docker did not report its root dir"))?;
     let store = StoreRoot::under(&docker_root);
-    store.prepare()?;
     let _lock = lock_store(&store)?;
+    store.prepare()?;
     let listener = bind_socket(&run_dir.join(SOCKET_FILE))?;
     tracing::info!(store = %store.path().display(), "holding Ployz container logs");
     harvest::Harvester::run(docker, &docker_root, store, listener).await
 }
 
+/// Locks before `prepare`, so a second harvester cannot delete version dirs
+/// the first one is using.
 fn lock_store(store: &StoreRoot) -> io::Result<File> {
-    let parent = store
-        .path()
-        .parent()
-        .ok_or_else(|| io::Error::other("store root has no parent"))?;
-    let lock = File::create(parent.join(LOCK_FILE))?;
+    layout::create_store_dir(store.base())?;
+    let lock = File::create(store.base().join(LOCK_FILE))?;
     lock.try_lock_exclusive().map_err(|error| {
         io::Error::new(
             error.kind(),
