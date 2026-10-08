@@ -48,14 +48,18 @@ const Refused = Schema.fromJsonString(Schema.Struct({
   refusal: Schema.Struct({ code: Schema.String, message: Schema.String, details: Schema.Unknown }),
 }));
 const Cancelled = Schema.fromJsonString(Schema.Struct({ ok: Schema.Literal(false), cancelled: Schema.Literal(true) }));
-const VolumeLoss = Schema.Struct({ version: Schema.String, accept: Schema.Array(Schema.String) });
+const Listed = Schema.fromJsonString(Schema.Struct({
+  ok: Schema.Literal(true),
+  value: Schema.Struct({ view: Schema.Literal("services"), services:Schema.Array(Schema.Struct({ name: Schema.String })) }),
+}));
+const VolumeLoss =Schema.Struct({ version: Schema.String, accept: Schema.Array(Schema.String) });
 
 const text = ({ content }: ModelMessage) =>
   Array.isArray(content) ? content.flatMap((part) => (part.type === "text" ? [part.content] : [])).join("") : content ?? "";
 
 /**
  * `PLOYZ_AGENT_STUB=1`'s model. It reads the member's latest message and the tool results since: "list services" lists
- * them, "remove <service>" stages its removal, and "deploy" deploys the Environment. After a Deploy refused for losing a
+ * them by name, "remove <service>" stages its removal, and "deploy" deploys the Environment. After a Deploy refused for losing a
  * Volume's data, "deploy, accepting the volume loss" deploys again accepting exactly what the Store named. A denial is
  * quoted, never retried.
  */
@@ -65,6 +69,8 @@ export function stubScript(messages: ReadonlyArray<ModelMessage>): ScriptedTurn 
   const last = messages.slice(asked + 1).filter((message) => message.role === "tool").map(text).at(-1);
   if (last !== undefined) {
     if (Option.isSome(Schema.decodeUnknownOption(Cancelled)(last))) return { text: "The approval was cancelled, so nothing was deployed." };
+    const listed = Schema.decodeUnknownOption(Listed)(last);
+    if (Option.isSome(listed)) return { text: `Services: ${listed.value.value.services.map(({ name }) => name).join(", ")}.` };
     const refused = Schema.decodeUnknownOption(Refused)(last);
     if (Option.isNone(refused)) return { text: "Done." };
     const { code, message } = refused.value.refusal;
