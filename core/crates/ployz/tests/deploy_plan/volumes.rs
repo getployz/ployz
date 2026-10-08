@@ -712,7 +712,7 @@ fn a_provisioned_volume_without_a_writer_refuses_and_names_the_restore_line() {
             "a slot alone",
             vec![('2', CopyRole::Slot)],
             vec![],
-            "ployz volume restore app_data --from second",
+            "Volume data has no writer; it is held as second (copy). Make one the writer: ployz volume restore data --from second",
         ),
         (
             "a switching root",

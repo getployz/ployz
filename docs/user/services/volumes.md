@@ -97,7 +97,7 @@ every volume it held into a copy, so the volume keeps its data but has no writer
 service that mounts such a volume refuses and names where the data is:
 
 ```
-Volume shop-production_data has no writer; it is held as web-2 (copy). Make one the writer: ployz volume restore shop-production_data --from web-2
+Volume data has no writer; it is held as web-2 (copy). Make one the writer: ployz volume restore data --from web-2
 ```
 
 Run the `ployz volume restore` line it prints to make that copy the writer again, then deploy.

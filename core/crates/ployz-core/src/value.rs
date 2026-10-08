@@ -604,6 +604,14 @@ impl Namespace {
         DockerVolumeName::parse(format!("{self}_{logical}"))
             .expect("a Namespace and Docker Volume name are each non-empty")
     }
+
+    /// The declared name inside a physical name `volume_name` built; a Namespace holds no `_`.
+    #[must_use]
+    pub fn declared_volume_name(physical: &DockerVolumeName) -> Option<&str> {
+        let (namespace, declared) = physical.as_str().split_once('_')?;
+        Self::parse(namespace).ok()?;
+        Some(declared)
+    }
 }
 
 /// Logical Service identity: Namespace plus Service Name, written `namespace/name`.

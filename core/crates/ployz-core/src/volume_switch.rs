@@ -698,11 +698,12 @@ pub fn admit_plain_mount(
     }
 }
 
-/// The refusal a plain Deploy of `name` reads when this Machine cannot mount its writer:
+/// The refusal a plain Deploy of `physical` reads when this Machine cannot mount its writer:
 /// the Machine that holds the writer, or else every copy and the restore that would make
-/// one a writer.
+/// one a writer. It names the Volume as declared, not by its Docker name.
 #[must_use]
-pub fn no_writer_message(name: &DockerVolumeName, copies: &[KnownCopy]) -> String {
+pub fn no_writer_message(physical: &DockerVolumeName, copies: &[KnownCopy]) -> String {
+    let name = crate::Namespace::declared_volume_name(physical).unwrap_or(physical.as_str());
     if let Some(writer) = copies.iter().find(|copy| copy.role == CopyRole::Writer) {
         return format!(
             "Volume {name}'s writer is on {}, so this Machine cannot mount it",
@@ -836,7 +837,7 @@ mod tests {
 
     #[test]
     fn no_writer_message_names_every_copy_and_the_restore_line() {
-        let volume = DockerVolumeName::parse("data").unwrap();
+        let volume = DockerVolumeName::parse("shop-production_data").unwrap();
         let copies = [
             KnownCopy {
                 machine: name("fsn-2"),
@@ -857,7 +858,7 @@ mod tests {
 
     #[test]
     fn no_writer_message_names_a_writer_elsewhere_without_a_restore_line() {
-        let volume = DockerVolumeName::parse("data").unwrap();
+        let volume = DockerVolumeName::parse("shop-production_data").unwrap();
         let copies = [
             KnownCopy {
                 machine: name("fsn-2"),
