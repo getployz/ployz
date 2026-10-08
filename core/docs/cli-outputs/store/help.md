@@ -16,7 +16,6 @@ Manage Ployz machines, services, and volumes
 Usage: ployz [OPTIONS] [COMMAND]
 
 Commands:
-  billing     Show the Organization's plan
   build       Build one Git Service and push it into a Machine with a Build Grant
   cloud       Manage Cloud
   ctx         Show where commands act, or manage local contexts
@@ -59,10 +58,6 @@ Options:
           
           [default: 20]
 
-      --ployz-config <ployz-config>
-          [env: PLOYZ_CONFIG=/tmp/ployz-cli-outputs-store/home/config.yaml]
-          [default: ~/.config/ployz/config.yaml]
-
   -c, --context <context>
           [env: PLOYZ_CONTEXT=]
 
@@ -98,7 +93,6 @@ Manage Ployz machines, services, and volumes
 Usage: ployz [OPTIONS] [COMMAND]
 
 Commands:
-  billing     Show the Organization's plan
   build       Build one Git Service and push it into a Machine with a Build Grant
   cloud       Manage Cloud
   ctx         Show where commands act, or manage local contexts
@@ -133,14 +127,13 @@ Commands:
   help        Print this message or the help of the given subcommand(s)
 
 Options:
-      --connect <connect>            [env: PLOYZ_CONNECT=]
-      --ssh-timeout <SECONDS>        SSH setup timeout in seconds (provisioning: network connection only) [default: 20]
-      --ployz-config <ployz-config>  [env: PLOYZ_CONFIG=/tmp/ployz-cli-outputs-store/home/config.yaml] [default: ~/.config/ployz/config.yaml]
-  -c, --context <context>            [env: PLOYZ_CONTEXT=]
-  -V, --version                      Print version
-      --json                         Print the result as one JSON object on stdout
-      --color <WHEN>                 When to color output; overrides NO_COLOR and CLICOLOR [default: auto] [possible values: auto, always, never]
-  -h, --help                         Print help (see more with '--help')
+      --connect <connect>      [env: PLOYZ_CONNECT=]
+      --ssh-timeout <SECONDS>  SSH setup timeout in seconds (provisioning: network connection only) [default: 20]
+  -c, --context <context>      [env: PLOYZ_CONTEXT=]
+  -V, --version                Print version
+      --json                   Print the result as one JSON object on stdout
+      --color <WHEN>           When to color output; overrides NO_COLOR and CLICOLOR [default: auto] [possible values: auto, always, never]
+  -h, --help                   Print help (see more with '--help')
 
 Settings catalog: `ployz schema --json` lists every command and Setting; `ployz explain SERVICE.SETTING` describes one Setting.
 ```
@@ -159,7 +152,6 @@ Manage Ployz machines, services, and volumes
 Usage: ployz [OPTIONS] [COMMAND]
 
 Commands:
-  billing     Show the Organization's plan
   build       Build one Git Service and push it into a Machine with a Build Grant
   cloud       Manage Cloud
   ctx         Show where commands act, or manage local contexts
@@ -194,14 +186,13 @@ Commands:
   help        Print this message or the help of the given subcommand(s)
 
 Options:
-      --connect <connect>            [env: PLOYZ_CONNECT=]
-      --ssh-timeout <SECONDS>        SSH setup timeout in seconds (provisioning: network connection only) [default: 20]
-      --ployz-config <ployz-config>  [env: PLOYZ_CONFIG=/tmp/ployz-cli-outputs-store/home/config.yaml] [default: ~/.config/ployz/config.yaml]
-  -c, --context <context>            [env: PLOYZ_CONTEXT=]
-  -V, --version                      Print version
-      --json                         Print the result as one JSON object on stdout
-      --color <WHEN>                 When to color output; overrides NO_COLOR and CLICOLOR [default: auto] [possible values: auto, always, never]
-  -h, --help                         Print help (see more with '--help')
+      --connect <connect>      [env: PLOYZ_CONNECT=]
+      --ssh-timeout <SECONDS>  SSH setup timeout in seconds (provisioning: network connection only) [default: 20]
+  -c, --context <context>      [env: PLOYZ_CONTEXT=]
+  -V, --version                Print version
+      --json                   Print the result as one JSON object on stdout
+      --color <WHEN>           When to color output; overrides NO_COLOR and CLICOLOR [default: auto] [possible values: auto, always, never]
+  -h, --help                   Print help (see more with '--help')
 
 Settings catalog: `ployz schema --json` lists every command and Setting; `ployz explain SERVICE.SETTING` describes one Setting.
 
@@ -257,10 +248,6 @@ Options:
 
       --patch <JSON>
           Set a Service's Settings from an object shaped like `get SERVICE --json` values; omitted Settings stay; - reads stdin
-
-      --ployz-config <ployz-config>
-          [env: PLOYZ_CONFIG=/tmp/ployz-cli-outputs-store/home/config.yaml]
-          [default: ~/.config/ployz/config.yaml]
 
       --secret
           Seal a value read from stdin: set web.env.KEY --secret, or set web.registryCredential --secret for a private image's token. With --from-env-file, seal every value
@@ -324,10 +311,6 @@ Options:
           
           [default: 20]
 
-      --ployz-config <ployz-config>
-          [env: PLOYZ_CONFIG=/tmp/ployz-cli-outputs-store/home/config.yaml]
-          [default: ~/.config/ployz/config.yaml]
-
       --json
           Print the result as one JSON object on stdout
 
@@ -355,25 +338,24 @@ Stage one Environment's changes in another of the Project
 Usage: ployz env sync [OPTIONS]
 
 Options:
-      --connect <connect>            [env: PLOYZ_CONNECT=]
-      --project <project>            Project [default: the only Project] [env: PLOYZ_PROJECT=]
-      --env <env>                    Environment [default: the Project's Default Environment] [env: PLOYZ_ENV=]
-      --ssh-timeout <SECONDS>        SSH setup timeout in seconds (provisioning: network connection only) [default: 20]
-      --ployz-config <ployz-config>  [env: PLOYZ_CONFIG=/tmp/ployz-cli-outputs-store/home/config.yaml] [default: ~/.config/ployz/config.yaml]
-      --to [<ENV>]                   Sync into ENV; with no value, the Branch's Parent, or a PR Environment's only Destination
-      --from <ENV>                   Sync ENV's changes into this Environment
-      --only <ROW>                   Sync only this row (web.image), or every row under a prefix (web, web.env); repeatable
-      --json                         Print the result as one JSON object on stdout
-      --skip <ROW>                   Leave out this row, or every row under a prefix; repeatable
-      --color <WHEN>                 When to color output; overrides NO_COLOR and CLICOLOR [default: auto] [possible values: auto, always, never]
-      --value <ROW>                  Give a secret the receiver lacks its value, read as one line of stdin per --value, in order; repeatable
-      --version <version>            Refuse unless this is still the version --plan showed
-      --plan                         List the changes and the version; sync nothing
-      --close                        Close the Branch once its changes landed in its Parent; refused for a kept Branch and for any other --to
-      --at-merge                     Go live in --to with the pull request's merge; the default from a PR Environment into a Destination
-      --undo <SYNC>                  Undo the Sync a sync printed, or withdraw its Conditional Sync
-      --take <ID>                    Stage the hints `ployz diff` lists from ID (the Parent, or a Conditional Sync) in --env; --only picks them
-  -h, --help                         Print help (see more with '--help')
+      --connect <connect>      [env: PLOYZ_CONNECT=]
+      --project <project>      Project [default: the only Project] [env: PLOYZ_PROJECT=]
+      --env <env>              Environment [default: the Project's Default Environment] [env: PLOYZ_ENV=]
+      --ssh-timeout <SECONDS>  SSH setup timeout in seconds (provisioning: network connection only) [default: 20]
+      --to [<ENV>]             Sync into ENV; with no value, the Branch's Parent, or a PR Environment's only Destination
+      --from <ENV>             Sync ENV's changes into this Environment
+      --only <ROW>             Sync only this row (web.image), or every row under a prefix (web, web.env); repeatable
+      --json                   Print the result as one JSON object on stdout
+      --skip <ROW>             Leave out this row, or every row under a prefix; repeatable
+      --color <WHEN>           When to color output; overrides NO_COLOR and CLICOLOR [default: auto] [possible values: auto, always, never]
+      --value <ROW>            Give a secret the receiver lacks its value, read as one line of stdin per --value, in order; repeatable
+      --version <version>      Refuse unless this is still the version --plan showed
+      --plan                   List the changes and the version; sync nothing
+      --close                  Close the Branch once its changes landed in its Parent; refused for a kept Branch and for any other --to
+      --at-merge               Go live in --to with the pull request's merge; the default from a PR Environment into a Destination
+      --undo <SYNC>            Undo the Sync a sync printed, or withdraw its Conditional Sync
+      --take <ID>              Stage the hints `ployz diff` lists from ID (the Parent, or a Conditional Sync) in --env; --only picks them
+  -h, --help                   Print help (see more with '--help')
 ```
 
 ### project rm --help
@@ -401,10 +383,6 @@ Options:
           SSH setup timeout in seconds. Management commands use noninteractive authentication. During provisioning, only the network connection is timed; SSH/sudo authentication and installer execution have no deadline.
           
           [default: 20]
-
-      --ployz-config <ployz-config>
-          [env: PLOYZ_CONFIG=/tmp/ployz-cli-outputs-store/home/config.yaml]
-          [default: ~/.config/ployz/config.yaml]
 
   -c, --context <context>
           [env: PLOYZ_CONTEXT=]
@@ -454,15 +432,14 @@ Arguments:
   [path]  SERVICE, SERVICE.SETTING or SERVICE.env.KEY
 
 Options:
-      --connect <connect>            [env: PLOYZ_CONNECT=]
-      --project <project>            Project [default: the only Project] [env: PLOYZ_PROJECT=]
-      --env <env>                    Environment [default: the Project's Default Environment] [env: PLOYZ_ENV=]
-      --ssh-timeout <SECONDS>        SSH setup timeout in seconds (provisioning: network connection only) [default: 20]
-      --all                          Include Settings at their default across the Environment
-      --ployz-config <ployz-config>  [env: PLOYZ_CONFIG=/tmp/ployz-cli-outputs-store/home/config.yaml] [default: ~/.config/ployz/config.yaml]
-      --json                         Print the result as one JSON object on stdout
-      --color <WHEN>                 When to color output; overrides NO_COLOR and CLICOLOR [default: auto] [possible values: auto, always, never]
-  -h, --help                         Print help (see more with '--help')
+      --connect <connect>      [env: PLOYZ_CONNECT=]
+      --project <project>      Project [default: the only Project] [env: PLOYZ_PROJECT=]
+      --env <env>              Environment [default: the Project's Default Environment] [env: PLOYZ_ENV=]
+      --ssh-timeout <SECONDS>  SSH setup timeout in seconds (provisioning: network connection only) [default: 20]
+      --all                    Include Settings at their default across the Environment
+      --json                   Print the result as one JSON object on stdout
+      --color <WHEN>           When to color output; overrides NO_COLOR and CLICOLOR [default: auto] [possible values: auto, always, never]
+  -h, --help                   Print help (see more with '--help')
 ```
 
 ### help service add
@@ -504,10 +481,6 @@ Options:
       --image <REF>
           Container image to run [default: none, an empty Service]
 
-      --ployz-config <ployz-config>
-          [env: PLOYZ_CONFIG=/tmp/ployz-cli-outputs-store/home/config.yaml]
-          [default: ~/.config/ployz/config.yaml]
-
       --repo <OWNER/REPO[@BRANCH]>
           GitHub repository to build; Ployz checks it and the branch (default: its default branch)
 
@@ -531,7 +504,7 @@ $ ployz completion bash
 # exit 0
 ```
 
-stdout (      34 lines, first 25 shown):
+stdout (34 lines, first 25 shown):
 ```
 
 _clap_complete_ployz() {

@@ -1,11 +1,9 @@
 import { useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PencilIcon, PlusIcon, ZapIcon } from "lucide-react";
 import type { DomainRow, JsonValue, ServiceSettingChange } from "@ployz/sdk";
 import { Link } from "@tanstack/react-router";
 import { PLATFORM_HTTP_PORT } from "#/modules/variables/managed-service-exports";
 import { Button } from "#/components/ui/button";
-import { customDomainCapabilityQueryOptions } from "#/modules/billing/billing.queries";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { changedProps, settingText } from "#/modules/config-store/store-services";
 import type { StoreService } from "./StoreServiceDrawer";
@@ -17,13 +15,15 @@ import { domainChanged } from "#/modules/config-store/store-services";
 import { domainsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CustomDomainDialog, type CustomDomain } from "./CustomDomainDialog";
-import { CustomDomainUpsellSheet } from "./CustomDomainUpsellSheet";
 import { DomainRowShell, DomainTitle, PublicDomainRow, storeStatusView } from "./domain-row";
 import { ManagedDomainDialog } from "./ManagedDomain";
 
-type CustomDomainEditor = { kind: "add"; draft?: CustomDomain } | { kind: "custom"; hostname: string };
-/** `upsell` pitches Pro, then opens the custom domain editor the user asked for. */
-type Editor = { kind: "generate" } | { kind: "generated" } | CustomDomainEditor | { kind: "upsell"; then: CustomDomainEditor } | null;
+type Editor =
+  | { kind: "generate" }
+  | { kind: "generated" }
+  | { kind: "add"; draft?: CustomDomain }
+  | { kind: "custom"; hostname: string }
+  | null;
 
 /** How a domain is addressed in commands: its hostname, or a generated one's prefix. */
 const nameOf = (domain: DomainRow) => domain.kind === "custom" ? domain.hostname : domain.prefix;
@@ -76,11 +76,6 @@ export function StoreNetworkingSection({ state, version, privateFirst = false, v
   const domains = all.filter((domain) => domain.service === service.name);
   const writer = useStoreWriter(organizationSlug);
   const [editor, setEditor] = useState<Editor>(null);
-  const queryClient = useQueryClient();
-  const capabilityQuery = customDomainCapabilityQueryOptions(organizationSlug);
-  // Unknown yet reads as allowed: the Store still refuses, and a paying Organization never waits on this.
-  const needsPro = useQuery(capabilityQuery).data === false;
-  const openCustomDomain = (next: CustomDomainEditor) => setEditor(needsPro ? { kind: "upsell", then: next } : next);
   const [editingPrivateDns, setEditingPrivateDns] = useState(false);
   const privateDnsChange = changes.get("privateDns");
   const generated = domains.find((domain) => domain.kind === "generated");
@@ -100,7 +95,7 @@ export function StoreNetworkingSection({ state, version, privateFirst = false, v
           Generate domain
         </Button>
       )}
-      <Button type="button" variant="outline" onClick={() => openCustomDomain({ kind: "add" })}>
+      <Button type="button" variant="outline" onClick={() => setEditor({ kind: "add" })}>
         <PlusIcon data-icon="inline-start" />
         Custom domain
       </Button>
@@ -182,7 +177,7 @@ export function StoreNetworkingSection({ state, version, privateFirst = false, v
                 dnsRecords={domain.action?.type === "dns" ? domain.action.records : []}
                 changed={domainChanged(changes, domain)}
                 onEdit={() => domain.kind === "custom"
-                  ? openCustomDomain({ kind: "custom", hostname: domain.hostname })
+                  ? setEditor({ kind: "custom", hostname: domain.hostname })
                   : setEditor({ kind: "generated" })}
                 onDelete={() => remove(name)}
               />
@@ -219,23 +214,11 @@ export function StoreNetworkingSection({ state, version, privateFirst = false, v
             onClose={() => setEditor(null)}
             initial={editor.kind === "add" ? editor.draft : undefined}
             onSubmit={({ hostname, targetPort }) => {
-              // Shown at once; a refusal toasts, then offers Pro if that was the reason, else reopens with what was typed.
-              add(hostname, targetPort).isPersisted.promise.catch(async () => {
-                const allowed = await queryClient.fetchQuery({ ...capabilityQuery, staleTime: 0 }).catch(() => true);
-                const draft = { kind: "add", draft: { hostname, targetPort } } as const;
-                if (!allowed) setEditor({ kind: "upsell", then: edited ? { kind: "custom", hostname } : draft });
-                else if (!edited) setEditor(draft);
+              // Shown at once; a refusal toasts, then reopens with what was typed.
+              add(hostname, targetPort).isPersisted.promise.catch(() => {
+                if (!edited) setEditor({ kind: "add", draft: { hostname, targetPort } });
               });
             }}
-          />
-        ) : null}
-        {editor?.kind === "upsell" ? (
-          <CustomDomainUpsellSheet
-            organizationSlug={organizationSlug}
-            service={service.name}
-            environment={environment.environment ?? null}
-            onUpgraded={() => setEditor(editor.then)}
-            onClose={() => setEditor(null)}
           />
         ) : null}
       {privateFirst ? null : privateRow}

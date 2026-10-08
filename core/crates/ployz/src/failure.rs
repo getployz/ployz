@@ -875,14 +875,12 @@ impl From<LoginError> for Failure {
             LoginError::TokenRefused => Some("ployz token new"),
             LoginError::UnknownOrganization(_) => Some("ployz org ls"),
             LoginError::UnknownCredential(_) => Some("ployz token ls"),
-            LoginError::AlreadyPro => Some("ployz billing manage"),
             LoginError::Unreachable { .. }
             | LoginError::Unsupported(_)
             | LoginError::Status { .. }
             | LoginError::Reply(_)
             | LoginError::Store { .. }
-            | LoginError::TokenBound
-            | LoginError::NoBilling(_) => None,
+            | LoginError::TokenBound => None,
         };
         Self::command(error).hint(next.map(|next| Hint::Next(next.into())))
     }
@@ -891,13 +889,13 @@ impl From<LoginError> for Failure {
 fn login_code(error: &LoginError) -> RpcErrorCode {
     match error {
         LoginError::Unreachable { .. } => RpcErrorCode::Unavailable,
-        LoginError::Unsupported(_) | LoginError::NoBilling(_) => RpcErrorCode::Unsupported,
+        LoginError::Unsupported(_) => RpcErrorCode::Unsupported,
         LoginError::TokenBound => RpcErrorCode::InvalidArgument,
         LoginError::Status { status, .. } => http_status_code(*status),
         LoginError::Reply(_) | LoginError::Store { .. } | LoginError::Corrupt { .. } => {
             RpcErrorCode::Internal
         }
-        LoginError::OtherCloud { .. } | LoginError::AlreadyPro => RpcErrorCode::Conflict,
+        LoginError::OtherCloud { .. } => RpcErrorCode::Conflict,
         LoginError::SignedOut
         | LoginError::Expired
         | LoginError::Denied

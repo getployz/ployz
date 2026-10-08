@@ -25,9 +25,6 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
     assert_eq!(
         paths,
         [
-            "billing",
-            "billing manage",
-            "billing upgrade",
             "build",
             "cloud",
             "cloud reset",
@@ -591,7 +588,6 @@ fn cloud_commands_act_with_ployz_token_or_the_signed_in_device() {
     for args in [
         &["token", "ls", "--json"][..],
         &["org", "ls", "--json"],
-        &["billing", "--json"],
         &["github", "ls", "--json"],
         // Store and live commands fail the same way instead of naming a config file.
         &["status", "--json"],
@@ -621,7 +617,7 @@ fn cloud_commands_act_with_ployz_token_or_the_signed_in_device() {
         ("PLOYZ_TOKEN", "ployz_secret"),
         ("PLOYZ_CLOUD_URL", "http://127.0.0.1:1"),
     ];
-    let (code, json, _) = run_json_with(&["billing", "--json"], &token);
+    let (code, json, _) = run_json_with(&["token", "ls", "--json"], &token);
     assert_eq!(code, Some(1));
     assert_eq!(
         json.pointer("/error/code").unwrap(),

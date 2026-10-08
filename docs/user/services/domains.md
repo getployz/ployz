@@ -39,17 +39,13 @@ ignores `EXPOSE` in your Dockerfile.
 
 ## Add a custom domain
 
-Custom domains need Ployz Pro, $9 a month for your organization. On a
-[self-hosted Ployz Cloud](../self-hosting.md) they're always available.
+Custom domains are free.
 
-1. In **Settings → Networking**, click **Custom Domain**. Without Pro, this opens **Use your
-   own domain**: click **Upgrade to Pro** first.
+1. In **Settings → Networking**, click **Custom Domain**.
 2. Enter the **Domain**, like `app.example.com`, leave **Target port** blank to use `PORT`,
    and click **Save route**.
 3. Create the DNS records below at your DNS provider.
 4. Click **Deploy**.
-
-![Use your own domain, shown when the organization doesn't have Pro](../images/custom-domain-pro.png)
 
 A service can have any number of custom domains next to its one generated domain, each with its
 own port.

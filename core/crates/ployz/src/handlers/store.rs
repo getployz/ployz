@@ -6,9 +6,9 @@ use ployz_core::RpcErrorCode;
 use std::path::Path;
 
 use ployz_store::{
-    Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence,
-    EnvironmentRef, OrganizationId, ProjectName, RemovalsQuery, SealingKey, Tell, Trusted, View,
-    VolumeObservation, Written,
+    Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, EnvironmentRef,
+    OrganizationId, ProjectName, RemovalsQuery, SealingKey, Tell, Trusted, View, VolumeObservation,
+    Written,
 };
 
 use super::{Error, config_path, leaf_matches, runtime};
@@ -67,7 +67,7 @@ impl Backend {
     pub(crate) fn read<Q: Ask>(&self, query: &Q) -> Result<Q::View, StoreCallError> {
         match self {
             Self::Local(store, who) => store
-                .read_trusted(who, query, &self_hosted())
+                .read_trusted(who, query, &Trusted::default())
                 .map_err(StoreCallError::Refused),
             Self::Cloud(runtime, credential) => {
                 let view: View = runtime.block_on(cloud_account::config_store(
@@ -140,7 +140,7 @@ impl<'m> Store<'m> {
 
     /// [`Self::write`], leaving the refusal for the caller to add a next step to.
     pub(crate) fn try_write<C: Tell>(&self, command: &C) -> Result<C::Written, StoreCallError> {
-        self.backend.write(command, self_hosted())
+        self.backend.write(command, Trusted::default())
     }
 
     /// Admit a Deployment. The in-process Store reviews Volume loss against the
@@ -159,7 +159,7 @@ impl<'m> Store<'m> {
             admit,
             Trusted {
                 volumes,
-                ..self_hosted()
+                ..Trusted::default()
             },
         )
     }
@@ -279,18 +279,6 @@ impl<'m> Store<'m> {
             refusal => refusal,
         };
         self.fail(refusal)
-    }
-}
-
-/// What the hidden local Store knows of domains: like a self-hosted Cloud, custom
-/// domains are allowed; it has no Cluster Domain and observes no Servers.
-fn self_hosted() -> Trusted {
-    Trusted {
-        domains: DomainEvidence {
-            custom_domains: true,
-            ..DomainEvidence::default()
-        },
-        ..Trusted::default()
     }
 }
 

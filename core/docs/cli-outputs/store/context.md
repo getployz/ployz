@@ -11,8 +11,13 @@ $ ployz status
 
 stdout:
 ```
-Organization local (local).
-Needs attention: This Organization has no Project yet
+organization = local
+signed in as = local
+needs attention = This Organization has no Project yet
+```
+
+stderr:
+```
 next: ployz project new NAME
 ```
 
@@ -61,9 +66,14 @@ $ ployz status
 
 stdout:
 ```
-Organization local (local).
-Environment shop/production.
-11 staged changes.
+organization = local
+signed in as = local
+environment = shop/production
+staged = 11 changes
+```
+
+stderr:
+```
 next: ployz diff --project shop
 ```
 
@@ -80,7 +90,7 @@ stdout:
   "attention": [],
   "deploying": [],
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 21
@@ -118,8 +128,13 @@ $ ployz status
 
 stdout:
 ```
-Organization local (local).
-Needs attention: Name a Project: this Organization has more than one
+organization = local
+signed in as = local
+needs attention = Name a Project: this Organization has more than one
+```
+
+stderr:
+```
 next: ployz link --project PROJECT
 ```
 
@@ -127,12 +142,12 @@ next: ployz link --project PROJECT
 
 ```console
 $ ployz link
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-Name a Project: this Organization has more than one
+error: Name a Project: this Organization has more than one
 next: ployz link --project PROJECT
 ```
 
@@ -148,6 +163,11 @@ stdout:
 Linked /tmp/ployz-cli-outputs-store/work to shop/production.
 ```
 
+stderr:
+```
+next: ployz status
+```
+
 ### status (linked, staged changes)
 
 ```console
@@ -157,10 +177,15 @@ $ ployz status
 
 stdout:
 ```
-Organization local (local).
-Environment shop/production.
-Linked from /tmp/ployz-cli-outputs-store/work.
-10 staged changes.
+organization = local
+signed in as = local
+environment = shop/production
+linked from = /tmp/ployz-cli-outputs-store/work
+staged = 10 changes
+```
+
+stderr:
+```
 next: ployz diff
 ```
 
@@ -177,7 +202,7 @@ stdout:
   "attention": [],
   "deploying": [],
   "environment": {
-    "id": "8f8502bb-f638-4973-891d-41f2ac918a25",
+    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
     "name": "production",
     "project": "shop",
     "revision": 34
@@ -239,7 +264,7 @@ $ ployz link --project shop --env nope
 
 stderr:
 ```
-No Environment named nope in Project shop
+error: No Environment named nope in Project shop
 next: ployz env new nope --project shop
 ```
 
@@ -252,10 +277,11 @@ $ ployz status --env staging
 
 stdout:
 ```
-Organization local (local).
-Environment shop/staging.
-Linked from /tmp/ployz-cli-outputs-store/work.
-0 staged changes.
+organization = local
+signed in as = local
+environment = shop/staging
+linked from = /tmp/ployz-cli-outputs-store/work
+staged = 0 changes
 ```
 
 ### status with PLOYZ_ENV
@@ -267,10 +293,15 @@ $ env PLOYZ_ENV=fix-web ployz status
 
 stdout:
 ```
-Organization local (local).
-Environment shop/fix-web.
-Linked from /tmp/ployz-cli-outputs-store/work.
-6 staged changes.
+organization = local
+signed in as = local
+environment = shop/fix-web
+linked from = /tmp/ployz-cli-outputs-store/work
+staged = 6 changes
+```
+
+stderr:
+```
 next: ployz diff --env fix-web
 ```
 
@@ -283,10 +314,10 @@ $ ployz ctx
 
 stdout:
 ```
-Organization: local
-Project: shop (link)
-Environment: production (link)
-Servers: via local
+organization = local
+project = shop (link)
+environment = production (link)
+servers = via local
 ```
 
 ### ctx --json (no contexts)
@@ -327,7 +358,12 @@ $ ployz ctx ls
 
 stdout:
 ```
-No contexts found
+NAME	CURRENT	DEFAULT	CONNECTIONS
+```
+
+stderr:
+```
+No contexts yet.
 ```
 
 ### ctx ls --json (no contexts)
@@ -354,8 +390,8 @@ $ ployz ctx ls
 stdout:
 ```
 NAME	CURRENT	DEFAULT	CONNECTIONS
-dev		unix:///tmp/dev.sock	1
-prod	*	unix:///tmp/prod.sock	2
+dev	-	unix:///tmp/dev.sock	1
+prod	current	unix:///tmp/prod.sock	2
 ```
 
 ### ctx ls --json
@@ -397,10 +433,10 @@ $ ployz ctx
 
 stdout:
 ```
-Organization: local
-Project: shop (link)
-Environment: production (link)
-Servers: via context prod
+organization = local
+project = shop (link)
+environment = production (link)
+servers = via context prod
 ```
 
 ### ctx --json
@@ -469,41 +505,47 @@ $ ployz ctx use nope
 
 stderr:
 ```
-context nope not found in Ployz config /tmp/ployz-cli-outputs-store/home/config.yaml
+error: context nope not found in Ployz config /tmp/ployz-cli-outputs-store/home/config.yaml
 ```
 
 ### ctx use (no name, not a terminal)
 
 ```console
 $ ployz ctx use
-# exit 1
+# exit 2
 ```
 
 stderr:
 ```
-cannot Select a context interactively without a terminal; pass the context name: ployz ctx use <context-name>
+error: Choosing a context needs a terminal; name one instead.
+retry: ployz ctx use CONTEXT
+valid: dev, prod
 ```
 
 ### ctx use picker (TTY, typed: 1)
 
 ```console
 $ ployz ctx use
-Select a context:
-  1. dev
-  2. prod (current)
-> 1
-Current context is now dev.
+[?25lSelect a context:
+  dev
+> prod (current)
+[2A[2K[1B[2K[1B[2A  dev
+> prod (current)
+[3A[2K[1B[2K[1B[2K[1B[3ASelect a context: prod (current)
+[?25hCurrent context is now prod.
 ```
 
 ### ctx use picker, invalid choice (TTY, typed: 9)
 
 ```console
 $ ployz ctx use
-Select a context:
-  1. dev (current)
-  2. prod
-> 9
-invalid selection
+[?25lSelect a context:
+  dev
+> prod (current)
+[2A[2K[1B[2K[1B[2A  dev
+> prod (current)
+[3A[2K[1B[2K[1B[2K[1B[3ASelect a context: prod (current)
+[?25hCurrent context is now prod.
 ```
 
 ### ctx rm
@@ -516,7 +558,6 @@ $ ployz ctx rm dev
 stdout:
 ```
 Removed context dev.
-Current context is now unset.
 ```
 
 ### ctx rm --json
@@ -530,7 +571,7 @@ stdout:
 ```
 {
   "removed": "prod",
-  "was_current": false
+  "was_current": true
 }
 ```
 
@@ -543,7 +584,7 @@ $ ployz ctx rm nope
 
 stderr:
 ```
-context nope not found in Ployz config /tmp/ployz-cli-outputs-store/home/config.yaml
+error: context nope not found in Ployz config /tmp/ployz-cli-outputs-store/home/config.yaml
 ```
 
 ### ctx ls (all removed)
@@ -555,7 +596,12 @@ $ ployz ctx ls
 
 stdout:
 ```
-No contexts found
+NAME	CURRENT	DEFAULT	CONNECTIONS
+```
+
+stderr:
+```
+No contexts yet.
 ```
 
 ### status (with a context removed)
@@ -567,10 +613,15 @@ $ ployz status
 
 stdout:
 ```
-Organization local (local).
-Environment shop/production.
-Linked from /tmp/ployz-cli-outputs-store/work.
-10 staged changes.
+organization = local
+signed in as = local
+environment = shop/production
+linked from = /tmp/ployz-cli-outputs-store/work
+staged = 10 changes
+```
+
+stderr:
+```
 next: ployz diff
 ```
 

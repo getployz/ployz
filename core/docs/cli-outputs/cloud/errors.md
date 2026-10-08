@@ -79,31 +79,6 @@ stdout:
 {"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
 ```
 
-### not signed in: billing
-
-```console
-$ ployz billing
-# exit 1
-```
-
-stderr:
-```
-not signed in to Cloud
-next: ployz login
-```
-
-### not signed in: billing --json
-
-```console
-$ ployz billing --json
-# exit 1
-```
-
-stdout:
-```
-{"error":{"code":"unauthenticated","details":{"next":"ployz login"},"message":"not signed in to Cloud"}}
-```
-
 ### not signed in: github ls
 
 ```console
@@ -437,31 +412,6 @@ next: ployz token new
 
 ```console
 $ ployz org ls --json
-# exit 1
-```
-
-stdout:
-```
-{"error":{"code":"unauthenticated","details":{"next":"ployz token new"},"message":"Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"}}
-```
-
-### bogus PLOYZ_TOKEN: billing
-
-```console
-$ ployz billing
-# exit 1
-```
-
-stderr:
-```
-Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization
-next: ployz token new
-```
-
-### bogus PLOYZ_TOKEN: billing --json
-
-```console
-$ ployz billing --json
 # exit 1
 ```
 

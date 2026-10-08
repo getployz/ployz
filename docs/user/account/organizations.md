@@ -27,18 +27,14 @@ In the sidebar, click **Organization** for its settings:
 
 ## Billing
 
-Ployz is free on your own servers: unlimited servers and projects, preview environments and
-generated https addresses. Your hosting provider bills you for the servers.
+Ployz is free on your own servers: unlimited servers and projects, preview environments,
+generated https addresses and custom domains. Your hosting provider bills you for the servers.
 
-**Pro** costs $9 a month per organization and adds custom domains. Without it, you can't add a
-custom domain.
+**Organization → Billing** shows the plans. **Hobby**, $5 a month, and **Pro**, $49 a month per
+organization, are coming soon.
 
-1. Go to **Organization → Billing**.
-2. Click **Upgrade to Pro · $9/mo** and pay in the checkout.
-
-![Organization → Billing: Free and Pro](../images/organization-billing.png)
-
-To change your card, get invoices or cancel, click **Manage billing** on the same page.
+If you subscribed to the old $9 Pro plan for custom domains, you no longer need it. Click
+**Manage billing** on the same page to cancel it or get invoices.
 
 A [self-hosted Ployz Cloud](../self-hosting.md) has no billing, and custom domains are always
 allowed.

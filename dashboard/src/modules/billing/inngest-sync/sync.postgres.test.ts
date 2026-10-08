@@ -43,7 +43,6 @@ const polar = {
         cancelAtPeriodEnd: true,
       },
     ]),
-  createCheckout: () => Effect.die("unused"),
   createCustomerPortal: () => Effect.die("unused"),
 } satisfies PolarService;
 
