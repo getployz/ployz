@@ -431,3 +431,25 @@ pub(super) fn docker_mounts(graph: &ResolvedServiceVolumeGraph) -> Result<Vec<Mo
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::container_log_config;
+
+    #[test]
+    fn container_log_config_is_local_uncompressed_rotation() {
+        let log_config = container_log_config();
+
+        assert_eq!(log_config.typ.as_deref(), Some("local"));
+        assert_eq!(
+            log_config.config,
+            Some(HashMap::from([
+                ("max-size".to_string(), "10m".to_string()),
+                ("max-file".to_string(), "3".to_string()),
+                ("compress".to_string(), "false".to_string()),
+            ]))
+        );
+    }
+}
