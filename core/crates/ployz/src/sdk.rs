@@ -799,6 +799,38 @@ impl Session {
             .await
     }
 
+    /// Container `container` on `machine` as its daemon holds it: the resolved spec with its
+    /// real environment values, which replicated observations redact.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, the Machine Target or
+    /// Container ID is invalid, or the Machine does not know `container`.
+    pub async fn inspect_container(
+        &self,
+        machine: &str,
+        container: &str,
+    ) -> Result<Value, RpcError> {
+        let target =
+            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let container_id = ployz_core::ContainerId::parse(container)
+            .map_err(|error| invalid_argument(error.to_string()))?;
+        let client = self.client()?;
+        let details = self
+            .until_closed(client.invoke::<ployz_core::op::InspectContainer>(
+                ployz_core::InspectContainerRequest { container_id },
+                &target,
+                Some(crate::connect::TARGET_RPC_TIMEOUT),
+            ))
+            .await?;
+        serde_json::to_value(details).map_err(|error| RpcError {
+            code: RpcErrorCode::Internal,
+            message: format!("encoding Container {container}: {error}"),
+            details: Value::Null,
+            cause: Vec::new(),
+        })
+    }
+
     /// Copy the image Container `container` runs on `source` to `dest`, by its local image
     /// ID and tagged as its spec names it. Never asks a registry, and does nothing when
     /// `dest` already holds that image.

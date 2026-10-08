@@ -3,6 +3,7 @@ import type {
   ConfigQuery,
   ConfigTrusted,
   VolumeObservation,
+  ContainerObservation,
   ConfigView,
   ConfigWritten,
   ConfigCommitted,
@@ -311,6 +312,8 @@ export declare class Client {
     machine: MachineTarget,
     update: Partial<MachineUpdate>,
   ): Promise<MachineUpdated>;
+  /** Container `container` on `machine` as its daemon holds it, its spec's environment values included. */
+  inspectContainer(machine: MachineTarget, container: string): Promise<{ container: ContainerObservation }>;
   /**
    * Copy the image Container `container` runs on `source` to `dest`, by its local image ID and
    * tagged as its spec names it. Never asks a registry; a no-op when `dest` already holds it.
