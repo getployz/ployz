@@ -384,7 +384,12 @@ impl Approvals {
         let body: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
         let segments: Vec<&str> = route.split('/').collect();
         match (method, segments.as_slice()) {
-            ("POST", ["servers", _, "drain"]) => (202, json!({ "id": "drn_1" })),
+            ("POST", ["servers", server, "drain"]) => self.operation(
+                approval,
+                json!({ "verb": "drain", "name": server }),
+                json!({ "kind": "removes_service", "name": "shop/worker", "node": "svc_1", "path": "worker" }),
+                "drn_1",
+            ),
             ("GET", ["server-drains", "drn_1"]) => {
                 let report = json!({
                     "server": cloud_server(),
@@ -413,29 +418,41 @@ impl Approvals {
                     "message": null,
                 }),
             ),
-            ("POST", ["namespaces", namespace, "clean"]) => {
-                let approved = approval.is_some_and(|id| self.status(id) == "approved");
-                if self.rows.is_empty() || approved {
-                    return (202, json!({ "id": "cln_1" }));
-                }
-                let id = self.rows[0].0;
-                let error = json!({
-                    "code": "approval_required",
-                    "message": format!("A human must approve this first: this cleanup removes Namespace {namespace}"),
-                    "details": {
-                        "approval_id": id,
-                        "approval": "clean:abc",
-                        "effects": [{ "kind": "deletes_volume", "name": "data", "node": "a/data", "path": "volumes/a/data" }],
-                        "operation": { "verb": "clean", "name": namespace },
-                    },
-                });
-                (409, json!({ "error": error }))
-            }
+            ("POST", ["namespaces", namespace, "clean"]) => self.operation(
+                approval,
+                json!({ "verb": "clean", "name": namespace }),
+                json!({ "kind": "deletes_volume", "name": "data", "node": "a/data", "path": "volumes/a/data" }),
+                "cln_1",
+            ),
             ("GET", ["namespace-cleanups", "cln_1"]) => {
                 (200, json!({ "state": "finished", "volumes": ["data"] }))
             }
             _ => (404, json!({ "code": "NOT_FOUND" })),
         }
+    }
+
+    fn operation(
+        &self,
+        approval: Option<&str>,
+        operation: Value,
+        effect: Value,
+        started: &str,
+    ) -> (u16, Value) {
+        let approved = approval.is_some_and(|id| self.status(id) == "approved");
+        if self.rows.is_empty() || approved {
+            return (202, json!({ "id": started }));
+        }
+        let error = json!({
+            "code": "approval_required",
+            "message": format!("A human must approve this first: this {} touches {}", operation["verb"], operation["name"]),
+            "details": {
+                "approval_id": self.rows[0].0,
+                "approval": format!("{}:abc", operation["verb"].as_str().unwrap()),
+                "effects": [effect],
+                "operation": operation,
+            },
+        });
+        (409, json!({ "error": error }))
     }
 
     fn answer(&self, method: &str, id: &str, body: &[u8]) -> (u16, Value) {
@@ -3632,7 +3649,17 @@ fn signed_in_an_upgrade_runs_in_cloud_along_the_release_channel() {
 #[test]
 fn an_agent_gets_the_approval_a_cleanup_needs() {
     let (target, approvals) = running(&[("apr_1", "approved")]);
-    let refused = error(&target, &["server", "clean", "--namespace", "stray"]);
+    let refused = error(
+        &target,
+        &[
+            "server",
+            "clean",
+            "--namespace",
+            "stray",
+            "--confirm",
+            "stray",
+        ],
+    );
     assert_eq!(refused["code"], json!("approval_required"), "{refused}");
     assert_eq!(
         refused["details"]["operation"],
@@ -3640,7 +3667,7 @@ fn an_agent_gets_the_approval_a_cleanup_needs() {
     );
     assert_eq!(
         refused["details"]["retry"],
-        json!("ployz server clean --namespace stray --approval apr_1"),
+        json!("ployz server clean --namespace stray --confirm stray --approval apr_1"),
         "{refused}"
     );
     assert_eq!(approvals.runs(), ["POST namespaces/stray/clean"]);
@@ -3654,7 +3681,14 @@ fn without_a_terminal_a_cleanup_waits_for_approval_then_retries_with_it() {
     let (code, stderr) = person(
         &target,
         home.path(),
-        &["server", "clean", "--namespace", "stray"],
+        &[
+            "server",
+            "clean",
+            "--namespace",
+            "stray",
+            "--confirm",
+            "stray",
+        ],
     );
     assert_eq!(code, Some(0), "{stderr}");
     assert!(
@@ -3669,6 +3703,70 @@ fn without_a_terminal_a_cleanup_waits_for_approval_then_retries_with_it() {
             "POST namespaces/stray/clean",
             "POST namespaces/stray/clean approved by apr_1",
             "GET namespace-cleanups/cln_1",
+        ]
+    );
+}
+
+#[test]
+fn signed_in_a_cleanup_takes_the_typed_namespace_even_when_nobody_must_approve() {
+    let (target, approvals) = running(&[]);
+    let refused = error(&target, &["server", "clean", "--namespace", "stray"]);
+    assert_eq!(refused["code"], json!("confirmation_required"), "{refused}");
+    assert!(approvals.runs().is_empty(), "{:?}", approvals.runs());
+
+    let cleaned = ok(
+        &target,
+        &[
+            "server",
+            "clean",
+            "--namespace",
+            "stray",
+            "--confirm",
+            "stray",
+        ],
+    );
+    assert_eq!(cleaned["volumes"], json!(["data"]), "{cleaned}");
+    assert_eq!(
+        approvals.runs(),
+        [
+            "POST namespaces/stray/clean",
+            "GET namespace-cleanups/cln_1"
+        ]
+    );
+}
+
+#[test]
+fn an_agent_gets_the_approval_a_drain_needs_and_a_person_waits_for_it() {
+    let (target, approvals) = running(&[("apr_1", "approved")]);
+    let refused = error(&target, &["server", "drain", CLOUD_SERVER]);
+    assert_eq!(refused["code"], json!("approval_required"), "{refused}");
+    assert_eq!(
+        refused["details"]["operation"],
+        json!({ "verb": "drain", "name": CLOUD_SERVER })
+    );
+    assert_eq!(
+        refused["details"]["retry"],
+        json!(format!(
+            "ployz server drain {CLOUD_SERVER} --approval apr_1"
+        )),
+        "{refused}"
+    );
+    assert!(approvals.calls().is_empty(), "--json never waits");
+
+    let home = tempfile::tempdir().unwrap();
+    let (code, stderr) = person(&target, home.path(), &["server", "drain", CLOUD_SERVER]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stderr.contains("Waiting for approval in Ployz Cloud"),
+        "{stderr}"
+    );
+    assert_eq!(
+        approvals.runs(),
+        [
+            format!("POST servers/{CLOUD_SERVER}/drain"),
+            format!("POST servers/{CLOUD_SERVER}/drain"),
+            format!("POST servers/{CLOUD_SERVER}/drain approved by apr_1"),
+            "GET server-drains/drn_1".to_owned(),
         ]
     );
 }

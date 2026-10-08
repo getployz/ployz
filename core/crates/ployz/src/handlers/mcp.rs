@@ -48,7 +48,7 @@ const OUTPUT_LIMIT: usize = 1 << 20;
 
 /// Outlasts a Server install over SSH (up to 20 minutes) and matches the default build
 /// limit. A Deployment or Volume run goes on in Cloud after the call's child is killed.
-const CALL_DEADLINE: Duration = Duration::from_secs(30 * 60);
+pub(crate) const CALL_DEADLINE: Duration = Duration::from_secs(30 * 60);
 
 /// Adding a Server installs Ployz over SSH or on this computer. A tool call cannot own that
 /// SSH session or answer its prompts, so it is run from a terminal.

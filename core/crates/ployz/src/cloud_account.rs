@@ -398,6 +398,42 @@ pub(crate) async fn follow_run<T: DeserializeOwned>(
     }
 }
 
+pub(crate) async fn follow_operation<T: DeserializeOwned>(
+    credential: &Credential,
+    path: &str,
+    doing: &str,
+) -> Result<Settled<T>, StoreCallError> {
+    follow_operation_until(
+        credential,
+        path,
+        doing,
+        tokio::time::Instant::now() + crate::handlers::mcp::CALL_DEADLINE,
+    )
+    .await
+}
+
+async fn follow_operation_until<T: DeserializeOwned>(
+    credential: &Credential,
+    path: &str,
+    doing: &str,
+    deadline: tokio::time::Instant,
+) -> Result<Settled<T>, StoreCallError> {
+    follow_run(credential, path, Some(deadline))
+        .await?
+        .ok_or_else(|| {
+            StoreCallError::Refused(RpcError {
+                code: ployz_core::RpcErrorCode::Unavailable,
+                message: format!(
+                    "Stopped waiting after {} minutes. {doing} keeps running in Ployz Cloud and \
+                     finishes on its own; this command no longer reports it.",
+                    crate::handlers::mcp::CALL_DEADLINE.as_secs() / 60
+                ),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            })
+        })
+}
+
 /// How a Cloud run of an operation settled: its result, or why it ended without one.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -864,6 +900,32 @@ mod tests {
             [MachineId::parse("b".repeat(32)).unwrap()]
         );
         assert!(!format!("{access:?}").contains(&capability));
+    }
+
+    #[tokio::test]
+    async fn an_operation_that_outlasts_the_wait_says_it_keeps_running_in_cloud() {
+        let cloud = fake_cloud(|route, _| match route {
+            "GET /api/cli/server-drains/drn_1" => (200, serde_json::json!({ "state": "running" })),
+            other => panic!("unexpected {other}"),
+        });
+        let past = tokio::time::Instant::now();
+        let error = follow_operation_until::<serde_json::Value>(
+            &token(&cloud),
+            "server-drains/drn_1",
+            "Draining Server web-1",
+            past,
+        )
+        .await
+        .unwrap_err();
+        let StoreCallError::Refused(refused) = error else {
+            panic!("{error:?}")
+        };
+        assert_eq!(refused.code, ployz_core::RpcErrorCode::Unavailable);
+        assert_eq!(
+            refused.message,
+            "Stopped waiting after 30 minutes. Draining Server web-1 keeps running in Ployz Cloud \
+             and finishes on its own; this command no longer reports it."
+        );
     }
 
     #[tokio::test]

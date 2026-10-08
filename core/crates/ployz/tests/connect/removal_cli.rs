@@ -175,15 +175,45 @@ async fn remove_cloud_server(
 ) -> (std::process::Output, DiscoveryService) {
     *service.management_clients.lock().unwrap() =
         vec![ployz_core::ManagementClientLabel::parse("cloud").unwrap()];
+    let output = remove_server(&service, Dial::Connect, server, env, extra).await;
+    (output, service)
+}
+
+#[derive(Clone, Copy)]
+enum Dial {
+    Connect,
+    Context,
+}
+
+async fn remove_server(
+    service: &DiscoveryService,
+    dial: Dial,
+    server: &str,
+    env: &[(&str, &str)],
+    extra: &[&str],
+) -> std::process::Output {
     let (address, _server) = serve_discovery(service.clone()).await;
     let config = std::env::temp_dir().join(format!("ployz-last-{}.yaml", MachineId::random()));
+    let (connect, context) = match dial {
+        Dial::Connect => (
+            vec!["--connect".to_owned(), format!("tcp://{address}")],
+            vec![],
+        ),
+        Dial::Context => {
+            std::fs::write(
+                &config,
+                format!("contexts:\n  lab:\n    connections:\n      - tcp: {address}\n"),
+            )
+            .unwrap();
+            (vec![], vec!["--context".to_owned(), "lab".to_owned()])
+        }
+    };
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
         .env_remove("PLOYZ_TOKEN")
         .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
         .envs(env.iter().copied())
+        .args(&connect)
         .args([
-            "--connect",
-            &format!("tcp://{address}"),
             "--ployz-config",
             config.to_str().unwrap(),
             "--json",
@@ -191,11 +221,13 @@ async fn remove_cloud_server(
             "rm",
             server,
         ])
+        .args(&context)
         .args(extra)
         .output()
         .await
         .unwrap();
-    (output, service)
+    let _ = std::fs::remove_file(&config);
+    output
 }
 
 #[tokio::test]
@@ -394,4 +426,75 @@ async fn an_agent_gets_the_approval_a_cloud_removal_needs() {
         "one removal asked, none retried"
     );
     assert!(service.removed_machines.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_context_still_removes_a_server_cloud_manages_through_cloud_and_its_approval() {
+    let (cloud, asked) = fake_cloud(
+        r#"{"state":"succeeded","reset_warning":null,"release":{"kind":"released"}}"#,
+        true,
+    );
+    let service = DiscoveryService::new(test_description());
+    *service.management_clients.lock().unwrap() =
+        vec![ployz_core::ManagementClientLabel::parse("cloud").unwrap()];
+    let output = remove_server(
+        &service,
+        Dial::Context,
+        "one",
+        &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
+        &["--confirm", "one", "--accept-volume-loss", "data"],
+    )
+    .await;
+    let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        error.pointer("/error/code"),
+        Some(&json!("approval_required")),
+        "{error}"
+    );
+    let retry = error
+        .pointer("/error/details/retry")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        retry.contains("--context lab") && retry.ends_with(" --approval apr_9"),
+        "{retry}"
+    );
+    let asked = asked.lock().unwrap();
+    let [(line, body)] = asked.as_slice() else {
+        panic!("Cloud was asked {asked:?}");
+    };
+    assert!(
+        line.starts_with(&format!("DELETE /api/cli/servers/{} ", machine_id('a'))),
+        "{line}"
+    );
+    assert_eq!(
+        body.pointer("/confirm_data_loss/confirmed/0/id/name"),
+        Some(&json!("data")),
+        "{body}"
+    );
+    assert!(service.reset_machines.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_context_removes_a_server_cloud_does_not_manage_without_cloud() {
+    let (cloud, removals) = fake_cloud(
+        r#"{"state":"succeeded","reset_warning":null,"release":{"kind":"released"}}"#,
+        true,
+    );
+    let service = DiscoveryService::new(test_description());
+    let output = remove_server(
+        &service,
+        Dial::Context,
+        "one",
+        &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
+        &["--confirm", "one", "--accept-volume-loss", "data"],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(*service.reset_machines.lock().unwrap(), [machine_id('a')]);
+    assert!(
+        removals.lock().unwrap().is_empty(),
+        "{:?}",
+        removals.lock().unwrap()
+    );
 }

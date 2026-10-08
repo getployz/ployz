@@ -81,7 +81,10 @@ reads **Drain again**. Turning services back on doesn't move anything back.
 
 From the CLI, `ployz server drain web-2` does the same and prints the report. If anything stayed or
 failed, it exits non-zero. When you're signed in, Ployz Cloud runs the drain, as it does for the
-button. Add `--context` to drain from your computer instead.
+button, and waits for approval first when your organization
+[asks before destructive actions](../account/organizations.md#ask-before-destructive-actions).
+The CLI stops waiting after 30 minutes and says so; the drain keeps running in Ployz Cloud. Add
+`--context` to drain from your computer instead.
 
 Turning web traffic off stops advertising the server, not serving from
 it: your generated addresses stop pointing at it within the hour, or when you click **Check
@@ -194,7 +197,12 @@ the private network and the server's place in the cluster keep running until the
 you remove it.
 
 When your organization [asks before destructive actions](../account/organizations.md#ask-before-destructive-actions),
-`ployz server rm` waits for that approval before it removes the server.
+`ployz server rm` waits for that approval before it removes the server. One approval removes the
+server once, and approving a removal that keeps the server's data doesn't approve one that resets it.
+
+Unlike `drain`, `upgrade` and `clean`, removing a server Ployz Cloud manages always goes through
+Ployz Cloud, even with `--context` or `--connect`: Cloud keeps a record of each server it manages,
+and removing one behind its back would leave that record behind.
 
 Ployz stays installed on a removed server, so you can add it again later. To remove Ployz itself,
 run `sudo ployz-uninstall` on the server after you remove it. Docker, your images and your volume
@@ -211,9 +219,12 @@ ployz server clean
 ployz server clean --namespace my-app-staging --confirm my-app-staging
 ```
 
-When you're signed in, Ployz Cloud does the removal. It refuses anything an environment still
-owns, and it asks before it stops services or deletes volume data when your organization
-[asks before destructive actions](../account/organizations.md#ask-before-destructive-actions).
+When you're signed in, Ployz Cloud does the removal. You still type the name to confirm. Cloud
+refuses anything an environment owns, including one an environment took over while the removal
+waited, and it asks before it stops services or deletes volume data when your organization
+[asks before destructive actions](../account/organizations.md#ask-before-destructive-actions). The
+CLI stops waiting after 30 minutes and says so; the removal keeps running in Ployz Cloud. Add
+`--context` to clean up from your computer instead.
 
 ## Forget servers you deleted
 

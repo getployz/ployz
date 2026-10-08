@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use super::target;
 use crate::approval::{self, Verb};
-use crate::cloud_account::{self, Credential, Settled};
+use crate::cloud_account::{self, Credential};
 use crate::drain::{
     DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Remaining, ServiceDrain,
     ServicesRole,
@@ -82,12 +82,11 @@ fn through_cloud(
     struct Finished {
         report: DrainReport,
     }
-    let settled = runtime.block_on(cloud_account::follow_run::<Settled<Finished>>(
+    let settled = runtime.block_on(cloud_account::follow_operation::<Finished>(
         credential,
         &format!("server-drains/{id}"),
-        None,
+        &format!("Draining Server {selector}"),
     ))?;
-    let settled = settled.expect("a run followed without a deadline settles");
     Ok(settled.finished()?.report)
 }
 

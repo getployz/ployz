@@ -1,8 +1,3 @@
-//! `ployz server clean`: remove a Namespace the Servers run that no Environment owns,
-//! such as one a failed teardown or a Store reset left behind. Without `--namespace`
-//! it lists them; removing one takes its name typed with `--confirm`, or, signed in to
-//! Cloud, whatever approval the Organization asks for.
-
 use clap::{ArgMatches, Command};
 use ployz_core::{DeployOutcome, DockerVolumeId, Namespace, RpcErrorCode};
 use ployz_store::{NamespacesQuery, OwnedNamespace};
@@ -14,7 +9,7 @@ use super::super::teardown::confirm;
 use super::super::{Error, leaf_matches, runtime, store};
 use crate::approval::{self, Verb};
 use crate::cli::{base, value};
-use crate::cloud_account::{self, Credential, Settled};
+use crate::cloud_account::{self, Credential};
 use crate::deploy::VolumeFate;
 use crate::ui::{Hint, Table, Tree};
 
@@ -29,7 +24,8 @@ pub(super) fn command() -> Command {
          --namespace, lists those Namespaces. Type the Namespace with --confirm, or in a \
          terminal when it asks; elsewhere it fails with confirmation_required, naming the \
          Volumes whose data goes. Signed in to Cloud without --context or --connect, Cloud \
-         removes it, asking a human first when the Organization wants that.",
+         removes it after the same typed confirmation, asking a human first when the \
+         Organization wants that.",
     )
     .arg(value("namespace", None).value_name("NAMESPACE"))
     .arg(
@@ -69,6 +65,7 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
     if let Some(namespace) = &named {
         let runtime = runtime()?;
         if let Some(credential) = super::cloud_runs(&runtime, matches)? {
+            confirm_in_cloud(matches, namespace)?;
             return through_cloud(&runtime, matches, &credential, namespace);
         }
     }
@@ -237,6 +234,35 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
     }
 }
 
+fn confirm_in_cloud(matches: &ArgMatches, namespace: &Namespace) -> Result<(), Error> {
+    let next = retry(matches, namespace);
+    confirm(
+        matches,
+        namespace.as_str(),
+        "Namespace",
+        next.clone(),
+        || {
+            let refusal = Error::detailed(
+                RpcErrorCode::ConfirmationRequired,
+                format!(
+                    "Removing Namespace {namespace} deletes its containers and the data of its \
+                 Volumes; this can't be undone. No changes made."
+                ),
+                json!({ "namespace": namespace }),
+            )
+            .hint(Hint::Retry(next.clone()));
+            let loss = Tree::new(
+                format!("Removing Namespace {namespace} deletes, for good:"),
+                vec![
+                    Tree::leaf("its containers"),
+                    Tree::leaf("the data of its Volumes"),
+                ],
+            );
+            Ok((refusal, loss))
+        },
+    )
+}
+
 fn through_cloud(
     runtime: &tokio::runtime::Runtime,
     matches: &ArgMatches,
@@ -250,7 +276,14 @@ fn through_cloud(
         matches.get_one::<String>("approval").cloned(),
         |id| {
             let namespace = namespace.to_string();
-            let args = ["server", "clean", "--namespace", namespace.as_str()];
+            let args = [
+                "server",
+                "clean",
+                "--namespace",
+                namespace.as_str(),
+                "--confirm",
+                namespace.as_str(),
+            ];
             super::approved_rerun(matches, &args, id)
         },
         async |approval| {
@@ -268,15 +301,12 @@ fn through_cloud(
     struct Finished {
         volumes: Vec<String>,
     }
-    let settled = runtime.block_on(cloud_account::follow_run::<Settled<Finished>>(
+    let settled = runtime.block_on(cloud_account::follow_operation::<Finished>(
         credential,
         &format!("namespace-cleanups/{id}"),
-        None,
+        &format!("Removing Namespace {namespace}"),
     ))?;
-    let volumes = settled
-        .expect("a run followed without a deadline settles")
-        .finished()?
-        .volumes;
+    let volumes = settled.finished()?.volumes;
     let report = json!({ "namespace": namespace, "volumes": volumes });
     crate::ui::finish(&report, || {
         crate::ui::stream(format_args!(

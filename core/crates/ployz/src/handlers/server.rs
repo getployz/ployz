@@ -468,7 +468,7 @@ pub(crate) fn command() -> Command {
         .subcommand(base("ls", "List Servers"))
         .subcommand(
             base("rm", "Remove a Server")
-                .long_about("Remove a Server from the Cluster and reset it. Type the Server's name with --confirm, or in a terminal when it asks; elsewhere it fails with confirmation_required, naming what goes and the exact command to retry. When Cloud manages the Server, Cloud removes it, asking a human first when the Organization wants that.")
+                .long_about("Remove a Server from the Cluster and reset it. Type the Server's name with --confirm, or in a terminal when it asks; elsewhere it fails with confirmation_required, naming what goes and the exact command to retry. When Cloud manages the Server, Cloud removes it even with --context or --connect, asking a human first when the Organization wants that.")
                 .arg(switch("no-reset", None).help(
                     "Remove the Server from the Cluster without resetting it; use when the Server is unreachable",
                 ))
