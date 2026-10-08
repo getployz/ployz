@@ -59,36 +59,21 @@ doesn't. Everything that mounts the volume still runs on its server.
 ## When its server goes down
 
 The services that mount the volume stop until the server is back. Nothing moves to another
-server. To keep deploying your other services meanwhile, see
+server on its own, and a volume can't be [moved](move-a-volume.md) while its server is down. To
+keep deploying your other services meanwhile, see
 [When a server goes down](scaling.md#when-a-server-goes-down).
 
 > [!WARNING]
-> Ployz doesn't back up volumes. A [mirror](#mirror-a-volume) holds the data as of its last
-> sync, nothing newer. Keep your own copies off the server; see
+> Ployz doesn't replicate or back up volumes. A [mirror](move-a-volume.md#mirror-a-volume)
+> holds the data as of its last sync, nothing newer, and Ployz doesn't switch to it when the
+> server goes down. Keep your own copies off the server; see
 > [Back up a database](databases.md#back-up-a-database).
 
-## Mirror a volume
+## Move a volume
 
-A mirror is a read-only copy of a volume on a second server. It refreshes only when you sync
-it, and a volume has at most one. Mirrors need Ployz Cloud; without it, volumes stay where they
-are.
-
-```
-ployz volume mirror data --to web-2     # copy data to web-2; it shows as data-web-2
-ployz volume sync data                   # send what changed since the last sync
-ployz volume mirror rm data-web-2        # delete the mirror
-ployz volume runs data                   # what ran on this volume, and how it ended
-```
-
-Each command starts a run in Ployz Cloud and prints its id. Add `--wait` to wait for it to
-finish. One run at a time per volume: a second one is refused and names the run in progress.
-
-- **A mirror that fell behind for good** is refused with `data-web-2 diverged`. Run
-  `ployz volume sync data --full` to copy everything again.
-- **Deleting a volume deletes its mirror.** So does deleting its environment. Ployz removes
-  the mirror after the deploy that deletes the volume.
-- **A mirror that is the only copy left** is removed only with `--confirm data`, because its
-  data goes with it.
+With Ployz Cloud, `ployz volume move data --to web-2` moves a volume and the service that
+mounts it to another server, stopping the service only for the last copy. `ployz volume mirror` keeps a read-only
+copy on a second server. See [Move a volume](move-a-volume.md).
 
 ## When a volume has no writer
 
@@ -101,12 +86,8 @@ Volume data has no writer; it is held as web-2 (copy). Make one the writer: ploy
 ```
 
 Run the `ployz volume restore` line it prints to make that copy the writer again, then deploy.
-A volume whose server is mid-move refuses the same way until the move finishes.
-
-During a move, the source server stops the service before it hands the volume to
-the target. Before handover, the source can restart the service and keep its final
-snapshot. After handover, recovery must finish the move on the target. The old
-server keeps a read-only copy so a later move back can send only the changes.
+A volume that is [mid-move](move-a-volume.md#when-a-move-stops) refuses the same way until the
+move finishes.
 
 ## When your servers show Docker only
 
