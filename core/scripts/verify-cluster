@@ -234,7 +234,9 @@ def install(run, backend, node):
         if staged.get(destination) != run["binaries"][name]:
             backend.push(node, artifacts / name, destination)
     backend.exec(node, ["bash", "-ec", """
-systemctl stop ployz.socket ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service ployz-observe.service
+observe=
+if systemctl cat ployz-observe.service >/dev/null 2>&1; then observe=ployz-observe.service; fi
+systemctl stop ployz.socket ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service $observe
 install -d -m 750 -o ployz -g ployz /run/ployz
 for binary in "$@"; do
     if cmp -s "/opt/ployz-verify/$binary" "/usr/local/bin/$binary"; then continue; fi
@@ -253,7 +255,9 @@ def doctor(run, commands, backend):
     def inspect(node):
         names = [name for name in run["binaries"] if name != "ployzd"]
         result = backend.exec(node, ["bash", "-ec", """
-systemctl is-active --quiet docker ssh ployz ployz.socket ployz-volume-plugin.socket ployz-observe
+observe=
+if systemctl cat ployz-observe.service >/dev/null 2>&1; then observe=ployz-observe.service; fi
+systemctl is-active --quiet docker ssh ployz ployz.socket ployz-volume-plugin.socket $observe
 pid=$(systemctl show ployz.service -p MainPID --value)
 sha256sum "/proc/$pid/exe" "$@"
 test -d /sys/module/zfs
@@ -360,7 +364,11 @@ def up(args):
                     install(run, backend, node)
                 else:
                     # The release and its units are already installed in this image.
-                    backend.exec(node, ["systemctl", "enable", "--now", "ployz.socket", "ployz-volume-plugin.socket", "ployz.service", "ployz-observe.service"])
+                    backend.exec(node, ["bash", "-ec", """
+observe=
+if systemctl cat ployz-observe.service >/dev/null 2>&1; then observe=ployz-observe.service; fi
+systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $observe
+"""])
                 node["address"] = backend.address(node)
             parallel(start, run["machines"])
             binaries.result()
