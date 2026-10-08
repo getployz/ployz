@@ -134,6 +134,10 @@ class Client {
     return withRpcError(this._inner.updateMachine(machine, update));
   }
 
+  copyContainerImage(source, container, dest) {
+    return withRpcError(this._inner.copyContainerImage(source, container, dest));
+  }
+
   volumeSwitch(machine, request) {
     return withRpcError(this._inner.volumeSwitch(machine, request));
   }

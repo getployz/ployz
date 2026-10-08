@@ -799,6 +799,60 @@ impl Session {
             .await
     }
 
+    /// Copy the image Container `container` runs on `source` to `dest`, by its local image
+    /// ID and tagged as its spec names it. Never asks a registry, and does nothing when
+    /// `dest` already holds that image.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, a Machine Target is
+    /// invalid or not visible, `container` is not a Container ID or not on `source`, the
+    /// source daemon reports no image ID, or the copy fails.
+    pub async fn copy_container_image(
+        &self,
+        source: &str,
+        container: &str,
+        dest: &str,
+    ) -> Result<(), RpcError> {
+        let parse = |machine: &str| {
+            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))
+        };
+        let (source, dest) = (parse(source)?, parse(dest)?);
+        let container_id = ployz_core::ContainerId::parse(container)
+            .map_err(|error| invalid_argument(error.to_string()))?;
+        let mut client = self.client()?;
+        self.until_closed(async {
+            let machines = client.machines().await.map_err(RpcError::from)?;
+            let source = crate::cluster::visible_machine(&source, &machines)?
+                .machine
+                .clone();
+            let dest = crate::cluster::visible_machine(&dest, &machines)?
+                .machine
+                .clone();
+            let details = client
+                .invoke::<ployz_core::op::InspectContainer>(
+                    ployz_core::InspectContainerRequest { container_id },
+                    &MachineTarget::from(&source.id),
+                    Some(crate::connect::TARGET_RPC_TIMEOUT),
+                )
+                .await?;
+            let image_id = details.image_id.ok_or_else(|| RpcError {
+                code: RpcErrorCode::Unsupported,
+                message: format!(
+                    "{} does not report the image ID its Containers run",
+                    source.name
+                ),
+                details: Value::Null,
+                cause: Vec::new(),
+            })?;
+            let image = &details.container.resolved_spec.container.image;
+            crate::image::copy_running_image(&client, &source, &dest, image, &image_id)
+                .await
+                .map_err(crate::failure::push_rpc_error)
+        })
+        .await
+    }
+
     /// Apply one Machine policy edit (Machine Roles and build concurrency) to `machine` and return its updated record.
     ///
     /// One-shot: a lost response is read back from observation, never replayed.

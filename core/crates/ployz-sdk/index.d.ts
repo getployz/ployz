@@ -312,6 +312,11 @@ export declare class Client {
     update: Partial<MachineUpdate>,
   ): Promise<MachineUpdated>;
   /**
+   * Copy the image Container `container` runs on `source` to `dest`, by its local image ID and
+   * tagged as its spec names it. Never asks a registry; a no-op when `dest` already holds it.
+   */
+  copyContainerImage(source: MachineTarget, container: string, dest: MachineTarget): Promise<void>;
+  /**
    * Send one Volume switch request to one Machine and answer its reply payload. Only the Volume
    * run verbs are accepted; any other command rejects `invalid_argument`. Not retried. A fence
    * refusal rejects with an `RpcError` whose `details` is a `SwitchError`.
