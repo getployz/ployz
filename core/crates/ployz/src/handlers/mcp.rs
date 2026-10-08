@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
@@ -26,6 +27,10 @@ pub(crate) fn command() -> Command {
 }
 
 const OUTPUT_LIMIT: usize = 1 << 20;
+
+/// Outlasts a Server install over SSH (up to 20 minutes) and matches the default build
+/// limit. A Deployment or Volume run goes on in Cloud after the call's child is killed.
+const CALL_DEADLINE: Duration = Duration::from_secs(30 * 60);
 
 const CONNECTION_FLAGS: [&str; 3] = ["connect", "ssh-timeout", "ployz-config"];
 
@@ -58,6 +63,7 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
 struct Server {
     exe: PathBuf,
     globals: Vec<String>,
+    deadline: Duration,
     commands: Vec<CommandEntry>,
     tools: Vec<Tool>,
 }
@@ -72,6 +78,7 @@ impl Server {
         Self {
             exe,
             globals,
+            deadline: CALL_DEADLINE,
             commands,
             tools,
         }
@@ -88,10 +95,12 @@ impl ServerHandler for Server {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("ployz", env!("CARGO_PKG_VERSION")))
-            .with_instructions(
+            .with_instructions(format!(
                 "Each tool runs one `ployz` command with --json and returns its JSON result. \
-                 Tools marked destructive can remove live things.",
-            )
+                 Tools marked destructive can remove live things. A call still running after \
+                 {} minutes is stopped; its error names the tool that shows what it left running.",
+                self.deadline.as_secs() / 60
+            ))
     }
 
     async fn list_tools(
@@ -134,6 +143,10 @@ impl ServerHandler for Server {
             () = context.ct.cancelled() => {
                 return Err(McpError::internal_error("the call was cancelled", None));
             }
+            () = tokio::time::sleep(self.deadline) => {
+                let content = vec![ContentBlock::text(overdue(entry, self.deadline))];
+                return Ok(CallToolResult::error(content).into());
+            }
         };
         let text = if stdout.is_empty() { stderr } else { stdout };
         let content = vec![ContentBlock::text(text)];
@@ -166,6 +179,20 @@ async fn capture(stream: Option<impl AsyncRead + Unpin>) -> String {
         ));
     }
     text
+}
+
+fn overdue(entry: &CommandEntry, deadline: Duration) -> String {
+    let status = match entry.command.split(' ').next() {
+        Some("server") => "server ls",
+        Some("volume") => "volume runs",
+        _ => "status",
+    };
+    format!(
+        "ployz mcp stopped `ployz {}` after {deadline:?}. What it started may still be running; \
+         check with the `{}` tool (`ployz {status}`).",
+        entry.command,
+        tool_name(status),
+    )
 }
 
 fn exposed(surface: Surface) -> bool {
@@ -255,7 +282,7 @@ fn arg_schema(arg: &ArgEntry, conflicts: &[&str]) -> Value {
         .map(|help| help.trim_end_matches('.').to_owned())
         .collect();
     if arg.stdin == Some(Stdin::OnDash) {
-        sentences.push("Give it inline or as a file path; `-` for stdin is refused".to_owned());
+        sentences.push("`-` for stdin is refused".to_owned());
     }
     if !conflicts.is_empty() {
         let others: Vec<String> = conflicts.iter().map(|name| format!("`{name}`")).collect();
@@ -308,7 +335,7 @@ fn argv(
         }
         if arg.stdin == Some(Stdin::OnDash) && values.iter().any(|word| word == "-") {
             return Err(McpError::invalid_params(
-                format!("`{key}` cannot read stdin here; give its value inline or as a file path"),
+                format!("`{key}` cannot read stdin here; give its value instead of `-`"),
                 None,
             ));
         }
@@ -416,31 +443,60 @@ mod tests {
     }
 
     async fn exchange_with(server: Server, frames: &[Value]) -> Vec<Value> {
-        let (server_io, client_io) = tokio::io::duplex(1 << 20);
-        let server = tokio::spawn(async move {
-            server
-                .serve(tokio::io::split(server_io))
-                .await
-                .expect("the handshake completes")
-                .waiting()
-                .await
-                .expect("the server stops cleanly");
-        });
-        let (read, mut write) = tokio::io::split(client_io);
-        let mut lines = BufReader::new(read).lines();
+        let mut client = Client::connect(server);
         let mut replies = Vec::new();
         for frame in frames {
-            write
+            client.send(frame).await;
+            if frame.get("id").is_some() {
+                replies.push(client.reply().await);
+            }
+        }
+        replies
+    }
+
+    struct Client {
+        lines: tokio::io::Lines<BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
+        write: tokio::io::WriteHalf<tokio::io::DuplexStream>,
+        server: tokio::task::JoinHandle<()>,
+    }
+
+    impl Client {
+        fn connect(server: Server) -> Self {
+            let (server_io, client_io) = tokio::io::duplex(1 << 20);
+            let server = tokio::spawn(async move {
+                server
+                    .serve(tokio::io::split(server_io))
+                    .await
+                    .expect("the handshake completes")
+                    .waiting()
+                    .await
+                    .expect("the server stops cleanly");
+            });
+            let (read, write) = tokio::io::split(client_io);
+            Self {
+                lines: BufReader::new(read).lines(),
+                write,
+                server,
+            }
+        }
+
+        async fn send(&mut self, frame: &Value) {
+            self.write
                 .write_all(format!("{frame}\n").as_bytes())
                 .await
                 .unwrap();
-            if frame.get("id").is_some() {
-                let line = lines.next_line().await.unwrap().expect("a reply");
-                replies.push(serde_json::from_str(&line).expect("a JSON-RPC frame"));
-            }
         }
-        server.abort();
-        replies
+
+        async fn reply(&mut self) -> Value {
+            let line = self.lines.next_line().await.unwrap().expect("a reply");
+            serde_json::from_str(&line).expect("a JSON-RPC frame")
+        }
+    }
+
+    impl Drop for Client {
+        fn drop(&mut self) {
+            self.server.abort();
+        }
     }
 
     fn request(id: u64, method: &str, params: Value) -> Value {
@@ -501,7 +557,11 @@ mod tests {
             ("github_connect", "wait"),
             ("server_add", "wait"),
             ("set", "secret"),
+            ("set", "at-merge"),
             ("env_sync", "value"),
+            ("volume_sync", "wait"),
+            ("volume_mirror", "wait"),
+            ("volume_mirror_rm", "wait"),
         ] {
             let properties = &tool(name)["inputSchema"]["properties"];
             assert!(properties.get(absent).is_none(), "{name} offers {absent}");
@@ -511,11 +571,9 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .ends_with(
-                    "- reads stdin. Give it inline or as a file path; `-` for stdin is refused. \
-                     Cannot be used with `--from-env-file`, `--at-merge`."
+                    "- reads stdin. `-` for stdin is refused. Cannot be used with `--from-env-file`."
                 ),
         );
-        assert!(tool("volume_sync")["inputSchema"]["properties"]["wait"].is_object());
         let no_reset = &tool("server_rm")["inputSchema"]["properties"]["no-reset"];
         assert_eq!(no_reset["type"], "boolean");
         assert!(
@@ -591,7 +649,7 @@ mod tests {
         }
         assert_eq!(
             replies[3]["error"]["message"],
-            "`patch` cannot read stdin here; give its value inline or as a file path"
+            "`patch` cannot read stdin here; give its value instead of `-`"
         );
         assert_eq!(
             replies[6]["error"]["message"],
@@ -608,6 +666,7 @@ mod tests {
              case \"$1\" in\n\
              server) echo \"no such server\" >&2; exit 3 ;;\n\
              logs) head -c 3000000 /dev/zero | tr '\\0' a; exit 0 ;;\n\
+             deployment) echo $$ > \"$(dirname \"$0\")/pid\"; exec sleep 60 ;;\n\
              esac\n\
              echo \"$*\"\n",
         )
@@ -657,6 +716,90 @@ mod tests {
             flooded.get(flooded.len() - 120..).unwrap_or_default()
         );
         assert_eq!(flooded.find('\n'), Some(OUTPUT_LIMIT));
+    }
+
+    async fn child_pid(dir: &std::path::Path) -> String {
+        let path = dir.join("pid");
+        for _ in 0..500 {
+            if let Ok(pid) = std::fs::read_to_string(&path)
+                && pid.ends_with('\n')
+            {
+                return pid.trim().to_owned();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the child never started");
+    }
+
+    /// Gone, or a zombie waiting to be reaped: either way it runs no more.
+    async fn assert_killed(pid: &str) {
+        for _ in 0..500 {
+            match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+                Err(_) => return,
+                Ok(stat)
+                    if stat
+                        .rsplit(") ")
+                        .next()
+                        .is_some_and(|rest| rest.starts_with('Z')) =>
+                {
+                    return;
+                }
+                Ok(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+        panic!("child {pid} is still running");
+    }
+
+    fn deployment_start() -> Value {
+        request(
+            2,
+            "tools/call",
+            json!({ "name": "deployment_start", "arguments": { "id": "dep_1" } }),
+        )
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_call_past_the_deadline_is_killed_and_names_where_to_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut server = Server::new(fake_ployz(dir.path()), Vec::new());
+        server.deadline = Duration::from_secs(2);
+        let mut frames = handshake();
+        frames.push(deployment_start());
+        let replies = exchange_with(server, &frames).await;
+        let overdue = &replies[1]["result"];
+        assert_eq!(overdue["isError"], true, "{overdue}");
+        assert_eq!(
+            overdue["content"][0]["text"],
+            "ployz mcp stopped `ployz deployment start` after 2s. What it started may still \
+             be running; check with the `status` tool (`ployz status`)."
+        );
+        assert_killed(&child_pid(dir.path()).await).await;
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_cancelled_call_kills_its_child_and_the_server_keeps_serving() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut client = Client::connect(Server::new(fake_ployz(dir.path()), Vec::new()));
+        for frame in handshake() {
+            client.send(&frame).await;
+        }
+        client.reply().await;
+        client.send(&deployment_start()).await;
+        let pid = child_pid(dir.path()).await;
+        client
+            .send(&json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/cancelled",
+                "params": { "requestId": 2 },
+            }))
+            .await;
+        assert_killed(&pid).await;
+        client.send(&request(3, "tools/list", json!({}))).await;
+        let listed = client.reply().await;
+        assert_eq!(listed["id"], 3, "{listed}");
+        assert!(listed["result"]["tools"].is_array(), "{listed}");
     }
 
     #[test]

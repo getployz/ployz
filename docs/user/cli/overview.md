@@ -64,9 +64,14 @@ runs one depends on the agent's own permission settings.
 
 Some commands are not tools. Local commands such as `login` and `ctx use` act on this computer.
 `exec` is interactive, and `service port-forward` stays open until you stop it. Run these
-yourself. The tools
-also leave out the arguments that read stdin, such as `set --secret`, and the ones that keep a
-command running, such as `logs --follow`.
+yourself. The tools also leave out the arguments that read stdin and the ones that keep a
+command waiting, such as `logs --follow` and `volume sync --wait`.
+
+Secrets can't be set through MCP. Run `ployz set web.env.KEY --secret` yourself.
+
+A tool call that runs for more than 30 minutes is stopped. A deployment or volume run it
+started keeps going in Cloud, and the tool's error names the command that shows where it
+stands, such as `ployz status`.
 
 ## Deploy a directory
 

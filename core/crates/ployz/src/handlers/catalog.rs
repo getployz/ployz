@@ -159,18 +159,22 @@ pub(crate) enum Stdin {
     OnDash,
 }
 
-const STDIN: [(&str, &str, Stdin); 4] = [
+const STDIN: [(&str, &str, Stdin); 5] = [
     ("env sync", "--value", Stdin::Only),
+    ("set", "--at-merge", Stdin::Only),
     ("set", "--from-env-file", Stdin::OnDash),
     ("set", "--patch", Stdin::OnDash),
     ("set", "--secret", Stdin::Only),
 ];
 
-const KEEPS_RUNNING_ARGS: [(&str, &str); 4] = [
+const KEEPS_RUNNING_ARGS: [(&str, &str); 7] = [
     ("github connect", "--wait"),
     ("logs", "--follow"),
     ("server add", "--wait"),
     ("server logs", "--follow"),
+    ("volume mirror", "--wait"),
+    ("volume mirror rm", "--wait"),
+    ("volume sync", "--wait"),
 ];
 
 const KEEPS_RUNNING_COMMANDS: [&str; 1] = ["service port-forward"];

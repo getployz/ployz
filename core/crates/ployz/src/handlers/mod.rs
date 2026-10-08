@@ -116,13 +116,13 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     }
     if context_above_leaf(matches) {
         // Store commands address a Project and Environment, never a context.
-        let takes_context = leaf_matches(matches)
-            .try_get_one::<String>("context")
-            .is_ok();
-        return Err(Error::usage(if takes_context {
+        let takes = |id| leaf_matches(matches).try_get_one::<String>(id).is_ok();
+        return Err(Error::usage(if takes("context") {
             format!("--context goes after the command: ployz {path} --context NAME")
-        } else {
+        } else if takes("project") {
             format!("ployz {path} doesn't use a context; it takes --project and --env")
+        } else {
+            format!("ployz {path} doesn't use a context")
         }));
     }
     (runnable.run)(matches)
