@@ -1,9 +1,10 @@
-import type { DataLossConfirmation, DeployOutcome, ExecutionError, MachineId } from "@ployz/sdk";
+import type { ConfigStore, DataLossConfirmation, DeployOutcome, ExecutionError, MachineId } from "@ployz/sdk";
 import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
+import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { createCancelNamespaceCleanup, createCleanNamespace } from "#/modules/machines/namespace-cleanup.inngest";
 import {
@@ -31,10 +32,16 @@ describe("clean-namespace", () => {
   let destroyCalls: Array<[string, DataLossConfirmation]>;
   let destroyAnswer: () => Effect.Effect<DeployOutcome<ExecutionError>, PloyzSdkError>;
   let connected: boolean;
+  let owned: string[];
 
-  const runEffect = makeInngestEffectRunner(<A, E>(operation: Effect.Effect<A, E, Database | OrganizationRuntime | InngestClient>) =>
+  const runEffect = makeInngestEffectRunner(<A, E>(operation: Effect.Effect<A, E, Database | OrganizationRuntime | InngestClient | CloudStore>) =>
     harness.runEffect(operation.pipe(
       Effect.provideService(InngestClient, inngest),
+      Effect.provideService(CloudStore, {
+        open: Effect.succeed(asTestDouble<ConfigStore>()({
+          read: async () => ({ namespaces: owned.map((namespace) => ({ namespace })) }),
+        })),
+      }),
       Effect.provideService(OrganizationRuntime, {
         cancel: () => Effect.void,
         open: () => Effect.succeed(connected
@@ -80,6 +87,7 @@ describe("clean-namespace", () => {
     destroyCalls = [];
     destroyAnswer = () => Effect.succeed({ type: "success", completed: [] });
     connected = true;
+    owned = [];
     send.mockReset();
     send.mockResolvedValue({ ids: [] });
     await harness.pool.query(`
@@ -122,6 +130,29 @@ describe("clean-namespace", () => {
     connected = true;
     expect(await runEffect(executeCleanupOnce({ cleanupId, organizationId }, "run-1"))).toEqual({ cleanupId, state: "finished" });
     expect(destroyCalls).toHaveLength(1);
+  });
+
+  it("refuses a clean whose Namespace an Environment took while it waited, and never asks the Engine", async () => {
+    const cleanupId = await request();
+    await harness.pool.query(`update namespace_cleanup set inngest_run_id = 'run-1' where id = $1`, [cleanupId]);
+    connected = false;
+    await expect(runEffect(executeCleanupOnce({ cleanupId, organizationId }, "run-1"))).rejects.toThrow();
+
+    owned = ["left-behind"];
+    connected = true;
+    expect(await runEffect(executeCleanupOnce({ cleanupId, organizationId }, "run-1"))).toEqual({ cleanupId, state: "failed" });
+    expect(destroyCalls).toEqual([]);
+    expect(await read(cleanupId)).toEqual({
+      state: "ended", code: "refused", message: "left-behind belongs to an Environment now. Nothing was removed.",
+    });
+  });
+
+  it("refuses a queued clean whose Namespace became owned before its run", async () => {
+    const cleanupId = await request();
+    owned = ["left-behind"];
+
+    expect((await clean(cleanupId)).result).toEqual({ cleanupId, state: "failed" });
+    expect(destroyCalls).toEqual([]);
   });
 
   it("a retried step that finds the row running ends it unknown, and never asks the Engine", async () => {

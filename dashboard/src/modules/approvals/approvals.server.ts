@@ -8,7 +8,6 @@ import {
   type ApprovalDecision,
   type ApprovalReview,
   DEFAULT_ORGANIZATION_SETTINGS,
-  type OperationReview,
   type OperationVerb,
   type SetOrganizationSettingsInput,
 } from "#/modules/approvals/approvals";
@@ -123,11 +122,11 @@ const staleOperation = (verb: OperationVerb, fresh: string | null) => Effect.suc
   fresh === null ? undefined : ne(operationApprovals.digest, fresh),
 ));
 
-/** Recompute an operation's preview digest for its subject: null when the operation no longer applies. */
 export type OperationDigest<R> = (
   organizationId: string,
   subject: string,
-  operation: OperationReview,
+  verb: OperationVerb,
+  stored: string,
 ) => Effect.Effect<string | null, never, R>;
 
 const freshen = <R>(row: ApprovalRow, operationDigest?: OperationDigest<R>) => Effect.gen(function* () {
@@ -136,15 +135,14 @@ const freshen = <R>(row: ApprovalRow, operationDigest?: OperationDigest<R>) => E
   if ("diff" in review) {
     yield* recordAndSweep(row.organizationId, row.subject, Effect.void, staleEnvironment(row.organizationId, review.diff.environment));
   } else if (operationDigest !== undefined) {
-    const fresh = yield* operationDigest(row.organizationId, row.subject, review.operation);
+    const fresh = yield* operationDigest(row.organizationId, row.subject, review.operation.verb, row.digest);
     yield* recordAndSweep(row.organizationId, row.subject, Effect.void, staleOperation(review.operation.verb, fresh));
   }
   return (yield* readRow(row.organizationId, row.id)) ?? row;
 });
 
-/** `verb:` and the SHA-256 of the preview as canonical JSON: object keys sorted, arrays as given. */
-export function operationDigest(verb: OperationVerb, preview: JsonValue) {
-  return `${verb}:${createHash("sha256").update(canonicalJson(preview)).digest("hex")}`;
+export function operationDigest({ verb, preview, effects }: Pick<OperationAsked, "verb" | "preview" | "effects">) {
+  return `${verb}:${createHash("sha256").update(canonicalJson({ preview, effects })).digest("hex")}`;
 }
 
 function canonicalJson(value: JsonValue): string {
@@ -296,7 +294,7 @@ export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
   if (!trusted.ok) return trusted;
   if (trusted.approval === "not_required") return { ok: true, approvalId: null };
-  const digest = operationDigest(asked.verb, asked.preview);
+  const digest = operationDigest(asked);
   if (trusted.approval !== "required" && trusted.approval.approved === digest) return { ok: true, approvalId };
   return { ok: false, refusal: yield* requestOperationApproval(caller, asked, digest).pipe(Effect.orDie) };
 });

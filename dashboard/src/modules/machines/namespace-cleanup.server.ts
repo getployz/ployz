@@ -165,12 +165,6 @@ const stateOf = Effect.fn("NamespaceCleanup.stateOf")(function* (cleanupId: stri
   return { cleanupId, state: row.state } satisfies CleanupRunReply;
 });
 
-/**
- * Ask the Engine once. The row is claimed (`running`) right before the call and ended with the Engine's answer right
- * after, in one step: a retry that finds the row running knows the Engine may have removed things, closes it lost and
- * never asks again. Volumes the clean didn't confirm make the Engine refuse before it removes anything; any other
- * error leaves what it removed unknown.
- */
 export const executeCleanupOnce = Effect.fn("NamespaceCleanup.execute")(function* (request: CleanupRequest, runId: string) {
   const { drizzle } = yield* Database;
   const owned = and(eq(namespaceCleanup.id, request.cleanupId), eq(namespaceCleanup.inngestRunId, runId));
@@ -185,6 +179,12 @@ export const executeCleanupOnce = Effect.fn("NamespaceCleanup.execute")(function
   if (row === undefined) return yield* stateOf(request.cleanupId);
   const session = yield* (yield* OrganizationRuntime).open(request.organizationId);
   if (session.status !== "connected") return yield* new NamespaceCleanupUnreachable({ cause: session.status });
+  if (row.namespace === SYSTEM_NAMESPACE || (yield* ownedNamespaces(request.organizationId)).includes(row.namespace)) {
+    const [refused] = yield* drizzle.update(namespaceCleanup)
+      .set(endedSaying("refused", `${row.namespace} belongs to an Environment now. Nothing was removed.`))
+      .where(and(owned, eq(namespaceCleanup.state, "pending"))).returning({ state: namespaceCleanup.state });
+    return refused === undefined ? yield* stateOf(request.cleanupId) : { cleanupId: request.cleanupId, state: refused.state };
+  }
   const [claimed] = yield* drizzle.update(namespaceCleanup).set({ state: "running", startedAt: new Date() })
     .where(and(owned, eq(namespaceCleanup.state, "pending"))).returning({ id: namespaceCleanup.id });
   if (claimed === undefined) return yield* stateOf(request.cleanupId);

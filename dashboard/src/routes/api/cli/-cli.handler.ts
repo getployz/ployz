@@ -19,8 +19,8 @@ import {
 import { refusal } from "#/modules/config-store/config-store.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { checkForgetServers, forgetServers } from "#/modules/machines/forget-servers.server";
+import { loadAuthorizedMachineRemoveAttempt, machineRemoveAttemptConsuming } from "#/modules/machines/machine-removal.repository";
 import { startMachineRemove } from "#/modules/machines/machine-removal.server";
-import { loadAuthorizedMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import type { MachineRemoveAttemptView } from "#/modules/machines/machine-removal";
 import { readCliNamespaceCleanup, requestNamespaceCleanup } from "#/modules/machines/namespace-cleanup.server";
 import { readCliServerDrain, requestCliServerDrain } from "#/modules/machines/server-drain.server";
@@ -143,13 +143,16 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       const machineId = serverIdOf(id);
       if (machineId === null) return yield* new NotFound({ message: "No such Server." });
       const input = yield* decodeBody(RemoveServer, request, "Removing a Server takes the Data Loss it confirms.");
-      const plan = yield* planRemove(caller.organization.id, machineId, "no_reset" in input ? [] : input.confirm_data_loss.confirmed);
+      const plan = yield* planRemove(caller.organization.id, machineId, "no_reset" in input ? null : input.confirm_data_loss.confirmed);
       const gated = yield* gateOperation(caller, approvalHeader(request), plan);
       if (!gated.ok) return refusal(gated.refusal);
+      const consumed = gated.approvalId === null ? null : yield* machineRemoveAttemptConsuming(caller.organization.id, gated.approvalId);
+      if (consumed !== null) return { id: consumed };
       const started = yield* startMachineRemove({
         organizationId: caller.organization.id,
         requestedByUserId: caller.userId,
         machineId,
+        approvalId: gated.approvalId,
         ...("no_reset" in input
           ? { confirmDataLoss: [], noReset: true }
           : { confirmDataLoss: [...input.confirm_data_loss.confirmed] }),

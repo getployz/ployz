@@ -17,6 +17,7 @@ type Attempt = typeof schemaMachineRemoveAttempt.$inferSelect;
 const MACHINE_REMOVE_UNIQUE_CONSTRAINTS = new Set([
   "machine_remove_attempt_inngest_run_uidx",
   "machine_remove_attempt_one_active_org_machine_idx",
+  "machine_remove_attempt_approval_uidx",
 ]);
 
 export function isMachineRemoveUniqueViolation(cause: unknown) {
@@ -133,6 +134,7 @@ export const requestMachineRemoveAttempt = Effect.fn(
   machineId: string;
   confirmDataLoss: DataLossIdentity[];
   noReset?: boolean;
+  approvalId?: string | null;
 }) {
   const { drizzle } = yield* Database;
   const [attempt] = yield* drizzle
@@ -143,6 +145,7 @@ export const requestMachineRemoveAttempt = Effect.fn(
       machineId: input.machineId,
       confirmDataLoss: input.confirmDataLoss,
       noReset: input.noReset ?? false,
+      approvalId: input.approvalId ?? null,
       state: "pending",
     })
     .returning()
@@ -157,6 +160,23 @@ export const requestMachineRemoveAttempt = Effect.fn(
     );
   }
   return toMachineRemoveAttemptView(attempt);
+});
+
+export const machineRemoveAttemptConsuming = Effect.fn(
+  "MachineRemovalRepository.consuming",
+)(function* (organizationId: string, approvalId: string) {
+  const { drizzle } = yield* Database;
+  const [attempt] = yield* drizzle
+    .select({ id: schemaMachineRemoveAttempt.id })
+    .from(schemaMachineRemoveAttempt)
+    .where(
+      and(
+        eq(schemaMachineRemoveAttempt.organizationId, organizationId),
+        eq(schemaMachineRemoveAttempt.approvalId, approvalId),
+      ),
+    )
+    .limit(1);
+  return attempt?.id ?? null;
 });
 
 export const abandonPendingMachineRemoveAttempt = Effect.fn(

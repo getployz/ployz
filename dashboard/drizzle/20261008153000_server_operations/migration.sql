@@ -38,10 +38,12 @@ CREATE TABLE "namespace_cleanup" (
 --> statement-breakpoint
 ALTER TABLE "server_drain_attempt" ADD COLUMN "targets" jsonb;--> statement-breakpoint
 ALTER TABLE "server_drain_attempt" ADD COLUMN "approval_id" uuid;--> statement-breakpoint
+ALTER TABLE "machine_remove_attempt" ADD COLUMN "approval_id" uuid;--> statement-breakpoint
 CREATE UNIQUE INDEX "namespace_cleanup_one_active_idx" ON "namespace_cleanup" ("organization_id","namespace") WHERE "state" in ('pending', 'running');--> statement-breakpoint
 CREATE UNIQUE INDEX "namespace_cleanup_run_uidx" ON "namespace_cleanup" ("inngest_run_id") WHERE "inngest_run_id" is not null;--> statement-breakpoint
 CREATE UNIQUE INDEX "namespace_cleanup_approval_uidx" ON "namespace_cleanup" ("approval_id") WHERE "approval_id" is not null;--> statement-breakpoint
 CREATE UNIQUE INDEX "server_drain_attempt_approval_uidx" ON "server_drain_attempt" ("approval_id") WHERE "approval_id" is not null;--> statement-breakpoint
+CREATE UNIQUE INDEX "machine_remove_attempt_approval_uidx" ON "machine_remove_attempt" ("approval_id") WHERE "approval_id" is not null;--> statement-breakpoint
 ALTER TABLE "namespace_cleanup" ADD CONSTRAINT "namespace_cleanup_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "namespace_cleanup" ADD CONSTRAINT "namespace_cleanup_requested_by_user_id_user_id_fkey" FOREIGN KEY ("requested_by_user_id") REFERENCES "user"("id") ON DELETE SET NULL;--> statement-breakpoint
 ALTER TABLE "server_drain_attempt" ADD CONSTRAINT "server_drain_attempt_targets_check" CHECK ("targets" is null or jsonb_typeof("targets") = 'array');--> statement-breakpoint

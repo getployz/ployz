@@ -36,6 +36,7 @@ export const machineRemoveAttempt = pgTable(
     machineId: text("machine_id").notNull().$type<MachineId>(),
     /** Take the Server out of the Cluster without resetting it (`ployz server rm --no-reset`). */
     noReset: boolean("no_reset").default(false).notNull(),
+    approvalId: uuid("approval_id"),
     confirmDataLoss: jsonb("confirm_data_loss")
       .notNull()
       .$type<DataLossIdentity[]>(),
@@ -69,6 +70,9 @@ export const machineRemoveAttempt = pgTable(
     uniqueIndex("machine_remove_attempt_one_active_org_machine_idx")
       .on(table.organizationId, table.machineId)
       .where(sql`${table.state} in ('pending', 'running')`),
+    uniqueIndex("machine_remove_attempt_approval_uidx")
+      .on(table.approvalId)
+      .where(sql`${table.approvalId} is not null`),
     check(
       "machine_remove_attempt_machine_id_check",
       sql`length(${table.machineId}) between 1 and 64 and ${table.machineId} !~ '[[:cntrl:]]'`,

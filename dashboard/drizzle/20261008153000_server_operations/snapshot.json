@@ -1600,6 +1600,19 @@
       "table": "machine_remove_attempt"
     },
     {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "approval_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "machine_remove_attempt"
+    },
+    {
       "type": "jsonb",
       "typeSchema": null,
       "notNull": true,
@@ -4086,6 +4099,27 @@
       "method": "btree",
       "concurrently": false,
       "name": "machine_remove_attempt_one_active_org_machine_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "machine_remove_attempt"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "approval_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": "\"approval_id\" is not null",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "machine_remove_attempt_approval_uidx",
       "entityType": "indexes",
       "schema": "public",
       "table": "machine_remove_attempt"

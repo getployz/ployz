@@ -103,14 +103,13 @@ export function cleanPlan(
   };
 }
 
-/** Removing a Server: the Server itself, and each Volume its removal confirms losing. */
-export function removePlan(machineId: string, name: string, confirmed: readonly DataLossIdentity[]): OperationAsked {
-  const volumes = [...confirmed].sort((a, b) => byName(volumeName(a), volumeName(b)));
+export function removePlan(machineId: string, name: string, confirmed: readonly DataLossIdentity[] | null): OperationAsked {
+  const volumes = [...(confirmed ?? [])].sort((a, b) => byName(volumeName(a), volumeName(b)));
   return {
     subject: `server:${machineId}`,
     verb: "remove",
     name,
-    preview: { server: machineId, volumes: volumes.map(volumeName) },
+    preview: { server: machineId, reset: confirmed !== null, volumes: volumes.map(volumeName) },
     effects: [
       { kind: "removes_server", name, node: machineId, path: `servers/${machineId}` },
       ...volumes.map(deletesVolume),
@@ -151,7 +150,7 @@ export const planClean = Effect.fn("ServerOperations.planClean")(function* (orga
 export const planRemove = Effect.fn("ServerOperations.planRemove")(function* (
   organizationId: string,
   machineId: string,
-  confirmed: readonly DataLossIdentity[],
+  confirmed: readonly DataLossIdentity[] | null,
 ) {
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
   return removePlan(machineId, serverName(frame, machineId), confirmed);
@@ -161,20 +160,19 @@ export const planRemove = Effect.fn("ServerOperations.planRemove")(function* (
  * An operation approval's preview recomputed on read, so a changed Cluster supersedes it. A Server no longer observed,
  * or a Namespace an Environment owns by now, no longer applies. When the Cluster can't be read, the stored preview stands.
  */
-export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<typeof planClean>>> = (organizationId, subject, operation) => {
-  const stored = operationDigest(operation.verb, operation.preview);
+export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<typeof planClean>>> = (organizationId, subject, verb, stored) => {
   const separator = subject.indexOf(":");
   const key = subject.slice(separator + 1);
   const fresh = Effect.gen(function* () {
-    switch (operation.verb) {
+    switch (verb) {
       case "drain": {
         const frame = yield* observe(organizationId);
         const plan = drainPlan(frame, new Set(yield* ownedNamespaces(organizationId)), key);
-        return plan === null ? null : operationDigest("drain", plan.preview);
+        return plan === null ? null : operationDigest(plan);
       }
       case "clean":
         if (yield* ownedOrSystem(organizationId, key)) return null;
-        return operationDigest("clean", (yield* planClean(organizationId, key)).preview);
+        return operationDigest(yield* planClean(organizationId, key));
       case "remove": {
         const frame = yield* observe(organizationId);
         return frame.machines.some(({ machine }) => machine.id === key) ? stored : null;

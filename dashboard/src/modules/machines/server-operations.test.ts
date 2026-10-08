@@ -81,6 +81,10 @@ describe("cleanPlan and removePlan", () => {
     expect(removePlan(here, "fra-1", []).effects).toEqual([
       { kind: "removes_server", name: "fra-1", node: here, path: `servers/${here}` },
     ]);
-    expect(removePlan(here, "fra-1", [volume(here, "data")]).preview).toEqual({ server: here, volumes: [`${here}/data`] });
+    expect(removePlan(here, "fra-1", [volume(here, "data")]).preview).toEqual({ server: here, reset: true, volumes: [`${here}/data`] });
+    expect(removePlan(here, "fra-1", null)).toMatchObject({
+      preview: { server: here, reset: false, volumes: [] },
+      effects: [{ kind: "removes_server", name: "fra-1" }],
+    });
   });
 });

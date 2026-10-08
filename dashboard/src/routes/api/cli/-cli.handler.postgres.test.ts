@@ -12,8 +12,9 @@ import { githubInstallation, githubRepositoryCache } from "#/modules/github/tabl
 import { InngestClient } from "#/modules/inngest/client";
 import { member, organizationToken, session } from "#/modules/identity/tables";
 import { asTestDouble } from "#/lib/test-double";
+import type { JsonObject } from "#/db/tables";
 import { retireServerAccess, serverAccessLabel } from "#/modules/machines/server-access.server";
-import { organizationMachine, serverAccess } from "#/modules/machines/tables";
+import { machineRemoveAttempt, organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { makePloyzLayer, Ployz } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
@@ -158,7 +159,7 @@ type Reply = {
 
 type As = { readonly cookie?: string; readonly bearer?: string; readonly approval?: string };
 
-type CliBody = Readonly<Record<string, string | number | boolean | Readonly<Record<string, string>>>>;
+type CliBody = JsonObject;
 
 const cli = Effect.fn(function* (method: string, path: string, as: As, body?: CliBody) {
   const headers = new Headers();
@@ -714,6 +715,38 @@ it.live(
           ["namespace:left-behind", "approved"],
           [`server:${fra1}`, "pending"],
         ]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "an approved `server rm` removes once, and a removal that would reset the Server isn't covered by a keep-data approval",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "cli-remove-test" });
+      const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const layer = yield* cliLayer(fakeServers().layer, { runtime: leftBehindCluster, inngest });
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const alice = yield* signUp("alice");
+        const keep = { no_reset: true };
+        const asked = (yield* cli("DELETE", `servers/${fra1}`, alice, keep)).json.error?.details ?? assert.fail("no ask");
+        const approvalId = asked.approval_id ?? assert.fail("no approval id");
+        yield* cli("POST", `approvals/${approvalId}`, alice, { approve: { digest: asked.approval ?? "" } });
+
+        const reset = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, { confirm_data_loss: { confirmed: [] } });
+        assert.strictEqual(reset.json.error?.code, "approval_required");
+        assert.notStrictEqual(reset.json.error?.details.approval_id, approvalId);
+
+        const started = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, keep);
+        const removalId = started.json.id ?? assert.fail("no removal id");
+        const ended = new Date();
+        yield* drizzle.update(machineRemoveAttempt).set({
+          state: "failed", inngestRunId: "run-1", startedAt: ended, terminalAt: ended, failureCode: "unreachable", failureMessage: "gone",
+        }).where(eq(machineRemoveAttempt.id, removalId));
+        assert.strictEqual((yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, keep)).json.id, removalId);
+        assert.deepStrictEqual(sent.mock.calls.map(([event]) => (event as { id?: string }).id), [`machine-remove-${removalId}`]);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
