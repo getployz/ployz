@@ -13,15 +13,6 @@ export class PolarFailure extends Data.TaggedError("PolarFailure")<{
   readonly cause: unknown;
 }> {}
 
-export type CreatePolarCheckout = {
-  readonly successUrl: string;
-  readonly embedOrigin: string;
-  readonly externalCustomerId: string;
-  readonly customerEmail: string;
-  readonly customerName: string;
-  readonly referenceId: string;
-};
-
 export type PolarService =
   | { readonly mode: "self_hosted" }
   | {
@@ -30,9 +21,6 @@ export type PolarService =
       readonly listActiveSubscriptions: (
         organizationId: string,
       ) => Effect.Effect<readonly PolarSubscription[], PolarFailure>;
-      readonly createCheckout: (
-        input: CreatePolarCheckout,
-      ) => Effect.Effect<{ readonly url: string }, PolarFailure>;
       /** A customer portal session for the user who paid, where plans are changed or cancelled. */
       readonly createCustomerPortal: (input: {
         readonly externalCustomerId: string;
@@ -44,7 +32,6 @@ export class Polar extends Context.Service<Polar, PolarService>()(
   "ployz/Polar",
 ) {}
 
-const Checkout = Schema.Struct({ url: Schema.String });
 const CustomerPortal = Schema.Struct({
   customerPortalUrl: Schema.String,
 }).pipe(Schema.encodeKeys({ customerPortalUrl: "customer_portal_url" }));
@@ -110,21 +97,6 @@ export function makePolarService(
           return items;
         },
         Schema.Array(PolarSubscription),
-      ),
-    createCheckout: (input) =>
-      call(
-        "create checkout",
-        () =>
-          client.checkouts.create({
-            products: [config.productId],
-            success_url: input.successUrl,
-            embed_origin: input.embedOrigin,
-            external_customer_id: input.externalCustomerId,
-            customer_email: input.customerEmail,
-            customer_name: input.customerName,
-            metadata: { referenceId: input.referenceId },
-          }),
-        Checkout,
       ),
     createCustomerPortal: (input) =>
       call(

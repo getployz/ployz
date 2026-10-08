@@ -47,8 +47,8 @@ your data yet, and if a server goes down, what ran only there stops until it's b
 
 ## What it costs
 
-Ployz is free on your own servers, with as many servers and projects as you like. Custom
-domains need Pro, at $9 a month. Your hosting provider bills you for the servers. See
+Ployz is free on your own servers, with as many servers, projects and custom domains as you
+like. Your hosting provider bills you for the servers. See
 [Organizations and billing](../account/organizations.md).
 
 ## What you own

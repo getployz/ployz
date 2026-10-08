@@ -187,11 +187,11 @@ fn serve(
         (Some(who), "/api/config/read") => answer(store.read_trusted(
             &who,
             &serde_json::from_slice::<ployz_store::Query>(&body).unwrap(),
-            &evidence(&who),
+            &evidence(),
         )),
         (Some(who), "/api/config/write") => {
             let command: StoreCommand = serde_json::from_slice(&body).unwrap();
-            let written = store.write_trusted(&who, &command, &evidence(&who));
+            let written = store.write_trusted(&who, &command, &evidence());
             if let (StoreCommand::Admit(_) | StoreCommand::Start(_), Ok(written)) =
                 (&command, &written)
             {
@@ -239,12 +239,11 @@ fn serve(
     )
 }
 
-/// What this Cloud knows for `who`: its GitHub, its one Server, and its Cluster
-/// Domain `acme.ployz.app`, ready. Only Organization `pro` may add custom domains.
-fn evidence(who: &Actor) -> Trusted {
+/// What this Cloud knows: its GitHub, its one Server, and its Cluster
+/// Domain `acme.ployz.app`, ready.
+fn evidence() -> Trusted {
     Trusted {
         domains: DomainEvidence {
-            custom_domains: who.organization.as_str() == "pro",
             cluster_domain: Some(ClusterDomain {
                 name: Hostname::parse("acme.ployz.app").unwrap(),
                 status: ClusterDomainStatus::Ready,
@@ -512,18 +511,10 @@ fn an_agent_adds_checks_and_removes_domains() {
         assert!(!label["message"].as_str().unwrap().contains("not.one-label"));
         ok(store, &["domain", "set", "web", "web"]);
 
-        // The hidden Store stands for a self-hosted Cloud; hosted Cloud needs Pro.
-        let args = ["domain", "add", "web", "App.Example.com"];
-        if cloud {
-            let refused = error(store, &args);
-            assert_eq!(refused["code"], json!("unsupported"));
-            assert_eq!(refused["details"]["next"], json!("ployz billing upgrade"));
-        } else {
-            assert_eq!(
-                ok(store, &args)["domain"]["hostname"],
-                json!("app.example.com")
-            );
-        }
+        assert_eq!(
+            ok(store, &["domain", "add", "web", "App.Example.com"])["domain"]["hostname"],
+            json!("app.example.com")
+        );
         let usage = failed(store, &["domain", "add", "web", "not a host"], 2);
         assert!(!usage["message"].as_str().unwrap().contains("not a host"));
 

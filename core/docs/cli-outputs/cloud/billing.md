@@ -13,7 +13,7 @@ $ ployz billing
 
 stdout:
 ```
-Organization ada: self-hosted, no billing; custom domains allowed.
+Organization ada: self-hosted, no billing.
 ```
 
 ### billing --json (billing off)
@@ -27,35 +27,10 @@ stdout:
 ```
 {
   "billing": {
-    "custom_domains": true,
     "organization": "ada",
     "plan": "self_hosted"
   }
 }
-```
-
-### billing upgrade (billing off)
-
-```console
-$ ployz billing upgrade
-# exit 1
-```
-
-stderr:
-```
-Cloud at http://localhost:34733 has no billing: it is self-hosted
-```
-
-### billing upgrade --json (billing off)
-
-```console
-$ ployz billing upgrade --json
-# exit 1
-```
-
-stdout:
-```
-{"error":{"code":"unsupported","details":null,"message":"Cloud at http://localhost:34733 has no billing: it is self-hosted"}}
 ```
 
 ### billing manage (billing off)
@@ -81,6 +56,3 @@ stdout:
 ```
 {"error":{"code":"unsupported","details":null,"message":"Cloud at http://localhost:34733 has no billing: it is self-hosted"}}
 ```
-
-## Billing on: not captured (BILLING=1 verify seed fails: custom domain on web needs Ployz Pro)
-

@@ -9,7 +9,7 @@ use super::{Error, Handler, config_path, leaf_matches, login::open_browser, runt
 use crate::cli::{positional, value};
 use ployz_core::RpcErrorCode;
 
-use crate::cloud_account::{self, BillingPage, Credential, ServerClears};
+use crate::cloud_account::{self, Credential, ServerClears};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::ui::{self, Cell, Hint, Table, Tone};
 
@@ -81,7 +81,6 @@ pub(crate) fn org_command() -> Command {
 pub(crate) fn billing_command() -> Command {
     Command::new("billing")
         .about("Show the Organization's plan")
-        .subcommand(Command::new("upgrade").about("Print the checkout link for Pro"))
         .subcommand(Command::new("manage").about("Print the billing portal link"))
 }
 
@@ -107,7 +106,6 @@ pub(super) fn org_handler(path: &str) -> Option<Handler> {
 pub(super) fn billing_handler(path: &str) -> Option<Handler> {
     Some(match path {
         "" => billing,
-        "upgrade" => billing_upgrade,
         "manage" => billing_manage,
         _ => return None,
     })
@@ -461,15 +459,10 @@ fn billing(root: &ArgMatches) -> Result<(), Error> {
     let report = BillingReport { billing, next };
     crate::ui::finish(&report, || {
         let billing = &report.billing;
-        let plan = billing.plan.label();
-        let domains = if billing.custom_domains {
-            "allowed"
-        } else {
-            "need Pro"
-        };
         ui::stream(format_args!(
-            "Organization {}: {plan}; custom domains {domains}.",
-            billing.organization
+            "Organization {}: {}.",
+            billing.organization,
+            billing.plan.label()
         ));
         if let Some(next) = report.next {
             ui::hint(&Hint::Next(next.to_owned()));
@@ -477,17 +470,9 @@ fn billing(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-fn billing_upgrade(root: &ArgMatches) -> Result<(), Error> {
-    billing_page(root, BillingPage::Checkout)
-}
-
 fn billing_manage(root: &ArgMatches) -> Result<(), Error> {
-    billing_page(root, BillingPage::Portal)
-}
-
-fn billing_page(root: &ArgMatches, page: BillingPage) -> Result<(), Error> {
     let url = in_cloud(root, async |_, credential| {
-        cloud_account::billing_url(credential, page).await
+        cloud_account::billing_portal(credential).await
     })?;
     crate::ui::finish(&serde_json::json!({ "url": url }), || {
         ui::stream(&url);

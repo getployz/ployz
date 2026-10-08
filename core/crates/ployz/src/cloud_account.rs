@@ -187,13 +187,12 @@ pub(crate) struct Removed {
     pub(crate) kind: CredentialKind,
 }
 
-/// An Organization's Billing Plan and the capability it grants.
+/// An Organization's Billing Plan.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(from = "BillingReply")]
 pub(crate) struct Billing {
     pub(crate) organization: String,
     pub(crate) plan: BillingPlan,
-    pub(crate) custom_domains: bool,
 }
 
 /// An Organization's Billing Plan.
@@ -212,7 +211,7 @@ impl BillingPlan {
         match self {
             Self::SelfHosted => "self-hosted, no billing",
             Self::Pro => "Pro",
-            Self::Free => "no plan",
+            Self::Free => "Free",
         }
     }
 
@@ -221,7 +220,7 @@ impl BillingPlan {
         match self {
             Self::SelfHosted => None,
             Self::Pro => Some("ployz billing manage"),
-            Self::Free => Some("ployz billing upgrade"),
+            Self::Free => None,
         }
     }
 }
@@ -232,7 +231,6 @@ struct BillingReply {
     organization: String,
     self_hosted: bool,
     pro: bool,
-    custom_domains: bool,
 }
 
 impl From<BillingReply> for Billing {
@@ -244,7 +242,6 @@ impl From<BillingReply> for Billing {
                 (false, true) => BillingPlan::Pro,
                 (false, false) => BillingPlan::Free,
             },
-            custom_domains: reply.custom_domains,
         }
     }
 }
@@ -359,7 +356,7 @@ pub(crate) async fn server_access(credential: &Credential) -> Result<ServerAcces
     call(credential, Method::POST, "server-access", None).await
 }
 
-/// The Organization's Billing Plan and Custom Domain Capability.
+/// The Organization's Billing Plan.
 ///
 /// # Errors
 ///
@@ -373,38 +370,23 @@ pub(crate) async fn billing(credential: &Credential) -> Result<Billing, LoginErr
     Ok(reply.billing)
 }
 
-/// Where to buy Pro (`checkout`) or manage it (`portal`).
+/// Where to manage a subscription: Polar's billing portal.
 ///
 /// # Errors
 ///
-/// Returns [`LoginError::NoBilling`] on a Self-hosted Cloud, [`LoginError::AlreadyPro`]
-/// for a checkout the Organization doesn't need, or a Cloud failure.
-pub(crate) async fn billing_url(
-    credential: &Credential,
-    page: BillingPage,
-) -> Result<String, LoginError> {
+/// Returns [`LoginError::NoBilling`] on a Self-hosted Cloud, or a Cloud failure.
+pub(crate) async fn billing_portal(credential: &Credential) -> Result<String, LoginError> {
     #[derive(Deserialize)]
     struct Reply {
         url: String,
     }
-    let path = match page {
-        BillingPage::Checkout => "billing/checkout",
-        BillingPage::Portal => "billing/portal",
-    };
-    match call::<Reply>(credential, Method::POST, path, None).await {
+    match call::<Reply>(credential, Method::POST, "billing/portal", None).await {
         Ok(reply) => Ok(reply.url),
         Err(LoginError::Status { status: 404, .. }) => {
             Err(LoginError::NoBilling(credential.cloud().to_owned()))
         }
-        Err(LoginError::Status { status: 409, .. }) => Err(LoginError::AlreadyPro),
         Err(error) => Err(error),
     }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum BillingPage {
-    Checkout,
-    Portal,
 }
 
 /// Why a Config Store call over HTTPS failed.
@@ -854,20 +836,11 @@ mod tests {
 
     #[tokio::test]
     async fn cloud_answers_become_their_own_errors() {
-        let cloud = fake_cloud(|route, _| match route {
-            "POST /api/cli/billing/checkout" => (409, serde_json::json!({ "code": "CONFLICT" })),
-            _ => (404, serde_json::json!({ "code": "NOT_FOUND" })),
-        });
+        let cloud = fake_cloud(|_, _| (404, serde_json::json!({ "code": "NOT_FOUND" })));
         let credential = token(&cloud);
         let error = remove_token(&credential, "t1").await.unwrap_err();
         assert!(matches!(error, LoginError::UnknownCredential(_)), "{error}");
-        let error = billing_url(&credential, BillingPage::Checkout)
-            .await
-            .unwrap_err();
-        assert!(matches!(error, LoginError::AlreadyPro), "{error}");
-        let error = billing_url(&credential, BillingPage::Portal)
-            .await
-            .unwrap_err();
+        let error = billing_portal(&credential).await.unwrap_err();
         assert!(matches!(error, LoginError::NoBilling(_)), "{error}");
         // A Cloud without the CLI surface (or with it switched off).
         let error = credentials(&credential).await.unwrap_err();

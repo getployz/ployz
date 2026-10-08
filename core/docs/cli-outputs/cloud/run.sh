@@ -272,9 +272,9 @@ c deploy "cloud reset (no -y)" $P cloud reset
 m deploy "cloud reset -y" $P cloud reset -y
 m deploy "cloud reset -y --json" $P cloud reset -y --json
 
-# ---------- billing: off, then on ----------
+# ---------- billing ----------
 note billing "## Billing off (self-hosted verify Cloud)"
-for cmd in "billing" "billing upgrade" "billing manage"; do
+for cmd in "billing" "billing manage"; do
   c billing "$cmd (billing off)" $P $cmd
   c billing "$cmd --json (billing off)" $P $cmd --json
 done
@@ -285,10 +285,6 @@ m auth "logout" $P logout
 c auth "logout again" $P logout
 export HOME=$WORK/home-ada2; mkdir -p "$HOME"; signin
 m auth "logout --json" $P logout --json
-
-# Billing on is not captured: `BILLING=1 scripts/verify/up.sh` fails its own
-# seed ("domain web": custom domains need Ployz Pro), so no Cloud comes up.
-note billing "## Billing on: not captured (BILLING=1 verify seed fails: custom domain on web needs Ployz Pro)"
 
 # Captures show the per-run work dir as /tmp/pz-cloud-capture.
 FROM=$WORK perl -pi -e 's/\Q$ENV{FROM}\E/\/tmp\/pz-cloud-capture/g' "$CAPTURES"/*.md "$CAPTURES"/*.ansi

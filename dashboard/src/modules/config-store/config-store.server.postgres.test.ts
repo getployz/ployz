@@ -9,7 +9,6 @@ import { eq, sql } from "drizzle-orm";
 import * as tar from "tar";
 import { Cause, Effect, Exit, Layer } from "effect";
 import { Inngest } from "inngest";
-import { organizationBillingState } from "#/modules/billing/tables";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
 import { callStoreAsMember } from "#/modules/config-store/config-store.server";
@@ -436,7 +435,7 @@ it.live(
 );
 
 it.live(
-  "domains: custom ones need Pro, and a generated one reserves the Cluster Domain when it is first admitted",
+  "domains: a custom one is free, and a generated one reserves the Cluster Domain when it is first admitted",
   () =>
     Effect.gen(function* () {
       const hostedDns = yield* Effect.acquireRelease(Effect.promise(startFakeHostedDns), (fake) => Effect.promise(() => fake.close()));
@@ -449,8 +448,7 @@ it.live(
       const hosted: PolarService = {
         mode: "hosted",
         productId: "pro",
-        listActiveSubscriptions: () => Effect.die("the capability reads the cached row"),
-        createCheckout: () => Effect.die("not used"),
+        listActiveSubscriptions: () => Effect.die("not used"),
         createCustomerPortal: () => Effect.die("not used"),
       };
       const layer = yield* cloudLayer({ polar: hosted, hostedDnsUrl: hostedDns.url }, inngest);
@@ -460,20 +458,6 @@ it.live(
         yield* request("write", alice, shop);
         yield* request("write", alice, web);
         const custom: ConfigCommand = { command: "add_domain", environment: here, service: "web", hostname: "app.example.com", port: null };
-        const refused = yield* request("write", alice, custom);
-        assert.strictEqual(refused.status, 501);
-        assert.strictEqual(refused.json.error?.code, "unsupported");
-        assert.strictEqual(refused.json.error?.details?.next, "ployz billing upgrade");
-
-        const database = yield* Database;
-        const [owner] = yield* database.drizzle.select({ organization: member.organizationId }).from(member);
-        yield* database.drizzle.insert(organizationBillingState).values({
-          organizationId: owner?.organization ?? assert.fail("no Organization"),
-          hasActiveSubscription: true,
-          activeSubscriptionId: "sub",
-          currentPeriodEnd: new Date(Date.now() + 86_400_000),
-          syncedAt: new Date(),
-        });
         assert.strictEqual((yield* request("write", alice, custom)).status, 200);
 
         const generated = yield* request("write", alice, { ...custom, hostname: null });

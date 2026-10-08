@@ -1,9 +1,8 @@
-import { useEffect, useState } from "react";
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, useHydrated, useNavigate } from "@tanstack/react-router";
-import { Schema } from "effect";
+import { useState } from "react";
+import { useSuspenseQuery } from "@tanstack/react-query";
+import { createFileRoute, useHydrated } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { CheckIcon, HeartIcon } from "lucide-react";
+import { CheckIcon } from "lucide-react";
 import { toast } from "sonner";
 import { DashboardPage } from "#/components/dashboard-page";
 import { RouteErrorAlert } from "#/components/route-error-alert";
@@ -13,17 +12,13 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "#/co
 import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
-import { PRO_PRICE } from "#/modules/billing/billing";
 import { billingStateQueryOptions } from "#/modules/billing/billing.queries";
 import { createCustomerPortalServerFn } from "#/modules/billing/billing.functions";
-import { useEmbeddedCheckout } from "#/modules/billing/use-embedded-checkout";
 import { prefetchRemote, requireBilling } from "#/collections/route-data";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/billing"
 )({
-  // Polar's checkout comes back here with the checkout it completed.
-  validateSearch: Schema.toStandardSchemaV1(Schema.Struct({ checkout_id: Schema.optional(Schema.String) })),
   loader: async ({ params, context }) => {
     await requireBilling(context, params.organizationSlug);
     await prefetchRemote(context, billingStateQueryOptions(params.organizationSlug));
@@ -37,8 +32,8 @@ function BillingPending() {
   return (
     <DashboardPage width="content">
       <Skeleton className="h-5 w-72" />
-      <div className="grid overflow-hidden rounded-xl border md:grid-cols-2">
-        {[0, 1].map((column) => (
+      <div className="grid overflow-hidden rounded-xl border md:grid-cols-3">
+        {[0, 1, 2].map((column) => (
           <div key={column} className="flex flex-col gap-5 p-6">
             <Skeleton className="h-5 w-16" />
             <Skeleton className="h-10 w-24" />
@@ -63,73 +58,51 @@ function BillingError() {
 
 function RouteComponent() {
   const { organizationSlug } = Route.useParams();
-  const { checkout_id: checkoutId } = Route.useSearch();
-  const navigate = useNavigate({ from: Route.fullPath });
-  const queryClient = useQueryClient();
   const isHydrated = useHydrated();
   const createCustomerPortal = useServerFn(createCustomerPortalServerFn);
-
-  useEffect(() => {
-    if (checkoutId === undefined) return;
-    toast.success("You're on Pro. Thanks for supporting Ployz!");
-    void queryClient.invalidateQueries(billingStateQueryOptions(organizationSlug));
-    void navigate({ search: {}, replace: true });
-  }, [checkoutId]);
   const { data: billingState } = useSuspenseQuery(
     billingStateQueryOptions(organizationSlug)
   );
-  const [portalPending, setPortalPending] = useState(false);
-  const { openCheckout, pending: checkoutPending } = useEmbeddedCheckout(organizationSlug);
-  const pending = portalPending || checkoutPending;
+  const [pending, setPending] = useState(false);
 
   /** Cancellation and payment changes happen in the Polar portal. */
   async function openBillingPortal() {
     try {
-      setPortalPending(true);
+      setPending(true);
       const { customerPortalUrl } = await createCustomerPortal({ data: { organizationSlug } });
       window.location.href = customerPortalUrl;
     } catch {
       toast.error("Unable to open billing portal.");
     } finally {
-      setPortalPending(false);
+      setPending(false);
     }
   }
-
-  const subscribed = billingState.hasActiveSubscription;
-  const busy = !isHydrated || pending;
 
   return (
     <DashboardPage width="content">
       <p className="text-muted-foreground">
-        {subscribed
-          ? "You’re on Pro. Thanks for supporting Ployz."
-          : "Free on your own servers. Pro adds custom domains."}
+        Ployz is free on your own servers, custom domains included. Paid plans are coming soon.
       </p>
-      <div className="grid overflow-hidden rounded-xl border md:grid-cols-2">
-        <Plan name="Free" price="$0" current={!subscribed} features={FREE_FEATURES} />
-        <Plan
-          name="Pro"
-          price={PRO_PRICE}
-          current={subscribed}
-          features={PRO_FEATURES}
-          className="border-t md:border-t-0 md:border-l"
-        >
-          {subscribed ? null : (
-            <Button className="self-start" disabled={busy} onClick={() => void openCheckout()}>
-              {pending ? <Spinner data-icon="inline-start" /> : null}
-              Upgrade to Pro · {PRO_PRICE}/mo
-            </Button>
-          )}
-        </Plan>
+      <div className="grid overflow-hidden rounded-xl border md:grid-cols-3">
+        {PLANS.map((plan, index) => (
+          <Plan
+            key={plan.name}
+            plan={plan}
+            current={index === 0}
+            className={index === 0 ? undefined : "border-t md:border-t-0 md:border-l"}
+          />
+        ))}
       </div>
-      {subscribed ? (
+      {billingState.hasActiveSubscription ? (
         <Item variant="outline">
           <ItemContent>
             <ItemTitle>{periodEndCopy(billingState)}</ItemTitle>
-            <ItemDescription>Payment method and invoices</ItemDescription>
+            <ItemDescription>
+              Your Pro subscription paid for custom domains, which are free now. Cancel it in the billing portal.
+            </ItemDescription>
           </ItemContent>
           <ItemActions>
-            <Button variant="outline" disabled={busy} onClick={() => void openBillingPortal()}>
+            <Button variant="outline" disabled={!isHydrated || pending} onClick={() => void openBillingPortal()}>
               {pending ? <Spinner data-icon="inline-start" /> : null}
               Manage billing
             </Button>
@@ -140,69 +113,86 @@ function RouteComponent() {
   );
 }
 
-type Feature = { readonly label: string; readonly soon?: true };
+type PlanDetails = {
+  readonly name: string;
+  readonly price: string;
+  readonly per: string;
+  readonly pitch: string;
+  readonly features: readonly string[];
+  readonly soon?: true;
+};
 
-const FREE_FEATURES: readonly Feature[] = [
-  { label: "Unlimited servers and projects" },
-  { label: "Preview environments" },
-  { label: "Open source" },
+const PLANS: readonly PlanDetails[] = [
+  {
+    name: "Free",
+    price: "$0",
+    per: "/ month",
+    pitch: "The whole platform, on servers you own. No card.",
+    features: [
+      "Unlimited servers and projects",
+      "Dashboard and git push deploys",
+      "Preview environments",
+      "One-click databases",
+      "Custom domains, and a free *.ployz.app address",
+      "Live logs and server metrics",
+      "24 hours of logs and metrics",
+    ],
+  },
+  {
+    name: "Hobby",
+    price: "$5",
+    per: "/ month",
+    pitch: "For the app that pays your rent.",
+    features: [
+      "Everything in Free",
+      "7 days of logs and metrics",
+      "Uptime checks from outside your servers",
+      "Alerts by email and Slack",
+    ],
+    soon: true,
+  },
+  {
+    name: "Pro",
+    price: "$49",
+    per: "/ month per organization",
+    pitch: "For a team. Not per seat, not per server.",
+    features: [
+      "Everything in Hobby",
+      "30 days of logs and metrics",
+      "Unlimited members",
+      "Roles and audit log",
+      "Public status page",
+    ],
+    soon: true,
+  },
 ];
 
-// Custom domains are Pro's only feature today; the rest is what paying supports.
-const PRO_FEATURES: readonly Feature[] = [
-  { label: "Custom domains on any service" },
-  { label: "Metrics", soon: true },
-  { label: "Log retention", soon: true },
-  { label: "Cloud builds", soon: true },
-];
-
-function Plan({
-  name,
-  price,
-  current,
-  features,
-  className,
-  children,
-}: {
-  name: string;
-  price: string;
-  current: boolean;
-  features: readonly Feature[];
-  className?: string;
-  children?: React.ReactNode;
-}) {
+function Plan({ plan, current, className }: { plan: PlanDetails; current: boolean; className?: string }) {
   return (
     <section
-      aria-label={name}
+      aria-label={plan.name}
       className={cn("flex flex-col gap-5 p-6", current && "bg-muted/50", className)}
     >
       <div className="flex items-center justify-between">
-        <h2 className="font-medium">{name}</h2>
+        <h2 className="font-medium">{plan.name}</h2>
         {current ? <Badge variant="outline">Current</Badge> : null}
+        {plan.soon ? <Badge variant="secondary">Coming soon</Badge> : null}
       </div>
-      <p className="text-4xl font-semibold tracking-tight">
-        {price}
-        <span className="text-muted-foreground text-sm font-normal"> /mo</span>
-      </p>
+      <div className="flex flex-col gap-1">
+        <p className="text-4xl font-semibold tracking-tight">
+          {plan.price}
+          <span className="text-muted-foreground text-sm font-normal"> {plan.per}</span>
+        </p>
+        <p className="text-muted-foreground text-sm">{plan.pitch}</p>
+      </div>
       <ul className="flex flex-col gap-2.5 text-sm">
-        {features.map((feature) => (
-          <li
-            key={feature.label}
-            className={cn("flex items-center gap-2.5", feature.soon && "text-muted-foreground")}
-          >
-            <CheckIcon aria-hidden className={cn("size-4", feature.soon ? "opacity-40" : "text-primary")} />
-            {feature.label}
-            {feature.soon ? <Badge variant="outline">Soon</Badge> : null}
+        {plan.features.map((feature) => (
+          <li key={feature} className="flex items-center gap-2.5">
+            <CheckIcon aria-hidden className={cn("size-4 shrink-0", plan.soon ? "text-muted-foreground" : "text-primary")} />
+            {feature}
           </li>
         ))}
-        {name === "Pro" ? (
-          <li className="flex items-center gap-2.5">
-            <HeartIcon aria-hidden className="text-primary size-4 fill-current" />
-            You’re supporting Ployz
-          </li>
-        ) : null}
       </ul>
-      {children}
     </section>
   );
 }
@@ -211,7 +201,7 @@ function Plan({
 const periodEndFormat = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" });
 
 function periodEndCopy(state: { currentPeriodEnd: Date | null; cancelAtPeriodEnd: boolean }) {
-  if (state.currentPeriodEnd === null) return "Pro is active";
+  if (state.currentPeriodEnd === null) return "Your Pro subscription is active";
   const day = periodEndFormat.format(state.currentPeriodEnd);
-  return state.cancelAtPeriodEnd ? `Pro ends on ${day}` : `Renews on ${day}`;
+  return state.cancelAtPeriodEnd ? `Your Pro subscription ends on ${day}` : `Your Pro subscription renews on ${day}`;
 }

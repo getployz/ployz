@@ -2,10 +2,8 @@ import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
 import {
   createCustomerPortal,
-  createEmbeddedCheckout,
   hasCachedActiveSubscription,
 } from "#/modules/billing/billing.server";
-import { customDomainsAllowed } from "#/modules/billing/custom-domain-capability";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { Uuid } from "#/lib/schema";
 import { disconnectGithub, githubBranches, githubConnection } from "#/modules/github/github-cli.server";
@@ -177,7 +175,6 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     case "GET billing":
       return { billing: yield* billingSummary(caller) };
     case "POST billing/:id":
-      if (id === "checkout") return { url: yield* checkout(caller) };
       if (id === "portal") {
         const portal = yield* createCustomerPortal(caller, { organizationSlug: caller.organization.slug });
         return { url: portal.customerPortalUrl };
@@ -238,7 +235,7 @@ const pendingRevocation = Effect.fn("Cli.pendingRevocation")(function* (caller: 
   return { id, kind: pending.kind };
 });
 
-/** The Billing Plan and the capability it grants, from the cached subscription row. */
+/** The Billing Plan, from the cached subscription row. */
 const billingSummary = Effect.fn("Cli.billingSummary")(function* (caller: Caller) {
   const polar = yield* Polar;
   const selfHosted = polar.mode === "self_hosted";
@@ -246,11 +243,5 @@ const billingSummary = Effect.fn("Cli.billingSummary")(function* (caller: Caller
     organization: caller.organization.slug,
     self_hosted: selfHosted,
     pro: !selfHosted && (yield* hasCachedActiveSubscription(caller.organization.id)),
-    custom_domains: yield* customDomainsAllowed(caller.organization.id),
   };
-});
-
-const checkout = Effect.fn("Cli.checkout")(function* (caller: Caller) {
-  const created = yield* createEmbeddedCheckout(caller, { organizationSlug: caller.organization.slug });
-  return created.url;
 });
