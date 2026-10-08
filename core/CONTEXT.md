@@ -380,11 +380,11 @@ The observer-relative plan-plus-warnings offered for confirmation before one Dep
 _Avoid_: persisted plan, cluster decision record
 
 **Destructive Change**:
-Removal of a Service in Applied State, deletion or detachment of a Volume, removal of a domain, or a Setting edit that takes effect at once. Each is one Destructive Effect. Ordinary Service updates, image rolls, variable changes, replica changes, and container replacements are not destructive; replicas stay 1–50, so no replica change stops a Service.
+Removal of a Service in Applied State, deletion or detachment of a Volume, or removal of a domain. Each is one Destructive Effect. Ordinary Service updates, image rolls, variable changes, replica changes, container replacements, and Setting edits are not destructive; replicas stay 1–50, so no replica change stops a Service.
 _Avoid_: Every container replacement, implicit Volume deletion
 
 **Approval**:
-A human's assent to one exact destructive set, pinned as `version:digest`. The version pins the Working and Saved revisions reviewed; the digest hashes the Organization, the Environment, and the sorted Destructive Effects. Only Publish, manual Deploy, and an edit that takes effect at once ask, and only when Cloud requires it as trusted evidence. Staged edits and Deploys of already-Saved State never ask. A stale or different digest refuses with the fresh review. Approval is separate from Data Loss Confirmation, which still names each Volume whose data a Deploy deletes.
+A human's assent to one exact destructive set, pinned as `version:digest`. The version pins the Working and Saved revisions reviewed; the digest hashes the Organization, the Environment, and the sorted Destructive Effects. Only Publish and a manual Deploy that publishes ask, and only when Cloud requires it as trusted evidence. Setting edits and Deploys of already-Saved State never ask. A removal not yet deployed asks again on every Publication that still carries it. A stale or different digest refuses with the fresh review. Approval is separate from Data Loss Confirmation, which still names each Volume whose data a Deploy deletes.
 _Avoid_: Confirmation flag, approval token, caller-asserted approval
 
 **Deploy Progress**:
