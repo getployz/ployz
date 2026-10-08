@@ -91,13 +91,18 @@ pub(crate) fn settle(
         .map_err(StoreCallError::Stopped)?;
         let approve = serde_json::json!({ "approve": { "digest": asked.digest } });
         return runtime.block_on(async {
-            decide(credential, &asked.id, &approve).await?;
-            Ok(asked.id.clone())
+            match decide(credential, &asked.id, &approve).await {
+                Ok(()) => Ok(asked.id.clone()),
+                Err(StoreCallError::Refused(error)) if error.code == RpcErrorCode::Conflict => {
+                    Ok(asked.id.clone())
+                }
+                Err(error) => Err(error),
+            }
         });
     }
-    crate::ui::note("Waiting for approval in Ployz Cloud…");
     let interrupted = crate::cancellation::interrupted()
         .map_err(|error| StoreCallError::Stopped(Failure::from(error)))?;
+    crate::ui::note("Waiting for approval in Ployz Cloud…");
     runtime.block_on(async {
         loop {
             tokio::select! {
@@ -148,21 +153,18 @@ async fn status(credential: &Credential, id: &str) -> Result<Status, StoreCallEr
     Ok(read.approval.status)
 }
 
+/// Cloud refuses `conflict` once the approval was decided otherwise or its plan changed.
 pub(crate) async fn decide(
     credential: &Credential,
     id: &str,
     decision: &serde_json::Value,
 ) -> Result<(), StoreCallError> {
-    match cloud_account::refusable::<serde_json::Value>(
+    cloud_account::refusable::<serde_json::Value>(
         credential,
         Method::POST,
         &format!("approvals/{id}"),
         Some(decision),
     )
-    .await
-    {
-        Ok(_) => Ok(()),
-        Err(StoreCallError::Refused(error)) if error.code == RpcErrorCode::Conflict => Ok(()),
-        Err(error) => Err(error),
-    }
+    .await?;
+    Ok(())
 }

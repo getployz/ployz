@@ -133,7 +133,12 @@ fn cloud(
     );
     std::thread::spawn(move || {
         for stream in listener.incoming() {
-            serve(&store, &approvals, stream.unwrap(), worker).unwrap();
+            match serve(&store, &approvals, stream.unwrap(), worker) {
+                Ok(()) => {}
+                // A CLI stopped by Ctrl-C hangs up mid-request.
+                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
+                Err(error) => panic!("{error}"),
+            }
         }
     });
     url
@@ -3313,6 +3318,42 @@ fn without_a_terminal_a_denied_publish_fails_with_the_reason() {
     assert!(
         stderr.contains("A human denied approval apr_1: the worker still drains"),
         "{stderr}"
+    );
+    assert!(approvals.calls().iter().all(|call| call.0 == "GET"));
+    let diff = ok(&target, &["diff"]);
+    assert_eq!(diff["published"], json!(false), "nothing was published");
+}
+
+#[cfg(unix)]
+#[test]
+fn without_a_terminal_ctrl_c_stops_the_wait_and_publishes_nothing() {
+    let (target, approvals) = approving(&[("apr_1", "pending")]);
+    let home = tempfile::tempdir().unwrap();
+    let mut child = target
+        .command(home.path())
+        .arg("publish")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = BufReader::new(child.stderr.take().unwrap());
+    let mut seen = String::new();
+    while !seen.contains("Waiting for approval in Ployz Cloud") {
+        assert_ne!(stderr.read_line(&mut seen).unwrap(), 0, "{seen}");
+    }
+    let pid = child.id().to_string();
+    assert!(
+        Command::new("kill")
+            .args(["-INT", &pid])
+            .status()
+            .unwrap()
+            .success()
+    );
+    stderr.read_to_string(&mut seen).unwrap();
+    assert_eq!(child.wait().unwrap().code(), Some(130), "{seen}");
+    assert!(
+        seen.contains("Stopped waiting; approval apr_1 stays pending in Ployz Cloud."),
+        "{seen}"
     );
     assert!(approvals.calls().iter().all(|call| call.0 == "GET"));
     let diff = ok(&target, &["diff"]);

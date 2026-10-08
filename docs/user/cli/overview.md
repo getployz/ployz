@@ -58,20 +58,22 @@ claude mcp add -s user ployz -- ployz mcp
 ```
 
 For Codex, run `codex mcp add ployz -- ployz mcp`. Each tool runs one `ployz` command with
-`--json`, signed in as you, and returns its one result. Tools that can remove something live,
-such as `deploy` and `server rm`, are marked destructive. Of those, every tool that acts the
-moment it runs, rather than through a plan Ployz reviews first, also asks the agent's app to
-check with you before every call, even when you've told it to skip permission prompts.
-`server rm` and `service stop` are two of them; `deploy` and `publish` are not. Claude Code
-honors this.
+`--json`, signed in as you, and returns its one result. Tools that can change something live,
+such as `deploy`, `server rm`, and `token new`, are marked destructive. Every one of them that
+acts the moment it runs, rather than through a plan Ployz reviews first, also asks the agent's
+app to check with you before every call, even when you've told it to skip permission prompts.
+`server rm`, `service stop`, and `token new` ask this way; `deploy` and `publish` don't. Claude
+Code honors this.
 
 When a `publish` or `deploy` needs your approval (see
 [Ask before destructive actions](../account/organizations.md#ask-before-destructive-actions)),
 the agent's app shows you what it would remove and asks you to approve or deny it. Approve and
-the command runs. Decline and Ployz denies the approval and tells the agent nothing changed.
-Close the dialog without answering and the approval stays pending in Ployz Cloud. An app that
-can't show this dialog gets an error instead, naming the approval, which you can approve in
-Ployz Cloud or by running the command yourself in a terminal.
+the command runs. Leave Approve unticked and Ployz denies the approval; any reason you type goes
+back to the agent, which is told nothing changed. Declining or closing the dialog denies it
+too, without a reason. Answer within 30 minutes of the agent's call; a later answer isn't
+recorded and the approval stays pending in Ployz Cloud. An app that can't show this dialog gets
+an error instead, naming the approval, which you can approve in Ployz Cloud or by running the
+command yourself in a terminal.
 
 Some commands are not tools. Local commands such as `login` and `ctx use` act on this computer.
 Servers are added with `ployz server add` from a terminal, not through MCP, because it installs
