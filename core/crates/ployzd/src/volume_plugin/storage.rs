@@ -48,6 +48,7 @@ pub(super) struct VolumeStorage {
     pub(super) zfs: PathBuf,
     pub(super) docker: PathBuf,
     pub(super) mount_grant: Arc<std::sync::Mutex<Option<super::switch_source::MountGrant>>>,
+    pub(super) steps: super::container_step::ContainerSteps,
     pub(super) mutation: MutationLock,
     pub(super) installation: ployzd::mutation::MutationGate,
     pub(super) receives: super::transfer::Receives,
@@ -137,6 +138,7 @@ impl VolumeStorage {
             zfs: "zfs".into(),
             docker: "docker".into(),
             mount_grant: Arc::default(),
+            steps: Default::default(),
             mutation: MutationLock::default(),
             installation: ployzd::mutation::MutationGate::new(run_dir, data_dir),
             receives: super::transfer::Receives::default(),
@@ -158,6 +160,7 @@ impl VolumeStorage {
             zfs: zfs.into(),
             docker: fixture.join("docker"),
             mount_grant: Arc::default(),
+            steps: Default::default(),
             mutation: MutationLock::default(),
             installation: ployzd::mutation::MutationGate::new(
                 fixture.join("admission-run"),

@@ -428,6 +428,7 @@ async fn concurrent_and_retried_first_creates_converge_on_one_pool() {
         zfs: first.zfs.clone(),
         docker: first.docker.clone(),
         mount_grant: Arc::default(),
+        steps: Default::default(),
         mutation: Default::default(),
         installation: first.installation.clone(),
         receives: Default::default(),
@@ -499,6 +500,7 @@ async fn a_second_process_cannot_use_a_pool_before_its_owner_finishes() {
         zfs: first.zfs.clone(),
         docker: first.docker.clone(),
         mount_grant: Arc::default(),
+        steps: Default::default(),
         mutation: Default::default(),
         installation: first.installation.clone(),
         receives: Default::default(),
@@ -973,6 +975,7 @@ esac
         zfs: program("zfs"),
         docker: program("docker"),
         mount_grant: Arc::default(),
+        steps: Default::default(),
         mutation: Default::default(),
         installation: ployzd::mutation::MutationGate::new(
             directory.join("admission-run"),

@@ -59,7 +59,7 @@ pub(super) fn fence(
     }
 }
 
-fn refusal(
+pub(super) fn refusal(
     decision: FenceDecision,
     request: &Switch,
     recorded: Option<LeaseRecord>,

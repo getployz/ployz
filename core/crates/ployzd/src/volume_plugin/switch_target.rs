@@ -594,6 +594,11 @@ pub(super) async fn admit_handed_start(
     State(storage): State<VolumeStorage>,
     Json(request): Json<MirrorRequest>,
 ) -> Json<Result<SwitchReply, RpcError>> {
+    if let Err(error) =
+        storage.refuse_while_running(&request.name.to_string(), &request.switch, "starting")
+    {
+        return Json(Err(error));
+    }
     Json(storage.admit_handed_start(&request).await)
 }
 
@@ -601,7 +606,14 @@ pub(super) async fn start_handed_container(
     State(storage): State<VolumeStorage>,
     Json(request): Json<SourceContainerRequest>,
 ) -> Json<Result<SwitchReply, RpcError>> {
-    Json(storage.start_handed_container(&request).await)
+    let (name, switch) = (request.name.to_string(), request.switch);
+    let step = storage.clone();
+    let start = async move { step.start_handed_container(&request).await };
+    Json(
+        storage
+            .container_step(&name, &switch, "starting", start)
+            .await,
+    )
 }
 
 pub(super) async fn restore(

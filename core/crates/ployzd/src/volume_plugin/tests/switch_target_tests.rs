@@ -326,19 +326,23 @@ async fn a_handed_start_keeps_its_grant_after_its_caller_gives_up_and_starts_onc
     .await;
     let mount = fs::read_to_string(test.0.join("mount-reply")).unwrap();
     assert!(mount.contains(r#""Err":"""#), "{mount}");
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while property(&test, ROOT, "ployz:task").is_some() {
+    let replay = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let replay = post(
+                &socket,
+                "/Volume.AdmitHandedStart",
+                at(1, 11, 0, 0, json!({})),
+            )
+            .await;
+            if reason(&replay) != Some(&json!("busy")) {
+                return replay;
+            }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
     .expect("the Start task never finished");
-    let replay = post(
-        &socket,
-        "/Volume.AdmitHandedStart",
-        at(1, 11, 0, 0, json!({})),
-    )
-    .await;
+    assert_eq!(property(&test, ROOT, "ployz:task"), None, "{replay}");
     assert_eq!(
         replay.pointer("/Ok/lease/cycle"),
         Some(&json!("closed")),

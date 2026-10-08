@@ -192,9 +192,14 @@ impl VolumeStorage {
         self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
             .await?;
         ployzd::faults::kill_after_record("Freeze");
-        self.docker(scope.held(), &["stop", request.container_id.as_str()])
-            .await
-            .map_err(internal)?;
+        self.docker_once(
+            scope.held(),
+            &name.0,
+            scope.admitted.lease,
+            &["stop", request.container_id.as_str()],
+        )
+        .await
+        .map_err(internal)?;
         self.zfs(&["set", "readonly=on", &root_name])
             .await
             .map_err(internal)?;
@@ -342,13 +347,13 @@ impl VolumeStorage {
         held: &HeldMutation,
         grant: MountGrant,
     ) -> Result<(), RpcError> {
-        let container = grant.container;
+        let (name, record, container) = (grant.name.clone(), grant.record, grant.container);
         *self
             .mount_grant
             .lock()
             .expect("mount grant is never poisoned") = Some(grant);
         let granted = Granted(Arc::clone(&self.mount_grant));
-        self.docker(held, &["start", container.as_str()])
+        self.docker_once(held, &name, record, &["start", container.as_str()])
             .await
             .map_err(internal)?;
         drop(granted);
@@ -475,7 +480,14 @@ pub(super) async fn freeze(
     State(storage): State<VolumeStorage>,
     Json(request): Json<SourceContainerRequest>,
 ) -> Json<Result<SwitchReply, RpcError>> {
-    Json(storage.freeze_source(&request).await)
+    let (name, switch) = (request.name.to_string(), request.switch);
+    let step = storage.clone();
+    let stop = async move { step.freeze_source(&request).await };
+    Json(
+        storage
+            .container_step(&name, &switch, "stopping", stop)
+            .await,
+    )
 }
 
 pub(super) async fn hand_over(
@@ -489,7 +501,14 @@ pub(super) async fn thaw(
     State(storage): State<VolumeStorage>,
     Json(request): Json<SourceContainerRequest>,
 ) -> Json<Result<SwitchReply, RpcError>> {
-    Json(storage.thaw_source(&request).await)
+    let (name, switch) = (request.name.to_string(), request.switch);
+    let step = storage.clone();
+    let start = async move { step.thaw_source(&request).await };
+    Json(
+        storage
+            .container_step(&name, &switch, "starting", start)
+            .await,
+    )
 }
 
 pub(super) async fn close(
