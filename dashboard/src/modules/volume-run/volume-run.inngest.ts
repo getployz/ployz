@@ -45,6 +45,8 @@ const POLL_INTERVAL = "5s";
 const MAX_POLLS = 500;
 // Promote's task has a 10 minute budget on the Machine; past it the task stops and only a replay finishes it.
 const PROMOTE_CHECKS = 120;
+// Docker decides how long a Container step takes; 120 checks five seconds apart wait out ten minutes of it.
+const CONTAINER_CHECKS = 120;
 
 const VolumeRunRequestedData = Schema.Struct({
   organizationId: Schema.String.check(Schema.isNonEmpty()),
@@ -64,6 +66,10 @@ type RunSteps = {
   readonly at: At;
   readonly mirrorRequest: MirrorAt;
 };
+type Asked<T> =
+  | { readonly ok: true; readonly working: false; readonly value: T }
+  | { readonly ok: true; readonly working: true }
+  | { readonly ok: false; readonly message: string };
 type Received = { readonly ok: true; readonly guid: SnapshotGuid; readonly name: string } | { readonly ok: false; readonly message: string };
 type Newest = { readonly name: string; readonly guid: SnapshotGuid; readonly created_unix_seconds: number } | null;
 
@@ -115,7 +121,7 @@ export async function runVolume(
   if (phase.kind === "release") {
     if (holder !== null) {
       const thaw = sourceRequest(steps, holder, { seq: 13, round: 0, sub: 0 });
-      await verb("13-thaw", sendSwitch(run, runId, phase.source.machine, (notAfter) => ({ command: "thaw", payload: thaw(notAfter) })));
+      await containerStep(steps, "13-thaw", sendSwitch(run, runId, phase.source.machine, (notAfter) => ({ command: "thaw", payload: thaw(notAfter) })), `${phase.source.machine.name} is still starting ${holder.redactedSpec.name}`);
     }
     if (phase.mirror !== null) {
       const clear = mirrorRequest({ seq: 14, round: 0, sub: 0 });
@@ -205,12 +211,23 @@ async function attempt(
   return result.reply;
 }
 
-async function settle({ step, runEffect }: RunSteps, id: string, effect: Effect.Effect<void, Error, AppServices>) {
-  const refusal = await step.run(id, () => runEffect(effect.pipe(
-    Effect.as(null),
-    Effect.catchIf((error) => error instanceof NonRetriableError, (error) => Effect.succeed(error.message)),
-  )));
-  if (refusal !== null) throw new NonRetriableError(refusal);
+/**
+ * Freeze's docker stop and the docker start of a Thaw or a handed Start run on the Machine until Docker answers, and
+ * the Machine answers Busy meanwhile. The run sleeps and asks again at the same position, which spends no retry.
+ */
+async function containerStep<T>({ step, runEffect }: RunSteps, id: string, effect: Effect.Effect<T, Error, AppServices>, still: string) {
+  for (let check = 0; check < CONTAINER_CHECKS; check += 1) {
+    if (check > 0) await step.sleep(`${id}-wait-${check}`, POLL_INTERVAL);
+    // SAFETY: step output is the JSON of an Asked<T>, and each T a Container step answers holds only JSON values.
+    const asked = (await step.run(check === 0 ? id : `${id}-${check}`, () => runEffect(effect.pipe(
+      Effect.map((value): Asked<T> => ({ ok: true, working: false, value })),
+      Effect.catchIf((error) => error instanceof SwitchAttemptError && error.reason === "busy", () => Effect.succeed<Asked<T>>({ ok: true, working: true })),
+      Effect.catchIf((error) => error instanceof NonRetriableError, (error) => Effect.succeed<Asked<T>>({ ok: false, message: error.message })),
+    )))) as Asked<T>;
+    if (!asked.ok) throw new NonRetriableError(asked.message);
+    if (!asked.working) return asked.value;
+  }
+  throw new NonRetriableError(`${still} after ${CONTAINER_CHECKS} checks`);
 }
 
 /** Steps 05 to 08 can be undone by thawing the source; from 09 on the target holds the only writable future, so a Move only goes forward. */
@@ -236,9 +253,9 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, lease: number
   const undo = async (message: string) => {
     try {
       const thaw = sourceRequest(steps, required(holder), { seq: 13, round: 0, sub: 0 });
-      await switchStep("13-thaw", A, (notAfter) => ({ command: "thaw", payload: thaw(notAfter) }), {
+      await containerStep(steps, "13-thaw", sendSwitch(run, runId, A, (notAfter) => ({ command: "thaw", payload: thaw(notAfter) }), {
         messages: { precondition: `${name} is handed to ${B.name}; ${forward}` },
-      });
+      }), `${A.name} is still starting ${required(holder).redactedSpec.name}`);
     } catch {
       return fail("13-unanswered", `${A.name} did not answer; volume move ${name} --to ${B.name} or volume release ${name} when it is back`);
     }
@@ -270,10 +287,10 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, lease: number
           command: "withdraw",
           payload: sourceRequest(steps, required(holder), { seq: 5, round: 0, sub: 0 })(notAfter),
         }));
-        const frozen = await attempt(steps, "06-freeze", A, (notAfter) => ({
+        const frozen = await containerStep(steps, "06-freeze", sendSwitch(run, runId, A, (notAfter) => ({
           command: "freeze",
           payload: sourceRequest(steps, required(holder), { seq: 6, round: 0, sub: 0 })(notAfter),
-        }));
+        }), { onRefusal: "throw" }), `${A.name} is still stopping ${required(holder).redactedSpec.name}`);
         const writer = frozen.copy?.kind === "root" ? frozen.copy.writer : null;
         if (writer?.phase !== "frozen") throw new NonRetriableError(`${name} on ${A.name} did not freeze`);
         const frozenGuid = writer.guid;
@@ -302,7 +319,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, lease: number
     }
     if (from("promote")) await promote(steps, B, required(holder));
     if (from("start")) {
-      await settle(steps, "11-start", startHanded(run, runId, A, required(holder), B, at({ seq: 11, round: 0, sub: 0 })));
+      await containerStep(steps, "11-start", startHanded(run, runId, A, required(holder), B, at({ seq: 11, round: 0, sub: 0 })), `${B.name} is still starting ${required(holder).redactedSpec.name}`);
     }
     await attempt(steps, "12-close", A, (notAfter) => ({ command: "close", payload: mirrorRequest({ seq: 12, round: 0, sub: 0 })(notAfter) }));
   } catch (error) {

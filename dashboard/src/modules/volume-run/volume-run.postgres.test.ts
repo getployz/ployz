@@ -238,6 +238,8 @@ describe("volume runs", () => {
       ...["04-r0", "04-r1", "04-r2", "07-final"].flatMap((prefix) =>
         Array.from({ length: 6 }, (_, poll) => ({ id: `${prefix}-3-wait-${poll}`, handler: () => undefined }))),
       ...Array.from({ length: 6 }, (_, check) => ({ id: `10-promote-wait-${check}`, handler: () => undefined })),
+      ...["06-freeze", "11-start", "13-thaw"].flatMap((id) =>
+        Array.from({ length: 6 }, (_, check) => ({ id: `${id}-wait-${check}`, handler: () => undefined }))),
     ],
   }).execute();
   const rows = async () => (await harness.pool.query(
@@ -623,6 +625,21 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "done", message: null }]);
     });
 
+    it("move: a Container step the Machine still works on is asked again, and the run ends done", async () => {
+      failNext.set("freeze@fsn-1", busy);
+      failNext.set("start_handed_container@fsn-2", busy);
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeUndefined();
+      expect(output.result).toEqual({ runId: run.id, moved: "fsn-2" });
+      expect(afterRounds(verbs).filter((verb) => verb.startsWith("freeze") || verb.startsWith("start_handed"))).toEqual([
+        "freeze@fsn-1(6,0,0)", "freeze@fsn-1(6,0,0)", "start_handed_container@fsn-2(11,0,0)", "start_handed_container@fsn-2(11,0,0)",
+      ]);
+      expect(await rows()).toMatchObject([{ state: "done", message: null }]);
+    });
+
     it("a refusal sent with onRefusal throw fails only the step, so the run can still undo", async () => {
       const run = await requested({ kind: "move", args: { to: "fsn-2" } });
       await harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1`, [run.id]);
@@ -757,6 +774,21 @@ describe("volume runs", () => {
       expect(output.result).toEqual({ runId: run.id, released: "fsn-1" });
       expect(ordered(verbs)).toEqual(["adopt_lease@fsn-1", "adopt_lease@fsn-2", "thaw@fsn-1(13,0,0)", "clear_final@fsn-2(14,0,0)"]);
       expect(machines[0]?.copy).toMatchObject({ writer: { phase: "idle" }, readonly: false });
+      expect(await rows()).toMatchObject([{ state: "done" }]);
+    });
+
+    it("release: a Thaw the Machine still works on is asked again, and the run ends done", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: sourceCopy("frozen"), lease: null },
+        { name: "fsn-2", pool: true, copy: slotCopy("30"), lease: null },
+      ];
+      failNext.set("thaw@fsn-1", busy);
+      const run = await requested({ kind: "release", args: {} });
+
+      const output = await execute(run.id);
+
+      expect(output.result).toEqual({ runId: run.id, released: "fsn-1" });
+      expect(ordered(verbs)).toEqual(["adopt_lease@fsn-1", "adopt_lease@fsn-2", "thaw@fsn-1(13,0,0)", "thaw@fsn-1(13,0,0)", "clear_final@fsn-2(14,0,0)"]);
       expect(await rows()).toMatchObject([{ state: "done" }]);
     });
 
