@@ -712,6 +712,18 @@ fn removing_a_deployed_domain_is_destructive() {
 }
 
 #[test]
+fn an_effect_from_a_cloud_that_names_nothing_still_reads() {
+    let effect: DestructiveEffect = serde_json::from_value(json!({
+        "kind": "removes_domain",
+        "node": WEB,
+        "path": "web.routes.e23290af-63ac-54c7-8368-5e4c6bcf804e",
+    }))
+    .unwrap();
+    assert_eq!(effect.kind, DestructiveKind::RemovesDomain);
+    assert_eq!(effect.name, "");
+}
+
+#[test]
 fn rolling_a_deployed_service_destroys_nothing_and_publishes_unasked() {
     let (store, who) = shop();
     apply_all(&store, &who, &Trusted::default());

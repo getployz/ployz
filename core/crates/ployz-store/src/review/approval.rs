@@ -24,6 +24,7 @@ pub struct DestructiveEffect {
     pub kind: DestructiveKind,
     /// What a human calls the thing destroyed: the Service, the Volume, or the
     /// domain's hostname.
+    #[serde(default)]
     pub name: String,
     /// The node's ID: a Service's, or a Volume's resource ID.
     pub node: String,
