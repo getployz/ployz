@@ -22,7 +22,6 @@ use super::{
 
 pub(super) const TCP_MIGRATE_REQ: &str = "net.ipv4.tcp_migrate_req";
 
-/// Log config for every container Ployz creates. Rotation stays uncompressed so each file keeps its inode.
 pub(crate) fn container_log_config() -> HostConfigLogConfig {
     HostConfigLogConfig {
         typ: Some("local".into()),

@@ -714,8 +714,8 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
     let log_config = host_config.log_config.as_ref().unwrap();
     assert_eq!(log_config.typ.as_deref(), Some("local"));
     assert_eq!(
-        log_config.config.clone().unwrap(),
-        HashMap::from([
+        log_config.config.as_ref().unwrap(),
+        &HashMap::from([
             ("max-size".to_owned(), "10m".to_owned()),
             ("max-file".to_owned(), "3".to_owned()),
             ("compress".to_owned(), "false".to_owned()),
