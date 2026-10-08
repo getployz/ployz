@@ -11,6 +11,7 @@ import { pairingEnrollmentStatus, type OrganizationEnrollmentRow } from "#/modul
 import { changeSources } from "#/modules/organization/change-log.sources";
 import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
 import type { ServerUpgradeSettingsRow } from "#/modules/server-upgrade/server-upgrade";
+import type { OrganizationSettingsRow } from "#/modules/approvals/approvals";
 import { readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { getOrganizationForUserBySlug } from "#/modules/organization/organization-state.server";
 import { Database } from "#/server/database.server";
@@ -70,6 +71,12 @@ export const readCollection = Effect.fn("Collections.read")(function* (
       case "organization_server_upgrades": {
         const settings = tables.organizationServerUpgrades;
         const rows: ServerUpgradeSettingsRow[] = yield* database.drizzle.select({ id: settings.organizationId, automatic: settings.automatic, channel: settings.channel })
+          .from(settings).where(scoped(settings));
+        return rows;
+      }
+      case "organization_settings": {
+        const settings = tables.organizationSettings;
+        const rows: OrganizationSettingsRow[] = yield* database.drizzle.select({ id: settings.organizationId, askBeforeDestructive: settings.askBeforeDestructive })
           .from(settings).where(scoped(settings));
         return rows;
       }

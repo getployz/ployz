@@ -5,6 +5,7 @@ export const changeCursorSchema = Schema.String.check(Schema.isPattern(/^\d{1,20
 
 export const collectionNames = [
   "environment_canvas_node_position", "organization_enrollment", "organization_cluster_domain", "organization_server_upgrades",
+  "organization_settings",
 ] as const;
 
 export const collectionReadInput = Schema.Struct({

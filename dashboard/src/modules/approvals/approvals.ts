@@ -1,0 +1,35 @@
+import type { DestructiveEffect, DiffView } from "@ployz/sdk";
+import { Schema } from "effect";
+
+export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"] as const;
+export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
+
+/** What a human approves: the plan's Destructive Effects and the Review they come from, as the Store refused it. */
+export type ApprovalReview = { effects: DestructiveEffect[]; diff: DiffView };
+
+/** The Organization's settings row as the Org Store reads it. No row reads as the defaults. */
+export type OrganizationSettingsRow = { id: string; askBeforeDestructive: boolean };
+
+/** An Organization without a settings row asks before destructive actions. */
+export const DEFAULT_ORGANIZATION_SETTINGS = { askBeforeDestructive: true } satisfies Omit<OrganizationSettingsRow, "id">;
+
+export function organizationSettings(rows: readonly OrganizationSettingsRow[]) {
+  return rows[0] ?? DEFAULT_ORGANIZATION_SETTINGS;
+}
+
+export const SetOrganizationSettingsInput = Schema.Struct({
+  organizationSlug: Schema.String,
+  askBeforeDestructive: Schema.Boolean,
+});
+
+/** The Working State version an approval digest (`version:hash`) was taken at. */
+export function digestVersion(digest: string) {
+  return digest.slice(0, digest.lastIndexOf(":"));
+}
+
+/** `POST /api/cli/approvals/:id`: approve exactly the digest the human saw, or deny with a reason the agent gets back. */
+export const ApprovalDecision = Schema.Union([
+  Schema.Struct({ approve: Schema.Struct({ digest: Schema.String.check(Schema.isNonEmpty()) }) }),
+  Schema.Struct({ reject: Schema.Struct({ reason: Schema.optional(Schema.String.check(Schema.isMaxLength(1024))) }) }),
+]);
+export type ApprovalDecision = typeof ApprovalDecision.Type;
