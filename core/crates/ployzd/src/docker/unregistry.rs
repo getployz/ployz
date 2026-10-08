@@ -459,6 +459,7 @@ mod tests {
         assert_eq!(host.network_mode.as_deref(), Some("host"));
         assert_eq!(host.port_bindings, None);
         assert_eq!(host.restart_policy, None);
+        assert_eq!(host.log_config, Some(crate::docker::container_log_config()));
         assert_eq!(
             host.mounts,
             Some(vec![Mount {
