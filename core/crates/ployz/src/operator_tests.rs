@@ -672,7 +672,6 @@ fn container(
                 open_stdin: false,
                 privileged: false,
                 pid_mode: None,
-                log_driver: None,
                 resources: Default::default(),
                 stop_timeout_secs: None,
                 sysctls: Default::default(),

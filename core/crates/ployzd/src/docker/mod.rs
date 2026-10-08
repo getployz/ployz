@@ -49,6 +49,7 @@ use checks::CheckRecords;
 use http_health::probe as http_health_probe;
 use observe::ObservationSink;
 
+pub(crate) use create::container_log_config;
 pub(crate) use lifecycle::{ContainerRequest, require_eligible};
 pub(crate) use managed_service::ManagedService;
 pub(crate) use peer_pull::pull_from_ingest;

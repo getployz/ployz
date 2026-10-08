@@ -387,7 +387,6 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                 open_stdin: false,
                 privileged: false,
                 pid_mode: None,
-                log_driver: None,
                 stop_timeout_secs: None,
                 sysctls: BTreeMap::new(),
             },

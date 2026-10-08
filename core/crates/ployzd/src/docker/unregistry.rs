@@ -7,9 +7,7 @@ use std::{
     time::Duration,
 };
 
-use bollard::models::{
-    ContainerCreateBody, HostConfig, HostConfigLogConfig, Mount, MountType, RestartPolicyNameEnum,
-};
+use bollard::models::{ContainerCreateBody, HostConfig, Mount, MountType, RestartPolicyNameEnum};
 use ployz_core::{
     ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ManagementAddress, RpcError,
 };
@@ -221,10 +219,7 @@ fn unregistry_config(socket: &Path, management_address: Ipv6Addr) -> ContainerCr
                 ..Default::default()
             }]),
             network_mode: Some("host".into()),
-            log_config: Some(HostConfigLogConfig {
-                typ: Some("local".into()),
-                ..Default::default()
-            }),
+            log_config: Some(super::container_log_config()),
             ..Default::default()
         }),
         ..Default::default()

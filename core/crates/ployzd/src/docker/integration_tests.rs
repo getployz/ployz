@@ -654,7 +654,6 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
             "command": ["sleep", "60"],
             "pull_policy": "missing",
             "healthcheck": {"state":"configured","test":["CMD","true"],"interval_millis":1000,"timeout_millis":2000,"retries":3},
-            "log_driver": {"name":"local","options":{}},
             "config_mounts": [{"config_name":"settings","target":"/etc/ployz/settings","uid":1000,"gid":1001,"mode":288}]
         },
         "ports": [{
@@ -712,12 +711,15 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
         binding.host_port.as_deref(),
         Some(published_port.to_string().as_str())
     );
+    let log_config = host_config.log_config.as_ref().unwrap();
+    assert_eq!(log_config.typ.as_deref(), Some("local"));
     assert_eq!(
-        host_config
-            .log_config
-            .as_ref()
-            .and_then(|config| config.typ.as_deref()),
-        Some("local")
+        log_config.config.clone().unwrap(),
+        HashMap::from([
+            ("max-size".to_owned(), "10m".to_owned()),
+            ("max-file".to_owned(), "3".to_owned()),
+            ("compress".to_owned(), "false".to_owned()),
+        ])
     );
     assert_eq!(
         container_config.exposed_ports.as_ref().unwrap(),

@@ -276,13 +276,6 @@ pub struct ConfiguredHealthcheck {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct LogDriver {
-    pub name: String,
-    #[serde(default)]
-    pub options: BTreeMap<String, String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct DeviceMapping {
     pub machine_path: MachinePath,
     pub container_path: ContainerPath,
@@ -478,8 +471,6 @@ pub struct ServiceContainerSpec {
     pub privileged: bool,
     #[serde(default)]
     pub pid_mode: Option<PidMode>,
-    #[serde(default)]
-    pub log_driver: Option<LogDriver>,
     #[serde(default)]
     pub resources: ContainerResources,
     #[serde(default)]

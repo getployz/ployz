@@ -131,7 +131,6 @@ impl ServingShape {
             open_stdin,
             privileged,
             pid_mode,
-            log_driver,
             resources: _,
             stop_timeout_secs,
             sysctls,
@@ -157,7 +156,8 @@ impl ServingShape {
             "open_stdin": open_stdin,
             "privileged": privileged,
             "pid_mode": pid_mode,
-            "log_driver": log_driver,
+            // Removed field, kept so the token stays stable for existing Global containers.
+            "log_driver": null,
             "stop_timeout_secs": stop_timeout_secs,
             "sysctls": sysctls,
             "restart": restart,
@@ -285,6 +285,20 @@ mod tests {
             "pull_policy": "missing"
         }));
         assert_eq!(spec.serving_shape().token(), "1c6e8ff538d68038");
-        assert_eq!(spec.to_requested().serving_shape().token(), "1c6e8ff538d68038");
+        assert_eq!(
+            spec.to_requested().serving_shape().token(),
+            "1c6e8ff538d68038"
+        );
+    }
+
+    #[test]
+    fn serving_shape_of_a_stored_spec_with_a_log_driver_ignores_it() {
+        let stored = web_spec(json!({
+            "image": "nginx:1.29-alpine",
+            "environment": { "PORT": "80" },
+            "pull_policy": "missing",
+            "log_driver": { "name": "json-file" }
+        }));
+        assert_eq!(stored.serving_shape().token(), "1c6e8ff538d68038");
     }
 }

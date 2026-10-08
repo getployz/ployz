@@ -274,7 +274,6 @@ fn requested_with_graphs(
             open_stdin: false,
             privileged: false,
             pid_mode: None,
-            log_driver: None,
             resources: Default::default(),
             stop_timeout_secs: None,
             sysctls: BTreeMap::new(),
