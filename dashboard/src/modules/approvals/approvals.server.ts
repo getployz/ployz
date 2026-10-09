@@ -115,16 +115,13 @@ const freshen = Effect.fn("Approvals.freshen")(function* (row: ApprovalRow) {
 
 type Trusted = { ok: true; approval: Approval } | { ok: false; refusal: StoreRefusal };
 
-/**
- * What the Store is told about a human's approval of one CLI write, from the Organization's setting and the approval
- * the CLI retries with (`x-ployz-approval`). A denied approval refuses with its reason, so the agent hears why.
- */
 export const trustedApproval = Effect.fn("Approvals.trusted")(function* (
   organizationId: string,
   approvalId: string | null,
 ): Effect.fn.Return<Trusted, never, Database> {
-  if (!(yield* askBeforeDestructive(organizationId).pipe(Effect.orDie))) return { ok: true, approval: "not_required" };
-  if (approvalId === null) return { ok: true, approval: "required" };
+  if (approvalId === null) {
+    return { ok: true, approval: (yield* askBeforeDestructive(organizationId).pipe(Effect.orDie)) ? "required" : "not_required" };
+  }
   const row = yield* readRow(organizationId, approvalId).pipe(Effect.orDie);
   if (row === undefined) {
     return {

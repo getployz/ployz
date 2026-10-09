@@ -70,11 +70,21 @@ const shopRemovingWeb = Effect.fn(function* () {
       .where(sql`${operationApprovals.status} = 'pending'`);
     return rows.map((row) => row.id);
   }));
-  return { provided, write, refusal, caller, userId, store, pending, withApproval };
+  const { secret } = yield* provided(createOrganizationToken(caller, { name: "agent", expiresInDays: 1 }));
+  const cli = (command: ConfigCommand, approval?: string) => provided(Effect.gen(function* () {
+    const headers = new Headers({ "content-type": "application/json", authorization: `Bearer ${secret}` });
+    if (approval !== undefined) headers.set("x-ployz-approval", approval);
+    const response = yield* handleConfigRequest(new Request("http://localhost:3000/api/config/write", {
+      method: "POST", headers, body: JSON.stringify(command),
+    }));
+    return { status: response.status, json: (yield* Effect.promise(() => response.json())) as Reply };
+  }));
+  return { provided, write, refusal, caller, userId, store, pending, withApproval, cli };
 });
 
 type Asked = { approval: string; approval_id: string; effects: unknown[] };
 const asked = (refused: { details: unknown }) => refused.details as Asked;
+type Reply = { written?: string; error?: { code: string; message: string; details: Partial<Asked> | null } };
 
 it.live("a destructive CLI publish waits for a human to approve exactly what it destroys, once", () =>
   Effect.gen(function* () {
@@ -239,21 +249,9 @@ it.live("the dashboard's writes never ask", () =>
     expect(write.mock.calls.map(([, , trusted]) => trusted?.approval)).toEqual(["not_required"]);
   }));
 
-type Reply = { written?: string; error?: { code: string; message: string; details: Partial<Asked> | null } };
-
 it.live("the CLI's Publish asks over HTTPS, and its retry names the approval a human decided", () =>
   Effect.gen(function* () {
-    const { provided, caller } = yield* shopRemovingWeb();
-    const { secret } = yield* provided(createOrganizationToken(caller, { name: "agent", expiresInDays: 1 }));
-    const cli = (command: ConfigCommand, approval?: string) => provided(Effect.gen(function* () {
-      const headers = new Headers({ "content-type": "application/json", authorization: `Bearer ${secret}` });
-      if (approval !== undefined) headers.set("x-ployz-approval", approval);
-      const response = yield* handleConfigRequest(new Request("http://localhost:3000/api/config/write", {
-        method: "POST", headers, body: JSON.stringify(command),
-      }));
-      // SAFETY: test-only view of the Store's JSON; assertions check every field read.
-      return { status: response.status, json: (yield* Effect.promise(() => response.json())) as Reply };
-    }));
+    const { provided, caller, cli } = yield* shopRemovingWeb();
 
     // A write that never publishes ignores the header, whatever it names.
     expect(yield* cli(addService(1), UNKNOWN_APPROVAL)).toMatchObject({ status: 200 });
@@ -281,3 +279,78 @@ it.live("the CLI's Publish asks over HTTPS, and its retry names the approval a h
     yield* provided(decideApproval(caller, secondId, { approve: { digest } }));
     expect(yield* cli(publish, secondId)).toMatchObject({ status: 200, json: { written: "published" } });
   }));
+
+type Shop = Effect.Success<ReturnType<typeof shopRemovingWeb>>;
+const askedOverHttps = Effect.fn(function* ({ cli }: Shop) {
+  const reply = yield* cli(publish);
+  expect(reply.json.error?.code).toBe("approval_required");
+  const details = reply.json.error?.details;
+  return { id: details?.approval_id ?? expect.fail("no approval_id"), digest: details?.approval ?? expect.fail("no digest") };
+});
+
+const recorded = [
+  {
+    state: "a denied approval",
+    leave: Effect.fn(function* (shop: Shop) {
+      const { id } = yield* askedOverHttps(shop);
+      yield* shop.provided(decideApproval(shop.caller, id, { reject: { reason: "web still serves traffic" } }));
+      return id;
+    }),
+    reachesStore: false,
+    answers: (id: string) => ({ status: 403, json: { error: { code: "approval_denied", message: `A human denied approval ${id}: web still serves traffic` } } }),
+  },
+  {
+    state: "a superseded approval",
+    leave: Effect.fn(function* (shop: Shop) {
+      const { id } = yield* askedOverHttps(shop);
+      yield* shop.write(addService(1));
+      expect((yield* shop.provided(getApproval(ORGANIZATION, id))).status).toBe("superseded");
+      return id;
+    }),
+    reachesStore: true,
+    answers: () => ({ status: 409, json: { error: { code: "approval_required" } } }),
+  },
+  {
+    state: "a pending approval",
+    leave: Effect.fn(function* (shop: Shop) {
+      return (yield* askedOverHttps(shop)).id;
+    }),
+    reachesStore: true,
+    answers: (id: string) => ({ status: 409, json: { error: { code: "approval_required", details: { approval_id: id } } } }),
+  },
+  {
+    state: "an approval of a plan that moved since",
+    leave: Effect.fn(function* (shop: Shop) {
+      const { id, digest } = yield* askedOverHttps(shop);
+      yield* shop.provided(decideApproval(shop.caller, id, { approve: { digest } }));
+      yield* shop.write(addService(1));
+      return id;
+    }),
+    reachesStore: true,
+    answers: () => ({ status: 409, json: { error: { code: "approval_required" } } }),
+  },
+  {
+    state: "an approval of the current plan",
+    leave: Effect.fn(function* (shop: Shop) {
+      const { id, digest } = yield* askedOverHttps(shop);
+      yield* shop.provided(decideApproval(shop.caller, id, { approve: { digest } }));
+      return id;
+    }),
+    reachesStore: true,
+    answers: () => ({ status: 200, json: { written: "published" } }),
+  },
+];
+
+for (const { state, leave, reachesStore, answers } of recorded) {
+  for (const asking of [true, false]) {
+    it.live(`a retry naming ${state} answers the same with asking ${asking ? "on" : "off"}`, () =>
+      Effect.gen(function* () {
+        const shop = yield* shopRemovingWeb();
+        const id = yield* leave(shop);
+        yield* shop.provided(setOrganizationSettings(shop.caller, { organizationSlug: "shop", askBeforeDestructive: asking }));
+        const writes = vi.spyOn(shop.store, "write");
+        expect(yield* shop.cli(publish, id)).toMatchObject(answers(id));
+        expect(writes.mock.calls.length > 0).toBe(reachesStore);
+      }));
+  }
+}
