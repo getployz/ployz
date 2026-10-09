@@ -122,3 +122,39 @@ it("holds live lines while the viewer reads older ones, and past the limit start
     queryClient.clear(); vi.useRealTimers(); vi.unstubAllGlobals();
   }
 });
+
+it("reads the newest page first for the exits the live tail lacks, then jumps before a tail that page sat inside", async () => {
+  vi.useFakeTimers();
+  const sources: EventTarget[] = [];
+  class FakeEventSource extends EventTarget {
+    constructor() { super(); sources.push(this); }
+    close() {}
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+  const line = (at: number, channel: "stdout" | "lifecycle" = "stdout") => ({
+    kind: "line", id: `${channel}/${at}`, timestamp: String(at), machineId: "m", machineName: "Server", containerId: "c", serviceName: "api", channel, level: "info", message: `line ${at}`,
+  });
+  const reads: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+    const params = JSON.parse(String(init.body)) as { cursor?: string; before?: string };
+    reads.push(params.before ? `before=${params.before}` : params.cursor ? `cursor=${params.cursor}` : "newest");
+    const page = params.before ? { rows: [line(5)], cursor: null } : { rows: [line(20), line(30, "lifecycle")], cursor: "inside-tail" };
+    return new Response(JSON.stringify({ ...page, failures: [] }));
+  }));
+  const queryClient = new QueryClient();
+  const stream = getContainerLogStream({ organizationSlug: "exits" }, { queryClient, sessionId: "session", userId: "user" });
+  const subscription = stream.collection.subscribeChanges(() => {});
+  try {
+    for (const at of [10, 20]) sources.at(-1)?.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: line(at) }) }));
+    await vi.advanceTimersByTimeAsync(260);
+    sources.at(-1)?.dispatchEvent(new MessageEvent("live"));
+    await vi.waitFor(() => expect(stream.hasOlder).toBe(false));
+    expect(reads).toEqual(["newest", "before=10"]);
+    expect(stream.collection.has("lifecycle/30")).toBe(true);
+    expect(stream.collection.has("stdout/5")).toBe(true);
+  } finally {
+    subscription.unsubscribe();
+    await stream.collection.cleanup();
+    queryClient.clear(); vi.useRealTimers(); vi.unstubAllGlobals();
+  }
+});

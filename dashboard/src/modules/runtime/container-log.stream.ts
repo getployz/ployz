@@ -124,9 +124,9 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
       const oldest = () => [...collection.values()].reduce<bigint | null>((min, row) => (min === null || BigInt(row.timestamp) < min ? BigInt(row.timestamp) : min), null);
       const reached = oldest();
       let failures: readonly MissingServer[] = [];
+      let next: { cursor?: string; beforeTail?: string } = cursor === undefined ? {} : { cursor };
       for (let read = 0; read < OVERLAP_PAGES && cursor !== null; read++) {
-        const from: string | undefined = cursor;
-        const start = from === undefined ? historyStart(collection.values()) : undefined;
+        const { cursor: from, beforeTail: start } = next;
         const page: typeof containerLogPageSchema.Type = await scope.queryClient.fetchQuery({
           queryKey: [id, "history", from ?? null, start ?? null],
           // A page behind a cursor never changes; the newest page is read fresh each time.
@@ -144,6 +144,8 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
         mergeContainerHistory(collection, page.rows, stored);
         cursor = page.cursor;
         failures = page.failures;
+        const tail = from === undefined && start === undefined ? historyStart(collection.values()) : undefined;
+        next = tail === undefined ? { cursor: cursor ?? undefined } : { beforeTail: tail };
         const now = oldest();
         if (reached === null || (now !== null && now < reached)) break;
       }

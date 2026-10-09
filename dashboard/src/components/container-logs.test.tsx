@@ -49,16 +49,17 @@ it("retains logs and exhausted history across navigation, and reconnects only on
     await waitFor(() => expect(stream.collection.size).toBe(2));
     expect(screen.queryByRole("button", { name: "Load older" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
-    // A short tail reads the Log Store's newest page at once.
-    expect(fetchHistory).toHaveBeenCalledTimes(1);
-    expect(cursorOf(fetchHistory.mock.calls[0]?.[1])).toBeUndefined();
-    expect(bodyOf(fetchHistory.mock.calls[0]?.[1]).before).toBe("100");
+    // A short tail reads the Log Store's newest page at once, then before the tail that page sat inside.
+    await waitFor(() => expect(fetchHistory).toHaveBeenCalledTimes(2));
+    expect(bodyOf(fetchHistory.mock.calls[0]?.[1])).not.toHaveProperty("cursor");
+    expect(bodyOf(fetchHistory.mock.calls[0]?.[1])).not.toHaveProperty("before");
+    expect(bodyOf(fetchHistory.mock.calls[1]?.[1]).before).toBe("100");
     fireEvent.change(screen.getByLabelText("Search loaded logs"), { target: { value: "missing" } });
     expect(screen.getByText("No logs match your filters")).toBeTruthy();
     expect(screen.getByText("Scroll up or press Home to check older logs.")).toBeTruthy();
     fireEvent.wheel(screen.getByLabelText("Container logs"), { deltaY: -100 });
-    await waitFor(() => expect(fetchHistory).toHaveBeenCalledTimes(2));
-    expect(cursorOf(fetchHistory.mock.calls[1]?.[1])).toBe("older");
+    await waitFor(() => expect(fetchHistory).toHaveBeenCalledTimes(3));
+    expect(cursorOf(fetchHistory.mock.calls[2]?.[1])).toBe("older");
     await waitFor(() => expect(stream.getSnapshot().historyPending).toBe(false));
     expect(screen.queryByText("Scroll up or press Home to check older logs.")).toBeNull();
     expect(stream.collection.size).toBe(2);
@@ -69,7 +70,7 @@ it("retains logs and exhausted history across navigation, and reconnects only on
     expect(stream.collection.size).toBe(2);
     mount();
     await act(async () => { await stream.loadOlder(); });
-    expect(fetchHistory).toHaveBeenCalledTimes(2);
+    expect(fetchHistory).toHaveBeenCalledTimes(3);
     expect(sources).toHaveLength(opened);
     // Only an offline organization is said; the stream stays open and the lines stay.
     await act(async () => source.dispatchEvent(new Event("offline")));
