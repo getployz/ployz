@@ -263,7 +263,8 @@ async fn a_failed_rebuild_is_retried_on_the_tick() {
     assert_eq!(process.await.unwrap().unwrap(), DnsExit::Stopped);
 }
 
-#[tokio::test]
+// The daemon runs multi-threaded; there a stop can race the queued UDP send.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn drains_an_in_flight_forwarded_query_on_sigterm() {
     let mut harness = Harness::new();
     let upstream = slow_upstream(SILENCE).await;

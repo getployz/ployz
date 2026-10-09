@@ -559,17 +559,37 @@ impl Handler {
 async fn run_server(
     mut server: Server<Handler>,
     in_flight: InFlight,
+    listen: SocketAddr,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     tokio::select! {
         result = server.block_until_done() => result.map_err(io::Error::other),
         () = shutdown.cancelled() => {
-            if tokio::time::timeout(DRAIN_TIMEOUT, in_flight.drained()).await.is_err() {
-                eprintln!("stopping Internal DNS with requests still in flight after {DRAIN_TIMEOUT:?}");
+            let drained = async {
+                in_flight.drained().await;
+                flush_udp(listen).await
+            };
+            match tokio::time::timeout(DRAIN_TIMEOUT, drained).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => eprintln!("failed to flush Internal DNS UDP responses: {error}"),
+                Err(_) => eprintln!("stopping Internal DNS with responses still undelivered after {DRAIN_TIMEOUT:?}"),
             }
             server.shutdown_gracefully().await.map_err(io::Error::other)
         }
     }
+}
+
+/// A finished handler has only queued its UDP response; Hickory's receive loop
+/// sends it later, and shutdown can stop that loop first. The loop sends its
+/// queue in order before reading the next datagram, and Hickory answers a
+/// header-only query itself, so that answer arriving proves the queue sent.
+async fn flush_udp(listen: SocketAddr) -> io::Result<()> {
+    const HEADER_ONLY_QUERY: [u8; 12] = [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+    let socket = UdpSocket::bind(SocketAddr::new(listen.ip(), 0)).await?;
+    socket.connect(listen).await?;
+    socket.send(&HEADER_ONLY_QUERY).await?;
+    socket.recv(&mut [0; 512]).await?;
+    Ok(())
 }
 
 async fn load_down_machines(

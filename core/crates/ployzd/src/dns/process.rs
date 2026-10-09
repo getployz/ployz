@@ -171,7 +171,12 @@ pub(crate) async fn serve_with(
     fixture.keeper.status(&format!("serving {}", spec.listen))?;
 
     let serving = shutdown.child_token();
-    let server = run_server(server, in_flight, serving.clone());
+    let server = run_server(
+        server,
+        in_flight,
+        listeners.listen().into(),
+        serving.clone(),
+    );
     tokio::pin!(server);
     let exit = tokio::select! {
         served = &mut server => return served.map(|()| DnsExit::Stopped),

@@ -55,7 +55,6 @@ impl Listeners {
         })
     }
 
-    #[cfg(test)]
     pub(crate) fn listen(&self) -> SocketAddrV4 {
         self.listen
     }
