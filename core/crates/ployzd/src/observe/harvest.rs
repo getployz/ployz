@@ -523,17 +523,28 @@ impl Harvester {
         let store_dir = self.store.container(id);
         let event = self.last_event.remove(id);
         let from_event = event.as_ref().and_then(container_meta);
-        let finished = |meta: &ContainerMeta| meta.finished_at.as_deref().and_then(rfc3339_nanos);
+        let at = |time: Option<&str>| time.and_then(rfc3339_nanos);
         let meta = match read_meta(&store_dir) {
             Ok(Some(mut kept)) => {
-                // A container Docker restarted may have died again since.
-                if let Some(from_event) = from_event
-                    && (kept.finished_at.is_none() || finished(&from_event) > finished(&kept))
-                {
-                    kept.started_at = kept.started_at.or(from_event.started_at);
-                    kept.finished_at = from_event.finished_at;
-                    kept.exit_code = from_event.exit_code;
-                    kept.oom_killed |= from_event.oom_killed;
+                if let Some(from_event) = from_event {
+                    // A container Docker restarted started a run after the
+                    // exit saved here, so that exit and its OOM kill are over.
+                    let saved = at(kept.finished_at.as_deref());
+                    if saved.is_some()
+                        && (at(from_event.started_at.as_deref()) > saved
+                            || at(from_event.finished_at.as_deref()) > saved)
+                    {
+                        kept.started_at = None;
+                        kept.finished_at = None;
+                        kept.exit_code = None;
+                        kept.oom_killed = false;
+                    }
+                    if kept.finished_at.is_none() {
+                        kept.started_at = kept.started_at.or(from_event.started_at);
+                        kept.finished_at = from_event.finished_at;
+                        kept.exit_code = from_event.exit_code;
+                        kept.oom_killed |= from_event.oom_killed;
+                    }
                 }
                 Some(kept)
             }
@@ -2213,16 +2224,20 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_crash_looping_container_removed_while_restarting_keeps_its_latest_exit() {
+    /// Docker restarting a container that exited with `code` at `T0 + 5`,
+    /// which the harvester inspected, then the events after it.
+    fn crash_loop(oom: bool, code: &str, after: &[EventMessage]) -> ContainerMeta {
         let host = host();
         let id = host.container(&[lines(T0 + 1, 3)]);
         let mut running = host.harvester();
         running.harvester.rescan();
         running.harvester.on_inspected(id, managed(3));
+        if oom {
+            running.harvester.on_docker_event(event("oom", T0 + 4, &[]));
+        }
         running
             .harvester
-            .on_docker_event(event("die", T0 + 5, &[("exitCode", "3")]));
+            .on_docker_event(event("die", T0 + 5, &[("exitCode", code)]));
         let Inspected::Found(mut restarting) = managed(3) else {
             unreachable!("managed() describes a found container")
         };
@@ -2230,26 +2245,57 @@ mod tests {
             running: Some(true),
             restarting: Some(true),
             finished_at: Some("2025-10-09T08:53:20.000000005Z".to_owned()),
-            exit_code: Some(3),
+            exit_code: code.parse().ok(),
+            oom_killed: Some(oom),
             ..ContainerState::default()
         });
         running
             .harvester
             .on_inspected(id, Inspected::Found(restarting));
-        running
-            .harvester
-            .on_docker_event(event("start", T0 + 6, &[]));
-        running
-            .harvester
-            .on_docker_event(event("die", T0 + 7, &[("exitCode", "9")]));
+        for event in after {
+            running.harvester.on_docker_event(event.clone());
+        }
         host.remove_from_docker();
         running.harvester.on_inspected(id, Inspected::Gone);
+        host.meta()
+    }
 
-        let meta = host.meta();
+    #[tokio::test]
+    async fn a_crash_looping_container_removed_while_restarting_keeps_its_latest_exit() {
+        let meta = crash_loop(
+            false,
+            "3",
+            &[
+                event("start", T0 + 6, &[]),
+                event("die", T0 + 7, &[("exitCode", "9")]),
+            ],
+        );
         assert_eq!(
             (meta.finished_at.as_deref(), meta.exit_code),
             (Some("2025-10-09T08:53:20.000000007Z"), Some(9))
         );
+    }
+
+    #[tokio::test]
+    async fn a_clean_exit_after_a_restart_is_not_an_oom_kill() {
+        let meta = crash_loop(
+            true,
+            "137",
+            &[
+                event("start", T0 + 6, &[]),
+                event("die", T0 + 7, &[("exitCode", "0")]),
+            ],
+        );
+        assert_eq!(
+            (meta.finished_at.as_deref(), meta.exit_code, meta.oom_killed),
+            (Some("2025-10-09T08:53:20.000000007Z"), Some(0), false)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_container_removed_after_it_restarted_drops_the_earlier_exit() {
+        let meta = crash_loop(false, "3", &[event("start", T0 + 6, &[])]);
+        assert_eq!((meta.finished_at, meta.exit_code), (None, None));
     }
 
     #[tokio::test]
