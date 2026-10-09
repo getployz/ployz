@@ -23,6 +23,45 @@ const diff = asTestDouble<DiffView>()({
 });
 const services = [asTestDouble<ServiceListing>()({ id: "s1", source: "image" })];
 
+it("keeps atomic Config files, literal paths and restart facts in the review", () => {
+  const before = { content: "PORT=80\nTOKEN=${{ web.TOKEN }}\n", mode: "0444", uid: 0, gid: 0 };
+  const after = { ...before, mode: "0555", uid: 1000, gid: 1001 };
+  const rows: DiffView["changes"][number]["settings"] = [
+    { path: "configs.sentry.files.nested/app.conf", kind: "update", before, after, canRestore: true, row: "c:files.nested/app.conf" as RowId },
+    { path: "configs.sentry.files.empty.conf", kind: "add", before: null, after: { ...before, content: "" }, canRestore: false, row: null },
+    { path: "configs.sentry.files.old.conf", kind: "remove", before, after: null, canRestore: true, row: null },
+  ];
+  const restarts = ["web", "worker"];
+  const [config, web] = changeGroups({ ...diff, changes: [
+    { type: "config", id: "c", row: "c:node" as RowId, name: "sentry", lifecycle: "update", comparison: "head", data: null, restarts, settings: rows },
+    { type: "service", id: "s1", row: "s1:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, restarts: [],
+      settings: [{ path: "web.configs.sentry", kind: "add", before: null, after: "/etc/sentry", canRestore: true, row: null }] },
+  ] }, services);
+  expect(config).toMatchObject({ discardPath: "configs.sentry", changeCount: 3, restarts });
+  expect(config?.restarts).toBe(restarts);
+  expect(config?.rows.map((row) => [row.path, row.label, row.currentValue, row.newValue, row.canDiscard])).toEqual([
+    [rows[0]?.path, "nested/app.conf", "File", "File", true],
+    [rows[1]?.path, "empty.conf", "", "File", false],
+    [rows[2]?.path, "old.conf", "File", "", true],
+  ]);
+  expect(config?.rows[0]).toMatchObject({ row: rows[0]?.row, configFile: { before, after } });
+  expect(config?.rows[1]?.configFile).toEqual({ before: null, after: { ...before, content: "" } });
+  expect(config?.rows[2]?.configFile).toEqual({ before, after: null });
+  expect(web?.rows[0]?.label).toBe("Config mount sentry");
+});
+
+const malformedFiles: JsonValue[] = [{ content: "private" }, "private", { content: "private", mode: "0444", uid: "0", gid: 0 }];
+it.each(malformedFiles)(
+  "refuses a malformed non-null Config file without exposing its value", (value) => {
+    const adapt = () => changeGroups({ ...diff, changes: [{
+      type: "config", id: "c", row: "c:node" as RowId, name: "sentry", lifecycle: "update", comparison: null, data: null, restarts: [],
+      settings: [{ path: "configs.sentry.files.app.conf", kind: "update", before: null, after: value, canRestore: true, row: null }],
+    }] }, []);
+    expect(adapt).toThrow("Could not read Config file comparison for configs.sentry.files.app.conf.");
+    expect(adapt).not.toThrow(/private/);
+  },
+);
+
 it("groups the Store's review by node, labelling rows from the catalog; a whole node, a Setting, a variable or a mount discards", () => {
   const [web, volume] = changeGroups(diff, services);
   expect(web).toMatchObject({ nodeType: "service", nodeName: "web", lifecycle: "update", canDiscard: true, serviceSourceType: "image", changeCount: 3 });

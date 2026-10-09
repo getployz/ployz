@@ -174,7 +174,7 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       await views<DiffView>("diff", command.environment, (view) => {
         const changes = view.changes.flatMap((change) => {
           if (whole(change)) return [];
-          const rows = change.settings.filter((row) => row.path !== path && !row.path.startsWith(`${path}.`));
+          const rows = change.settings.filter((row) => row.path !== path && (type === "config" || !row.path.startsWith(`${path}.`)));
           return rows.length === 0 && change.lifecycle === "update" ? [] : [{ ...change, settings: rows }];
         });
         // An empty review counts nothing.

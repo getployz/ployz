@@ -52,6 +52,24 @@ it("empties the review at once on a whole discard; the Services come with its an
   expect(read<ServicesView>(servicesQuery(ref))?.services.map((service) => service.change)).toEqual(["update", "create"]);
 });
 
+it("discards a Config file by exact identity, retaining its dotted sibling until whole Config discard", async () => {
+  const { queryClient, read } = cached();
+  const key = storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, diffQuery(ref)).queryKey;
+  queryClient.setQueryData<unknown>(key, { ok: true, value: {
+    ...read<DiffView>(diffQuery(ref)), changes: [{
+      type: "config", id: "s", row: "s:node" as RowId, name: "sentry", lifecycle: "update", comparison: null, data: null, restarts: ["web"],
+      settings: ["app.conf", "app.conf.bak"].map((name) => ({
+        path: `configs.sentry.files.${name}`, kind: "update", before: null, after: null, canRestore: true, row: null,
+      })),
+    }],
+  } });
+  await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: "configs.sentry.files.app.conf", version: null });
+  expect(read<DiffView>(diffQuery(ref))?.changes[0]?.settings.map((row) => row.path)).toEqual(["configs.sentry.files.app.conf.bak"]);
+  expect(read<DiffView>(diffQuery(ref))?.changes[0]?.restarts).toEqual(["web"]);
+  await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: "configs.sentry", version: null });
+  expect(read<DiffView>(diffQuery(ref))).toMatchObject({ changes: [], total_count: 0 });
+});
+
 it("renames a Service everywhere its name keys a view, and marks a removed one", async () => {
   const { queryClient, read } = cached();
   await applyOptimistic(queryClient, "acme", { command: "rename_service", environment: ref, service: "web", name: "site" });
