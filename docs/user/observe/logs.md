@@ -55,8 +55,9 @@ no service arguments, and `--follow` still use live container discovery.
 - **Deleting an environment deletes its logs.** A removed service's logs stay until they age out.
 - **Containers started before your servers ran this release** keep Docker's old log settings, and
   their logs aren't kept, until their next deploy.
-- **Levels come from the line.** A JSON `level` field, a logfmt `level=`, or a leading word such
-  as `ERROR` sets it. A line without one counts as **Info**, stderr included.
+- **Levels come from the line.** A JSON `level`, `lvl` or `severity` field, a logfmt `level=`, or
+  a leading `ERROR`, `WARN`, `INFO` or `DEBUG` (or a tag such as `[error]`) sets it. A line
+  without one counts as **Info**, stderr included.
 - **A stretch a server didn't keep says so.** The log shows a line in its place, saying the lines
   weren't captured or couldn't be read.
 - **A server that doesn't answer is named** in a banner above the log, and the other servers'
