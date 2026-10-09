@@ -30,8 +30,6 @@ export const volumeRun = pgTable(
     refquotaBytes: bigint("refquota_bytes", { mode: "number" }).default(0).notNull(),
     state: text("state").default("requested").notNull().$type<VolumeRunState>(),
     lease: bigint("lease", { mode: "number" }),
-    /** The Machines the run acts on, set with its lease; `server rm` waits while an open run names one. */
-    machineIds: text("machine_ids").array().default(sql`'{}'::text[]`).notNull(),
     /** The Service spec seen when the run took its lease; Restore reads it once that Service's Server is gone. */
     serviceSpec: jsonb("service_spec").$type<ServiceSpec>(),
     inngestRunId: text("inngest_run_id"),
@@ -45,7 +43,6 @@ export const volumeRun = pgTable(
     uniqueIndex("volume_run_one_active_idx")
       .on(table.volumeId)
       .where(sql`${table.state} in ('requested', 'running')`),
-    index("volume_run_machine_ids_idx").using("gin", table.machineIds),
     index("volume_run_latest_idx").on(table.organizationId, table.volumeId, table.createdAt.desc()),
     check("volume_run_kind_check", sql`${table.kind} in (${sqlStringLiterals(VOLUME_RUN_KINDS)})`),
     check("volume_run_state_check", sql`${table.state} in (${sqlStringLiterals(VOLUME_RUN_STATES)})`),

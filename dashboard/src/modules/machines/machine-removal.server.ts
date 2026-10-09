@@ -28,8 +28,7 @@ import {
   loadMachineRemoveAttemptByRun,
   requestMachineRemoveAttempt,
 } from "#/modules/machines/machine-removal.repository";
-import { Conflict, NotFound } from "#/server/public-error";
-import { openRunNaming } from "#/modules/volume-run/volume-run.server";
+import { NotFound } from "#/server/public-error";
 import { dropRemovedServer, forgetEmptiedPairing } from "#/modules/machines/pairing-removal.server";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { storeSystem } from "#/modules/config-store/config-store.server";
@@ -101,8 +100,6 @@ export const completeMachineRemoveAttemptActivity = Effect.fn(
  */
 export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
   function* (attempt: Pick<MachineRemoveAttemptContext, "organizationId" | "machineId" | "confirmDataLoss" | "noReset">) {
-    const open = yield* openRunNaming(attempt.organizationId, asMachineId(attempt.machineId));
-    if (open !== null) return { kind: "refused", failureCode: "volume_run_open", message: open } satisfies RemoveMachineOutcome;
     const access = yield* loadOrganizationConnections(attempt.organizationId);
     const runtime = yield* OrganizationRuntime;
     const session = yield* runtime.open(attempt.organizationId);
@@ -284,8 +281,6 @@ export const enqueueMachineRemove = Effect.fn("MachineRemoval.enqueue")(
 /** Start the one durable removal of a Server, the dashboard's and `ployz server rm`'s alike; both follow its attempt. */
 export const startMachineRemove = Effect.fn("MachineRemoval.start")(
   function* (input: Parameters<typeof requestMachineRemoveAttempt>[0]) {
-    const open = yield* openRunNaming(input.organizationId, asMachineId(input.machineId));
-    if (open !== null) return yield* new Conflict({ message: open, userFacing: true });
     const requested = yield* requestMachineRemoveAttempt(input);
     yield* dispatchMachineRemoveRequested(requested.id);
     return requested;
