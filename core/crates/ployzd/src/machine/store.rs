@@ -100,7 +100,6 @@ pub(crate) enum Opened {
 pub(crate) struct InterruptedReset(LocalMachineStore);
 
 impl InterruptedReset {
-    /// Clears the data directory and opens it fresh.
     pub(crate) fn complete(self) -> Result<LocalMachineStore, StoreError> {
         let store = self.0;
         store.complete_reset()?;
