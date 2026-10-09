@@ -17,7 +17,7 @@ use bollard::{
 };
 use futures_util::{Stream, StreamExt};
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
-use ployz_core::ContainerId;
+use ployz_core::{ContainerId, Namespace};
 use tokio::{net::UnixListener, sync::mpsc};
 
 use super::{
@@ -917,6 +917,8 @@ fn container_meta(inspected: &ContainerInspectResponse) -> Option<ContainerMeta>
     }
     let kind = if labels.contains_key(LABEL_HOOK) {
         ContainerKind::PreDeployHook
+    } else if labels.get(LABEL_NAMESPACE).map(String::as_str) == Some(Namespace::SYSTEM) {
+        ContainerKind::System
     } else if labels.contains_key(LABEL_SERVICE_NAME) {
         ContainerKind::Service
     } else {
@@ -976,11 +978,13 @@ fn rfc3339_nanos(at: &str) -> Option<i64> {
 mod tests {
     use std::{fs, os::unix::fs::MetadataExt, path::PathBuf};
 
-    use bollard::models::{ContainerInspectResponse, HostConfig, HostConfigLogConfig};
+    use bollard::models::{
+        ContainerConfig, ContainerInspectResponse, HostConfig, HostConfigLogConfig,
+    };
 
     use super::{
-        DamageCursor, Link, Synced, close_removed_container, first_seen_gap, foreign_log_driver,
-        link_exact, record_damage, sync_container, write_meta,
+        DamageCursor, Link, Synced, close_removed_container, container_meta, first_seen_gap,
+        foreign_log_driver, link_exact, record_damage, sync_container, write_meta,
     };
     use crate::{
         observe::{
@@ -1377,6 +1381,37 @@ mod tests {
             }),
             ..ContainerInspectResponse::default()
         }
+    }
+
+    fn labelled(labels: &[(&str, &str)]) -> ContainerInspectResponse {
+        ContainerInspectResponse {
+            name: Some("/replica".to_owned()),
+            config: Some(ContainerConfig {
+                labels: Some(
+                    labels
+                        .iter()
+                        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                        .collect(),
+                ),
+                ..ContainerConfig::default()
+            }),
+            ..ContainerInspectResponse::default()
+        }
+    }
+
+    #[test]
+    fn ingress_is_a_system_container_and_an_app_is_a_service() {
+        let kind = |namespace: &str, service: &str| {
+            container_meta(&labelled(&[
+                ("ployz.managed", "true"),
+                ("ployz.namespace", namespace),
+                ("ployz.service.name", service),
+            ]))
+            .unwrap()
+            .kind
+        };
+        assert_eq!(kind("ployz-system", "ingress"), ContainerKind::System);
+        assert_eq!(kind("default", "web"), ContainerKind::Service);
     }
 
     #[test]
