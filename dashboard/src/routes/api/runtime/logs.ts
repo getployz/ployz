@@ -22,7 +22,7 @@ export const Route = createFileRoute("/api/runtime/logs")({
       try {
         const search = Schema.decodeUnknownOption(logHistorySchema)(await request.json().catch(() => null));
         if (Option.isNone(search)) return publicErrorResponse(new Validation({ message: "Invalid log selection." }));
-        const result = await runAppEffect(openContainerLogs(request, search.value, { cursor: search.value.cursor }), { signal: request.signal });
+        const result = await runAppEffect(openContainerLogs(request, search.value, { cursor: search.value.cursor, before: search.value.before }), { signal: request.signal });
         if (result.type !== "history") throw new Error("A history read answered with a stream.");
         const { records, gaps, exits, failures, cursor } = result.page;
         return Response.json({ rows: [...records.map(projectContainerLog), ...gaps.map(projectLogGap), ...exits.map(projectLogExit)], failures, cursor }, { headers: { "Cache-Control": "private, no-store" } });

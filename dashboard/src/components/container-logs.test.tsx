@@ -9,7 +9,9 @@ import { getDbClient } from "#/collections/scope";
 import { getContainerLogStream } from "#/modules/runtime/container-log.stream";
 import { ContainerLogs } from "./container-logs";
 
-const cursorOf = (init: RequestInit | undefined): string | undefined => (JSON.parse(String(init?.body)) as { cursor?: string }).cursor;
+const bodyOf = (init: RequestInit | undefined) => JSON.parse(String(init?.body)) as { cursor?: string; before?: string };
+const cursorOf = (init: RequestInit | undefined) => bodyOf(init).cursor;
+const line = { kind: "line", id: "m/c/100/0", timestamp: "100", machineId: "m", machineName: "Server", containerId: "c", serviceName: "api", channel: "stdout", level: "info", message: "hello" } as const;
 
 it("retains logs and exhausted history across navigation, and reconnects only on failure", async () => {
   const sources: FakeEventSource[] = [];
@@ -21,7 +23,8 @@ it("retains logs and exhausted history across navigation, and reconnects only on
   vi.stubGlobal("EventSource", FakeEventSource);
   const fetchHistory = vi.fn(async (_url: string, init: RequestInit) => {
     expect(init.signal?.aborted).toBe(false);
-    return Response.json({ rows: [], failures: [], cursor: cursorOf(init) === undefined ? "older" : null });
+    if (cursorOf(init) !== undefined) return Response.json({ rows: [], failures: [], cursor: null });
+    return Response.json({ rows: bodyOf(init).before === undefined ? [] : [{ ...line, id: "store/m/c/50/0", timestamp: "50" }], failures: [], cursor: "older" });
   });
   vi.stubGlobal("fetch", fetchHistory);
   const client = new QueryClient();
@@ -39,17 +42,17 @@ it("retains logs and exhausted history across navigation, and reconnects only on
     const firstView = mount();
     const source = sources.at(-1);
     if (!source) throw new Error("Viewer did not open its log stream");
+    // The tail arrives before the stream turns live.
+    await act(async () => source.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: line }) })));
     await act(async () => source.dispatchEvent(new Event("live")));
-    await act(async () => source.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: {
-      kind: "line", id: "m/c/100/0", timestamp: "100", machineId: "m", machineName: "Server", containerId: "c", serviceName: "api", channel: "stdout", level: "info", message: "hello",
-    } }) })));
     // Streamed lines land in a batch a moment later.
-    await waitFor(() => expect(stream.collection.size).toBe(1));
+    await waitFor(() => expect(stream.collection.size).toBe(2));
     expect(screen.queryByRole("button", { name: "Load older" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
     // A short tail reads the Log Store's newest page at once.
     expect(fetchHistory).toHaveBeenCalledTimes(1);
     expect(cursorOf(fetchHistory.mock.calls[0]?.[1])).toBeUndefined();
+    expect(bodyOf(fetchHistory.mock.calls[0]?.[1]).before).toBe("100");
     fireEvent.change(screen.getByLabelText("Search loaded logs"), { target: { value: "missing" } });
     expect(screen.getByText("No logs match your filters")).toBeTruthy();
     expect(screen.getByText("Scroll up or press Home to check older logs.")).toBeTruthy();
@@ -58,12 +61,12 @@ it("retains logs and exhausted history across navigation, and reconnects only on
     expect(cursorOf(fetchHistory.mock.calls[1]?.[1])).toBe("older");
     await waitFor(() => expect(stream.getSnapshot().historyPending).toBe(false));
     expect(screen.queryByText("Scroll up or press Home to check older logs.")).toBeNull();
-    expect(stream.collection.size).toBe(1);
+    expect(stream.collection.size).toBe(2);
     const opened = sources.length;
     firstView.unmount();
     await waitFor(() => expect(stream.collection.subscriberCount).toBe(0));
     expect(source.closed).toBe(false);
-    expect(stream.collection.size).toBe(1);
+    expect(stream.collection.size).toBe(2);
     mount();
     await act(async () => { await stream.loadOlder(); });
     expect(fetchHistory).toHaveBeenCalledTimes(2);
@@ -74,7 +77,7 @@ it("retains logs and exhausted history across navigation, and reconnects only on
     await act(async () => source.dispatchEvent(new Event("live")));
     expect(screen.queryByText(/Your servers are offline/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
-    expect(stream.collection.size).toBe(1);
+    expect(stream.collection.size).toBe(2);
     expect(sources.filter(source => !source.closed)).toHaveLength(1);
     expect(getContainerLogStream(selection, { queryClient: client, sessionId: "session", userId: "user" })).toBe(stream);
   } finally {
@@ -219,6 +222,7 @@ it("shows an old Deployment's stored lines with their gaps and missing servers, 
     expect(screen.queryByText("boom")).toBeNull();
     fireEvent.wheel(screen.getByLabelText("Container logs"), { deltaY: -100 });
     await waitFor(() => expect(screen.getByText("boom")).toBeTruthy());
+    expect(bodyOf(fetchHistory.mock.calls[0]?.[1]).before).toBeUndefined();
     expect(cursorOf(fetchHistory.mock.calls[1]?.[1])).toBe("page-2");
     expect(screen.queryByRole("alert")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "error" }));

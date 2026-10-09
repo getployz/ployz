@@ -2,7 +2,7 @@ import { createCollection, localOnlyCollectionOptions } from "@tanstack/react-db
 import { Schema } from "effect";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
 import { liveStream } from "#/lib/live.stream";
-import { appendContainerLogs, containerLogEventSchema, containerLogPageSchema, LIVE_LOG_LIMIT, mergeContainerHistory, trimContainerLogs, type ContainerLogRow, type MissingServer } from "./container-log.collection";
+import { appendContainerLogs, boundContainerLogs, containerLogEventSchema, containerLogPageSchema, historyStart, mergeContainerHistory, type ContainerLogRow, type MissingServer } from "./container-log.collection";
 
 export type ContainerLogSelection = { organizationSlug: string; projectSlug?: string; environmentSlug?: string; deploymentId?: string; serviceId?: string };
 
@@ -30,9 +30,12 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
   const publish = (next: typeof snapshot) => { snapshot = next; listeners.forEach(listener => listener()); };
   // The Log Store's position: not read yet, a cursor, or null once it has nothing older.
   let cursor: string | null | undefined;
+  // Where the scrollback begins: lines older than this came from the Log Store; null when all of them did.
+  let scrollback: string | null | undefined;
   const stored = new Set<string>();
   const resetHistory = () => {
     cursor = undefined;
+    scrollback = undefined;
     stored.clear();
   };
   let controller = new AbortController();
@@ -53,12 +56,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
           flush = undefined;
           appendContainerLogs(collection, pending, stored);
           pending = [];
-          // Scrollback is kept while it fits; past that the page drops it whole and reads it again on the next scroll up.
-          if (cursor !== undefined && collection.size > LIVE_LOG_LIMIT * 1.1) {
-            collection.delete([...collection.values()].filter(row => row.kind === "gap" || stored.has(`${row.machineId}/${row.containerId}/${row.timestamp}`)).map(row => row.id));
-            resetHistory();
-          }
-          trimContainerLogs(collection);
+          if (boundContainerLogs(collection, scrollback)) resetHistory();
         };
         // A replayed tail after a reconnect is dropped by the rows' ids. A refused stream ends its history reads.
         controller = new AbortController();
@@ -108,17 +106,19 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
     publish({ ...snapshot, historyPending: true, historyError: false });
     try {
       const oldest = () => [...collection.values()].reduce<bigint | null>((min, row) => (min === null || BigInt(row.timestamp) < min ? BigInt(row.timestamp) : min), null);
-      const before = oldest();
+      const reached = oldest();
       let failures: readonly MissingServer[] = [];
       for (let read = 0; read < OVERLAP_PAGES && cursor !== null; read++) {
         const from: string | undefined = cursor;
+        const start = from === undefined ? historyStart(collection.values()) : undefined;
         const page: typeof containerLogPageSchema.Type = await scope.queryClient.fetchQuery({
-          queryKey: [id, "history", from ?? null],
+          queryKey: [id, "history", from ?? null, start ?? null],
           // A page behind a cursor never changes; the newest page is read fresh each time.
           staleTime: from === undefined ? 0 : Infinity,
           queryFn: async ({ signal }) => {
             const response = await fetch("/api/runtime/logs", {
-              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...selection, cursor: from }), signal: AbortSignal.any([signal, streamSignal]),
+              method: "POST", headers: { "Content-Type": "application/json" }, signal: AbortSignal.any([signal, streamSignal]),
+              body: JSON.stringify({ ...selection, ...(from !== undefined ? { cursor: from } : { before: start }) }),
             });
             if (!response.ok) throw new Error("Could not load older logs.");
             return Schema.decodeUnknownSync(containerLogPageSchema)(await response.json());
@@ -126,10 +126,11 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
         });
         streamSignal.throwIfAborted();
         mergeContainerHistory(collection, page.rows, stored);
+        if (from === undefined) scrollback = start ?? null;
         cursor = page.cursor;
         failures = page.failures;
         const now = oldest();
-        if (before === null || (now !== null && now < before)) break;
+        if (reached === null || (now !== null && now < reached)) break;
       }
       publish({ ...snapshot, missing: { ...snapshot.missing, history: failures }, historyPending: false });
     } catch {

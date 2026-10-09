@@ -97,6 +97,39 @@ export function trimContainerLogs(collection: ContainerLogs, limit = LIVE_LOG_LI
 }
 
 /**
+ * Where the Log Store's first page starts: the newest of each container's oldest loaded line. From there on every
+ * container's lines are already here, so the Store needn't send them again.
+ */
+export function historyStart(rows: Iterable<ContainerLogRow>) {
+  const oldest = new Map<string, bigint>();
+  for (const row of rows) {
+    if (row.kind !== "line" || row.channel === "lifecycle") continue;
+    const key = `${row.machineId}/${row.containerId}`;
+    const at = BigInt(row.timestamp);
+    if (!oldest.has(key) || at < oldest.get(key)!) oldest.set(key, at);
+  }
+  return oldest.size ? [...oldest.values()].reduce((max, at) => (at > max ? at : max)).toString() : undefined;
+}
+
+/**
+ * Keep the page within `limit`. Without scrollback, the oldest lines go. Scrollback the viewer loaded, everything
+ * older than `scrollback` (all of it when null), stays until the page holds twice the limit, so a service printing
+ * thousands a second doesn't take it away at once. Then it goes whole; the next scroll up reads it again.
+ * True when it dropped the scrollback.
+ */
+export function boundContainerLogs(collection: ContainerLogs, scrollback: string | null | undefined, limit = LIVE_LOG_LIMIT) {
+  if (scrollback === undefined) {
+    trimContainerLogs(collection, limit);
+    return false;
+  }
+  if (collection.size <= limit * 2) return false;
+  const from = scrollback === null ? null : BigInt(scrollback);
+  collection.delete([...collection.values()].filter(row => from === null || BigInt(row.timestamp) < from).map(row => row.id));
+  trimContainerLogs(collection, limit);
+  return true;
+}
+
+/**
  * The live tail starts each container somewhere inside the Log Store's newest page, so the two overlap. The Store's
  * read of a timestamp group replaces the tail's copy of it, and `stored` remembers the group for later live lines.
  */
