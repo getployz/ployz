@@ -29,7 +29,7 @@ import {
   Superseded,
 } from "#/modules/agent/persistence.server";
 import { notSetUpScript, ScriptedAdapter, stubScript } from "#/modules/agent/scripted-adapter.server";
-import { answeredApproval, requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
+import { requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
 import { callStore } from "#/modules/config-store/config-store.server";
 import type { StoreCall, StoreRefusal } from "#/modules/config-store/store.contract";
 import type { Caller } from "#/modules/identity/actor";
@@ -93,14 +93,8 @@ const landedPublish = (reviewed: DiffView, refusal: StoreRefusal): ConfigWritten
   return published && same ? { written: "published", environment, saved, created: false } : null;
 };
 
-/**
- * One Publish or Deploy as `caller`, retried with `approvalId` once a human answered. When the plan destroys something and
- * the Organization asks first, it records the pending approval and answers with it instead of an outcome.
- */
 const runGated = Effect.fn("Agent.runGated")(function* (caller: Caller, asked: ConfigCommand, approvalId: string | null) {
-  const trusted = approvalId === null
-    ? yield* trustedApproval(caller.organization.id, null)
-    : yield* answeredApproval(caller.organization.id, approvalId);
+  const trusted = yield* trustedApproval(caller.organization.id, approvalId);
   if (!trusted.ok) return { outcome: { ok: false, refusal: denialForAgent(asked, trusted.refusal) } } satisfies Gated;
   const reviewed = approvalId === null || trusted.approval === "required" ? null : yield* reviewedDiff(caller.organization.id, approvalId);
   const command = approvalId === null ? asked : onceFor(asked, approvalId, reviewed);

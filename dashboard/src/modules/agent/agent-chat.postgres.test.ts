@@ -806,6 +806,19 @@ it.live("a cancelled approval stays cancelled after the Organization stops askin
     expect(yield* deployments).toEqual([]);
   }));
 
+it.live("a resume whose approval is still pending asks again under it after the Organization stops asking", () =>
+  Effect.gen(function* () {
+    const { provided, caller, say, resume, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true });
+    const approval = yield* waitingApproval(yield* say("deploy"), pending);
+    yield* provided(setOrganizationSettings(caller, { organizationSlug: "shop", askBeforeDestructive: false }));
+    const writes = watchWrites();
+    const resumed = yield* resume("resolved");
+    expect(resumed.results).toEqual([]);
+    expect((yield* waitingApproval(resumed, pending)).id).toBe(approval.id);
+    expect(admits(writes).map(([, , trusted]) => trusted?.approval)).toEqual(["required"]);
+    expect(yield* deployments).toEqual([]);
+  }), 15_000);
+
 it.live("a cancelled approval answers the agent without touching the Store", () =>
   Effect.gen(function* () {
     const { say, resume, watchWrites, pending } = yield* sidebar({ removeWeb: true });
