@@ -681,7 +681,7 @@ fn history_line(record: &HistoryRecord) -> serde_json::Value {
 #[derive(Debug, Default)]
 struct Printed {
     containers: HashMap<ContainerId, i64>,
-    last: Option<i64>,
+    first: Option<i64>,
 }
 
 impl Printed {
@@ -692,28 +692,24 @@ impl Printed {
                 .entry(record.container.container_id)
                 .or_insert(ts);
             *container = (*container).max(ts);
-            self.last = self.last.max(Some(ts));
+            self.first = Some(self.first.map_or(ts, |first| first.min(ts)));
         }
     }
 
-    /// Where the live read starts: just after the earliest container's last line.
+    /// Where the live read starts: the start of what history printed, so a
+    /// container whose store had none of its lines yet still shows them all.
     fn since(&self, started: i64) -> i64 {
-        self.containers
-            .values()
-            .min()
-            .map_or(started, |ts| ts.saturating_add(1))
+        self.first.unwrap_or(started)
     }
 
-    /// A live line history already printed, or older than history's window
-    /// for a container history printed nothing from.
+    /// A live line history already printed. A container history printed
+    /// nothing from is never covered.
     fn covers(&self, entry: &LogEntry) -> bool {
         let printed = match &entry.metadata.origin {
             LogOrigin::Service { container_id, .. } => self.containers.get(container_id),
             LogOrigin::Machine { .. } => None,
         };
-        printed
-            .or(self.last.as_ref())
-            .is_some_and(|ts| entry.timestamp_unix_nanos <= *ts)
+        printed.is_some_and(|ts| entry.timestamp_unix_nanos <= *ts)
     }
 }
 
@@ -1192,8 +1188,8 @@ mod scope_tests {
                 },
             });
         }
-        // b's Server stored less than a's; live starts after b's last line.
-        assert_eq!(printed.since(7), 51);
+        // Live starts where history did, so a container it missed loses nothing.
+        assert_eq!(printed.since(7), 50);
         let live = |id: char, ts: i64| LogEntry {
             metadata: ployz_core::LogMetadata {
                 origin: LogOrigin::Service {
@@ -1212,9 +1208,9 @@ mod scope_tests {
         assert!(printed.covers(&live('b', 50)));
         assert!(printed.covers(&live('a', 60)));
         assert!(!printed.covers(&live('a', 101)));
-        // A container history printed nothing from starts after the last line.
-        assert!(printed.covers(&live('c', 90)));
-        assert!(!printed.covers(&live('c', 101)));
+        // A container history printed nothing from shows every live line.
+        assert!(!printed.covers(&live('c', 50)));
+        assert!(!printed.covers(&live('c', 90)));
     }
 
     #[test]

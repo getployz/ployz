@@ -18,18 +18,21 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, BufWriter},
     net::{UnixListener, UnixStream},
-    sync::{mpsc, oneshot},
+    sync::{Semaphore, mpsc, oneshot},
 };
 
 use super::{
     layout::StoreRoot,
-    query::{self, Query},
+    query::{self, Bounds, Query},
 };
 
 const HEARTBEAT: Duration = Duration::from_secs(1);
 const REQUEST_DEADLINE: Duration = Duration::from_secs(3);
 const MAX_REQUEST: usize = 64 << 10;
 const ACCEPT_RETRY: Duration = Duration::from_millis(100);
+/// Pages read at once. Each can hold a page's text plus the file it decodes,
+/// and the harvester shares the service's memory.
+const READERS: usize = 2;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -51,10 +54,15 @@ pub(super) async fn serve(
     store: StoreRoot,
     forgets: mpsc::Sender<ForgetJob>,
 ) {
+    let reading = Reading {
+        store,
+        bounds: Arc::new(Bounds::default()),
+        readers: Arc::new(Semaphore::new(READERS)),
+    };
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
-                tokio::spawn(answer(stream, store.clone(), forgets.clone()));
+                tokio::spawn(answer(stream, reading.clone(), forgets.clone()));
             }
             Err(error) => {
                 tracing::warn!(%error, "cannot accept a history reader");
@@ -64,7 +72,15 @@ pub(super) async fn serve(
     }
 }
 
-async fn answer(mut stream: UnixStream, store: StoreRoot, forgets: mpsc::Sender<ForgetJob>) {
+/// What every query shares.
+#[derive(Clone)]
+struct Reading {
+    store: StoreRoot,
+    bounds: Arc<Bounds>,
+    readers: Arc<Semaphore>,
+}
+
+async fn answer(mut stream: UnixStream, reading: Reading, forgets: mpsc::Sender<ForgetJob>) {
     let request =
         match tokio::time::timeout(REQUEST_DEADLINE, read_frame(&mut stream, MAX_REQUEST)).await {
             Ok(Ok(Some(bytes))) => serde_json::from_slice::<Request>(&bytes),
@@ -79,7 +95,7 @@ async fn answer(mut stream: UnixStream, store: StoreRoot, forgets: mpsc::Sender<
             }
         };
     let result = match request {
-        Ok(Request::Query(request)) => answer_query(stream, store, request).await,
+        Ok(Request::Query(request)) => answer_query(stream, reading, request).await,
         Ok(Request::Forget(request)) => answer_forget(stream, forgets, request).await,
         Err(error) => {
             let row = HistoryRow::Error(format!("unreadable history request: {error}"));
@@ -93,7 +109,7 @@ async fn answer(mut stream: UnixStream, store: StoreRoot, forgets: mpsc::Sender<
 
 async fn answer_query(
     stream: UnixStream,
-    store: StoreRoot,
+    shared: Reading,
     request: LogHistoryRequest,
 ) -> io::Result<()> {
     let mut stream = BufWriter::new(stream);
@@ -105,15 +121,28 @@ async fn answer_query(
         }
     };
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut reading = tokio::task::spawn_blocking({
+    let reading = {
         let cancel = Arc::clone(&cancel);
-        move || query::page(&store, &query, &cancel)
-    });
+        async move {
+            let permit = shared
+                .readers
+                .acquire_owned()
+                .await
+                .map_err(io::Error::other)?;
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                query::page(&shared.store, &query, &shared.bounds, &cancel)
+            })
+            .await
+            .map_err(io::Error::other)
+        }
+    };
+    tokio::pin!(reading);
     let mut heartbeat = tokio::time::interval(HEARTBEAT);
     heartbeat.tick().await;
     let read = loop {
         tokio::select! {
-            read = &mut reading => break read.map_err(io::Error::other)?,
+            read = &mut reading => break read?,
             _ = heartbeat.tick() => {
                 let beat = async {
                     write_row(&mut stream, &HistoryRow::Heartbeat).await?;
@@ -121,8 +150,8 @@ async fn answer_query(
                 };
                 if let Err(error) = beat.await {
                     cancel.store(true, Ordering::Relaxed);
+                    // The read stops at its next check and frees its reader then.
                     tracing::info!(%error, "history reader went away; stopping the read");
-                    let _ = reading.await;
                     return Ok(());
                 }
             }
@@ -200,4 +229,60 @@ pub(crate) async fn read_frame(
     let mut bytes = vec![0; len];
     stream.read_exact(&mut bytes).await?;
     Ok(Some(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::Arc, time::Duration};
+
+    use ployz_core::{HistoryRow, LogHistoryRequest, OpaquePayload};
+    use tokio::{net::UnixStream, sync::Semaphore};
+
+    use super::{Reading, answer_query, read_frame};
+    use crate::{observe::layout::StoreRoot, test_dir::TestDir};
+
+    #[tokio::test]
+    async fn a_query_waits_for_a_free_reader() {
+        let dir = TestDir::new("ployzd-observe-serve");
+        std::fs::create_dir_all(&dir.0).unwrap();
+        let store = StoreRoot::under(&dir.0);
+        store.prepare().unwrap();
+        let readers = Arc::new(Semaphore::new(0));
+        let reading = Reading {
+            store,
+            bounds: Arc::default(),
+            readers: Arc::clone(&readers),
+        };
+        let (mut ours, theirs) = UnixStream::pair().unwrap();
+        let request = LogHistoryRequest {
+            namespace: Some("prod".into()),
+            limit: 10,
+            ..LogHistoryRequest::default()
+        };
+        let answering = tokio::spawn(answer_query(theirs, reading, request));
+
+        let early =
+            tokio::time::timeout(Duration::from_millis(300), read_frame(&mut ours, 1 << 20)).await;
+        assert!(early.is_err(), "answered with every reader busy");
+
+        readers.add_permits(1);
+        loop {
+            let json = read_frame(&mut ours, 1 << 20).await.unwrap().unwrap();
+            let row = HistoryRow::decode(&OpaquePayload { json }).unwrap();
+            match row {
+                HistoryRow::Heartbeat => {}
+                HistoryRow::End { next } => {
+                    assert_eq!(next, None);
+                    break;
+                }
+                other @ (HistoryRow::Container(_)
+                | HistoryRow::Line { .. }
+                | HistoryRow::Gap { .. }
+                | HistoryRow::Exit { .. }
+                | HistoryRow::Error(_)) => panic!("unexpected {other:?}"),
+            }
+        }
+        answering.await.unwrap().unwrap();
+        assert_eq!(readers.available_permits(), 1);
+    }
 }

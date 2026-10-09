@@ -4,16 +4,21 @@
 //! file's seq plus one (gaps take 0, the exit takes `u64::MAX`), and `n`
 //! ranks rows of equal `ts` within one file. Each file decodes on its own,
 //! so a row's key depends only on its file and paging never repeats or skips
-//! a row. A line Docker split across a rotation reads as two rows.
+//! a row. A line Docker split across a rotation reads as two rows. The
+//! unfinished line at the end of a running container's newest file waits
+//! until it ends, so a later page reads it whole.
 
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BinaryHeap},
+    collections::{BTreeMap, BinaryHeap, HashMap},
     fmt, fs,
     io::{self, Read as _, Seek as _, SeekFrom},
     path::{Path, PathBuf},
     str::FromStr,
-    sync::atomic::{self, AtomicBool},
+    sync::{
+        Mutex, PoisonError,
+        atomic::{self, AtomicBool, AtomicUsize},
+    },
 };
 
 use ployz_core::{
@@ -32,6 +37,13 @@ use super::{
 /// size Docker writes, plus an incomplete one after it.
 const BOUND_WINDOW: u64 = 2 << 20;
 const CANCEL_EVERY: usize = 4096;
+/// The text one page holds at most, past its first row. The page ends early,
+/// with a cursor, rather than outgrow the observe service's memory.
+const PAGE_BYTES: usize = 16 << 20;
+/// What a row costs on top of its text.
+const ROW_BYTES: usize = 64;
+/// How many files' bounds [`Bounds`] keeps before it starts over.
+const BOUNDS_KEPT: usize = 1 << 16;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Key {
@@ -78,6 +90,7 @@ pub struct Query {
     until: i64,
     backward: bool,
     limit: usize,
+    bytes: usize,
     cursor: Option<Key>,
 }
 
@@ -97,6 +110,7 @@ impl Query {
             until: request.until_nanos.unwrap_or(i64::MAX),
             backward: request.direction == LogDirection::Backward,
             limit: usize::from(request.limit),
+            bytes: PAGE_BYTES,
             cursor,
         })
     }
@@ -125,7 +139,12 @@ pub struct Page {
 /// Returns [`io::ErrorKind::Interrupted`] once `cancel` is set, and an error
 /// when the store's containers dir cannot be listed. A file or container
 /// cleanup deletes mid-read is skipped.
-pub fn page(store: &StoreRoot, query: &Query, cancel: &AtomicBool) -> io::Result<Page> {
+pub fn page(
+    store: &StoreRoot,
+    query: &Query,
+    known: &Bounds,
+    cancel: &AtomicBool,
+) -> io::Result<Page> {
     let mut containers = Vec::new();
     for entry in fs::read_dir(store.containers())? {
         let entry = entry?;
@@ -145,7 +164,7 @@ pub fn page(store: &StoreRoot, query: &Query, cancel: &AtomicBool) -> io::Result
                 continue;
             }
         };
-        let files = match stored_files(&dir) {
+        let files = match known.files(&dir) {
             Ok(files) => files,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error),
@@ -173,11 +192,10 @@ pub fn page(store: &StoreRoot, query: &Query, cancel: &AtomicBool) -> io::Result
         stored.read_files(query, &mut best, cancel)?;
     }
 
+    let cut = best.cut;
     let mut ranked = best.heap.into_vec();
     ranked.sort();
-    let next = (ranked.len() == query.limit)
-        .then(|| ranked.last().map(|ranked| ranked.key.to_string()))
-        .flatten();
+    let next = cut.and(ranked.last()).map(|ranked| ranked.key.to_string());
     let mut rows = Vec::with_capacity(ranked.len());
     let mut introduced = std::collections::HashSet::new();
     for ranked in ranked {
@@ -303,6 +321,7 @@ impl Stored {
         } else {
             Box::new(self.files.iter())
         };
+        let newest = self.files.last().map(|file| file.seq);
         for file in order {
             check(cancel)?;
             if best.skips(file) {
@@ -313,7 +332,9 @@ impl Stored {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error),
             };
-            for (index, (n, line)) in lines(&bytes).into_iter().enumerate() {
+            // Nothing more lands in a rotated file or a stopped container's.
+            let ended = Some(file.seq) != newest || self.meta.finished_at.is_some();
+            for (index, (n, line)) in lines(&bytes, ended).into_iter().enumerate() {
                 if index % CANCEL_EVERY == 0 {
                     check(cancel)?;
                 }
@@ -339,7 +360,8 @@ impl Stored {
 }
 
 /// A file's lines by timestamp, each with its rank among equal timestamps.
-fn lines(bytes: &[u8]) -> Vec<(u64, frame::Line)> {
+/// The unfinished line at its end counts only once the file has `ended`.
+fn lines(bytes: &[u8], ended: bool) -> Vec<(u64, frame::Line)> {
     let mut reassembler = Reassembler::default();
     let mut lines = Vec::new();
     for event in Frames::new(bytes) {
@@ -347,7 +369,9 @@ fn lines(bytes: &[u8]) -> Vec<(u64, frame::Line)> {
             reassembler.push(&entry, |line| lines.push(line));
         }
     }
-    lines.extend(reassembler.finish());
+    if ended {
+        lines.extend(reassembler.finish());
+    }
     lines.sort_by_key(|line| line.ts);
     let mut previous = None;
     let mut n = 0;
@@ -361,28 +385,69 @@ fn lines(bytes: &[u8]) -> Vec<(u64, frame::Line)> {
         .collect()
 }
 
-fn stored_files(dir: &Path) -> io::Result<Vec<StoredFile>> {
-    let mut files = Vec::new();
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let Some(name) = LogFileName::parse(entry.file_name().as_encoded_bytes()) else {
-            continue;
-        };
-        let path = entry.path();
-        let (first, last) = match bounds(&path) {
-            Ok(bounds) => bounds,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
-        };
-        files.push(StoredFile {
-            path,
-            seq: name.seq,
-            first,
-            last,
-        });
+/// Each stored file's first and last frame timestamps, kept between pages
+/// so a page opens only the files it reads. A file only grows, so a bound
+/// stays good while its length does.
+#[derive(Default)]
+pub struct Bounds {
+    known: Mutex<HashMap<PathBuf, Known>>,
+    reads: AtomicUsize,
+}
+
+#[derive(Clone, Copy)]
+struct Known {
+    len: u64,
+    first: i64,
+    last: i64,
+}
+
+impl Bounds {
+    fn files(&self, dir: &Path) -> io::Result<Vec<StoredFile>> {
+        let mut files = Vec::new();
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let Some(name) = LogFileName::parse(entry.file_name().as_encoded_bytes()) else {
+                continue;
+            };
+            let path = entry.path();
+            let (first, last) = match self.of(&path) {
+                Ok(bounds) => bounds,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            files.push(StoredFile {
+                path,
+                seq: name.seq,
+                first,
+                last,
+            });
+        }
+        files.sort_by_key(|file| file.seq);
+        Ok(files)
     }
-    files.sort_by_key(|file| file.seq);
-    Ok(files)
+
+    fn of(&self, path: &Path) -> io::Result<(i64, i64)> {
+        let len = fs::metadata(path)?.len();
+        let known = self
+            .known
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(path)
+            .copied();
+        if let Some(known) = known
+            && known.len == len
+        {
+            return Ok((known.first, known.last));
+        }
+        self.reads.fetch_add(1, atomic::Ordering::Relaxed);
+        let (first, last) = bounds(path)?;
+        let mut kept = self.known.lock().unwrap_or_else(PoisonError::into_inner);
+        if kept.len() >= BOUNDS_KEPT {
+            kept.clear();
+        }
+        kept.insert(path.to_owned(), Known { len, first, last });
+        Ok((first, last))
+    }
 }
 
 /// The first and last frame timestamps, read from the file's ends. A bound
@@ -427,16 +492,35 @@ fn describe(id: &ContainerId, meta: &ContainerMeta) -> HistoryContainer {
     }
 }
 
-/// The `limit` best rows seen so far; the heap's top is the worst of them.
+/// The best rows seen so far, at most `limit` of them and `bytes` of text
+/// past the first; the heap's top is the worst of them.
 struct Best<'q> {
     query: &'q Query,
     heap: BinaryHeap<Ranked>,
+    bytes: usize,
+    /// The best row left out for room. Every row the page keeps is better.
+    cut: Option<Key>,
 }
 
 struct Ranked {
     key: Key,
     backward: bool,
     row: HistoryRow,
+}
+
+impl Ranked {
+    fn bytes(&self) -> usize {
+        ROW_BYTES
+            + match &self.row {
+                HistoryRow::Line { text, .. } => text.len(),
+                HistoryRow::Container(_)
+                | HistoryRow::Gap { .. }
+                | HistoryRow::Exit { .. }
+                | HistoryRow::End { .. }
+                | HistoryRow::Heartbeat
+                | HistoryRow::Error(_) => 0,
+            }
+    }
 }
 
 impl Ord for Ranked {
@@ -468,39 +552,58 @@ impl<'q> Best<'q> {
         Self {
             query,
             heap: BinaryHeap::with_capacity(query.limit + 1),
+            bytes: 0,
+            cut: None,
         }
     }
 
-    fn worst(&self) -> Option<Key> {
+    /// The key a row must beat to enter the page.
+    fn edge(&self) -> Option<Key> {
         (self.heap.len() >= self.query.limit)
             .then(|| self.heap.peek().map(|ranked| ranked.key))
             .flatten()
+            .or(self.cut)
     }
 
     fn better(&self, a: &Key, b: &Key) -> bool {
         if self.query.backward { a > b } else { a < b }
     }
 
-    fn admits(&self, key: &Key) -> bool {
+    fn in_range(&self, key: &Key) -> bool {
         (self.query.since..self.query.until).contains(&key.ts)
             && self
                 .query
                 .cursor
                 .is_none_or(|cursor| self.better(&cursor, key))
-            && self.worst().is_none_or(|worst| self.better(key, &worst))
+    }
+
+    fn cut(&mut self, key: Key) {
+        if self.cut.is_none_or(|cut| self.better(&key, &cut)) {
+            self.cut = Some(key);
+        }
     }
 
     fn offer(&mut self, key: Key, row: impl FnOnce() -> HistoryRow) {
-        if !self.admits(&key) {
+        if !self.in_range(&key) {
             return;
         }
-        self.heap.push(Ranked {
+        if self.edge().is_some_and(|edge| !self.better(&key, &edge)) {
+            self.cut(key);
+            return;
+        }
+        let ranked = Ranked {
             key,
             backward: self.query.backward,
             row: row(),
-        });
-        if self.heap.len() > self.query.limit {
-            self.heap.pop();
+        };
+        self.bytes += ranked.bytes();
+        self.heap.push(ranked);
+        while self.heap.len() > self.query.limit
+            || (self.bytes > self.query.bytes && self.heap.len() > 1)
+        {
+            let Some(worst) = self.heap.pop() else { break };
+            self.bytes -= worst.bytes();
+            self.cut(worst.key);
         }
     }
 
@@ -518,11 +621,11 @@ impl<'q> Best<'q> {
         if file.last < low || file.first >= high {
             return true;
         }
-        self.worst().is_some_and(|worst| {
+        self.edge().is_some_and(|edge| {
             if query.backward {
-                file.last < worst.ts
+                file.last < edge.ts
             } else {
-                file.first > worst.ts
+                file.first > edge.ts
             }
         })
     }
@@ -536,7 +639,7 @@ mod tests {
         ContainerId, HistoryGapReason, HistoryRow, HistoryStream, LogDirection, LogHistoryRequest,
     };
 
-    use super::{Query, page};
+    use super::{Bounds, Query, ROW_BYTES, page};
     use crate::{
         observe::{
             frame::{Piece, Stream, tests::frame},
@@ -550,6 +653,7 @@ mod tests {
     struct Store {
         _dir: TestDir,
         root: StoreRoot,
+        bounds: Bounds,
     }
 
     impl Store {
@@ -558,7 +662,11 @@ mod tests {
             std::fs::create_dir_all(&dir.0).unwrap();
             let root = StoreRoot::under(&dir.0);
             root.prepare().unwrap();
-            Self { _dir: dir, root }
+            Self {
+                _dir: dir,
+                root,
+                bounds: Bounds::default(),
+            }
         }
 
         fn container(&self, hex: char, service: &str) -> ContainerId {
@@ -581,24 +689,33 @@ mod tests {
         }
 
         fn file(&self, id: &ContainerId, seq: u64, frames: &[Vec<u8>]) {
+            std::fs::write(self.path(id, seq), frames.concat()).unwrap();
+        }
+
+        fn path(&self, id: &ContainerId, seq: u64) -> std::path::PathBuf {
             let name = LogFileName {
                 seq,
                 ino: seq + 100,
             };
-            std::fs::write(
-                self.root.container(id).join(name.to_string()),
-                frames.concat(),
-            )
-            .unwrap();
+            self.root.container(id).join(name.to_string())
+        }
+
+        fn append(&self, id: &ContainerId, seq: u64, bytes: &[u8]) {
+            use std::io::Write as _;
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(self.path(id, seq))
+                .unwrap()
+                .write_all(bytes)
+                .unwrap();
         }
 
         fn page(&self, request: LogHistoryRequest) -> super::Page {
-            page(
-                &self.root,
-                &Query::new(request).unwrap(),
-                &AtomicBool::new(false),
-            )
-            .unwrap()
+            self.query(&Query::new(request).unwrap())
+        }
+
+        fn query(&self, query: &Query) -> super::Page {
+            page(&self.root, query, &self.bounds, &AtomicBool::new(false)).unwrap()
         }
     }
 
@@ -716,28 +833,128 @@ mod tests {
     }
 
     #[test]
-    fn the_active_file_reads_up_to_its_last_whole_frame() {
+    fn a_running_containers_unfinished_line_waits_until_it_ends() {
         let store = Store::new();
         let id = store.container('d', "web");
-        let unfinished = frame(T0 + 2, Stream::Stderr, b"half written", Piece::Whole);
+        let truncated = line(T0 + 2, "half written");
+        let (written, rest) = truncated.split_at(truncated.len() - 3);
+        store.file(&id, 0, &[line(T0 - 1, "rotated")]);
         store.file(
             &id,
-            0,
+            1,
             &[
                 line(T0, "done"),
                 frame(T0 + 1, Stream::Stderr, b"still ", Piece::Continues),
-                unfinished.get(..unfinished.len() - 3).unwrap().to_vec(),
+                written.to_vec(),
             ],
         );
-        let page = store.page(request(LogDirection::Forward, 100));
-        assert_eq!(texts(&page.rows), ["done", "still "]);
-        assert!(page.rows.iter().any(|row| matches!(
+        let first = store.page(LogHistoryRequest {
+            since_nanos: Some(T0),
+            ..request(LogDirection::Forward, 1)
+        });
+        assert_eq!(texts(&first.rows), ["done"]);
+        assert_eq!(first.next, None);
+
+        store.append(&id, 1, rest);
+        store.append(
+            &id,
+            1,
+            &frame(T0 + 3, Stream::Stderr, b"going", Piece::Last),
+        );
+        let second = store.page(LogHistoryRequest {
+            cursor: Some(format!("{T0}:{id}:2:0")),
+            ..request(LogDirection::Forward, 100)
+        });
+        assert_eq!(texts(&second.rows), ["still going", "half written"]);
+        assert!(second.rows.iter().any(|row| matches!(
             row,
             HistoryRow::Line {
                 stream: HistoryStream::Stderr,
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn a_stopped_containers_unfinished_line_is_read() {
+        let store = Store::new();
+        let id = store.container('d', "web");
+        store.file(
+            &id,
+            0,
+            &[frame(T0, Stream::Stdout, b"cut off", Piece::Continues)],
+        );
+        assert!(texts(&store.page(request(LogDirection::Forward, 10)).rows).is_empty());
+        let dir = store.root.container(&id);
+        let mut meta: ContainerMeta =
+            serde_json::from_slice(&std::fs::read(dir.join("meta.json")).unwrap()).unwrap();
+        meta.finished_at = Some("2025-10-09T08:53:20Z".into());
+        std::fs::write(dir.join("meta.json"), serde_json::to_vec(&meta).unwrap()).unwrap();
+        assert_eq!(
+            texts(&store.page(request(LogDirection::Forward, 10)).rows),
+            ["cut off", "exit"]
+        );
+    }
+
+    #[test]
+    fn a_page_ends_early_at_its_byte_budget() {
+        let store = Store::new();
+        let id = store.container('a', "web");
+        store.file(
+            &id,
+            0,
+            &[line(T0, "aaaa"), line(T0 + 1, "bbbb"), line(T0 + 2, "cccc")],
+        );
+        for (budget, pages) in [
+            (
+                2 * (ROW_BYTES + 4),
+                vec![vec!["aaaa", "bbbb"], vec!["cccc"]],
+            ),
+            (1, vec![vec!["aaaa"], vec!["bbbb"], vec!["cccc"]]),
+        ] {
+            let mut seen = Vec::new();
+            let mut cursor = None;
+            loop {
+                let mut query = Query::new(LogHistoryRequest {
+                    cursor: cursor.clone(),
+                    ..request(LogDirection::Forward, 100)
+                })
+                .unwrap();
+                query.bytes = budget;
+                let page = store.query(&query);
+                seen.push(texts(&page.rows));
+                match page.next {
+                    Some(next) => cursor = Some(next),
+                    None => break,
+                }
+            }
+            assert_eq!(seen, pages, "budget {budget}");
+        }
+    }
+
+    #[test]
+    fn a_page_reads_an_unchanged_files_bounds_once() {
+        let store = Store::new();
+        let id = store.container('b', "web");
+        store.file(&id, 0, &[line(T0, "old")]);
+        store.file(&id, 1, &[line(T0 + 1, "new")]);
+        let reads = || {
+            store
+                .bounds
+                .reads
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+        store.page(request(LogDirection::Forward, 10));
+        assert_eq!(reads(), 2);
+        store.page(request(LogDirection::Backward, 10));
+        assert_eq!(reads(), 2);
+        store.append(&id, 1, &line(T0 + 2, "newer"));
+        let page = store.page(LogHistoryRequest {
+            since_nanos: Some(T0 + 2),
+            ..request(LogDirection::Forward, 10)
+        });
+        assert_eq!(texts(&page.rows), ["newer"]);
+        assert_eq!(reads(), 3);
     }
 
     #[test]
@@ -814,6 +1031,7 @@ mod tests {
         let error = page(
             &store.root,
             &Query::new(request(LogDirection::Forward, 10)).unwrap(),
+            &store.bounds,
             &AtomicBool::new(true),
         )
         .err()
