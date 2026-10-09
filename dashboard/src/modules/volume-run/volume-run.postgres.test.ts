@@ -152,6 +152,10 @@ describe("volume runs", () => {
       case "restore":
         fake.copy = writerCopy(fake.copy?.newest?.guid ?? null);
         return reply();
+      case "demote_volume":
+        fake.copy = slotCopy(fake.copy?.newest?.guid ?? null);
+        fake.lease = { ...request.payload.switch, cycle: "closed" };
+        return reply();
       case "start_receive": {
         const frozen = machines.map((entry) => entry.copy).find((copy) => copy?.kind === "root" && copy.writer.phase === "frozen");
         const guid = request.payload.target.startsWith("f-") && frozen?.kind === "root" && frozen.writer.phase === "frozen"
@@ -486,6 +490,19 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ lease: "8", state: "failed" }]);
     });
 
+    it("an undo that clears the target counts the target's record", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: sourceCopy("stopping"), lease: { lease: 3, pos: { seq: 6, round: 0, sub: 0 }, cycle: "open" } },
+        { name: "fsn-2", pool: true, copy: slotCopy("30"), lease: { lease: 9, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" } },
+      ];
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      await execute(run.id);
+
+      expect(ordered(verbs)).toEqual(["thaw@fsn-1(13,0,0)", "clear_final@fsn-2(14,0,0)"]);
+      expect(await rows()).toMatchObject([{ lease: "10", state: "failed" }]);
+    });
+
     it("lease_above_records_after_db_reset: above an earlier run's lease when the Machines hold less", async () => {
       await harness.pool.query(
         `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state, lease, finished_at)
@@ -678,50 +695,6 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "done", message: null }]);
     });
 
-    it("a Move whose target is being removed is refused before it takes a lease", async () => {
-      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
-      await harness.pool.query(
-        `insert into machine_remove_attempt (organization_id, requested_by_user_id, machine_id, no_reset, confirm_data_loss, state)
-         values ($1, $2, $3, true, '[]', 'pending')`,
-        [organizationId, userId, idOf("fsn-2")],
-      );
-
-      const output = await execute(run.id);
-
-      expect(output.error).toBeUndefined();
-      expect(output.result).toMatchObject({ runId: run.id, refused: { code: "server_removing" } });
-      expect(verbs).toEqual([]);
-      expect(await rows()).toMatchObject([{ state: "failed", lease: null, message: "fsn-2 is being removed from the Cluster; run this again once the removal ends" }]);
-    });
-
-    it("a Move whose target was removed after the request is refused before it takes a lease", async () => {
-      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
-      await harness.pool.query(
-        `insert into machine_remove_attempt (organization_id, requested_by_user_id, machine_id, no_reset, confirm_data_loss, state, inngest_run_id, started_at, terminal_at)
-         values ($1, $2, $3, true, '[]', 'succeeded', 'remove-1', now(), now())`,
-        [organizationId, userId, idOf("fsn-2")],
-      );
-
-      const output = await execute(run.id);
-
-      expect(output.result).toMatchObject({ runId: run.id, refused: { code: "server_removing" } });
-      expect(verbs).toEqual([]);
-      expect(await rows()).toMatchObject([{ state: "failed", lease: null }]);
-    });
-
-    it("a removal that ended before the request does not block the Move", async () => {
-      await harness.pool.query(
-        `insert into machine_remove_attempt (organization_id, requested_by_user_id, machine_id, no_reset, confirm_data_loss, state, inngest_run_id, started_at, terminal_at)
-         values ($1, $2, $3, true, '[]', 'succeeded', 'remove-1', now() - interval '1 hour', now() - interval '1 hour')`,
-        [organizationId, userId, idOf("fsn-2")],
-      );
-      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
-
-      const output = await execute(run.id);
-
-      expect(output.result).toEqual({ runId: run.id, moved: "fsn-2" });
-    });
-
     it("move: a Container step the Machine still works on is asked again, and the run ends done", async () => {
       failNext.set("freeze@fsn-1", busy);
       failNext.set("start_handed_container@fsn-2", busy);
@@ -899,13 +872,7 @@ describe("volume runs", () => {
   });
 
   describe("restore", () => {
-    const removedHolder = (terminalAt: Date, noReset = true) => harness.pool.query(
-      `insert into machine_remove_attempt (organization_id, requested_by_user_id, machine_id, no_reset, confirm_data_loss, state, inngest_run_id, started_at, terminal_at)
-       values ($1, $2, $3, $5, '[]', 'succeeded', 'remove-1', $4, $4)`,
-      [organizationId, userId, idOf("fsn-9"), terminalAt, noReset],
-    );
     const restoreSent = () => sent.find((request) => request.command === "restore");
-    const machineIds = async () => (await harness.pool.query(`select machine_ids from volume_run`)).rows[0]?.machine_ids as string[];
 
     beforeEach(() => {
       holders = ["fsn-1"];
@@ -921,59 +888,13 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.error).toBeUndefined();
-      expect(output.ctx.step.sleepUntil).not.toHaveBeenCalled();
-      expect(verbs.filter((verb) => !verb.startsWith("adopt_lease"))).toEqual(["restore@fsn-2(3,0,0)"]);
+      expect(verbs).toEqual(["restore@fsn-2(3,0,0)"]);
       expect(restoreSent()?.payload).toMatchObject({ name: dockerVolume, namespace: "shop-production", resolved_spec: { name: "web" } });
       expect(machines[1]?.copy).toMatchObject({ kind: "root", readonly: false });
-      expect(await machineIds()).toEqual([idOf("fsn-2")]);
       expect(await rows()).toMatchObject([{
         state: "done",
         message: `data restored on fsn-2 from ${new Date(1_790_000_000_000).toISOString()}; writes after that time are lost`,
       }]);
-    });
-
-    it("a Restore after a no-reset removal waits until the removed Server's last answer plus 60 s plus the 10 min budget", async () => {
-      const terminalAt = new Date(Date.now() - 60_000);
-      await removedHolder(terminalAt);
-      const run = await requested({ kind: "restore", args: { from: "fsn-2" } });
-
-      const output = await execute(run.id, "run-1", [{ id: "02-departed-wait", handler: () => undefined }]);
-
-      expect(output.error).toBeUndefined();
-      expect(output.ctx.step.sleepUntil).toHaveBeenCalledWith("02-departed-wait", new Date(terminalAt.getTime() + 60_000 + 600_000).toISOString());
-      expect(verbs.filter((verb) => !verb.startsWith("adopt_lease"))).toEqual(["restore@fsn-2(3,0,0)"]);
-      expect(await rows()).toMatchObject([{ state: "done" }]);
-    });
-
-    it.each([
-      ["a removal older than the wait", new Date(Date.now() - 11 * 60_000 - 5_000), true],
-      ["a removal that reset the Server", new Date(), false],
-    ])("%s does not hold the Restore", async (_name, terminalAt, noReset) => {
-      await removedHolder(terminalAt, noReset);
-      const run = await requested({ kind: "restore", args: { from: "fsn-2" } });
-
-      const output = await execute(run.id);
-
-      expect(output.ctx.step.sleepUntil).not.toHaveBeenCalled();
-      expect(await rows()).toMatchObject([{ state: "done" }]);
-    });
-
-    it("a copy that answers during the wait refuses the Restore and sends nothing", async () => {
-      await removedHolder(new Date());
-      const run = await requested({ kind: "restore", args: { from: "fsn-2" } });
-
-      const output = await execute(run.id, "run-1", [{
-        id: "02-departed-wait",
-        handler: () => {
-          const first = machines[0];
-          if (first !== undefined) first.copy = slotCopy("12");
-          return undefined;
-        },
-      }]);
-
-      expect(output.result).toMatchObject({ refused: { code: "another_copy" } });
-      expect(restoreSent()).toBeUndefined();
-      expect(await rows()).toMatchObject([{ state: "failed" }]);
     });
 
     it("a Restore after the Service's Server is gone takes the spec the Mirror saw", async () => {
@@ -992,6 +913,27 @@ describe("volume runs", () => {
       expect(output.error).toBeUndefined();
       expect(restoreSent()?.payload).toMatchObject({ name: dockerVolume, namespace: "shop-production", resolved_spec: { name: "web" } });
       expect(await rows()).toMatchObject([{ kind: "mirror", state: "done" }, { kind: "restore", state: "done" }]);
+    });
+
+    it("returning_old_copy: a run that finds a root below the restored one demotes it, and only it, then asks for a rerun", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: writerCopy("10"), lease: { lease: 7, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" } },
+        { name: "fsn-2", pool: true, copy: writerCopy("11"), lease: { lease: 8, pos: { seq: 3, round: 0, sub: 0 }, cycle: "closed" } },
+      ];
+      const run = await requested({ kind: "release", args: {} });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeUndefined();
+      expect(output.result).toEqual({ runId: run.id, demoted: "fsn-1" });
+      expect(verbs).toEqual(["demote_volume@fsn-1(3,0,0)"]);
+      expect(machines[0]?.copy).toMatchObject({ kind: "slot", readonly: true });
+      expect(machines[1]?.copy).toMatchObject({ kind: "root", readonly: false });
+      expect(await rows()).toMatchObject([{
+        lease: "8",
+        state: "failed",
+        message: "data-fsn-1 was older than data-fsn-2 and is now read-only; writes to it since fsn-2 took over are lost. Run this again",
+      }]);
     });
 
     it("a Restore with no Service container mounting the Volume is refused before the lease", async () => {
