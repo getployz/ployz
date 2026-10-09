@@ -33,6 +33,7 @@ mod store;
 pub use record_owner::{RecordOwner, RecordOwnerStopped};
 #[cfg(test)]
 use store::PENDING_RESET_FILE_NAME;
+pub(crate) use store::{InterruptedReset, Opened};
 pub use store::{LocalMachineStore, StoreError};
 
 pub(crate) use local_machine::RuntimeWatchTelemetry;

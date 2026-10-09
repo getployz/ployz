@@ -27,14 +27,14 @@ use crate::{
     certificates,
     corrosion::{
         CorrosionConfig, DEFAULT_CONTAINER_NAME, Error as CorrosionError, MachineView,
-        RunningCorrosion, run_machine_publisher,
+        RunningCorrosion, remove_retained, run_machine_publisher,
     },
     dns,
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
     ingress,
     machine::{
-        LocalMachineBody, LocalMachineRecord, LocalMachineStore, RecordOwner, RecordOwnerStopped,
-        StoreError,
+        InterruptedReset, LocalMachineBody, LocalMachineRecord, LocalMachineStore, Opened,
+        RecordOwner, RecordOwnerStopped, StoreError,
     },
     machine_api::MachineApi,
     machine_api_socket::MachineApiSocket,
@@ -127,10 +127,14 @@ impl Daemon {
         build_policy: ployz_build::HostPolicy,
         run_dir: PathBuf,
     ) -> Result<Self, Error> {
-        let local = RecordOwner::spawn(LocalMachineStore::open_with_admission(
-            &config.data_dir,
-            run_dir,
-        )?)?;
+        let store = match LocalMachineStore::open_with_admission(&config.data_dir, &run_dir)? {
+            Opened::Ready(store) => store,
+            Opened::Resetting(interrupted) => {
+                finish_interrupted_reset(interrupted, remove_retained(&run_dir.join("corrosion")))
+                    .await?
+            }
+        };
+        let local = RecordOwner::spawn(store)?;
         let cleanup = tokio::task::spawn_blocking({
             let policy = build_policy.clone();
             move || ployz_build::Admission::cleanup_abandoned(&policy)
@@ -612,6 +616,16 @@ async fn serve_volume_send(
     }
 }
 
+// Corrosion outlives the daemon and holds files in the data directory, so it goes first.
+// A failed removal keeps the Resetting record, and the next start retries.
+async fn finish_interrupted_reset(
+    interrupted: InterruptedReset,
+    remove_corrosion: impl Future<Output = Result<(), CorrosionError>>,
+) -> Result<LocalMachineStore, Error> {
+    remove_corrosion.await?;
+    Ok(interrupted.complete()?)
+}
+
 async fn start_corrosion(
     config: &DaemonConfig,
     local: &RecordOwner,
@@ -744,8 +758,9 @@ mod tests {
     use tonic::transport::Endpoint;
 
     use super::{
-        ContainerMode, Daemon, DaemonConfig, MachineApiSocket, ManagementConfig,
-        wait_for_participation, wait_until_socket_accepts,
+        ContainerMode, CorrosionError, Daemon, DaemonConfig, Error, InterruptedReset,
+        LocalMachineStore, MachineApiSocket, ManagementConfig, Opened, StoreError,
+        finish_interrupted_reset, wait_for_participation, wait_until_socket_accepts,
     };
     use crate::test_dir::TestDir;
     use tokio_util::sync::CancellationToken;
@@ -973,6 +988,60 @@ mod tests {
             .expect("reset shutdown must not wait on a held Machine API connection")
             .unwrap();
         assert!(!data_dir.exists());
+    }
+
+    fn interrupted_reset(data_dir: &Path) -> (ployz_core::MachineId, InterruptedReset) {
+        let mut store = LocalMachineStore::open(data_dir).unwrap();
+        let id = store.record().id();
+        store.begin_reset().unwrap();
+        drop(store);
+        match LocalMachineStore::open_with_admission(data_dir, data_dir.join(".run")).unwrap() {
+            Opened::Resetting(interrupted) => (id, interrupted),
+            Opened::Ready(_) => panic!("a begun reset must reopen as Resetting"),
+        }
+    }
+
+    #[tokio::test]
+    async fn interrupted_reset_removes_corrosion_before_clearing_the_data_dir() {
+        let root = TestDir::new("ployzd-interrupted-reset");
+        let data_dir = root.0.join("data");
+        let (old_id, interrupted) = interrupted_reset(&data_dir);
+        let machine_json = data_dir.join("machine.json");
+
+        let store = finish_interrupted_reset(interrupted, async {
+            assert!(machine_json.exists(), "Corrosion is removed first");
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        assert_ne!(store.record().id(), old_id);
+        assert_eq!(
+            store.record().phase(),
+            ployz_core::LocalMachinePhase::Uninitialized
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_corrosion_removal_keeps_the_reset_for_retry() {
+        let root = TestDir::new("ployzd-interrupted-reset-retry");
+        let data_dir = root.0.join("data");
+        let (old_id, interrupted) = interrupted_reset(&data_dir);
+
+        let result = finish_interrupted_reset(interrupted, async {
+            Err(CorrosionError::Api("docker unavailable".into()))
+        })
+        .await;
+
+        assert!(matches!(result, Err(Error::Corrosion(_))));
+        assert!(matches!(
+            LocalMachineStore::open(&data_dir),
+            Err(StoreError::ResetInterrupted(_))
+        ));
+        let persisted: crate::machine::LocalMachineRecord =
+            serde_json::from_slice(&fs::read(data_dir.join("machine.json")).unwrap()).unwrap();
+        assert_eq!(persisted.id(), old_id);
+        assert_eq!(persisted.phase(), ployz_core::LocalMachinePhase::Resetting);
     }
 
     #[tokio::test]
