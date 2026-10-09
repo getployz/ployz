@@ -83,7 +83,7 @@ export function StoreConfigDrawer({ params, config }: { params: ConfigRouteParam
             .filter(Boolean).join(" · ")}
         </p>
       </CanvasInspectorHeader>
-      <ConfigBody key={config.name} state={state} item={item} services={services} targets={targets} serviceNames={serviceNames}
+      <ConfigBody key={config.id} state={state} item={item} services={services} targets={targets} serviceNames={serviceNames}
         values={() => configReferenceValues(settings, services)} removing={removing} params={params} version={diff.version} />
     </div>
   );
@@ -125,7 +125,9 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
     const submitted = new Map([...drafts].filter(([file]) => dirty.has(file)));
     for (const file of submitted.keys()) submittedFiles.current.set(file, submitted);
     setSaveError(null);
-    writer.commit(saveConfigCommand(state.environment, state.config.name, edits), SHOWN_REFUSALS).isPersisted.promise.catch((error) => {
+    writer.commit(saveConfigCommand(state.environment, state.config.name, edits), SHOWN_REFUSALS).isPersisted.promise.then(() => {
+      setDrafts((current) => new Map([...current].filter(([file, value]) => submitted.get(file) !== value)));
+    }).catch((error) => {
       setDrafts((current) => new Map([
         ...[...submitted].filter(([file]) => submittedFiles.current.get(file) === submitted && !current.has(file)),
         ...current,
@@ -134,7 +136,6 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
         setSaveError(error instanceof StoreRefused ? error.message : "Couldn't save. Try again.");
       }
     });
-    setDrafts((current) => new Map([...current].filter(([file, value]) => submitted.get(file) !== value)));
   }
 
   function removeFile(file: string) {
@@ -327,7 +328,7 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
         <Skeleton className="h-80 w-full" />
       ) : (
         <div className="overflow-hidden rounded-md border">
-          <ConfigFileEditor fileName={current} value={textOf(current)} targets={targets} services={serviceNames}
+          <ConfigFileEditor key={current} fileName={current} value={textOf(current)} targets={targets} services={serviceNames}
             ariaLabel={`${current} contents`} onSave={onSave}
             onChange={(content) => { if (!readOnly) onDraft(current, { content }); }} />
         </div>
