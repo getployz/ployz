@@ -1,33 +1,7 @@
-import type { LeaseRecord, MachineId, VolumeCopy } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { participantsOf, type PlanInput, planFromCopies, type Role, roleOf } from "#/modules/volume-run/plan";
 import type { Member } from "#/modules/volume-run/volume-run";
-
-const snapshot = { name: "ployz-1", guid: "11", created_unix_seconds: 1_790_000_000 };
-const lease = (cycle: LeaseRecord["cycle"], number = 4): LeaseRecord => ({ lease: number, pos: { seq: 4, round: 0, sub: 5 }, cycle });
-
-const COPIES = {
-  writer: { kind: "root", writer: { phase: "idle" }, readonly: false, newest: snapshot },
-  switching: { kind: "root", writer: { phase: "frozen", guid: "11" }, readonly: true, newest: snapshot },
-  handed: { kind: "root", writer: { phase: "handed", guid: "11" }, readonly: true, newest: snapshot },
-  mirror: { kind: "slot", mirror: { phase: "idle" }, readonly: true, newest: snapshot, resume_token: null },
-  final: { kind: "slot", mirror: { phase: "final", guid: "11" }, readonly: true, newest: snapshot, resume_token: null },
-  stale: { kind: "slot", mirror: { phase: "handed_in", guid: "11" }, readonly: true, newest: snapshot, resume_token: null },
-  promoting: { kind: "slot", mirror: { phase: "promoting" }, readonly: true, newest: snapshot, resume_token: null },
-  stopping: { kind: "root", writer: { phase: "stopping" }, readonly: false, newest: snapshot },
-  thawing: { kind: "root", writer: { phase: "thawing" }, readonly: true, newest: snapshot },
-  behind: { kind: "slot", mirror: { phase: "idle" }, readonly: true, newest: { ...snapshot, guid: "10" }, resume_token: null },
-  promoted: { kind: "root", writer: { phase: "idle" }, readonly: true, newest: snapshot },
-} satisfies Record<string, VolumeCopy>;
-
-type Copy = keyof typeof COPIES | "empty" | "unanswered";
-
-function member(server: string, copy: Copy, options: { pool?: boolean; cycle?: LeaseRecord["cycle"]; lease?: number } = {}): Member {
-  const machine = { id: server.padEnd(32, "0") as MachineId, name: server };
-  if (copy === "unanswered") return { machine, answered: false };
-  const view = { copy: copy === "empty" ? null : (COPIES[copy] ?? null), lease: options.lease !== undefined ? lease(options.cycle ?? "closed", options.lease) : options.cycle === undefined ? null : lease(options.cycle) };
-  return { machine, address: "fdcc::1", answered: true, pool: options.pool ?? copy !== "empty", view };
-}
+import { type Copy, member } from "#/modules/volume-run/volume-run.test-fixture";
 
 const mirror = (to: string): PlanInput => ({ kind: "mirror", args: { to }, volumeName: "data", orphan: false });
 const sync = (full = false): PlanInput => ({ kind: "sync", args: { full }, volumeName: "data", orphan: false });

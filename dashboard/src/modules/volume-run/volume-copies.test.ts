@@ -68,6 +68,12 @@ describe("volumeCopies", () => {
     expect(shown.offers).toMatchObject({ mirror: { servers: ["c"] }, move: { servers: ["c"] } });
   });
 
+  it("keeps a copy an interrupted demote left read-only old, even with the higher record", () => {
+    const shown = view([member("a", "promoted", { lease: 9 }), member("b", "writer", { lease: 8 }), pooled("c")]);
+    expect(shown.copies.map((entry) => [entry.server, entry.role])).toEqual([["b", "writer"], ["a", "old"]]);
+    expect(shown.sealing).toBe("data-a");
+  });
+
   it("promises no seal for tied writers, whatever the run history says", () => {
     const shown = view([member("a", "writer", { lease: 8 }), member("b", "writer", { lease: 8 })], [run("restore", { from: "b" }, "done")]);
     expect(shown.twoWriters).toBe(true);

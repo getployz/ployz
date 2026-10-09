@@ -26,6 +26,7 @@ export function useVolumeMembers(organizationSlug: string, environment: Environm
   return useQuery({
     queryKey: [...volumeRunKeys.all, organizationSlug, volumeId, "members"] as const,
     queryFn: () => inspectVolumeCopiesServerFn({ data: { organizationSlug, environment, volumeId } }),
+    staleTime: 15_000,
     refetchInterval: 15_000,
   });
 }
