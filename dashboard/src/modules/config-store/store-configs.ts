@@ -81,7 +81,7 @@ export function configTrays(services: readonly Pick<ServiceListing, "id" | "name
       const changes = serviceChanges(diff, service.id);
       return [service.id, configs.flatMap((config): MountedConfig[] => config.mounts
         .filter((mount) => mount.service === service.name)
-        .map((mount) => ({ config, dir: mount.dir, mountChanged: changes.has(`configs.${config.name}`) })))];
+        .map((mount) => ({ config, dir: mount.dir, mountChanged: changes.has(`configs.@${config.id}`) })))];
     })),
     unmounted: configs.filter((config) => !config.mounts.some((mount) => names.has(mount.service))),
   };

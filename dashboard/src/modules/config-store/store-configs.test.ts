@@ -55,21 +55,21 @@ describe("Config trays", () => {
   const services = [listing("s1", "web"), listing("s2", "worker")];
   const configs = [
     config("sentry", [{ service: "web", dir: "/etc/sentry" }, { service: "worker", dir: "/etc/sentry" }]),
-    config("relay", [{ service: "worker", dir: "/etc/relay" }]),
+    { ...config("relay", [{ service: "worker", dir: "/etc/relay" }]), id: "5802594f-5019-45d9-abbd-7257780c8565" },
     config("loose", []),
     config("orphan", [{ service: "gone", dir: "/etc" }]),
   ];
   const diff = asTestDouble<DiffView>()({ changes: [{ type: "service", id: "s2", name: "worker", lifecycle: "update", comparison: "head", data: null,
-    settings: [{ path: "worker.configs.relay", kind: "add", before: null, after: "/etc/relay", canRestore: true }] }] });
+    settings: [{ path: "worker.configs.@5802594f-5019-45d9-abbd-7257780c8565", kind: "add", before: null, after: "/etc/relay", canRestore: true }] }] });
   const { trays, unmounted } = configTrays(services, configs, diff);
 
   it("puts a mounted Config in a tray under each Service that mounts it, with its directory", () => {
     expect(trays.get("s1")?.map((tray) => [tray.config.id, tray.dir])).toEqual([["sentry", "/etc/sentry"]]);
-    expect(trays.get("s2")?.map((tray) => [tray.config.id, tray.dir])).toEqual([["sentry", "/etc/sentry"], ["relay", "/etc/relay"]]);
+    expect(trays.get("s2")?.map((tray) => [tray.config.id, tray.dir])).toEqual([["sentry", "/etc/sentry"], ["5802594f-5019-45d9-abbd-7257780c8565", "/etc/relay"]]);
   });
 
   it("marks only the mount the next Deploy stages", () => {
-    expect(trays.get("s2")?.map((tray) => [tray.config.id, tray.mountChanged])).toEqual([["sentry", false], ["relay", true]]);
+    expect(trays.get("s2")?.map((tray) => [tray.config.id, tray.mountChanged])).toEqual([["sentry", false], ["5802594f-5019-45d9-abbd-7257780c8565", true]]);
   });
 
   it("leaves a Config no Service here mounts as its own node", () => {
