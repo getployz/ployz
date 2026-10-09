@@ -4,7 +4,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { EditorView } from "@codemirror/view";
 import { undo } from "@codemirror/commands";
-import type { ConfigItemView, ConfigQuery, ConfigView, ConfigWritten, ServiceListing } from "@ployz/sdk";
+import { startCompletion } from "@codemirror/autocomplete";
+import type { ConfigItemView, ConfigQuery, ConfigView, ConfigWritten, EnvironmentView, ServiceListing } from "@ployz/sdk";
 import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import { asTestDouble } from "#/lib/test-double";
@@ -33,7 +34,7 @@ function deferred() {
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-async function openDrawer(item = initial) {
+async function openDrawer(item = initial, settings: EnvironmentView["settings"] = []) {
   vi.stubGlobal("scrollTo", () => {});
   vi.spyOn(changes, "useStoreChangeActions").mockReturnValue(asTestDouble<ReturnType<typeof changes.useStoreChangeActions>>()({ dialog: null }));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -45,7 +46,7 @@ async function openDrawer(item = initial) {
       case "config": return { view: "config", ...store.item };
       case "configs": return { view: "configs", environment: env, configs: [store.item] };
       case "services": return { view: "services", environment: env, services: [asTestDouble<ServiceListing>()({ id: "api", name: "api", private_dns: "api", change: null })] };
-      case "environment": return { view: "environment", environment: env, settings: [] };
+      case "environment": return { view: "environment", environment: env, settings };
       case "diff": return { view: "diff", environment: env, version: "1", saved: 0, published: false, total_count: 0,
         changes: [], hints: [], incoming: [], follow_hints: [] };
       default: throw new Error(`Unexpected test query ${query.query}`);
@@ -83,10 +84,38 @@ async function openDrawer(item = initial) {
   return {
     store, write,
     edit(text: string) { act(() => { const view = editor(); view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, userEvent: "input.type" }); }); },
+    complete() { act(() => { startCompletion(editor()); }); },
     undo() { act(() => { undo(editor()); }); },
     text: () => editor().state.doc.toString(),
   };
 }
+
+it("recognizes unexported Config references without offering them in autocomplete", async () => {
+  const test = await openDrawer(initial, [
+    { path: "api.env.CONFIG_SENTINEL", value: { secret: true }, default: null, apply: "staged" },
+    { path: "api.env.CONFIG_SENTINEL.exported", value: false, default: false, apply: "staged" },
+    { path: "api.env.CONFIG_MODE", value: "debug", default: null, apply: "staged" },
+    { path: "api.env.CONFIG_MODE.exported", value: false, default: false, apply: "staged" },
+  ]);
+  test.edit("token: ${{ api.CONFIG_SENTINEL }}\nmode: ${{ api.CONFIG_MODE }}\nmissing: ${{ api.MISSING }}");
+  expect(screen.getByRole("region", { name: "Depends on" }).textContent).toContain("api");
+  expect(within(screen.getByRole("region", { name: "Secrets" })).getByText("api.CONFIG_SENTINEL")).toBeTruthy();
+  const editor = screen.getByRole("textbox", { name: "config.yml contents" });
+  expect(Array.from(editor.querySelectorAll(".cm-config-ref"), (token) => token.textContent))
+    .toEqual(["${{ api.CONFIG_SENTINEL }}", "${{ api.CONFIG_MODE }}"]);
+  expect(Array.from(editor.querySelectorAll(".cm-config-unknown"), (token) => token.textContent))
+    .toEqual(["${{ api.MISSING }}"]);
+  fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+  const preview = screen.getByLabelText("Preview");
+  expect(within(preview).getByLabelText("Secret")).toBeTruthy();
+  expect(preview.textContent).toContain("mode: debug");
+  fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+  await screen.findByRole("textbox", { name: "config.yml contents" });
+  test.edit("${{ api.");
+  test.complete();
+  await screen.findByRole("option", { name: /api.PORT/ });
+  expect(screen.queryByRole("option", { name: /CONFIG_SENTINEL|CONFIG_MODE/ })).toBeNull();
+});
 
 it("keeps text typed during a pending save when that save commits", async () => {
   const test = await openDrawer();
