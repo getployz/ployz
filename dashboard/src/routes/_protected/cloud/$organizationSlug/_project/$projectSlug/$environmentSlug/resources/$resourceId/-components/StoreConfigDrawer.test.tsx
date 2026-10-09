@@ -278,3 +278,68 @@ it("guards a pending save and retains its text when persistence is refused", asy
   act(() => { void test.router.navigate({ to: "/" }); });
   await screen.findByRole("alertdialog");
 });
+
+it("releases navigation protection once a pending save persists", async () => {
+  const test = await openDrawer();
+  const pending = deferred();
+  test.write.mockImplementationOnce(() => pending.promise);
+  test.edit("persisted text");
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
+  test.store.item = { ...initial, contents: { "config.yml": "persisted text" } };
+  await act(async () => { pending.resolve(accepted); });
+  await act(async () => { await test.router.navigate({ to: "/" }); });
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(screen.queryByRole("textbox", { name: "config.yml contents" })).toBeNull();
+});
+
+it("lets the user explicitly discard a pending save without restoring its refused draft", async () => {
+  const test = await openDrawer();
+  const pending = deferred();
+  test.write.mockImplementationOnce(() => pending.promise);
+  test.edit("discard this text");
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(true));
+  fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+  await act(async () => { pending.resolve(refused); });
+  await waitFor(() => expect(test.text()).toBe("initial"));
+  expect(screen.queryByText("Unknown Config reference")).toBeNull();
+  await act(async () => { await test.router.navigate({ to: "/" }); });
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+});
+
+it.each(["retry", "discard"])("keeps a refused save guarded when rollback reads fail until %s", async (action) => {
+  const test = await openDrawer();
+  const pending = deferred();
+  test.write.mockImplementationOnce(() => pending.promise);
+  test.edit("valuable offline text");
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(true));
+  const read = vi.mocked(functions.readStoreViewServerFn).getMockImplementation();
+  if (!read) throw new Error("Store test reader did not mount");
+  vi.mocked(functions.readStoreViewServerFn).mockRejectedValue(new TypeError("Failed to fetch"));
+  await act(async () => { pending.resolve(refused); });
+  await screen.findByText("Unknown Config reference");
+  expect(test.text()).toBe("valuable offline text");
+  act(() => { void test.router.navigate({ to: "/" }); });
+  const dialog = await screen.findByRole("alertdialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Keep editing" }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  vi.mocked(functions.readStoreViewServerFn).mockImplementation(read);
+  if (action === "retry") {
+    test.write.mockImplementationOnce(async () => {
+      test.store.item = { ...initial, contents: { "config.yml": "valuable offline text" } };
+      return accepted;
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(test.write).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Discard" })).toBeNull());
+  } else {
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+  }
+  await act(async () => { await test.router.navigate({ to: "/" }); });
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(screen.queryByRole("textbox", { name: "config.yml contents" })).toBeNull();
+});

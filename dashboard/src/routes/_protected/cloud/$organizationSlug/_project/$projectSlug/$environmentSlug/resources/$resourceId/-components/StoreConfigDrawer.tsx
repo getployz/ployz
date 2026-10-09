@@ -98,6 +98,8 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
   const writer = useStoreWriter(state.organizationSlug);
   const [drafts, setDrafts] = useState<ReadonlyMap<string, FileDraft>>(new Map());
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [failedSaves, setFailedSaves] = useState<ReadonlySet<string>>(new Set());
+  const [pendingSaves, setPendingSaves] = useState<ReadonlySet<ReadonlyMap<string, FileDraft>>>(new Set());
   const submittedFiles = useRef(new Map<string, ReadonlyMap<string, FileDraft>>());
   const stored = item.files.map((file) => file.name);
   const fileNames = [...stored, ...[...drafts.keys()].filter((name) => !stored.includes(name))];
@@ -105,13 +107,18 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
   const current = selected !== null && fileNames.includes(selected) ? selected : fileNames[0] ?? null;
   const textOf = (file: string) => drafts.get(file)?.content ?? item.contents[file] ?? "";
   const edits = configEdits(item, drafts);
+  // A failed rollback read can leave the optimistic contents cached.
+  edits.push(...[...drafts]
+    .filter(([file]) => failedSaves.has(file) && !edits.some((edit) => edit.file === file))
+    .map(([file, draft]) => ({ file, ...draft })));
   const dirty = new Set(edits.map((edit) => edit.file));
+  const unsaved = new Set([...dirty, ...[...pendingSaves].flatMap((submitted) => [...submitted.keys()])]);
   const oversized = fileNames.map((file) => ({ file, error: configFileSizeError(utf8Bytes(textOf(file))) }))
     .find((one) => one.error !== null);
 
   const blocker = useBlocker({
-    shouldBlockFn: ({ current: from, next }) => dirty.size > 0 && from.pathname !== next.pathname,
-    enableBeforeUnload: () => dirty.size > 0,
+    shouldBlockFn: ({ current: from, next }) => unsaved.size > 0 && from.pathname !== next.pathname,
+    enableBeforeUnload: () => unsaved.size > 0,
     withResolver: true,
   });
 
@@ -125,10 +132,13 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
     if (edits.length === 0 || oversized) return;
     const submitted = new Map([...drafts].filter(([file]) => dirty.has(file)));
     for (const file of submitted.keys()) submittedFiles.current.set(file, submitted);
+    setPendingSaves((current) => new Set(current).add(submitted));
+    setFailedSaves((current) => new Set([...current].filter((file) => !submitted.has(file))));
     setSaveError(null);
     writer.commit(saveConfigCommand(state.environment, state.config.name, edits), SHOWN_REFUSALS).isPersisted.promise.then(() => {
       setDrafts((current) => new Map([...current].filter(([file, value]) => submitted.get(file) !== value)));
     }).catch((error) => {
+      setFailedSaves((current) => new Set([...current, ...[...submitted.keys()].filter((file) => submittedFiles.current.get(file) === submitted)]));
       setDrafts((current) => new Map([
         ...[...submitted].filter(([file]) => submittedFiles.current.get(file) === submitted && !current.has(file)),
         ...current,
@@ -136,10 +146,13 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
       if ([...submitted.keys()].some((file) => submittedFiles.current.get(file) === submitted)) {
         setSaveError(error instanceof StoreRefused ? error.message : "Couldn't save. Try again.");
       }
+    }).finally(() => {
+      setPendingSaves((current) => new Set([...current].filter((pending) => pending !== submitted)));
     });
   }
 
   function removeFile(file: string) {
+    setFailedSaves((current) => new Set([...current].filter((name) => name !== file)));
     const submitted = new Map([...drafts].filter(([name]) => name === file));
     submittedFiles.current.set(file, submitted);
     setDrafts((current) => new Map([...current].filter(([name]) => name !== file)));
@@ -167,8 +180,8 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
             footer={removing ? null : (
               <div className="flex items-center justify-end gap-3">
                 {saveError ?? oversized?.error ? <FieldError className="mr-auto">{saveError ?? `${oversized?.file}: ${oversized?.error}`}</FieldError> : null}
-                {dirty.size > 0 ? (
-                  <Button variant="ghost" onClick={() => { submittedFiles.current.clear(); setDrafts(new Map()); setSaveError(null); }}>Discard</Button>
+                {unsaved.size > 0 ? (
+                  <Button variant="ghost" onClick={() => { submittedFiles.current.clear(); setPendingSaves(new Set()); setFailedSaves(new Set()); setDrafts(new Map()); setSaveError(null); }}>Discard</Button>
                 ) : null}
                 <Button onClick={save} disabled={dirty.size === 0 || oversized !== undefined}>Save</Button>
               </div>
@@ -216,7 +229,7 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle>
-            <AlertDialogDescription>Edits to {[...dirty].join(", ")} are lost.</AlertDialogDescription>
+            <AlertDialogDescription>Edits to {[...unsaved].join(", ")} are lost.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => blocker.reset?.()}>Keep editing</AlertDialogCancel>
