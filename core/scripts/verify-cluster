@@ -319,21 +319,22 @@ def tcp_answers(stream):
 def dns_soak_stop(commands, backend, node):
     backend.exec(node, ["bash", "-ec", """
 touch /tmp/dns-soak.stop
-for loop in tcp udp workload; do
+for loop in tcp udp tcpdial workload; do
     while [ ! -e "/tmp/dns-soak.$loop-done" ]; do sleep 0.1; done
 done
 """], timeout=30)
     def read(name):
         return backend.exec(node, ["sh", "-c", f"cat /tmp/dns-soak.{name} 2>/dev/null"], check=False).stdout
     report = {"machine": node["name"]}
-    for loop in ["udp", "workload"]:
+    for loop in ["udp", "tcpdial", "workload"]:
         report[loop] = {"sent": int(read(loop + "-sent") or 0), "failed": read(loop + "-failed").decode(errors="replace").splitlines()}
     sent = int(read("tcp-sent") or 0)
     answered, bad = tcp_answers(read("tcp-out"))
-    report["tcp"] = {"sent": sent, "answered": len(answered), "missing": sorted(set(range(1, sent + 1)) - set(answered)), "bad": bad}
+    report["tcp"] = {"sent": sent, "answered": len(answered), "missing": sorted(set(range(1, sent + 1)) - set(answered)), "bad": bad,
+                     "closed_at": read("tcp-closed").decode().strip() or None}
     (commands.evidence / f"dns-soak-{node['name']}.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report))
-    lost = report["udp"]["failed"] or report["workload"]["failed"] or report["tcp"]["missing"] or report["tcp"]["bad"]
+    lost = report["udp"]["failed"] or report["tcpdial"]["failed"] or report["workload"]["failed"] or report["tcp"]["missing"] or report["tcp"]["bad"]
     return 1 if lost or not sent else 0
 
 
@@ -492,7 +493,7 @@ def main():
             command.add_argument("state", choices=["kill", "start"])
         if action == "dns-soak":
             command.add_argument("state", choices=["start", "stop"],
-                                 help="Query the Machine's Internal DNS over UDP and one TCP connection until stop; "
+                                 help="Query the Machine's Internal DNS over UDP, one persistent TCP connection and a TCP dial per query until stop; "
                                       "stop writes evidence/dns-soak-<machine>.json and fails on any lost lookup")
             command.add_argument("--name", default="dns-api.app.internal", help="The name to resolve, SERVICE.NAMESPACE.internal")
             command.add_argument("--workload", help="Also resolve through 127.0.0.11 inside this container")

@@ -195,6 +195,7 @@ async fn internal_dns_survives_daemon_restart() {
         "the soak must span the restarts: {report:?}"
     );
     assert_eq!(report.udp.failed, Vec::<String>::new(), "{report:?}");
+    assert_eq!(report.tcpdial.failed, Vec::<String>::new(), "{report:?}");
     assert_eq!(report.workload.failed, Vec::<String>::new(), "{report:?}");
     assert_eq!(
         report.tcp_answered,
@@ -244,6 +245,7 @@ struct DnsSoak<'a> {
 #[derive(Debug)]
 struct SoakReport {
     udp: SoakCounts,
+    tcpdial: SoakCounts,
     workload: SoakCounts,
     tcp_sent: u16,
     tcp_answered: Vec<u16>,
@@ -290,7 +292,7 @@ impl<'a> DnsSoak<'a> {
         self.cluster
             .machine_shell(
                 self.index,
-                "touch /tmp/dns-soak.stop; while [ ! -e /tmp/dns-soak.tcp-done ] || [ ! -e /tmp/dns-soak.udp-done ] || [ ! -e /tmp/dns-soak.workload-done ]; do sleep 0.1; done",
+                "touch /tmp/dns-soak.stop; while [ ! -e /tmp/dns-soak.tcp-done ] || [ ! -e /tmp/dns-soak.udp-done ] || [ ! -e /tmp/dns-soak.tcpdial-done ] || [ ! -e /tmp/dns-soak.workload-done ]; do sleep 0.1; done",
             )
             .unwrap();
         let tcp_sent = self.read("tcp-sent").trim().parse().unwrap();
@@ -303,6 +305,7 @@ impl<'a> DnsSoak<'a> {
             .unwrap();
         SoakReport {
             udp: self.counts("udp"),
+            tcpdial: self.counts("tcpdial"),
             workload: self.counts("workload"),
             tcp_sent,
             tcp_answered: answered_ids(&hex_bytes(stream.trim())),
