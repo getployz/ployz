@@ -23,10 +23,11 @@ it("retains logs and exhausted history across navigation, and reconnects only on
   vi.stubGlobal("EventSource", FakeEventSource);
   const fetchHistory = vi.fn(async (_url: string, init: RequestInit) => {
     expect(init.signal?.aborted).toBe(false);
-    if (cursorOf(init) !== undefined) return Response.json({ rows: [], failures: [], cursor: null });
-    // The newest page sits inside the live tail; the read before the tail goes further back.
-    const row = bodyOf(init).before === undefined ? { ...line, id: "store/m/c/150/0", timestamp: "150" } : { ...line, id: "store/m/c/50/0", timestamp: "50" };
-    return Response.json({ rows: [row], failures: [], cursor: "older" });
+    if (cursorOf(init) === "older") return Response.json({ rows: [], failures: [], cursor: null });
+    // The newest page sits inside the live tail; the next page goes further back.
+    return cursorOf(init) === "second"
+      ? Response.json({ rows: [{ ...line, id: "store/m/c/50/0", timestamp: "50" }], failures: [], cursor: "older" })
+      : Response.json({ rows: [{ ...line, id: "store/m/c/150/0", timestamp: "150" }], failures: [], cursor: "second" });
   });
   vi.stubGlobal("fetch", fetchHistory);
   const client = new QueryClient();
@@ -51,11 +52,10 @@ it("retains logs and exhausted history across navigation, and reconnects only on
     await waitFor(() => expect(stream.collection.size).toBe(3));
     expect(screen.queryByRole("button", { name: "Load older" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
-    // A short tail reads the Log Store's newest page at once, then before the tail that page sat inside.
+    // A short tail reads the Log Store's newest page at once, then on past the tail that page sat inside.
     await waitFor(() => expect(fetchHistory).toHaveBeenCalledTimes(2));
-    expect(bodyOf(fetchHistory.mock.calls[0]?.[1])).not.toHaveProperty("cursor");
-    expect(bodyOf(fetchHistory.mock.calls[0]?.[1])).not.toHaveProperty("before");
-    expect(bodyOf(fetchHistory.mock.calls[1]?.[1]).before).toBe("100");
+    expect(cursorOf(fetchHistory.mock.calls[0]?.[1])).toBeUndefined();
+    expect(cursorOf(fetchHistory.mock.calls[1]?.[1])).toBe("second");
     fireEvent.change(screen.getByLabelText("Search loaded logs"), { target: { value: "missing" } });
     expect(screen.getByText("No logs match your filters")).toBeTruthy();
     expect(screen.getByText("Scroll up or press Home to check older logs.")).toBeTruthy();

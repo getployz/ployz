@@ -107,22 +107,6 @@ export function restartContainerLogs(collection: ContainerLogs, waiting: readonl
 }
 
 /**
- * The newest of each container's oldest loaded line. From there on every container's lines are already here, so when
- * the Log Store's newest page sat entirely inside the live tail, the next read starts before it instead.
- */
-export function historyStart(rows: Iterable<ContainerLogRow>) {
-  const oldest = new Map<string, bigint>();
-  for (const row of rows) {
-    if (row.kind !== "line" || row.channel === "lifecycle") continue;
-    const key = `${row.machineId}/${row.containerId}`;
-    const at = BigInt(row.timestamp);
-    const known = oldest.get(key);
-    if (known === undefined || at < known) oldest.set(key, at);
-  }
-  return oldest.size ? [...oldest.values()].reduce((max, at) => (at > max ? at : max)).toString() : undefined;
-}
-
-/**
  * The live tail starts each container somewhere inside the Log Store's newest page, so the two overlap. The Store's
  * read of a timestamp group replaces the tail's copy of it, and `stored` remembers the group for later live lines.
  */

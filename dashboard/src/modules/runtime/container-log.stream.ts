@@ -2,7 +2,7 @@ import { createCollection, localOnlyCollectionOptions } from "@tanstack/react-db
 import { Schema } from "effect";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
 import { liveStream } from "#/lib/live.stream";
-import { appendContainerLogs, containerLogEventSchema, containerLogPageSchema, historyStart, LIVE_LOG_LIMIT, mergeContainerHistory, restartContainerLogs, trimContainerLogs, type ContainerLogRow, type MissingServer } from "./container-log.collection";
+import { appendContainerLogs, containerLogEventSchema, containerLogPageSchema, LIVE_LOG_LIMIT, mergeContainerHistory, restartContainerLogs, trimContainerLogs, type ContainerLogRow, type MissingServer } from "./container-log.collection";
 
 export type ContainerLogSelection = { organizationSlug: string; projectSlug?: string; environmentSlug?: string; deploymentId?: string; serviceId?: string };
 
@@ -14,7 +14,7 @@ export type ContainerLogSelection = { organizationSlug: string; projectSlug?: st
  */
 type LogStreamState = {
   opened: boolean; offline: boolean; refused: boolean;
-  missing: { live: Record<string, Omit<MissingServer, "machineId"> & { containerId: string }>; history: readonly MissingServer[] };
+  missing: { live: Record<string, Omit<MissingServer, "machineId"> & { containerIds: readonly string[] }>; history: readonly MissingServer[] };
   historyPending: boolean; historyError: boolean;
 };
 
@@ -93,16 +93,19 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
               if (decoded._tag === "None") return;
               if (decoded.value.type === "record") {
                 const { machineId, containerId } = decoded.value.record;
-                // The container that failed is sending again.
-                if (snapshot.missing.live[machineId]?.containerId === containerId) {
+                // A container that failed is sending again; the note stays while another on that Server is still down.
+                const server = snapshot.missing.live[machineId];
+                if (server?.containerIds.includes(containerId)) {
                   const { [machineId]: _, ...live } = snapshot.missing.live;
-                  publish({ ...snapshot, missing: { ...snapshot.missing, live } });
+                  const containerIds = server.containerIds.filter(failed => failed !== containerId);
+                  publish({ ...snapshot, missing: { ...snapshot.missing, live: containerIds.length ? { ...live, [machineId]: { ...server, containerIds } } : live } });
                 }
                 pending.push(decoded.value.record); flush ??= setTimeout(land, 250);
               } else {
                 const { machineId, containerId, message } = decoded.value;
                 const machineName = [...collection.values()].find(row => row.machineId === machineId)?.machineName ?? machineId;
-                publish({ ...snapshot, missing: { ...snapshot.missing, live: { ...snapshot.missing.live, [machineId]: { machineName, containerId, message } } } });
+                const containerIds = [...(snapshot.missing.live[machineId]?.containerIds ?? []).filter(failed => failed !== containerId), containerId];
+                publish({ ...snapshot, missing: { ...snapshot.missing, live: { ...snapshot.missing.live, [machineId]: { machineName, containerIds, message } } } });
               }
             },
           },
@@ -131,17 +134,16 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
       const oldest = () => earliest(collection.values());
       const reached = oldest();
       let failures: readonly MissingServer[] = [];
-      let next: { cursor?: string; beforeTail?: string } = cursor === undefined ? {} : { cursor };
+      // Each read follows the last page's cursor; a page the live tail already had dedupes by its lines' ids.
       for (let read = 0; read < OVERLAP_PAGES && cursor !== null; read++) {
-        const { cursor: from, beforeTail: start } = next;
+        const from = cursor;
         const page: typeof containerLogPageSchema.Type = await scope.queryClient.fetchQuery({
-          queryKey: [id, "history", from ?? null, start ?? null],
+          queryKey: [id, "history", from ?? null],
           // A page behind a cursor never changes; the newest page is read fresh each time.
           staleTime: from === undefined ? 0 : Infinity,
           queryFn: async ({ signal }) => {
             const response = await fetch("/api/runtime/logs", {
-              method: "POST", headers: { "Content-Type": "application/json" }, signal: AbortSignal.any([signal, streamSignal]),
-              body: JSON.stringify({ ...selection, ...(from !== undefined ? { cursor: from } : { before: start }) }),
+              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...selection, cursor: from }), signal: AbortSignal.any([signal, streamSignal]),
             });
             if (!response.ok) throw new Error("Could not load older logs.");
             return Schema.decodeUnknownSync(containerLogPageSchema)(await response.json());
@@ -151,9 +153,6 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
         mergeContainerHistory(collection, page.rows, stored);
         cursor = page.cursor;
         failures = page.failures;
-        const tail = from === undefined && start === undefined ? historyStart(collection.values()) : undefined;
-        const back = earliest(page.rows);
-        next = tail !== undefined && back !== null && BigInt(tail) < back ? { beforeTail: tail } : { cursor: cursor ?? undefined };
         const now = oldest();
         if (reached === null || (now !== null && now < reached)) break;
       }

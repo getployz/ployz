@@ -1,6 +1,6 @@
 import { createCollection, localOnlyCollectionOptions } from "@tanstack/react-db";
 import { expect, it } from "vitest";
-import { appendContainerLogs, historyStart, mergeContainerHistory, projectLogExit, restartContainerLogs, trimContainerLogs, type ContainerLogLine, type ContainerLogRow } from "./container-log.collection";
+import { appendContainerLogs, mergeContainerHistory, projectLogExit, restartContainerLogs, trimContainerLogs, type ContainerLogLine, type ContainerLogRow } from "./container-log.collection";
 
 const row = (containerId: string, timestamp: string, ordinal = 0, origin = "live"): ContainerLogLine => ({
   kind: "line", id: `${origin}/server/${containerId}/${timestamp}/${ordinal}`, timestamp,
@@ -36,13 +36,6 @@ it("keeps only the newest lines past the limit, and a batch with repeats lands o
   expect(trimContainerLogs(collection, 2)).toBe(true);
   expect([...collection.values()].map(kept => kept.timestamp).sort()).toEqual(["20", "30"]);
   await collection.cleanup();
-});
-
-it("the Log Store starts after the lines every container already has", () => {
-  expect(historyStart([])).toBeUndefined();
-  // busy's tail reaches back to 90, a restarted container's only to 100; from 100 on, both are loaded.
-  expect(historyStart([row("busy", "90"), row("busy", "120"), row("fresh", "100"), row("fresh", "130")])).toBe("100");
-  expect(historyStart([row("busy", "90"), { ...row("busy", "5"), channel: "lifecycle" }])).toBe("90");
 });
 
 it("live lines that overflowed while waiting keep only the page's lines as new as they are", async () => {

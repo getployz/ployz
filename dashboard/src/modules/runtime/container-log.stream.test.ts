@@ -126,7 +126,7 @@ it("holds live lines while the viewer reads older ones, and past the limit start
   }
 });
 
-it("reads the newest page first for the exits the live tail lacks, then jumps before a tail that page sat inside", async () => {
+it("reads the newest page first for the exits the live tail lacks, then follows its cursor past the tail", async () => {
   vi.useFakeTimers();
   const sources: EventTarget[] = [];
   class FakeEventSource extends EventTarget {
@@ -139,9 +139,9 @@ it("reads the newest page first for the exits the live tail lacks, then jumps be
   });
   const reads: string[] = [];
   vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
-    const params = JSON.parse(String(init.body)) as { cursor?: string; before?: string };
-    reads.push(params.before ? `before=${params.before}` : params.cursor ? `cursor=${params.cursor}` : "newest");
-    const page = params.before ? { rows: [line(5)], cursor: null } : { rows: [line(20), line(30, "lifecycle")], cursor: "inside-tail" };
+    const { cursor } = JSON.parse(String(init.body)) as { cursor?: string };
+    reads.push(cursor ? `cursor=${cursor}` : "newest");
+    const page = cursor ? { rows: [line(5)], cursor: null } : { rows: [line(20), line(30, "lifecycle")], cursor: "inside-tail" };
     return new Response(JSON.stringify({ ...page, failures: [] }));
   }));
   const queryClient = new QueryClient();
@@ -152,7 +152,7 @@ it("reads the newest page first for the exits the live tail lacks, then jumps be
     await vi.advanceTimersByTimeAsync(260);
     sources.at(-1)?.dispatchEvent(new MessageEvent("live"));
     await vi.waitFor(() => expect(stream.hasOlder).toBe(false));
-    expect(reads).toEqual(["newest", "before=10"]);
+    expect(reads).toEqual(["newest", "cursor=inside-tail"]);
     expect(stream.collection.has("lifecycle/30")).toBe(true);
     expect(stream.collection.has("stdout/5")).toBe(true);
   } finally {
@@ -186,9 +186,9 @@ function storeFetch(stored: readonly Stored[], reads: string[]) {
     },
   };
   return async (_url: string, init: RequestInit) => {
-    const { before, cursor } = JSON.parse(String(init.body)) as { cursor?: string; before?: string };
-    reads.push(before ? `before=${before}` : cursor ? "cursor" : "newest");
-    const page = await sdkHistory(transport, { filter: { namespace: "env" }, limit: 500, before, cursor });
+    const { cursor } = JSON.parse(String(init.body)) as { cursor?: string };
+    reads.push(cursor ? "cursor" : "newest");
+    const page = await sdkHistory(transport, { filter: { namespace: "env" }, limit: 500, cursor });
     return Response.json({ rows: page.records.map(projectContainerLog), failures: page.failures, cursor: page.cursor });
   };
 }
@@ -204,6 +204,18 @@ it.each([
   // Steady: a container writing every tenth, a busy one, a quiet one. The newest page ends on a sparse line the busy
   // container shares a timestamp with.
   { name: "busy, sparse and quiet containers", stored: [...span("sparse", 10, 2_000, 10), ...span("busy", 1, 2_004), { container: "quiet", at: 1 }], live: [...span("sparse", 10, 2_000, 10), ...span("busy", 1_805, 2_004), { container: "quiet", at: 1 }] },
+  // A rolling deploy mid-flight: the stopped replica's last lines overlap its replacement's first, inside the live tail.
+  {
+    name: "a rolling deploy's stopped replica",
+    stored: [...["a1", "a2", "a3", "a4"].flatMap(name => span(name, 1, 2_000)), ...span("bold", 1, 1_897), ...span("bnew", 1_890, 2_000)],
+    live: [...["a1", "a2", "a3", "a4"].flatMap(name => span(name, 1_801, 2_000)), ...span("bnew", 1_890, 2_000)],
+  },
+  // Three busy replicas and a container that stopped after writing a few lines inside their live tail.
+  {
+    name: "a stopped container inside the busy replicas' tail",
+    stored: [...["r1", "r2", "r3"].flatMap(name => span(name, 1, 1_500)), ...span("x", 1_010, 1_020)],
+    live: [...["r1", "r2", "r3"].flatMap(name => span(name, 1_000, 1_500))],
+  },
 ])("pages back through the Log Store holding each line once: $name", async ({ stored, live }) => {
   vi.useFakeTimers();
   let source: EventTarget | undefined;
@@ -224,12 +236,11 @@ it.each([
       } }) }));
     }
     await vi.advanceTimersByTimeAsync(260);
-    for (let scroll = 0; scroll < 10 && stream.hasOlder; scroll++) await stream.loadOlder();
+    for (let scroll = 0; scroll < 50 && stream.hasOlder; scroll++) await stream.loadOlder();
     expect(stream.hasOlder).toBe(false);
-    // None of these newest pages sat inside the live tail, so each read carries on from the last.
-    expect(reads.filter(read => read !== "cursor")).toEqual(["newest"]);
     const lines = [...stream.collection.values()].map(row => `${row.containerId} ${row.timestamp}`).sort();
     expect(lines).toEqual(stored.map(({ container, at }) => `${container} ${at}`).sort());
+    expect(reads.filter(read => read !== "cursor")).toEqual(["newest"]);
   } finally {
     subscription.unsubscribe();
     await stream.collection.cleanup();
@@ -237,7 +248,7 @@ it.each([
   }
 });
 
-it("clears a Server's missing note once the container that failed sends again", async () => {
+it("clears a Server's missing note once every container that failed sends again", async () => {
   let source: EventTarget | undefined;
   class FakeEventSource extends EventTarget {
     constructor() { super(); source = this; }
@@ -254,9 +265,12 @@ it("clears a Server's missing note once the container that failed sends again", 
   } });
   try {
     send(JSON.stringify({ type: "source_error", machineId: "m", containerId: "c", message: "unavailable" }));
+    send(JSON.stringify({ type: "source_error", machineId: "m", containerId: "d", message: "unavailable" }));
     send(record("other"));
-    expect(Object.keys(stream.getSnapshot().missing.live)).toEqual(["m"]);
+    expect(stream.getSnapshot().missing.live["m"]?.containerIds).toEqual(["c", "d"]);
     send(record("c"));
+    expect(stream.getSnapshot().missing.live["m"]?.containerIds).toEqual(["d"]);
+    send(record("d"));
     expect(stream.getSnapshot().missing.live).toEqual({});
   } finally {
     subscription.unsubscribe();

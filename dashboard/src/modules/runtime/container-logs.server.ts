@@ -22,8 +22,6 @@ export type LogSearch = typeof logSearchSchema.Type;
 export const logHistorySchema = Schema.Struct({
   ...logSearchSchema.fields,
   cursor: Schema.optional(Schema.String.check(Schema.isMaxLength(1 << 18))),
-  /** Without a cursor, start before this Unix nanosecond instead of at the newest line. */
-  before: Schema.optional(Schema.String.check(Schema.isPattern(/^\d{1,19}$/))),
 });
 
 /**
@@ -47,7 +45,7 @@ export const resolveLogFilter = Effect.fn("Runtime.resolveLogFilter")(function* 
 const HISTORY_PAGE = 500;
 
 /** The response owns this scope until its consumer disconnects. */
-export const openContainerLogs = Effect.fn("Runtime.openContainerLogs")(function* (request: Request, search: LogSearch, history?: { cursor?: string; before?: string }) {
+export const openContainerLogs = Effect.fn("Runtime.openContainerLogs")(function* (request: Request, search: LogSearch, history?: { cursor?: string }) {
   const { organizationId } = yield* authorizeRuntimeOrganization({ headers: request.headers, organizationSlug: search.organizationSlug });
   const filter = yield* resolveLogFilter(organizationId, search);
   const scope = yield* Scope.make();
@@ -60,7 +58,7 @@ export const openContainerLogs = Effect.fn("Runtime.openContainerLogs")(function
     return yield* new Validation({ message: "Container logs are unavailable while the server is disconnected." });
   }
   if (history !== undefined) {
-    return yield* session.connected.logHistory({ filter, ...history, limit: HISTORY_PAGE, signal: request.signal })
+    return yield* session.connected.logHistory({ filter, cursor: history.cursor, limit: HISTORY_PAGE, signal: request.signal })
       .pipe(Effect.map(page => ({ type: "history" as const, page })), Effect.ensuring(close));
   }
   const options = { filter, tail: 200, signal: request.signal };
