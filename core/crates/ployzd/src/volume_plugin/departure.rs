@@ -60,7 +60,9 @@ impl VolumeStorage {
 
     /// Demotes this Machine's copy of one Volume, the old copy Cloud found beside a newer
     /// writer. The root turns read-only before it moves, so a Container still writing to
-    /// it fails at once, and the record closes at the request's step.
+    /// it fails at once. The record closes at the request's step only once the root is a
+    /// slot: Cloud tells the old copy by its lower record, so a demote cut short by a busy
+    /// mount must not raise it above the writer's. The retry redoes what is left.
     async fn demote_volume(
         &self,
         request: &MirrorRequest,
@@ -69,8 +71,6 @@ impl VolumeStorage {
         let name = name(&request.name)?;
         let mut scope = self.leased(&name, &request.switch).await?;
         scope.admitted.lease.cycle = Cycle::Closed;
-        self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
-            .await?;
         if let Some(root) = Self::dataset(&scope.datasets, &scope.pool, &name).map_err(internal)? {
             self.zfs(&["set", "readonly=on", &root.name])
                 .await

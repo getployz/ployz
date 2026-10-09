@@ -188,6 +188,57 @@ async fn demote_seals_one_old_root_read_only_before_unmounting_it_and_closes_its
 }
 
 #[tokio::test]
+async fn an_interrupted_demote_keeps_the_old_record_and_finishes_on_retry() {
+    for (toggle, failure) in [
+        ("props/busy-mount", "filesystem is busy"),
+        ("rename-fails", "rename interrupted"),
+    ] {
+        let test = TestDir::new();
+        set_property(&test, "tank/ployz", "ployz:lease.data", "7:4.0.5:closed");
+        let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "mounted"]);
+        fs::write(test.0.join(toggle), "").unwrap();
+
+        let request = at(9, 3, 0, 0, json!({}));
+        for attempt in 0..2 {
+            let interrupted = post(&socket, "/Volume.Demote", request.clone()).await;
+            assert!(
+                error_message(&interrupted).contains(failure),
+                "{toggle} attempt {attempt}: {interrupted}"
+            );
+            assert!(test.0.join("volume").exists(), "{toggle}: the root moved");
+            assert_eq!(
+                property(&test, "tank/ployz/data", "readonly").as_deref(),
+                Some("on"),
+                "{toggle}"
+            );
+            let view = post(&socket, "/Volume.Inspect", json!({"name": "data"})).await;
+            assert_eq!(
+                view.pointer("/Ok/lease"),
+                Some(
+                    &json!({"lease": 7, "pos": {"seq": 4, "round": 0, "sub": 5}, "cycle": "closed"})
+                ),
+                "{toggle}: a demote that did not finish raised the record above the writer's: {view}"
+            );
+        }
+        fs::remove_file(test.0.join(toggle)).unwrap();
+
+        let resumed = post(&socket, "/Volume.Demote", request).await;
+        assert_eq!(
+            resumed.pointer("/Ok/decision"),
+            Some(&json!("adopt")),
+            "{toggle}: {resumed}"
+        );
+        assert_departed_into_a_slot(&test, &socket).await;
+        assert_eq!(
+            property(&test, "tank/ployz", "ployz:lease.data").as_deref(),
+            Some("9:3.0.0:closed"),
+            "{toggle}"
+        );
+        server.abort();
+    }
+}
+
+#[tokio::test]
 async fn departure_refuses_a_root_beside_a_slot_that_holds_a_copy() {
     let test = TestDir::new();
     let (socket, server) = start(
