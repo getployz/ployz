@@ -178,7 +178,9 @@ ployz server rm web-2 --no-reset --confirm web-2
 ```
 
 A server removed this way doesn't know it was removed. If it comes back, its services may still be
-running on its copy of a volume.
+running on its copy of a volume. Ployz no longer uses that copy. Anything written to it after the
+removal stays on that server and never reaches your other servers. The volume's copy on your
+current servers is the real one.
 
 Ployz stays installed on a removed server, so you can add it again later. To remove Ployz itself,
 run `sudo ployz-uninstall` on the server after you remove it. Docker, your images and your volume

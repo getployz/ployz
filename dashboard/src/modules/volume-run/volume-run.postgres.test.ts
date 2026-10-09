@@ -412,8 +412,8 @@ describe("volume runs", () => {
   describe("C16", () => {
     it("lease_from_participants: one above the highest record a participant holds", async () => {
       machines = [
-        { name: "fsn-1", pool: true, copy: writerCopy("10"), lease: { lease: 7, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" }, warms: ["10"] },
-        { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: { lease: 3, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" } },
+        { name: "fsn-1", pool: true, copy: writerCopy("10"), lease: { lease: 3, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" }, warms: ["10"] },
+        { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: { lease: 7, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" } },
         { name: "fsn-3", pool: false, copy: null, lease: null },
         { name: "docker-1", pool: false, stateless: true, copy: null, lease: null, silent: true },
       ];
@@ -440,6 +440,47 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ lease: "8", state: "done" }]);
       expect(verbs.filter((verb) => verb.includes("@fsn-3"))).toEqual([]);
       expect(machines[2]?.lease?.lease).toBe(20);
+    });
+
+    it("a Move counts the target's record when the target gets a verb", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: sourceCopy("handed"), lease: { lease: 3, pos: { seq: 8, round: 0, sub: 0 }, cycle: "open" } },
+        { name: "fsn-2", pool: true, copy: slotCopy("30", "handed_in"), lease: { lease: 9, pos: { seq: 9, round: 0, sub: 0 }, cycle: "open" } },
+      ];
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeUndefined();
+      expect(ordered(verbs)).toContain("promote@fsn-2(10,0,0)");
+      expect(await rows()).toMatchObject([{ lease: "10", state: "done" }]);
+    });
+
+    it("a Move that only closes the source ignores the target's record", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: sourceCopy("handed"), lease: { lease: 7, pos: { seq: 8, round: 0, sub: 0 }, cycle: "open" } },
+        { name: "fsn-2", pool: true, copy: writerCopy("30"), lease: { lease: 20, pos: { seq: 11, round: 0, sub: 0 }, cycle: "closed" } },
+      ];
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeUndefined();
+      expect(ordered(verbs)).toEqual(["close@fsn-1(12,0,0)"]);
+      expect(await rows()).toMatchObject([{ lease: "8", state: "done" }]);
+    });
+
+    it("an undo that leaves the target alone ignores the target's record", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: sourceCopy("stopping"), lease: { lease: 7, pos: { seq: 6, round: 0, sub: 0 }, cycle: "open" } },
+        { name: "fsn-2", pool: true, copy: null, lease: { lease: 20, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" } },
+      ];
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      await execute(run.id);
+
+      expect(ordered(verbs)).toEqual(["thaw@fsn-1(13,0,0)"]);
+      expect(await rows()).toMatchObject([{ lease: "8", state: "failed" }]);
     });
 
     it("lease_above_records_after_db_reset: above an earlier run's lease when the Machines hold less", async () => {

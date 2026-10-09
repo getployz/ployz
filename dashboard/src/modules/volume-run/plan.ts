@@ -39,13 +39,29 @@ export type Planned =
   | { readonly ok: false; readonly refusal: Refusal };
 
 type Phase = Extract<Planned, { ok: true }>["phase"];
+type MovePhase = Extract<Phase, { kind: "move" }>;
+
+/** Undo clears the target's final only when the target holds a slot that this or an earlier attempt filled. */
+export const undoClearsTarget = (phase: MovePhase) => phase.start === "rounds" || phase.target.view.copy?.kind === "slot";
 
 /** The Machines the planned phase sends a verb to; only their records may raise the next lease. */
 export function participantsOf(phase: Phase): readonly AnsweredMember[] {
   switch (phase.kind) {
     case "mirror":
-    case "move":
       return [phase.writer, phase.target];
+    case "move":
+      switch (phase.start) {
+        case "close":
+          return [phase.writer];
+        case "undo":
+          return undoClearsTarget(phase) ? [phase.writer, phase.target] : [phase.writer];
+        case "rounds":
+        case "handover":
+        case "accept":
+        case "promote":
+        case "start":
+          return [phase.writer, phase.target];
+      }
     case "sync":
       return [phase.writer, phase.mirror];
     case "release":

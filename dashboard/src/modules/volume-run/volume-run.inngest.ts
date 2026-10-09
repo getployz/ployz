@@ -9,7 +9,7 @@ import {
   inngestFunctionFinishedEventType,
   volumeRunRequestedEventType,
 } from "#/modules/inngest/events";
-import { participantsOf, type Planned, planFromCopies } from "#/modules/volume-run/plan";
+import { participantsOf, type Planned, planFromCopies, undoClearsTarget } from "#/modules/volume-run/plan";
 import { copyName, type Member } from "#/modules/volume-run/volume-run";
 import {
   claimVolumeRun,
@@ -259,7 +259,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, lease: number
     } catch {
       return fail("13-unanswered", `${A.name} did not answer; volume move ${name} --to ${B.name} or volume release ${name} when it is back`);
     }
-    if (phase.start === "rounds" || phase.target.view.copy?.kind === "slot") {
+    if (undoClearsTarget(phase)) {
       const clear = mirrorRequest({ seq: 14, round: 0, sub: 0 });
       await switchStep("14-clear-final", B, { command: "clear_final", payload: clear });
     }

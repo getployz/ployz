@@ -324,3 +324,34 @@ async fn mount_admits_only_an_idle_closed_root() {
         server.abort();
     }
 }
+
+#[tokio::test]
+async fn a_late_step_at_the_departed_lease_is_refused_as_stale() {
+    let test = TestDir::new();
+    set_property(&test, "tank/ployz", "ployz:lease.data", "1:10.0.0:open");
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    let demoted = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(demoted, json!({"Ok": ["data"]}));
+
+    let response = post(
+        &socket,
+        "/Volume.Restore",
+        super::mirror_tests::at(1, 11, 0, 0, json!({})),
+    )
+    .await;
+
+    assert_eq!(
+        response.pointer("/Err/details/reason"),
+        Some(&json!("stale_step")),
+        "{response}"
+    );
+    assert!(
+        !test.0.join("volume").exists(),
+        "a late Restore reopened the departed root"
+    );
+    assert_eq!(
+        property(&test, "tank/ployz-mirror/data/fs", "readonly").as_deref(),
+        Some("on")
+    );
+    server.abort();
+}
