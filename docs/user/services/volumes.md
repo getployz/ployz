@@ -3,7 +3,7 @@ title: Volumes
 description: Keep files across deploys and restarts.
 ---
 
-Every deploy starts your service in fresh containers. A volume is a folder that survives:
+A deploy can replace your service's containers. A volume is a folder that survives:
 whatever your service writes there is still there after deploys and restarts. Use one for
 uploads, a SQLite file or a database's data. [Databases](databases.md) come with one.
 

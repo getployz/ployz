@@ -28,7 +28,7 @@ agent-browser --session $S find role tab click --name Variables
 - Close with `button "Close inspector and return to Canvas"`.
 - The file editor is CodeMirror, `textbox "<file> contents"`. Click `.cm-content`, then `type '.cm-content' '...'`; completions are `.cm-tooltip-autocomplete li`. Hover tooltips ignore `agent-browser mouse move`; dispatch a `mousemove` on `.cm-config-unknown` with `eval` instead.
 - Escape closes the drawer; with unsaved edits it asks "Discard unsaved changes?" first.
-- Configs don't deploy yet, so a seeded config stays staged ("will be added") after the queued Deploy, and Delete drops it outright instead of offering Keep config.
+- With real Servers, Deploy applies Config files as read-only mounts. Editing a deployed Config restarts its mounting Services; an unchanged redeploy keeps their containers. Without `SERVERS`, the seed cannot prove runtime behavior.
 
 ## Gotchas
 
