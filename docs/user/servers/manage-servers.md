@@ -177,6 +177,9 @@ If the server is unreachable, remove it without resetting it. This is CLI-only f
 ployz server rm web-2 --no-reset --confirm web-2
 ```
 
+A server removed this way doesn't know it was removed. If it comes back, its services may still be
+running on its copy of a volume.
+
 Ployz stays installed on a removed server, so you can add it again later. To remove Ployz itself,
 run `sudo ployz-uninstall` on the server after you remove it. Docker, your images and your volume
 data stay on the disk.
