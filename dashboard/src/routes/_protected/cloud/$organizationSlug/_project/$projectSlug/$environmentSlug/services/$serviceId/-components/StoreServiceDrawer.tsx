@@ -564,16 +564,16 @@ function StoreServiceConfigs({ state, params, configs, mounts }: {
   const unmountedOrPicked = (config: ConfigListing) => config.name === adding.config || !mounts.some((mount) => mount.config.id === config.id);
   const available = configs.filter((config) => config.change !== "delete" && unmountedOrPicked(config));
 
-  async function mount() {
+  function mount() {
     if (adding.config === "") return setAdding({ ...adding, error: "Select a config." });
     const dir = adding.dir || `/etc/${adding.config}`;
-    try {
-      await writer.commit(attachConfigCommand(state.environment, state.service.name, adding.config, dir), ["invalid", "conflict"])
-        .isPersisted.promise;
-      setAdding({ config: "", dir: "", error: null });
-    } catch (error) {
-      setAdding((prev) => ({ ...prev, error: error instanceof StoreRefused ? error.message : "Couldn't mount it." }));
-    }
+    const cleared = { config: "", dir: "", error: null };
+    writer.commit(attachConfigCommand(state.environment, state.service.name, adding.config, dir), ["invalid", "conflict"])
+      .isPersisted.promise.catch((error) => {
+        setAdding((current) => current.config === "" && current.dir === "" && current.error === null
+          ? { ...adding, error: error instanceof StoreRefused ? error.message : "Couldn't mount it." } : current);
+      });
+    setAdding(cleared);
   }
 
   return <>
@@ -603,7 +603,7 @@ function StoreServiceConfigs({ state, params, configs, mounts }: {
           <Input className="flex-1 font-mono" aria-label="Directory" value={adding.dir}
             placeholder={adding.config ? `/etc/${adding.config}` : "/etc/app"} aria-invalid={adding.error ? true : undefined}
             onChange={(event) => setAdding({ ...adding, dir: event.target.value, error: null })} />
-          <Button onClick={() => void mount()}><PlusIcon data-icon="inline-start" />Mount</Button>
+          <Button onClick={mount}><PlusIcon data-icon="inline-start" />Mount</Button>
         </div>
         {adding.error ? <FieldError>{adding.error}</FieldError> : null}
       </Field>

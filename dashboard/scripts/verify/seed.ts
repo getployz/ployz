@@ -4,8 +4,6 @@
 // (`cliToken`), every write's outcome and what was skipped.
 //
 // Ada Lovelace's organization holds project `shop`, on public images so a real Server can run it:
-//   production  web, api, postgres (+ pg-data volume), worker, redis; config sentry (2 files) on web and worker; a domain on
-//               web; one queued Deploy; unpublished api edits
 //   fix-api     a Branch of production (api, web) with 2 changes to save; production moved on after it branched
 // A fake Server is paired so the Store admits Deploys; nothing answers it. VERIFY_REAL_SERVERS=1 leaves pairing to the
 // real Servers that enroll next, so the queued Deploy is skipped: the Store admits none before a Server joins.

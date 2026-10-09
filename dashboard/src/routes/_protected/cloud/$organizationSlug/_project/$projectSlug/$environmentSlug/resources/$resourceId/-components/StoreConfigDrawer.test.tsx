@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { EditorView } from "@codemirror/view";
-import type { ConfigItemView, ConfigQuery, ConfigView, ConfigWritten } from "@ployz/sdk";
+import type { ConfigItemView, ConfigQuery, ConfigView, ConfigWritten, ServiceListing } from "@ployz/sdk";
 import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import { asTestDouble } from "#/lib/test-double";
@@ -43,7 +43,7 @@ async function openDrawer() {
     switch (query.query) {
       case "config": return { view: "config", ...store.item };
       case "configs": return { view: "configs", environment: env, configs: [store.item] };
-      case "services": return { view: "services", environment: env, services: [] };
+      case "services": return { view: "services", environment: env, services: [asTestDouble<ServiceListing>()({ id: "api", name: "api", private_dns: "api", change: null })] };
       case "environment": return { view: "environment", environment: env, settings: [] };
       case "diff": return { view: "diff", environment: env, version: "1", saved: 0, published: false, total_count: 0,
         changes: [], hints: [], incoming: [], follow_hints: [] };
@@ -138,4 +138,17 @@ it("adds a nested filename and submits its contents", async () => {
       { command: "put_config_file", environment, config: "sentry", file: "conf.d/site.yml", content: "listen: 8080" },
     ] },
   } })));
+});
+
+
+it("restores a refused mount form without losing its directory", async () => {
+  const test = await openDrawer();
+  test.write.mockResolvedValueOnce(refused);
+  fireEvent.click(screen.getByRole("combobox", { name: "Service" }));
+  fireEvent.click(await screen.findByRole("option", { name: "api" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Directory" }), { target: { value: "/etc/attempt" } });
+  fireEvent.click(screen.getByRole("button", { name: "Mount" }));
+  await screen.findByText("Unknown Config reference");
+  expect(screen.getByRole<HTMLInputElement>("textbox", { name: "Directory" }).value).toBe("/etc/attempt");
+  expect(screen.getByRole("combobox", { name: "Service" }).textContent).toContain("api");
 });

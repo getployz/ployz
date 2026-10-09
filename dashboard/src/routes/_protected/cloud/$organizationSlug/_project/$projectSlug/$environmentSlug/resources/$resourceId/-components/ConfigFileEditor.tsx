@@ -163,7 +163,6 @@ function language(fileName: string): Extension | Promise<Extension> {
   }
 }
 
-/** A CodeMirror editor for one Config file, with `${{ }}` pills, unknown-reference squiggles and autocomplete. */
 export default function ConfigFileEditor({ fileName, value, onChange, onSave, targets, services, ariaLabel }: ConfigFileEditorProps) {
   const parent = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);

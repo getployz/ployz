@@ -74,7 +74,6 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers }
   );
 }
 
-/** A Config as a tray under a Service that mounts it: its name and the directory it lands in. Opens its panel. */
 export function ConfigTray({ tray: { config, dir, mountChanged }, selected }: { tray: MountedConfig; selected: boolean }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const lighting = useNodeLighting(config.id);
@@ -97,7 +96,6 @@ export function ConfigTray({ tray: { config, dir, mountChanged }, selected }: { 
   );
 }
 
-/** A Service's trays under its card: its Configs, then its Volumes. */
 export function ServiceTrays({ trays, configTrays, selectedNodeId }:
   { trays: MountedVolume[]; configTrays: MountedConfig[]; selectedNodeId: string | null }) {
   return <>

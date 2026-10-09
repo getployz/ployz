@@ -99,6 +99,14 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
         : { ...put(view), contents: { ...view.contents, [command.file]: command.content } });
       return;
     }
+    case "remove_config_file": {
+      const remove = <V extends Pick<ConfigListing, "name" | "files">>(config: V): V => config.name !== command.config ? config
+        : { ...config, files: config.files.filter((file) => file.name !== command.file) };
+      await views<ConfigsView>("configs", command.environment, (view) => ({ ...view, configs: view.configs.map(remove) }));
+      await views<ConfigItemView>("config", command.environment, (view) => view.name !== command.config ? view
+        : { ...remove(view), contents: Object.fromEntries(Object.entries(view.contents).filter(([file]) => file !== command.file)) });
+      return;
+    }
     case "remove_service":
       await views<ServicesView>("services", command.environment, (view) => ({ ...view, services: view.services.flatMap((service) =>
         service.name !== command.service ? [service] : service.change === "create" ? [] : [{ ...service, change: "delete" as const }]) }));
@@ -143,7 +151,6 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       // Its rows leave the review at once; what the Store restores (values, nodes, the count) comes with its answer.
       const { path } = command;
       const [node, ...setting] = path?.split(".") ?? [];
-      // Every node, one node (a Volume as `volumes.NAME`, a Config as `configs.NAME`), or one Setting of one node.
       const type = node === "volumes" ? "volume" : node === "configs" ? "config" : null;
       const named = type !== null && setting.length === 1 ? setting[0] : null;
       const whole = (change: NodeChange) => path === null

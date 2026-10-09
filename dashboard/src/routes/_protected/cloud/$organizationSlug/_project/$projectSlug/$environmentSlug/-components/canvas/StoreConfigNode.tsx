@@ -11,7 +11,6 @@ import { NO_MOUNTS_CONFIGURED, stagedChip, stagedSurface } from "./node-status";
 import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 
-/** A Config no Service here mounts, on the canvas and in its phone list. */
 export function StoreConfigCard({ config, selected, className }: { config: ConfigListing; selected: boolean; className: string }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const light = useNodeLighting(config.id);

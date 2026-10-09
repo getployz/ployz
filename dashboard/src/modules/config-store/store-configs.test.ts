@@ -49,7 +49,6 @@ describe("Config files", () => {
 });
 
 describe("Config trays", () => {
-  // SAFETY: test ids stand in for the Store's minted Service ids.
   const listing = (id: string, name: string): ServiceListing => ({ id, row: `${id}:node` as RowId, name, private_dns: name, source: "image", change: null, template: null });
   const config = (id: string, mounts: { service: string; dir: string }[]): ConfigListing =>
     ({ id, name: id, files: [], mounts, deployed: true, change: null });

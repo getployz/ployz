@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Schema } from "effect";
 import { useBlocker, useLoaderData, useNavigate } from "@tanstack/react-router";
 import { EllipsisIcon, LockIcon, PlusIcon, Trash2Icon } from "lucide-react";
@@ -47,7 +47,6 @@ const SHOWN_REFUSALS = ["invalid", "conflict"] as const;
 type ConfigRouteParams = { organizationSlug: string; projectSlug: string; environmentSlug: string; resourceId: string };
 type StoreConfig = { organizationSlug: string; environment: EnvironmentRef; config: ConfigListing };
 
-/** A Config in the Config Store: its files, what they reference, where Services mount it, and its removal. */
 export function StoreConfigDrawer({ params, config }: { params: ConfigRouteParams; config: ConfigListing }) {
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { organizationSlug } = params;
@@ -98,7 +97,7 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
   const writer = useStoreWriter(state.organizationSlug);
   const [drafts, setDrafts] = useState<ReadonlyMap<string, FileDraft>>(new Map());
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const submittedFiles = useRef(new Map<string, ReadonlyMap<string, FileDraft>>());
   const stored = item.files.map((file) => file.name);
   const fileNames = [...stored, ...[...drafts.keys()].filter((name) => !stored.includes(name))];
   const [selected, setSelected] = useState<string | null>(fileNames[0] ?? null);
@@ -117,35 +116,38 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
 
   function draft(file: string, change: Partial<FileDraft>) {
     setSaveError(null);
+    submittedFiles.current.delete(file);
     setDrafts((prev) => new Map(prev).set(file, { content: prev.get(file)?.content ?? item.contents[file] ?? "", ...prev.get(file), ...change }));
   }
 
-  async function save() {
-    if (edits.length === 0 || saving || oversized) return;
-    setSaving(true);
+  function save() {
+    if (edits.length === 0 || oversized) return;
+    const submitted = new Map([...drafts].filter(([file]) => dirty.has(file)));
+    for (const file of submitted.keys()) submittedFiles.current.set(file, submitted);
     setSaveError(null);
-    try {
-      await writer.commit(saveConfigCommand(state.environment, state.config.name, edits), SHOWN_REFUSALS).isPersisted.promise;
-      setDrafts((prev) => new Map([...prev].filter(([file]) => !dirty.has(file))));
-    } catch (error) {
-      setSaveError(error instanceof StoreRefused ? error.message : "Couldn't save. Try again.");
-    } finally {
-      setSaving(false);
-    }
+    writer.commit(saveConfigCommand(state.environment, state.config.name, edits), SHOWN_REFUSALS).isPersisted.promise.catch((error) => {
+      setDrafts((current) => new Map([
+        ...[...submitted].filter(([file]) => submittedFiles.current.get(file) === submitted && !current.has(file)),
+        ...current,
+      ]));
+      if ([...submitted.keys()].some((file) => submittedFiles.current.get(file) === submitted)) {
+        setSaveError(error instanceof StoreRefused ? error.message : "Couldn't save. Try again.");
+      }
+    });
+    setDrafts((current) => new Map([...current].filter(([file, value]) => submitted.get(file) !== value)));
   }
 
-  async function removeFile(file: string) {
-    if (!stored.includes(file)) {
-      setDrafts((prev) => new Map([...prev].filter(([name]) => name !== file)));
-      return;
-    }
-    try {
-      await writer.commit({ command: "remove_config_file", environment: state.environment, config: state.config.name, file }, SHOWN_REFUSALS)
-        .isPersisted.promise;
-      setDrafts((prev) => new Map([...prev].filter(([name]) => name !== file)));
-    } catch (error) {
-      setSaveError(error instanceof StoreRefused ? error.message : "Couldn't remove the file.");
-    }
+  function removeFile(file: string) {
+    const submitted = new Map([...drafts].filter(([name]) => name === file));
+    submittedFiles.current.set(file, submitted);
+    setDrafts((current) => new Map([...current].filter(([name]) => name !== file)));
+    if (!stored.includes(file)) return;
+    writer.commit({ command: "remove_config_file", environment: state.environment, config: state.config.name, file }, SHOWN_REFUSALS)
+      .isPersisted.promise.catch((error) => {
+        if (submittedFiles.current.get(file) !== submitted) return;
+        setDrafts((current) => new Map([...submitted, ...current]));
+        setSaveError(error instanceof StoreRefused ? error.message : "Couldn't remove the file.");
+      });
   }
 
   const references = fileNames.flatMap((file) => configReferences(textOf(file), targets, serviceNames));
@@ -158,15 +160,15 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
         <SettingsSection id="files" title="Files">
           <ConfigFiles fileNames={fileNames} current={current} onSelect={setSelected} item={item} drafts={drafts} dirty={dirty}
             textOf={textOf} targets={targets} serviceNames={serviceNames} values={values} readOnly={removing}
-            onDraft={draft} onSave={() => void save()} onRemove={(file) => void removeFile(file)}
+            onDraft={draft} onSave={save} onRemove={removeFile}
             onAdd={(file) => { draft(file, { content: "" }); setSelected(file); }}
             footer={removing ? null : (
               <div className="flex items-center justify-end gap-3">
                 {saveError ?? oversized?.error ? <FieldError className="mr-auto">{saveError ?? `${oversized?.file}: ${oversized?.error}`}</FieldError> : null}
                 {dirty.size > 0 ? (
-                  <Button variant="ghost" onClick={() => { setDrafts(new Map()); setSaveError(null); }}>Discard</Button>
+                  <Button variant="ghost" onClick={() => { submittedFiles.current.clear(); setDrafts(new Map()); setSaveError(null); }}>Discard</Button>
                 ) : null}
-                <Button onClick={() => void save()} disabled={dirty.size === 0 || saving || oversized !== undefined}>Save</Button>
+                <Button onClick={save} disabled={dirty.size === 0 || oversized !== undefined}>Save</Button>
               </div>
             )} />
         </SettingsSection>
@@ -240,7 +242,6 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
     if (!adding) return;
     const name = adding.name.trim();
     const error = name === "" ? "Enter a file name."
-      : name.includes("/") ? "A file name has no slashes."
       : fileNames.includes(name) ? `${name} already exists.` : null;
     if (error) return setAdding({ ...adding, error });
     onAdd(name);
@@ -359,16 +360,16 @@ function ConfigMounts({ state, services }: { state: StoreConfig; services: reado
   const unmountedOrPicked = (service: ServiceListing) => service.name === adding.service || !mounted.has(service.name);
   const available = services.filter((service) => service.change !== "delete" && unmountedOrPicked(service));
 
-  async function attach() {
+  function attach() {
     if (adding.service === "") return setAdding({ ...adding, error: "Select a service." });
     if (!adding.dir.startsWith("/")) return setAdding({ ...adding, error: "Enter an absolute directory, like /etc/app." });
-    try {
-      await writer.commit(attachConfigCommand(state.environment, adding.service, state.config.name, adding.dir), SHOWN_REFUSALS)
-        .isPersisted.promise;
-      setAdding({ service: "", dir: defaultDir, error: null });
-    } catch (error) {
-      setAdding((prev) => ({ ...prev, error: error instanceof StoreRefused ? error.message : "Couldn't mount it." }));
-    }
+    const cleared = { service: "", dir: defaultDir, error: null };
+    writer.commit(attachConfigCommand(state.environment, adding.service, state.config.name, adding.dir), SHOWN_REFUSALS)
+      .isPersisted.promise.catch((error) => {
+        setAdding((current) => current.service === "" && current.dir === defaultDir && current.error === null
+          ? { ...adding, error: error instanceof StoreRefused ? error.message : "Couldn't mount it." } : current);
+      });
+    setAdding(cleared);
   }
 
   function detach(service: string) {
@@ -416,7 +417,7 @@ function ConfigMounts({ state, services }: { state: StoreConfig; services: reado
             <Input className="flex-1 font-mono" aria-label="Directory" value={adding.dir} placeholder={defaultDir}
               aria-invalid={adding.error ? true : undefined}
               onChange={(event) => setAdding({ ...adding, dir: event.target.value, error: null })} />
-            <Button onClick={() => void attach()}><PlusIcon data-icon="inline-start" />Mount</Button>
+            <Button onClick={attach}><PlusIcon data-icon="inline-start" />Mount</Button>
           </div>
           {adding.error ? <FieldError>{adding.error}</FieldError> : null}
         </Field>

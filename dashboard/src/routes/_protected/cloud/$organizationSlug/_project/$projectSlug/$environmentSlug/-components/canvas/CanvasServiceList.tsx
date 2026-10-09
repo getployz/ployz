@@ -4,7 +4,6 @@ import { StoreConfigCard } from "./StoreConfigNode";
 import { ServiceTrays } from "./VolumeTray";
 import type { StoreCanvas } from "./types";
 
-/** The canvas as a list, on phones: its Services as compact cards with their trays, then the Volumes and Configs nothing mounts. */
 export function CanvasNodeList({
   store: { services, unmountedVolumes, unmountedConfigs },
   selectedNodeId,
