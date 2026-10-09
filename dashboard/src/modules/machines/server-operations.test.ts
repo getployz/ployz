@@ -6,7 +6,14 @@ import { cleanPlan, drainPlan, removePlan, volumeLabels } from "#/modules/machin
 const here = "a".repeat(32);
 const there = "b".repeat(32);
 
-type Slot = { machine: string; mode?: "replicated" | "global"; volumes?: number; state?: string; at?: number };
+type Slot = {
+  machine: string;
+  mode?: "replicated" | "global";
+  volumes?: number;
+  mounts?: Record<string, string>;
+  state?: string;
+  at?: number;
+};
 
 const frame = (services: Record<string, Slot[]>) => asTestDouble<RuntimeWatchView>()({
   machines: [{ machine: { id: here, name: "fra-1" } }, { machine: { id: there, name: "fra-2" } }],
@@ -18,7 +25,14 @@ const frame = (services: Record<string, Slot[]>) => asTestDouble<RuntimeWatchVie
       machine_id: slot.machine,
       runtime: { state: slot.state ?? "running" },
       created_at_unix_nanos: slot.at ?? 1,
-      resolved_spec: { mode: { mode: slot.mode ?? "replicated" }, volumes: Array.from({ length: slot.volumes ?? 0 }, () => ({})) },
+      resolved_spec: {
+        mode: { mode: slot.mode ?? "replicated" },
+        volumes: [
+          ...Array.from({ length: slot.volumes ?? 0 }, () => ({ reference: "v", source: { kind: "bind" } })),
+          ...Object.keys(slot.mounts ?? {}).map((docker, index) => ({ reference: `r${index}`, source: { kind: "ordinary", name: docker } })),
+        ],
+        mounts: Object.values(slot.mounts ?? {}).map((target, index) => ({ volume: `r${index}`, target })),
+      },
     })),
   })),
 });
@@ -71,10 +85,24 @@ describe("cleanPlan and removePlan", () => {
     expect(plan.preview).toEqual({ namespace: "old", services: ["old/job", "old/web"], volumes: [`${here}/old_a`, `${there}/old_b`] });
     expect(plan.effects.map(({ kind, name }) => [kind, name])).toEqual([
       ["removes_service", "old/web"],
-      ["deletes_volume", "old_a"],
-      ["deletes_volume", "old_b"],
+      ["deletes_volume", "on fra-1"],
+      ["deletes_volume", "on fra-2"],
     ]);
     expect(plan.confirmDataLoss).toEqual([volume(here, "old_a"), volume(there, "old_b")]);
+  });
+
+  it("a clean names each Volume by the Services that mount it and its Server, never by its Docker name", () => {
+    const plan = cleanPlan(frame({
+      "old/db": [{ machine: here, mounts: { old_vol_a: "/var/lib/postgresql" } }, { machine: there, mounts: { old_vol_a: "/data" } }],
+      "old/backup": [{ machine: here, state: "exited", mounts: { old_vol_a: "/backup" } }],
+    }), "old", [volume(here, "old_vol_a"), volume(there, "old_vol_a"), volume(here, "old_vol_b"), volume("c".repeat(32), "old_vol_c")]);
+
+    expect(plan.effects.filter(({ kind }) => kind === "deletes_volume").map(({ name, node }) => [node, name])).toEqual([
+      [`${here}/old_vol_a`, "used by backup at /backup, db at /var/lib/postgresql on fra-1"],
+      [`${here}/old_vol_b`, "on fra-1"],
+      [`${there}/old_vol_a`, "used by db at /data on fra-2"],
+      [`${"c".repeat(32)}/old_vol_c`, "on a Server Cloud can't see"],
+    ].sort(([a], [b]) => (a < b ? -1 : 1)));
   });
 
   it("removing a Server always destroys the Server, and each Volume it confirms losing", () => {

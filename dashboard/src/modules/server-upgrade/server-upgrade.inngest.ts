@@ -8,6 +8,7 @@ import { type FinalOutcome, type ReleaseChannel, UPGRADE_TRIGGERS } from "#/modu
 import {
   closeRunUpgradeAttempts,
   closeStaleUpgradeAttempts,
+  dropUpgradeAttempt,
   finalOutcome,
   finishUpgradeAttempt,
   listAutomaticUpgradeOrganizationIds,
@@ -85,8 +86,12 @@ async function upgradeServer(
   const { organizationId, channel, attemptId: requested, ...event } = request;
   const observed = await step.run(`observe-server-${machineId}`, async () => {
     const fromVersion = await runEffect(observeUpgradeableServer(organizationId, machineId));
+    if (fromVersion === null) {
+      if (requested !== undefined) await runEffect(dropUpgradeAttempt(organizationId, requested));
+      return null;
+    }
     // Minted here so every retry of a later step reuses it.
-    return fromVersion === null ? null : { fromVersion, attemptId: requested ?? mintAttemptId() };
+    return { fromVersion, attemptId: requested ?? mintAttemptId() };
   });
   if (observed === null) return { kind: "skipped", reason: "not-online" };
   const { fromVersion, attemptId } = observed;

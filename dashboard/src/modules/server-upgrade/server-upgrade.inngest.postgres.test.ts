@@ -16,6 +16,8 @@ import {
 import { createCancelServerUpgrade, createRollOutServerUpgrade, createScheduleServerUpgrades } from "#/modules/server-upgrade/server-upgrade.inngest";
 import {
   listLatestServerUpgrades,
+  readCliServerUpgrade,
+  requestCliServerUpgrade,
   requestServerUpgrade,
   setServerUpgradeSettings,
 } from "#/modules/server-upgrade/server-upgrade.server";
@@ -101,12 +103,11 @@ describe("roll-out-server-upgrade", () => {
     ))) as typeof runInngestEffect;
 
   /** Upgrade on a Server page names its Server; Upgrade and Upgrade the rest on the Servers page name none. */
-  const rollOut = (target: string | null = machineId, trigger: "manual" | "automatic" = "manual") => new InngestTestEngine({
+  const rollOut = (target: string | null = machineId, trigger: "manual" | "automatic" = "manual") =>
+    rollOutRequested({ organizationId, machineId: target, trigger, userId: trigger === "manual" ? userId : null });
+  const rollOutRequested = (data: Record<string, unknown>) => new InngestTestEngine({
     function: createRollOutServerUpgrade(new Inngest({ id: "test" }), runEffect),
-    events: [{
-      name: "server/upgrade.requested",
-      data: { organizationId, machineId: target, trigger, userId: trigger === "manual" ? userId : null },
-    }],
+    events: [{ name: "server/upgrade.requested", data }],
     // Each poll's sleep ends at once; `outliveAfterInspects` moves the clock instead.
     steps: frame.machines.flatMap(({ machine }) =>
       Array.from({ length: 80 }, (_, poll) => ({ id: `wait-${machine.id}-${poll}`, handler: () => undefined }))),
@@ -587,6 +588,78 @@ describe("roll-out-server-upgrade", () => {
       c: ["running", null],
     });
     expect(captured.map(({ event }) => event)).toEqual(["server_upgrade_unknown"]);
+  });
+
+  describe("`server upgrade` from the CLI", () => {
+    const requestCli = () => runEffect(requestCliServerUpgrade({ organizationId, userId }, { machineId, channel: undefined }));
+    const readCli = (attemptId: string) => runEffect(readCliServerUpgrade(organizationId, attemptId));
+    /** The run of the event the CLI's request sent. */
+    const rollOutSent = () => rollOutRequested((send.mock.calls.at(-1)?.[0] as { data: Record<string, unknown> }).data);
+    const requested = async () => {
+      const answer = await requestCli();
+      if (!answer.ok) throw new Error(answer.refusal.message);
+      return answer.id;
+    };
+
+    it("reads running from its request on, and the run claims and settles that attempt", async () => {
+      const id = await requested();
+      expect(await readCli(id)).toEqual({ state: "running" });
+
+      await rollOutSent();
+
+      expect(requests).toEqual([{ machine: machineId, attemptId: id, release: "stable" }]);
+      expect(await readCli(id)).toEqual({ state: "finished", outcome: "succeeded", from_version: "0.2.1", target_version: "0.2.2", message: null });
+      const claimed = await harness.pool.query("select inngest_run_id from server_upgrade_attempt");
+      expect(claimed.rows).toEqual([{ inngest_run_id: expect.stringMatching(/.+/u) }]);
+    });
+
+    it("joins the attempt already running on the Server instead of queueing one its run would find busy", async () => {
+      const first = await requested();
+
+      expect(await requested()).toBe(first);
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    it("ends busy at once when its run finds the Server busy or building, and leaves no attempt", async () => {
+      requestAnswer = "busy";
+      const busy = await requested();
+      expect((await rollOutSent()).result).toEqual({ results: [{ machineId, kind: "skipped", reason: "busy" }] });
+      expect(await readCli(busy)).toMatchObject({ state: "ended", code: "busy" });
+
+      const building = await requested();
+      const observed = frame.machines[0];
+      if (observed) observed.machine.runtime.running_builds = 1;
+      expect((await rollOutSent()).result).toEqual({ results: [{ machineId, kind: "skipped", reason: "not-online" }] });
+      expect(await readCli(building)).toMatchObject({ state: "ended", code: "busy" });
+      expect(await rows()).toEqual([]);
+    });
+
+    it("refuses unavailable, writing and sending nothing, for a Server that can't take an Upgrade now", async () => {
+      const observed = frame.machines[0];
+      if (observed) observed.machine.runtime.running_builds = 1;
+
+      expect(await requestCli()).toEqual({
+        ok: false,
+        refusal: { code: "unavailable", message: "This Server isn't online and idle, so it can't take an Upgrade now.", details: null },
+      });
+      expect(send).not.toHaveBeenCalled();
+      expect(await rows()).toEqual([]);
+    });
+
+    it("reads unknown once its attempt outlives the observation limit, and a new request starts its own", async () => {
+      const stale = await requested();
+      await harness.pool.query("update server_upgrade_attempt set started_at = started_at - interval '20 minutes'");
+
+      expect(await readCli(stale)).toMatchObject({ state: "finished", outcome: "unknown" });
+      expect(await requested()).not.toBe(stale);
+    });
+
+    it("drops its attempt when the event can't be sent", async () => {
+      send.mockRejectedValueOnce(new Error("Inngest is down"));
+
+      await expect(requestCli()).rejects.toThrow();
+      expect(await rows()).toEqual([]);
+    });
   });
 
   it("a plain member can Upgrade one Server or every Server behind, and reads each Server's latest attempt", async () => {

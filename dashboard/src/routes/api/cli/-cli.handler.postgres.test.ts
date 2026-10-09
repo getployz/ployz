@@ -651,7 +651,11 @@ const leftBehindClusterOf = (cluster: LeftBehind) => Layer.succeed(OrganizationR
           service_id: "web",
           containers: [{
             kind: "service_container", machine_id: fra1, runtime: { state: "running" }, created_at_unix_nanos: 1,
-            resolved_spec: { mode: { mode: "replicated" }, volumes: [] },
+            resolved_spec: {
+              mode: { mode: "replicated" },
+              volumes: [{ reference: "data", source: { kind: "ordinary", name: "left-behind_data" } }],
+              mounts: [{ volume: "data", target: "/data" }],
+            },
           }],
         }],
       })),
@@ -680,7 +684,7 @@ it.live(
         assert.deepStrictEqual(details.operation, { verb: "clean", name: "left-behind" });
         assert.deepStrictEqual(details.effects?.map(({ kind, name }) => [kind, name]), [
           ["removes_service", "left-behind/web"],
-          ["deletes_volume", "left-behind_data"],
+          ["deletes_volume", "used by web at /data on fra-1"],
         ]);
         const approvalId = details.approval_id ?? assert.fail("no approval id");
         assert.lengthOf(sent.mock.calls, 0);
@@ -713,7 +717,10 @@ it.live(
         const drainId = drain.json.id ?? assert.fail("no drain id");
         assert.deepStrictEqual((yield* cli("GET", `server-drains/${drainId}`, alice)).json, { state: "pending" });
         assert.strictEqual((yield* cli("GET", "server-drains/not-a-uuid", alice)).json.error?.code, "not_found");
-        assert.strictEqual((yield* cli("POST", "servers/not-a-machine/drain", alice)).status, 404);
+        const notAMachine = yield* cli("POST", "servers/not-a-machine/drain", alice);
+        assert.deepStrictEqual([notAMachine.status, notAMachine.json.error?.message], [404, "No such Server."]);
+        const unseen = yield* cli("POST", `servers/${"e".repeat(32)}/drain`, alice);
+        assert.deepStrictEqual([unseen.status, unseen.json.error?.message], [404, "No such Server."]);
 
         const approvals = yield* drizzle.select({ subject: operationApprovals.subject, status: operationApprovals.status })
           .from(operationApprovals).orderBy(operationApprovals.subject);
@@ -747,6 +754,10 @@ it.live(
 
         const started = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, keep);
         const removalId = started.json.id ?? assert.fail("no removal id");
+        const resetAfterUse = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, { confirm_data_loss: { confirmed: [] } });
+        assert.strictEqual(resetAfterUse.json.error?.code, "approval_required");
+        const elsewhere = yield* cli("DELETE", `servers/${"e".repeat(32)}`, { ...alice, approval: approvalId }, keep);
+        assert.strictEqual(elsewhere.json.error?.code, "not_found");
         const ended = new Date();
         yield* drizzle.update(machineRemoveAttempt).set({
           state: "failed", inngestRunId: "run-1", startedAt: ended, terminalAt: ended, failureCode: "unreachable", failureMessage: "gone",
@@ -783,8 +794,11 @@ it.live(
         const retried = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, keep);
         assert.strictEqual(retried.status, 200);
         assert.strictEqual(retried.json.id, removalId);
-        assert.strictEqual((yield* cli("DELETE", `servers/${fra1}`, alice, keep)).status, 404);
-        assert.strictEqual((yield* cli("DELETE", `servers/${fra1}`, alice, { confirm_data_loss: { confirmed: [] } })).status, 404);
+        for (const body of [keep, { confirm_data_loss: { confirmed: [] } }]) {
+          const gone = yield* cli("DELETE", `servers/${fra1}`, alice, body);
+          assert.strictEqual(gone.status, 404);
+          assert.deepStrictEqual([gone.json.error?.code, gone.json.error?.message], ["not_found", "No such Server."]);
+        }
 
         const approvals = yield* drizzle.select({ status: operationApprovals.status }).from(operationApprovals);
         assert.deepStrictEqual(approvals.map(({ status }) => status), ["approved"]);

@@ -81,6 +81,7 @@ function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
 
 // The CLI reads a bare 404 as an unsupported route, so a missing Volume or run answers as a refusal.
 const missingRefusal = (message: string) => refusal({ code: "not_found", message, details: null });
+const noSuchServer = () => missingRefusal("No such Server.");
 
 const forgetter = (caller: Caller) => ({ userId: caller.userId, organizationId: caller.organization.id });
 
@@ -141,7 +142,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     }
     case "DELETE servers/:id": {
       const machineId = serverIdOf(id);
-      if (machineId === null) return yield* new NotFound({ message: "No such Server." });
+      if (machineId === null) return noSuchServer();
       const input = yield* decodeBody(RemoveServer, request, "Removing a Server takes the Data Loss it confirms.");
       const noReset = "no_reset" in input;
       const approval = approvalHeader(request);
@@ -150,6 +151,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
         : null;
       if (consumed !== null) return { id: consumed };
       const plan = yield* planRemove(caller.organization.id, machineId, noReset ? null : input.confirm_data_loss.confirmed);
+      if (plan === null) return noSuchServer();
       const gated = yield* gateOperation(caller, approval, plan);
       if (!gated.ok) return refusal(gated.refusal);
       const started = yield* startMachineRemove({
@@ -172,8 +174,9 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     }
     case "POST servers/:id/drain": {
       const machineId = serverIdOf(id);
-      if (machineId === null) return yield* new NotFound({ message: "No such Server." });
+      if (machineId === null) return noSuchServer();
       const plan = yield* planDrain(caller.organization.id, machineId);
+      if (plan === null) return noSuchServer();
       const gated = yield* gateOperation(caller, approvalHeader(request), plan);
       if (!gated.ok) return refusal(gated.refusal);
       return accepted(yield* requestCliServerDrain(forgetter(caller), { machineId, targets: plan.targets, approvalId: gated.approvalId }));
@@ -184,7 +187,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     }
     case "POST servers/:id/upgrade": {
       const machineId = serverIdOf(id);
-      if (machineId === null) return yield* new NotFound({ message: "No such Server." });
+      if (machineId === null) return noSuchServer();
       const input = yield* decodeBody(UpgradeServer, request, "An upgrade takes at most the Release Channel it names.");
       const requested = yield* requestCliServerUpgrade(forgetter(caller), { machineId, channel: input.channel });
       return requested.ok ? accepted(requested.id) : refusal(requested.refusal);

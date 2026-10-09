@@ -9,7 +9,7 @@ import { SYSTEM_NAMESPACE, splitQualifiedService } from "#/modules/machines/serv
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import { firstRuntimeFrame, OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import { dockerVolumeName } from "#/modules/volume-run/volume-run";
-import { Conflict, NotFound } from "#/server/public-error";
+import { Conflict } from "#/server/public-error";
 
 const unreachable = () => new Conflict({ userFacing: true, message: "Your servers aren't answering. Try again once they are." });
 
@@ -29,6 +29,25 @@ const removesService = (identity: QualifiedService, serviceId: string): Destruct
 });
 const serverName = (frame: RuntimeWatchView, machineId: string) =>
   frame.machines.find(({ machine }) => machine.id === machineId)?.machine.name;
+
+/**
+ * A Volume named by what the frame shows of it: the Services that mount it, where, and on which Server. The Store's
+ * name for it is gone once no Environment owns its Namespace.
+ */
+export function volumeMountLabel(frame: RuntimeWatchView, { id }: DataLossIdentity): string {
+  const users = frame.services.flatMap((service) => service.containers.flatMap(({ machine_id, resolved_spec }) => {
+    if (machine_id !== id.machine_id) return [];
+    const volume = resolved_spec.volumes.find(({ source }) =>
+      (source.kind === "ordinary" || source.kind === "provisioned") && source.name === id.name);
+    if (volume === undefined) return [];
+    const at = resolved_spec.mounts.find((mount) => mount.volume === volume.reference)?.target;
+    const name = splitQualifiedService(service.identity).name;
+    return [at === undefined ? name : `${name} at ${at}`];
+  }));
+  const unique = [...new Set(users)].sort(byName);
+  const server = serverName(frame, id.machine_id) ?? "a Server Cloud can't see";
+  return unique.length === 0 ? `on ${server}` : `used by ${unique.join(", ")} on ${server}`;
+}
 
 /** An operation as the gate weighs it, with the services a Drain of it acts on. */
 export type DrainPlan = OperationAsked & { readonly targets: QualifiedService[] };
@@ -100,7 +119,7 @@ export function cleanPlan(
     },
     effects: [
       ...running.map((service) => removesService(service.identity, service.service_id)).sort((a, b) => byName(a.path, b.path)),
-      ...confirmDataLoss.map((identity) => deletesVolume(identity)),
+      ...confirmDataLoss.map((identity) => deletesVolume(identity, volumeMountLabel(frame, identity))),
     ],
     confirmDataLoss,
   };
@@ -145,12 +164,10 @@ const observe = (organizationId: string) => firstRuntimeFrame(organizationId).pi
   Effect.flatMap((frame) => frame === null ? Effect.fail(unreachable()) : Effect.succeed(frame)),
 );
 
-/** A Drain of `machineId` as it stands now. */
+/** A Drain of `machineId` as it stands now; null when Cloud doesn't observe that Server. */
 export const planDrain = Effect.fn("ServerOperations.planDrain")(function* (organizationId: string, machineId: string) {
   const frame = yield* observe(organizationId);
-  const plan = drainPlan(frame, new Set(yield* ownedNamespaces(organizationId)), machineId);
-  if (plan === null) return yield* new NotFound({ message: "No such Server." });
-  return plan;
+  return drainPlan(frame, new Set(yield* ownedNamespaces(organizationId)), machineId);
 });
 
 const ownedOrSystem = (organizationId: string, namespace: string) => namespace === SYSTEM_NAMESPACE
@@ -194,14 +211,19 @@ const volumeOwners = Effect.fn("ServerOperations.volumeOwners")(function* (
   return owners;
 });
 
+/** A removal of `machineId` as it stands now; null when Cloud doesn't observe that Server. */
 export const planRemove = Effect.fn("ServerOperations.planRemove")(function* (
   organizationId: string,
   machineId: string,
   confirmed: readonly DataLossIdentity[] | null,
 ) {
-  const name = serverName(yield* observe(organizationId), machineId);
-  if (name === undefined) return yield* new NotFound({ message: "No such Server." });
-  return removePlan(machineId, name, confirmed, volumeLabels(yield* volumeOwners(organizationId, confirmed ?? [])));
+  const frame = yield* observe(organizationId);
+  const name = serverName(frame, machineId);
+  if (name === undefined) return null;
+  const owned = volumeLabels(yield* volumeOwners(organizationId, confirmed ?? []));
+  const labels = new Map((confirmed ?? []).map((identity) =>
+    [identity.id.name, owned.get(identity.id.name) ?? volumeMountLabel(frame, identity)]));
+  return removePlan(machineId, name, confirmed, labels);
 });
 
 /**

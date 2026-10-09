@@ -50,8 +50,8 @@ it.live("a Server removal's ask names each Volume it deletes as Ployz names it, 
   const plan = yield* planRemove(ORGANIZATION, fra1, [{ kind: "docker_volume", id: { machine_id: fra1, name: docker } }])
     .pipe(Effect.provide(cluster), Effect.provide(services));
 
-  expect(plan.name).toBe("fra-1");
-  expect(plan.effects).toEqual([
+  expect(plan?.name).toBe("fra-1");
+  expect(plan?.effects).toEqual([
     { kind: "removes_server", name: "fra-1", node: fra1, path: `servers/${fra1}` },
     { kind: "deletes_volume", name: "cache-data", node: `${fra1}/${docker}`, path: `volumes/${fra1}/${docker}` },
   ]);

@@ -32,7 +32,6 @@ import {
 import { organizationServerUpgrades, serverUpgradeAttempt } from "#/modules/server-upgrade/tables";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { Database } from "#/server/database.server";
-import { Conflict } from "#/server/public-error";
 
 /** The daemon reads its Release Channel pointers here (core `CHANNEL_URL`). */
 const CHANNEL_URL = "https://ployz.sh";
@@ -188,7 +187,8 @@ export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function*
 /**
  * Write the attempt's row before its request. Its target starts as the release `channel` names for the Server's line,
  * so an attempt whose request never gets an answer still halts that release; the Server's answer replaces it with
- * the exact version it resolved.
+ * the exact version it resolved. A row the CLI's request wrote first is claimed by the run: its observation limit
+ * counts from here, not from the request that queued it.
  */
 export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* (input: {
   readonly request: ServerUpgradeRequestedEventData & { readonly machineId: string };
@@ -201,7 +201,7 @@ export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* 
   // An unreadable pointer leaves the target to the Server's answer.
   const expected = line === null ? null : yield* channelRelease(input.channel, line).pipe(Effect.orElseSucceed(() => null));
   const { drizzle } = yield* Database;
-  // A retried step finds the row it already wrote.
+  const startedAt = new Date();
   yield* drizzle.insert(serverUpgradeAttempt).values({
     organizationId: input.request.organizationId,
     machineId: input.request.machineId,
@@ -212,8 +212,19 @@ export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* 
     fromVersion: input.fromVersion,
     targetVersion: expected,
     inngestRunId: input.inngestRunId,
-    startedAt: new Date(),
-  }).onConflictDoNothing();
+    startedAt,
+  }).onConflictDoUpdate({
+    target: [serverUpgradeAttempt.organizationId, serverUpgradeAttempt.machineId, serverUpgradeAttempt.attemptId],
+    set: { inngestRunId: input.inngestRunId, startedAt },
+    // A retried step finds the row it already claimed.
+    setWhere: and(eq(serverUpgradeAttempt.outcome, "running"), sql`${serverUpgradeAttempt.inngestRunId} <> ${input.inngestRunId}`),
+  });
+});
+
+/** A refused request is no attempt: drop its row. */
+export const dropUpgradeAttempt = Effect.fn("ServerUpgrade.drop")(function* (organizationId: string, attemptId: string) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.delete(serverUpgradeAttempt).where(attemptWhere(organizationId, attemptId));
 });
 
 const attemptWhere = (organizationId: string, attemptId: string) =>
@@ -243,8 +254,7 @@ export const requestUpgradeOnServer = Effect.fn("ServerUpgrade.requestOnServer")
     Effect.mapError((cause) => new ServerUpgradeUnreachable({ operation: "request machine upgrade", cause })),
   );
   if (attempt.busy) {
-    const { drizzle } = yield* Database;
-    yield* drizzle.delete(serverUpgradeAttempt).where(attemptWhere(input.organizationId, input.attemptId));
+    yield* dropUpgradeAttempt(input.organizationId, input.attemptId);
     return null;
   }
   yield* noteAttempt(input.organizationId, attempt.attempt);
@@ -413,8 +423,10 @@ export const mintAttemptId = () =>
 
 /**
  * `server upgrade` from the signed-in CLI: one Server, along the Organization's Release Channel. A `channel` other than
- * the Organization's refuses `channel_mismatch` naming it. The attempt ID the CLI polls is minted here and carried by
- * the event, so the run records its attempt under it.
+ * the Organization's refuses `channel_mismatch` naming it; a Server that can't take an Upgrade now refuses
+ * `unavailable`. A Server already upgrading answers with that attempt, so the CLI follows it rather than queueing one
+ * its run would find busy. Otherwise the attempt's row is written here, before its event, under an ID the event
+ * carries: the run claims the row, or drops it when it skips the Server, so the CLI's poll always settles.
  */
 export const requestCliServerUpgrade = Effect.fn("ServerUpgrade.requestCli")(function* (
   caller: { readonly organizationId: string; readonly userId: string },
@@ -431,38 +443,65 @@ export const requestCliServerUpgrade = Effect.fn("ServerUpgrade.requestCli")(fun
       },
     } as const satisfies { ok: false; refusal: StoreRefusal };
   }
-  const version = yield* observeUpgradeableServer(caller.organizationId, input.machineId).pipe(
-    Effect.catch(() => Effect.fail(new Conflict({ userFacing: true, message: "Your servers aren't answering. Try again once they are." }))),
-  );
-  if (version === null) {
-    return yield* new Conflict({ userFacing: true, message: "This Server isn't online and idle, so it can't take an Upgrade now." });
+  const { drizzle } = yield* Database;
+  const [running] = yield* drizzle.select({ attemptId: serverUpgradeAttempt.attemptId, startedAt: serverUpgradeAttempt.startedAt })
+    .from(serverUpgradeAttempt)
+    .where(and(
+      eq(serverUpgradeAttempt.organizationId, caller.organizationId),
+      eq(serverUpgradeAttempt.machineId, input.machineId),
+      eq(serverUpgradeAttempt.outcome, "running"),
+    ))
+    .orderBy(desc(serverUpgradeAttempt.startedAt))
+    .limit(1);
+  if (running !== undefined && !outlivedObservation(running.startedAt, Date.now())) {
+    return { ok: true, id: running.attemptId } as const;
   }
-  const attemptId = mintAttemptId();
-  yield* sendInngestEvent(createServerUpgradeRequestedEvent({
+  const unavailable = (message: string) =>
+    ({ ok: false, refusal: { code: "unavailable", message, details: null } }) as const satisfies { ok: false; refusal: StoreRefusal };
+  const fromVersion = yield* observeUpgradeableServer(caller.organizationId, input.machineId).pipe(Effect.option);
+  if (fromVersion._tag === "None") return unavailable("Your servers aren't answering. Try again once they are.");
+  if (fromVersion.value === null) return unavailable("This Server isn't online and idle, so it can't take an Upgrade now.");
+  const request = {
     organizationId: caller.organizationId,
     machineId: input.machineId,
     trigger: "manual",
     userId: caller.userId,
-    attemptId,
-  }));
-  return { ok: true, id: attemptId } as const;
+    attemptId: mintAttemptId(),
+  } as const;
+  // The run that claims the row writes its own run ID over this placeholder.
+  yield* recordUpgradeAttempt({ request, attemptId: request.attemptId, channel, fromVersion: fromVersion.value, inngestRunId: "" });
+  yield* sendInngestEvent(createServerUpgradeRequestedEvent(request)).pipe(
+    Effect.tapError(() => dropUpgradeAttempt(caller.organizationId, request.attemptId)),
+  );
+  return { ok: true, id: request.attemptId } as const;
 });
 
-/** One Upgrade attempt as the CLI polls it. Until its run records the attempt, it reads pending. */
+/**
+ * One Upgrade attempt as the CLI polls it. Its row exists from the request on, so a missing one is an attempt its
+ * run skipped and dropped. One running past the observation limit reads `unknown`, as the hourly sweep will record it.
+ */
 export const readCliServerUpgrade = Effect.fn("ServerUpgrade.readCli")(function* (organizationId: string, attemptId: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({
+    startedAt: serverUpgradeAttempt.startedAt,
     outcome: serverUpgradeAttempt.outcome,
     fromVersion: serverUpgradeAttempt.fromVersion,
     targetVersion: serverUpgradeAttempt.targetVersion,
     stage: serverUpgradeAttempt.stage,
     error: serverUpgradeAttempt.error,
   }).from(serverUpgradeAttempt).where(attemptWhere(organizationId, attemptId));
-  if (row === undefined) return { state: "pending" } as const;
-  if (row.outcome === "running") return { state: "running" } as const;
+  if (row === undefined) {
+    return {
+      state: "ended",
+      code: "busy",
+      message: "The Server was busy with a build or another Upgrade, or went offline, so it took no Upgrade.",
+    } as const;
+  }
+  const outlived = row.outcome === "running" && outlivedObservation(row.startedAt, Date.now());
+  if (row.outcome === "running" && !outlived) return { state: "running" } as const;
   return {
     state: "finished",
-    outcome: row.outcome,
+    outcome: outlived ? "unknown" : row.outcome,
     from_version: row.fromVersion,
     target_version: row.targetVersion,
     message: row.error ?? row.stage,
