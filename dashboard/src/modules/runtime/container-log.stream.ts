@@ -61,12 +61,13 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
             if (pending.length > LIVE_LOG_LIMIT) { pending = pending.slice(-LIVE_LOG_LIMIT); overflowed = true; }
             return;
           }
+          // The Store's lines that outlive the restart still dedupe the waiting ones; only then does history start over.
+          if (overflowed) restartContainerLogs(collection, pending);
+          appendContainerLogs(collection, pending, stored);
           if (overflowed) {
-            restartContainerLogs(collection, pending);
             resetHistory();
             overflowed = false;
           }
-          appendContainerLogs(collection, pending, stored);
           pending = [];
           // The oldest lines go first, so a trim takes the scrollback and the Log Store reads again from the new oldest.
           if (trimContainerLogs(collection) && cursor !== undefined) resetHistory();

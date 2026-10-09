@@ -167,28 +167,31 @@ type HistoryRead = { cursor: string | null; until_nanos: string | null; limit: n
 type StoreTransport = { watch(): AsyncGenerator<object>; history(input: HistoryRead): Promise<{ next(): Promise<object | null>; cancel(): void }> };
 const sdkHistory = createRequire(import.meta.url)(join(dirname(createRequire(import.meta.url).resolve("@ployz/sdk")), "runtime-logs.js")).history as (transport: StoreTransport, options: LogHistoryOptions) => Promise<LogHistoryPage>;
 
-/** One Server's Log Store holding `stored`, read through the SDK's history and the route's projection. */
+/**
+ * One Server's Log Store holding `stored`, read through the SDK's history and the route's projection. `stored` may
+ * grow between reads; a cursor counts the rows older than its page's end, so newer lines don't shift it.
+ */
 function storeFetch(stored: readonly Stored[], reads: string[]) {
-  const rows = stored.map(({ container, at }) => ({ row: "line", container_id: container, timestamp_nanos: String(at), stream: "stdout", level: "info", message: `${container} ${at}` }))
-    .sort((a, b) => Number(b.timestamp_nanos) - Number(a.timestamp_nanos));
-  const containers = [...new Set(stored.map(row => row.container))];
   const transport: StoreTransport = {
     async *watch() { yield { machines: [{ machine: { id: "m", name: "Server" } }], containers: [] }; },
     async history(input) {
-      const from = input.cursor === null ? 0 : Number(input.cursor);
+      const rows = stored.map(({ container, at }) => ({ row: "line", container_id: container, timestamp_nanos: String(at), stream: "stdout", level: "info", message: `${container} ${at}` }))
+        .sort((a, b) => Number(b.timestamp_nanos) - Number(a.timestamp_nanos));
+      const containers = [...new Set(stored.map(row => row.container))];
+      const from = input.cursor === null ? 0 : rows.length - Number(input.cursor);
       const selected = rows.slice(from).filter(row => input.until_nanos === null || BigInt(row.timestamp_nanos) < BigInt(input.until_nanos));
       const page = selected.slice(0, input.limit);
       const output: object[] = [
         ...containers.map(container_id => ({ row: "container", container_id, namespace: "env", service: container_id, replica: container_id, kind: "service" })),
-        ...page, { row: "end", next: page.length < selected.length ? String(rows.length - selected.length + page.length) : null },
+        ...page, { row: "end", next: page.length < selected.length ? String(selected.length - page.length) : null },
       ];
       return { async next() { return output.shift() ?? null; }, cancel() {} };
     },
   };
   return async (_url: string, init: RequestInit) => {
-    const { cursor } = JSON.parse(String(init.body)) as { cursor?: string };
-    reads.push(cursor ? "cursor" : "newest");
-    const page = await sdkHistory(transport, { filter: { namespace: "env" }, limit: 500, cursor });
+    const { cursor, before } = JSON.parse(String(init.body)) as { cursor?: string; before?: string };
+    reads.push(cursor ? "cursor" : before === undefined ? "newest" : `before=${before}`);
+    const page = await sdkHistory(transport, { filter: { namespace: "env" }, limit: 500, cursor, before });
     return Response.json({ rows: page.records.map(projectContainerLog), failures: page.failures, cursor: page.cursor });
   };
 }
@@ -241,6 +244,48 @@ it.each([
     const lines = [...stream.collection.values()].map(row => `${row.containerId} ${row.timestamp}`).sort();
     expect(lines).toEqual(stored.map(({ container, at }) => `${container} ${at}`).sort());
     expect(reads.filter(read => read !== "cursor")).toEqual(["newest"]);
+  } finally {
+    subscription.unsubscribe();
+    await stream.collection.cleanup();
+    queryClient.clear(); vi.useRealTimers(); vi.unstubAllGlobals();
+  }
+});
+
+it("holds each line once when lines waiting past the limit land after a read of the Log Store", async () => {
+  vi.useFakeTimers();
+  let source: EventTarget | undefined;
+  class FakeEventSource extends EventTarget {
+    constructor() { super(); source = this; }
+    close() {}
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+  const stored = span("busy", 1, 300);
+  vi.stubGlobal("fetch", storeFetch(stored, []));
+  const queryClient = new QueryClient();
+  const stream = getContainerLogStream({ organizationSlug: "overflow", environmentSlug: "env", projectSlug: "p" }, { queryClient, sessionId: "session", userId: "user" });
+  const subscription = stream.collection.subscribeChanges(() => {});
+  const send = async (rows: readonly Stored[]) => {
+    for (const { container, at } of rows) {
+      source?.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: {
+        kind: "line", id: `live/${container}/${at}`, timestamp: String(at), machineId: "m", machineName: "Server", containerId: container, serviceName: container, channel: "stdout", level: "info", message: `${container} ${at}`,
+      } }) }));
+    }
+    await vi.advanceTimersByTimeAsync(260);
+  };
+  try {
+    // A tail this long reads no history on its own; the viewer scrolls up, reads the Store, and the waiting lines overflow.
+    await send(span("busy", 1, 300));
+    stream.follow(false);
+    const waiting = span("busy", 301, 5_300);
+    stored.push(...waiting);
+    await send(waiting);
+    await stream.loadOlder();
+    const flood = span("busy", 5_301, 11_400);
+    stored.push(...flood);
+    await send(flood);
+    stream.follow(true);
+    const lines = [...stream.collection.values()].map(row => `${row.containerId} ${row.timestamp}`);
+    expect(lines.length).toBe(new Set(lines).size);
   } finally {
     subscription.unsubscribe();
     await stream.collection.cleanup();
