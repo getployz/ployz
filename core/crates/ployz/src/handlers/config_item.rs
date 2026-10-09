@@ -6,12 +6,12 @@
 use std::io::{self, IsTerminal};
 
 use clap::{ArgAction, ArgMatches, Command};
-use ployz_core::config::FileMode;
+use ployz_core::config::{FileMode, ReviewLifecycleKind};
 use ployz_core::{ConfigFileName, ConfigName, ServiceName};
 use ployz_store::{
-    AttachConfig, ConfigId, ConfigItemQuery, ConfigMountAt, ConfigStaged, ConfigSummary,
-    ConfigsQuery, CreateConfig, DeleteConfig, DetachConfig, PutConfigFile, RemoveConfigFile,
-    RenameConfig,
+    AttachConfig, ConfigId, ConfigItemQuery, ConfigListing, ConfigMountAt, ConfigStaged,
+    ConfigSummary, ConfigsQuery, CreateConfig, DeleteConfig, DetachConfig, PutConfigFile,
+    RemoveConfigFile, RenameConfig,
 };
 
 use super::store::{self, Next};
@@ -215,13 +215,19 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
             Cell::from(listing.config.name.to_string()),
             Cell::from(files_word(&listing.config)),
             Cell::from(mounts_word(&listing.mounts)),
-            listing.change.as_ref().map_or_else(
-                || Cell::from(""),
-                |change| Cell::status(super::store::word(change), Tone::Change),
-            ),
+            next_deploy(listing)
+                .map_or_else(|| Cell::from(""), |word| Cell::status(word, Tone::Change)),
         ]);
     }
     crate::ui::list(&view, &table)
+}
+
+/// What the next Deploy does to a Config: `new` until a Deploy applies it, unless it deletes it.
+fn next_deploy(listing: &ConfigListing) -> Option<String> {
+    if listing.deployed || listing.change == Some(ReviewLifecycleKind::Delete) {
+        return listing.change.as_ref().map(super::store::word);
+    }
+    Some("new".to_owned())
 }
 
 fn inspect(root: &ArgMatches) -> Result<(), Error> {
@@ -234,8 +240,8 @@ fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let mut record = Fields::new()
         .field("config", &listing.config.name)
         .field("id", &listing.config.id);
-    if let Some(change) = &listing.change {
-        record.push("next deploy", super::store::word(change));
+    if let Some(word) = next_deploy(listing) {
+        record.push("next deploy", word);
     }
     for mount in &listing.mounts {
         record.push(

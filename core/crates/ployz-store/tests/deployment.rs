@@ -107,6 +107,7 @@ fn changed(store: &ConfigStore, who: &Actor) -> Vec<String> {
         .collect()
 }
 
+/// Each listed Config: whether a Deploy applied it, and what the next one does.
 fn configs(store: &ConfigStore, who: &Actor) -> Vec<(String, bool, Option<ReviewLifecycleKind>)> {
     store
         .read(who, &ConfigsQuery::default())
@@ -357,10 +358,12 @@ fn a_config_deploys_with_the_services_that_mount_it() {
             .map(|(_, outcome)| outcome)
     };
     assert_eq!(sentry_is(1), Some(NodeStatus::Pending));
+    assert_eq!(configs(&store, &who), [("sentry".to_owned(), false, None)]);
     store
         .record(&id(1), &a, succeeded(&["web", "api"]))
         .unwrap();
     assert_eq!(sentry_is(1), Some(NodeStatus::Deployed));
+    assert_eq!(configs(&store, &who), [("sentry".to_owned(), true, None)]);
     assert!(
         changed(&store, &who).is_empty(),
         "Applied State holds Config and mount"
@@ -430,6 +433,47 @@ fn a_config_deploys_with_the_services_that_mount_it() {
     store.record(&id(4), &a, succeeded(&["web"])).unwrap();
     assert_eq!(sentry_is(4), Some(NodeStatus::Removed));
     assert!(changed(&store, &who).is_empty());
+    assert!(configs(&store, &who).is_empty());
+}
+
+#[test]
+fn a_config_deleted_while_its_deploy_is_in_flight_lists_as_a_delete() {
+    let (store, who) = shop();
+    sentry(&store, &who);
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .write(
+            &who,
+            &DetachConfig {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+                config: ConfigName::parse("sentry").unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &DeleteConfig {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("sentry").unwrap(),
+            },
+        )
+        .unwrap();
+    let delete = Some(ReviewLifecycleKind::Delete);
+    assert_eq!(
+        configs(&store, &who),
+        [("sentry".to_owned(), false, delete)]
+    );
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    assert_eq!(configs(&store, &who), [("sentry".to_owned(), true, delete)]);
 }
 
 fn shared_sentry(store: &ConfigStore, who: &Actor) {
@@ -676,7 +720,10 @@ fn a_narrowed_deploy_leaves_a_shared_config_staged_until_every_mounter_redeploys
     };
     assert_eq!(
         restarts(diff(&store, &who).changes),
-        [("sentry".to_owned(), vec!["web".to_owned(), "api".to_owned()])]
+        [(
+            "sentry".to_owned(),
+            vec!["web".to_owned(), "api".to_owned()]
+        )]
     );
     let plan = |services: &[&str]| {
         let plan: ployz_store::PlanView = store
