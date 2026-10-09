@@ -21,6 +21,7 @@ import { Switch } from "#/components/ui/switch";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { Badge } from "#/components/ui/badge";
 import { RowWarning, SettingsSection, SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
+import { StoreVolumeCopies } from "./StoreVolumeCopies";
 import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
 import { ServiceSettingInput } from "../../../services/$serviceId/-components/ServiceSettingInput";
 import { CanvasInspectorNotFound } from "../../../-components/CanvasInspectorRouteStates";
@@ -88,6 +89,12 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
           <SettingsSection id="storage" title="Storage">
             <StoreVolumeStorage key={`${volume.id}:${JSON.stringify(volume.storage)}`} state={state} removing={removing} />
           </SettingsSection>
+          {/* Copies exist once a Deploy made the managed Volume on a Server. */}
+          {volume.deployed && volume.storage.kind === "provisioned" && !removing ? (
+            <SettingsSection id="copies" title="Copies">
+              <StoreVolumeCopies organizationSlug={organizationSlug} environment={store} volume={volume} />
+            </SettingsSection>
+          ) : null}
           <SettingsSection id="danger" title="Danger">
             <StoreVolumeDanger state={state} params={params} version={diff.version} />
           </SettingsSection>

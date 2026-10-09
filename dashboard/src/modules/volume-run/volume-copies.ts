@@ -33,15 +33,21 @@ export type VolumeCopies = {
 
 const ENGINE_ROLE = { writer: "writer", slot: "mirror", switching: "moving", old: "old" } as const satisfies Record<RuntimeVolumeCopy["role"], CopyRole>;
 const RELEASABLE: readonly VolumeRunState[] = ["failed", "lost", "cancelled"];
-const isActive = (run: VolumeRunView) => (ACTIVE_VOLUME_RUN_STATES as readonly VolumeRunState[]).includes(run.state);
+const isActive = (run: VolumeRunView) => ACTIVE_VOLUME_RUN_STATES.some((state) => state === run.state);
 const isOnline = (machine: Pick<RuntimeMachineRecord, "membership"> | undefined) => machine?.membership === "up" || machine?.membership === "suspect";
+
+/** Any run's arguments, each field present only for the kinds that take it. */
+function runArgs(run: VolumeRunView): Partial<{ readonly to: string; readonly from: string; readonly full: boolean; readonly slot: string | null }> {
+  return run.args;
+}
 
 /** The Server the last finished Move or Restore made the writer: of two writers, the other one is old. */
 function lastWriter(runs: readonly VolumeRunView[]): string | null {
   for (const run of runs) {
     if (run.state !== "done") continue;
-    if (run.kind === "move") return (run.args as { to: string }).to;
-    if (run.kind === "restore") return (run.args as { from: string }).from;
+    const args = runArgs(run);
+    if (run.kind === "move" && args.to !== undefined) return args.to;
+    if (run.kind === "restore" && args.from !== undefined) return args.from;
   }
   return null;
 }
@@ -62,7 +68,7 @@ export function volumeCopies(input: {
     .filter((copy) => parseDockerVolumeName(copy.name)?.volumeId === input.volume.id)
     .map((copy) => {
       const machine = machines.get(copy.machineId);
-      return { server: machine?.name ?? copy.machineId, machineId: copy.machineId, role: ENGINE_ROLE[copy.role] as CopyRole, online: isOnline(machine) };
+      return { server: machine?.name ?? copy.machineId, machineId: copy.machineId, role: ENGINE_ROLE[copy.role], online: isOnline(machine) };
     });
 
   const writers = observed.filter((copy) => copy.role === "writer");
@@ -121,8 +127,8 @@ const STATE_WORD = {
 } as const satisfies Record<VolumeRunState, string>;
 
 /** A run as one line of activity: "Move to web-2", and its state in one word. */
-export function runText(run: VolumeRunView): { readonly what: string; readonly state: string } {
-  const args = run.args as Partial<{ to: string; from: string; full: boolean; slot: string | null }>;
+export function runText(run: VolumeRunView) {
+  const args = runArgs(run);
   const what = {
     mirror: `Mirror to ${args.to}`,
     sync: args.full ? "Full sync" : "Sync",
