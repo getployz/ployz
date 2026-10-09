@@ -1291,37 +1291,48 @@ fn described_by_event(
         .as_ref()
         .and_then(|actor| actor.attributes.clone())
         .unwrap_or_default();
-    let action = message.action.as_deref();
-    let died = action == Some("die");
     let at = message.time_nano.map(|nanos| {
         let mut at = Vec::new();
         frame::write_rfc3339_nanos(nanos, &mut at).expect("writing to a Vec cannot fail");
         String::from_utf8(at).expect("an RFC 3339 time is ASCII")
     });
-    let before = previous.and_then(|previous| previous.state.as_ref());
-    let (started_at, oom_killed) = match action {
-        Some("start") => (at.clone(), Some(false)),
-        Some("oom") => (
-            before.and_then(|state| state.started_at.clone()),
-            Some(true),
-        ),
-        _ => (
-            before.and_then(|state| state.started_at.clone()),
-            before.and_then(|state| state.oom_killed),
-        ),
+    let exit_code = attributes
+        .get("exitCode")
+        .and_then(|code| code.parse().ok());
+    let before = previous
+        .and_then(|previous| previous.state.clone())
+        .unwrap_or_default();
+    let state = match message.action.as_deref() {
+        Some("start") => ContainerState {
+            running: Some(true),
+            started_at: at,
+            oom_killed: Some(false),
+            ..ContainerState::default()
+        },
+        // Docker can send the oom after its die, so the kill changes nothing
+        // else about the run.
+        Some("oom") => ContainerState {
+            running: before.running.or(Some(true)),
+            oom_killed: Some(true),
+            ..before
+        },
+        Some("die") => ContainerState {
+            running: Some(false),
+            finished_at: at,
+            exit_code,
+            ..before
+        },
+        _ => ContainerState {
+            running: Some(true),
+            started_at: before.started_at,
+            exit_code,
+            oom_killed: before.oom_killed,
+            ..ContainerState::default()
+        },
     };
     ContainerInspectResponse {
         name: attributes.get("name").cloned(),
-        state: Some(ContainerState {
-            running: Some(!died),
-            started_at,
-            finished_at: at.filter(|_| died),
-            exit_code: attributes
-                .get("exitCode")
-                .and_then(|code| code.parse().ok()),
-            oom_killed,
-            ..ContainerState::default()
-        }),
+        state: Some(state),
         config: Some(ContainerConfig {
             labels: Some(attributes),
             ..ContainerConfig::default()
@@ -2418,6 +2429,70 @@ mod tests {
             (meta.exit_code, meta.oom_killed),
             (Some(0), false),
             "the OOM kill belongs to the run before the restart"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_oom_event_after_its_die_does_not_hide_the_restart() {
+        let host = host();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running
+            .harvester
+            .on_docker_event(event("start", T0 + 1, &[]));
+        running.harvester.on_inspected(id, managed(3));
+        running
+            .harvester
+            .on_docker_event(event("die", T0 + 5, &[("exitCode", "137")]));
+        let Inspected::Found(mut exited) = managed(3) else {
+            unreachable!("managed() describes a found container")
+        };
+        exited.state = Some(ContainerState {
+            running: Some(false),
+            started_at: Some("2025-10-09T08:53:20.000000001Z".to_owned()),
+            finished_at: Some("2025-10-09T08:53:20.000000005Z".to_owned()),
+            exit_code: Some(137),
+            ..ContainerState::default()
+        });
+        running.harvester.on_inspected(id, Inspected::Found(exited));
+        for (action, at, attributes) in [
+            ("oom", 6, &[][..]),
+            ("start", 8, &[]),
+            ("die", 9, &[("exitCode", "0")]),
+        ] {
+            running
+                .harvester
+                .on_docker_event(event(action, T0 + at, attributes));
+        }
+        host.remove_from_docker();
+        running.harvester.on_inspected(id, Inspected::Gone);
+
+        let meta = host.meta();
+        assert_eq!((meta.exit_code, meta.oom_killed), (Some(0), false));
+    }
+
+    #[tokio::test]
+    async fn an_oom_event_after_its_die_keeps_the_exit() {
+        let host = host();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running
+            .harvester
+            .on_docker_event(event("start", T0 + 1, &[]));
+        running.harvester.on_inspected(id, managed(3));
+        running
+            .harvester
+            .on_docker_event(event("die", T0 + 5, &[("exitCode", "137")]));
+        running.harvester.on_docker_event(event("oom", T0 + 6, &[]));
+        host.remove_from_docker();
+        running.harvester.on_inspected(id, Inspected::Gone);
+
+        let meta = host.meta();
+        assert_eq!(
+            (meta.finished_at.as_deref(), meta.exit_code, meta.oom_killed),
+            (Some("2025-10-09T08:53:20.000000005Z"), Some(137), true)
         );
     }
 
