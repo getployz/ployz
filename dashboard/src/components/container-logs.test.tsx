@@ -24,7 +24,9 @@ it("retains logs and exhausted history across navigation, and reconnects only on
   const fetchHistory = vi.fn(async (_url: string, init: RequestInit) => {
     expect(init.signal?.aborted).toBe(false);
     if (cursorOf(init) !== undefined) return Response.json({ rows: [], failures: [], cursor: null });
-    return Response.json({ rows: bodyOf(init).before === undefined ? [] : [{ ...line, id: "store/m/c/50/0", timestamp: "50" }], failures: [], cursor: "older" });
+    // The newest page sits inside the live tail; the read before the tail goes further back.
+    const row = bodyOf(init).before === undefined ? { ...line, id: "store/m/c/150/0", timestamp: "150" } : { ...line, id: "store/m/c/50/0", timestamp: "50" };
+    return Response.json({ rows: [row], failures: [], cursor: "older" });
   });
   vi.stubGlobal("fetch", fetchHistory);
   const client = new QueryClient();
@@ -46,7 +48,7 @@ it("retains logs and exhausted history across navigation, and reconnects only on
     await act(async () => source.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: line }) })));
     await act(async () => source.dispatchEvent(new Event("live")));
     // Streamed lines land in a batch a moment later.
-    await waitFor(() => expect(stream.collection.size).toBe(2));
+    await waitFor(() => expect(stream.collection.size).toBe(3));
     expect(screen.queryByRole("button", { name: "Load older" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
     // A short tail reads the Log Store's newest page at once, then before the tail that page sat inside.
@@ -62,12 +64,12 @@ it("retains logs and exhausted history across navigation, and reconnects only on
     expect(cursorOf(fetchHistory.mock.calls[2]?.[1])).toBe("older");
     await waitFor(() => expect(stream.getSnapshot().historyPending).toBe(false));
     expect(screen.queryByText("Scroll up or press Home to check older logs.")).toBeNull();
-    expect(stream.collection.size).toBe(2);
+    expect(stream.collection.size).toBe(3);
     const opened = sources.length;
     firstView.unmount();
     await waitFor(() => expect(stream.collection.subscriberCount).toBe(0));
     expect(source.closed).toBe(false);
-    expect(stream.collection.size).toBe(2);
+    expect(stream.collection.size).toBe(3);
     mount();
     await act(async () => { await stream.loadOlder(); });
     expect(fetchHistory).toHaveBeenCalledTimes(3);
@@ -78,7 +80,7 @@ it("retains logs and exhausted history across navigation, and reconnects only on
     await act(async () => source.dispatchEvent(new Event("live")));
     expect(screen.queryByText(/Your servers are offline/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
-    expect(stream.collection.size).toBe(2);
+    expect(stream.collection.size).toBe(3);
     expect(sources.filter(source => !source.closed)).toHaveLength(1);
     expect(getContainerLogStream(selection, { queryClient: client, sessionId: "session", userId: "user" })).toBe(stream);
   } finally {

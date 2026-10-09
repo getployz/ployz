@@ -14,7 +14,7 @@ export type ContainerLogSelection = { organizationSlug: string; projectSlug?: st
  */
 type LogStreamState = {
   opened: boolean; offline: boolean; refused: boolean;
-  missing: { live: Record<string, Omit<MissingServer, "machineId">>; history: readonly MissingServer[] };
+  missing: { live: Record<string, Omit<MissingServer, "machineId"> & { containerId: string }>; history: readonly MissingServer[] };
   historyPending: boolean; historyError: boolean;
 };
 
@@ -91,11 +91,18 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
             log: (event) => {
               const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(containerLogEventSchema))(event.data);
               if (decoded._tag === "None") return;
-              if (decoded.value.type === "record") { pending.push(decoded.value.record); flush ??= setTimeout(land, 250); }
-              else {
-                const { machineId, message } = decoded.value;
+              if (decoded.value.type === "record") {
+                const { machineId, containerId } = decoded.value.record;
+                // The container that failed is sending again.
+                if (snapshot.missing.live[machineId]?.containerId === containerId) {
+                  const { [machineId]: _, ...live } = snapshot.missing.live;
+                  publish({ ...snapshot, missing: { ...snapshot.missing, live } });
+                }
+                pending.push(decoded.value.record); flush ??= setTimeout(land, 250);
+              } else {
+                const { machineId, containerId, message } = decoded.value;
                 const machineName = [...collection.values()].find(row => row.machineId === machineId)?.machineName ?? machineId;
-                publish({ ...snapshot, missing: { ...snapshot.missing, live: { ...snapshot.missing.live, [machineId]: { machineName, message } } } });
+                publish({ ...snapshot, missing: { ...snapshot.missing, live: { ...snapshot.missing.live, [machineId]: { machineName, containerId, message } } } });
               }
             },
           },
@@ -121,7 +128,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
     const streamSignal = controller.signal;
     publish({ ...snapshot, historyPending: true, historyError: false });
     try {
-      const oldest = () => [...collection.values()].reduce<bigint | null>((min, row) => (min === null || BigInt(row.timestamp) < min ? BigInt(row.timestamp) : min), null);
+      const oldest = () => earliest(collection.values());
       const reached = oldest();
       let failures: readonly MissingServer[] = [];
       let next: { cursor?: string; beforeTail?: string } = cursor === undefined ? {} : { cursor };
@@ -145,7 +152,8 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
         cursor = page.cursor;
         failures = page.failures;
         const tail = from === undefined && start === undefined ? historyStart(collection.values()) : undefined;
-        next = tail === undefined ? { cursor: cursor ?? undefined } : { beforeTail: tail };
+        const back = earliest(page.rows);
+        next = tail !== undefined && back !== null && BigInt(tail) < back ? { beforeTail: tail } : { cursor: cursor ?? undefined };
         const now = oldest();
         if (reached === null || (now !== null && now < reached)) break;
       }
@@ -167,6 +175,12 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
     getSnapshot: () => snapshot,
     subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
   };
+}
+
+function earliest(rows: Iterable<ContainerLogRow>) {
+  let min: bigint | null = null;
+  for (const row of rows) if (min === null || BigInt(row.timestamp) < min) min = BigInt(row.timestamp);
+  return min;
 }
 
 const streams = cachedByCollectionScope(() => new Map<string, ReturnType<typeof createLogStream>>());

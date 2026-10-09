@@ -107,8 +107,8 @@ export function restartContainerLogs(collection: ContainerLogs, waiting: readonl
 }
 
 /**
- * Where the Log Store's first page starts: the newest of each container's oldest loaded line. From there on every
- * container's lines are already here, so the Store needn't send them again.
+ * The newest of each container's oldest loaded line. From there on every container's lines are already here, so when
+ * the Log Store's newest page sat entirely inside the live tail, the next read starts before it instead.
  */
 export function historyStart(rows: Iterable<ContainerLogRow>) {
   const oldest = new Map<string, bigint>();
