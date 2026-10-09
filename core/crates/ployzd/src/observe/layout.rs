@@ -7,6 +7,8 @@
 //!       <cid>/                          one per container Ployz ran
 //!         meta.json                     ContainerMeta
 //!         gaps.jsonl                    one Gap per line
+//!         scanned                       seq of the newest file the damage
+//!                                       scan has read past
 //!         <seq>-<ino>.log               a hardlink to one Docker log file, raw
 //! ```
 //!
@@ -31,6 +33,8 @@ pub const META_FILE: &str = "meta.json";
 pub const META_TEMP_FILE: &str = "meta.tmp";
 pub const GAPS_FILE: &str = "gaps.jsonl";
 pub const LINKING_FILE: &str = "linking.tmp";
+pub const SCANNED_FILE: &str = "scanned";
+pub const SCANNED_TEMP_FILE: &str = "scanned.tmp";
 const LOG_SUFFIX: &str = ".log";
 
 /// The versioned root of the Log Store, `<DockerRootDir>/ployz-observe/v1`.
