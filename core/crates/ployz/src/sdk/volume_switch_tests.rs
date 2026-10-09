@@ -69,6 +69,7 @@ fn every_volume_run_verb_is_sent_on_its_own_path() {
         ("destroy_mirror", leased.clone(), "DestroyMirror"),
         ("forget_snapshots", leased.clone(), "ForgetSnapshots"),
         ("forget_lease", leased.clone(), "ForgetLease"),
+        ("demote_volume", leased.clone(), "DemoteVolume"),
         ("withdraw", source.clone(), "Withdraw"),
         ("freeze", source.clone(), "Freeze"),
         ("thaw", source, "Thaw"),

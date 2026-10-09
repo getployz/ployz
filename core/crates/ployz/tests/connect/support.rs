@@ -1122,6 +1122,15 @@ impl MachineRpc for DiscoveryService {
         ))
     }
 
+    async fn demote_volume(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "Volume switch verbs are not used by this fixture",
+        ))
+    }
+
     async fn remove_volume(
         &self,
         request: Request<OpaquePayload>,

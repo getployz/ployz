@@ -2,7 +2,7 @@
 //! roles Storage.Inspect and Mount derive from the markers.
 
 use super::lease_tests::{set_property, start};
-use super::mirror_tests::{commands, property, snapshot_names};
+use super::mirror_tests::{at, commands, property, snapshot_names};
 use super::*;
 
 #[tokio::test]
@@ -144,6 +144,46 @@ async fn departure_moves_a_root_into_the_empty_slot_beside_it() {
         !log.contains("zfs create -o canmount=off -o readonly=on"),
         "{log}"
     );
+    server.abort();
+}
+
+#[tokio::test]
+async fn demote_seals_one_old_root_read_only_before_unmounting_it_and_closes_its_record() {
+    let test = TestDir::new();
+    set_property(&test, "tank/ployz", "ployz:lease.data", "7:4.0.5:closed");
+    set_property(&test, "tank/ployz", "ployz:lease.other", "2:4.0.0:open");
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "mounted"]);
+
+    let request = at(9, 3, 0, 0, json!({}));
+    let response = post(&socket, "/Volume.Demote", request.clone()).await;
+    assert_eq!(
+        response.pointer("/Ok/decision").unwrap(),
+        "adopt",
+        "{response}"
+    );
+    assert_departed_into_a_slot(&test, &socket).await;
+    let log = commands(&test);
+    let sealed = log
+        .find("zfs set readonly=on tank/ployz/data\n")
+        .unwrap_or_else(|| panic!("the root was never sealed in place:\n{log}"));
+    let unmounted = log.find("zfs unmount tank/ployz/data\n").unwrap();
+    assert!(sealed < unmounted, "{log}");
+    assert_eq!(
+        property(&test, "tank/ployz", "ployz:lease.data").as_deref(),
+        Some("9:3.0.0:closed")
+    );
+    assert_eq!(
+        property(&test, "tank/ployz", "ployz:lease.other").as_deref(),
+        Some("2:4.0.0:open")
+    );
+
+    let replayed = post(&socket, "/Volume.Demote", request).await;
+    assert_eq!(
+        replayed.pointer("/Ok/decision").unwrap(),
+        "replay",
+        "{replayed}"
+    );
+    assert_eq!(commands(&test).matches("zfs rename").count(), 1);
     server.abort();
 }
 

@@ -508,6 +508,7 @@ async fn every_mirror_verb_is_fenced() {
         ("/Volume.DestroyMirror", json!({})),
         ("/Volume.ForgetSnapshots", json!({})),
         ("/Volume.ForgetLease", json!({})),
+        ("/Volume.Demote", json!({})),
     ] {
         let response = post(&socket, route, at(4, 9, 9, 9, fields)).await;
         assert_eq!(

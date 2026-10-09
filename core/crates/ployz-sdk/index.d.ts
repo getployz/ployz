@@ -97,6 +97,7 @@ export type VolumeSwitchRequest =
   | { command: "destroy_mirror"; payload: MirrorRequest }
   | { command: "forget_snapshots"; payload: MirrorRequest }
   | { command: "forget_lease"; payload: MirrorRequest }
+  | { command: "demote_volume"; payload: MirrorRequest }
   | { command: "withdraw"; payload: SourceContainerRequest }
   | { command: "freeze"; payload: SourceContainerRequest }
   | { command: "hand_over"; payload: HandOverRequest }
