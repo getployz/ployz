@@ -16,9 +16,9 @@ use ployz_store::{
     DeploymentStatus, DeploymentSummary, DeploymentsQuery, DetachConfig, DiffQuery, DiffView,
     Discard, Edit, EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId,
     PlanQuery, Principal, ProjectId, ProjectName, PutConfigFile, Query, RemoveService,
-    RenameService, Retry, Revision, RowPhase, RowState, RowTracker, RunEvidence, RunnerId,
-    ServerRow, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, Start, Trusted,
-    UploadBase, UploadedSource, View, Written,
+    RenameConfig, RenameService, Retry, Revision, RowPhase, RowState, RowTracker, RunEvidence,
+    RunnerId, ServerRow, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, Start,
+    Trusted, UploadBase, UploadedSource, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -434,6 +434,87 @@ fn a_config_deploys_with_the_services_that_mount_it() {
     assert_eq!(sentry_is(4), Some(NodeStatus::Removed));
     assert!(changed(&store, &who).is_empty());
     assert!(configs(&store, &who).is_empty());
+}
+
+#[test]
+fn a_deployed_configs_rename_and_file_edits_discard_by_their_rows() {
+    let (store, who) = shop();
+    sentry(&store, &who);
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    store
+        .write(
+            &who,
+            &RenameConfig {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("sentry").unwrap(),
+                name: ConfigName::parse("errors").unwrap(),
+            },
+        )
+        .unwrap();
+    for (file, content) in [
+        ("config.yml", "url: changed\n"),
+        ("extra.yml", "on: true\n"),
+    ] {
+        store
+            .write(
+                &who,
+                &PutConfigFile {
+                    environment: EnvironmentRef::default(),
+                    config: ConfigName::parse("errors").unwrap(),
+                    file: ConfigFileName::parse(file).unwrap(),
+                    content: content.into(),
+                    mode: None,
+                    uid: None,
+                    gid: None,
+                },
+            )
+            .unwrap();
+    }
+    let rows: Vec<(String, bool)> = diff(&store, &who)
+        .changes
+        .iter()
+        .flat_map(|change| &change.settings)
+        .map(|row| (row.path.clone(), row.can_restore))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("configs.errors.name".to_owned(), true),
+            ("configs.errors.files.config.yml".to_owned(), true),
+            ("configs.errors.files.extra.yml".to_owned(), true),
+        ]
+    );
+    for (path, _) in &rows {
+        assert_eq!(&SettingPath::parse(path).unwrap().to_string(), path);
+    }
+    let discard = |path: &str| {
+        store.write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                path: Some(SettingPath::parse(path).unwrap()),
+                version: None,
+            },
+        )
+    };
+    discard("configs.errors.files.extra.yml").unwrap();
+    discard("configs.errors.files.config.yml").unwrap();
+    assert_eq!(changed(&store, &who), ["errors"], "the rename stays staged");
+    discard("configs.errors.name").unwrap();
+    assert!(diff(&store, &who).changes.is_empty());
+    assert_eq!(configs(&store, &who), [("sentry".to_owned(), true, None)]);
+    assert_eq!(
+        SettingPath::parse("configs.sentry.mode").unwrap_err().code,
+        RpcErrorCode::InvalidArgument
+    );
 }
 
 #[test]

@@ -2,8 +2,8 @@
 
 use std::fmt;
 
-use ployz_core::config::SavedVolumeIntent;
-use ployz_core::{ConfigName, RpcError, ServiceName};
+use ployz_core::config::{SavedConfigIntent, SavedEnvironmentIntent, SavedVolumeIntent};
+use ployz_core::{ConfigFileName, ConfigName, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
@@ -103,7 +103,9 @@ impl From<NodeName> for String {
 /// `SERVICE.mounts.VOLUME` for where it mounts a Volume, `SERVICE.configs.CONFIG`
 /// for where it mounts a Config, `volumes.VOLUME` for a whole Volume,
 /// `volumes.VOLUME.name` / `volumes.VOLUME.storage` for its name or storage, which
-/// only discard addresses, or `configs.CONFIG` for a whole Config.
+/// only discard addresses, `configs.CONFIG` for a whole Config, or
+/// `configs.CONFIG.name` / `configs.CONFIG.files.FILE` for its name or one file, which
+/// only discard addresses.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 #[ts(as = "String")]
@@ -113,7 +115,107 @@ pub struct SettingPath(Addressed);
 enum Addressed {
     Service(ServiceName, Option<Target>),
     Volume(VolumeName, Option<VolumeField>),
-    Config(ConfigRef),
+    Config(ConfigRef, Option<ConfigField>),
+}
+
+/// A Volume's or Config's field a change row names: what discard restores alone.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NodeField<'a> {
+    Volume(VolumeField),
+    Config(&'a ConfigField),
+}
+
+impl NodeField<'_> {
+    /// This field of node `id` in `intent`, as JSON; none when `intent` lacks the node.
+    pub(crate) fn of(self, intent: &SavedEnvironmentIntent, id: &str) -> Option<Value> {
+        match self {
+            Self::Volume(field) => intent
+                .volumes
+                .iter()
+                .find(|volume| volume.resource_id == id)
+                .map(|volume| field.of(volume)),
+            Self::Config(field) => intent
+                .configs
+                .iter()
+                .find(|config| config.resource_id == id)
+                .map(|config| field.of(config)),
+        }
+    }
+
+    /// Give node `id` in `intent` this field as `from` has it.
+    ///
+    /// # Errors
+    /// Why not, when either lacks the node.
+    pub(crate) fn restore(
+        self,
+        intent: &mut SavedEnvironmentIntent,
+        from: &SavedEnvironmentIntent,
+        id: &str,
+    ) -> Result<(), String> {
+        match self {
+            Self::Volume(field) => {
+                let gone = || "discard the whole Volume instead".to_owned();
+                let from = from
+                    .volumes
+                    .iter()
+                    .find(|volume| volume.resource_id == id)
+                    .ok_or_else(gone)?;
+                let volume = intent
+                    .volumes
+                    .iter_mut()
+                    .find(|volume| volume.resource_id == id)
+                    .ok_or_else(gone)?;
+                field.restore(volume, from);
+            }
+            Self::Config(field) => {
+                let gone = || "discard the whole Config instead".to_owned();
+                let from = from
+                    .configs
+                    .iter()
+                    .find(|config| config.resource_id == id)
+                    .ok_or_else(gone)?;
+                let config = intent
+                    .configs
+                    .iter_mut()
+                    .find(|config| config.resource_id == id)
+                    .ok_or_else(gone)?;
+                field.restore(config, from);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A Config's field a change row names.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ConfigField {
+    Name,
+    File(ConfigFileName),
+}
+
+impl ConfigField {
+    /// This field of `config`, as JSON.
+    fn of(&self, config: &SavedConfigIntent) -> Value {
+        match self {
+            Self::Name => json!(config.name),
+            Self::File(file) => json!(config.files.get(file)),
+        }
+    }
+
+    /// Give `config` this field as `from` has it: a file `from` lacks goes.
+    fn restore(&self, config: &mut SavedConfigIntent, from: &SavedConfigIntent) {
+        match self {
+            Self::Name => config.name.clone_from(&from.name),
+            Self::File(file) => match from.files.get(file) {
+                Some(kept) => {
+                    config.files.insert(file.clone(), kept.clone());
+                }
+                None => {
+                    config.files.remove(file);
+                }
+            },
+        }
+    }
 }
 
 /// A Volume's field a change row names.
@@ -132,7 +234,7 @@ impl VolumeField {
     }
 
     /// This field of `volume`, as JSON.
-    pub(crate) fn of(self, volume: &SavedVolumeIntent) -> Value {
+    fn of(self, volume: &SavedVolumeIntent) -> Value {
         match self {
             Self::Name => json!(volume.name),
             Self::Storage => json!(volume.storage),
@@ -140,7 +242,7 @@ impl VolumeField {
     }
 
     /// Give `volume` this field as `from` has it.
-    pub(crate) fn restore(self, volume: &mut SavedVolumeIntent, from: &SavedVolumeIntent) {
+    fn restore(self, volume: &mut SavedVolumeIntent, from: &SavedVolumeIntent) {
         match self {
             Self::Name => volume.name.clone_from(&from.name),
             Self::Storage => volume.storage = from.storage,
@@ -168,7 +270,9 @@ pub(crate) enum Target {
 impl SettingPath {
     /// Parse `SERVICE`, `SERVICE.SETTING`, `SERVICE.env.KEY`,
     /// `SERVICE.env.KEY.exported`, `SERVICE.mounts.VOLUME`, `SERVICE.configs.CONFIG`,
-    /// `volumes.VOLUME` or `configs.CONFIG`; use `@UUID` for an exact Config identity.
+    /// `volumes.VOLUME`, `volumes.VOLUME.name`, `volumes.VOLUME.storage`,
+    /// `configs.CONFIG`, `configs.CONFIG.name` or `configs.CONFIG.files.FILE`.
+    /// Use `@UUID` in place of `CONFIG` to select an exact Config identity.
     ///
     /// # Errors
     /// Returns `invalid_argument` for a malformed path or an unknown Setting, never
@@ -181,13 +285,27 @@ impl SettingPath {
             return Err(name_a_config());
         }
         if let Some(config) = path.strip_prefix("configs.") {
-            if config.contains('.') {
-                return Err(error::invalid(
-                    "A Config has no Settings: address it as configs.CONFIG",
-                    json!({ "example": "configs.sentry" }),
-                ));
-            }
-            return Ok(Self(Addressed::Config(ConfigRef::parse(config)?)));
+            let (config, field) = match config.split_once('.') {
+                None => (config, None),
+                Some((config, "name")) => (config, Some(ConfigField::Name)),
+                Some((config, field)) if field.starts_with("files.") => {
+                    let file = field.strip_prefix("files.").unwrap_or_default();
+                    let file = ConfigFileName::parse(file).map_err(|_| {
+                        error::invalid(
+                            "Expected a Config file name, like nginx.conf or conf.d/site.conf",
+                            json!({ "example": "configs.sentry.files.config.yml" }),
+                        )
+                    })?;
+                    (config, Some(ConfigField::File(file)))
+                }
+                Some(_) => {
+                    return Err(error::invalid(
+                        "A Config has no Settings: address it as configs.CONFIG",
+                        json!({ "example": "configs.sentry" }),
+                    ));
+                }
+            };
+            return Ok(Self(Addressed::Config(ConfigRef::parse(config)?, field)));
         }
         if let Some(volume) = path.strip_prefix("volumes.") {
             let (volume, field) = match volume.split_once('.') {
@@ -264,15 +382,16 @@ impl SettingPath {
         match &self.0 {
             Addressed::Service(service, _) => NodeName::Service(service.clone()),
             Addressed::Volume(volume, _) => NodeName::Volume(volume.clone()),
-            Addressed::Config(config) => NodeName::Config(config.clone()),
+            Addressed::Config(config, _) => NodeName::Config(config.clone()),
         }
     }
 
-    /// The Volume field it names, if any.
-    pub(crate) const fn volume_field(&self) -> Option<VolumeField> {
+    /// The Volume or Config field it names, if any.
+    pub(crate) fn node_field(&self) -> Option<NodeField<'_>> {
         match &self.0 {
-            Addressed::Volume(_, field) => *field,
-            Addressed::Service(..) | Addressed::Config(_) => None,
+            Addressed::Volume(_, field) => field.map(NodeField::Volume),
+            Addressed::Config(_, field) => field.as_ref().map(NodeField::Config),
+            Addressed::Service(..) => None,
         }
     }
 
@@ -304,7 +423,7 @@ impl SettingPath {
     pub const fn service(&self) -> Option<&ServiceName> {
         match &self.0 {
             Addressed::Service(service, _) => Some(service),
-            Addressed::Volume(..) | Addressed::Config(_) => None,
+            Addressed::Volume(..) | Addressed::Config(..) => None,
         }
     }
 
@@ -312,7 +431,7 @@ impl SettingPath {
     pub(crate) fn settings_of(&self) -> Result<&ServiceName, RpcError> {
         self.service().ok_or_else(|| {
             let what = match &self.0 {
-                Addressed::Config(_) => "A Config",
+                Addressed::Config(..) => "A Config",
                 Addressed::Volume(..) | Addressed::Service(..) => "A Volume",
             };
             error::invalid(
@@ -327,7 +446,7 @@ impl SettingPath {
     pub(crate) const fn target(&self) -> Option<&Target> {
         match &self.0 {
             Addressed::Service(_, target) => target.as_ref(),
-            Addressed::Volume(..) | Addressed::Config(_) => None,
+            Addressed::Volume(..) | Addressed::Config(..) => None,
         }
     }
 
@@ -343,7 +462,7 @@ impl SettingPath {
 
     /// The path of Config `config` as a whole.
     pub(crate) fn config(config: &ConfigName) -> Self {
-        Self(Addressed::Config(config.clone().into()))
+        Self(Addressed::Config(config.clone().into(), None))
     }
 
     /// The path of one Setting of `service`.
@@ -364,7 +483,13 @@ impl fmt::Display for SettingPath {
                 return write!(formatter, "volumes.{volume}.{}", field.name());
             }
             Addressed::Volume(volume, None) => return write!(formatter, "volumes.{volume}"),
-            Addressed::Config(config) => return write!(formatter, "configs.{config}"),
+            Addressed::Config(config, Some(ConfigField::Name)) => {
+                return write!(formatter, "configs.{config}.name");
+            }
+            Addressed::Config(config, Some(ConfigField::File(file))) => {
+                return write!(formatter, "configs.{config}.files.{file}");
+            }
+            Addressed::Config(config, None) => return write!(formatter, "configs.{config}"),
         };
         match target {
             Some(Target::Setting(setting)) => write!(formatter, "{service}.{}", setting.name()),

@@ -10,7 +10,7 @@ use super::{Error, leaf_matches};
 use crate::cli::{positional, value};
 
 pub(crate) fn diff_command() -> Command {
-    scoped(Command::new("diff").about("Show staged Service and Volume changes"))
+    scoped(Command::new("diff").about("Show staged Service, Volume and Config changes"))
 }
 
 pub(crate) fn publish_command() -> Command {
@@ -19,10 +19,10 @@ pub(crate) fn publish_command() -> Command {
 }
 
 pub(crate) fn discard_command() -> Command {
-    scoped(Command::new("discard").about("Undo staged Service, Volume or Setting changes"))
+    scoped(Command::new("discard").about("Undo staged Service, Volume, Config or Setting changes"))
         .arg(
             positional("path", false)
-                .help("SERVICE, SERVICE.SETTING or volumes.VOLUME [default: everything]"),
+                .help("SERVICE, SERVICE.SETTING, volumes.VOLUME, configs.CONFIG or a `ployz diff` row [default: everything]"),
         )
         .arg(version())
 }
