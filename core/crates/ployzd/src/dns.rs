@@ -41,6 +41,7 @@ use crate::corrosion::{
     membership_states_by_address,
 };
 
+mod listeners;
 mod query;
 mod spec;
 
