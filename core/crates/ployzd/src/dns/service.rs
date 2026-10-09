@@ -14,7 +14,7 @@ use super::{
     process::{InstalledExe, identity_of},
     spec::{DnsSpec, SpecFile},
 };
-use crate::machine::LocalMachineRecord;
+use crate::{filesystem::atomic_write, machine::LocalMachineRecord};
 
 const UNIT_NAME: &str = "ployz-dns.service";
 const HOST_UNIT_NAME: &str = "ployz.service";
@@ -134,11 +134,17 @@ impl DnsService {
     /// removes the process; a downgrade onto a binary that cannot serve DNS
     /// retires it so that binary can bind port 53. Never fails.
     pub async fn stopping(&self, resetting: bool) {
-        if !resetting && !self.downgrade_pending().await {
-            return;
-        }
-        if let Err(error) = tokio::time::timeout(STOP_BOUND, self.converge(None)).await {
-            eprintln!("Internal DNS did not retire within {STOP_BOUND:?}: {error}");
+        let retire = async {
+            if resetting || self.downgrade_pending().await {
+                self.converge(None).await
+            } else {
+                Ok(())
+            }
+        };
+        match tokio::time::timeout(STOP_BOUND, retire).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => eprintln!("Internal DNS did not retire: {error}"),
+            Err(error) => eprintln!("Internal DNS did not retire within {STOP_BOUND:?}: {error}"),
         }
     }
 
@@ -166,7 +172,11 @@ impl DnsService {
                     if fs::read_to_string(&self.inner.unit_file).ok().as_deref()
                         != Some(&self.inner.unit_text)
                     {
-                        fs::write(&self.inner.unit_file, &self.inner.unit_text)?;
+                        atomic_write(
+                            &self.inner.unit_file,
+                            self.inner.unit_text.as_bytes(),
+                            0o644,
+                        )?;
                         systemctl(&["daemon-reload"]).await;
                     }
                     systemctl(&["start", "--no-block", UNIT_NAME]).await;
