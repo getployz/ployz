@@ -89,11 +89,21 @@ export const LIVE_LOG_LIMIT = 10_000;
  * waits for 10% slack first, so the sort runs once per thousand lines, not on every batch.
  */
 export function trimContainerLogs(collection: ContainerLogs, limit = LIVE_LOG_LIMIT) {
-  if (collection.size <= limit * 1.1) return;
+  if (collection.size <= limit * 1.1) return false;
   const over = collection.size - limit;
   const oldest = [...collection.values()].map(row => ({ id: row.id, at: BigInt(row.timestamp) }))
     .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)).slice(0, over).map(row => row.id);
   collection.delete(oldest);
+  return true;
+}
+
+/**
+ * Live lines that waited past the limit lost their oldest, so what the page had can't meet them without a hole. The
+ * page keeps only what's as new as the oldest one left.
+ */
+export function restartContainerLogs(collection: ContainerLogs, waiting: readonly ContainerLogRow[]) {
+  const from = waiting.reduce<bigint | null>((min, row) => (min === null || BigInt(row.timestamp) < min ? BigInt(row.timestamp) : min), null);
+  collection.delete([...collection.values()].filter(row => from === null || BigInt(row.timestamp) < from).map(row => row.id));
 }
 
 /**
@@ -106,27 +116,10 @@ export function historyStart(rows: Iterable<ContainerLogRow>) {
     if (row.kind !== "line" || row.channel === "lifecycle") continue;
     const key = `${row.machineId}/${row.containerId}`;
     const at = BigInt(row.timestamp);
-    if (!oldest.has(key) || at < oldest.get(key)!) oldest.set(key, at);
+    const known = oldest.get(key);
+    if (known === undefined || at < known) oldest.set(key, at);
   }
   return oldest.size ? [...oldest.values()].reduce((max, at) => (at > max ? at : max)).toString() : undefined;
-}
-
-/**
- * Keep the page within `limit`. Without scrollback, the oldest lines go. Scrollback the viewer loaded, everything
- * older than `scrollback` (all of it when null), stays until the page holds twice the limit, so a service printing
- * thousands a second doesn't take it away at once. Then it goes whole; the next scroll up reads it again.
- * True when it dropped the scrollback.
- */
-export function boundContainerLogs(collection: ContainerLogs, scrollback: string | null | undefined, limit = LIVE_LOG_LIMIT) {
-  if (scrollback === undefined) {
-    trimContainerLogs(collection, limit);
-    return false;
-  }
-  if (collection.size <= limit * 2) return false;
-  const from = scrollback === null ? null : BigInt(scrollback);
-  collection.delete([...collection.values()].filter(row => from === null || BigInt(row.timestamp) < from).map(row => row.id));
-  trimContainerLogs(collection, limit);
-  return true;
 }
 
 /**

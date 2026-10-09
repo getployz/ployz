@@ -52,6 +52,7 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   const { element, virtual } = useLogScroll({
     count: rows.length, getItemKey: index => rows[index]?.id ?? index,
     onChange: (instance, sync) => {
+      stream.follow(instance.isAtEnd());
       if (dragging.current && sync && instance.scrollDirection === "backward" && (instance.scrollOffset ?? 0) < 160 && !historyError) void stream.loadOlder();
     },
   });

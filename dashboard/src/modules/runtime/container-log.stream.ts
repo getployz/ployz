@@ -2,7 +2,7 @@ import { createCollection, localOnlyCollectionOptions } from "@tanstack/react-db
 import { Schema } from "effect";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
 import { liveStream } from "#/lib/live.stream";
-import { appendContainerLogs, boundContainerLogs, containerLogEventSchema, containerLogPageSchema, historyStart, mergeContainerHistory, type ContainerLogRow, type MissingServer } from "./container-log.collection";
+import { appendContainerLogs, containerLogEventSchema, containerLogPageSchema, historyStart, LIVE_LOG_LIMIT, mergeContainerHistory, restartContainerLogs, trimContainerLogs, type ContainerLogRow, type MissingServer } from "./container-log.collection";
 
 export type ContainerLogSelection = { organizationSlug: string; projectSlug?: string; environmentSlug?: string; deploymentId?: string; serviceId?: string };
 
@@ -23,6 +23,8 @@ const INITIAL: LogStreamState = { opened: false, offline: false, refused: false,
 const SHORT_TAIL = 200;
 /** Pages whose lines the live tail already had, read before giving the viewer older ones. */
 const OVERLAP_PAGES = 4;
+/** Scrollback stops growing here, until the viewer follows the newest lines again and the page trims it. */
+const SCROLLBACK_LIMIT = LIVE_LOG_LIMIT * 3;
 
 function createLogStream(id: string, selection: ContainerLogSelection, scope: CollectionScope) {
   let snapshot = INITIAL;
@@ -30,14 +32,15 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
   const publish = (next: typeof snapshot) => { snapshot = next; listeners.forEach(listener => listener()); };
   // The Log Store's position: not read yet, a cursor, or null once it has nothing older.
   let cursor: string | null | undefined;
-  // Where the scrollback begins: lines older than this came from the Log Store; null when all of them did.
-  let scrollback: string | null | undefined;
   const stored = new Set<string>();
   const resetHistory = () => {
     cursor = undefined;
-    scrollback = undefined;
     stored.clear();
   };
+  // Scrolled up, live lines wait so the ones being read stay put; past the limit the oldest waiting go.
+  let following = true;
+  let overflowed = false;
+  let land = () => {};
   let controller = new AbortController();
   const query = new URLSearchParams(Object.entries(selection).filter((entry): entry is [string, string] => entry[1] !== undefined)).toString();
   const options = localOnlyCollectionOptions({ id, getKey: (row: ContainerLogRow) => row.id, initialData: [] });
@@ -51,12 +54,22 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
         // Lines arrive one event each; land them in batches so a noisy service doesn't re-render the page per line.
         let pending: ContainerLogRow[] = [];
         let flush: ReturnType<typeof setTimeout> | undefined;
-        const land = () => {
+        land = () => {
           clearTimeout(flush);
           flush = undefined;
+          if (!following) {
+            if (pending.length > LIVE_LOG_LIMIT) { pending = pending.slice(-LIVE_LOG_LIMIT); overflowed = true; }
+            return;
+          }
+          if (overflowed) {
+            restartContainerLogs(collection, pending);
+            resetHistory();
+            overflowed = false;
+          }
           appendContainerLogs(collection, pending, stored);
           pending = [];
-          if (boundContainerLogs(collection, scrollback)) resetHistory();
+          // The oldest lines go first, so a trim takes the scrollback and the Log Store reads again from the new oldest.
+          if (trimContainerLogs(collection) && cursor !== undefined) resetHistory();
         };
         // A replayed tail after a reconnect is dropped by the rows' ids. A refused stream ends its history reads.
         controller = new AbortController();
@@ -90,6 +103,9 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
         const close = () => { clearTimeout(flush); flush = undefined; pending = []; stop(); controller.abort(); };
         return () => {
           pending = [];
+          land = () => {};
+          following = true;
+          overflowed = false;
           close();
           resetHistory();
           publish(INITIAL);
@@ -101,7 +117,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
     },
   });
   async function loadOlder() {
-    if (snapshot.historyPending || cursor === null) return;
+    if (snapshot.historyPending || cursor === null || collection.size >= SCROLLBACK_LIMIT) return;
     const streamSignal = controller.signal;
     publish({ ...snapshot, historyPending: true, historyError: false });
     try {
@@ -126,7 +142,6 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
         });
         streamSignal.throwIfAborted();
         mergeContainerHistory(collection, page.rows, stored);
-        if (from === undefined) scrollback = start ?? null;
         cursor = page.cursor;
         failures = page.failures;
         const now = oldest();
@@ -139,6 +154,12 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
   }
   return {
     collection, loadOlder,
+    /** Whether the viewer is at the newest line; live lines land only then. */
+    follow(at: boolean) {
+      if (at === following) return;
+      following = at;
+      if (at) land();
+    },
     get hasOlder() { return cursor !== null; },
     get signal() { return controller.signal; },
     getSnapshot: () => snapshot,

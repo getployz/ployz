@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient } from "@tanstack/react-query";
 import { expect, it, vi } from "vitest";
+import { LIVE_LOG_LIMIT } from "./container-log.collection";
 import { getContainerLogStream } from "./container-log.stream";
 
 it("delivers a log burst together without losing or duplicating replayed records", async () => {
@@ -76,6 +77,45 @@ it("retains an inactive stream until DB garbage collection, then reopens it on d
     expect(sources).toHaveLength(opened + 1);
     expect(stream.signal.aborted).toBe(false);
     reopened.unsubscribe();
+  } finally {
+    subscription.unsubscribe();
+    await stream.collection.cleanup();
+    queryClient.clear(); vi.useRealTimers(); vi.unstubAllGlobals();
+  }
+});
+
+it("holds live lines while the viewer reads older ones, and past the limit starts over from the newest", async () => {
+  vi.useFakeTimers();
+  const sources: EventTarget[] = [];
+  class FakeEventSource extends EventTarget {
+    constructor() { super(); sources.push(this); }
+    close() {}
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+  const queryClient = new QueryClient();
+  const stream = getContainerLogStream({ organizationSlug: "held" }, { queryClient, sessionId: "session", userId: "user" });
+  const subscription = stream.collection.subscribeChanges(() => {});
+  const send = (at: number) => sources.at(-1)?.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: {
+    kind: "line", id: String(at), timestamp: String(at), machineId: "m", machineName: "Server", containerId: "c", serviceName: "api", channel: "stdout", level: "info", message: `line ${at}`,
+  } }) }));
+  try {
+    send(1);
+    await vi.advanceTimersByTimeAsync(260);
+    stream.follow(false);
+    send(2);
+    await vi.advanceTimersByTimeAsync(260);
+    expect([...stream.collection.keys()]).toEqual(["1"]);
+    stream.follow(true);
+    expect([...stream.collection.keys()].sort()).toEqual(["1", "2"]);
+    stream.follow(false);
+    for (let at = 3; at <= LIVE_LOG_LIMIT + 3; at++) send(at);
+    await vi.advanceTimersByTimeAsync(260);
+    expect(stream.collection.size).toBe(2);
+    stream.follow(true);
+    expect(stream.collection.size).toBe(LIVE_LOG_LIMIT);
+    expect(stream.collection.has("2")).toBe(false);
+    expect(stream.collection.has("3")).toBe(false);
+    expect(stream.collection.has(String(LIVE_LOG_LIMIT + 3))).toBe(true);
   } finally {
     subscription.unsubscribe();
     await stream.collection.cleanup();

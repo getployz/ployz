@@ -1,6 +1,6 @@
 import { createCollection, localOnlyCollectionOptions } from "@tanstack/react-db";
 import { expect, it } from "vitest";
-import { appendContainerLogs, boundContainerLogs, historyStart, mergeContainerHistory, projectLogExit, trimContainerLogs, type ContainerLogLine, type ContainerLogRow } from "./container-log.collection";
+import { appendContainerLogs, historyStart, mergeContainerHistory, projectLogExit, restartContainerLogs, trimContainerLogs, type ContainerLogLine, type ContainerLogRow } from "./container-log.collection";
 
 const row = (containerId: string, timestamp: string, ordinal = 0, origin = "live"): ContainerLogLine => ({
   kind: "line", id: `${origin}/server/${containerId}/${timestamp}/${ordinal}`, timestamp,
@@ -32,7 +32,8 @@ it("keeps only the newest lines past the limit, and a batch with repeats lands o
   await collection.preload();
   appendContainerLogs(collection, [row("a", "30"), row("a", "10"), row("a", "20"), row("a", "20")]);
   expect(collection.size).toBe(3);
-  trimContainerLogs(collection, 2);
+  expect(trimContainerLogs(collection, 3)).toBe(false);
+  expect(trimContainerLogs(collection, 2)).toBe(true);
   expect([...collection.values()].map(kept => kept.timestamp).sort()).toEqual(["20", "30"]);
   await collection.cleanup();
 });
@@ -44,21 +45,14 @@ it("the Log Store starts after the lines every container already has", () => {
   expect(historyStart([row("busy", "90"), { ...row("busy", "5"), channel: "lifecycle" }])).toBe("90");
 });
 
-it("scrollback the viewer loaded outlasts a flood of live lines until the page holds twice the limit", async () => {
-  const collection = createCollection(localOnlyCollectionOptions({ id: "log-bound-test", getKey: (row: ContainerLogRow) => row.id }));
+it("live lines that overflowed while waiting keep only the page's lines as new as they are", async () => {
+  const collection = createCollection(localOnlyCollectionOptions({ id: "log-restart-test", getKey: (row: ContainerLogRow) => row.id }));
   await collection.preload();
-  appendContainerLogs(collection, [row("a", "1", 0, "store"), row("a", "2", 0, "store"), ...["10", "11", "12"].map(at => row("a", at))]);
-  expect(boundContainerLogs(collection, "10", 3)).toBe(false);
-  appendContainerLogs(collection, [row("a", "13")]);
-  expect(boundContainerLogs(collection, "10", 3)).toBe(false);
-  expect(collection.size).toBe(6);
-  appendContainerLogs(collection, [row("a", "14")]);
-  expect(boundContainerLogs(collection, "10", 3)).toBe(true);
-  expect([...collection.values()].map(kept => kept.timestamp).sort()).toEqual(["12", "13", "14"]);
-  // Nothing scrolled back: live lines trim from the oldest.
-  appendContainerLogs(collection, [row("a", "15"), row("a", "16")]);
-  expect(boundContainerLogs(collection, undefined, 3)).toBe(false);
-  expect([...collection.values()].map(kept => kept.timestamp).sort()).toEqual(["14", "15", "16"]);
+  appendContainerLogs(collection, [row("a", "1", 0, "store"), row("a", "10"), row("b", "12")]);
+  restartContainerLogs(collection, [row("a", "11"), row("b", "13")]);
+  expect([...collection.values()].map(kept => kept.timestamp)).toEqual(["12"]);
+  restartContainerLogs(collection, []);
+  expect(collection.size).toBe(0);
   await collection.cleanup();
 });
 
