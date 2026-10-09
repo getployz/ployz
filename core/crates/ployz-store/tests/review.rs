@@ -135,11 +135,11 @@ fn diff_groups_new_services_and_compares_edits_with_their_introduction() {
                     "path": "web.replicas", "kind": "update", "before": 1, "after": 3, "canRestore": true,
                     "row": "00000000-0000-4000-8000-000000000003:replicas",
                 }],
-                "data": null,
+                "data": null, "restarts": [],
             },
             {
                 "type": "service", "id": "00000000-0000-4000-8000-000000000004", "name": "api",
-                "row": "00000000-0000-4000-8000-000000000004:node", "lifecycle": "create", "comparison": "introduction", "settings": [], "data": null,
+                "row": "00000000-0000-4000-8000-000000000004:node", "lifecycle": "create", "comparison": "introduction", "settings": [], "data": null, "restarts": [],
             },
         ])
     );

@@ -665,6 +665,39 @@ fn a_narrowed_deploy_leaves_a_shared_config_staged_until_every_mounter_redeploys
     assert!(changed(&store, &who).is_empty());
 
     put_sentry(&store, &who, "url: changed\n");
+    let restarts = |changes: Vec<ployz_store::NodeChange>| -> Vec<(String, Vec<String>)> {
+        changes
+            .into_iter()
+            .map(|change| {
+                let services = change.restarts.iter().map(ToString::to_string).collect();
+                (change.name, services)
+            })
+            .collect()
+    };
+    assert_eq!(
+        restarts(diff(&store, &who).changes),
+        [("sentry".to_owned(), vec!["web".to_owned(), "api".to_owned()])]
+    );
+    let plan = |services: &[&str]| {
+        let plan: ployz_store::PlanView = store
+            .read(
+                &who,
+                &PlanQuery {
+                    services: services
+                        .iter()
+                        .map(|name| ServiceName::parse(*name).unwrap())
+                        .collect(),
+                    ..PlanQuery::default()
+                },
+            )
+            .unwrap();
+        restarts(plan.changes)
+    };
+    assert_eq!(
+        plan(&["web"]),
+        [("sentry".to_owned(), vec!["web".to_owned()])],
+        "api keeps the old file, so only web restarts"
+    );
     deploy(2, &["web"], &["web"]);
     assert!(
         !nodes(&store, &who, 2)
@@ -676,6 +709,28 @@ fn a_narrowed_deploy_leaves_a_shared_config_staged_until_every_mounter_redeploys
 
     deploy(3, &[], &["web", "api"]);
     assert!(changed(&store, &who).is_empty());
+
+    store
+        .write(
+            &who,
+            &CreateConfig {
+                id: ConfigId::parse("00000000-0000-4000-8000-000000000011").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("fresh").unwrap(),
+                mounts: vec![ConfigMountAt {
+                    service: ServiceName::parse("web").unwrap(),
+                    dir: "/etc/fresh".into(),
+                }],
+            },
+        )
+        .unwrap();
+    let fresh = diff(&store, &who)
+        .changes
+        .into_iter()
+        .find(|change| change.name == "fresh")
+        .unwrap();
+    assert_eq!(fresh.lifecycle, ReviewLifecycleKind::Create);
+    assert!(fresh.restarts.is_empty(), "a new Config restarts nothing");
 }
 
 #[test]

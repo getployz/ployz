@@ -74,6 +74,10 @@ pub struct NodeChange {
     /// What the change does to Volume data: `deleted` for a deployed Volume it
     /// removes, `kept` for a Service that stops mounting a Volume that stays.
     pub data: Option<DataEffect>,
+    /// For a Config changed in place, the deployed Services mounting it: they restart
+    /// to take its new files.
+    #[serde(default)]
+    pub restarts: Vec<ployz_core::ServiceName>,
 }
 
 /// What a staged change does to data on the Servers.
@@ -243,6 +247,12 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                     })
                     .collect();
                 let data = data_effect(&group.node, group.lifecycle, &settings, &head.applied);
+                let restarts = restarts(
+                    &group.node,
+                    group.lifecycle,
+                    &environment.working,
+                    &head.applied,
+                )?;
                 Ok(NodeChange {
                     node: group.node,
                     name,
@@ -251,6 +261,7 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                     comparison: group.comparison,
                     settings,
                     data,
+                    restarts,
                 })
             })
             .collect::<Result<_, RpcError>>()?,
@@ -345,6 +356,7 @@ fn renames(view: &mut DiffView, working: &SavedEnvironmentIntent, head: &SavedEn
                 comparison: Some(ReviewComparisonRole::Head),
                 settings: vec![row],
                 data: None,
+                restarts: Vec::new(),
             }),
         }
     }
@@ -395,6 +407,34 @@ fn data_effect(
         }
         EnvironmentNodeType::Config => None,
     }
+}
+
+/// The Services of `working` that mount Config `node` and run already, for a Config
+/// `lifecycle` changes in place: they get its new files only by restarting.
+fn restarts(
+    node: &ReviewNodeIdentity,
+    lifecycle: ReviewLifecycleKind,
+    working: &SavedEnvironmentIntent,
+    applied: &SavedEnvironmentIntent,
+) -> Result<Vec<ployz_core::ServiceName>, RpcError> {
+    if node.node_type != EnvironmentNodeType::Config || lifecycle != ReviewLifecycleKind::Update {
+        return Ok(Vec::new());
+    }
+    working
+        .services
+        .iter()
+        .filter(|service| {
+            service
+                .config_attachments
+                .iter()
+                .any(|mount| mount.config_resource_id == node.id)
+                && applied.services.iter().any(|old| old.id == service.id)
+        })
+        .map(|service| {
+            ployz_core::ServiceName::parse(service.slug.as_str())
+                .map_err(|_| error::corrupt("Service name"))
+        })
+        .collect()
 }
 
 /// Refuse unless `version` still names this review; the refusal carries the fresh

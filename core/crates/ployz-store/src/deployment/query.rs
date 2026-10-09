@@ -174,11 +174,17 @@ pub(crate) fn plan(tx: &mut dyn Tx, who: &Actor, query: &PlanQuery) -> Result<Pl
         None,
         &removed,
     )?;
+    // A Config left staged still restarts the targeted Services that mount it.
     let changes = review
         .view
         .changes
         .into_iter()
-        .filter(|change| frozen.targets(&change.node.id))
+        .filter_map(|mut change| {
+            change
+                .restarts
+                .retain(|service| query.services.is_empty() || query.services.contains(service));
+            (frozen.targets(&change.node.id) || !change.restarts.is_empty()).then_some(change)
+        })
         .collect();
     Ok(PlanView {
         environment: environment.summary,

@@ -2300,7 +2300,12 @@ settings: Array<ServiceSettingChange>,
  * What the change does to Volume data: `deleted` for a deployed Volume it
  * removes, `kept` for a Service that stops mounting a Volume that stays.
  */
-data: DataEffect | null, type: EnvironmentNodeType, id: string, };
+data: DataEffect | null,
+/**
+ * For a Config changed in place, the deployed Services mounting it: they restart
+ * to take its new files.
+ */
+restarts: Array<ServiceName>, type: EnvironmentNodeType, id: string, };
 
 export type NodeName = string;
 
