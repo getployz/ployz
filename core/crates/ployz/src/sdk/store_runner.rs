@@ -788,7 +788,6 @@ async fn log_tail(
                 container_id: container,
                 tail: i32::try_from(LOG_TAIL).unwrap_or(i32::MAX),
                 follow: false,
-                before_nanos: None,
                 since_unix_seconds: None,
             })
             .await

@@ -472,7 +472,7 @@ impl MachineRpc for DiscoveryService {
         });
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
-    type ContainerLogHistoryStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type LogHistoryStream = tokio_stream::Iter<std::vec::IntoIter<Result<OpaquePayload, Status>>>;
     type ContainerLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type MachineLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type RuntimeWatchStream = ReceiverStream<Result<OpaquePayload, Status>>;
@@ -1236,10 +1236,40 @@ impl MachineRpc for DiscoveryService {
         Err(Status::unimplemented("unused"))
     }
 
-    async fn container_log_history(
+    /// Every Server's Log Store holds one line of a removed `app/gone`.
+    async fn log_history(
         &self,
         _request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::ContainerLogHistoryStream>, Status> {
+    ) -> Result<Response<Self::LogHistoryStream>, Status> {
+        let container_id = ContainerId::parse("9".repeat(64)).unwrap();
+        let rows = [
+            ployz_core::HistoryRow::Container(ployz_core::HistoryContainer {
+                container_id,
+                namespace: Some("app".into()),
+                service: Some("gone".into()),
+                deployment: Some("dep_old".into()),
+                replica: "gone-1".into(),
+                kind: ployz_core::HistoryContainerKind::Service,
+            }),
+            ployz_core::HistoryRow::Line {
+                container_id,
+                ts: 1_760_000_000_000_000_000,
+                stream: ployz_core::HistoryStream::Stdout,
+                text: b"shutting down".to_vec(),
+            },
+            ployz_core::HistoryRow::End { next: None },
+        ];
+        let mut payloads = Vec::new();
+        for row in &rows {
+            payloads.push(Ok(row.encode().unwrap()));
+        }
+        Ok(Response::new(tokio_stream::iter(payloads)))
+    }
+
+    async fn forget_logs(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
         Err(Status::unimplemented("unused"))
     }
 

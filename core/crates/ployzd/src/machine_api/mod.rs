@@ -96,6 +96,12 @@ impl MachineApiBuilder {
     }
 
     #[must_use]
+    pub(crate) fn with_observe_socket(mut self, socket: PathBuf) -> Self {
+        self.service = self.service.with_observe_socket(socket);
+        self
+    }
+
+    #[must_use]
     pub(crate) fn with_image_ingest(mut self, ingest: Arc<ImageIngest>) -> Self {
         self.service = self.service.with_image_ingest(ingest);
         self

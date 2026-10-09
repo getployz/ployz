@@ -3,15 +3,17 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
 };
 
-use chrono::{DateTime, Local, Utc};
-use clap::ArgMatches;
+use std::collections::HashMap;
+
+use chrono::{DateTime, Local, SecondsFormat, Utc};
 use clap::{Arg, ArgAction, Command};
+use clap::{ArgMatches, parser::ValueSource};
 use crossterm::terminal;
 use futures_util::StreamExt;
 use ployz_core::{
-    ContainerSelector, EnvironmentValues, ExecRequestFrame, ExecResponseFrame, FanoutSelector,
-    LogBody, LogEntry, LogOrigin, LogsOptions, Namespace, RpcErrorCode, ServiceSelector,
-    select_service,
+    ContainerId, ContainerSelector, EnvironmentValues, ExecRequestFrame, ExecResponseFrame,
+    FanoutSelector, HistoryContainerKind, HistoryGapReason, HistoryStream, LogBody, LogEntry,
+    LogOrigin, LogsOptions, Namespace, RpcErrorCode, ServiceSelector, log_level, select_service,
 };
 use ployz_store::{DeploymentId, NamespaceQuery};
 use tokio::io::copy_bidirectional;
@@ -22,9 +24,11 @@ use crate::{
     cloud_login::LoginError,
     context::Transport,
     operator::{
-        ExecMode, ProxyPorts, ServiceArg, asked_machines, exec_options, merge_logs,
-        observe_service_logs, open_exec, open_machine_logs, open_service_logs, parse_log_time,
-        parse_proxy_ports, parse_service_args, parse_tail, select_proxy_container,
+        ExecMode, OperatorError, ProxyPorts, ServiceArg, asked_machines, exec_options,
+        history::{HistoryEvent, HistoryRecord, HistoryWindow, read_history},
+        history_selectors, merge_logs, observe_service_logs, open_exec, open_machine_logs,
+        open_service_logs, parse_log_time, parse_proxy_ports, parse_service_args, parse_tail,
+        select_proxy_container,
     },
 };
 
@@ -53,9 +57,9 @@ pub(crate) fn logs_command() -> Command {
             .action(ArgAction::Append),
     )
     .arg(
-        value("deployment", None)
-            .value_name("ID")
-            .help("Only the running containers this Deployment created, in its Environment"),
+        value("deployment", None).value_name("ID").help(
+            "Only the containers this Deployment created, in its Environment, running or not",
+        ),
     )
     .arg(
         switch("build", None)
@@ -253,32 +257,78 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
         .collect::<Result<Vec<_>, Error>>()?;
     let machines = parse_fanout_selectors(string_values(leaf, "machine"))?;
     let utc = leaf.get_flag("utc");
+    let window = history_window(leaf, &options);
     with_client(root, |client| {
         Box::pin(async move {
+            let started = Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX);
             let cancellation = cancellation_on_ctrl_c();
             let _parent = cancellation.clone().drop_guard();
             let scope = observe_service_logs(client, &machines).await?;
-            let unanswered = &scope.unanswered;
-            let mut gaps = crate::ui::Gaps::default().named(
-                unanswered
-                    .names
-                    .iter()
-                    .map(|(machine_id, name)| (*machine_id, name)),
-            );
-            gaps.extend(&unanswered.failures, &unanswered.omissions);
-            // Before opening, so a missing Service or Container still names the Server that did not answer.
+            let names = &scope.unanswered.names;
+            let named = || names.iter().map(|(machine_id, name)| (*machine_id, name));
+            let mut gaps = crate::ui::Gaps::default().named(named());
+            gaps.extend(&scope.unanswered.failures, &scope.unanswered.omissions);
+            // Before reading, so a missing Service or Container still names the Server that did not answer.
             gaps.warn();
-            let inputs = open_service_logs(
+            let namespace = namespace.as_ref().map(|scoped| &scoped.namespace);
+            let deployment = deployment.as_ref().map(DeploymentId::as_str);
+            let selectors = history_selectors(&scope, &args, namespace, deployment)?;
+            let mut last = None;
+            let failures = read_history(
                 client,
-                &scope,
-                &args,
-                namespace.as_ref().map(|scoped| &scoped.namespace),
-                options,
-                cancellation.clone(),
-                deployment.as_ref().map(DeploymentId::as_str),
+                &scope.answered(),
+                &selectors,
+                window,
+                &cancellation,
+                |record| {
+                    if let HistoryEvent::Line { ts, .. } | HistoryEvent::Exit { ts, .. } =
+                        record.event
+                    {
+                        last = Some(ts);
+                    }
+                    print_history(&record, utc)
+                },
             )
             .await?;
-            print_logs(merge_logs(inputs, cancellation), utc).await?;
+            let mut missed = crate::ui::Gaps::default().named(named());
+            missed.extend(&failures, &[]);
+            missed.warn();
+            gaps.extend(&failures, &[]);
+            if options.follow && !cancellation.is_cancelled() {
+                // Live lines start where history stopped, so none prints twice.
+                let since = last
+                    .map_or(started, |ts| ts.saturating_add(1))
+                    .max(options.since_nanos.unwrap_or(i64::MIN));
+                let live = LogsOptions {
+                    tail: -1,
+                    since_nanos: Some(since),
+                    ..options
+                };
+                let deployments = scope.deployments();
+                match open_service_logs(
+                    client,
+                    &scope,
+                    &args,
+                    namespace,
+                    live,
+                    cancellation.clone(),
+                    deployment,
+                )
+                .await
+                {
+                    Ok(inputs) => {
+                        print_logs(merge_logs(inputs, cancellation), utc, &deployments).await?;
+                    }
+                    // Nothing runs to follow; the history above is the whole log.
+                    Err(
+                        OperatorError::NoServices
+                        | OperatorError::NoDeploymentContainers
+                        | OperatorError::NoContainersOnMachines { .. }
+                        | OperatorError::NotRunning { .. },
+                    ) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
             gaps.outcome()
         })
     })
@@ -357,7 +407,7 @@ pub fn machine_logs(root: &ArgMatches) -> Result<(), Error> {
             let inputs =
                 open_machine_logs(client, &services, &machines, options, cancellation.clone())
                     .await?;
-            print_logs(merge_logs(inputs, cancellation), utc).await?;
+            print_logs(merge_logs(inputs, cancellation), utc, &HashMap::new()).await?;
             gaps.outcome()
         })
     })
@@ -459,21 +509,33 @@ fn parse_fanout_selectors(values: Vec<String>) -> Result<Vec<FanoutSelector>, Er
 }
 
 fn log_options(matches: &ArgMatches) -> Result<LogsOptions, Error> {
-    let options = log_window(matches, Utc::now().timestamp())?;
+    let now = Utc::now().timestamp();
+    let options = log_window(matches, now)?;
     // A window with no time in it would print nothing and look like an empty log.
-    let follow = options.follow;
-    match (options.since_unix_seconds, options.until_unix_seconds) {
+    let since = options.since_nanos.map(|since| since.div_euclid(NANOS));
+    match (since, options.until_unix_seconds) {
         (Some(since), Some(until)) if until < since => Err(Error::usage(
             "--until is before --since, so no line fits; swap them",
         )),
-        (Some(since), _) if !follow && since > Utc::now().timestamp() => Err(Error::usage(
+        (Some(since), _) if !options.follow && since > now => Err(Error::usage(
             "--since is in the future, so no line fits yet; add --follow to wait for them",
         )),
         _ => Ok(options),
     }
 }
 
+const NANOS: i64 = 1_000_000_000;
+
 fn log_window(matches: &ArgMatches, now: i64) -> Result<LogsOptions, Error> {
+    let time = |name: &str| {
+        parse_log_time(
+            matches
+                .get_one::<String>(name)
+                .map(String::as_str)
+                .unwrap_or(""),
+            now,
+        )
+    };
     Ok(LogsOptions {
         follow: matches.get_flag("follow"),
         tail: parse_tail(
@@ -481,36 +543,146 @@ fn log_window(matches: &ArgMatches, now: i64) -> Result<LogsOptions, Error> {
                 .get_one::<String>("tail")
                 .ok_or_else(|| Error::usage("log tail is required"))?,
         )?,
-        since_unix_seconds: parse_log_time(
-            matches
-                .get_one::<String>("since")
-                .map(String::as_str)
-                .unwrap_or(""),
-            now,
-        )?,
-        until_unix_seconds: parse_log_time(
-            matches
-                .get_one::<String>("until")
-                .map(String::as_str)
-                .unwrap_or(""),
-            now,
-        )?,
+        since_nanos: time("since")?.map(|since| since.saturating_mul(NANOS)),
+        until_unix_seconds: time("until")?,
     })
+}
+
+/// `-n` reads the last lines of the window; `--since` alone, or `-n all`,
+/// reads all of it.
+fn history_window(matches: &ArgMatches, options: &LogsOptions) -> HistoryWindow {
+    let since = options.since_nanos;
+    let until = options
+        .until_unix_seconds
+        .map(|until| until.saturating_mul(NANOS));
+    let explicit = matches.value_source("tail") == Some(ValueSource::CommandLine);
+    match usize::try_from(options.tail) {
+        Ok(lines) if explicit || since.is_none() => HistoryWindow::Last {
+            lines,
+            since,
+            until,
+        },
+        _ => HistoryWindow::All { since, until },
+    }
+}
+
+fn print_history(record: &HistoryRecord, utc: bool) -> Result<(), Error> {
+    if crate::ui::json() {
+        crate::ui::emit_line(&history_line(record))?;
+        return Ok(());
+    }
+    let container = &record.container;
+    let id = container.container_id.as_str();
+    let service = container
+        .service
+        .as_deref()
+        .unwrap_or(container.replica.as_str());
+    let hook = if container.kind == HistoryContainerKind::PreDeployHook {
+        " (pre-deploy)"
+    } else {
+        ""
+    };
+    let prefix = format!(
+        "{} {} {service}/{}{hook} | ",
+        format_time(record.ts(), utc),
+        record.machine,
+        id.get(..12).unwrap_or(id),
+    );
+    match &record.event {
+        HistoryEvent::Line { stream, text, .. } => {
+            let output: &mut dyn Write = if *stream == HistoryStream::Stderr {
+                &mut std::io::stderr()
+            } else {
+                &mut std::io::stdout()
+            };
+            output.write_all(prefix.as_bytes())?;
+            output.write_all(text)?;
+            output.write_all(b"\n")?;
+        }
+        HistoryEvent::Gap { to, reason, .. } => {
+            let why = match reason {
+                HistoryGapReason::NotCaptured => "not captured",
+                HistoryGapReason::Corrupt => "unreadable",
+            };
+            crate::ui::note(format_args!(
+                "{prefix}lines until {} are missing: {why}",
+                format_time(*to, utc)
+            ));
+        }
+        HistoryEvent::Exit {
+            exit_code,
+            oom_killed,
+            ..
+        } => {
+            let code =
+                exit_code.map_or_else(|| "an unknown code".to_owned(), |code| code.to_string());
+            let oom = if *oom_killed {
+                ", killed out of memory"
+            } else {
+                ""
+            };
+            crate::ui::note(format_args!("{prefix}exited with {code}{oom}"));
+        }
+    }
+    Ok(())
+}
+
+/// One `--json` history record. A line carries the live fields too.
+fn history_line(record: &HistoryRecord) -> serde_json::Value {
+    let container = &record.container;
+    let ts = record.ts();
+    let mut line = serde_json::json!({
+        "timestamp": format_time(ts, true),
+        "ts": json_time(ts),
+        "machine": record.machine,
+        "namespace": container.namespace,
+        "service": container.service,
+        "deployment": container.deployment,
+        "replica": container.replica,
+        "container": container.container_id,
+        "container_id": container.container_id,
+        "hook": (container.kind == HistoryContainerKind::PreDeployHook).then_some("pre-deploy"),
+    });
+    let fields = match &record.event {
+        HistoryEvent::Line { stream, text, .. } => serde_json::json!({
+            "stream": stream,
+            "level": log_level(text),
+            "line": String::from_utf8_lossy(text),
+            "message": format!("{}\n", String::from_utf8_lossy(text)),
+        }),
+        HistoryEvent::Gap {
+            from, to, reason, ..
+        } => serde_json::json!({
+            "gap": { "from": json_time(*from), "to": json_time(*to), "reason": reason },
+        }),
+        HistoryEvent::Exit {
+            exit_code,
+            oom_killed,
+            ..
+        } => serde_json::json!({
+            "exit": { "code": exit_code, "oom_killed": oom_killed },
+        }),
+    };
+    if let (Some(line), serde_json::Value::Object(fields)) = (line.as_object_mut(), fields) {
+        line.extend(fields);
+    }
+    line
 }
 
 async fn print_logs(
     mut entries: tokio::sync::mpsc::Receiver<Result<LogEntry, String>>,
     utc: bool,
+    deployments: &HashMap<ContainerId, String>,
 ) -> Result<(), Error> {
     while let Some(entry) = entries.recv().await {
         let entry = entry.map_err(Error::unavailable)?;
         if crate::ui::json() {
-            if let Some(line) = log_line(&entry) {
+            if let Some(line) = log_line(&entry, deployments) {
                 crate::ui::emit_line(&line)?;
             }
             continue;
         }
-        let timestamp = timestamp(&entry, utc);
+        let timestamp = format_time(entry.timestamp_unix_nanos, utc);
         // The Service and a `ps`-length container ID; --json carries the full IDs.
         let (service_name, container, hook) = match &entry.metadata.origin {
             LogOrigin::Service {
@@ -552,7 +724,10 @@ async fn print_logs(
 }
 
 /// One `--json` log line; heartbeats and stream errors carry no log text.
-fn log_line(entry: &LogEntry) -> Option<serde_json::Value> {
+fn log_line(
+    entry: &LogEntry,
+    deployments: &HashMap<ContainerId, String>,
+) -> Option<serde_json::Value> {
     let (message, stderr) = printable_log_bytes(&entry.body)?;
     let (service, service_id, container_id, hook) = match &entry.metadata.origin {
         LogOrigin::Service {
@@ -568,14 +743,20 @@ fn log_line(entry: &LogEntry) -> Option<serde_json::Value> {
         ),
         LogOrigin::Machine { service } => (service.as_str(), None, None, None),
     };
+    let line = message.strip_suffix(b"\n").unwrap_or(message);
     Some(serde_json::json!({
-        "timestamp": timestamp(entry, true),
+        "timestamp": format_time(entry.timestamp_unix_nanos, true),
+        "ts": json_time(entry.timestamp_unix_nanos),
         "machine": entry.metadata.machine_name,
         "service": service,
         "service_id": service_id,
+        "container": container_id,
         "container_id": container_id,
+        "deployment": container_id.and_then(|id| deployments.get(id)),
         "hook": hook,
         "stream": if stderr { "stderr" } else { "stdout" },
+        "level": log_level(line),
+        "line": String::from_utf8_lossy(line),
         "message": String::from_utf8_lossy(message),
     }))
 }
@@ -588,17 +769,26 @@ fn printable_log_bytes(body: &LogBody) -> Option<(&[u8], bool)> {
     }
 }
 
-fn timestamp(entry: &LogEntry, utc: bool) -> String {
-    let seconds = entry.timestamp_unix_nanos.div_euclid(1_000_000_000);
-    let nanos = entry.timestamp_unix_nanos.rem_euclid(1_000_000_000) as u32;
-    let Some(timestamp) = DateTime::<Utc>::from_timestamp(seconds, nanos) else {
+fn format_time(nanos: i64, utc: bool) -> String {
+    let Some(time) = utc_time(nanos) else {
         return "0000-00-00T00:00:00Z".into();
     };
     if utc {
-        timestamp.to_rfc3339()
+        time.to_rfc3339()
     } else {
-        timestamp.with_timezone(&Local).to_rfc3339()
+        time.with_timezone(&Local).to_rfc3339()
     }
+}
+
+/// `--json` time: RFC 3339 in UTC with all nine fraction digits, so it sorts as text.
+fn json_time(nanos: i64) -> Option<String> {
+    utc_time(nanos).map(|time| time.to_rfc3339_opts(SecondsFormat::Nanos, true))
+}
+
+fn utc_time(nanos: i64) -> Option<DateTime<Utc>> {
+    let seconds = nanos.div_euclid(NANOS);
+    let fraction = u32::try_from(nanos.rem_euclid(NANOS)).ok()?;
+    DateTime::<Utc>::from_timestamp(seconds, fraction)
 }
 
 pub(super) struct RawTerminal;
@@ -871,6 +1061,59 @@ mod scope_tests {
         assert!(options(&[
             "ployz", "logs", "web", "--since", "5m", "--until", "1m"
         ]));
+    }
+
+    #[test]
+    fn since_reads_the_whole_window_and_tail_reads_its_end() {
+        let window = |args: &[&str]| {
+            let root = crate::cli::command().try_get_matches_from(args).unwrap();
+            let leaf = leaf_matches(&root);
+            history_window(leaf, &log_options(leaf).unwrap())
+        };
+        assert_eq!(
+            window(&["ployz", "logs", "web"]),
+            HistoryWindow::Last {
+                lines: 100,
+                since: None,
+                until: None
+            }
+        );
+        let HistoryWindow::All {
+            since: Some(since), ..
+        } = window(&["ployz", "logs", "web", "--since", "2h"])
+        else {
+            panic!("--since alone reads the whole window");
+        };
+        assert_eq!(since % NANOS, 0);
+        assert!(matches!(
+            window(&["ployz", "logs", "web", "--since", "2h", "-n", "5"]),
+            HistoryWindow::Last {
+                lines: 5,
+                since: Some(_),
+                ..
+            }
+        ));
+        assert!(matches!(
+            window(&["ployz", "logs", "web", "-n", "all"]),
+            HistoryWindow::All { since: None, .. }
+        ));
+    }
+
+    #[test]
+    fn a_server_whose_history_failed_makes_the_command_partial() {
+        let mut gaps = crate::ui::Gaps::default();
+        assert!(gaps.outcome().is_ok());
+        let failure = ployz_core::MachineFailure {
+            machine_id: ployz_core::MachineId::parse("1".repeat(32)).unwrap(),
+            error: crate::ui::rpc_error(
+                RpcErrorCode::Unavailable,
+                &std::io::Error::other("ployz-observe is down"),
+            ),
+        };
+        gaps.extend(&[failure.clone(), failure], &[]);
+        assert_eq!(gaps.failures.len(), 1);
+        let partial = gaps.outcome().unwrap_err();
+        assert_eq!(partial.printed_exit(), Some(crate::ui::PARTIAL_EXIT));
     }
 
     #[test]

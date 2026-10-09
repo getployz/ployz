@@ -220,7 +220,7 @@ async fn log_tail(client: &Client, machine: MachineId, container: ContainerId) -
                 options: ployz_core::LogsOptions {
                     follow: false,
                     tail: 10,
-                    since_unix_seconds: None,
+                    since_nanos: None,
                     until_unix_seconds: None,
                 },
             })

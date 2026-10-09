@@ -166,6 +166,7 @@ impl Daemon {
         build_policy: ployz_build::HostPolicy,
         run_dir: PathBuf,
     ) -> Result<Self, Error> {
+        let observe_socket = run_dir.join(crate::observe::SOCKET_FILE);
         let store = match LocalMachineStore::open_with_admission(&config.data_dir, &run_dir)? {
             Opened::Ready(store) => store,
             Opened::Resetting(interrupted) => {
@@ -281,6 +282,7 @@ impl Daemon {
             )
             .with_optional_containers(containers.clone())
             .with_ingress_data_dir(config.data_dir.clone())
+            .with_observe_socket(observe_socket)
             .with_image_ingest(Arc::clone(&ingest))
             .build();
 

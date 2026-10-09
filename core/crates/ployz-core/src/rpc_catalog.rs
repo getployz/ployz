@@ -92,10 +92,11 @@ macro_rules! rpc_catalog {
                 EndBuildGrant: (end_build_grant, "EndBuildGrant", EndBuildGrantRequest, "end_build_grant", BuildGrantEnded, END_BUILD_GRANT_CAPABILITY, "ployz.build.grant.end.v1", Container),
                 GetIngressProxyConfig: (get_ingress_proxy_config, "GetIngressProxyConfig", GetIngressProxyConfigRequest, "get_ingress_proxy_config", IngressProxyConfig, GET_INGRESS_PROXY_CONFIG_CAPABILITY, "ployz.ingress.config.v1", Ingress),
                 PublishCertificateMaterial: (publish_certificate_material, "PublishCertificateMaterial", PublishCertificateMaterialRequest, "publish_certificate_material", CertificateMaterialPublished, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, "ployz.certificates.publish.v1", Cluster),
+                ForgetLogs: (forget_logs, "ForgetLogs", ForgetLogsRequest, "forget_logs", LogsForgotten, FORGET_LOGS_CAPABILITY, "ployz.logs.forget.v1", Container),
                 Reset: (reset, "Reset", ResetRequest, "reset", ResetAccepted, RESET_MACHINE_CAPABILITY, "ployz.machine.reset.v1", Always),
             }
             server_streaming {
-                ContainerLogHistory: (container_log_history, "ContainerLogHistory", ContainerLogHistoryRequest, "container_log_history", CONTAINER_LOG_HISTORY_CAPABILITY, "ployz.container.log-history.v1", Container),
+                LogHistory: (log_history, "LogHistory", LogHistoryRequest, "log_history", LOG_HISTORY_CAPABILITY, "ployz.logs.history.v2", Container),
                 ContainerLogs: (container_logs, "ContainerLogs", ContainerLogsRequest, "container_logs", CONTAINER_LOGS_CAPABILITY, "ployz.container.logs.v1", Container),
                 MachineLogs: (machine_logs, "MachineLogs", MachineLogsRequest, "machine_logs", MACHINE_LOGS_CAPABILITY, "ployz.machine.logs.v1", Container),
                 RuntimeWatch: (runtime_watch, "RuntimeWatch", RuntimeWatchRequest, "runtime_watch", RUNTIME_WATCH_CAPABILITY, "ployz.runtime.watch.v1", Always),

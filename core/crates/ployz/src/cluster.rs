@@ -394,14 +394,18 @@ impl Client {
             .into_inner())
     }
 
-    pub(crate) async fn container_log_history_stream(
+    /// A stored line can be 8 MiB, past tonic's 4 MiB default.
+    pub(crate) async fn log_history_stream(
         &self,
         target: &MachineTarget,
         request: OpaquePayload,
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.machine_rpc();
+        let mut rpc = self
+            .machine_rpc()
+            .accept_compressed(CompressionEncoding::Gzip)
+            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT);
         Ok(rpc
-            .container_log_history(target_request(request, Some(target)))
+            .log_history(target_request(request, Some(target)))
             .await?
             .into_inner())
     }

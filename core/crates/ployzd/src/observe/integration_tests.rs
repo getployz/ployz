@@ -128,12 +128,12 @@ async fn every_line_through_six_rotations_and_removal_is_stored_exactly_once() {
     fs::create_dir_all(&test_root.0).unwrap();
     let store = StoreRoot::under(&test_root.0);
     store.prepare().unwrap();
-    let listener = tokio::net::UnixListener::bind(test_root.0.join("observe.sock")).unwrap();
+    let (_forget, forgets) = tokio::sync::mpsc::channel(1);
     let client = bollard::Docker::connect_with_defaults().unwrap();
     let harvester = tokio::spawn({
         let docker_root = docker_root.clone();
         let store = store.clone();
-        async move { Harvester::run(client, &docker_root, store, listener).await }
+        async move { Harvester::run(client, &docker_root, store, forgets).await }
     });
     tokio::time::sleep(Duration::from_secs(1)).await;
 
